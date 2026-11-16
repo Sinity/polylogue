@@ -46,7 +46,7 @@ fn acknowledged_socket_write_survives_runtime_shutdown() {
         Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations)).unwrap();
     let mut stream = UnixStream::connect(runtime.daemon.archive.socket()).unwrap();
     let request = command_surface::Request {
-        operation: "setting".into(),
+        operation: "set".into(),
         arguments: serde_json::json!({"key":"browser.actions","value":"on"}),
         request_id: "saved-socket-setting".into(),
         deadline: command_surface::Deadline::None,
@@ -181,7 +181,7 @@ fn disconnect_interrupts_sql_and_releases_the_reader_slot() {
     let reads = daemon.watch_reads();
     let mut stream = UnixStream::connect(daemon.daemon.archive.socket()).unwrap();
     let request = command_surface::Request {
-        operation: "sql".into(),
+        operation: "dev sql".into(),
         arguments: serde_json::json!({"statement":"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n"}),
         request_id: "disconnect-sql".into(),
         deadline: command_surface::Deadline::None,
@@ -218,7 +218,7 @@ fn shutdown_cancels_a_started_socket_read_before_joining_its_transport() {
     *runtime.daemon.read_limits.lock().unwrap() = Some(observed);
     let mut stream = UnixStream::connect(runtime.daemon.archive.socket()).unwrap();
     let request = command_surface::Request {
-        operation: "sql".into(),
+        operation: "dev sql".into(),
         arguments: serde_json::json!({"statement":"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n"}),
         request_id: "read-started-before-stop".into(),
         deadline: command_surface::Deadline::None,
@@ -261,7 +261,7 @@ fn shutdown_cancels_reads_without_revoking_a_handed_over_write() {
         *runtime.daemon.read_limits.lock().unwrap() = Some(observed);
         let mut reading = UnixStream::connect(runtime.daemon.archive.socket()).unwrap();
         let request = command_surface::Request {
-            operation: "sql".into(),
+            operation: "dev sql".into(),
             arguments: serde_json::json!({"statement":"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n"}),
             request_id: "read-beside-write".into(),
             deadline: command_surface::Deadline::None,
@@ -284,7 +284,7 @@ fn shutdown_cancels_reads_without_revoking_a_handed_over_write() {
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
         let request = command_surface::Request {
-            operation: "setting".into(),
+            operation: "set".into(),
             arguments: serde_json::json!({"key":"browser.actions","value":"on"}),
             request_id: "handed-over-setting".into(),
             deadline: command_surface::Deadline::None,
@@ -338,7 +338,7 @@ fn socket_honours_the_client_deadline_without_closing_the_connection() {
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
     let request = command_surface::Request {
-        operation: "sql".into(),
+        operation: "dev sql".into(),
         arguments: serde_json::json!({"statement":"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n"}),
         request_id: "bounded-sql".into(),
         deadline: command_surface::Deadline::Milliseconds(50),
@@ -358,7 +358,7 @@ fn socket_honours_the_client_deadline_without_closing_the_connection() {
         "{response:?}"
     );
     let next = command_surface::Request {
-        operation: "sql".into(),
+        operation: "dev sql".into(),
         arguments: serde_json::json!({"statement":"SELECT 1"}),
         request_id: "after-timeout".into(),
         deadline: command_surface::Deadline::Default,
@@ -381,7 +381,7 @@ fn a_client_can_close_its_write_half_and_still_receive_the_answer() {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
-    stream.write_all(b"{\"caller\":{\"controlling_terminal\":false},\"operation\":\"sql\",\"request_id\":\"half-close\",\"arguments\":{\"statement\":\"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100000) SELECT count(*) AS n FROM n\"}}\n").unwrap();
+    stream.write_all(b"{\"caller\":{\"controlling_terminal\":false},\"operation\":\"dev sql\",\"request_id\":\"half-close\",\"arguments\":{\"statement\":\"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100000) SELECT count(*) AS n FROM n\"}}\n").unwrap();
     stream.shutdown(std::net::Shutdown::Write).unwrap();
     let mut line = String::new();
     BufReader::new(stream).read_line(&mut line).unwrap();
@@ -426,7 +426,7 @@ fn stopping_new_requests_releases_queued_socket_requests() {
     client
         .write_all(
             request_line(
-                "sql",
+                "dev sql",
                 serde_json::json!({"statement":"SELECT 1"}),
                 "queued-before-stop",
             )
@@ -476,7 +476,7 @@ fn complete_queued_requests_receive_shutting_down_before_socket_drain() {
         .unwrap();
     let mut responses = BufReader::new(stream.try_clone().unwrap());
     let request = |id: &str| command_surface::Request {
-        operation: "sql".into(),
+        operation: "dev sql".into(),
         arguments: serde_json::json!({"statement":"SELECT 1 AS n"}),
         request_id: id.into(),
         deadline: command_surface::Deadline::None,
@@ -737,7 +737,7 @@ fn stalled_client_releases_reader_and_wal_stops_growing() {
     crate::test_answers::ok(answer_of(
         &mut writer,
         &request_line(
-            "setting",
+            "set",
             serde_json::json!({"key": "browser.actions", "value": "on"}),
             "write-during-stall",
         ),
@@ -768,7 +768,7 @@ fn sixteen_clients_with_one_stalled_stream() {
                     answer_of(
                         &mut stream,
                         &request_line(
-                            "sql",
+                            "dev sql",
                             serde_json::json!({"statement": format!("SELECT {n} AS n")}),
                             &format!("client-{n}"),
                         ),
@@ -797,7 +797,7 @@ fn status_keeps_budget_during_import() {
     long_read
         .write_all(
             request_line(
-                "sql",
+                "dev sql",
                 serde_json::json!({"statement": "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n"}),
                 "long-read",
             )

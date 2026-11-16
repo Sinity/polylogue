@@ -74,16 +74,36 @@ act!(Interrupt, protocol::Interrupt, |a, call| interrupt(
     &a.session
 ));
 act!(Start, protocol::Start, |a, call| {
+    let pending = [
+        (
+            a.harness
+                .as_deref()
+                .is_some_and(|name| matches!(name, "chatgpt" | "claude-ai" | "grok")),
+            "in a web chat",
+        ),
+        (a.submit, "submit"),
+        (a.model.is_some(), "model"),
+        (a.effort.is_some(), "effort"),
+        (a.project.is_some(), "project"),
+        (!a.attach.is_empty(), "attach"),
+    ];
+    if let Some((_, option)) = pending.into_iter().find(|(used, _)| *used) {
+        return Ok(error(
+            polylogue_model::Code::NotBuilt,
+            format!("start --{option} is not built yet"),
+        ));
+    }
     if a.harness.is_none() && a.role.is_none() {
-        Err(Failure::bad_request("start takes --harness or --role"))
+        Err(Failure::bad_request("start takes --in or --role"))
     } else {
+        let cwd = call.directory(a.cwd.as_deref())?;
         start(
             call.daemon,
             call.invocation,
             call.request_id,
             a.harness.as_deref(),
             a.role.as_deref(),
-            &a.cwd,
+            &cwd,
             &a.text,
         )
     }
@@ -1129,7 +1149,7 @@ fn start(
         (None, None) => {
             return Ok(error(
                 polylogue_model::Code::BadRequest,
-                "start takes --harness or --role",
+                "start takes --in or --role",
             ));
         }
     };

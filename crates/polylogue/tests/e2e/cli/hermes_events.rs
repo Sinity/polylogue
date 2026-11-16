@@ -292,7 +292,12 @@ fn hermes_verification_restart_and_rebuild_agree() {
         loop {
             let out = cli(
                 &env,
-                &["--json", "sql", "SELECT SUM(skipped) AS n FROM parse_state"],
+                &[
+                    "--json",
+                    "dev",
+                    "sql",
+                    "SELECT SUM(skipped) AS n FROM parse_state",
+                ],
             );
             assert!(out.status.success(), "{out:?}");
             if json(&out)[0]["n"].as_u64().is_some_and(|n| n >= 2) {

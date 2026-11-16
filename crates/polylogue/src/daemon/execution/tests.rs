@@ -35,7 +35,7 @@ fn background_readers_keep_their_busy_wait() {
 fn slow_read_returns_a_typed_deadline_with_unknown_count() {
     let daemon = test_daemon::start("synthetic deadline");
     let limit = ReadLimit::new(Duration::from_millis(50), Default::default());
-    let response = crate::test_daemon::Call::new("sql", serde_json::json!({"statement": SLOW}))
+    let response = crate::test_daemon::Call::new("dev sql", serde_json::json!({"statement": SLOW}))
         .limit(limit.clone())
         .answer(&daemon.daemon);
     let command_surface::Answer {
@@ -52,7 +52,7 @@ fn slow_read_returns_a_typed_deadline_with_unknown_count() {
         panic!("one note names the stage: {notes:?}")
     };
     let steps: u64 = note
-        .strip_prefix("stopped during sql after ")
+        .strip_prefix("stopped during dev sql after ")
         .and_then(|rest| rest.split_once(' '))
         .and_then(|(steps, _)| steps.parse().ok())
         .unwrap_or_else(|| panic!("{note}"));
@@ -98,7 +98,7 @@ fn expired_requests_never_start_any_read_operation() {
             serde_json::json!({"text": "repo:", "position": 5}),
         ),
         crate::test_daemon::Call::new("query", serde_json::json!({"query": "sessions"})),
-        crate::test_daemon::Call::new("sql", serde_json::json!({"statement": "SELECT 1"})),
+        crate::test_daemon::Call::new("dev sql", serde_json::json!({"statement": "SELECT 1"})),
     ];
     for request in requests {
         let limit = ReadLimit::new(Duration::ZERO, Default::default());
@@ -129,7 +129,7 @@ fn write_requests_do_not_enter_a_read_scope_even_with_an_expired_cancelled_limit
     for request in [
         crate::test_daemon::Call::new("keep", serde_json::json!({"query": "sessions"}))
             .id("synthetic-keep"),
-        crate::test_daemon::Call::new("embed build", serde_json::json!({})),
+        crate::test_daemon::Call::new("embed", serde_json::json!({"yes":true})),
     ] {
         let policy = policy(&request);
         assert!(!policy.read_phase, "{}", request.operation);
@@ -289,7 +289,7 @@ fn deadline_hint_not_repeating_existing_bound() {
 
 #[test]
 fn deadline_hint_uses_stopped_stage() {
-    for stage in ["page", "similarity", "sql", "group"] {
+    for stage in ["page", "similarity", "dev sql", "group"] {
         let limit = ReadLimit::new(Duration::ZERO, Default::default());
         limit.scope(|| ReadLimit::set_stage(stage));
         let command_surface::Answer {

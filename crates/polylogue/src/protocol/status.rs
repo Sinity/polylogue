@@ -10,6 +10,11 @@ pub struct Arguments {
     /// One line for status bars: running sessions and the longest wait
     #[serde(default)]
     pub line: bool,
+    /// Check the stored bytes against their hashes
+    #[serde(default)]
+    pub verify: bool,
+    /// Write the checked revisions to this manifest
+    pub manifest: Option<PathBuf>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]

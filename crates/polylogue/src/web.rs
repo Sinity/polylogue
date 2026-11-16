@@ -463,14 +463,14 @@ async fn home(State(web): State<Arc<Web>>) -> HttpResponse {
         };
     let sessions = match ask(
         &web,
-        "query",
-        serde_json::json!({"query": "sessions", "limit": 30}),
+        "rows",
+        serde_json::json!({"selection": "sessions", "page_size": 30}),
         None,
     )
     .await
     .value()
     {
-        Some(sessions) => sessions.clone(),
+        Some(sessions) => sessions["reply"].clone(),
         None => serde_json::Value::Null,
     };
     page(pages::home(&status, &sessions))
@@ -487,9 +487,14 @@ async fn search(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> Ht
     if p.q.trim().is_empty() {
         return Redirect::to("/").into_response();
     }
-    let arguments = serde_json::json!({"query": p.q, "why": true});
-    match crate::protocol::into_value(ask(&web, "query", arguments, p.cursor.clone()).await) {
-        Ok(data) => page(pages::search(&p.q, Some(&data), None, p.cursor.as_deref())),
+    let arguments = serde_json::json!({"selection": p.q, "why": true});
+    match crate::protocol::into_value(ask(&web, "rows", arguments, p.cursor.clone()).await) {
+        Ok(data) => page(pages::search(
+            &p.q,
+            Some(&data["reply"]),
+            None,
+            p.cursor.as_deref(),
+        )),
         Err(failure) => page(pages::search(
             &p.q,
             None,
@@ -507,9 +512,9 @@ async fn cost(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> Http
         p.q.trim()
     };
     let text = format!("{scope} | measure usage");
-    let answer = ask(&web, "query", serde_json::json!({ "query": text }), None).await;
+    let answer = ask(&web, "rows", serde_json::json!({ "selection": text }), None).await;
     match crate::protocol::into_value(answer) {
-        Ok(data) => page(pages::cost(scope, &data["data"])),
+        Ok(data) => page(pages::cost(scope, &data["reply"]["data"])),
         Err(failure) => failed_with(&failure),
     }
 }

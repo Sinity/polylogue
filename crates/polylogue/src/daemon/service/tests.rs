@@ -115,7 +115,7 @@ fn reading_variants_setting_is_the_default_and_is_bound_in_the_cursor() {
     let set = |value: &str| {
         crate::test_answers::ok(
             crate::test_daemon::Call::new(
-                "setting",
+                "set",
                 serde_json::json!({"key": "reading.variants", "value": value}),
             )
             .answer(&w.daemon),

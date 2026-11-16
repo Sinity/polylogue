@@ -151,7 +151,7 @@ fn typed_sql_empty_rows_are_successful_empty_reads() {
     let socket = crate::client::call(
         &daemon.daemon.archive.socket(),
         &request(
-            "sql",
+            "dev sql",
             json!({"statement": "SELECT 1 AS example WHERE 0"}),
             "sql-empty",
         ),
@@ -186,7 +186,7 @@ fn typed_schema_selection_refuses_conflicting_origin_controls_on_the_socket() {
     let answer = crate::client::call_ready(
         &daemon.daemon.archive,
         &request(
-            "schema infer",
+            "dev schema infer",
             json!({"origin":"claude-code", "all":true}),
             "schema-selection-wire",
         ),
@@ -207,6 +207,7 @@ fn local_schema_output_path_stays_out_of_the_typed_request() {
     let (_, _, arguments) = crate::cli::request_arguments(
         &[
             "polylogue",
+            "dev",
             "schema",
             "infer",
             "--all",
@@ -225,7 +226,7 @@ fn local_schema_output_path_stays_out_of_the_typed_request() {
 #[test]
 fn typed_setting_catalog_is_a_real_table_answer() {
     let daemon = crate::test_daemon::start("typed settings catalog example");
-    let raw = crate::test_daemon::call(&daemon.daemon, "setting", json!({}));
+    let raw = crate::test_daemon::call(&daemon.daemon, "set", json!({}));
     let Some(data) = raw.value().cloned() else {
         panic!("catalog producer failed: {raw:?}");
     };
@@ -233,7 +234,7 @@ fn typed_setting_catalog_is_a_real_table_answer() {
         serde_json::from_value(data).expect("catalog producer emits its declared answer");
     let table = crate::commands::table(Arc::clone(&daemon.daemon));
     let answer = runtime().block_on(table.call(
-        request("setting", json!({}), "catalog-example"),
+        request("set", json!({}), "catalog-example"),
         command_surface::Via::Cli,
         Default::default(),
     ));
@@ -257,7 +258,7 @@ fn typed_setting_catalog_is_a_real_table_answer() {
         (json!({"machine":"*"}), "invalid-host-example"),
     ] {
         let invalid = runtime().block_on(table.call(
-            request("setting", arguments, id),
+            request("set", arguments, id),
             command_surface::Via::Cli,
             Default::default(),
         ));
@@ -304,10 +305,10 @@ fn typed_import_uses_the_same_path_and_answer_schema() {
 
 #[test]
 fn mixed_setting_reads_use_scope_fences_from_the_decoded_request() {
-    assert!(crate::commands::command("setting").unwrap().writes);
-    let read = policy("setting", json!({}), Surface::Http).unwrap();
+    assert!(crate::commands::command("set").unwrap().writes);
+    let read = policy("set", json!({}), Surface::Http).unwrap();
     let write = policy(
-        "setting",
+        "set",
         json!({"key":"browser.actions","value":"on"}),
         Surface::Http,
     )
@@ -320,7 +321,7 @@ fn mixed_setting_reads_use_scope_fences_from_the_decoded_request() {
 
 #[test]
 fn typed_write_identity_comes_from_the_request_on_every_surface() {
-    let command = crate::commands::command("setting").unwrap();
+    let command = crate::commands::command("set").unwrap();
     for surface in [Surface::Cli, Surface::Http, Surface::Mcp] {
         assert!(
             !crate::commands::declarations()
@@ -330,10 +331,10 @@ fn typed_write_identity_comes_from_the_request_on_every_surface() {
                 .iter()
                 .any(|arg| arg.name == "request_id")
         );
-        assert!(policy("setting", json!({}), surface).is_ok());
+        assert!(policy("set", json!({}), surface).is_ok());
         assert!(
             policy(
-                "setting",
+                "set",
                 json!({"key":"browser.actions","request_id":"in-arguments"}),
                 surface
             )
@@ -342,7 +343,7 @@ fn typed_write_identity_comes_from_the_request_on_every_surface() {
     }
     let daemon = crate::test_daemon::start("write identity from the request");
     let written =
-        crate::test_daemon::Call::new("setting", json!({"key":"browser.actions","value":"on"}))
+        crate::test_daemon::Call::new("set", json!({"key":"browser.actions","value":"on"}))
             .id("write-request-id")
             .answer(&daemon.daemon);
     crate::test_answers::ok(written);
@@ -555,11 +556,11 @@ fn answer_errors_keep_credential_shaped_messages_and_hints() {
 fn setting_write_returns_its_result_and_value() {
     let daemon = crate::test_daemon::start("setting transport example");
     let (_, _, arguments) = crate::cli::request_arguments(
-        &["polylogue", "setting", "reading.variants", "[]"],
+        &["polylogue", "set", "reading.variants", "[]"],
         std::path::Path::new("/"),
     )
     .unwrap();
-    let ready = request("setting", Value::Object(arguments), "setting-cli-socket");
+    let ready = request("set", Value::Object(arguments), "setting-cli-socket");
     let first = crate::client::call_ready(&daemon.daemon.archive, &ready).unwrap();
     let crate::protocol::setting::Answer::Outcome(write_result) =
         serde_json::from_value(first.value().unwrap().clone()).unwrap()
@@ -580,7 +581,7 @@ fn setting_write_returns_its_result_and_value() {
     let shown = crate::client::call_ready(
         &daemon.daemon.archive,
         &request(
-            "setting",
+            "set",
             json!({"key":"reading.variants"}),
             "setting-socket-read",
         ),

@@ -61,7 +61,7 @@ fn documents_search_and_read_in_one_http_operation() {
             "{page}"
         );
         assert!(!page.contains("<script>"));
-        assert!(page.contains("polylogue read --request"));
+        assert_read_command(&page, &target);
         let api = read_page(&r, &target, &[]).await;
         let Ok(data) = crate::protocol::into_value(
             crate::test_daemon::Call::new(
@@ -189,7 +189,7 @@ fn document_previous_pages_restore_unicode_body_fragments() {
         let first = read_page(
             &r,
             "document:claude-ai:project:paged-project:doc:paged-doc",
-            &[("page_tokens", "64")],
+            &[("budget", "64")],
         )
         .await;
         let current = follow_read(

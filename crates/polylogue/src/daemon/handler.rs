@@ -7,7 +7,7 @@
 //! compile and nothing joins two tables by name.
 use super::Failure;
 use super::service::Daemon;
-use crate::commands::{Caller, Command, Surface};
+use crate::commands::{Caller, Command, Surface, ToolAccess};
 use command_surface::{
     Access, Answer, DeclarationsBuilder, FailureKind, JsonSchema, Operation, OperationFuture,
     OperationTable, RequestContext, TextStyle, TokenBudget,
@@ -138,6 +138,11 @@ pub(crate) trait Handler: Send + Sync + 'static {
     fn access(_arguments: &Self::Arguments, declared: Access) -> Access {
         declared
     }
+    /// The smallest tool that accepts these arguments.
+    fn tool_access(_arguments: &Self::Arguments, row: &Command) -> ToolAccess {
+        row.tool
+            .map_or(ToolAccess::Read, crate::commands::Tool::access)
+    }
     /// The query a refusal narrows, for a request that runs one.
     fn query_text(_arguments: &Self::Arguments) -> Option<&str> {
         None
@@ -219,6 +224,7 @@ pub struct Registration {
     admit: fn(&Value, &'static Command, &Caller) -> Result<Policy, Failure>,
     answer: fn(&Value, &'static Command, &Local<'_>) -> Answer<Value>,
     produce: Option<Produce>,
+    tool_access: fn(&Value, &Command) -> Result<ToolAccess, Failure>,
 }
 
 /// A row answered by the daemon through `H`.
@@ -229,6 +235,7 @@ pub(crate) const fn daemon<H: Handler>() -> Registration {
         admit: admit::<H>,
         answer: answer_local::<H>,
         produce: None,
+        tool_access: tool_access::<H>,
     }
 }
 
@@ -240,6 +247,7 @@ pub(crate) const fn streams<H: Streams>() -> Registration {
         admit: admit_stream::<H>,
         answer: answer_local::<H>,
         produce: Some(produce::<H>),
+        tool_access: tool_access::<H>,
     }
 }
 
@@ -278,6 +286,15 @@ impl FeedRegistration {
 }
 
 impl Registration {
+    /// Decodes the arguments before deciding which tool can run them.
+    pub(crate) fn tool_access(
+        &self,
+        arguments: &Value,
+        row: &Command,
+    ) -> Result<ToolAccess, Failure> {
+        (self.tool_access)(arguments, row)
+    }
+
     pub(crate) fn declare(&self, declarations: &mut DeclarationsBuilder, row: &'static Command) {
         (self.declare)(declarations, row)
     }
@@ -351,6 +368,10 @@ impl FeedRegistration {
 
 fn decode<T: DeserializeOwned>(arguments: &Value) -> Result<T, Failure> {
     T::deserialize(arguments).map_err(Failure::bad_request)
+}
+
+fn tool_access<H: Handler>(arguments: &Value, row: &Command) -> Result<ToolAccess, Failure> {
+    Ok(H::tool_access(&decode::<H::Arguments>(arguments)?, row))
 }
 
 fn declare<H: Handler>(declarations: &mut DeclarationsBuilder, row: &'static Command) {
@@ -605,6 +626,7 @@ impl<H: Handler> Operation for Row<H> {
                     .into()
                 });
             let invocation = accepted.and_then(|caller| caller.invocation.clone());
+            let calling_session = accepted.and_then(|caller| caller.calling_session.clone());
             let parent = accepted.and_then(|caller| caller.parent.clone());
             let request_id = context.request_id.clone();
             let cursor = context.cursor().map(str::to_owned);
@@ -638,6 +660,7 @@ impl<H: Handler> Operation for Row<H> {
                 };
                 let invocation = invocation
                     .unwrap_or_else(|| daemon.invocation(&authorship))
+                    .with_calling_session(calling_session)
                     .with_parent(parent);
                 answer::<H>(
                     arguments,

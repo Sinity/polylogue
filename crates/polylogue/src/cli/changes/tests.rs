@@ -134,7 +134,7 @@ fn inconsistent_completion_or_premature_event_advancement_refuses_before_the_new
 #[test]
 fn the_command_socket_and_cli_receiver_deliver_one_finite_batch() {
     let daemon = crate::test_daemon::start("synthetic feed source");
-    let (_, values) = crate::cli::parse(&["polylogue", "changes"]).unwrap();
+    let (_, values) = crate::cli::parse(&["polylogue", "dev", "feed"]).unwrap();
     let request = request(&values).unwrap();
     assert_eq!(request.arguments, serde_json::json!({}));
     let mut output = Vec::new();
@@ -157,8 +157,8 @@ fn the_command_socket_and_cli_receiver_deliver_one_finite_batch() {
     assert_eq!(last["type"], "complete");
     let checkpoint = last["position"].as_str().unwrap().to_owned();
     let request = crate::client::request(
-        "changes",
-        serde_json::json!({ "since": checkpoint }),
+        "dev feed",
+        serde_json::json!({ "after": checkpoint }),
         "changes-again".into(),
     );
     let mut again = Vec::new();
@@ -335,12 +335,12 @@ fn feed_refuses_query_page_and_field_flags_instead_of_ignoring_global_arguments(
     // The feed declares no query flags: the parser refuses them.
     for flag in ["--fields", "--why"] {
         let error = crate::cli::command()
-            .try_get_matches_from(["polylogue", "changes", flag, "ref"])
+            .try_get_matches_from(["polylogue", "dev", "feed", flag, "ref"])
             .unwrap_err();
         assert_eq!(error.exit_code(), 2, "{flag}");
     }
     for suffix in [vec!["--cursor", "opaque"], vec!["--budget", "none"]] {
-        let mut argv = vec!["polylogue", "changes"];
+        let mut argv = vec!["polylogue", "dev", "feed"];
         argv.extend(suffix);
         let matches = crate::cli::command().try_get_matches_from(&argv).unwrap();
         assert_eq!(
@@ -351,16 +351,16 @@ fn feed_refuses_query_page_and_field_flags_instead_of_ignoring_global_arguments(
         assert!(!startup.config.archive.join("daemon.sock").exists());
     }
     let error = crate::cli::command()
-        .try_get_matches_from(["polylogue", "changes", "--fresh"])
+        .try_get_matches_from(["polylogue", "dev", "feed", "--fresh"])
         .unwrap_err();
     assert_eq!(error.exit_code(), 2);
 }
 
 fn request(v: &command_surface::ParsedCommand) -> Result<command_surface::RunnableRequest, String> {
     Ok(crate::client::request(
-        "changes",
+        "dev feed",
         v.request.arguments.clone(),
-        "changes".into(),
+        "feed".into(),
     ))
 }
 

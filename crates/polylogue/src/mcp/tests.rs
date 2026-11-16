@@ -303,10 +303,10 @@ fn server_instructions_are_the_card_naming_every_tool() {
     };
     let text = info["result"]["instructions"].as_str().unwrap();
     assert_eq!(text, crate::manual::card());
-    for tool in Tool::ALL {
+    for tool in [Tool::Read, Tool::Write, Tool::Act] {
         assert!(text.contains(tool.name()), "{}", tool.name());
     }
-    assert!(text.contains("`explain capabilities`"));
+    assert!(text.contains("operation defaults to \"rows\""));
     assert!(text.len() <= 800, "the card is {} bytes", text.len());
 }
 
@@ -345,56 +345,54 @@ fn errors_show_archived_controls_as_text() {
 
 #[test]
 fn tool_annotations_follow_the_command_table() {
-    let tools = tools();
+    let listed = tools();
     for tool in Tool::ALL {
-        let listed = tools.iter().find(|t| t["name"] == tool.name()).unwrap();
-        assert_eq!(listed["annotations"]["openWorldHint"], tool.open_world());
-        assert_eq!(listed["annotations"]["idempotentHint"], tool.idempotent());
-        for command in operations(tool) {
-            assert_eq!(
-                listed["annotations"]["readOnlyHint"], !command.writes,
-                "{}",
-                command.name
-            );
-        }
-    }
-    for (name, read_only) in [
-        ("polylogue_read", true),
-        ("polylogue_context", true),
-        ("polylogue_note", false),
-        ("polylogue_chat", false),
-        ("polylogue_act", false),
-    ] {
-        let tool = tools.iter().find(|t| t["name"] == name).unwrap();
-        assert_eq!(tool["annotations"]["readOnlyHint"], read_only, "{name}");
+        let entry = listed
+            .iter()
+            .find(|entry| entry["name"] == tool.name())
+            .unwrap();
+        let expected = match tool.access() {
+            ToolAccess::Read => json!({"readOnlyHint":true,"openWorldHint":false}),
+            ToolAccess::Write => {
+                json!({"readOnlyHint":false,"idempotentHint":true,"openWorldHint":false})
+            }
+            ToolAccess::Act => {
+                json!({"readOnlyHint":false,"destructiveHint":false,"openWorldHint":true})
+            }
+        };
+        assert_eq!(entry["annotations"], expected, "{}", tool.name());
     }
 }
 
 #[test]
-fn every_tool_operation_is_reachable_from_exactly_one_tool() {
-    let tools = tools();
+fn larger_tools_offer_smaller_operations() {
+    let listed = tools();
     for command in tool_commands() {
-        let offering: Vec<&str> = tools
-            .iter()
-            .filter(|tool| {
-                tool["inputSchema"]["properties"]["operation"]["enum"]
-                    .as_array()
-                    .unwrap()
-                    .contains(&json!(command.name))
-            })
-            .map(|tool| tool["name"].as_str().unwrap())
-            .collect();
-        assert_eq!(offering, [command.tool.unwrap().name()], "{}", command.name);
+        let home = command.tool.unwrap();
+        for tool in Tool::ALL {
+            let entry = listed
+                .iter()
+                .find(|entry| entry["name"] == tool.name())
+                .unwrap();
+            let offered = entry["inputSchema"]["properties"]["operation"]["enum"]
+                .as_array()
+                .unwrap();
+            let expected = home == tool
+                || (matches!(tool, Tool::Write | Tool::Act) && home.access() <= tool.access())
+                || (tool == Tool::Read && command.name == "set");
+            assert_eq!(
+                offered.contains(&json!(command.name)),
+                expected,
+                "{} on {}",
+                command.name,
+                tool.name()
+            );
+        }
     }
-    // Every daemon request the command line or HTTP can make, apart from
-    // query forms and internal operations, is a tool operation.
-    let query_forms = ["list", "live", "notices", "sql", "changes"];
-    for command in COMMANDS.iter().filter(|c| {
-        !matches!(
-            c.run,
-            crate::commands::Run::Local(..) | crate::commands::Run::ConfiguredLocal(..)
-        ) && c.http
-    }) {
+    for command in COMMANDS
+        .iter()
+        .filter(|command| command.http && command.registration().is_some())
+    {
         if command.name.starts_with("internal ") {
             assert_eq!(
                 command.cli,
@@ -405,7 +403,7 @@ fn every_tool_operation_is_reachable_from_exactly_one_tool() {
             assert_eq!(command.tool, None, "{}", command.name);
         } else {
             assert!(
-                command.tool.is_some() || query_forms.contains(&command.name),
+                command.tool.is_some(),
                 "{} is not reachable over MCP",
                 command.name
             );
@@ -434,12 +432,9 @@ fn every_argument_is_in_its_tool_schema_or_unlisted() {
             .find(|tool| tool["name"] == command.tool.unwrap().name())
             .unwrap();
         let properties = &tool["inputSchema"]["properties"]["arguments"]["properties"];
-        for arg in arguments(command) {
-            assert_eq!(
+        for arg in arguments(command).filter(|argument| argument.listed) {
+            assert!(
                 properties.get(&arg.name).is_some(),
-                arg.listed
-                    || operations(command.tool.unwrap())
-                        .any(|other| arguments(other).any(|a| a.name == arg.name && a.listed)),
                 "{} {}",
                 command.name,
                 arg.name
@@ -470,21 +465,20 @@ fn a_tool_call_names_one_of_its_operations() {
             },
         )
     };
-    let missing = run(
-        "polylogue_read",
-        json!({"arguments": {}, "request_id": "no-operation"}),
+    assert!(
+        run("polylogue_read", json!({"operation":7,"arguments":{}}))
+            .contains("operation must be text")
     );
-    assert!(missing.contains("name the operation: one of"), "{missing}");
     let wrong_tool = run(
         "polylogue_read",
-        json!({"operation": "assert", "arguments": {}, "request_id": "wrong-tool"}),
+        json!({"arguments": {"selection":"session:claude-code:s1","steps":[{"verb":"note","text":"a decision"}]}, "request_id": "wrong-tool"}),
     );
     assert!(
-        wrong_tool.contains("assert is not an operation of this tool"),
+        wrong_tool.contains("rows with these arguments needs polylogue_write"),
         "{wrong_tool}"
     );
     let inside = run(
-        "polylogue_note",
+        "polylogue_write",
         json!({"operation": "save", "arguments": {"name": "x", "query": "sessions", "request_id": "inner"}, "request_id": "outer"}),
     );
     assert!(inside.contains("beside arguments"), "{inside}");
@@ -627,7 +621,7 @@ fn generated_ready_mcp_call_executes_its_typed_envelope() {
     let sql = daemon
         .daemon
         .ready_call(&command_surface::Request {
-            operation: "sql".into(),
+            operation: "dev sql".into(),
             arguments: json!({"statement":"SELECT 1"}),
             request_id: "mcp-ready-sql".into(),
             deadline: command_surface::Deadline::None,
@@ -647,7 +641,7 @@ fn generated_ready_mcp_call_executes_its_typed_envelope() {
         crate::commands::declarations()
             .mcp_call(&sql.request)
             .unwrap()["arguments"]["operation"],
-        "sql"
+        "dev sql"
     );
     let reply = session
         .prepare(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":crate::commands::declarations().mcp_call(&sql.request).unwrap()}))
@@ -657,7 +651,7 @@ fn generated_ready_mcp_call_executes_its_typed_envelope() {
     assert!(
         polylogue_render::web::http_url(crate::commands::declarations(), &sql.request)
             .unwrap()
-            .starts_with("/api/v1/sql?")
+            .starts_with("/api/v1/dev/sql?")
     );
     let outside_arguments = call_with_limit(
         &daemon.daemon.archive,
@@ -715,7 +709,14 @@ fn typed_acceptance_failure_answers_without_a_daemon() {
 #[test]
 fn tool_schema_from_operation_table() {
     let declarations = crate::commands::declarations();
-    assert_eq!(tools(), declarations.mcp_tools());
+    let declared = declarations.mcp_tools();
+    for home in &declared {
+        let entry = tools()
+            .into_iter()
+            .find(|tool| tool["name"] == home["name"])
+            .unwrap();
+        assert_eq!(entry["description"], home["description"]);
+    }
     for tool in Tool::ALL {
         let listed = tools()
             .into_iter()
@@ -726,7 +727,9 @@ fn tool_schema_from_operation_table() {
             .as_array()
             .map(|names| names.iter().filter_map(Value::as_str).collect())
             .unwrap_or_else(|| rows.clone());
-        assert_eq!(offered, rows, "{}", tool.name());
+        for row in &rows {
+            assert!(offered.contains(row), "{} on {}", row, tool.name());
+        }
         let family = declarations.family_schemas(
             tool.name()
                 .strip_prefix("polylogue_")
@@ -805,14 +808,14 @@ fn generated_mcp_follow_up_preserves_the_accepted_request() {
 }
 
 #[test]
-fn setting_mcp_keeps_typed_write_repeat_and_read_results() {
+fn set_mcp_keeps_typed_write_repeat_and_read_results() {
     let daemon = test_daemon::start("MCP settings example");
     let mut session = Session {
         initialized: true,
         ..Default::default()
     };
     let mut invoke = |id, arguments| {
-        session.prepare(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":tool_call("setting", arguments,"mcp-setting-write-result")})).answer(&daemon.daemon.archive).unwrap()
+        session.prepare(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":tool_call("set", arguments,"mcp-setting-write-result")})).answer(&daemon.daemon.archive).unwrap()
     };
     let first = invoke(1, json!({"key":"reading.variants","value":"[]"}));
     assert_eq!(first["result"]["isError"], false, "{first}");
@@ -831,7 +834,7 @@ fn setting_mcp_keeps_typed_write_repeat_and_read_results() {
     assert_eq!(first.id, repeat.id);
     assert!(repeat.repeat);
     assert!(!repeat.pending);
-    let shown = session.prepare(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":tool_call("setting",json!({"key":"reading.variants"}),"mcp-setting-current")})).answer(&daemon.daemon.archive).unwrap();
+    let shown = session.prepare(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":tool_call("set",json!({"key":"reading.variants"}),"mcp-setting-current")})).answer(&daemon.daemon.archive).unwrap();
     assert_eq!(shown["result"]["isError"], false, "{shown}");
     let current: crate::protocol::setting::Answer =
         serde_json::from_value(shown["result"]["structuredContent"]["value"].clone()).unwrap();
@@ -839,3 +842,5 @@ fn setting_mcp_keeps_typed_write_repeat_and_read_results() {
         matches!(current, crate::protocol::setting::Answer::Current(value) if value.key=="reading.variants")
     );
 }
+
+mod rows;

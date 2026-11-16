@@ -183,7 +183,8 @@ fn clients_wait_with_deadlines_only_for_reads_and_explicit_stream_limits() {
     };
     let mut limited = stream();
     limited.deadline = command_surface::Deadline::Milliseconds(120_000);
-    let mut build = crate::client::request("embed build", serde_json::json!({}), "build".into());
+    let mut build =
+        crate::client::request("embed", serde_json::json!({"yes":true}), "build".into());
     build.deadline = command_surface::Deadline::Milliseconds(120_000);
     for (request, expected) in [
         (status(), Some(Duration::from_millis(80 + 50))),
@@ -727,20 +728,20 @@ fn shared_cli_values_keep_request_options_and_calling_process_separate() {
 fn local_and_stream_cli_use_their_declared_argument_types() {
     let (_, completion) = parse(&[
         "polylogue",
-        "completions",
+        "install",
         "zsh",
+        "--dry-run",
         "--program",
         "archive-view",
     ])
     .unwrap();
     assert_eq!(
         completion.request.arguments,
-        serde_json::json!({"shell":"zsh", "program":"archive-view"})
+        serde_json::json!({"target":"zsh", "dry_run":true, "program":"archive-view"})
     );
-    assert!(parse(&["polylogue", "completions", "unknown-shell"]).is_err());
     let (_, installer) = parse(&[
         "polylogue",
-        "install-agent",
+        "install",
         "chrome",
         "--extension-id",
         "synthetic-id",
@@ -749,7 +750,7 @@ fn local_and_stream_cli_use_their_declared_argument_types() {
     .unwrap();
     assert_eq!(
         installer.request.arguments,
-        serde_json::json!({"harness":"chrome","extension_id":"synthetic-id","remove":true})
+        serde_json::json!({"target":"chrome","extension_id":"synthetic-id","remove":true})
     );
     let (_, daemon) = parse(&["polylogue", "daemon", "--no-sources", "--until-idle"]).unwrap();
     assert_eq!(
@@ -793,25 +794,13 @@ fn cli_domain_choices_keep_their_existing_operation() {
                 "hello",
                 "--cwd",
                 "/synthetic",
-                "--harness",
+                "--in",
                 harness.name
             ])
             .is_ok()
         );
         assert!(parse(&["polylogue", "hand-off", "test:one", "--to", harness.name]).is_ok());
     }
-    assert!(
-        parse(&[
-            "polylogue",
-            "start",
-            "hello",
-            "--cwd",
-            "/synthetic",
-            "--harness",
-            "unsupported-harness"
-        ])
-        .is_err()
-    );
 }
 
 #[test]

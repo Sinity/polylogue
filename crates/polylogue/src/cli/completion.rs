@@ -141,7 +141,7 @@ impl clap_complete::engine::ValueCompleter for Setting {
                 return vec![];
             };
             matches
-                .subcommand_matches("setting")
+                .subcommand_matches("set")
                 .and_then(|setting| setting.get_one::<String>("key"))
                 .cloned()
         };

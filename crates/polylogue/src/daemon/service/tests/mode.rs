@@ -103,14 +103,14 @@ fn blocked(runtime: &Runtime, path: &std::path::Path) {
         crate::test_daemon::Call::new("backfill start", serde_json::json!({"provider": "chatgpt"})),
         crate::test_daemon::Call::new("import", serde_json::json!({})).id("import"),
         crate::test_daemon::Call::new(
-            "setting",
+            "set",
             serde_json::json!({"key": Some("browser.actions"), "value": Some("on")}),
         ),
         crate::test_daemon::Call::new("recall", serde_json::json!({"query": "question"}))
             .id("delivery")
             .surface(crate::commands::Surface::Hook),
         crate::test_daemon::Call::new("keep", serde_json::json!({"query": "sessions"})).id("keep"),
-        crate::test_daemon::Call::new("embed build", serde_json::json!({"yes": true})),
+        crate::test_daemon::Call::new("embed", serde_json::json!({"yes": true})),
     ];
     for request in requests {
         assert!(
@@ -144,7 +144,7 @@ fn malformed_config_keeps_primary_status_and_refuses_reads_and_writes() {
         assert!(
             crate::test_answers::ok(
                 crate::test_daemon::Call::new(
-                    "setting",
+                    "set",
                     serde_json::json!({"key": Some("browser.actions")})
                 )
                 .answer(&runtime.daemon)
@@ -273,7 +273,7 @@ fn offline_setting_and_chat_writes_keep_own_results() {
     let runtime = launch(primary(&home)).unwrap();
     let setting = primary_table_call(
         &runtime,
-        "setting",
+        "set",
         serde_json::json!({"key":"browser.actions","value":"on"}),
         "enable-offline-chat",
     );
@@ -294,7 +294,7 @@ fn offline_setting_and_chat_writes_keep_own_results() {
     let pending_before_retry = pending_requests(&runtime);
     let repeated = primary_table_call(
         &runtime,
-        "setting",
+        "set",
         serde_json::json!({"key":"browser.actions","value":"on"}),
         "enable-offline-chat",
     );

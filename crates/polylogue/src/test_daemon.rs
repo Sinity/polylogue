@@ -315,7 +315,7 @@ impl TestDaemon {
     pub fn set(&self, key: &str, value: &str) {
         let r = call(
             &self.daemon,
-            "setting",
+            "set",
             serde_json::json!({ "key": key, "value": value }),
         );
         assert!(

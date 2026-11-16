@@ -59,12 +59,12 @@ class ClientTests(unittest.TestCase):
             self.assertNotEqual(declared, str(alias.resolve()))
             self.assertEqual(client.archive, declared)
             self.assertEqual(client._arguments("status")[:3], [EXECUTABLE, "--archive", declared])
-            self.assertEqual(client._arguments("changes")[:3], [EXECUTABLE, "--archive", declared])
+            self.assertEqual(client._arguments("dev", "feed")[:3], [EXECUTABLE, "--archive", declared])
 
     def test_query_and_read_match_cli_json(self):
         query = self.checked(lambda: self.client.query("sessions"))
         self.assertEqual(query["outcome"], "ok")
-        self.assertTrue(query["value"]["rows"])
+        self.assertTrue(query["value"]["reply"]["rows"])
         read = self.checked(lambda: self.client.read("session:claude-code:python"))
         self.assertIn(read["outcome"], {"ok", "degraded"})
         self.assertTrue(read["value"]["document"]["items"])
@@ -161,6 +161,18 @@ class ClientTests(unittest.TestCase):
             arguments = json.loads(self.arguments.read_text())
             self.assertEqual(arguments[arguments.index("--budget") + 1], "none" if budget is None else "37")
 
+    def test_rows_follow_up_preserves_the_listing_request(self):
+        request = {"operation": "rows", "arguments": {"selection": "sessions", "page_size": 1},
+                   "request_id": "python-rows-follow", "deadline": None}
+        answer = self.checked(lambda: self.client.follow_read(request))
+        self.assertEqual(answer["value"]["kind"], "listing")
+        self.assertEqual(len(answer["value"]["reply"]["rows"]), 1)
+        arguments = json.loads(self.arguments.read_text())
+        self.assertEqual(arguments[3], "rows")
+        self.assertEqual(json.loads(arguments[arguments.index("--request") + 1]), request["arguments"])
+        self.assertEqual(arguments[arguments.index("--request-id") + 1], request["request_id"])
+        self.assertEqual(arguments[arguments.index("--deadline") + 1], "none")
+
     def test_generated_attachment_action_and_unsupported_operations(self):
         page = self.direct.read("session:claude-code:python-image").json()["value"]
         attachment = next(item["kind"] for item in page["document"]["items"]
@@ -170,7 +182,7 @@ class ClientTests(unittest.TestCase):
         answer = self.checked(lambda: self.client.follow_read(request))
         self.assertEqual(base64.b64decode(answer["value"]["content_base64"]), b"synthetic Python attachment")
         before = self.arguments.read_bytes()
-        for operation in ["query", "setting"]:
+        for operation in ["query", "set"]:
             with self.assertRaises(ValueError):
                 self.client.follow_read({**request, "operation": operation})
             self.assertEqual(self.arguments.read_bytes(), before)
@@ -188,7 +200,7 @@ class ClientTests(unittest.TestCase):
     def test_empty_answers_keep_their_payload_and_exit_contract(self):
         answer = self.checked(lambda: self.client.query('sessions where repo:"python-missing"'))
         self.assertEqual(answer["outcome"], "empty")
-        self.assertEqual(answer["value"]["rows"], [])
+        self.assertEqual(answer["value"]["reply"]["rows"], [])
 
     def test_answers_are_frozen_without_changing_json_values(self):
         value = {"unknown": None, "zero": 0, "id": "a:b:c", "large": 2**62, "rows": [{"x": "ż"}]}
@@ -206,13 +218,13 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(len(answer.data["rows"]), 1)
 
     def test_resent_write_is_idempotent(self):
-        arguments = ("setting", "signal.interrupts_per_hour", "9", "--request-id", "python-write")
+        arguments = ("set", "signal.interrupts_per_hour", "9", "--request-id", "python-write")
         first = self.checked(lambda: self.client.call(*arguments))["value"]
         again = self.checked(lambda: self.client.call(*arguments))["value"]
         self.assertEqual(first["id"], again["id"])
         self.assertFalse(first["repeat"])
         self.assertTrue(again["repeat"])
-        current = self.checked(lambda: self.client.call("setting", "signal.interrupts_per_hour"))["value"]
+        current = self.checked(lambda: self.client.call("set", "signal.interrupts_per_hour"))["value"]
         self.assertEqual(current["value"], {"type": "interrupt_budget", "value": 9})
         self.assertEqual(first["id"], "python-write")
         self.assertEqual(current["authored"]["reference"], "assertion:python-write@python-write")

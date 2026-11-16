@@ -222,12 +222,7 @@ fn completion_matrix_thirteen_positions_three_shells_empty_and_seeded() {
             true,
         ),
         ("session reference", &["abc"], "codex:a", true),
-        (
-            "setting key",
-            &["setting", "browser."],
-            "browser.actions",
-            true,
-        ),
+        ("setting key", &["set", "browser."], "browser.actions", true),
     ];
     let mut timings = vec![];
     for seeded in [false, true] {
@@ -285,7 +280,7 @@ fn wrapper_unicode_and_setting_values_use_the_same_offline_provider() {
             &root,
             &cache,
             shell,
-            &["setting", "browser.actions", "o"],
+            &["set", "browser.actions", "o"],
             "plg",
         );
         assert!(

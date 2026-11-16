@@ -13,14 +13,14 @@ use super::*;
 fn page_navigation_and_message_routes_use_the_shared_selection() {
     let r = reader();
     rt().block_on(async {
-        let first = read_page(&r, "session:claude-code:s1", &[("page_tokens", "2")]).await;
+        let first = read_page(&r, "session:claude-code:s1", &[("budget", "2")]).await;
         let next = first
             .document
             .footer
             .next
             .as_ref()
             .expect("small budget continues");
-        assert_eq!(next.request.operation, "read");
+        assert_eq!(next.request.operation, "rows");
         let (_, headers, _) = send(
             &r,
             authed(get("/m/claude-code:u1"))
@@ -30,7 +30,7 @@ fn page_navigation_and_message_routes_use_the_shared_selection() {
         .await;
         assert_eq!(
             headers[header::LOCATION],
-            "/api/v1/read?target=message%3Aclaude-code%3Au1"
+            "/api/v1/rows?selection=message%3Aclaude-code%3Au1&steps=read"
         );
         let (status, _, body) = send_html(&r, "/m/claude-code:u1").await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -47,7 +47,7 @@ fn page_navigation_and_message_routes_use_the_shared_selection() {
 fn command_and_sign_in_body_types_are_checked_before_parsing_or_writing() {
     let r = reader();
     rt().block_on(async {
-        for path in ["/auth", "/api/v1/setting"] {
+        for path in ["/auth", "/api/v1/set"] {
             for media in [
                 None,
                 Some("text/plain"),
@@ -71,7 +71,7 @@ fn command_and_sign_in_body_types_are_checked_before_parsing_or_writing() {
                 assert_eq!(headers[header::CACHE_CONTROL], "no-store");
             }
         }
-        let mut req = own_origin(authed(post("/api/v1/setting")))
+        let mut req = own_origin(authed(post("/api/v1/set")))
             .body(Body::from(setting_request("media-setting")))
             .unwrap();
         req.headers_mut().insert(
@@ -88,7 +88,7 @@ fn finite_http_changes_are_authenticated_and_resume_only_from_complete() {
     rt().block_on(async {
         let (status, headers, body) = send(
             &r,
-            authed(get("/api/v1/changes")).body(Body::empty()).unwrap(),
+            authed(get("/api/v1/dev/feed")).body(Body::empty()).unwrap(),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -98,7 +98,7 @@ fn finite_http_changes_are_authenticated_and_resume_only_from_complete() {
         assert_eq!(lines.last().unwrap()["type"], "complete");
         let position = lines.last().unwrap()["position"].as_str().unwrap();
         let path = format!(
-            "/api/v1/changes?since={}",
+            "/api/v1/dev/feed?after={}",
             polylogue_render::html::encode_path_segment(position)
         );
         let (status, _, body) = send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
@@ -111,7 +111,7 @@ fn finite_http_changes_are_authenticated_and_resume_only_from_complete() {
         assert_eq!(
             send(
                 &r,
-                authed(get("/api/v1/changes?since=broken"))
+                authed(get("/api/v1/dev/feed?after=broken"))
                     .body(Body::empty())
                     .unwrap()
             )
@@ -126,7 +126,7 @@ fn finite_http_changes_are_authenticated_and_resume_only_from_complete() {
 fn changed_generation_refuses_content_continuation_and_replaces_change_population() {
     let r = reader();
     rt().block_on(async {
-        let first = read_page(&r, "session:claude-code:s1", &[("page_tokens", "2")]).await;
+        let first = read_page(&r, "session:claude-code:s1", &[("budget", "2")]).await;
         let next = polylogue_render::web::http_url(
             crate::commands::declarations(),
             &first.document.footer.next.unwrap().request,
@@ -134,7 +134,7 @@ fn changed_generation_refuses_content_continuation_and_replaces_change_populatio
         .unwrap();
         let (_, _, body) = send(
             &r,
-            authed(get("/api/v1/changes")).body(Body::empty()).unwrap(),
+            authed(get("/api/v1/dev/feed")).body(Body::empty()).unwrap(),
         )
         .await;
         let frames = feed_frames(&body);
@@ -149,7 +149,7 @@ fn changed_generation_refuses_content_continuation_and_replaces_change_populatio
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert!(body.contains("stale_cursor"));
         let url = format!(
-            "/api/v1/changes?since={}",
+            "/api/v1/dev/feed?after={}",
             polylogue_render::html::encode_path_segment(position)
         );
         let (status, _, body) = send(&r, authed(get(&url)).body(Body::empty()).unwrap()).await;
@@ -244,7 +244,7 @@ fn every_relationship_is_reachable_and_search_pages_keep_the_query() {
         assert!(!body.contains("more: --cursor"));
         let (status, _, body) = send(&r, authed(get(&next)).body(Body::empty()).unwrap()).await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert!(body.contains("polylogue list messages --cursor"));
+        assert!(body.contains("polylogue messages --cursor"));
     });
 }
 
@@ -354,7 +354,7 @@ fn previous_links_reopen_unicode_fragments_without_browser_history() {
             && data["store"]["search_pending"] == 0
     });
     rt().block_on(async {
-        let first = read_page(&r, "message:claude-code:u1", &[("page_tokens", "20")]).await;
+        let first = read_page(&r, "message:claude-code:u1", &[("budget", "20")]).await;
         let next = first
             .document
             .footer
@@ -390,7 +390,7 @@ fn message_redirects_quote_literal_ids_without_resolving_source_rows() {
         assert_eq!(
             headers[header::LOCATION],
             format!(
-                "/api/v1/read?target={}",
+                "/api/v1/rows?selection={}&steps=read",
                 polylogue_render::html::encode_path_segment(&format!("message:{id}"))
             )
         );
@@ -422,14 +422,14 @@ fn live_initial_queries_page_through_the_real_http_api() {
         let mut ids = Vec::new();
         loop {
             let mut params = vec![
-                ("query".into(), "changes where kind:session".into()),
-                ("limit".into(), "1".into()),
+                ("selection".into(), "changes where kind:session".into()),
+                ("page_size".into(), "1".into()),
             ];
             if let Some(cursor) = cursor {
                 params.push(("cursor".into(), cursor));
             }
             let path = format!(
-                "/api/v1/query?{}",
+                "/api/v1/rows?{}",
                 params
                     .iter()
                     .map(|(k, v): &(String, String)| format!(

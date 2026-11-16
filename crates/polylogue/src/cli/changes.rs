@@ -9,7 +9,7 @@ use std::io::Read;
 use std::io::{self, Write};
 use std::process::ExitCode;
 
-/// `changes`: writes one finite batch to stdout, ending with its
+/// `dev feed`: writes one finite batch to stdout, ending with its
 /// completion line.
 pub fn run(
     values: &command_surface::ParsedCommand,
@@ -57,7 +57,7 @@ fn send(
 ) -> io::Result<u8> {
     let previous = request
         .arguments
-        .str("since")
+        .str("after")
         .map(|s| {
             ChangePosition::parse(s)
                 .map(|p| p.to_string())

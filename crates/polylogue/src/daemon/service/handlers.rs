@@ -362,7 +362,18 @@ impl Handler for Status {
     type Arguments = protocol::status::Arguments;
     type Answer = protocol::status::Answer;
     const CLASS: crate::daemon::executor::Class = crate::daemon::executor::Class::Interactive;
-    fn run(_: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
+        if arguments.verify || arguments.manifest.is_some() {
+            let option = if arguments.manifest.is_some() {
+                "manifest"
+            } else {
+                "verify"
+            };
+            return Ok(error(
+                polylogue_model::Code::NotBuilt,
+                format!("status --{option} is not built yet"),
+            ));
+        }
         Ok(match call.reader() {
             Ok(reader) => status::answer(call.daemon, &reader),
             Err(failure) => match call.daemon.archive.index_build() {
@@ -372,6 +383,65 @@ impl Handler for Status {
                 _ => failure.answer(),
             },
         })
+    }
+}
+
+/// Pages of the language, a verb's fields, or the full reference.
+pub(crate) struct Help;
+impl Handler for Help {
+    type Arguments = protocol::help::Arguments;
+    type Answer = Value;
+    const PAGES: bool = true;
+    const PRINT: fn(&Value, TextStyle) -> String = |value, style| {
+        value.get("manual").and_then(Value::as_str).map_or_else(
+            || print::json(value, style),
+            polylogue_render::terminal::escape,
+        )
+    };
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Value>, Failure> {
+        if arguments.to.is_some() || arguments.format.is_some() {
+            let option = if arguments.to.is_some() {
+                "to"
+            } else {
+                "format"
+            };
+            return Ok(error(
+                polylogue_model::Code::NotBuilt,
+                format!("help --{option} is not built yet"),
+            ));
+        }
+        if arguments.all {
+            return Ok(ok(serde_json::json!({"manual": crate::manual::text()})));
+        }
+        let topic = arguments.topic.as_deref().unwrap_or("");
+        let subject = match topic {
+            "units" | "fields" => topic,
+            "transforms" => "operators",
+            "query" => "syntax",
+            _ => {
+                let steps = crate::protocol::steps::declarations();
+                if let Some(verb) = steps.verbs().iter().find(|verb| verb.verb() == topic) {
+                    return Ok(ok(serde_json::json!({
+                        "verb": topic,
+                        "signature": verb.signature(),
+                        "arguments": verb.arguments(),
+                        "fields": verb.input_schema()["properties"],
+                    })));
+                }
+                return Ok(error(
+                    polylogue_model::Code::NotBuilt,
+                    format!("help {topic} is not built yet"),
+                ));
+            }
+        };
+        crate::explain::answer(
+            subject,
+            None,
+            arguments.unit.as_deref(),
+            arguments.page_size,
+            call.cursor,
+        )
+        .map(ok)
     }
 }
 
@@ -648,10 +718,30 @@ impl Handler for Import {
     type Arguments = protocol::import::Arguments;
     type Answer = protocol::import::Answer;
     const CLASS: crate::daemon::executor::Class = crate::daemon::executor::Class::Background;
+    fn tool_access(arguments: &Self::Arguments, _: &Command) -> crate::commands::ToolAccess {
+        if arguments.provider().is_some() {
+            crate::commands::ToolAccess::Act
+        } else {
+            crate::commands::ToolAccess::Write
+        }
+    }
     fn read_phase(_: &Self::Arguments, _: &Command, _: &Caller) -> bool {
         false
     }
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
+        let pending = [
+            (arguments.provider().is_some(), "a provider"),
+            (arguments.withdraw_missing, "--withdraw-missing"),
+            (arguments.since.is_some(), "--since"),
+            (arguments.cancel, "--cancel"),
+            (arguments.wait.is_some(), "--wait"),
+        ];
+        if let Some((_, option)) = pending.into_iter().find(|(used, _)| *used) {
+            return Ok(error(
+                polylogue_model::Code::NotBuilt,
+                format!("import {option} is not built yet"),
+            ));
+        }
         let paths = arguments
             .paths
             .iter()
@@ -664,10 +754,10 @@ impl Handler for Import {
                     "--from-archive names one archive and takes no other paths",
                 ));
             }
-            Some(_) if arguments.format.is_some() => {
+            Some(_) if arguments.origin.is_some() => {
                 return Ok(error(
                     polylogue_model::Code::BadRequest,
-                    "--from-archive takes no --format",
+                    "--from-archive takes no --origin",
                 ));
             }
             Some(archive) => {
@@ -700,7 +790,7 @@ impl Handler for Import {
         let sent = tx
             .send(polylogue_engine::LoopMsg::Import {
                 paths,
-                format: arguments.format.clone(),
+                format: arguments.origin.clone(),
                 from_archive,
                 dry_run: arguments.dry_run,
                 authorship: invocation.authorship.clone(),
@@ -1106,6 +1196,13 @@ pub(crate) struct Setting;
 impl Handler for Setting {
     type Arguments = protocol::setting::Arguments;
     type Answer = protocol::setting::Answer;
+    fn tool_access(arguments: &Self::Arguments, _: &Command) -> crate::commands::ToolAccess {
+        if arguments.value.is_none() {
+            crate::commands::ToolAccess::Read
+        } else {
+            crate::commands::ToolAccess::Write
+        }
+    }
     fn read_only(arguments: &Self::Arguments, _: &Command, _: &Caller) -> bool {
         arguments.value.is_none()
     }
@@ -1212,14 +1309,23 @@ impl Handler for Continue {
     }
 }
 
-/// Embeddings: `preview` (what a build would embed and cost) or `build`,
-/// named by the row.
+/// Previews embedding work, or builds it when the caller confirms.
 pub(crate) struct Embed;
 impl Handler for Embed {
     type Arguments = protocol::embed::Arguments;
     type Answer = crate::embeddings::Answer;
+    fn read_only(arguments: &Self::Arguments, _: &Command, _: &Caller) -> bool {
+        !arguments.yes
+    }
+    fn access(arguments: &Self::Arguments, _: Access) -> Access {
+        if arguments.yes {
+            Access::Write
+        } else {
+            Access::Read
+        }
+    }
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
-        let what = call.row.name.trim_start_matches("embed ");
+        let what = if arguments.yes { "build" } else { "preview" };
         embed(
             call,
             what,
@@ -1467,3 +1573,6 @@ impl Handler for SelectionNote {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests;

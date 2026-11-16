@@ -65,7 +65,7 @@ fn hook_setup_cli_refuses_malformed_settings_without_replacing_them() {
         r#"{"hooks":[]}"#,
         r#"{"hooks":{},"hooks":{"Stop":[]}}"#,
     ] {
-        for action in ["install", "uninstall"] {
+        for remove in [false, true] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("settings.json");
             std::fs::write(&path, original).unwrap();
@@ -80,14 +80,18 @@ fn hook_setup_cli_refuses_malformed_settings_without_replacing_them() {
             .unwrap();
             std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o700)).unwrap();
             let marker = dir.path().join("probed");
-            let out = crate::command(dir.path())
-                .args([
-                    "--json",
-                    "hooks",
-                    action,
-                    "--settings",
-                    path.to_str().unwrap(),
-                ])
+            let mut command = crate::command(dir.path());
+            command.args([
+                "--json",
+                "install",
+                "claude-code",
+                "--settings",
+                path.to_str().unwrap(),
+            ]);
+            if remove {
+                command.arg("--remove");
+            }
+            let out = command
                 .env("PATH", &tools)
                 .env("HOOK_PROBE_MARKER", &marker)
                 .output()

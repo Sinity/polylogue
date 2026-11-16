@@ -633,7 +633,7 @@ fn ranking_with_model_calls_off_uses_stored_vectors() {
                 .any(|note| note.ends_with(crate::embeddings::CALLS_OFF)),
             "{notes:?}"
         );
-        let refused = crate::test_daemon::call(d, "embed build", json!({ "yes": true }));
+        let refused = crate::test_daemon::call(d, "embed", json!({ "yes": true }));
         assert!(
             matches!(refused.outcome, command_surface::Outcome::Error(_)),
             "{refused:?}"

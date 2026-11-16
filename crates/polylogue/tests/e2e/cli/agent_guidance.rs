@@ -10,21 +10,21 @@ fn gemini_hooks_install_and_uninstall_through_the_public_command() {
     let original = json!({"model":"synthetic", "hooks":{"BeforeAgent":[{"hooks":[{"type":"command","command":"other"}]}]}});
     std::fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
     let mut installed = None;
-    for action in ["install", "install", "uninstall"] {
-        let out = crate::command(dir.path())
-            .args([
-                "hooks",
-                action,
-                "--harness",
-                "gemini-cli",
-                "--settings",
-                path.to_str().unwrap(),
-            ])
-            .output()
-            .unwrap();
+    for remove in [false, false, true] {
+        let mut command = crate::command(dir.path());
+        command.args([
+            "install",
+            "gemini-cli",
+            "--settings",
+            path.to_str().unwrap(),
+        ]);
+        if remove {
+            command.arg("--remove");
+        }
+        let out = command.output().unwrap();
         assert!(out.status.success(), "{out:?}");
         let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        if action == "install" {
+        if !remove {
             assert_eq!(value["model"], "synthetic");
             assert_eq!(
                 value["hooks"]["SessionStart"][0]["hooks"][0]["command"],

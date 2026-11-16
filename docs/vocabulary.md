@@ -543,7 +543,7 @@ another line does are in [set-aside.md](set-aside.md#words-another-line-does).
 | `verify` | `status --verify` |
 | `completions` | `install zsh`, `install bash`, `install fish` |
 | `sql`, `schema`, `changes` (commands) | `dev sql`, `dev schema`, `dev feed` |
-| `install-agent`, `hooks install`, `hooks uninstall` | `install HARNESS`, `install HARNESS --remove` |
+| harness and browser setup | `install TARGET`, `install TARGET --remove` |
 | `auth drive` | `install drive` |
 | `cutover`, `sinex cutover`, `move-to-sinex` (as a first word) | `dev move-to-sinex` |
 | `demo tour` | `demo DIR` |

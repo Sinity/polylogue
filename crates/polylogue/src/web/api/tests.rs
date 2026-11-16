@@ -1,4 +1,5 @@
 mod feeds;
+mod rows;
 use super::*;
 use crate::daemon::{Failure, service::Daemon};
 use std::io::Write;
@@ -33,7 +34,7 @@ fn stream_failure_before_first_event_uses_the_shared_http_status() {
                 &web(&daemon),
                 crate::daemon::executor::Class::Ordinary,
                 super::super::request_limit(),
-                crate::client::request("changes", serde_json::json!({}), "http-stream".into()),
+                crate::client::request("dev feed", serde_json::json!({}), "http-stream".into()),
                 Box::new(failed),
             )
             .await;
@@ -86,7 +87,7 @@ fn stream_failure_after_begin_delivers_error_without_final_completion() {
                 crate::daemon::executor::Class::Ordinary,
                 super::super::request_limit(),
                 command_surface::Request {
-                    operation: "changes".into(),
+                    operation: "dev feed".into(),
                     arguments: serde_json::json!({"uncapped":true}),
                     request_id: "http-accepted-stream".into(),
                     deadline: command_surface::Deadline::None,
@@ -144,7 +145,7 @@ fn stream_headers_arrive_before_the_body_of_a_large_stream_is_read() {
                     &web(&daemon),
                     crate::daemon::executor::Class::Ordinary,
                     super::super::request_limit(),
-                    crate::client::request("changes", serde_json::json!({}), "http-stream".into()),
+                    crate::client::request("dev feed", serde_json::json!({}), "http-stream".into()),
                     Box::new(large),
                 ),
             )
@@ -160,8 +161,8 @@ fn generated_http_ready_call_executes_without_translating_its_arguments() {
     use tower::ServiceExt;
     let daemon = crate::test_daemon::start("HTTP ready example");
     let call = command_surface::Request {
-        operation: "query".into(),
-        arguments: serde_json::json!({"query":"sessions"}),
+        operation: "rows".into(),
+        arguments: serde_json::json!({"selection":"sessions"}),
         request_id: "http-ready-id".into(),
         deadline: command_surface::Deadline::None,
         budget_tokens: Default::default(),
@@ -196,7 +197,7 @@ fn generated_http_ready_call_executes_without_translating_its_arguments() {
                 .unwrap();
             let answer: command_surface::Answer<serde_json::Value> =
                 serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(answer.value().unwrap()["count"], 1);
+            assert_eq!(answer.value().unwrap()["reply"]["count"], 1);
             let refusal = super::super::router(web(&daemon))
                 .oneshot(
                     axum::http::Request::get(format!("/api/v1/status?{pairs}"))
@@ -223,7 +224,7 @@ fn read_html_negotiates_on_the_same_typed_operation_route() {
             let response = super::super::router(web(&daemon))
                 .oneshot(
                     axum::http::Request::get(
-                        "/api/v1/read?target=session%3Aclaude-code%3As1&format=html",
+                        "/api/v1/rows?steps=read&selection=session%3Aclaude-code%3As1&format=html",
                     )
                     .header(header::HOST, "127.0.0.1:8765")
                     .header(header::AUTHORIZATION, "Bearer synthetic")
@@ -288,7 +289,7 @@ fn scope_reset_ends_a_begun_http_stream_unfinished() {
                 &web(&daemon),
                 crate::daemon::executor::Class::Ordinary,
                 super::super::request_limit(),
-                crate::client::request("changes", serde_json::json!({}), "http-stream".into()),
+                crate::client::request("dev feed", serde_json::json!({}), "http-stream".into()),
                 Box::new(reset_after_begin),
             )
             .await;
@@ -453,7 +454,7 @@ fn a_cancelled_http_parent_without_a_header_cannot_submit_a_pure_write() {
     cancellation.cancel();
     let id = "cancelled-parent-no-new-write";
     let request = command_surface::Request {
-        operation: "setting".into(),
+        operation: "set".into(),
         arguments: serde_json::json!({"key":"reading.variants","value":"[]"}),
         request_id: id.into(),
         deadline: command_surface::Deadline::None,
@@ -466,7 +467,7 @@ fn a_cancelled_http_parent_without_a_header_cannot_submit_a_pure_write() {
     let response = runtime.block_on(crate::web::READ_LIMIT.scope((None, cancellation), async {
         answer(
             &web,
-            crate::commands::command("setting").unwrap(),
+            crate::commands::command("set").unwrap(),
             Ok(request),
             &HeaderMap::new(),
         )
@@ -513,7 +514,7 @@ fn writer_dispatch_refuses_queued_expiry_but_finishes_an_already_owned_write() {
         let pause = writer.pause_user_dispatch_for_test(id, phase);
         let parent = Instant::now() + Duration::from_secs(2);
         let request = command_surface::Request {
-            operation: "setting".into(),
+            operation: "set".into(),
             arguments: serde_json::json!({"key":"reading.variants","value":"[]"}),
             request_id: id.into(),
             deadline: command_surface::Deadline::None,
@@ -528,7 +529,7 @@ fn writer_dispatch_refuses_queued_expiry_but_finishes_an_already_owned_write() {
             async move {
                 answer(
                     &web,
-                    crate::commands::command("setting").unwrap(),
+                    crate::commands::command("set").unwrap(),
                     Ok(request),
                     &HeaderMap::new(),
                 )
@@ -598,8 +599,8 @@ fn ready_http_calls_preserve_absent_null_and_finite_deadlines() {
         command_surface::Deadline::Milliseconds(37),
     ] {
         let request = command_surface::Request {
-            operation: "query".into(),
-            arguments: serde_json::json!({"query":"sessions","session":null,"limit":null,"fields":[]}),
+            operation: "rows".into(),
+            arguments: serde_json::json!({"selection":"sessions","page_size":null,"fields":[]}),
             request_id: "ready-http-deadline".into(),
             deadline,
             budget_tokens: Default::default(),
@@ -619,7 +620,7 @@ fn ready_http_calls_preserve_absent_null_and_finite_deadlines() {
             !matches!(deadline, command_surface::Deadline::Default)
         );
         let parsed = crate::commands::declarations()
-            .parse_http_query("query", &pairs, "unused")
+            .parse_http_query("rows", &pairs, "unused")
             .unwrap();
         assert_eq!(
             parsed, request,
@@ -628,7 +629,7 @@ fn ready_http_calls_preserve_absent_null_and_finite_deadlines() {
         assert!(
             parsed
                 .arguments
-                .get("session")
+                .get("page_size")
                 .is_some_and(serde_json::Value::is_null)
         );
     }

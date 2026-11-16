@@ -139,7 +139,10 @@ pub(crate) fn options(reader: &Reader<'_>, ask: &Ask<'_>, seed: u64) -> Result<O
         page_size: ask.page_size,
         random_seed: Some(seed),
         embeddings: ask.embeddings,
-        self_session: ask.session.clone(),
+        self_session: ask
+            .session
+            .clone()
+            .or_else(|| ask.context.calling_session().map(str::to_owned)),
         saved: named.saved,
         kept: named.kept,
         fields: ask.fields.to_vec(),

@@ -9,7 +9,7 @@ const begin = { type: "begin", replacement: false, generation_changed: false };
 const change = { type: "change", component: "index", change: { ref: "session:synthetic" } };
 const complete = position => ({ type: "complete", position, count: 1 });
 const batch = position => new Response(sseFrame(begin) + sseFrame(change) + sseFrame(complete(position)));
-const currentPage = (next = null) => Response.json({ outcome: "ok", value: { rows: [{ ref: "session:current" }], read_at: { cursor: "synthetic:0:0", generation: "synthetic" }, next }, notes: [], next: [] });
+const currentPage = (next = null) => Response.json({ outcome: "ok", value: { kind: "listing", reply: { rows: [{ ref: "session:current" }], read_at: { cursor: "synthetic:0:0", generation: "synthetic" }, next } }, notes: [], next: [] });
 async function environment(t, fetch) {
   const saved = new Map(["document", "window", "fetch", "setTimeout", "clearTimeout", "setInterval", "clearInterval"].map(key => [key, globalThis[key]]));
   const timers = new Map(), intervals = new Map(), events = new Map();
@@ -31,13 +31,13 @@ async function environment(t, fetch) {
 test("an interrupted batch repeats references from the last completed position", async t => {
   const requests = [], applied = [], errors = [];
   const env = await environment(t, async url => {
-    if (url.startsWith("/api/v1/query")) return currentPage();
+    if (url.startsWith("/api/v1/rows")) return currentPage();
     requests.push(url);
     return requests.length === 2 ? new Response(sseFrame(begin) + sseFrame(change)) : batch("synthetic:1:0");
   });
   const stop = env.watchChanges({ query: "changes where kind:session", apply: line => applied.push(line.change.ref), error: error => errors.push(error.message) });
   await flush(); await env.tick(); await env.tick();
-  assert.deepEqual(requests, ["/api/v1/changes?since=synthetic%3A0%3A0", "/api/v1/changes?since=synthetic%3A1%3A0", "/api/v1/changes?since=synthetic%3A1%3A0"]);
+  assert.deepEqual(requests, ["/api/v1/dev/feed?after=synthetic%3A0%3A0", "/api/v1/dev/feed?after=synthetic%3A1%3A0", "/api/v1/dev/feed?after=synthetic%3A1%3A0"]);
   assert.equal(applied.length, 4); assert.match(errors[0], /interrupted/); stop();
 });
 test("joining reads every current page without resetting the shared position", async t => {
@@ -45,7 +45,7 @@ test("joining reads every current page without resetting the shared position", a
   let loaded = 0;
   const env = await environment(t, async url => {
     requests.push(url);
-    if (url.startsWith("/api/v1/query")) return currentPage(++loaded % 2 ? "next-page" : null);
+    if (url.startsWith("/api/v1/rows")) return currentPage(++loaded % 2 ? "next-page" : null);
     return batch("synthetic:5:0");
   });
   const stopA = env.watchChanges({ query: "changes where kind:session",}); await flush();
@@ -53,16 +53,16 @@ test("joining reads every current page without resetting the shared position", a
   assert.equal(pages.length, 2);
   assert.equal(beginnings[0].generation, "synthetic");
   assert.equal(completions[0].count, 2);
-  assert.equal(requests.filter(url => url.startsWith("/api/v1/query")).length, 4);
-  const feeds = requests.filter(url => url.startsWith("/api/v1/changes"));
+  assert.equal(requests.filter(url => url.startsWith("/api/v1/rows")).length, 4);
+  const feeds = requests.filter(url => url.startsWith("/api/v1/dev/feed"));
   assert.equal(feeds.length, 2);
-  assert.equal(feeds[1], "/api/v1/changes?since=synthetic%3A5%3A0");
+  assert.equal(feeds[1], "/api/v1/dev/feed?after=synthetic%3A5%3A0");
   stopA(); stopB();
 });
 test("one active change request serves the tab and hidden tabs abort it", async t => {
   let calls = 0;
   const env = await environment(t, async (url, { signal }) => {
-    if (url.startsWith("/api/v1/query")) return currentPage();
+    if (url.startsWith("/api/v1/rows")) return currentPage();
     calls++;
     return new Promise((resolve, reject) => signal.addEventListener("abort", () => reject(new DOMException("hidden", "AbortError"))));
   });
@@ -76,7 +76,7 @@ test("one active change request serves the tab and hidden tabs abort it", async 
 test("expired authentication stops requests", async t => {
   let calls = 0; const errors = [];
   const env = await environment(t, async url => {
-    if (url.startsWith("/api/v1/query")) return currentPage();
+    if (url.startsWith("/api/v1/rows")) return currentPage();
     calls++; return new Response("expired", { status: 401 });
   });
   const stop = env.watchChanges({ query: "changes where kind:session", error: error => errors.push(error.message) }); await flush();
@@ -86,7 +86,7 @@ test("expired authentication stops requests", async t => {
 });
 test("a generation change reaches views before replacement references", async t => {
   const seen = [];
-  const env = await environment(t, async url => url.startsWith("/api/v1/query") ? currentPage() : new Response(sseFrame({ ...begin, replacement: true, generation_changed: true }) + sseFrame(change) + sseFrame(complete("new:1:0"))));
+  const env = await environment(t, async url => url.startsWith("/api/v1/rows") ? currentPage() : new Response(sseFrame({ ...begin, replacement: true, generation_changed: true }) + sseFrame(change) + sseFrame(complete("new:1:0"))));
   const stop = env.watchChanges({ query: "changes where kind:session", begin: line => seen.push(line.generation_changed), apply: () => seen.push("change"), complete: () => seen.push("complete") });
   await flush(); assert.deepEqual(seen, [false,"change","complete",true,"change","complete"]); stop();
 });
@@ -96,15 +96,15 @@ test("an initial query failure retries without requesting a replacement feed", a
   const env = await environment(t, async url => {
     requests.push(url);
     if (requests.length === 1) return new Response("temporarily unavailable", { status: 503 });
-    if (url.startsWith("/api/v1/query")) return currentPage();
+    if (url.startsWith("/api/v1/rows")) return currentPage();
     return batch("synthetic:1:0");
   });
   const stop = env.watchChanges({ query: "changes where kind:session", error: error => errors.push(error.message) });
   await flush(); assert.match(errors[0], /unavailable/);
   await env.tick();
-  assert.equal(requests.filter(url => url.startsWith("/api/v1/query")).length,2);
-  assert.equal(requests.filter(url => url === "/api/v1/changes").length,0);
-  assert.equal(requests.at(-1),"/api/v1/changes?since=synthetic%3A0%3A0");
+  assert.equal(requests.filter(url => url.startsWith("/api/v1/rows")).length,2);
+  assert.equal(requests.filter(url => url === "/api/v1/dev/feed").length,0);
+  assert.equal(requests.at(-1),"/api/v1/dev/feed?after=synthetic%3A0%3A0");
   stop();
 });
 
@@ -112,8 +112,8 @@ test("a persistently failing view leaves healthy views updating", async t => {
   const requests = [], errors = [], positions = [];
   const env = await environment(t, async url => {
     requests.push(url);
-    if (url.startsWith("/api/v1/query")) {
-      if (new URL(url,"http://localhost").searchParams.get("query") === "broken query") return new Response("bad query",{status:400});
+    if (url.startsWith("/api/v1/rows")) {
+      if (new URL(url,"http://localhost").searchParams.get("selection") === "broken query") return new Response("bad query",{status:400});
       return currentPage();
     }
     return batch("synthetic:" + (positions.push(url)) + ":0");
@@ -125,7 +125,7 @@ test("a persistently failing view leaves healthy views updating", async t => {
   await env.tick();
   assert.ok(positions.length >= 3);
   assert.ok(errors.length >= 2);
-  assert.ok(requests.some(url=>url.startsWith("/api/v1/changes?since=synthetic%3A2%3A0")));
+  assert.ok(requests.some(url=>url.startsWith("/api/v1/dev/feed?after=synthetic%3A2%3A0")));
   stopA();stopB();
 });
 
@@ -138,7 +138,7 @@ test("a view joining an active batch receives its changes before the position ad
   let finish;
   const requests=[], joined=[];
   const env=await environment(t,async url=>{
-    if(url.startsWith("/api/v1/query"))return currentPage();
+    if(url.startsWith("/api/v1/rows"))return currentPage();
     requests.push(url);
     if(requests.length===1)return new Promise(resolve=>{finish=()=>resolve(batch("synthetic:5:0"));});
     return batch("synthetic:6:0");
@@ -146,6 +146,6 @@ test("a view joining an active batch receives its changes before the position ad
   const stopA=env.watchChanges({query:"changes where kind:session"});await flush();
   const stopB=env.watchChanges({query:"changes where kind:assertion",apply:line=>joined.push(line.change.ref)});await flush();
   finish();await flush();await env.tick();
-  assert.equal(requests[1],"/api/v1/changes?since=synthetic%3A0%3A0");
+  assert.equal(requests[1],"/api/v1/dev/feed?after=synthetic%3A0%3A0");
   assert.ok(joined.includes("session:synthetic"));stopA();stopB();
 });

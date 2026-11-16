@@ -1,4 +1,4 @@
-//! The browser host through the real binary: `install-agent chrome` writes
+//! The browser host through the real binary: `install chrome` writes
 //! and removes the host manifest, and the binary started as Chrome starts
 //! it (with the extension's origin) answers a native messaging exchange.
 
@@ -34,14 +34,9 @@ fn install_agent_chrome_writes_and_removes_the_host_manifest() {
             .output()
             .unwrap()
     };
-    let out = run(&["install-agent", "chrome"]);
+    let out = run(&["install", "chrome"]);
     assert!(!out.status.success(), "an extension ID is required");
-    let out = run(&[
-        "install-agent",
-        "chrome",
-        "--extension-id",
-        "abcdefghijklmnop",
-    ]);
+    let out = run(&["install", "chrome", "--extension-id", "abcdefghijklmnop"]);
     assert!(
         out.status.success(),
         "{}",
@@ -58,10 +53,10 @@ fn install_agent_chrome_writes_and_removes_the_host_manifest() {
     assert!(std::path::Path::new(manifest["path"].as_str().unwrap()).is_absolute());
     // Only the existing browser's directory is written.
     assert!(!config.join("google-chrome").exists());
-    let out = run(&["install-agent", "chrome", "--remove"]);
+    let out = run(&["install", "chrome", "--remove"]);
     assert!(out.status.success());
     assert!(!path.exists());
-    let out = run(&["install-agent", "codex"]);
+    let out = run(&["install", "unknown-harness"]);
     assert!(!out.status.success());
 }
 

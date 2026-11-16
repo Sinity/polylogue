@@ -64,12 +64,13 @@ class Client:
         return self.call("status")
 
     def query(self, text, *, cursor=None, page_size=None):
-        arguments = []
-        if cursor is not None:
-            arguments.extend(["--cursor", cursor])
+        arguments = {"selection": text}
         if page_size is not None:
-            arguments.extend(["--limit", str(page_size)])
-        return self.call(*arguments, "--", text)
+            arguments["page_size"] = page_size
+        command = ["rows", "--request", json.dumps(arguments, ensure_ascii=False)]
+        if cursor is not None:
+            command.extend(["--cursor", cursor])
+        return self.call(*command)
 
     def read(self, identity, *, view="transcript", page_tokens=None):
         arguments = ["read", identity, "--view", view]
@@ -78,14 +79,14 @@ class Client:
         return self.call(*arguments)
 
     def follow_read(self, request):
-        """Execute a generated read/attachment action, including a previous page.
+        """Execute a generated rows/read/attachment action, including a previous page.
 
         The request is passed as structured arguments; displayed commands are
         never parsed. Omitted and explicit null deadlines/budgets stay distinct.
         """
         request = _copy(request)
         operation = request["operation"]
-        if operation not in {"read", "attachment"}:
+        if operation not in {"rows", "read", "attachment"}:
             raise ValueError(f"unsupported read follow-up operation: {operation}")
         unknown = request.keys() - {
             "operation", "arguments", "request_id", "deadline", "budget_tokens",
@@ -107,15 +108,15 @@ class Client:
             arguments.extend(["--cursor", request["cursor"]])
         return self.call(*arguments)
 
-    def changes(self, since=None):
+    def changes(self, after=None):
         """Yield a finite feed. Save only the position on its completion line.
 
         The CLI validates framing and counts before forwarding completion.
         Closing the iterator early terminates and reaps the child process.
         """
-        arguments = self._arguments("changes")
-        if since is not None:
-            arguments.extend(["--since", since])
+        arguments = self._arguments("dev", "feed")
+        if after is not None:
+            arguments.extend(["--after", after])
         with subprocess.Popen(arguments, stdout=subprocess.PIPE) as process:
             try:
                 for line in process.stdout:
