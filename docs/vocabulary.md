@@ -209,7 +209,13 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **reading**: what `read` produces: rows, view, show and hide, range and
   presentation at one read position, as one typed document.
 - **view**: which content a reading shows (`transcript`, `dialogue`,
-  `overview`, `context`, `tree`, `changes`, `live`, `raw`, `compare`).
+  `overview`, `context`, `tree`, `changes`, `live`, `raw`, `compare`,
+  `contents`, `trace`).
+- **trace**: where something came from: the message a quote or paste first
+  appeared in, the tool call that last wrote a file line, and the bytes behind
+  a record (`read --view trace`), read from the **trace data** sets.
+- **seen mark**: where a reader last stopped, per target (`read --from seen`,
+  `since:seen`); it advances only when an item was shown to that reader.
 - **show** and **hide**: how much of each item kind a reading shows
   (`--show tools:full`).
 - **range**: which part of a session a reading shows (`--from`, `--until`,
@@ -230,6 +236,8 @@ generated page of the thing they belong to, or on the area page that owns them.
   **alternate part** maps to one original message or block.
 - **blind**: a comparison shown with labels `A`, `B` instead of references and
   with identifying fields removed.
+- **as it stood**: `read --at TIME|POSITION`, rendering annotations and
+  pages from the revisions current then.
 - **neutral names**: `--neutral-names`, labelling the human `user` instead of
   `you` in excerpts shared with others.
 
@@ -262,6 +270,9 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **rubric** and **pass**: the declared schema of a bulk annotation run, and
   the run itself, with its coverage and abstentions; a **rubric value** is one
   rubric field's value for one row.
+- **ranking**: an order of rows computed from comparisons
+  (`| measure ranking`); **agreement**: how a pass's values match the
+  judgments a reader counts (`| measure agreement`).
 - **checked claim**: a claim that carries a query checking it.
 - **marker**: a `::kind(args)` line in a transcript, read as an annotation by
   the message's author.
@@ -274,6 +285,37 @@ generated page of the thing they belong to, or on the area page that owns them.
   annotation with its history (`set`).
 - **role**: a named kind of agent with a harness and instructions
   (`role:reviewer`); a **role instance** is a session running them.
+
+## Pages
+
+- **page**: a named, ordered arrangement of sessions, notes, live queries,
+  kept results and other pages (`page:NAME`); its **subject** is what it is
+  about, and its **layout** is `linear`, `board` or `table`.
+- **slot**: one item placed on a page: a reference, a live or kept query, or
+  a heading.
+- **section**: a heading slot and what sits under it.
+- **red link**: a page name not yet created, shown waiting until the page
+  appears.
+- **template**: a page others are made from (`page:template/investigation`),
+  with **parameters** bound by `--param`; a **shipped page** (`page:home`,
+  `page:pinned`, `page:cost`) comes with Polylogue.
+- **checkpoint**: a page kept as it stands now (`page:NAME save`, giving
+  `result:<id>`).
+- **working copy**: a page written as one Markdown file (`read --to FILE.md`)
+  and checked in with `import`.
+- **member**: an alias (`@reviewer`) for a session, optionally on a page and
+  with a role. An export's **member** (below, under stored inputs) is a file
+  inside it; the context always says which.
+- **pin**: putting rows on `page:pinned` (`save page:pinned`).
+- **open items** (of a page): the questions, goals and problems it shows that
+  are still open, and anything blocked; the **decision box**: the current
+  decisions about its subject. Both are computed when read.
+- **staleness mark**: `written before 2 findings on this page`, on a note
+  older than later findings or decisions on its page; **circle marker**:
+  `returned to the position of revision 2`, on a decision back at an earlier
+  value.
+- **context bundle**: a page from the `bundle` template, the context a
+  recipient should read, given with `brief`.
 
 ## Agents
 
@@ -344,7 +386,7 @@ generated page of the thing they belong to, or on the area page that owns them.
   **command**: a first word that is not about selected rows (`status`,
   `import`, …).
 - **line option**: an option that goes anywhere on a line (`--json`,
-  `--deadline`, `--request-id`, `--dry-run`, `--explain`, `--all`).
+  `--deadline`, `--request-id`, `--dry-run`, `--explain`, `--wait`, `--all`).
 - **usual rows**: the saved query a verb with no selection picks from
   (`recent` for `read`, `unfinished` for `resume`).
 - **reply**: what an operation returns. **next call**: a ready call or line
@@ -417,19 +459,20 @@ generated page of the thing they belong to, or on the area page that owns them.
 
 ## Removed words
 
-These words are not part of the surface. Each row names what says it now;
-`polylogue help WORD` prints the same line.
+These words are not part of the surface; each was renamed, and the row names
+what says it now. `polylogue help WORD` prints the same line. Words whose job
+another line does are in [set-aside.md](set-aside.md#words-another-line-does).
 
 | Word | Now |
 |---|---|
-| `find`, `query`, `list` (commands) | the selection alone: `polylogue 'QUERY'` |
+| `query`, `list` (commands) | the selection alone: `polylogue 'QUERY'` |
 | `live` (as a list) | the saved query `running` |
 | `follow` | `read --follow` |
 | `takeover` (as a command) | `polylogue SESSION brief` |
 | `recall` (as a command) | `polylogue 'WORDS' brief` |
 | `assert`, `assert-query`, assertion | `note TEXT --as KIND`, `tag NAME`; the unit `annotations`, `annotation:<id>` |
 | `revise` | `edit` |
-| `keep` | `save` with no name |
+| `keep` | `save` with no name; on a page, the checkpoint `page:NAME save` |
 | `watch` (as a verb) | `save NAME --watch` |
 | `ping` | `send` |
 | `continue` (as a verb) | `resume` |
@@ -447,11 +490,15 @@ These words are not part of the surface. Each row names what says it now;
 | `cutover`, `sinex cutover`, `move-to-sinex` (as a first word) | `dev move-to-sinex` |
 | `demo tour` | `demo DIR` |
 | `manual` | `help --all` |
-| `next` (command) | the pager, and the continuation line every page prints |
-| `pack` | `brief` |
-| `trace` | `read --view raw` |
 | `fetch` | `import PROVIDER` |
 | `timeline`, `cost`, `measure NAME` (commands) | queries with `\| measure` |
+| `trace` (as a verb) | `read --view trace` |
+| `toc` | `read --view contents` |
+| `checkout`, `checkin` | `read --to DIR` and `import DIR/NAME.md` |
+| `add`, `move` (on a page) | `save page:NAME [--section S] [--after SLOT]` |
+| `pin` | `save page:pinned` |
+| `analyze` (experiments) | `\| measure experiment` |
+| `applies` (as a verb) | the field `applies:REF` on methods |
 | variant | alternate: `note --as translation:LANG`, `read --alternate`, the unit `alternates` |
 | stage (in a query) | transform |
 | fold | `--show` and `--hide` |
@@ -459,9 +506,8 @@ These words are not part of the surface. Each row names what says it now;
 | answer (for a query run) | run: `run:<id>`, the unit `runs` |
 | `answers` (link role) | `--replies-to` |
 | `annotation` (rubric kind) | `rubric_value` |
-| `toc`, `checkout`, `checkin`, `applies`, Pages | not built ([set-aside.md](set-aside.md)) |
-| `--limit`, `--out`, `--output`, `--for-session`, `--print`, `--exec`, `--harness`, `--for-others`, `--variant`, `--answers`, `--page-tokens`, `--all-matches`, `--first` (picker) | `--page-size`, `--to`, `--for`, `--dry-run`, `--in`, `--neutral-names`, `--alternate`, `--replies-to`, `--budget`, `--all` |
-| `@[QUERY]`, `@last`, `@N.M`, `@*` | `--all`; exact references; `@all` |
+| `ranking:[…]`, `insufficient_evidence` (comparison verdicts) | `judge 'B>A>C'`, `judge insufficient-evidence` |
+| `--limit`, `--out`, `--output`, `--for-session`, `--print`, `--exec`, `--harness`, `--for-others`, `--variant`, `--answers`, `--page-tokens`, `--output-lines`, `--since seen` | `--page-size`, `--to`, `--for`, `--dry-run`, `--in`, `--neutral-names`, `--alternate`, `--replies-to`, `--budget`, `--show tools:N`, `--from seen` |
 | `last` (reference) | `latest` |
 | `--format` on `import` | `--origin` |
 | `--since` on the change feed | `--after` |

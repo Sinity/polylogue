@@ -21,7 +21,7 @@ runtime and its tests. The target card and tool descriptions are
 | [architecture](architecture.md) | purpose, principles, the two modes, data flow, the stores, durability, the pipeline and its targets, configuration and clocks, the store boundary, deletion |
 | [capture](capture.md) | where inputs come from: locations, origins, hooks, tool databases, import, AI Studio through Drive, capture status |
 | [extension](extension.md) | the browser extension: live capture, provider import, its own UI, chat actions |
-| [archive](archive.md) | stored inputs, versioned rows, evolution, parsers and reading versions, goldens, field accounting, format drift and `dev schema` |
+| [archive](archive.md) | stored inputs, versioned rows, evolution, parsers and reading versions, goldens, field accounting, format drift and `dev schema`, trace data |
 | [sessions](sessions.md) | the parsed model: sessions, messages, message authorship, times, session links, compaction, attachments, logical sessions |
 | [references](references.md) | the one reference grammar and its rules |
 | [interfaces](interfaces.md) | the operation table, the line grammar, verb words, chains, the verbs and commands, option names and exit codes |
@@ -32,13 +32,14 @@ runtime and its tests. The target card and tool descriptions are
 | [transforms](transforms.md) | conditions over related rows, transforms after `\|`, attached rows, combining queries |
 | [saved queries](saved-queries.md) | questions, runs, `save`, saved names, shipped saved queries, kept results, figures, findings, watches |
 | [search](search.md) | full-text search, semantic ranking and `embed`, fusion, the brief of a search |
-| [reading](reading.md) | `read`: views, show and hide, ranges, paging, formats and destinations, alternates, compare and blind |
+| [reading](reading.md) | `read`: views (including a page's contents and trace), show and hide, ranges and seen marks, paging, formats and destinations, alternates, compare and blind |
 | [transcripts](transcripts.md) | how a transcript is composed and rendered: branches, compaction, headers, tool calls, thinking, attachments, value states, rendering for models |
-| [annotations](annotations.md) | everything authored: the record, kinds, links, current revisions, the write path, `note`, `tag`, `edit`, `withdraw`, annotation lines, checked claims, memory |
+| [annotations](annotations.md) | everything authored: the record, kinds, links, current revisions, the write path, `note`, `tag`, `edit`, `withdraw`, annotation lines, checked claims, memory and methods |
+| [pages](pages.md) | pages: slots, sections, members, open items, layouts, templates and shipped pages, checkpoints, the working copy, investigations, experiments |
 | [authorship](authorship.md) | who wrote a record and how each channel decides |
-| [judging](judging.md) | `judge`: verdicts, comparisons, blind judging, forecasts, rubrics and passes |
+| [judging](judging.md) | `judge`: verdicts, comparisons, blind judging, rankings, agreement, sampled judging, forecasts, rubrics and passes |
 | [alternates](alternates.md) | translations and other renderings of content |
-| [markup](markup.md) | annotations written inside messages |
+| [markup](markup.md) | annotations, page placements and sends written inside messages |
 | [measures](measures.md) | derived data and measures, and the catalog of derived products |
 | [agents](agents.md) | the agent contract, trust rendering, the skill file, the three MCP tools |
 | [live sessions](live-sessions.md) | live state, the process watcher, peers, tasks, control channels |
@@ -47,14 +48,14 @@ runtime and its tests. The target card and tool descriptions are
 | [web](web.md) | the workbench frame, keys, inspector, live behaviour, access and routes |
 | [web designs](web-design.md) | visual baselines, artboards and views to draw |
 | [web reader](web-reader.md) | session reading and control, reports, sharing, documents and messages |
-| [web views](web-views.md) | home, running, search, notes, comparisons, timelines, cost, analysis, status and settings |
+| [web views](web-views.md) | home, running, search, notes, comparisons, judging passes, pages and workspaces, timelines, cost, analysis, status and settings |
 | [operations](operations.md) | the daemon, storage failure, idle work, `status` and `--verify`, notices, the change feed |
 | [installing](installing.md) | `install`, configuration and `set`, `embed`, `demo`, several machines, deployment, upgrades, backup and restore |
 | [primary mode](primary-mode.md) | Polylogue on Sinex, and the move to it |
 | [testing](testing.md) | test archives, properties tested, fault and crash tests, fuzzing, benchmarks |
 | [development](development.md) | building, the dev shell, xtask, CI, the deployment modules |
 | [vocabulary](vocabulary.md) | each concept and its one name, and the removed words |
-| [set aside](set-aside.md) | capabilities that are not part of Polylogue now, and dropped writers |
+| [set aside](set-aside.md) | words whose job another line does, and what the operator ruled out |
 
 The shared mechanics (blobs and segments, the query grammar, the operation and
 failure types, the web shell, signals) are documented in
