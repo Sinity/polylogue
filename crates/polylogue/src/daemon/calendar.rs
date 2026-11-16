@@ -1,7 +1,7 @@
 //! Shared logical-day composition for timeline, day and cost clients.
 use super::{Failure, query};
-use polylogue_reading::operation::Context;
 use polylogue_model::context::RunContext;
+use polylogue_reading::operation::Context;
 use polylogue_store::{Reader, timeline};
 use query_language::cursor::{
     Continuation, CursorContext, CursorSeal, OrderPosition, SealedCursor,

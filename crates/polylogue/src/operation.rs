@@ -42,4 +42,3 @@ impl Accepted {
         serde_json::to_string(&self.authorship).expect("computed authorship serializes")
     }
 }
-
