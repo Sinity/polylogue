@@ -40,7 +40,7 @@ Parameter: cluster_gap = 300000 milliseconds.
 
 Tests: span_and_parties_match_a_hand_computed_session, tool_intervals_extend_clusters_and_share_overlap, clustering_sensitivity_matches_the_morrow_shaped_sample.
 
-Evidence: Morrow #2, 18 own messages: clustered 62 minutes at a 5-minute gap, 75 minutes at a 10-minute gap. time per party at both gaps: tools 1704000 ms, model 2348000 ms, human 448000 ms (2026-10-28).
+Evidence: Morrow #2, 18 own messages: clustered 62 minutes at a 5-minute gap, 75 minutes at a 10-minute gap. Time per party at both gaps: tools 1704000 ms, model 2348000 ms, human 448000 ms (2026-10-28).
 
 ## session_time (K16)
 
@@ -56,7 +56,7 @@ Parameter: cluster_gap = 300000 milliseconds.
 
 Tests: span_and_parties_match_a_hand_computed_session, tool_intervals_extend_clusters_and_share_overlap, party_times_sum_to_wall_for_overlapping_intervals.
 
-Evidence: Morrow #2, 18 own messages: clustered 62 minutes at a 5-minute gap, 75 minutes at a 10-minute gap. time per party at both gaps: tools 1704000 ms, model 2348000 ms, human 448000 ms (2026-10-28).
+Evidence: Morrow #2, 18 own messages: clustered 62 minutes at a 5-minute gap, 75 minutes at a 10-minute gap. Time per party at both gaps: tools 1704000 ms, model 2348000 ms, human 448000 ms (2026-10-28).
 
 ## billing-cycle outlook (K12)
 

@@ -70,7 +70,7 @@ pub const SESSION_SPAN: Construct = Construct {
         "clustering_sensitivity_matches_the_morrow_shaped_sample",
     ],
     figures: &[
-        "Morrow #2, 18 own messages: clustered 62 minutes at a 5-minute gap, 75 minutes at a 10-minute gap. Time lanes at both gaps: tools 1704000 ms, model 2348000 ms, human 448000 ms (2026-10-28)",
+        "Morrow #2, 18 own messages: clustered 62 minutes at a 5-minute gap, 75 minutes at a 10-minute gap. Time per party at both gaps: tools 1704000 ms, model 2348000 ms, human 448000 ms (2026-10-28)",
     ],
 };
 
@@ -130,7 +130,7 @@ pub const OUTLOOK: Construct = Construct {
         "message.at",
         "message.cost_nusd",
         "message.provider_cost_nusd",
-        "message token lanes",
+        "message token kinds",
         "usage_report",
     ],
     unit: "nano-USD; tokens",

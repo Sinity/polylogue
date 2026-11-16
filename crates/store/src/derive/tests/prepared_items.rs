@@ -37,7 +37,7 @@ fn hidden() -> (WriterArchive, Connection, i64, i64) {
     let mut world = WriterArchive::new();
     world.write(
         "session",
-        prose("session", 1, 1000, "stored original content"),
+        prose("session", 1, 1000, "retained original content"),
     );
     let conn = crate::archive::open_write(&world.archive.index_db(), crate::archive::cache::SETUP)
         .unwrap();
