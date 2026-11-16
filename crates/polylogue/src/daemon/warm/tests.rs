@@ -726,6 +726,7 @@ fn a_warmed_model_refreshes_mixed_restore_and_preserves_old_reader_values() {
         .unwrap();
     let reader = daemon.daemon.reads.reader().unwrap();
     let current = warm.vectors_of(&reader, key).unwrap();
+    drop(reader);
     assert_eq!(
         current.revision,
         old.revision + 3,
@@ -746,6 +747,7 @@ fn a_warmed_model_refreshes_mixed_restore_and_preserves_old_reader_values() {
     store.restore(&[restored_vector(1, 40, [0., 1.])]).unwrap();
     let newer_reader = daemon.daemon.reads.reader().unwrap();
     let newer = warm.vectors_of(&newer_reader, key).unwrap();
+    drop(newer_reader);
     assert_eq!(newer.revision, current.revision + 1);
     assert_eq!(newer.rows_read, 3);
     assert_eq!(newer.similarity(&[1., 0.]).unwrap().of(&[1]), Some(0.));
