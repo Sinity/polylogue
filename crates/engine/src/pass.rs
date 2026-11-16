@@ -417,15 +417,21 @@ impl Engine {
             (Vec::new(), Vec::new())
         } else if discover {
             let scan = collect::scan_with_coverage(&self.config);
-            self.writer.coverage(polylogue_model::capture::Coverage {
+            // Coverage reports the walk; a refused report is this pass's
+            // error and the walk's files are still read.
+            let observed_at =
+                polylogue_model::Timestamp::from_unix_ms(self.config.clock.now().as_millisecond())
+                    .ok_or_else(|| {
+                        std::io::Error::other("capture observation time is out of range")
+                    })?;
+            if let Err(error) = self.writer.coverage(polylogue_model::capture::Coverage {
                 version: 1,
                 machine: self.config.machine.clone(),
-                observed_at: polylogue_model::Timestamp::from_unix_ms(
-                    self.config.clock.now().as_millisecond(),
-                )
-                .ok_or_else(|| std::io::Error::other("capture observation time is out of range"))?,
+                observed_at,
                 roots: scan.roots,
-            })?;
+            }) {
+                errors.push(format!("capture coverage: {error}"));
+            }
             (scan.found, scan.unreadable)
         } else {
             collect::scan_paths(&self.config, paths)
@@ -2132,6 +2138,10 @@ impl Engine {
         };
         let mut summary = RunSummary::default();
         let mut discover = true;
+        // The errors of the last failed turn. A turn that fails with the same
+        // errors again waits for a change instead of being retried at once.
+        let mut failed_with: Option<Vec<String>> = None;
+        let mut repeated_failure;
         let mut changed = std::collections::BTreeSet::new();
         let mut watch_errors = Vec::new();
         loop {
@@ -2161,6 +2171,8 @@ impl Engine {
                         changed.clear();
                     }
                     discover = false;
+                    failed_with = None;
+                    repeated_failure = false;
                     pass
                 }
                 Err(e) => {
@@ -2182,6 +2194,8 @@ impl Engine {
                         Ok(report) => errors.extend(report.errors),
                         Err(error) => errors.push(error.to_string()),
                     }
+                    repeated_failure = failed_with.as_ref() == Some(&errors);
+                    failed_with = Some(errors.clone());
                     Pass {
                         full_scans: u64::from(discover && self.config.reads_sources),
                         errors,
@@ -2213,8 +2227,10 @@ impl Engine {
                 // Work queued while the pass ran (imports, changes the
                 // watcher saw) is taken now; with none, the loop is idle. A
                 // capture that continues gets `live_every` before the next pass.
-                let mut more = pending;
-                if pending {
+                // A turn failing as the one before it ends the run with its
+                // errors reported.
+                let mut more = pending && !repeated_failure;
+                if more {
                     match self
                         .requests
                         .as_mut()
@@ -2243,14 +2259,14 @@ impl Engine {
                     }
                 }
                 more |= self.take_watched(&mut changed, &mut watch_errors);
-                more |= !changed.is_empty();
+                more |= !repeated_failure && !changed.is_empty();
                 if !more {
                     return Ok(self.stopped(summary));
                 }
                 continue;
             }
             let requests = self.requests.as_mut().expect("running inbox");
-            let mut msg = if !self.config.reads_sources && !pending {
+            let mut msg = if (!self.config.reads_sources && !pending) || repeated_failure {
                 requests.recv()
             } else {
                 requests.recv_timeout(self.config.live_every)

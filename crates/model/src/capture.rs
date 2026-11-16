@@ -65,9 +65,12 @@ impl Coverage {
             if root.path_bytes.is_empty() || !roots.insert(&root.path_bytes) {
                 return Err("coverage roots must be nonempty and unique");
             }
+            // An entry is its class and its pattern or reason: the built-in
+            // ignore rules that match any path share the pattern `**` and
+            // differ by reason.
             let mut entries = std::collections::BTreeSet::new();
             for entry in &root.entries {
-                if !entries.insert((entry.class, &entry.pattern)) {
+                if !entries.insert((entry.class, &entry.pattern, &entry.reason)) {
                     return Err("coverage entries must be unique within a root");
                 }
                 if entry.class == Classification::Ignored

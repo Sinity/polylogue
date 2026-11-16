@@ -1858,6 +1858,7 @@ impl Inner {
     }
 
     fn write_coverage(&mut self, coverage: polylogue_model::capture::Coverage) -> Result<()> {
+        crate::fault::check("write.coverage", &coverage.machine)?;
         coverage
             .validate()
             .map_err(|error| StoreError::Invalid(error.into()))?;
