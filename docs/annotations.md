@@ -1,6 +1,6 @@
 # Annotations
 
-Everything people and agents write about the archive is an annotation: notes, tags, judgments, comparisons, saved queries, watches and settings. This page owns the record and its tables, kinds, links and current revisions, reading annotations, the one write path and the write verbs `note`, `tag`, `edit` and `withdraw`, annotation lines, checked claims, memory and methods. Neighbouring pages own the rest: who wrote a record is [authorship.md](authorship.md); `judge`, comparisons, forecasts, rubrics and passes are [judging.md](judging.md); alternates (translations and other renderings, written with `note --as`) are [alternates.md](alternates.md); annotations written inside messages are [markup.md](markup.md); `save` and saved queries are [saved-queries.md](saved-queries.md#save); settings are [operations.md](installing.md#configuration); the reference grammar is [references.md](references.md); how briefs read annotations is [agent-context.md](agent-context.md#the-brief-for-a-directory).
+Everything people and agents write about the archive is an annotation: notes, tags, judgments, comparisons, saved queries, watches and settings. This page owns the record and its tables, kinds, links and current revisions, reading annotations, the one write path and the write verbs `note`, `tag`, `edit` and `withdraw`, annotation lines, checked claims, memory and methods. Neighbouring pages own the rest: who wrote a record is [authorship.md](authorship.md); `judge`, comparisons, forecasts, rubrics and passes are [judging.md](judging.md); alternates (translations and other renderings, written with `note --as`) are [alternates.md](alternates.md); annotations written inside messages are [markup.md](markup.md); `save` and saved queries are [saved-queries.md](saved-queries.md#save); pages, slots and members are [pages.md](pages.md); settings are [operations.md](installing.md#configuration); the reference grammar is [references.md](references.md); how briefs read annotations is [agent-context.md](agent-context.md#the-brief-for-a-directory).
 
 Annotations are the one record of everything authored; there are no separate tables per kind of mark.
 
@@ -69,7 +69,7 @@ Kinds are one closed declaration in the `model` crate. Each states the key's mea
 | `note` | — | text | many | anything | `note` | `::note` |
 | `tag` | tag name | optional `{value?, confidence?}` | one per (about, key, value) | anything | `tag` | `::tag` |
 | `highlight` | colour name | optional text | many | a `span:` | `note --as highlight` | `::highlight` |
-| `title` | — | text | one per about | a session | `note --as title` | `::title` |
+| `title` | — | text | one per about | a session | `note --as title` (with `--rename`, also renamed in the provider for a web chat) | `::title` |
 | `outcome` | — | `solved`, `partial` or `abandoned` | one per about | a session | `note --as outcome` | `::outcome` |
 | `hidden` | — | optional reason | one per about | a session | `note --as hidden` | — |
 | `claim` | optional label | text, optional `check` ([Checked claims](#checked-claims)) | many | anything | `note --as claim` | `::claim` |
@@ -84,14 +84,17 @@ Kinds are one closed declaration in the `model` crate. Each states the key's mea
 | `rubric_value` | a rubric field, or `abstain` | `{value, confidence?, rationale?}`: the field's value, or the reason for abstaining | one per (about, rubric revision, key, author) | one row of the pass's population | `import` | `::rubric_value(rubric=…, key=…)` |
 | `memory` | path | file text | one per (scope, key) | — (`scope` link) | `note --as memory`, the memory-tool adapter | — |
 | `method` | name | `{inputs, conditions: [{name, check}], steps, expected, stop}` | one per name | — (optional scope) | `import` | — |
+| `seen` | the target's reference | `{position}` | one per (key, author) | — | reads shown to their reader ([reading.md](reading.md#ranges)) | — |
 | `role` | name | `{instructions, harness}` ([session-control.md](session-control.md#roles)) | one per name | — | `import` | — |
-| `page`, `slot`, `member` | name | structure records (`slot_of`, `member_of`, `role_of` links) | one per name | — | `import` | — |
+| `page` | page name | `{title, layout, template?, params?}` ([pages.md](pages.md#the-model)) | one per name | its subject (optional) | `note --as page`, `save page:NAME` | — |
+| `slot` | — | `{parent?, pos, mode, heading?, query?, caption?, x?, y?, w?, h?}` | many (`slot_of` one page) | what it shows | `save page:NAME`, `note --section`, `note --as heading` | `page=`, `section=`, `::heading`, `::slot` |
+| `member` | alias | — | one per (key, page) | a session | `note ALIAS --as member` | — |
 | `saved_query` | name | `{text, hash, denominator?}` | one per name | — | `save` | — |
 | `signal` | name | a signal rule ([operations.md](operations.md#notices)) | one per name | — | `save --watch`, `note --as signal` | — |
 | `withdrawal` | — | optional reason | many | — (`withdraws` links) | `withdraw` | — |
 | `setting` | setting name | `{machine, value}` ([operations.md](installing.md#configuration)) | one per (name, host) for a host-scoped key, one per name for an archive-scoped key | — | `set` | — |
 
-- **Kinds about nothing** (`rubric`, `method`, `role`, `page`, `slot`, `member`, `pass`) have a name as their identity and come in through `import` of annotation lines ([Annotation lines](#annotation-lines)); names are keys, never selections. Polylogue stores, lists and links them; `page`, `slot` and `member` records are kept as data and no page is rendered from them.
+- **Kinds keyed by name** (`rubric`, `method`, `role`, `pass`) have a name as their identity and come in through `import` of annotation lines ([Annotation lines](#annotation-lines)); names are keys, never selections. Pages are written by verbs: the page's name comes from its `page:NAME` reference and a member's alias is the note's text, so names stay keys there too ([pages.md](pages.md#writing)).
 - **Settings.** A setting's `machine` is its target host for a host-scoped key and null for an archive-scoped key; `value` has the catalog's type for that key. The machine that wrote the setting stays the annotation's own `machine`. Two current revisions for one key and host are a conflict, shown with both references; the default does not resolve it.
 - **Marks.** Starring and other marks are tags: starring is `tag star`.
 - **`hidden`** takes a session and its rows out of default listings, search results, briefs and the `unfinished` list; `hidden:true` or `hidden:*` brings them back. Measures and population counts still include hidden sessions and say how many ("includes 3 hidden sessions"), because a display preference never changes a measured population. It is written with `note 'why' --as hidden` and taken back with `withdraw`.
@@ -108,7 +111,7 @@ Kinds are one closed declaration in the `model` crate. Each states the key's mea
 | `revises` | it is a new revision of the named revision | written by `edit` |
 | `withdraws` | it withdraws the named revision, root, alternate or withdrawal | written by `withdraw` |
 | `replies_to`, `challenges`, `supports`, `qualifies`, `corrects`, `derived_from`, `blocks` | typed relations between annotations; `replies_to` may also name the `delivery:` of a sent message | `--replies-to`, `--challenges`, `--supports`, `--qualifies`, `--corrects`, `--derived-from`, `--blocks` |
-| `slot_of`, `member_of`, `role_of` | structure of the import-only kinds | — |
+| `slot_of`, `member_of`, `role_of` | a slot's page; a member's page and role ([pages.md](pages.md#the-model)) | `save page:NAME`, `--page`, `--role` |
 
 **Stacks.** An annotation may be about another annotation at an exact revision, through one typed relation, so a claim, a question about it and a reply that challenges it form a stack. What links to a note is a query: `polylogue 'annotations where links_to:annotation:01JB7Q2M'` lists everything that links to any revision of it, each with author, revision, whether it is current, and relation.
 
@@ -183,10 +186,15 @@ Undo is the safety for named rows; a query matching several rows also needs `--a
 | `highlight` | a `span:` reference | the colour | `polylogue span:message:01JB7Q2M#c=10-80 note yellow --as highlight` |
 | `translation:LANG`, `transliteration:LANG`, `simplification`, `summary` | a message, or a session with `--parts FILE\|-` (one part per message, as lines) | the text, or `''` with `--parts` | `polylogue @3 note '' --as translation:pl --parts parts.jsonl` |
 | `signal` | the selection's question, not its rows (one rule; no `--all`) | the rule as JSON, any shape the shared signals schema accepts | `polylogue query:waiting note '{"for":"20m","notify":true}' --as signal` |
+| `page` | a `page:NAME` reference | the title; `--template`, `--param`, `--layout`, `--about` set the rest | `polylogue page:flaky-ci note 'Why is CI flaky on Fridays?' --as page --template investigation` |
+| `heading` (a heading slot) | a page | the section's title; `--level N`, `--section S` | `polylogue page:flaky-ci note 'Risks' --as heading` |
+| `member` | a session | the alias; `--page P`, `--role R` | `polylogue codex:019d0f2a note reviewer --as member --page flaky-ci --role reviewer` |
 | `forecast`, `memory` (the row is the scope), `rubric_value` | as declared | JSON | — |
 
 - Relation options take references: `--evidence`, `--replies-to`, `--supports`, `--challenges`, `--qualifies`, `--corrects`, `--derived-from`, `--blocks`, `--scope`; `--valid-until TIME`; `--check QUERY --expect E` for a checked claim; `--key KEY` for kinds keyed by name.
 - The four alternate kinds write an alternate record, not an annotation ([alternates.md](alternates.md)).
+- **On a page.** `note` on a `page:` selection places the note on that page; on any other selection `--page NAME --section S` writes the note about its rows and places it too. The note and its slot are one request ([pages.md](pages.md#writing)).
+- **Renaming a web chat.** `polylogue chatgpt:6a2e91c0 note 'New title' --as title --rename` writes the title and asks the browser extension to rename the conversation in the provider, an act recorded like every act ([extension.md](extension.md#chat-actions)); without `--rename` the title is Polylogue's alone.
 
 ### tag
 
@@ -224,6 +232,8 @@ A `claim` or `finding` may carry `--check QUERY --expect E`, where `E` is `rows`
 **The memory-tool adapter** maps a harness's memory tool onto `memory` annotations: key = path, value = text, `scope` = the repository or directory (none for global). `view` is a query; `create` is a write or revision; `str_replace` and `insert` are a revision on the current base, refused as `conflict` when the base moved; `delete` is a withdrawal; `rename` is a revision with the new key. It is a thin mapping on the MCP side, so an agent's memories become queryable across sessions, machines and agents with no second store. Harness memory files (`CLAUDE.md`, `AGENTS.md`, a harness's memory directory) are captured inputs with their revision history ([capture.md](capture.md)); Polylogue does not inject them, and an annotation cites one by its `document:` reference.
 
 **Methods** are `method` annotations: a procedure with inputs, checkable conditions, steps, an expected result and a stop rule, brought in by `import`. Adopted (an accepted judgment) and used (a delivery that included it, or an annotation `derived_from` it) are separate facts.
+
+**Where a method applies** is the computed field `applies:REF` on method annotations: each condition's check is evaluated against the scope REF names (`here`, a `repo:` or `cwd:`), giving `applicable` when every condition holds, `not_applicable` when one fails, and `unassessed` when a check cannot be decided from what was captured. `polylogue 'annotations where kind:method applies:here'` lists the methods that apply in this repository; reading a method shows each condition with its result; the brief for a directory lists the methods that apply there ([agent-context.md](agent-context.md#the-brief-for-a-directory)).
 
 ## Storage
 
