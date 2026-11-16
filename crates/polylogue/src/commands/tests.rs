@@ -437,8 +437,10 @@ fn request_id_travels_beside_the_arguments_on_every_surface() {
                 .unwrap();
             let schema = &listed["inputSchema"];
             assert!(schema["properties"]["request_id"].is_object());
+            // A call may leave the ID out; parsing derives it (docs/interfaces.md,
+            // Operation table: `{operation, arguments, request_id?, …}`).
             assert!(
-                schema["required"]
+                !schema["required"]
                     .as_array()
                     .unwrap()
                     .contains(&json!("request_id"))

@@ -228,18 +228,31 @@ impl ReadServices for LineReads<'_> {
             serde_json::to_value(rows).map_err(|error| Error::Internal(error.to_string()))?;
         let identity = canonical_json::canonical_hash("polylogue-rows-call", &arguments)
             .map_err(|error| Error::Internal(error.to_string()))?;
-        self.daemon
-            .ready_call(&RunnableRequest {
-                operation: "rows".into(),
-                arguments,
-                request_id: format!("rows-page-{}", identity.to_hex()),
-                deadline,
-                budget_tokens: Default::default(),
-                cursor: None,
-                fresh: false,
-                format: Default::default(),
-            })
-            .map_err(Error::Operation)
+        let request = RunnableRequest {
+            operation: "rows".into(),
+            arguments,
+            request_id: format!("rows-page-{}", identity.to_hex()),
+            deadline,
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
+        };
+        // `rows` has no HTTP route yet, so its next call is checked against
+        // its own declaration rather than offered as an HTTP call.
+        let row = crate::commands::command("rows").expect("rows is a row");
+        row.registration()
+            .expect("rows is answered by the daemon")
+            .admit(
+                &request.arguments,
+                row,
+                &crate::commands::Caller {
+                    surface: crate::commands::Surface::Cli,
+                    cwd: None,
+                },
+            )
+            .map_err(|failure| Error::Operation(failure.error))?;
+        Ok(ReadyCall { request })
     }
     fn attachment_call(&self, at: &AttachmentPlace) -> Result<ReadyCall, Error> {
         ReadServices::attachment_call(self.daemon, at)

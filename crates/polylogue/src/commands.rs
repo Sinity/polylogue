@@ -405,7 +405,6 @@ const WRITTEN: &[Command] = &[
         help: "A selection and the verbs that act on its rows, in order: the line every surface carries",
         run: Run::Daemon(streams::<line::Line>()),
         cli: Cli::Line,
-        http: true,
         writes: true,
         ..CLI
     },
