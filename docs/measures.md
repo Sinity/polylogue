@@ -1,6 +1,6 @@
 # Derived data and measures
 
-Everything Polylogue computes from parsed sessions: the rules every derived product follows, the catalog of products, and the measures over them (usage and cost, quota and plans, time, tool behaviour, comparison, reports). The parsed rows these products read are [sessions.md](sessions.md); query grammar, `group by`, `agg` and paging are [query.md](query.md); kept results, figures and findings are [saved-queries.md](saved-queries.md) and judgment notes [annotations.md](annotations.md); semantic ranking is [search.md](search.md#semantic-ranking); how figures appear in a read is [reading.md](reading.md); chart and page layout is [web.md](web.md); the brief is [agent-context.md](agent-context.md#brief).
+Everything Polylogue computes from parsed sessions: the rules every derived product follows, the catalog of products, and the measures over them (usage and cost, quota and plans, time, tool behaviour, comparison, reports, rankings, agreement and experiments). The parsed rows these products read are [sessions.md](sessions.md); query grammar, `group by`, `agg` and paging are [query.md](query.md); kept results, figures and findings are [saved-queries.md](saved-queries.md) and judgment notes [annotations.md](annotations.md), and how rankings and agreement are used in judging [judging.md](judging.md); semantic ranking is [search.md](search.md#semantic-ranking); how figures appear in a read is [reading.md](reading.md); chart and page layout is [web.md](web.md); the brief is [agent-context.md](agent-context.md#brief).
 
 Measurement addresses four questions for someone who runs many agents on subscriptions: how much of the subscription is left and when it runs out; what something cost, and would have cost at API prices; where an agent's time went and how agents behave; what one set of sessions looks like beside another. Every figure is computed from records, never guessed from prose, and says what it counts and what it could not count.
 
@@ -164,6 +164,9 @@ Store: **row** (a column on a parsed row), **session** (stored at session grain)
 | Facet counts with IDF and lift | `measure facets` | read | exact |
 | Contrast | `measure contrast` | read | exact |
 | Distributions and correlation | `p50`, `p90`, `histogram`, `corr` | read | exact |
+| Rankings over comparisons | `measure ranking` | read | parameterized |
+| Agreement of a pass | `measure agreement` | read | exact |
+| Experiment intervals | `measure experiment` | read | exact |
 | Reports | queries joining the above | read | exact |
 | Embeddings | vectors in the embeddings store | row | judged |
 | Format drift | the `drift` unit ([archive.md](archive.md#format-drift)) | read | exact |
@@ -355,3 +358,15 @@ Activity sessions, presence, agency, interruption and resumption, cross-day epis
 An empty selection gives zero counts with outcome `empty`; a failed component gives `degraded` with that component's error while the other columns stay. Any report can be saved like any query (`save NAME`, [saved-queries.md](saved-queries.md#save)); a kept report records its pipelines, scope, clock, unknowns and derivation versions, and renders to a file through `read --to` like any kept result ([reading.md](reading.md#formats-and-destinations)).
 
 **Embeddings.** A vector per message or chunk, used as a ranking score, never as a filter. The derive consumer embeds new or changed text while model calls are on (`polylogue set embed.calls on`), within the spend budget the settings carry ([search.md](search.md#semantic-ranking)); turning calls on is the user's one authorization. Model calls are off by default; stored and purchased vectors are kept and used. Judged: recall at 10 on known pairs before it is relied on. Search behaviour and providers are search.md's.
+
+## Judging and experiments
+
+### Rankings and agreement
+
+**Ranking.** `| measure ranking` reads current comparisons ([judging.md](judging.md#the-better-of-several-rows)); a selection holding several dimensions is ranked per dimension. Each comparison adds pairwise outcomes: `prefer:X` is a win for X over each other row; an order is a win for each row over every row after it; `tie` is half a win each way for every pair; `incomparable`, `abstain` and `insufficient_evidence` add none and are counted per row. A row's win rate is its wins over its pairwise outcomes, with that count. Bradley-Terry strengths are fitted by maximum likelihood with a weak prior, so a row that won every comparison still gets a finite strength; the prior is the declared constant and is printed. Each rank shows its strength with an interval and the number of comparisons behind it; rows the comparisons do not connect are ranked in separate groups, never against each other. **Uncertain pairs** are neighbouring ranks whose intervals overlap, fewest direct comparisons first, each given as a ready `judge` line that selects the two rows with the dimension.
+
+**Agreement.** `| measure agreement` compares a pass's `rubric_value`s with a reference judge: the operator unless the option names another judge, in the forms `judged_by:` takes ([query.md](query.md#units-and-fields)). A value's reference item is the reference judge's current judgment of that exact revision (accept agrees, reject disagrees) or the judge's own value for the same row and field under the same rubric revision (equal values agree). **Excluded:** abstentions, deferrals and values with no reference item. **Incompatible:** a reference item about another revision of the value or under another rubric revision. **Conflicting:** two current reference items that differ. Agreement is agreeing items over compared items, overall and per field, with the compared count as its denominator and the three other counts beside it.
+
+### Experiment
+
+`polylogue 'slots where page:exp-1 | measure experiment'` reads the page's assignment and the outcomes of its units ([pages.md](pages.md#experiments)). For each arm, with n the units assigned to it, satisfied the units whose current outcome meets the declared outcome, and unresolved the units with no current outcome, an abstention or a conflict, the result is the interval `[satisfied/n, (satisfied+unresolved)/n]`. Unresolved units stay in the denominator: there is no point estimate that drops them. An arm with n = 0 is unmeasured. Units whose recorded exposure differs from their assignment are counted per arm. Causal words ("caused", "because of the arm") appear only for a page whose assignment was written before any exposure and never revised after it; otherwise the reply speaks of association.

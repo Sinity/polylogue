@@ -1,12 +1,13 @@
 # Web workbench
 
-The workbench is the web interface the daemon serves: reading, searching, measuring and annotating the archive, and reading and answering live agent sessions as they run. It is one more client of the [operation table](interfaces.md#operation-table) and adds no behaviour of its own: every view is a line or a command. This page owns its principles, frame, key bindings, inspector, live behaviour, state matrix, access and routes. [Web designs](web-design.md) owns the visual baselines; [Web reader](web-reader.md) and [Web views](web-views.md) describe every view. Shared web mechanics (visual tokens, the shared key table, palette and copy mechanics, the frame, server-sent-event fragments, windowed lists) belong to the common [`web-shell`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/web-shell/README.md) crate. The browser extension's own interface is [extension.md](extension.md); rendering rules for messages and read views are [reading.md](reading.md); live sessions and the acts on them are [session-control.md](session-control.md); status figures are [operations.md](operations.md#status).
+The workbench is the web interface the daemon serves: reading, searching, measuring and annotating the archive, arranging work on [pages](pages.md), and reading and answering live agent sessions as they run. It is one more client of the [operation table](interfaces.md#operation-table) and adds no behaviour of its own: every view is a line or a command. This page owns its principles, frame, workspaces, key bindings, inspector, live behaviour, state matrix, access and routes. [Web designs](web-design.md) owns the visual baselines; [Web reader](web-reader.md) and [Web views](web-views.md) describe every view. Shared web mechanics (visual tokens, the shared key table, palette and copy mechanics, the frame, server-sent-event fragments, windowed lists) belong to the common [`web-shell`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/web-shell/README.md) crate. The browser extension's own interface is [extension.md](extension.md); rendering rules for messages and read views are [reading.md](reading.md); live sessions and the acts on them are [session-control.md](session-control.md); status figures are [operations.md](operations.md#status).
 
 ## Principles
 
 - **A full designed interface, built from the designs.** Every view is specified to the fidelity its board draws; the [visual baselines](web-design.md#visual-baselines) are built faithfully, and views without a board are drawn before they are built.
 - **A shell over the same operations.** Every view is a line or a command, and every action is a verb or command reachable from the CLI and MCP; there is no web-only endpoint. Every view shows the CLI line and the MCP call that reproduce it ([footer line](#frame)).
 - **Where the operator works with agents.** Live sessions are read as they happen (`read --follow`), answered (`answer`), sent to (`send`), interrupted (`interrupt`) and resumed (`resume`, `resume --in`) from the web ([Running and Waiting](web-views.md#running-and-waiting-running-waiting), [live-session control](web-reader.md#live-session-control-panel)).
+- **Pages are where work is arranged, and optional.** The model is [pages.md](pages.md); the views are [Pages](web-views.md#pages). Every other view works the same with no page in the archive.
 - **Live, never polling.** Views update from the daemon's committed changes ([live behaviour](#live-behaviour)).
 - **Every visible fact shows its source.** A chip, figure or line opens where it came from ([inspector](#inspector-and-source)).
 - **State that must last lives in the archive.** The browser holds only view state in progress ([what the browser holds](#what-the-browser-holds)).
@@ -22,7 +23,7 @@ Each view is HTML rendered by the daemon with `maud` from the same typed reply t
 
 ```
 ┌ header ──────────────────────────────────────────────────────────────────────────────────┐
-│ Polylogue  Home  Running(2·1 waiting)  Search  Notes  Review  Saved  Cost  Status [query…] │
+│ Polylogue  Home  Running(2·1 waiting)  Search  Notes  Pages  Review  Saved  Cost  Status [query…] │
 ├─ left rail (optional) ─┬─ main ───────────────────────────────┬─ inspector ───────────────┤
 │ outline / facets /     │ view content                          │ facts · lineage ·         │
 │ filters                │                                       │ notes · source …          │
@@ -31,11 +32,11 @@ Each view is HTML rendered by the daemon with `maud` from the same typed reply t
 └──────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Header:** wordmark; navigation Home · Running · Search · Notes · Review · Saved · Cost · Status; the persistent query field with completion on every view. The Running item carries `running · waiting` counts, so "waiting on you" is visible from every page.
+- **Header:** wordmark; navigation Home · Running · Search · Notes · Pages · Review · Saved · Cost · Status (Review links to [Judging passes](web-views.md#judging-passes-judge)); the persistent query field with completion on every view. The Running item carries `running · waiting` counts, so "waiting on you" is visible from every page.
 - **Status strip:** daemon state and uptime; **live lag per source** (time from the newest byte a live source wrote to its commit in the archive, per origin; `—` when the source is idle; a figure state when not measured); the extension's connection (from the host's last contact); index work pending; in primary mode, the Sinex position lag. Each item links to its Status section. The strip is the daemon state indicator: `live`, `catching up · N inputs waiting`, `disconnected · retrying`, `stopped (start: <service command>)`.
 - **Main column** up to 1,200 px; transcript text 75–90 characters per line.
 - **Inspector** (right rail, 280–320 px): the view's own facts by default, switching to the focused target with a "back to session" link.
-- **Left rail** only where it earns its width: session outline, search facets, timeline filters.
+- **Left rail** only where it earns its width: session outline, search facets, a page's contents, timeline filters.
 - **Narrow widths** (under 900 px): rails become disclosures above the main column; tables scroll inside their box; there is no horizontal page scroll. Every view stays usable at 390 px.
 - **Footer line** on every view: the CLI line and the MCP call that reproduce what is shown, each with a copy button; a view with several tables has one pair per table. Both are computed from the request arguments that produced the view, so the CLI line, the MCP call and the HTTP request carry the same selection, steps and argument names:
 
@@ -61,24 +62,36 @@ The tokens, marks of meaning, value states and chips are `web-shell`'s. Polylogu
 - **Motion:** none except the live tick and progress; off under `prefers-reduced-motion`.
 - **Chips:** text first, ordered origin or harness · live state · repository, working directory, branch · lineage state · counts · cost · notes and tags; at most one row in a header.
 
+### Workspaces
+
+A workspace is several targets open at once: sessions, pages, kept results and searches side by side. A saved workspace is a page from the `workspace` template ([pages.md](pages.md#templates-and-shipped-pages)): its slots are the open targets in order, each slot's `w` the width of its column, and the page's parameters record the mode and the focused target, so saving a workspace is saving a page and reopening it is reading that page (`/page/NAME`). An unsaved workspace lives in the URL (`/w/stack?ids=codex:019d0f2a,claude-code:7f3a2c10&focus=claude-code:7f3a2c10`); **Save workspace** writes the page (`polylogue 'codex:019d0f2a OR claude-code:7f3a2c10' save page:morrow/desk --template workspace`).
+- **Tabs** (`/w/tabs`): open targets as tabs; `Ctrl`-click opens in the background; each tab shows its live state and a short title.
+- **Stack** (`/w/stack`): two to five columns, each a compact reader with its own scroll and live chip, and one inspector following the active column. Columns are filled by stack builders: parent chain, siblings and forks, subagents, recent sessions in the same repository, the marked search results, sessions sharing a file. Opening more columns folds the oldest into tabs.
+- **Compare** (`/w/compare`): the open columns read with the `compare` view ([Compare](web-views.md#review-and-compare-review-compare)).
+- **Timeline** (`/w/timeline`): the columns' messages, tool calls, notes and lineage events merged by time or grouped by session; clock gaps and provider-relative times flagged; tool bursts collapsed (`… tool burst · 42 runs · 22m · expand`).
+
 ## Keys
 
 Navigation, selection, the palette, help and the copy menu keys come from the shared key table in `web-shell`. The picker and the web use the same letter for the same act wherever both offer it: the picker's `Ctrl-r` read, `Ctrl-y` copy and `Ctrl-e` query are the web's `r`, `y` and `e` ([terminal.md](terminal.md#keys)). The picker needs the Ctrl forms because its prompt takes letters; the web binds the bare letters. Single-character keys can be switched off (a setting), are ignored in inputs and while text is selected, and move real DOM focus, which live updates never steal.
 
 | Key | Action | Line it runs | Scope |
 |---|---|---|---|
-| `g h` `g r` `g s` `g n` `g v` `g k` `g c` `g t` | go to Home, Running, Search, Notes, Review, Saved, Cost, Status | — | everywhere |
+| `g h` `g r` `g s` `g n` `g p` `g v` `g k` `g c` `g t` | go to Home, Running, Search, Notes, Pages, Review, Saved, Cost, Status | — | everywhere |
+| `+` | add the focused target or the marked rows to a page: a picker of page (or a new one from a template), section and mode | `REF save page:NAME --section S` (`--fixed`, `--live`) | everywhere |
+| `P` | pin the focused target | `REF save page:pinned` | reader, lists |
 | `e` | focus the query field | — | everywhere |
 | `r`, `Enter` | read the focused row | `REF read` | lists |
 | `x` | mark the focused row; the selection bar acts on the marked rows | — | lists, reader |
 | `y` | the copy menu; `y c` copies the view's CLI line, `y m` its MCP call | — | everywhere |
 | `o` | open in the editor at the session's working directory, or a tool line's file at its line | — | reader |
-| `a` / `A` | write a note / a decision on the focused target | `REF note TEXT`, `… --as decision` | reader, search, notes |
+| `a` / `A` | write a note / a decision on the focused target; on a page, in the focused section | `REF note TEXT`, `… --as decision`; `page:NAME note TEXT --section S` | reader, search, notes, page |
 | `t` | tag the focused target | `REF tag NAME` | reader, lists |
 | `s` | star or unstar the focused session or message | `REF tag star`, or the star's `withdraw` | reader, lists |
 | `n` / `N` | next / previous match of the search in the session | — | reader |
 | `m` `w` `p` | inspector tab Outline / Raw / Source | — | reader |
-| `v` then a letter | read view: `t` transcript, `d` dialogue, `o` overview, `c` context, `e` tree, `g` changes, `l` live, `w` raw; `f` opens the flow panel | `REF read --view VIEW` | reader |
+| `v` then a letter | read view: `t` transcript (linear on a page), `d` dialogue, `o` overview, `c` context, `e` tree, `g` changes, `l` live, `w` raw, `x` trace, `n` contents; `f` opens the flow panel | `REF read --view VIEW` | reader, page |
+| `v b` `v a` `v h` | page layout board / table, and the page's history | `page:NAME read`, `--at POSITION` | page |
+| `Alt-↑` `Alt-↓` | move the focused slot before its previous or after its next sibling; on the board, the arrow keys move the focused card | `SLOT save page:NAME --after SLOT` | page |
 | `z` then a letter | show or hide: `t` tools in full, `k` thinking in full, `h` harness messages, `i` inherited, `b` branches, `s` spawns, `a` annotations, `u` turns, `c` the context meter | `REF read --show WORD` | reader |
 | `c` | compare: with one target opens the chooser, with two or more opens Compare | `'QUERY' read --view compare` | lists, reader |
 | `l` | read live on or off | `REF read --follow` | reader |
@@ -98,6 +111,7 @@ Inside a review card, `a`, `r` and `d` mean accept, reject and defer (`REF judge
 | message | Markdown with header (`## 10:56 you`) | plain text; typed-only (when paste spans are known); reference; permalink; **as context** |
 | tool call | the command or target | input JSON; output as stored; reference |
 | annotation | body | `annotation:<root>@<rev>`; the `edit` line |
+| page | `page:NAME` | the contents view as Markdown; the page's brief (**as prompt**); the page as Markdown; the working-copy line |
 | result row | its reference | the row as TSV |
 | selection | Markdown | **as context**: the selection's `brief` in Markdown |
 
@@ -110,7 +124,7 @@ The inspector shows, for the view or the focused target:
 - **Lineage:** the compact tree of linked sessions (the `tree` view).
 - **Notes:** every annotation on the target, newest first, each with author, `via`, judgments and check state; **Write a note**.
 - **Views:** links to the read views, the report and share.
-- **Referenced by:** kept results and annotations that point here (`annotations where links_to:REF`).
+- **Referenced by:** pages that place this target (`pages where shows:REF`), kept results and annotations that point here (`annotations where links_to:REF`).
 - **Tabs Outline · Raw · Source:**
   - *Outline:* the session outline (the `turns` of the session).
   - *Raw:* the stored input records behind the focused messages, as inert text, with each record's outcome (used, skipped with reason, unreadable); the line is `REF read --view raw`.
@@ -119,7 +133,7 @@ The inspector shows, for the view or the focused target:
 
 ## Live behaviour
 
-- **Transport:** one server-sent-event stream per visible tab: the view's own line with `follow`, in the shared framing ([routes](#routes)). A reader or Running streams what its sessions do, as `read --follow` does; a listing streams each row that starts matching, as `read --follow` does on rows that are not sessions. The event ID is the change position; events are sent after commit and carry rendered fragments (`append`, `replace`) or changed references (`ref`), never whole sessions. A reconnect resumes from `Last-Event-ID`; an unknown position or a new index sends `reload`. A selection the daemon cannot follow is refused by name.
+- **Transport:** one server-sent-event stream per visible tab: the view's own line with `follow`, in the shared framing ([routes](#routes)). A reader or Running streams what its sessions do, as `read --follow` does; a page streams changes to its slots and the annotations it shows; a listing streams each row that starts matching, as `read --follow` does on rows that are not sessions. The event ID is the change position; events are sent after commit and carry rendered fragments (`append`, `replace`) or changed references (`ref`), never whole sessions. A reconnect resumes from `Last-Event-ID`; an unknown position or a new index sends `reload`. A selection the daemon cannot follow is refused by name.
 - **Clock-driven changes:** a live state carries `until`, and the view recomputes at `until` without an event.
 - **Never moves the reader:** lists hold reordering while a row has focus and show "N updates · apply"; the reader appends only while reading live and at the end, and otherwise shows "N new messages ↓"; an update never removes text selection or focus.
 - **Hidden tabs** close the stream and refresh on return.
@@ -142,6 +156,8 @@ Every view renders four states as a persistent line in the view, never a modal, 
 | Running, Waiting | "Nothing running" with the last ended session | rows `pending` | a source's live lag above its normal range, named | no hooks installed for a harness: rows `unknown (no hooks)` with `polylogue install HARNESS` |
 | Search | "0 rows" with the rows each condition kept and the nearest line that returns rows | results stream in; the coverage line says `partial` | `up_to_date: false` banner naming what is behind | a refused query: kind, the submitted text, the corrected query |
 | Reader | "No messages" (only harness records) with the raw view link | first-page skeleton | session behind its derived products: values computed on the spot or `pending` | not found: the reference and the nearest match by prefix |
+| Pages | "No pages yet" with the templates and the line that makes one (`polylogue page:NAME note TITLE --as page --template investigation`) | slots `pending` independently | a slot whose target is gone from the index: `unresolved reference` with the reference text; an `sx:` slot standalone: `unresolved: Sinex not configured` | a write refused on a moved base: the current revision shown beside the edit; two current revisions shown as a conflict; an `import` of a working copy lists each refused block |
+| Judging passes | "No passes" with the shipped rubrics and the line that keeps a population | figures `pending` | agreement `not measured` until a sample is judged | a refused value or judgment: the reason and the revision it needs |
 | Review | "Nothing to review" with the judged count | rows `pending` | judgments by other authors shown apart when the operator's are missing | a refused judgment: the reason and the revision it needs |
 | Cost, Analysis | "No priced sessions in this range" | figures `pending` | `≥ X (N unknown)`, sessions behind counted | measure refused: reason and a narrower query |
 | Timeline, Day | "No activity on this day" | rows `pending` | undated records listed apart | — |
@@ -176,7 +192,7 @@ The HTTP API carries the same operations as the CLI and MCP, with the same argum
 - **The calling session** for HTTP callers is an envelope field, not a query argument. HTTP callers follow MCP's rule for request IDs: a POST without one gets an ID derived from its arguments ([agents.md](agents.md#mcp-server)).
 - **Not over HTTP**, as over MCP: `pick` and row numbers (they need a terminal), `--to` (the browser saves what the route returns), `status --verify`, `web`, `install`, `demo`, `daemon`, `mcp` and `dev move-to-sinex`. Each is refused with the CLI line that does it.
 
-The workbench's view routes are presentation over those operations. A **reader route** (`/s/SESSION`, `/d/DOCUMENT`, `/n/NOTE`) passes its selection and read options as the `read` step's argument names in the query string (`/s/codex:019d0f2a?view=dialogue&show=tools:full&around=message:…`); the reader renders the typed read reply, with no message selection, parent walk or cursor handling of its own, and its next and previous links are that reply's `next` calls. Changing the view starts a new read. `/m/MESSAGE` redirects to the reader anchor. A **collection route** (`/`, `/running`, `/waiting`, `/search`, `/notes`, `/review`, `/saved`, `/cost`, …) renders a listing; its `layout` parameter (list, table, chart, calendar) changes the presentation and never the rows. Each view's line is in the table of [Web views](web-views.md#views). Every view uses the common `web-shell` frame, styles and browser script.
+The workbench's view routes are presentation over those operations. A **reader route** (`/s/SESSION`, `/d/DOCUMENT`, `/n/NOTE`, `/page/NAME`) passes its selection and read options as the `read` step's argument names in the query string (`/s/codex:019d0f2a?view=dialogue&show=tools:full&around=message:…`); the reader renders the typed read reply, with no message selection, parent walk or cursor handling of its own, and its next and previous links are that reply's `next` calls. Changing the view starts a new read. `/m/MESSAGE` redirects to the reader anchor. A **collection route** (`/`, `/running`, `/waiting`, `/search`, `/notes`, `/review`, `/judge`, `/pages`, `/saved`, `/cost`, …) renders a listing; a **workspace route** (`/w/MODE`) holds its open targets in the query string until saved as a page ([Workspaces](#workspaces)); its `layout` parameter (list, table, chart, calendar) changes the presentation and never the rows. Each view's line is in the table of [Web views](web-views.md#views). Every view uses the common `web-shell` frame, styles and browser script.
 
 Facet editing in Search and the query field uses the parsed query with spans that `explain: true` returns: editing a facet rewrites the span of its condition and leaves the rest of the query as typed ([terminal.md](terminal.md#explain)).
 

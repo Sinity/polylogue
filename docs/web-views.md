@@ -1,6 +1,6 @@
 # Web views
 
-These views use the [workbench frame](web.md#frame). Session and document reading is described in [Web reader](web-reader.md). Every view is a line or a command, and its footer shows that CLI line and the MCP call that reproduce it ([web.md](web.md#frame)); the HTTP routes behind the views are in [web.md](web.md#routes).
+These views use the [workbench frame](web.md#frame). Session and document reading is described in [Web reader](web-reader.md); the page model the Pages views draw is [pages.md](pages.md). Every view is a line or a command, and its footer shows that CLI line and the MCP call that reproduce it ([web.md](web.md#frame)); the HTTP routes behind the views are in [web.md](web.md#routes).
 
 ## Views
 
@@ -11,9 +11,13 @@ These views use the [workbench frame](web.md#frame). Session and document readin
 | [Search](#search-searchq) | `/search?q=QUERY` | the listing `polylogue 'QUERY'` with `polylogue 'QUERY \| measure facets'` for the rail; `save` |
 | [Session reader](web-reader.md#session-reader-ssession) | `/s/SESSION` | `polylogue SESSION read` with every view and show/hide word; `note`, `tag`, `edit`, `withdraw`, `send`, `resume` (with `--in`), `brief` |
 | [Notes, claims, triage](#notes-claims-and-triage-notes-claims-triage) | `/notes`, `/claims`, `/triage` | `polylogue annotations`, `polylogue 'annotations where kind:claim'`, `polylogue triage` |
-| [Review and compare](#review-and-compare-review-compare) | `/review`, `/compare` | `polylogue review`; `judge`; `polylogue result:01JD7Q4M read --view compare --blind` on a kept result |
+| [Review and compare](#review-and-compare-review-compare) | `/review`, `/compare` | `polylogue review`; `judge`; `polylogue result:01JD7Q4M read --view compare --blind` on a kept result; `read --view compare --align prompt\|lineage\|time\|file` |
+| [Judging passes](#judging-passes-judge) | `/judge` | `\| sample`, `\| measure agreement`, forecasts' calibration, passes ([judging.md](judging.md)) |
+| [Pages](#pages) | `/pages`, `/page/NAME` | `polylogue pages`; `polylogue page:NAME read` with its views and `--at`; `save page:NAME`, `note --section`, `withdraw`, `import` of a working copy |
+| [Project story](#project-story) | `/page/NAME` | a page from the `project-story` template |
+| [Workspaces](web.md#workspaces) | `/w/MODE`, `/page/NAME` | a page from the `workspace` template |
 | [Timeline, days, firehose](#timeline-days-firehose) | `/timeline`, `/day/DATE`, `/firehose` | time conditions and `\| group by day(at)`; `polylogue recent read --follow` |
-| [Cost](#cost-cost) | `/cost` | `\| measure usage`, `quota`, `outlook`, `daily` |
+| [Cost](#cost) | `/cost` | `\| measure usage`, `quota`, `outlook`, `daily`; the shipped page `page:cost` |
 | [Analysis](#analysis-analysisq) | `/analysis?q=QUERY` | any `\| measure` or `\| agg` query |
 | [Pastes, attachments, topics](#pastes-attachments-topics) | `/pastes`, `/attachments`, `/topic?q=QUERY` | `polylogue pastes`, `polylogue attachments`, `polylogue 'QUERY' read` |
 | [Status, Settings](#status-and-settings-status-settings) | `/status`, `/settings` | `polylogue status`; `polylogue set` (listing and writing) |
@@ -21,7 +25,7 @@ These views use the [workbench frame](web.md#frame). Session and document readin
 
 ### Home `/`
 
-The sections of bare `polylogue` ([terminal.md](terminal.md#the-orientation-screen)), as a view, from the same status snapshot:
+The sections of bare `polylogue` ([terminal.md](terminal.md#the-orientation-screen)), as a view, from the same status snapshot. Both render the shipped page `page:home` ([pages.md](pages.md#templates-and-shipped-pages)), so revising that page changes the terminal's orientation screen and this view together:
 1. **The status line:** health, session count, how up to date, the quota windows (`claude 5h 61 % (resets 16:40) · codex week 34 %`). The query field above it is focused on load.
 2. **Waiting on you** (the rows of `waiting`), when not empty: one row per waiting session with what it waits for and the [live-session controls](web-reader.md#live-session-control-panel); a permission request shows **Allow** and **Deny** directly.
 3. **Running** (the rows of `running`): state word and since, what it is doing, repository.
@@ -64,7 +68,7 @@ The first answer wins, from any surface; a late one shows what won. Lines: `poly
 - **Coverage line:** `exact`, or `ranked (semantic): candidates exact, order by similarity` ([search.md](search.md#semantic-ranking)).
 - **Wide layout** (1,600 px and wider): results, a reading pane with the focused result in the reader's compact form, and the inspector. `Enter` opens the full reader.
 
-The query field is the selection of a line and completes from the completion catalog ([completion.md](completion.md#positions)), with the count as preview. A single plain word searches for that word, as on the command line ([interfaces.md](interfaces.md#the-first-word)). `x` marks hits or sessions; the selection bar offers **Note** (`note`), **Tag** (`tag`), **Save rows** (`save` with no name, giving `result:<id>`), **Compare** (`read --view compare`, two or more sessions) and **Copy as context** (the marked rows' `brief`). **Save query** names the question and keeps today's rows (`save NAME`); **Save and watch** adds notices of rows that start matching (`save NAME --watch`) ([saved-queries.md](saved-queries.md#save)). **Note all matches** and **Tag all matches** show the count and the first rows, then send the step with `all`. Results are a snapshot with a read position; a banner "N new matches since this view was read · refresh" appears when the stream reports rows that start matching.
+The query field is the selection of a line and completes from the completion catalog ([completion.md](completion.md#positions)), with the count as preview. A single plain word searches for that word, as on the command line ([interfaces.md](interfaces.md#the-first-word)). `x` marks hits or sessions; the selection bar offers **Note** (`note`), **Tag** (`tag`), **Save rows** (`save` with no name, giving `result:<id>`), **Compare** (`read --view compare`, two or more sessions), **Add to page** (`save page:NAME`, one slot per row, with the section and mode chosen in the `+` picker), **Pin** (`save page:pinned`) and **Copy as context** (the marked rows' `brief`). **Save query** names the question and keeps today's rows (`save NAME`); **Save and watch** adds notices of rows that start matching (`save NAME --watch`) ([saved-queries.md](saved-queries.md#save)). **Note all matches** and **Tag all matches** show the count and the first rows, then send the step with `all`. Results are a snapshot with a read position; a banner "N new matches since this view was read · refresh" appears when the stream reports rows that start matching.
 
 Lines: `polylogue 'rate limit'`, `polylogue 'rate limit | measure facets'`, `polylogue 'rate limit' save rate-limits --watch`, `polylogue 'repo:sinex rate limit' tag rate-limits --all`.
 
@@ -81,11 +85,73 @@ Lines: `polylogue annotations`, `polylogue 'annotations where kind:claim'`, `pol
 
 **`/review`** shows the rows of the shipped saved query `review`: annotations by agents and programs that the operator has not judged, newest first ([judging.md](judging.md#verdicts-on-annotations)). Each row is a card: kind, text, author and `via`, target with its last messages, relations, check state. **Accept**, **Reject** and **Defer** (`a`, `r`, `d`), each with an optional reason, judge the exact revision shown. A selector chooses whose judgments count (`judged_by:`, by default the operator). Marked cards are judged in one step, as `polylogue review pick judge accept` does on the command line. A judgment is never a gate, and the queue may stay long.
 
-**`/compare`** reads two or more rows with the `compare` view ([reading.md](reading.md#compare-and-blind)): headers per side (title, origin, relation such as `fork @ msg 42`, counts); paired rows aligned by prompt, with a gutter naming the row type (`same`, `shared paste`, `divergent`, `shared file`, `decision`) and tool outcomes per side; a **metadata diff** above (model, harness, duration, tool calls, errors, cost, outcome); a footer with the alignment rule and counts. Shared message identity and the recorded branch point are exact; any other pairing is labelled as the alignment rule, never "same message". A missing side stays visible (`missing on right`). For more than two rows, a metadata table with one column per row, compared on matched tasks with denominators. **Prefer** on a dimension records a comparison (`judge REF --on DIMENSION`).
+**`/compare`** reads two or more rows with the `compare` view ([reading.md](reading.md#compare-and-blind)): headers per side (title, origin, relation such as `fork @ msg 42`, counts); paired rows aligned by the chosen rule, with a gutter naming the row type (`same`, `shared paste`, `divergent`, `shared file`, `decision`) and tool outcomes per side; a **metadata diff** above (model, harness, duration, tool calls, errors, cost, outcome); a footer with the alignment rule and counts. The alignment switcher **by prompt · by lineage · by time · by shared file** is `--align prompt|lineage|time|file` ([reading.md](reading.md#compare-and-blind)): by prompt (the default) pairs matching prompts; by lineage pairs a fork and its parent from the branch point; by time interleaves by wall-clock time; by shared file puts edits to the same file side by side. Shared message identity and the recorded branch point are exact; any other pairing is labelled as the alignment rule, never "same message". A missing side stays visible (`missing on right`). For more than two rows, a metadata table with one column per row, compared on matched tasks with denominators. **Prefer** on a dimension records a comparison (`judge REF --on DIMENSION`); **Tie**, **Incomparable**, **Abstain** and **Insufficient evidence** record the other verdicts ([judging.md](judging.md)). **Add both to page** places the sides on a page (`save page:NAME`), and **Fix paired messages on a page** places the paired messages with `--fixed`.
 
 **Compare blind** first saves the rows (`save` with no name, giving a kept result), then reads the kept result with `--view compare --blind`: the sides are labelled `A`, `B` with identifying fields removed and tool names shown by family, and the view shows the seed. **Prefer A** and **Prefer B** on a dimension send `judge A --on DIMENSION --seed N` on the kept result; the daemon maps the label back. Once the comparison is recorded, **Reveal** reads the same kept result without `--blind`. Blind reading of anything but a kept result is not offered.
 
-Lines: `polylogue review`, `polylogue annotation:01JB7Q2M@2 judge accept`, `polylogue 'session:codex:019d0f2a OR session:claude-code:7f3a2c10' save`, `polylogue result:01JD7Q4M read --view compare --blind`, `polylogue result:01JD7Q4M judge A --on correctness --seed 7`.
+Lines: `polylogue review`, `polylogue annotation:01JB7Q2M@2 judge accept`, `polylogue 'session:codex:019d0f2a OR session:claude-code:7f3a2c10' read --view compare --align file`, `polylogue 'session:codex:019d0f2a OR session:claude-code:7f3a2c10' save`, `polylogue result:01JD7Q4M read --view compare --blind`, `polylogue result:01JD7Q4M judge A --on correctness --seed 7`.
+
+### Judging passes `/judge`
+
+A pass is a rubric applied by an agent over a kept population; this view is where the operator checks one ([judging.md](judging.md#rubrics-and-passes)). The rows behind it are annotations, so every panel is a line.
+
+- **Passes:** each pass with its rubric and exact revision, author, population (`result:<id>`), coverage (rows with a value or an abstention against the kept rows), abstentions with their reasons, and refused values; **Withdraw the pass** withdraws its whole set in one step.
+- **Sample to judge:** **Draw a sample** keeps a seeded, reproducible sample of the pass's values (`polylogue 'annotations where pass:outcomes-r2 | sample 20 seed 7' save`), and the view prints the seed so the same sample can be drawn again. The sample is then judged one card at a time: the card shows the value, its target with its last messages, and the rubric's field and allowed values, with the annotator's identity hidden until the verdict; **Accept**, **Reject** and **Defer** (`a`, `r`, `d`) judge the exact revision shown, as on [Review](#review-and-compare-review-compare). Pairs of rows from a sample go to [Compare blind](#review-and-compare-review-compare).
+- **Agreement:** the pass against the operator's judgments (`| measure agreement`), with its denominator and the excluded, incompatible and conflicting counts; a selector chooses whose judgments it is measured against (`judged_by:`). A pass with no judged sample shows `not measured`, never a figure.
+- **Rankings:** over comparisons on one dimension, `| measure ranking` gives win rates and a fitted order, each rank with its number of comparisons; the uncertain pairs are listed as **Compare these** buttons, each the ready `judge` line.
+- **Forecasts' calibration:** forecasts grouped by stated probability against how often they came true, counting only forecasts written before their event resolved, with the count beside every bucket ([judging.md](judging.md#forecasts)).
+- **Run the rubric again:** after the rubric is revised, the same kept population is offered for a new pass, with the line that starts an agent on it; the new pass's values derive from the new revision, and agreement is shown per revision side by side.
+
+Lines: `polylogue 'annotations where pass:outcomes-r2 | sample 20 seed 7' save`, `polylogue 'annotations where pass:outcomes-r2 | measure agreement'`, `polylogue 'annotations where kind:comparison on:correctness | measure ranking'`, `polylogue annotation:01JB7Q2M judge accept`.
+
+### Pages
+
+The routes are `/pages` (the page list) and `/page/NAME` (one page). The model is [pages.md](pages.md); this section gives its web form. Every action on a page is a line: the view posts it and shows the committed records and the undo line from the reply, and the footer shows the CLI line and the MCP call of what is on screen:
+
+```
+polylogue page:flaky-ci read --view contents
+polylogue_read {"arguments": {"selection": "page:flaky-ci", "steps": [{"verb": "read", "view": "contents"}]}}
+```
+
+**`/pages`** is the listing of the unit `pages` (`polylogue pages`): title with `page:NAME`, template, subject, slots, members, open items, last change (`finding from codex:019d0f2a · 14:02`) and whether it is watched. Filters are conditions of the listing (`pages where shows:REF` finds the pages that cite a row). Shipped pages (`home`, `pinned`, `cost`) and templates (names under `template/`) are listed apart, each marked built-in until revised. **New page** asks for a title, a name and a template and writes the page record (`polylogue page:flaky-ci note 'Why is CI flaky on Fridays?' --as page --template investigation`), with **Parameters** for a parametric template (`--param repo=morrow`) and **Subject** (`--about REF`).
+
+**`/page/NAME`** is the page's `read`; its query string carries the `read` step's argument names (`/page/flaky-ci?view=contents`, `/page/flaky-ci?at=48390`, `/page/flaky-ci?view=changes&from=seen`).
+- **Header:** template, `page:NAME`, created by and when, the subject above the sections (a question, a decision, a repository, a session or a file, linked); the switcher **linear · board · table · contents · history**; **Checkpoint**, **Watch**, **Brief**, **Working copy** and the copy menu. The page's own `layout` is the default; the switcher changes the presentation only, and **Make this the page's layout** writes it (`note TITLE --as page --layout board`).
+- **Linear:** headings in tree order, each with **+** to add to that section; an empty section renders as one line `empty — add`. Slots render from the archive at read time, each with its mode (`current`, or `fixed at rev 3`) and target state:
+  - a message, message range, session, block, span, annotation or alternate, in the reader's compact form;
+  - a kept result or checkpoint: its rows marked `stored rows, not re-run`, with **Run again** as a separate act beside them;
+  - a live query: `live · N rows`, rows that update while the page is open;
+  - a figure: a measure query or saved figure as a chart and its table, as in [Analysis](#analysis-analysisq);
+  - a file at a commit: the file at that revision in a code view, **History** (the commits that touched it, from the repository when it is on this machine, else from captured git data, otherwise disabled with the reason) and **Current**;
+  - an `sx:` reference: resolved through Sinex in primary mode with a link to Sinex's reader; standalone it shows `unresolved: Sinex not configured` with the reference text;
+  - a `url:`: the URL with its written title, never fetched;
+  - another page: embedded and collapsed; a page not yet created shows as a red link, `page:not-yet · waiting`, and attaches when the page appears.
+- **Board:** the same slots as cards placed by their `x`, `y`, `w` and `h`; dragging a card, or moving it with the arrow keys, writes one revision of that slot. Only this layout reads those values.
+- **Table:** one row per slot with kind, target, mode, target state, author and last change.
+- **Contents:** exactly `read --view contents` ([pages.md](pages.md#reading)), each line a link.
+- **History:** a scrubber over the page's change positions (each position where a slot or a shown annotation changed, with author and time); moving it renders the page as it stood (`read --at POSITION`), and an approximate time across machines is labelled approximate. Choosing two positions shows the page diff between them (`read --view changes --from POSITION --until POSITION`); **Since I last looked** is `--from seen` ([reading.md](reading.md#ranges)). Reading a page here moves the reader's seen mark only when the web reports that the items were on screen.
+- **Composer:** below each section and at the end of the page, a text field with a kind select (note, finding, question, decision, …) and the target section; sending writes the note and its slot in one request (`polylogue page:flaky-ci note 'weekday arithmetic used >= instead of >' --as finding --section Findings`), and the undo line withdraws both. **Add section** writes a heading (`note 'Risks' --as heading`).
+- **Decision box** and **open items**, computed at read ([pages.md](pages.md#open-items-and-the-decision-box)): `no decision yet` with **Record decision**, which writes a `decision` about the subject placed in the Decision section (`polylogue annotation:01JA9X2B note 'strict weekday mode' --as decision --page flaky-ci --section Decision`). Open items each show "unresolved since" and link to their item; the shipped saved query `open` lists them across pages.
+- **Members** (inspector): each alias with its resolved session, live state, role and last activity on the page (`@reviewer → codex:019d0f2a · working · reviewer · last on this page 09:50`); after a resume the alias shows the successor it followed. **Add member** writes `note reviewer --as member --page flaky-ci --role reviewer` on the chosen session ([pages.md](pages.md#members)).
+- **Send composer:** a member or session, the text, and the section where the reply belongs (`polylogue @reviewer send 'fold the findings into the overview' --page flaky-ci --section Overview`); delivery is [session-control.md](session-control.md#send)'s, and the reply is placed in that section ([pages.md](pages.md#reply-placement)). The sent messages list each delivery with its state and its reply.
+- **Staleness and circle markers:** dim marks in place, `written before 2 findings on this page` and `returned to the position of revision 2` ([pages.md](pages.md#staleness-and-circle-markers)).
+- **Sidenotes and previews:** on wide screens notes about a slot sit in the margin beside it; hovering any reference shows a preview from the shared reference reader, and a hover never runs a model or changes anything.
+
+**Moving and removing.** Dragging a slot in the linear or table layout, or `Alt-↑`/`Alt-↓`, writes one slot move (`polylogue annotation:01JC7Q2M save page:flaky-ci --section Findings --after annotation:01JD4K8P`). **Remove** withdraws the slot (`withdraw`), and what it showed stays.
+
+**Add from anywhere.** `+` on any target or selection, in any view, opens a picker of page (or a new page from a template), section and mode (current or fixed) and writes `save page:NAME --section S`, with `--fixed` for fixed and `--live` to place a query's question as a live slot instead of its rows.
+
+**Checkpoints, watches and the working copy.** **Checkpoint** writes `polylogue page:flaky-ci save` and links the `result:<id>`; **Watch** writes `polylogue page:flaky-ci save --watch`. **Working copy** offers `read --to flaky-ci.md` as a download, and **Import** takes the edited file back as `import` ([pages.md](pages.md#the-working-copy)): blocks that were refused (a moved base, an edited quote) are listed with their reasons, and the rest commit.
+
+**Live.** A page view streams its slots and shown annotations; live query, figure and note slots update in place, and fixed slots never change. Agents' markers aimed at the page appear under their section as they are written, authored by the message's author. Updates never move the reader: a change above the viewport shows "N changes · show". Two current revisions of one slot from two machines show as a conflict with both.
+
+Lines: `polylogue pages`, `polylogue page:flaky-ci read --view changes --from seen`, `polylogue page:flaky-ci read --at 2026-11-10`, `polylogue 'messages where "flaky" repo:morrow since:7d' save page:flaky-ci --section Evidence --fixed`, `polylogue annotation:01JC7Q2M withdraw`, `polylogue import flaky-ci.md`.
+
+### Project story
+
+A page from the `project-story` template, bound to a repository (`polylogue page:morrow/story note 'Morrow story' --as page --template project-story --param repo=morrow`) and read at `/page/morrow/story`. Its slots are live queries over `$repo` and `$since`, so it shows stored facts and checked notes only, with no generated prose: the repository's identity (its root commit); **Sessions per logical week** (week, Claude Code, Codex, web chats, models, cost), with delegated work beside it and never mixed in; **What happened** per session (date, link, title, cost, a finding with its check state, decisions, commits); **Outcomes** from sampled judging passes with the sampling stated, an unsampled pass labelled unsampled. Commits and pull requests come from captured git data, or from Sinex in primary mode. The `weekly-review`, `day-story` and `feature-story` templates render the same way over a week, a day or a feature.
+
+Lines: `polylogue page:morrow/story read`, `polylogue page:morrow/story save`.
 
 ### Timeline, days, firehose
 
@@ -96,7 +162,9 @@ Lines: `polylogue review`, `polylogue annotation:01JB7Q2M@2 judge accept`, `poly
 
 Lines: `polylogue 'messages since:365d | group by day(at) | count'`, `polylogue 'sessions since:2026-10-08 until:2026-10-09'`, `polylogue recent read --follow`.
 
-### Cost `/cost`
+### Cost
+
+`/cost`, the shipped page `page:cost` ([pages.md](pages.md#templates-and-shipped-pages)) rendered in the workbench; revising that page changes this view.
 
 - Title `Cost · since Oct 01` and its line; group by **day · model · origin · repository**.
 - Cards: **Known cost** with its money kind and the exact value in a tooltip; **Unknown** (`4 sessions — item-only Codex rollouts and subscription chats`); **Price table** in use; **Most expensive**.

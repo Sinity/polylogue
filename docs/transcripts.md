@@ -143,9 +143,9 @@ The context view reconstructs what the model had at the selected message from th
 - **Errors:** beneath the line, the first output line that names the failure.
 - **Subagent calls** end with `→ <child id> (N msgs)`.
 
-**`--show tools:full`:**
+**`--show tools:full`** and **`--show tools:N`:**
 
-- The input whole. The output as its first 100 and last 100 lines with `… N lines skipped (polylogue block:<id> read)` between; a single line over 4,000 characters is shortened the same way by characters. Reading the block reference gives the whole output, paged.
+- The input whole. With `tools:full` the output whole; with `tools:N` its first N and last N lines with `… K lines skipped (polylogue block:<id> read)` between, and a single line over 4,000 characters shortened the same way by characters. Reading the block reference gives the whole output, paged.
 - Structured result data (Claude `toolUseResult`, Codex structured output) as fields when the origin declares a shape, otherwise as a JSON code block.
 - **File edits** show a diff: an explicit patch as given; otherwise a unified diff built from the old and new strings, labelled `diff built from old/new strings`; a write shows its content with head and tail lines; a failed edit says "failed, may have changed the file".
 - **Delegation card** for a subagent call: the child's ID and agent type, message and tool-call counts, own and tree cost, the call's outcome, the instruction given, the child's final message (the call's result, else the child's last model message), the parent's next message, earlier attempts (`retry_of`), and `result_use` when recorded, otherwise `unknown`.

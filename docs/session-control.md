@@ -1,6 +1,6 @@
 # Session control
 
-How the operator and agents reach live sessions: `send`, `answer`, `interrupt`, `resume` (with `--in` for another harness), `read --follow`, `start`, roles, hosted sessions, the mailbox, notices to sessions, and delegation records. Live states, peers and the control channel of each harness are [agents.md](live-sessions.md#live-state); the line grammar is [interfaces.md](interfaces.md); the sessions waiting on you and the running ones are the shipped saved queries `waiting` and `running` ([saved-queries.md](saved-queries.md#shipped-saved-queries)).
+How the operator and agents reach live sessions: `send` (to sessions, roles, member aliases and web chats, and through bracketed sends in messages), `answer`, `interrupt`, `resume` (with `--fork`, `--anyway`, and `--in` for another harness), `read --follow`, `start`, roles, hosted sessions, the mailbox, notices to sessions, and delegation records. Live states, peers and the control channel of each harness are [agents.md](live-sessions.md#live-state); the line grammar is [interfaces.md](interfaces.md); the sessions waiting on you and the running ones are the shipped saved queries `waiting` and `running` ([saved-queries.md](saved-queries.md#shipped-saved-queries)).
 
 Every act here is a step of a line or an operation of the `polylogue_act` tool ([agents.md](agents.md#mcp-server)), the same from the CLI, MCP and the web. Each act is recorded as a [delivery](agent-context.md#deliveries) with its computed author ([authorship.md](authorship.md)); an act on several rows of a query needs `--all` ([interfaces.md](interfaces.md#chains)); `--dry-run` shows each recipient and channel and reaches nothing. Polylogue records what happened and does not coordinate: it never locks, assigns or schedules work.
 
@@ -11,6 +11,7 @@ Every act here is a step of a line or an operation of the `polylogue_act` tool (
 ```console
 $ polylogue @2 send 'rebase on master first'
 $ polylogue role:reviewer send 'review the diff on branch docs/command-surface'
+$ polylogue @reviewer send 'look at the findings' --page flaky-ci --section Findings
 $ polylogue 'sessions where running:true repo:sinex' send 'stop before touching the writer' --all
 ```
 
@@ -20,6 +21,7 @@ $ polylogue 'sessions where running:true repo:sinex' send 'stop before touching 
 | a running session with hooks | at its next tool result or prompt, through its [mailbox](#the-mailbox) |
 | one ended session, named alone | resumed once, headlessly, with the text (this starts a harness process) |
 | ended sessions among several | skipped, each listed with the line that sends to it alone |
+| `@alias` | the session the [member](pages.md#members) names, resolved when the message is sent; an alias follows its session's successor, so a resumed session gets it |
 | `role:NAME` | the role's running instance, or a new one started with the role's harness and instructions ([Roles](#roles)) |
 | a web-chat session, or a pasted conversation URL not yet archived | the browser extension writes the turn and holds it for the operator's approval ([Answer](#answer)); with the setting `browser.actions` off it is refused with the `set` line |
 
@@ -29,10 +31,17 @@ $ polylogue 'sessions where running:true repo:sinex' send 'stop before touching 
   - running (`working`, `waiting`, `idle`, `unknown`): over the hosted connection, or at its next context-accepting hook event through the mailbox, never interrupting a running tool call; if the session stops running first, `not_sent:session_ended`;
   - `ended` or `stale`, named alone: resumed once, headlessly, through the harness's resume command in the session's [resume directory](#resume), with the text as its prompt; without one the delivery is `not_sent:directory_unknown` or `not_sent:directory_missing(DIR)`. No confirmation is asked, whoever sent it and through whichever channel. The delivery is `delivered` when the run starts and `not_sent:failed(<first error line>)` if it exits unsuccessfully;
   - a session not in the archive gives `not_sent:session_missing`; a harness with no headless resume gives `not_sent:unsupported`.
+- **Where the reply goes.** `--page P --section S` records on the delivery the page and heading where a reply belongs; an annotation replying to the delivery that names no page of its own is placed there ([pages.md](pages.md#reply-placement)).
 - `--about REF` says what the message is about; `--attach FILE` (repeatable) attaches files, over MCP as paths on the daemon's host under `import`'s rule.
 - The sender is never its own recipient. Each recipient's channel and outcome is in the reply. A sent message cannot be taken back, and the reply says so.
 - **Retries never send twice.** Two identical sends to one session without a request ID are one send ([agents.md](agents.md#mcp-server)); sending the same text again on purpose is a new line, which the CLI gives a fresh request ID.
 - **Concurrency:** one resumed run per session at a time; further messages to it queue as `prepared` deliveries and run in order, unless the resumed session's own hook claims them first. There is no rate limit.
+- **Bracketed sends.** A bracketed address in a message the operator or an agent writes sends the text after it, as `send` does ([markup.md](markup.md#sends) has the syntax):
+  - `@[codex:019d0f2a] rebase first` sends to that session, with the delivery rules above (one ended session named alone is resumed);
+  - `@[@reviewer] look at the findings` sends to the member alias, resolved as [pages.md](pages.md#members) says;
+  - `@[sessions where running:true repo:sinex] stop before touching the writer` reaches the running sessions the query selects when the message is sent, as `send --all` does; ended ones are skipped, and sessions that start matching later receive nothing.
+
+  The send's ID derives from the marker (the message and the marker's position), so re-parsing, quoting, translating or importing the message again never sends twice. Each recipient gets one delivery like any send, from the message's author. A bare `@reviewer` without brackets is plain text.
 - **Background triggers never start or resume agents:** a signal or watch firing has no recipient named by an author, so it only notifies ([Notices to sessions](#notices-to-sessions)).
 
 ## Answer
@@ -48,7 +57,7 @@ $ polylogue @3 answer 'use the staging bucket'
 - **The first answer wins**, from the terminal, the web, the harness itself or the extension's popup; a later one is refused `conflict` naming what won, and its delivery records `not_sent:already_answered`.
 - **Hosted sessions.** A hosted session's requests come to Polylogue's connection, and `answer` replies to the oldest one.
 - **Observed sessions.** Polylogue does not hold a harness's own permission prompt, so an answer reaches an observed Claude Code session only ahead of time: `answer allow --standing` records the decision for the pending request's tool and input, and the next `PermissionRequest` hook for the same tool and input in that session returns it at once (recorded `delivered`), once; with none, the hook returns nothing and the harness's own prompt stands. A plain `answer` to an observed session is refused with "answer it in the terminal".
-- **Held web-chat turns.** A turn Polylogue writes into an existing web conversation is what that web-chat session waits for: `polylogue @1 answer allow` releases it and `deny` cancels it; the extension's popup does the same ([extension.md](extension.md)). Over MCP, `answer` on a held web-chat turn is refused with "approve it in the browser or terminal": the hold exists so that the operator sees what is posted under the operator's account.
+- **Held web-chat turns.** A turn Polylogue writes into an existing web conversation is always held, whoever sent it, and so is a new web conversation submitted by anyone but the operator ([Start](#start)); the held turn is what that web-chat session waits for. `polylogue @1 answer allow` releases it and `deny` cancels it; the extension's popup does the same ([extension.md](extension.md#chat-actions)). Over MCP, `answer` on a held web-chat turn is refused with "approve it in the browser or terminal": the hold exists so that the operator sees what is posted under the operator's account (default; open operator question).
 - Every answer is a delivery with sender `act` and event `control`.
 
 ## Interrupt
@@ -63,12 +72,14 @@ $ polylogue @3 answer 'use the staging bucket'
 $ polylogue resume
 $ polylogue codex:019d0f2a resume
 $ polylogue codex:019d0f2a resume --dry-run
+$ polylogue claude-code:7f3e2a9b resume --fork
 ```
 
 - **On a terminal** it runs that command; **off a terminal** it prints it, since an agent's tool shell has no terminal to run an interactive harness in. `--dry-run` prints it on a terminal too.
 - **Alone**, `polylogue resume` opens the picker over the shipped saved query `unfinished`: sessions in this repository that ended open, each row with why it is open (`unanswered_prompt`, `unfinished_tool_call`, `open_note`, `outcome_partial`, `question`). Successors replace predecessors; forks stay separate; sessions judged `solved` or `abandoned` come last. Off a terminal it is refused with the candidates as ready lines ([interfaces.md](interfaces.md#a-verb-with-no-selection)).
 - **The resume directory** is the directory the session was launched in, or the one its harness relocated it to (a Claude Code `relocated` record), never a directory it moved to while working. A session with no recorded directory, or one that does not exist here, is refused (`directory_unknown`, `directory_missing`); the command never runs in the caller's or the daemon's directory.
-- **A running session is not reopened**: the refusal offers `polylogue SESSION read --follow` and `polylogue SESSION send 'TEXT'`.
+- **A running session** is refused `session_running`, with `polylogue SESSION read --follow`, `polylogue SESSION send 'TEXT'` and, where the harness allows it, the `--anyway` line offered. **`--anyway`** reopens it in a second client where the harness lets a running session be resumed again, as its origin declaration says; where it does not, the refusal stands.
+- **`--fork`** opens the harness's own fork of the session where the harness has one (Claude Code: `claude --resume ID --fork-session`): a new session sharing the source's history up to now, which the archive links to the source as a `fork` ([sessions.md](sessions.md#session-links)). A harness with no fork of its own is refused `unsupported` with the `resume --in` line, which continues the work in a new session instead. `--fork` works on running and ended sessions, and runs or prints like any resume.
 - `resume` takes one row: several rows open the picker on a terminal and are refused `ambiguous` off it.
 
 ### Resume in another harness
@@ -81,7 +92,7 @@ $ polylogue codex:019d0f2a resume --in claude-code --at message:codex:019d0f2a:m
 ```
 
 - The new session's first turn is the source's brief (its takeover, [agent-context.md](agent-context.md#the-brief-of-a-session)) with a line naming the source and the message to continue from (`--at MESSAGE`, default the latest); the turn opens with its delivery reference. It starts in the source's resume directory, or `--cwd DIR`.
-- The first turn is a delivery (sender `act`, event `first_turn`) that refers to the source session and the message; that is how the new session is recorded as briefed from the source. It is a new session, never the harness's own resume or fork of the source.
+- The first turn is a delivery (sender `act`, event `first_turn`) that refers to the source session and the message; that is how the new session is recorded as briefed from the source. It is a new session briefed from the source, unlike `--fork`, which uses the harness's own fork.
 - `--stop-source` interrupts the source through its channel once the new session runs, recorded like any interrupt.
 - It works on running and ended sessions, on and off a terminal, since it starts a hosted session and runs nothing interactive in the caller's shell. `--dry-run` shows the brief and the channel and starts nothing.
 - Over MCP: `{"arguments": {"selection": "self", "steps": [{"verb": "resume", "in": "codex", "stop_source": true}]}}`.
@@ -111,11 +122,12 @@ $ polylogue @2 read --follow --until-idle --hide thinking
 $ polylogue start 'fix the flaky attachment test' --in codex --cwd ~/morrow
 $ polylogue start 'review the open pull request' --role reviewer
 $ polylogue start 'compare these two retry strategies' --in chatgpt --model gpt-5 --project morrow
+$ polylogue start 'summarise this thread' --in claude-ai --submit
 ```
 
 - `--in HARNESS` (`claude-code`, `codex`, `gemini-cli`, `hermes`; default the setting `start.harness`) or `--role NAME` (an instance of a [role](#roles): its harness with its instructions); `--cwd DIR`; `--attach FILE` (repeatable).
 - The first turn is recorded as a delivery (sender `act`, event `first_turn`) to the new session, whose text opens with the delivery reference.
-- **Web chats.** `--in chatgpt|claude-ai|grok` drafts a new web conversation through the browser extension and leaves it as a draft for the operator to submit; `--model`, `--effort` and `--project` choose what the provider's menus offer. Polylogue only drafts a new web conversation, never submits it; a turn into an existing one is `send`, held for approval ([Answer](#answer)). Drafts are rows of the unit `chat_actions`.
+- **Web chats.** `--in chatgpt|claude-ai|grok` drafts a new web conversation through the browser extension; `--model`, `--effort` and `--project` choose what the provider's menus offer. `--submit` sends it when the caller is the operator; from any other author (an agent over MCP or a shell) the draft is held like a turn into an existing conversation until the operator's `answer allow` ([Answer](#answer)). The extension's side is [extension.md](extension.md#chat-actions). A turn into an existing conversation is `send`, always held for approval. Drafts and held turns are rows of the unit `chat_actions`.
 - Older web conversations come in through `import PROVIDER` ([extension.md](extension.md)).
 
 ## Roles
@@ -123,6 +135,7 @@ $ polylogue start 'compare these two retry strategies' --in chatgpt --model gpt-
 A role is a named kind of agent: instructions (a SOUL.md-style text, or a `file:` reference) and the harness that runs it. It is a `role` annotation keyed by its name, with value `{instructions, harness}`, brought in by `import` of annotation lines ([annotations.md](annotations.md#annotation-lines)); `role:NAME` names it, and `edit` on the role's annotation writes a new revision. Roles are optional; a session without one runs the harness's default.
 
 - **Instances.** A session is an instance of a role, or of no role. Starting an instance (`polylogue start 'TEXT' --role reviewer --cwd ~/morrow`, or `start` with `role` over MCP) starts a hosted session of the role's harness with the role's instructions, then the text, as its first turn. That delivery refers to `role:<name>` and to the role's exact revision, so editing the role later does not change what earlier sessions ran under. A role may have several instances running at once.
+- **Members.** A member names one session under an alias, optionally as an instance of a role and on a page; `@alias` is then a selection and a recipient ([pages.md](pages.md#members)).
 - **`role:NAME` as a recipient.** `send` to `role:reviewer` reaches the role's newest instance that Polylogue hosts or that runs. With none, it starts one in the directory the role's latest instance ran in, with the sent text as the first turn; a role that never ran has no directory, and the send is refused (`no_live_instance`) with the line `polylogue start 'TEXT' --role reviewer --cwd DIR`.
 
 ## Hosted sessions

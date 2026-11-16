@@ -151,7 +151,7 @@ Shipped pages and templates are built into the binary and resolved by name, with
 | `project-understanding` | Overview, Components, and live query slots Decisions (decisions scoped to `$repo`), Open questions, Recent work (sessions in `$repo` since `$since`) |
 | `experiment` | Hypothesis, Units, Arms, Assignment, Exposure, Outcomes, Analysis, Decision |
 | `weekly-review`, `project-story`, `day-story`, `feature-story` | live query slots over `$repo` and `$since` (or `$day`, `$feature`): sessions, decisions, findings, costs and failing checks of the period |
-| `workspace` | the web's saved tabs and lanes ([web.md](web.md#workspaces)) |
+| `workspace` | the web's saved tabs and columns ([web.md](web.md#workspaces)) |
 | `bundle` | a context bundle: the slots a recipient should read, with the page's title as its purpose and the manifest the brief prints |
 
 ## Pages elsewhere

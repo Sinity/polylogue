@@ -15,7 +15,7 @@ Tab completes every position of a line, with descriptions and real values from t
 | Typing after `polylogue ` | Candidates, with descriptions |
 |---|---|
 | the first word | under headings: **commands**, each with its one line; **verbs on their usual rows** (`read  pick from recent sessions`, `brief  for this directory`, `resume  pick a session that ended open`); **saved queries** (`waiting  sessions waiting on you · 2`, yours marked `yours`); **units**; **recent sessions** (`7f3a2c10  Back off on 429 · 2h · sinex`) |
-| `'` | units (`tool_calls  every tool call, with outcome`), fields for sessions, references (`here`, `latest`, `self`, `query:`, `result:`) |
+| `'` | units (`tool_calls  every tool call, with outcome`), fields for sessions, references (`here`, `latest`, `self`, `query:`, `result:`, `page:`) |
 | `'repo:` | values with counts (`sinex  4,927 sessions`): origins that have sessions, repository, project, cwd by path component, model, harness, tool, MCP server, tag and `tag:key:`, branch; closed sets; after `query:`, saved names with parameters and their one line; after `result:`, kept result IDs with names |
 | `'repo:sinex ` | fields valid for the unit, `session.` fields, `exists`, `count(`, `seq(`, `query:`, `result:`, `similar:`, `NOT`, `\|`, and the count preview `→ 212 sessions` |
 | after a comparison field | operators; time words (`today`, `7d`, `this week`, month names) |
@@ -24,18 +24,23 @@ Tab completes every position of a line, with descriptions and real values from t
 | `'repo:sinex since:7d' ` | the verbs valid for the selection's unit, grouped **look** (`read`, `pick`, `brief`, with the brief's form as its description: `brief  take this session over` or `brief  recall what is known`), **annotate** (`note`, `tag`, `save`; on annotations also `edit`, `withdraw`, `judge`), **act** (`send`, `answer`, `interrupt`, `resume`); then the listing options |
 | `… note 'x' --as ` | kinds with what each is for (`decision  a choice made, with the alternatives`) |
 | `… tag ` | tags in use with counts (`rate-limits  14`) |
-| `… judge ` | `accept`, `reject`, `defer` on annotations; on several rows, their row numbers or the labels `A`, `B` |
+| `… judge ` | `accept`, `reject`, `defer` on annotations; on several rows, their row numbers or the labels `A`, `B`, and `tie`, `incomparable`, `abstain`, `insufficient-evidence` |
 | `… save ` | your saved names, to save again |
 | `… answer ` | `allow`, `deny`, and for a waiting question its text as the description |
+| `… --section ` | the headings of the page named in the line, in page order |
+| `… --template ` | templates with their sections (`investigation  Goal, Assumptions, …`) |
+| `… resume --` | the resume options, `--fork  use the harness's own fork` and `--anyway  reopen it in a second client` among them |
 | `… resume --in ` | harnesses installed (`codex  continue this work in a new Codex session`) |
 | `… read --` | the read options, `--follow  keep printing what happens, like tail -f` among them |
-| `… read --view ` | views valid for the unit, one line each |
+| `… read --view ` | views valid for the unit, one line each: `contents` on a page, `trace` on a message, span, block, tool call or file line |
 | `… --to ` | `clipboard`, `browser`, `pager`, then file paths |
 | any position, `--` | the line options, `--explain  how this line is read; runs nothing` among them |
-| `@` | rows of the last list on this terminal, with their titles |
+| `@` | rows of the last list on this terminal, with their titles; beside them, member aliases with their sessions and roles (`reviewer  codex:019d0f2a · reviewer`) |
+| `page:` | page names with their titles and open-item counts; after `page:template/`, templates |
 | a reference position | sessions by short ID with title; typed prefixes |
 | `set ` | keys with current values, then the key's allowed values |
 | `start 'x' --in ` | harnesses and web chats with what each does |
+| `start 'x' --` | the start options, `--submit  send the new web chat rather than draft it` among them |
 | `import ` | providers first, then file paths |
 | `install ` | targets: harnesses, `chrome`, shells, `drive` |
 | `help ` | verbs, commands and topics |
@@ -49,7 +54,7 @@ Tab completes every position of a line, with descriptions and real values from t
 ## The catalog file
 
 - **Location:** `$XDG_CACHE_HOME/polylogue/<archive key>/catalog`, so it survives a reboot before the daemon starts.
-- **Contents:** a header (format version, archive key, write position, time written); values with counts per completable field; the verbs valid per unit; tag names with counts; saved query names with parameters and their one line, and the shipped saved queries ([saved-queries.md](saved-queries.md#shipped-saved-queries)); kept results (ID, name, unit, row count); settings keys and values; sessions (full ID, shortest unique prefix, title, origin, repository, last activity, first prompt), sorted by ID with a second order by last activity. The picker's candidates and `help`'s filled lines read the same file.
+- **Contents:** a header (format version, archive key, write position, time written); values with counts per completable field; the verbs valid per unit; tag names with counts; saved query names with parameters and their one line, and the shipped saved queries ([saved-queries.md](saved-queries.md#shipped-saved-queries)); page names with titles, their headings, templates and member aliases ([pages.md](pages.md)); kept results (ID, name, unit, row count); settings keys and values; sessions (full ID, shortest unique prefix, title, origin, repository, last activity, first prompt), sorted by ID with a second order by last activity. The picker's candidates and `help`'s filled lines read the same file.
 - **Format:** a private, versioned SQLite catalog with indexed values and typed metadata, opened read-only with memory mapping. The publisher owns its WAL and shared-memory files and preserves them for offline readers; a daemon-down read changes none of the cache files. Concurrent readers hold a committed SQL snapshot while publication continues. SQLite may coordinate shared-memory read marks inside the live publisher process. The catalog path selects a uniquely named database file through an atomically published pointer. Rebuilding the same source state uses fresh database and journal names so pinned old snapshots cannot mix with the rebuild. Activation retires the cache namespace of the previous pointer. Missing, wrong-archive, obsolete or corrupt catalogs leave grammar-only completion.
 - **Freshness:** the writer records what each session contributes to the catalog in `index.db`, in the same transaction as the rows and from that transaction's change summary: how many of its messages name each model and how many of its calls use each tool, and its first typed prompt. Each changed message takes away what it contributed before and adds what it contributes now, and each changed count records the write counter of its transaction (a value the session no longer has stays at 0, so its removal is seen). The publisher subscribes before its startup snapshot, then on each coalesced post-commit cue copies what changed since its position: session rows whose own fields changed, the counts the writer changed, removed sessions, and the annotation families (tags and saved queries among them), settings, kept results and query-body dependencies their committed change source names. A refresh runs statements in proportion to the rows that changed, never to the length of a session it touches, and recomputes nothing from the archive. A Sinex lifecycle rewrite replaces its affected vocabulary category; a change of scope or of index build rebuilds the snapshot. Each catalog transaction publishes its data and position together. A commit that changes nothing the catalog holds writes nothing, so the file is rewritten only when its content changes and its "values as of" time is that of the last change. Activation uses the Sinex read-scope switch, which revokes the old pointer synchronously. Completion never shows staged or producer-acknowledged data as confirmed vocabulary.
 - **Budgets:** at most 50 ms per keystroke with the daemon up or down, and at most 2 s from a committed batch to visible vocabulary while a writer commits once per second. Measured latency samples and workload records are reported apart from functional test results; a passing test alone is not a timing measurement.

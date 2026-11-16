@@ -1,6 +1,6 @@
 # Saved queries
 
-A question and its reply are stored objects with identities, so they can be cited, reused and compared over time. This page owns those objects: questions, runs, saved queries, kept results, figures, findings, pre-registration and watches, and the verb `save` that writes them. The query language is [query.md](query.md); the reference grammar is [references.md](references.md); signal rules and notices are [operations.md](operations.md#notices); the line grammar and the `--all` rule are [interfaces.md](interfaces.md#chains).
+A question and its reply are stored objects with identities, so they can be cited, reused and compared over time. This page owns those objects: questions, runs, saved queries, kept results, figures, findings, pre-registration and watches, and the verb `save` that writes them, rows on a page and page checkpoints included. The query language is [query.md](query.md); the reference grammar is [references.md](references.md); signal rules and notices are [operations.md](operations.md#notices); the line grammar and the `--all` rule are [interfaces.md](interfaces.md#chains).
 
 ## Query objects
 
@@ -77,11 +77,21 @@ Inside a saved query's definition, `result:NAME` is fixed at save time to the `r
 
 **Shipped names.** A saved query of your own with a shipped name takes precedence; withdrawing yours restores the shipped one.
 
-**Freezing and starring.** Freezing rows is `save` with no name; starring a row is `tag star` ([annotations.md](annotations.md#tag)). So one verb covers both the question and the reply, and there is no separate verb for marking or pinning rows.
+**Freezing and starring.** Freezing rows is `save` with no name; starring a row is `tag star` ([annotations.md](annotations.md#tag)); pinning a row is saving it to the shipped page `pinned` (`polylogue @2 save page:pinned`).
+
+### Saving to a page
+
+`save page:NAME` places the selection's rows on page NAME, one slot per row, creating the page when it does not exist; `--section S` and `--after SLOT` place them, `--fixed` shows exact revisions, `--live` places the question as one live query slot, `--kept` places a newly kept result as one slot, and `--template T` shapes a new page. Saving a row the page already shows in that section moves its slot. The rules are [pages.md](pages.md#writing).
+
+```console
+$ polylogue 'sessions where repo:morrow since:7d' save page:flaky-ci --live --section 'Recent work'
+```
+
+`save` on a page itself, `polylogue page:flaky-ci save`, writes a **checkpoint**: a kept result of unit `slots` with every reference resolved to an exact revision ([pages.md](pages.md#time-and-checkpoints)). `polylogue page:flaky-ci save --watch` watches the page's changes, named after the page ([Watches](#watches)). So one verb keeps a question, its rows, rows on a page, and a page's checkpoint.
 
 ## Saved names
 
-A name is lowercase letters, digits and `-`, starting with a letter. Saving a name is refused when it equals a command, a verb, a unit, a reserved word (`latest`, `self`, `here`) or a typed reference prefix, or when it is entirely hexadecimal: each would be read by an earlier first-word rule or as an ID ([interfaces.md](interfaces.md#the-first-word)), so a saved name is always reachable as a first word. A shipped name may be reused, and yours wins. Two current revisions under one name are a conflict ([annotations.md](annotations.md#current-revisions)), and `query:NAME` is then refused as `ambiguous`, listing both.
+A name is lowercase letters, digits and `-`, starting with a letter. Saving a name is refused when it equals a command, a verb, a unit, a reserved word (`latest`, `self`, `here`) or a typed reference prefix, or when it is entirely hexadecimal, or contains `:`: each would be read by an earlier first-word rule or as an ID ([interfaces.md](interfaces.md#the-first-word)), so a saved name is always reachable as a first word, and `page:NAME` after `save` is never a name. A shipped name may be reused, and yours wins. Two current revisions under one name are a conflict ([annotations.md](annotations.md#current-revisions)), and `query:NAME` is then refused as `ambiguous`, listing both.
 
 ## Shipped saved queries
 
@@ -98,6 +108,9 @@ Shipped saved queries are data in the code (`crates/model/src/saved_queries.rs`)
 | `questions` | `annotations where kind:question answered:false` |
 | `triage` | `sessions where triage_score > 0 \| sort by triage_score desc` |
 | `saved` | `queries where name:* \| sort by saved_at desc` |
+| `open` | `annotations where kind:(question goal problem) open:true \| group by page` (open items across pages) |
+
+Shipped pages (`home`, `pinned`, `cost`) and page templates sit beside the shipped saved queries, built in and overridden the same way ([pages.md](pages.md#templates-and-shipped-pages)).
 
 `recent` and `unfinished` are the usual rows of `read` and `resume` with no selection ([interfaces.md](interfaces.md#a-verb-with-no-selection)).
 
@@ -163,5 +176,6 @@ A watch is a saved query that tells you when rows start matching: `save NAME --w
 - A reading taken while the index catches up, or an incomplete reply, is held as incomplete, never reported as a change.
 - Occurrences are keyed by logical session, so a re-parse never fires a watch again and one logical session fires once.
 - A watch over annotations compares by kind, target, key and value.
+- **A page watch**, `polylogue page:flaky-ci save --watch`, is named after the page and watches `annotations where referenced_by:page:flaky-ci`: its slots and the annotations they show, so a revision counts as a change ([pages.md](pages.md#time-and-checkpoints)).
 - A watch only notifies; it never starts or resumes a session ([session-control.md](session-control.md)).
 - Withdrawing the saved query withdraws its watch; withdrawing only the `signal` annotation stops the watch and leaves the name.
