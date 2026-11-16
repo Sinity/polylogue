@@ -5,6 +5,13 @@ use polylogue_model::BlobHash;
 use std::fs::Metadata;
 use std::os::unix::fs::MetadataExt;
 
+#[cfg(feature = "fixture")]
+mod reader;
+#[cfg(not(feature = "fixture"))]
+pub use hashed_blobs::BlobReader;
+#[cfg(feature = "fixture")]
+pub use reader::BlobReader;
+
 mod chain;
 pub use chain::{CHAIN_CACHE_KIB, ChainReader, ChainSource, StoredChain};
 
@@ -14,7 +21,7 @@ pub(crate) use segments::{insert_extent, load_extent, open_writer};
 
 /// The read operations used by stored chains.
 pub trait PlainBlobs {
-    fn open_plain(&self, hash: &hashed_blobs::Hash, size: u64) -> Result<hashed_blobs::BlobReader>;
+    fn open_plain(&self, hash: &hashed_blobs::Hash, size: u64) -> Result<BlobReader>;
     fn verify_plain(
         &self,
         hash: &hashed_blobs::Hash,
@@ -23,7 +30,7 @@ pub trait PlainBlobs {
     ) -> Result<hashed_blobs::VerificationStats>;
 }
 impl PlainBlobs for Blobs {
-    fn open_plain(&self, hash: &hashed_blobs::Hash, size: u64) -> Result<hashed_blobs::BlobReader> {
+    fn open_plain(&self, hash: &hashed_blobs::Hash, size: u64) -> Result<BlobReader> {
         self.read_plain(hash, Some(size), || Ok(()))
     }
     fn verify_plain(
