@@ -59,7 +59,7 @@ It opens only when standard input and output are terminals and no machine format
 
 ### Keys
 
-The picker and the web use the same letter for the same act wherever both offer it; the shared key table is the common [`web-shell`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/web-shell/README.md)'s, and Polylogue's web bindings are in [web.md](web.md#keys). The picker uses Ctrl forms for letters that would otherwise type into its prompt.
+The picker and the web use the same letter for the same act wherever both offer it. Movement and copying take their letters from the common [`web-shell`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/web-shell/README.md)'s key table; the picker's own table adds its reading, printing, mode and preview keys and drives both dispatch and the footer. Polylogue's web bindings are in [web.md](web.md#keys). The picker uses Ctrl forms for letters that would otherwise type into its prompt.
 
 | Act | Key |
 |---|---|
