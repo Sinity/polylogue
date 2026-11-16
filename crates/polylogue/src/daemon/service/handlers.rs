@@ -30,6 +30,14 @@ fn run_query(
     call: &Call<'_>,
     input: QueryInput<'_>,
 ) -> Result<Answer<protocol::query::Answer>, Failure> {
+    query_reply(call, input, true)
+}
+
+fn query_reply(
+    call: &Call<'_>,
+    input: QueryInput<'_>,
+    finish_reads: bool,
+) -> Result<Answer<protocol::query::Answer>, Failure> {
     let reader = call.reader()?;
     let context = call.context()?;
     let d = call.daemon;
@@ -52,7 +60,9 @@ fn run_query(
                 fields: input.fields,
             };
             match super::super::query::prepare(&reader, ask).and_then(|prepared| {
-                super::super::handler::finish_read_phase("optional query count")?;
+                if finish_reads {
+                    super::super::handler::finish_read_phase("optional query count")?;
+                }
                 prepared.complete()
             }) {
                 Ok(answer) => super::query_outcome(answer, &freshness),
@@ -104,6 +114,24 @@ impl Handler for Query {
             },
         )
     }
+}
+
+/// A listing that keeps the enclosing wait's read phase open.
+pub(super) fn waiting_query(
+    arguments: &protocol::query::Arguments,
+    call: &Call<'_>,
+) -> Result<Answer<protocol::query::Answer>, Failure> {
+    query_reply(
+        call,
+        QueryInput {
+            text: &arguments.query,
+            page_size: arguments.limit,
+            why: arguments.why,
+            session: arguments.session.clone(),
+            fields: &arguments.fields,
+        },
+        false,
+    )
 }
 
 /// The query; without one, the `sessions` unit with its defaults.

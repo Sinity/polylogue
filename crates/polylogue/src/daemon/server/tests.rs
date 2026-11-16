@@ -953,6 +953,33 @@ fn a_follow_whose_client_hangs_up_gives_up_its_place_at_once() {
 }
 
 #[test]
+fn peer_running_internal_hook_is_the_hook_channel() {
+    use command_surface::Via;
+    for arguments in [
+        vec!["polylogue", "internal", "hook", "SessionStart"],
+        vec![
+            "polylogue",
+            "--archive",
+            "/synthetic",
+            "internal",
+            "hook",
+            "Stop",
+        ],
+        vec!["polylogue", "--deadline=100", "internal", "hook", "Stop"],
+    ] {
+        assert_eq!(via_of_command_line(&arguments), Via::Hook);
+    }
+    assert_eq!(
+        via_of_command_line(&["polylogue", "internal", "browser-host"]),
+        Via::Extension
+    );
+    assert_eq!(
+        via_of_command_line(&["polylogue", "sessions", "internal", "hook"]),
+        Via::Cli
+    );
+}
+
+#[test]
 fn a_query_word_named_mcp_does_not_change_the_observed_channel() {
     use command_surface::Via;
     assert_eq!(via_of_command_line(&["polylogue", "find", "mcp"]), Via::Cli);

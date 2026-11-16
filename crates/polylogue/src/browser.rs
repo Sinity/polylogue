@@ -1,6 +1,6 @@
 //! The browser extension's side of Polylogue: the capture spool and the
 //! routes the extension calls through its native messaging host,
-//! `polylogue browser-host`. Chrome starts the host only for the extension
+//! `polylogue internal browser-host`. Chrome starts the host only for the extension
 //! IDs its manifest names, so no token or pairing is needed. The host
 //! writes captures into the spool, which the daemon ingests like any
 //! location, and asks the daemon everything else over its Unix socket.

@@ -167,7 +167,7 @@ fn via_of_command_line(words: &[&str]) -> command_surface::Via {
     let mut words = words.iter().skip(1);
     while let Some(word) = words.next() {
         match *word {
-            "--json" => continue,
+            "--json" | "internal" => continue,
             word if VALUED.contains(&word) => {
                 words.next();
                 continue;

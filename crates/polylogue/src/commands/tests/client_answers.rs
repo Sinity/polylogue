@@ -19,10 +19,6 @@ const ASKED: &[(&str, &[&str])] = &[
     ("sql", &["SELECT id FROM v1_sessions ORDER BY id"]),
     ("schema infer", &[]),
     ("schema unread", &[]),
-    (
-        "complete",
-        &["sessions where ori | count", "--position", "18"],
-    ),
     ("list", &[]),
     ("read", &["session:claude-code:s1"]),
     ("read", &["session:claude-code:missing"]),
@@ -30,16 +26,6 @@ const ASKED: &[(&str, &[&str])] = &[
     ("read", &["assertion:missing"]),
     ("continue", &["claude-code:s1"]),
     ("brief", &["--cwd", "/synthetic", "--source", "startup"]),
-    (
-        "advisory",
-        &[
-            "Review parser.rs",
-            "--cwd",
-            "/synthetic",
-            "--session",
-            "codex:parity",
-        ],
-    ),
     ("takeover", &["claude-code:s1"]),
     ("takeover", &["claude-code:missing"]),
     ("recall", &["parser", "--cwd", "/synthetic"]),
@@ -81,23 +67,13 @@ fn cli_answer(w: &test_daemon::TestDaemon, argv: &[&str], request_id: &str) -> (
     (shown, Some(exit))
 }
 
-/// The MCP answer for the same request through its declared operation;
-/// `complete` also has the protocol's completion method.
+/// The MCP answer for the same request through its declared operation.
 fn mcp_answer(
     w: &test_daemon::TestDaemon,
     c: &Command,
     values: &command_surface::ParsedCommand,
     request_id: &str,
 ) -> Answer {
-    if c.name == "complete" {
-        return crate::mcp::tests::complete(
-            &w.daemon.archive,
-            values.request.arguments["text"]
-                .as_str()
-                .unwrap_or_default(),
-            values.request.arguments["position"].as_u64(),
-        );
-    }
     let names: Vec<&str> = crate::commands::declarations()
         .spec_named(c.name)
         .expect("declared row")
@@ -304,6 +280,37 @@ fn assert_read_page(answer: &Answer, position: &polylogue_model::ChangePosition)
 }
 
 #[test]
+fn internal_completion_http_returns_candidates() {
+    let daemon = test_daemon::start("synthetic HTTP completion");
+    let web = Arc::new(crate::web::Web {
+        daemon: Arc::clone(&daemon.daemon),
+        operations: Arc::clone(daemon.operations()),
+        key: "synthetic".into(),
+        token: "synthetic".into(),
+        port: 8765,
+    });
+    let (command, arguments) = crate::cli::parse(&[
+        "polylogue",
+        "internal",
+        "complete",
+        "tool_calls where outcome:err",
+    ])
+    .unwrap();
+    assert_eq!(command.http_path(), "/internal/complete");
+    let (answer, exit) = http_answer(&web, command, &arguments, "internal-http-completion");
+    assert_eq!(exit, Some(0));
+    let candidates = answer.unwrap();
+    assert!(
+        candidates
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate["value"] == "error"),
+        "{candidates}"
+    );
+}
+
+#[test]
 fn every_client_answers_the_same_request_identically() {
     let offered: Vec<&str> = COMMANDS
         .iter()
@@ -375,7 +382,7 @@ fn every_client_answers_the_same_request_identically() {
             assert_eq!(Ok(expected), http, "whole HTTP read answer");
             continue;
         }
-        if matches!(*name, "brief" | "takeover" | "recall" | "advisory")
+        if matches!(*name, "brief" | "takeover" | "recall")
             && let Ok(value) = &cli
         {
             // Session's protocol handler runs in this test process. The

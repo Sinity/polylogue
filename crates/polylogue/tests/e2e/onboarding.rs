@@ -1,7 +1,7 @@
 use serde_json::Value;
 
 #[test]
-fn public_morrow_tour_matches_current_query_examples() {
+fn demo_steps_run_through_rows() {
     let temp = tempfile::tempdir().unwrap();
     let actual = temp.path().join("a");
     let alias = temp.path().join("b");
@@ -28,6 +28,36 @@ fn public_morrow_tour_matches_current_query_examples() {
     let directory = directory.canonicalize().unwrap();
     let steps = tour["steps"].as_array().unwrap();
     assert_eq!(steps.len(), 10);
+    for (index, step) in steps.iter().enumerate() {
+        if index != 6 {
+            assert_eq!(step["command"], "rows", "step {index}");
+            assert!(step["arguments"]["selection"].is_string(), "step {index}");
+            if let Some(reports) = step["result"]["reply"]["steps"].as_array() {
+                for report in reports {
+                    assert_eq!(
+                        report["outcome"]["status"], "done",
+                        "step {index}: {report}"
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(
+        steps[0]["command_line"],
+        "polylogue 'messages where written_by:human chrono'"
+    );
+    assert_eq!(
+        steps[1]["command_line"],
+        "polylogue session:claude-code:7f3a2c10-0002-4000-8000-000000000002 read --format markdown"
+    );
+    assert_eq!(
+        steps[7]["command_line"],
+        "polylogue session:claude-code:7f3a2c10-0002-4000-8000-000000000002 note 'Use chrono for date parsing.' --as decision"
+    );
+    assert_eq!(
+        steps[9]["command_line"],
+        "polylogue session:claude-code:7f3a2c10-0002-4000-8000-000000000002 brief"
+    );
     assert_eq!(tour["first_query_seconds"], steps[0]["seconds"]);
     assert!(tour["preparation_seconds"].as_f64().unwrap() >= 0.0);
     let examples: Value = serde_json::from_str(include_str!(
@@ -35,7 +65,10 @@ fn public_morrow_tour_matches_current_query_examples() {
     ))
     .unwrap();
     assert_eq!(
-        steps[0]["result"]["rows"].as_array().unwrap().len(),
+        steps[0]["result"]["reply"]["rows"]
+            .as_array()
+            .unwrap()
+            .len(),
         examples["queries"]["13 messages where written_by:human \"chrono\""]
             .as_array()
             .unwrap()
@@ -49,7 +82,7 @@ fn public_morrow_tour_matches_current_query_examples() {
                 .unwrap(),
         )
     };
-    let mut errors: Vec<_> = steps[2]["result"]["rows"]
+    let mut errors: Vec<_> = steps[2]["result"]["reply"]["rows"]
         .as_array()
         .unwrap()
         .iter()
@@ -76,7 +109,7 @@ fn public_morrow_tour_matches_current_query_examples() {
     errors.sort();
     expected_errors.sort();
     assert_eq!(errors, expected_errors);
-    let mut children: Vec<_> = steps[3]["result"]["rows"]
+    let mut children: Vec<_> = steps[3]["result"]["reply"]["rows"]
         .as_array()
         .unwrap()
         .iter()
@@ -84,7 +117,7 @@ fn public_morrow_tour_matches_current_query_examples() {
         .collect();
     children.sort();
     assert_eq!(children, ["#3"]);
-    let unknown: Vec<_> = steps[5]["result"]["rows"]
+    let unknown: Vec<_> = steps[5]["result"]["reply"]["rows"]
         .as_array()
         .unwrap()
         .iter()
@@ -97,10 +130,19 @@ fn public_morrow_tour_matches_current_query_examples() {
         .map(|v| v.as_str().unwrap().to_owned())
         .collect();
     assert_eq!(unknown, expected_unknown);
-    assert_eq!(steps[8]["result"]["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        steps[8]["result"]["reply"]["rows"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     // A takeover names an assertion by another author that the operator has
     // not accepted, without quoting it (docs/agents.md, Brief).
-    let takeover = steps[9]["result"].to_string();
+    let takeover = steps[9]["result"]["reply"]["steps"][0]["outcome"]["reply"]["reply"]["prepared"]
+        ["text"]
+        .as_str()
+        .unwrap();
     assert!(
         takeover.contains("Assertions by other authors, not yet accepted: 1;"),
         "{takeover}"
@@ -166,7 +208,7 @@ fn public_morrow_tour_matches_current_query_examples() {
     let restarted: command_surface::Answer<Value> = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
         restarted.value().expect("query succeeded")["rows"],
-        steps[2]["result"]["rows"]
+        steps[2]["result"]["reply"]["rows"]
     );
     drop(daemon);
     let marker = directory.join("keep.txt");

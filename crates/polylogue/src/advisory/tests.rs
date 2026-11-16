@@ -196,7 +196,7 @@ fn unscoped_relative_files_are_not_inferred_global_and_absolute_files_match_exac
 #[test]
 fn advisory_bounds_intersect_parent_and_an_expired_request_prepares_nothing() {
     let (w, _) = fixture();
-    let request = crate::test_daemon::Call::new("advisory", serde_json::json!({"prompt": "Inspect src/parser.rs", "cwd": CWD, "session": SessionId::parse("codex:advisory-test").unwrap()})).id("expired-advisory").surface(crate::commands::Surface::Hook);
+    let request = crate::test_daemon::Call::new("internal advisory", serde_json::json!({"prompt": "Inspect src/parser.rs", "cwd": CWD, "session": SessionId::parse("codex:advisory-test").unwrap()})).id("expired-advisory").surface(crate::commands::Surface::Hook);
     let limit =
         polylogue_store::read::limit::ReadLimit::at(std::time::Instant::now(), Default::default());
     // docs/agents.md, Advisories: "preparation is capped at 20 ms, intersected

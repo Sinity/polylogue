@@ -2,9 +2,9 @@
 //! (`claude -p --input-format stream-json --output-format stream-json`)
 //! and the Agent Client Protocol of Gemini CLI and Hermes.
 //!
-//! **`polylogue host`.** These protocols run over the agent's stdin and
+//! **`polylogue internal host`.** These protocols run over the agent's stdin and
 //! stdout, so the process that holds those pipes keeps the agent alive. A
-//! small per-session `polylogue host` process holds them instead of the
+//! small per-session `polylogue internal host` process holds them instead of the
 //! daemon, so a daemon restart never ends an agent. The host relays lines
 //! between the agent and whichever daemon connection its socket has. What
 //! the agent writes while no daemon is connected waits in the host and is
@@ -59,7 +59,7 @@ pub fn dir(paths: &crate::config::Paths, root: &Path) -> PathBuf {
 pub(crate) struct Record {
     pub session: String,
     pub protocol: HostProtocol,
-    /// The `polylogue host` socket of a stdio protocol.
+    /// The `polylogue internal host` socket of a stdio protocol.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub socket: Option<PathBuf>,
     /// The protocol's own session or thread ID, when it differs from the
@@ -110,7 +110,7 @@ pub(crate) fn remove(dir: &Path, key: &str) {
     let _ = std::fs::remove_file(dir.join(format!("{key}.sock")));
 }
 
-/// The command line `polylogue host` runs for a harness: Claude Code in
+/// The command line `polylogue internal host` runs for a harness: Claude Code in
 /// stream-json mode with permission prompts sent to the host, Gemini CLI
 /// and Hermes in ACP mode.
 pub fn agent_command(harness: &str, session_id: Option<&str>) -> Option<Vec<String>> {
@@ -258,7 +258,7 @@ impl Tracker {
     }
 }
 
-/// What `polylogue host` is asked to run.
+/// What `polylogue internal host` is asked to run.
 #[derive(Debug, Clone)]
 pub struct HostConfig {
     pub harness: String,
@@ -322,7 +322,7 @@ fn session_named(config: &HostConfig, message: &Value) -> Option<SessionId> {
     SessionId::parse(&format!("{}:{native}", config.harness)).ok()
 }
 
-/// Runs a hosted agent until it exits: the body of `polylogue host`.
+/// Runs a hosted agent until it exits: the body of `polylogue internal host`.
 pub fn serve(config: &HostConfig) -> std::io::Result<()> {
     use std::process::{Command, Stdio};
     let (program, args) = config
@@ -495,7 +495,7 @@ fn protocol_traffic(message: &Value) -> bool {
         )
 }
 
-/// Starts `polylogue host` for a new session in its own process group, so
+/// Starts `polylogue internal host` for a new session in its own process group, so
 /// it outlives the daemon, and waits for its socket. Returns the host's
 /// process ID.
 pub(crate) fn spawn_host(
@@ -509,7 +509,7 @@ pub(crate) fn spawn_host(
     let program = std::env::current_exe()?;
     let mut command = std::process::Command::new(program);
     command
-        .arg("host")
+        .args(["internal", "host"])
         .arg(harness)
         .arg("--socket")
         .arg(socket)
@@ -537,14 +537,14 @@ pub(crate) fn spawn_host(
         }
         if let Some(status) = child.try_wait()? {
             return Err(std::io::Error::other(format!(
-                "polylogue host exited at start ({status})"
+                "polylogue internal host exited at start ({status})"
             )));
         }
         std::thread::sleep(Duration::from_millis(20));
     }
     stop_host(child.id());
     Err(std::io::Error::other(
-        "polylogue host did not open its socket",
+        "polylogue internal host did not open its socket",
     ))
 }
 
@@ -678,7 +678,7 @@ impl StdioState {
     }
 }
 
-/// The daemon's connection to a session a `polylogue host` holds.
+/// The daemon's connection to a session a `polylogue internal host` holds.
 pub(crate) struct HostedStdio {
     state: Arc<(Mutex<StdioState>, std::sync::Condvar)>,
 }

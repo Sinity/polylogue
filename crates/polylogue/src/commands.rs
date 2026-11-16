@@ -505,13 +505,14 @@ const WRITTEN: &[Command] = &[
         ..CLI
     },
     Command {
-        name: "advisory",
+        name: "internal advisory",
         reason: "Offer one operator-judged file pointer without delaying the prompt",
         latency: command_surface::LatencyClass::Read,
         help: "One current operator-judged decision or correction for a file named in a prompt; silent when unavailable within 20 ms or on cooldown",
         run: Run::Daemon(daemon::<H::Advisory>()),
-        tool: Some(Tool::Context),
+        tool: None,
         http: true,
+        cli: Cli::Hidden,
         ..CLI
     },
     Command {
@@ -683,10 +684,11 @@ const WRITTEN: &[Command] = &[
         ..CLI
     },
     Command {
-        name: "browser-host",
+        name: "internal browser-host",
         help: "The browser extension's native messaging host; Chrome starts it",
         run: configured_local::<local::arguments::Empty>(local::browser_host),
         cli: Cli::Hidden,
+        tool: None,
         ..CLI
     },
     Command {
@@ -696,15 +698,19 @@ const WRITTEN: &[Command] = &[
         ..CLI
     },
     Command {
-        name: "hook",
+        name: "internal hook",
         help: "Called by a harness hook; reads the event from stdin and answers with context when the event takes it: the brief at session start, takeover context for a pasted session ID or supported web link",
         run: configured_local::<local::arguments::Hook>(local::hook),
+        tool: None,
+        cli: Cli::Hidden,
         ..CLI
     },
     Command {
-        name: "host",
+        name: "internal host",
         help: "Started by the daemon for a session it hosts over stdio (Claude Code stream-json, Gemini CLI and Hermes ACP): holds the agent's stdin and stdout so a daemon restart never ends it, and relays them to the daemon's connection",
         run: local_command::<local::arguments::Host>(local::host),
+        tool: None,
+        cli: Cli::Hidden,
         ..CLI
     },
     Command {
@@ -744,121 +750,133 @@ const WRITTEN: &[Command] = &[
         ..CLI
     },
     Command {
-        name: "complete",
+        name: "internal complete",
         reason: "Complete an unfinished query at its cursor position",
         latency: command_surface::LatencyClass::Completion,
         help: "Complete a query at a UTF-8 byte offset using its full scope and suffix",
         run: Run::Daemon(daemon::<H::Complete>()),
         cli: Cli::Hidden,
         http: true,
-        tool: Some(Tool::Read),
+        tool: None,
         ..CLI
     },
     // Rows the hooks, the browser extension's host and the operator's own
     // pages ask; no person types them.
     Command {
-        name: "delivery-event",
+        name: "internal delivery-event",
         reason: "A hook reports what happened to a delivery it was handed",
         help: "Record what happened to a delivery after it was handed out",
         run: Run::Daemon(daemon::<H::DeliveryEvent>()),
         cli: Cli::Hidden,
         writes: true,
+        tool: None,
         ..CLI
     },
     Command {
-        name: "mail-claim",
+        name: "internal mail-claim",
         reason: "A session's hook takes the pings and notices waiting for it",
         help: "Take the pings and notices pending for a session",
         run: Run::Daemon(daemon::<acts::Claim>()),
         cli: Cli::Hidden,
         writes: true,
+        tool: None,
         ..CLI
     },
     Command {
-        name: "permission",
+        name: "internal permission",
         reason: "The synchronous permission hook asks for a decision given ahead",
         help: "A decision given ahead for a session's pending tool request",
         run: Run::Daemon(daemon::<acts::Permission>()),
         cli: Cli::Hidden,
         writes: true,
+        tool: None,
         ..CLI
     },
     Command {
-        name: "chat claim",
+        name: "internal chat claim",
         reason: "The extension takes the oldest queued chat action",
         help: "Take the oldest queued chat action for an extension instance",
         run: Run::Daemon(daemon::<browser::ChatClaim>()),
         cli: Cli::Hidden,
         writes: true,
+        tool: None,
         ..CLI
     },
     Command {
-        name: "chat report",
+        name: "internal chat report",
         reason: "The extension reports the progress or outcome of a chat action",
         help: "Report a held chat action's progress or outcome",
         run: Run::Daemon(daemon::<browser::ChatReport>()),
         cli: Cli::Hidden,
         writes: true,
+        tool: None,
         ..CLI
     },
     Command {
-        name: "chat decide",
+        name: "internal chat decide",
         reason: "The extension's popup records the operator's approval",
         help: "Approve or decline a chat action from the extension",
         run: Run::Daemon(daemon::<browser::ChatDecision>()),
         cli: Cli::Hidden,
         writes: true,
+        tool: None,
         ..CLI
     },
     Command {
-        name: "chat attachment",
+        name: "internal chat attachment",
         reason: "The extension fetches the bytes of a file a chat action attaches",
         help: "The bytes of a chat action's attachment, base64",
         run: Run::Daemon(daemon::<browser::ChatAttachment>()),
         cli: Cli::Hidden,
+        tool: None,
         ..CLI
     },
     Command {
-        name: "backfill claim",
+        name: "internal import claim",
         reason: "The extension takes the backfill job it holds or the oldest waiting one",
         help: "Take a backfill job for an extension instance",
         run: Run::Daemon(daemon::<browser::BackfillClaim>()),
         cli: Cli::Hidden,
         writes: true,
+        tool: None,
         ..CLI
     },
     Command {
-        name: "backfill report",
+        name: "internal import report",
         reason: "The extension reports a backfill job's progress",
         help: "Report a held backfill job's progress or outcome",
         run: Run::Daemon(daemon::<browser::BackfillReport>()),
         cli: Cli::Hidden,
         writes: true,
+        tool: None,
         ..CLI
     },
     Command {
-        name: "conversations",
+        name: "internal conversations",
         reason: "The extension asks what the archive holds of the conversations it lists",
         help: "What the archive holds of some of a web chat's conversations",
         run: Run::Daemon(daemon::<browser::Conversations>()),
         cli: Cli::Hidden,
+        tool: None,
         ..CLI
     },
     Command {
-        name: "stored-files",
+        name: "internal stored-files",
         reason: "The extension skips downloading files whose bytes the archive holds",
         help: "The files of a web chat's conversation whose bytes the archive holds",
         run: Run::Daemon(daemon::<browser::StoredFiles>()),
         cli: Cli::Hidden,
+        tool: None,
         ..CLI
     },
     Command {
-        name: "selection-note",
+        name: "internal selection-note",
         reason: "A selection in a chat web page becomes the operator's note on its message",
         help: "Save a browser selection as a note on its message",
         run: Run::Daemon(daemon::<H::SelectionNote>()),
         cli: Cli::Hidden,
         writes: true,
+        tool: None,
         ..CLI
     },
 ];

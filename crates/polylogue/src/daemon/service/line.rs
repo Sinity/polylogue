@@ -5,7 +5,7 @@
 //! A selection with no steps is the listing; a line ending in a streamed
 //! read streams.
 use super::{Failure, handlers, query_targets};
-use crate::commands::{Caller, Command, ToolAccess};
+use crate::commands::{Caller, Command, Surface, ToolAccess};
 use crate::daemon::handler::{Call, Handler, Streams};
 use crate::daemon::verbs::{
     self, Given, RowRule, Selection, StepCall, read::LineReads, refused_pick, rows_rule,
@@ -18,8 +18,10 @@ use command_surface::{Access, Answer, Envelope, TextStyle};
 use polylogue_model::read::ReadDelivery;
 use polylogue_model::{Code, Reference};
 use polylogue_reading::operation::Context;
+use polylogue_store::read::limit::ReadLimit;
 use std::io::Write;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 pub(crate) struct Line;
 
@@ -52,6 +54,17 @@ impl Handler for Line {
         query_selection(rows).map(str::to_owned)
     }
     fn run(rows: Rows, call: &Call<'_>) -> Result<Answer<LineAnswer>, Failure> {
+        if let Some(failure) = refused_surface(&rows, call)? {
+            let next = match failure.suggestion() {
+                Some(command_surface::Suggestion::Request(request)) => Some(request.clone()),
+                _ => None,
+            };
+            let answer = failure.answer();
+            return Ok(match next {
+                Some(request) => answer.with_next("read", request),
+                None => answer,
+            });
+        }
         let given = given(&rows)?;
         if rows.explain {
             return explain(&rows, given, call);
@@ -118,6 +131,9 @@ impl Streams for Line {
             request_id: &request_id,
             ..call.copy()
         };
+        if let Some(failure) = refused_surface(&rows, &call)? {
+            return Err(failure);
+        }
         let given = given(&rows)?;
         check(&rows, &given)?;
         let selection = prepare(&rows, given, &call)?;
@@ -195,6 +211,19 @@ fn named(text: &str) -> Option<Reference> {
 
 /// What the line names.
 fn given(rows: &Rows) -> Result<Given, Failure> {
+    for text in rows.selection.iter().chain(&rows.references) {
+        let text = text.trim();
+        if matches!(text, "@all" | "@last")
+            || text
+                .strip_prefix('@')
+                .is_some_and(|tail| tail.starts_with(|c: char| c.is_ascii_digit()))
+        {
+            return Err(Failure::new(
+                Code::RowNumbersOffTerminal,
+                "row numbers are resolved by the command line; use the references printed above",
+            ));
+        }
+    }
     match (&rows.selection, rows.references.as_slice()) {
         (Some(_), [_, ..]) => Err(Failure::bad_request(
             "a line takes a selection or references, not both",
@@ -212,6 +241,78 @@ fn given(rows: &Rows) -> Result<Given, Failure> {
     }
 }
 
+/// The request to continue this line, retaining its envelope options.
+fn repeated(rows: &Rows, call: &Call<'_>) -> Result<command_surface::RunnableRequest, Failure> {
+    let context = call.context()?;
+    let mut request =
+        context
+            .accepted_request()
+            .cloned()
+            .unwrap_or_else(|| command_surface::RunnableRequest {
+                operation: "rows".into(),
+                arguments: serde_json::Value::Null,
+                request_id: call.request_id.into(),
+                deadline: Default::default(),
+                budget_tokens: call.budget,
+                cursor: call.cursor.map(str::to_owned),
+                fresh: false,
+                format: Default::default(),
+            });
+    if request.operation == "rows"
+        && serde_json::from_value::<Rows>(request.arguments.clone())
+            .is_ok_and(|original| original == *rows)
+    {
+        return Ok(request);
+    }
+    request.arguments = serde_json::to_value(rows).map_err(Failure::internal)?;
+    Ok(request)
+}
+
+/// Refusals that offer a finite read of the requested rows.
+fn refused_surface(rows: &Rows, call: &Call<'_>) -> Result<Option<Failure>, Failure> {
+    if let Some(id) = rows
+        .selection
+        .as_deref()
+        .and_then(|text| text.trim().strip_prefix("answer:"))
+    {
+        let mut read = Rows {
+            selection: Some(format!("run:{id}")),
+            ..Rows::default()
+        };
+        read.steps.push(Step::Read(Box::default()));
+        let failure = Failure::bad_request(format!(
+            "answer references are query runs; use polylogue run:{id} read"
+        ));
+        return Ok(Some(
+            failure
+                .error
+                .with_suggestion(command_surface::Suggestion::Request(repeated(&read, call)?))
+                .into(),
+        ));
+    }
+    if call.caller.surface == Surface::Mcp
+        && rows
+            .steps
+            .iter()
+            .any(|step| matches!(step, Step::Read(read) if read.follow))
+    {
+        let mut read = rows.clone();
+        for step in &mut read.steps {
+            if let Step::Read(read) = step {
+                read.follow = false;
+            }
+        }
+        let failure = Failure::bad_request("a model cannot hold a stream; read again to continue");
+        return Ok(Some(
+            failure
+                .error
+                .with_suggestion(command_surface::Suggestion::Request(repeated(&read, call)?))
+                .into(),
+        ));
+    }
+    Ok(None)
+}
+
 /// The refusals of a line's shape, before anything resolves.
 fn check(rows: &Rows, given: &Given) -> Result<(), Failure> {
     if rows.steps.iter().any(|step| matches!(step, Step::Pick(_))) {
@@ -225,8 +326,8 @@ fn check(rows: &Rows, given: &Given) -> Result<(), Failure> {
     {
         return Err(Failure::bad_request("read --follow must be the last step"));
     }
-    if rows.wait.is_some() {
-        return Err(Failure::new(Code::NotBuilt, "--wait is not built yet"));
+    if rows.wait.is_some() && !rows.steps.is_empty() {
+        return Err(Failure::bad_request("--wait needs a listing without verbs"));
     }
     if *given == Given::None {
         match rows.steps.as_slice() {
@@ -407,17 +508,68 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
     }
     .query_text()
     .ok_or_else(|| Failure::bad_request("a listing needs a selection"))?;
-    Ok(handlers::Query::run(
-        crate::protocol::query::Arguments {
-            query,
-            limit: rows.page_size.map(std::num::NonZeroU64::get),
-            why: rows.why,
-            session: None,
-            fields: rows.fields,
-        },
-        call,
-    )?
-    .map(|found| LineAnswer::Listing(Box::new(found))))
+    let arguments = crate::protocol::query::Arguments {
+        query,
+        limit: rows.page_size.map(std::num::NonZeroU64::get),
+        why: rows.why,
+        session: None,
+        fields: rows.fields.clone(),
+    };
+    let Some(wait) = rows.wait.as_deref() else {
+        return Ok(handlers::Query::run(arguments, call)?
+            .map(|found| LineAnswer::Listing(Box::new(found))));
+    };
+    let wait = crate::signals::duration(wait)
+        .ok_or_else(|| Failure::bad_value("--wait needs a duration such as 30s or 30m"))?;
+    let mut duration = Duration::from_millis(wait as u64);
+    if call.caller.surface == Surface::Mcp {
+        duration = duration.min(Duration::from_secs(50));
+    }
+    let limit = ReadLimit::current();
+    if let Some(left) = limit.as_ref().and_then(ReadLimit::remaining) {
+        duration = duration.min(left.saturating_sub(super::follow::REPLY_MARGIN));
+    }
+    let until = Instant::now() + duration;
+    let commits = call
+        .daemon
+        .writes
+        .as_ref()
+        .map(|writer| writer.completion_commits());
+    let _wake = match (&commits, &limit) {
+        (Some(commits), Some(limit)) => {
+            let wake = commits.wake_handle();
+            Some(limit.cancellation.on_cancel(move || {
+                let _ = wake.try_send(());
+            }))
+        }
+        _ => None,
+    };
+    loop {
+        super::accepting(call.daemon)?;
+        if let Some(limit) = &limit {
+            limit.check()?;
+        }
+        let answer = handlers::waiting_query(&arguments, call)?
+            .map(|found| LineAnswer::Listing(Box::new(found)));
+        if !matches!(answer.outcome, command_surface::Outcome::Empty(_)) {
+            return Ok(answer);
+        }
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Ok(answer.with_next("wait again", repeated(&rows, call)?));
+        }
+        let left = limit
+            .as_ref()
+            .and_then(ReadLimit::remaining)
+            .map_or(left, |remaining| left.min(remaining));
+        ReadLimit::set_stage("listing wait");
+        crate::daemon::executor::outside(|| match &commits {
+            Some(commits) => {
+                let _ = commits.recv_timeout(left);
+            }
+            None => std::thread::sleep(left),
+        });
+    }
 }
 
 /// How the line is read and what each step would do; nothing resolves.

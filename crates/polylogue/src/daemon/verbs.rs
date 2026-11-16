@@ -13,7 +13,7 @@ pub(crate) mod save;
 use crate::daemon::Failure;
 use crate::daemon::handler::Call;
 use crate::protocol::line::{Step, StepAnswer};
-use command_surface::{Answer, Envelope, Outcome, TokenBudget};
+use command_surface::{Answer, Envelope, Outcome};
 use polylogue_model::{Code, Reference, RevisionReference};
 
 /// One verb of a line.
@@ -69,7 +69,7 @@ impl<'a> StepCall<'a> {
             call: Call {
                 request_id,
                 cursor: None,
-                budget: TokenBudget::Default,
+                budget: line.budget,
                 ..line.copy()
             },
         }

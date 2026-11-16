@@ -175,10 +175,10 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
             let result = invoke(command, arguments.clone())?;
             let seconds = started.elapsed().as_secs_f64();
             let declaration = commands::command(command).ok_or("missing command")?;
-            let text = if command == "query" {
-                let answer = crate::protocol::query::Answer::deserialize(&result)
+            let text = if command == "rows" {
+                let answer = crate::protocol::line::LineAnswer::deserialize(&result)
                     .map_err(|error| format!("{command}: {error}"))?;
-                crate::cli::print::query_plain(&answer)
+                line_text(&answer)?
             } else {
                 commands::declarations()
                     .render_text(
@@ -203,38 +203,38 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
     step(
         "Find the date decision",
         "Search human messages for chrono. Morrow has two matches: the parser decision and a README request.",
-        "query",
-        json!({"query": "messages where written_by:human chrono"}),
+        "rows",
+        json!({"selection": "messages where written_by:human chrono"}),
     )?;
     step(
         "Read the parser session",
         "Read the session around the decision, including the assistant's account of its work.",
-        "read",
-        json!({"target": format!("session:{PARSER}"), "format": "markdown"}),
+        "rows",
+        json!({"selection": format!("session:{PARSER}"), "steps": [{"verb": "read", "format": "markdown"}]}),
     )?;
     step(
         "Check recorded tool failures",
         "Structured outcomes record two failures: cargo test exited 101 and cargo clippy exited 1. An assistant's claim is prose; the outcome comes from the tool result.",
-        "query",
-        json!({"query": "tool_calls where outcome:error"}),
+        "rows",
+        json!({"selection": "tool_calls where outcome:error"}),
     )?;
     step(
         "Follow parent and child work",
         "The parser session has a subagent and a later continuation. Include every session kind when following its children.",
-        "query",
-        json!({"query": format!("sessions where kind:* parent:{PARSER}")}),
+        "rows",
+        json!({"selection": format!("sessions where kind:* parent:{PARSER}")}),
     )?;
     step(
         "Read the continuation with its parents",
         "Inherited messages appear with the continuation when requested.",
-        "read",
-        json!({"target": format!("session:{RESUME}"), "show": ["inherited"], "format": "markdown"}),
+        "rows",
+        json!({"selection": format!("session:{RESUME}"), "steps": [{"verb": "read", "show": ["inherited"], "format": "markdown"}]}),
     )?;
     step(
         "Keep unknown costs visible",
         "Four top-level sessions have unknown total cost, including both Codex sessions. Recorded token observations alone do not establish complete costs.",
-        "query",
-        json!({"query": "sessions where cost:unknown"}),
+        "rows",
+        json!({"selection": "sessions where cost:unknown"}),
     )?;
     step(
         "Inspect usage",
@@ -245,20 +245,20 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
     step(
         "Add a decision note",
         "Write a note only in this tour's archive.",
-        "assert",
-        json!({"assertions": [{"kind":"decision","value":"Use chrono for date parsing.","links":[{"role":"about","reference":format!("session:{PARSER}")}]}]}),
+        "rows",
+        json!({"selection": format!("session:{PARSER}"), "steps": [{"verb": "note", "as": "decision", "text": "Use chrono for date parsing."}]}),
     )?;
     step(
         "Read the note",
         "Notes can be retrieved independently of the conversation.",
-        "query",
-        json!({"query":format!("assertions where about:\"session:{PARSER}\"")}),
+        "rows",
+        json!({"selection":format!("assertions where about:\"session:{PARSER}\"")}),
     )?;
     step(
         "Prepare takeover context",
         "Takeover carries the session's prompts and last answer for the next reader. It names the assertion without quoting it, because another author wrote it and the operator has not accepted it; the previous step still reads it.",
-        "takeover",
-        json!({"session": PARSER}),
+        "rows",
+        json!({"selection": format!("session:{PARSER}"), "steps": [{"verb": "brief"}]}),
     )?;
     let first_query_seconds = steps.first().ok_or("tour has no steps")?.seconds;
     let mut transcript = format!(
@@ -283,16 +283,101 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
     })
 }
 
-fn command_line(command: &Command, arguments: &Value) -> String {
-    let quote = polylogue_render::shell_quote;
-    let mut words = vec!["polylogue".to_owned()];
-    if command.name != "query" {
-        words.push(command.name.to_owned());
+fn line_text(answer: &crate::protocol::line::LineAnswer) -> Result<String, String> {
+    use crate::protocol::line::{LineAnswer, StepAnswer, StepOutcome};
+    let reports = match answer {
+        LineAnswer::Listing(listing) => return Ok(crate::cli::print::query_plain(listing)),
+        LineAnswer::Steps(reports) => &reports.steps,
+        LineAnswer::Explained(_) => return Err("the tour expected completed steps".into()),
+    };
+    let mut text = String::new();
+    let mut undo = Vec::new();
+    for report in reports {
+        let StepOutcome::Done { reply, undo: lines } = &report.outcome else {
+            return Err(match &report.outcome {
+                StepOutcome::Failed { error } => {
+                    format!("{} failed: {}", report.verb, error.message)
+                }
+                _ => format!("{} did not run", report.verb),
+            });
+        };
+        match reply {
+            StepAnswer::Read(page) => {
+                let mut bytes = Vec::new();
+                polylogue_render::encode_document(
+                    &page.document,
+                    polylogue_render::Format::Markdown,
+                    polylogue_render::EncodeOptions {
+                        commands: Some(commands::declarations()),
+                        via: command_surface::Via::Cli,
+                        model_facing: false,
+                        ..Default::default()
+                    },
+                    &mut bytes,
+                )
+                .map_err(|error| error.to_string())?;
+                text.push_str(&String::from_utf8(bytes).map_err(|error| error.to_string())?);
+            }
+            StepAnswer::Brief(prepared) => text.push_str(&crate::cli::print::context(
+                prepared,
+                command_surface::TextStyle::Plain,
+            )),
+            StepAnswer::Resume(found) => text.push_str(&crate::cli::print::resume(
+                found,
+                command_surface::TextStyle::Plain,
+            )),
+            other => text.push_str(&crate::cli::print::json(
+                other,
+                command_surface::TextStyle::Plain,
+            )),
+        }
+        undo.extend(lines);
     }
-    let declared = commands::declarations()
-        .spec_named(command.name)
-        .map(|spec| spec.arguments.as_slice())
-        .unwrap_or_default();
+    for line in undo {
+        use std::fmt::Write;
+        writeln!(text, "undo: {line}").map_err(|error| error.to_string())?;
+    }
+    Ok(text)
+}
+
+fn command_line(command: &Command, arguments: &Value) -> String {
+    let mut words = vec!["polylogue".to_owned()];
+    let declarations = commands::declarations();
+    if command.name == "rows" {
+        if let Some(selection) = arguments["selection"].as_str() {
+            words.push(polylogue_render::shell_quote(selection));
+        }
+        if let Some(steps) = arguments["steps"].as_array() {
+            let declared = declarations
+                .steps("rows", "steps")
+                .expect("rows declares steps");
+            for step in steps {
+                let verb = step["verb"].as_str().expect("a tour step has a verb");
+                words.push(verb.to_owned());
+                let spec = declared
+                    .verbs()
+                    .iter()
+                    .find(|spec| spec.verb() == verb)
+                    .expect("a tour verb is declared");
+                append_arguments(&mut words, step, spec.arguments());
+            }
+        }
+    } else {
+        words.push(command.name.to_owned());
+        let declared = declarations
+            .spec_named(command.name)
+            .expect("a tour command is declared");
+        append_arguments(&mut words, arguments, &declared.arguments);
+    }
+    words.join(" ")
+}
+
+fn append_arguments(
+    words: &mut Vec<String>,
+    arguments: &Value,
+    declared: &[command_surface::ArgumentSpec],
+) {
+    let quote = polylogue_render::shell_quote;
     for arg in declared.iter().filter(|arg| !arg.calling_process) {
         let Some(value) = arguments.get(&arg.name) else {
             continue;
@@ -317,5 +402,4 @@ fn command_line(command: &Command, arguments: &Value) -> String {
             words.push(quote(value.as_str().unwrap_or("")));
         }
     }
-    words.join(" ")
 }

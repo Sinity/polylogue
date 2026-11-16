@@ -4,7 +4,7 @@
 //! - **harness resume**: the harness's own command reopens the session with
 //!   its full history (`claude --resume <id>`, `codex resume <id>`);
 //! - **context-assisted continuation**: a new session starts with a
-//!   takeover brief Polylogue prepares (`polylogue takeover <id>`), for
+//!   takeover brief Polylogue prepares (`polylogue <id> brief`), for
 //!   harnesses without harness resume or a session whose file is gone.
 //!
 //! Which sessions are worth resuming comes from what they left open, not
@@ -59,7 +59,7 @@ pub fn plan(reader: &Reader<'_>, session: &SessionId) -> Result<Plan, StoreError
         harness_command: harness_resume(session, cwd.as_deref()),
         context_assisted: Command {
             program: "polylogue".into(),
-            args: vec!["takeover".into(), session.to_string()],
+            args: vec![session.to_string(), "brief".into()],
             cwd,
         },
     })

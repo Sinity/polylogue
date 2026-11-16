@@ -11,6 +11,9 @@ use crate::protocol::steps::BriefStep;
 use command_surface::TokenBudget;
 use polylogue_model::{Reference, SessionId};
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) struct Brief;
 impl Verb for Brief {
     type Step = BriefStep;
@@ -31,7 +34,7 @@ impl Verb for Brief {
                 u32::try_from(tokens)
                     .map_err(|_| Failure::bad_value("brief --budget exceeds 4294967295"))?,
             ),
-            None => TokenBudget::Default,
+            None => call.call.budget,
         };
         let call = Call {
             cursor: step.cursor.as_deref(),

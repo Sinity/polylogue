@@ -94,7 +94,7 @@ fn expired_requests_never_start_any_read_operation() {
             serde_json::json!({"query": "sessions | measure usage"}),
         ),
         crate::test_daemon::Call::new(
-            "complete",
+            "internal complete",
             serde_json::json!({"text": "repo:", "position": 5}),
         ),
         crate::test_daemon::Call::new("query", serde_json::json!({"query": "sessions"})),

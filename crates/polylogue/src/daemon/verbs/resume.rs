@@ -10,6 +10,9 @@ use crate::protocol::steps::ResumeStep;
 use crate::protocol::{act, resume};
 use polylogue_model::SessionId;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) struct Resume;
 impl Verb for Resume {
     type Step = ResumeStep;
@@ -55,13 +58,73 @@ impl Verb for Resume {
     fn would(
         step: &ResumeStep,
         selection: &Selection,
-        _: &StepCall<'_>,
+        call: &StepCall<'_>,
     ) -> Result<String, Failure> {
-        Ok(match (&step.harness, session(step, selection)?) {
-            (_, None) => "would list the sessions here that ended open".into(),
-            (None, Some(session)) => format!("would resume {session}"),
-            (Some(to), Some(session)) => format!("would continue {session} in {to}"),
-        })
+        let session = session(step, selection)?;
+        match (&step.harness, session) {
+            (None, session) => {
+                let done = delegated(
+                    handlers::Continue::run(
+                        resume::Arguments {
+                            session,
+                            cwd: None,
+                            limit: None,
+                        },
+                        &call.call,
+                    )?,
+                    |found| StepAnswer::Resume(Box::new(found)),
+                )?;
+                match done.reply {
+                    StepAnswer::Resume(found) => match *found {
+                        resume::Answer::Plan(plan) => {
+                            let command = plan.harness_command.ok_or_else(|| {
+                                Failure::bad_request(format!(
+                                    "{} has no harness resume command; use resume --in HARNESS",
+                                    plan.session
+                                ))
+                            })?;
+                            Ok(format!(
+                                "would resume {} with {}",
+                                plan.session,
+                                crate::cli::print::command_line(&command)
+                            ))
+                        }
+                        resume::Answer::Sessions(found) => Ok(crate::cli::print::resume(
+                            &resume::Answer::Sessions(found),
+                            command_surface::TextStyle::Plain,
+                        )),
+                    },
+                    _ => unreachable!(),
+                }
+            }
+            (Some(_), None) => Err(Failure::bad_request(
+                "resume --in needs the session whose work it continues",
+            )),
+            (Some(to), Some(session)) => {
+                let done = delegated(
+                    acts::HandOffSession::run(
+                        act::HandOff {
+                            session: session.clone(),
+                            to: to.clone(),
+                            at: step.at.clone(),
+                            cwd: step.cwd.clone(),
+                            stop_source: step.stop_source,
+                            print: true,
+                        },
+                        &call.call,
+                    )?,
+                    |value| StepAnswer::Acted(vec![value]),
+                )?;
+                let StepAnswer::Acted(values) = done.reply else {
+                    unreachable!()
+                };
+                let text = values[0]["pack"].as_str().unwrap_or_default();
+                let tokens = polylogue_model::read::estimate_tokens(text);
+                Ok(format!(
+                    "would continue {session} in {to} with a brief of {tokens} tokens"
+                ))
+            }
+        }
     }
 }
 

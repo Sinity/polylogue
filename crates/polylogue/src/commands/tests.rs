@@ -85,13 +85,23 @@ fn every_declared_cli_command_is_reachable() {
 
 #[test]
 fn the_command_line_has_nothing_outside_the_table() {
-    let root = crate::cli::command();
-    for sub in root.get_subcommands() {
-        let name = sub.get_name();
-        if sub.has_subcommands() {
-            assert!(GROUPS.iter().any(|g| g.name == name), "group {name}");
-            for leaf in sub.get_subcommands() {
-                let full = format!("{name} {}", leaf.get_name());
+    fn visit(command: &clap::Command, prefix: &str) {
+        for sub in command.get_subcommands() {
+            let full = if prefix.is_empty() {
+                sub.get_name().to_owned()
+            } else {
+                format!("{prefix} {}", sub.get_name())
+            };
+            if sub.has_subcommands() {
+                assert!(
+                    COMMANDS.iter().any(|command| command
+                        .cli_words()
+                        .join(" ")
+                        .starts_with(&format!("{full} "))),
+                    "group {full} has no declared commands"
+                );
+                visit(sub, &full);
+            } else {
                 assert!(
                     COMMANDS
                         .iter()
@@ -99,15 +109,9 @@ fn the_command_line_has_nothing_outside_the_table() {
                     "{full} is not in the table"
                 );
             }
-        } else {
-            assert!(
-                COMMANDS
-                    .iter()
-                    .any(|command| command.cli_words().join(" ") == name),
-                "{name} is not in the table"
-            );
         }
     }
+    visit(&crate::cli::command(), "");
     for g in GROUPS {
         assert!(
             COMMANDS

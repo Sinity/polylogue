@@ -19,7 +19,7 @@ fn completion_reads_declared_values_and_refreshes_observed_models() {
     let d = crate::test_daemon::start("synthetic prompt");
     let values = |word: &str| {
         crate::test_daemon::Call::new(
-            "complete",
+            "internal complete",
             serde_json::json!({"text": word, "position": word.len()}),
         )
         .answer(&d.daemon)
@@ -83,7 +83,7 @@ fn completion_request_preserves_full_text_offsets_and_reports_invalid_boundaries
     let text = "tool_calls where outcome:err | count";
     let position = text.find(" | ").unwrap();
     match crate::test_daemon::Call::new(
-        "complete",
+        "internal complete",
         serde_json::json!({"text": text, "position": position}),
     )
     .answer(&daemon.daemon)
@@ -115,7 +115,7 @@ fn completion_request_preserves_full_text_offsets_and_reports_invalid_boundaries
     }
     for position in [6, 8] {
         match crate::test_daemon::Call::new(
-            "complete",
+            "internal complete",
             serde_json::json!({"text": "repo:λ", "position": position}),
         )
         .answer(&daemon.daemon)

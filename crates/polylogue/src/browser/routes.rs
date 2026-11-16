@@ -222,7 +222,7 @@ async fn capture_files(State(host): State<Arc<BrowserHost>>, body: Bytes) -> Htt
     let stored = match provider.zip(conversation) {
         Some((provider, conversation)) => ask(
             host,
-            "stored-files",
+            "internal stored-files",
             json!({ "provider": provider, "conversation": conversation }),
         )
         .await
@@ -268,7 +268,7 @@ async fn conversations(
         .map(|id| host.capture_log(&asked.provider, id).exists())
         .collect();
     let arguments = json!({ "provider": asked.provider, "ids": asked.ids });
-    let held = ask(host, "conversations", arguments).await.ok();
+    let held = ask(host, "internal conversations", arguments).await.ok();
     let daemon = held.is_some();
     let rows: Vec<Value> = asked
         .ids
@@ -333,7 +333,7 @@ async fn chat_actions(
 ) -> HttpResponse {
     match q.claim_by.filter(|by| !by.is_empty()) {
         None => answer(host, "chat list", json!({})).await,
-        Some(by) => answer(host, "chat claim", json!({ "by": by })).await,
+        Some(by) => answer(host, "internal chat claim", json!({ "by": by })).await,
     }
 }
 
@@ -342,7 +342,12 @@ async fn chat_report(
     UrlPath(id): UrlPath<String>,
     Json(update): Json<Update>,
 ) -> HttpResponse {
-    answer(host, "chat report", json!({ "id": id, "update": update })).await
+    answer(
+        host,
+        "internal chat report",
+        json!({ "id": id, "update": update }),
+    )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -360,7 +365,7 @@ async fn chat_decision(
     Json(d): Json<Decision>,
 ) -> HttpResponse {
     let arguments = json!({ "id": id, "approve": d.approve, "by": d.by, "detail": d.detail });
-    answer(host, "chat decide", arguments).await
+    answer(host, "internal chat decide", arguments).await
 }
 
 async fn chat_attachment(
@@ -369,7 +374,7 @@ async fn chat_attachment(
 ) -> HttpResponse {
     use base64::Engine as _;
     let arguments = json!({ "id": id, "attachment": attachment });
-    let v = match ask(host, "chat attachment", arguments).await {
+    let v = match ask(host, "internal chat attachment", arguments).await {
         Ok(v) => v,
         Err(refusal) => return *refusal,
     };
@@ -404,7 +409,7 @@ async fn backfill_claim(
     State(host): State<Arc<BrowserHost>>,
     Json(c): Json<Claimant>,
 ) -> HttpResponse {
-    answer(host, "backfill claim", json!({ "by": c.by })).await
+    answer(host, "internal import claim", json!({ "by": c.by })).await
 }
 
 #[derive(Deserialize)]
@@ -420,5 +425,5 @@ async fn backfill_report(
     Json(r): Json<Report>,
 ) -> HttpResponse {
     let arguments = json!({ "id": id, "by": r.by, "report": r.report });
-    answer(host, "backfill report", arguments).await
+    answer(host, "internal import report", arguments).await
 }

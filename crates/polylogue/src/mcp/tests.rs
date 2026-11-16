@@ -96,35 +96,6 @@ fn call_params(archive: &Archive, params: Value) -> Result<String, String> {
     .and_then(|(text, _, failed)| if failed { Err(text) } else { Ok(text) })
 }
 
-/// The completion protocol method's answer for `text` at `position`, as
-/// the completions value of the `complete` operation.
-pub(crate) fn complete(
-    archive: &Archive,
-    text: &str,
-    position: Option<u64>,
-) -> Result<Value, String> {
-    let mut meta = json!({});
-    if let Some(position) = position {
-        meta["polylogue/position"] = json!(position);
-    }
-    let reply = Session {
-        initialized: true,
-        ..Default::default()
-    }
-    .prepare(
-        json!({"jsonrpc":"2.0", "id":1, "method":"completion/complete", "params":{
-            "argument": {"name": "query", "value": text},
-            "_meta": meta,
-        }}),
-    )
-    .answer(archive)
-    .unwrap();
-    match reply.get("error") {
-        Some(error) => Err(error["message"].as_str().unwrap_or_default().to_owned()),
-        None => Ok(reply["result"]["_meta"]["polylogue/completions"].clone()),
-    }
-}
-
 fn args(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
     v.as_object().unwrap().clone()
 }
@@ -416,7 +387,7 @@ fn every_tool_operation_is_reachable_from_exactly_one_tool() {
         assert_eq!(offering, [command.tool.unwrap().name()], "{}", command.name);
     }
     // Every daemon request the command line or HTTP can make, apart from
-    // query forms and the protocol's own completion, is a tool operation.
+    // query forms and internal operations, is a tool operation.
     let query_forms = ["list", "live", "notices", "sql", "changes"];
     for command in COMMANDS.iter().filter(|c| {
         !matches!(
@@ -424,13 +395,21 @@ fn every_tool_operation_is_reachable_from_exactly_one_tool() {
             crate::commands::Run::Local(..) | crate::commands::Run::ConfiguredLocal(..)
         ) && c.http
     }) {
-        assert!(
-            command.tool.is_some()
-                || query_forms.contains(&command.name)
-                || command.name == "complete",
-            "{} is not reachable over MCP",
-            command.name
-        );
+        if command.name.starts_with("internal ") {
+            assert_eq!(
+                command.cli,
+                crate::commands::Cli::Hidden,
+                "{}",
+                command.name
+            );
+            assert_eq!(command.tool, None, "{}", command.name);
+        } else {
+            assert!(
+                command.tool.is_some() || query_forms.contains(&command.name),
+                "{} is not reachable over MCP",
+                command.name
+            );
+        }
     }
 }
 

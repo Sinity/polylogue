@@ -356,12 +356,7 @@ fn a_brief_fits_its_budget_and_names_what_it_left_out() {
                 })
                 .collect()
         };
-        fit.section(
-            "Notes:",
-            items(40, 90),
-            "notes",
-            "polylogue query assertions",
-        );
+        fit.section("Notes:", items(40, 90), "notes", "polylogue assertions");
         fit.section(
             "Sessions:",
             items(40, 300),
@@ -369,7 +364,7 @@ fn a_brief_fits_its_budget_and_names_what_it_left_out() {
             "polylogue list",
         );
         let (text, refs, left_out) = fit
-            .finish("Earlier work: `polylogue recall WORDS`.", |_| Ok(None))
+            .finish("Earlier work: `polylogue 'WORDS' brief`.", |_| Ok(None))
             .unwrap();
         assert!(
             text.len() <= budget as usize * 4,
@@ -806,7 +801,7 @@ fn tight_fitting_keeps_later_candidates_and_lossless_bounded_prefixes() {
             },
         ],
         "notes",
-        "polylogue read assertion:current@v2",
+        "polylogue assertion:current@v2 read",
     );
     let (text, refs, left_out) = fit.finish("", |_| Ok(None)).unwrap();
     assert!(text.len() <= 1600);
@@ -825,7 +820,7 @@ fn tight_fitting_keeps_later_candidates_and_lossless_bounded_prefixes() {
     assert!(correction.starts_with(current));
     assert!(first.starts_with(entries[0]["source"].as_str().unwrap()));
     assert!(text.contains("2 shortened / 0 omitted"));
-    assert!(text.contains("expand: `polylogue read assertion:current@v2`"));
+    assert!(text.contains("expand: `polylogue assertion:current@v2 read`"));
     assert_eq!(left_out.len(), 1);
 }
 
@@ -1010,7 +1005,7 @@ fn contrary_note_comes_before_the_claim_under_a_tight_budget() {
         "Notes:",
         vec![item],
         "notes",
-        "polylogue read assertion:original@original-v1",
+        "polylogue assertion:original@original-v1 read",
     );
     let (text, refs, _) = fit.finish("", |_| Ok(None)).unwrap();
     assert!(text.len() <= 1600);
@@ -1019,7 +1014,7 @@ fn contrary_note_comes_before_the_claim_under_a_tight_budget() {
     assert!(!source.contains("CLAIM THAT MUST NOT APPEAR UNQUALIFIED"));
     assert!(refs.contains(&"assertion:correction@correction-v1".into()));
     assert!(text.contains("judgment:operator-authored"));
-    assert!(text.contains("expand: `polylogue read assertion:original@original-v1`"));
+    assert!(text.contains("expand: `polylogue assertion:original@original-v1 read`"));
 }
 
 #[test]
@@ -1046,7 +1041,7 @@ fn omitted_candidates_never_read_their_deferred_bodies() {
         "Candidates:",
         candidates,
         "assertions",
-        "polylogue query assertions",
+        "polylogue assertions",
     );
     let mut read = Vec::new();
     let (text, refs, _) = fit
@@ -1059,7 +1054,7 @@ fn omitted_candidates_never_read_their_deferred_bodies() {
     assert!(!read.is_empty());
     assert!(read.len() < 40);
     assert!(read.iter().all(|reference| refs.contains(reference)));
-    assert!(text.contains("omitted; expand: `polylogue query assertions`"));
+    assert!(text.contains("omitted; expand: `polylogue assertions`"));
 }
 
 #[test]
@@ -1151,7 +1146,7 @@ fn latest_human_correction_is_shown_before_the_older_model_answer() {
     assert!(
         prepared
             .text
-            .contains("older prompts: `polylogue read session:test:corrected --view dialogue`")
+            .contains("older prompts: `polylogue session:test:corrected read --view dialogue`")
     );
     assert!(prepared.text.len() <= 4000);
 }
@@ -1299,7 +1294,7 @@ fn unjudged_contrary_bodies_are_counted_without_hiding_the_eligible_claim() {
         "Notes:",
         vec![item],
         "notes",
-        "polylogue read assertion:subject@subject-v1",
+        "polylogue assertion:subject@subject-v1 read",
     );
     let (text, refs, _) = fit.finish("", |_| Ok(None)).unwrap();
     let visible = visible_context(&text);
@@ -1308,7 +1303,7 @@ fn unjudged_contrary_bodies_are_counted_without_hiding_the_eligible_claim() {
     assert!(visible.find(agent_correction).unwrap() < visible.find(claim).unwrap());
     assert!(!text.contains("UNJUDGED_BODY_MUST_NOT_BE_INLINED"));
     assert!(text.contains("contrary assertions not inlined: 1"));
-    assert!(text.contains("polylogue read assertion:unjudged-agent@unjudged-agent-v1"));
+    assert!(text.contains("polylogue assertion:unjudged-agent@unjudged-agent-v1 read"));
     assert!(text.contains("accepted by operator"));
     assert!(refs.contains(&"assertion:unjudged-agent@unjudged-agent-v1".into()));
     assert!(text.len() <= 4000);

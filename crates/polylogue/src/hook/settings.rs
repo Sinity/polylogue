@@ -43,7 +43,7 @@ pub fn settings_path(
         Harness::Codex => Ok(config.root(polylogue_sources::codex::ROOT).join("hooks.json")),
         Harness::GeminiCli => Ok(config.root(polylogue_sources::origin::Root::HOME).join(".gemini/settings.json")),
         Harness::Hermes => Err(
-            "Hermes reads its hooks from config.yaml: add `hooks: {pre_llm_call: [{command: \"polylogue hook pre_llm_call --harness hermes\"}]}`"
+            "Hermes reads its hooks from config.yaml: add `hooks: {pre_llm_call: [{command: \"polylogue internal hook pre_llm_call --harness hermes\"}]}`"
                 .into(),
         ),
     }
@@ -128,8 +128,11 @@ fn every_event(harness: Harness) -> Vec<&'static str> {
 
 fn command(harness: Harness, event: &str) -> String {
     match harness {
-        Harness::ClaudeCode => format!("polylogue hook {event}"),
-        _ => format!("polylogue hook {event} --harness {}", harness.origin()),
+        Harness::ClaudeCode => format!("polylogue internal hook {event}"),
+        _ => format!(
+            "polylogue internal hook {event} --harness {}",
+            harness.origin()
+        ),
     }
 }
 
@@ -200,12 +203,12 @@ fn validate(settings: &Value) -> io::Result<()> {
     Ok(())
 }
 
-/// A command this installer wrote: `polylogue hook EVENT`, with
+/// A command this installer wrote: `polylogue internal hook EVENT`, with
 /// `--harness NAME` for a harness other than Claude Code, and nothing else.
 fn ours(hook: &Value) -> bool {
     let Some(rest) = hook["command"]
         .as_str()
-        .and_then(|command| command.strip_prefix("polylogue hook "))
+        .and_then(|command| command.strip_prefix("polylogue internal hook "))
     else {
         return false;
     };

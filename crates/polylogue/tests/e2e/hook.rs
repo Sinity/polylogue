@@ -1,4 +1,4 @@
-//! `polylogue hook` never blocks the harness: a hook that cannot start
+//! `polylogue internal hook` never blocks the harness: a hook that cannot start
 //! writes nothing to stdout, one line to stderr and exits 0.
 
 use std::process::{Output, Stdio};
@@ -29,7 +29,7 @@ fn malformed_config_exits_zero_with_empty_stdout() {
     std::fs::create_dir_all(deployment.parent().unwrap()).unwrap();
     std::fs::write(&deployment, "archive = [unterminated\n").unwrap();
     let mut command = crate::command(dir.path());
-    command.args(["hook", "SessionStart"]);
+    command.args(["internal", "hook", "SessionStart"]);
     assert_quiet_success(&run(command));
 }
 
@@ -49,7 +49,7 @@ fn deleted_cwd_exits_zero() {
         .arg(&gone)
         .arg(hook.get_program())
         .args(hook.get_args())
-        .args(["hook", "Stop"]);
+        .args(["internal", "hook", "Stop"]);
     assert_quiet_success(&run(command));
 }
 
@@ -57,6 +57,6 @@ fn deleted_cwd_exits_zero() {
 fn unknown_harness_exits_zero() {
     let dir = tempfile::tempdir().unwrap();
     let mut command = crate::command(dir.path());
-    command.args(["hook", "Stop", "--harness", "no-such-harness"]);
+    command.args(["internal", "hook", "Stop", "--harness", "no-such-harness"]);
     assert_quiet_success(&run(command));
 }

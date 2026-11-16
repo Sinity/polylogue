@@ -38,7 +38,7 @@ fn prepared(d: &test_daemon::TestDaemon, id: &str, text: &str) {
 
 fn claim_ids(d: &test_daemon::TestDaemon) -> Vec<String> {
     let answer = crate::test_daemon::Call::new(
-        "mail-claim",
+        "internal mail-claim",
         serde_json::json!({"session": s1(), "event": "PostToolUse"}),
     )
     .answer_with(&d.daemon, &invocation(d));

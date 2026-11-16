@@ -183,7 +183,7 @@ fn resumable(sessions: &[crate::resume::ResumableSession]) -> String {
 }
 
 /// A command line as a shell would run it, in its directory.
-fn command_line(command: &crate::resume::Command) -> String {
+pub(crate) fn command_line(command: &crate::resume::Command) -> String {
     let mut words = vec![shell_quote(&command.program)];
     words.extend(command.args.iter().map(|a| shell_quote(a)));
     let line = words.join(" ");
