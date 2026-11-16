@@ -76,8 +76,8 @@ fn row_session(row: &Json, field: &str) -> Option<polylogue_model::SessionId> {
     str_field(row, field).and_then(session_id)
 }
 
-static ROW_HEADER: crate::fields::Fields = crate::fields::Fields::new(
-    "row_header",
+static ROW_ENVELOPE: crate::fields::Fields = crate::fields::Fields::new(
+    "row_envelope",
     &[
         (
             "t",
@@ -206,7 +206,7 @@ impl Parser for Database {
             );
         }
         let row = v.get("r").unwrap_or(&Json::Null);
-        records.fields(table, &crate::fields::header(v, &["r"]), &ROW_HEADER);
+        records.fields(table, &crate::fields::header(v, &["r"]), &ROW_ENVELOPE);
         match table {
             "threads" => {
                 records.fields("threads", row, &THREAD_FIELDS);

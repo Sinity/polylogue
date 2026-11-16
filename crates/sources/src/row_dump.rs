@@ -89,7 +89,7 @@ impl Parser for RowDump {
             records.fields("row", value, &INVALID);
             return RecordOutcome::unreadable("row-dump record has no row object");
         };
-        records.unknown_table_row_header(table, value);
+        records.unknown_table_row_envelope(table, value);
         records.unknown_table("row", table, row);
         RecordOutcome::skipped("tool table has no domain parser")
     }

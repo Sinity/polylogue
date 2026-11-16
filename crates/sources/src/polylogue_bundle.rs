@@ -1,5 +1,5 @@
 //! Current bundle records, framed one record at a time.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 pub const ORIGIN: &str = "polylogue-bundle";
 use crate::RecordOutcome;
 use crate::document::Sink;

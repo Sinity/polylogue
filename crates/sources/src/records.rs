@@ -98,10 +98,10 @@ impl Records {
 
     /// The row body has its own table-column scope. Framing leaves are observed
     /// separately so a new header field cannot disappear behind that walk.
-    pub fn unknown_table_row_header(&mut self, table: &str, record: &Json) {
+    pub fn unknown_table_row_envelope(&mut self, table: &str, record: &Json) {
         use crate::fields::{ExpectedType as T, Rule};
-        static ROW_HEADER: Fields = Fields::new(
-            "row_header",
+        static ROW_ENVELOPE: Fields = Fields::new(
+            "row_envelope",
             &[
                 ("t", Rule::Read(T::String)),
                 ("k", Rule::Read(T::Any)),
@@ -110,9 +110,9 @@ impl Records {
             ],
         );
         self.account(
-            "row header",
+            "row envelope",
             &crate::fields::header(record, &["r"]),
-            &ROW_HEADER,
+            &ROW_ENVELOPE,
             Some(table),
             false,
         );
