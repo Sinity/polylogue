@@ -1,0 +1,499 @@
+//! The `rows` operation: one line. Its selection is resolved once, before
+//! the first step, and every step acts on those rows in order, each its own
+//! request (`<line request ID>-<n>`, so a retried line repeats each write
+//! once). A failing step stops the line; earlier steps keep their effects.
+//! A selection with no steps is the listing; a line ending in a streamed
+//! read streams.
+use super::{Failure, handlers, query_targets};
+use crate::commands::{Caller, Command, ToolAccess};
+use crate::daemon::handler::{Call, Handler, Streams};
+use crate::daemon::verbs::{
+    self, Given, RowRule, Selection, StepCall, read::LineReads, refused_pick, rows_rule,
+};
+use crate::protocol::line::{
+    LineAnswer, LineExplanation, Resolved, Rows, SelectionForm, Step, StepExplanation, StepOutcome,
+    StepReport, StepsAnswer,
+};
+use command_surface::{Access, Answer, Envelope, TextStyle};
+use polylogue_model::read::ReadDelivery;
+use polylogue_model::{Code, Reference};
+use polylogue_reading::operation::Context;
+use std::io::Write;
+use std::sync::Arc;
+
+pub(crate) struct Line;
+
+impl Handler for Line {
+    type Arguments = Rows;
+    type Answer = LineAnswer;
+    const PAGES: bool = true;
+    const BUDGETED: bool = true;
+    const READS_FIRST: bool = true;
+    const PRINT: fn(&Self::Answer, TextStyle) -> String = crate::cli::print::line;
+    fn read_only(rows: &Rows, _: &Command, caller: &Caller) -> bool {
+        rows.access() == ToolAccess::Read
+            && !(caller.sender().is_some()
+                && rows.steps.iter().any(|s| matches!(s, Step::Brief(_))))
+    }
+    fn default_deadline(rows: &Rows) -> bool {
+        !streams(rows)
+    }
+    fn access(rows: &Rows, _: Access) -> Access {
+        if rows.access() > ToolAccess::Read {
+            Access::Write
+        } else {
+            Access::Read
+        }
+    }
+    fn query_text(rows: &Rows) -> Option<&str> {
+        query_selection(rows)
+    }
+    fn ranking_query(rows: &Rows, _: &Command) -> Option<String> {
+        query_selection(rows).map(str::to_owned)
+    }
+    fn run(rows: Rows, call: &Call<'_>) -> Result<Answer<LineAnswer>, Failure> {
+        let given = given(&rows)?;
+        if rows.explain {
+            return explain(&rows, given, call);
+        }
+        check(&rows, &given)?;
+        if rows.steps.is_empty() {
+            return listing(rows, given, call);
+        }
+        let selection = prepare(&rows, given, call)?;
+        let resolved = summary(&selection);
+        if rows.dry_run {
+            let steps = rows
+                .steps
+                .iter()
+                .enumerate()
+                .map(|(index, step)| {
+                    let request_id = step_request(call.request_id, index);
+                    let step_call = StepCall::new(call, &request_id);
+                    let outcome = match verbs::would(step, &selection, &step_call) {
+                        Ok(would) => StepOutcome::WouldDo {
+                            would,
+                            refusal: None,
+                        },
+                        Err(failure) => StepOutcome::WouldDo {
+                            would: format!("would {} {}", step.verb(), selection.described()),
+                            refusal: Some(failure.error),
+                        },
+                    };
+                    StepReport {
+                        verb: step.verb().into(),
+                        request_id: Some(request_id),
+                        outcome,
+                    }
+                })
+                .collect();
+            return Ok(Answer::ok(LineAnswer::Steps(StepsAnswer {
+                resolved,
+                steps,
+            })));
+        }
+        let (steps, envelope, _) = run_steps(rows.steps, &selection, call);
+        let mut answer = Answer::ok(LineAnswer::Steps(StepsAnswer { resolved, steps }));
+        answer.envelope = envelope;
+        Ok(answer)
+    }
+}
+
+impl Streams for Line {
+    fn streaming(rows: &Rows) -> bool {
+        streams(rows)
+    }
+    fn produce(
+        mut rows: Rows,
+        call: &Call<'_>,
+        context: &Arc<Context>,
+        output: &mut dyn Write,
+    ) -> Result<(), Failure> {
+        // The stream's call carries no request ID; the accepted request does.
+        let request_id = context
+            .accepted_request()
+            .map(|request| request.request_id.clone())
+            .unwrap_or_default();
+        let call = Call {
+            request_id: &request_id,
+            ..call.copy()
+        };
+        let given = given(&rows)?;
+        check(&rows, &given)?;
+        let selection = prepare(&rows, given, &call)?;
+        let Some(Step::Read(last)) = rows.steps.pop() else {
+            return Err(Failure::bad_request("only a line ending in read streams"));
+        };
+        if let (_, _, Some(failure)) = run_steps(rows.steps, &selection, &call) {
+            return Err(failure);
+        }
+        let target = verbs::read::target(&selection)?;
+        if last.follow {
+            if last.until_idle {
+                return Err(verbs::not_built("read", "until-idle"));
+            }
+            return <super::follow::Follow as crate::daemon::handler::Feed>::produce(
+                super::follow::Arguments {
+                    target,
+                    marks: None,
+                },
+                call.daemon,
+                context,
+                output,
+            );
+        }
+        let call = Call {
+            cursor: last.cursor.as_deref(),
+            ..call.copy()
+        };
+        super::read::stream(
+            verbs::read::arguments(&last, target)?,
+            &call,
+            context,
+            output,
+            &LineReads {
+                daemon: call.daemon,
+            },
+        )
+    }
+}
+
+/// A line streams when it ends in `read --follow` or a streamed read.
+fn streams(rows: &Rows) -> bool {
+    !rows.explain
+        && !rows.dry_run
+        && matches!(
+            rows.steps.last(),
+            Some(Step::Read(read)) if read.follow || read.delivery == ReadDelivery::Stream
+        )
+}
+
+/// The selection, when it is a query rather than a reference.
+fn query_selection(rows: &Rows) -> Option<&str> {
+    match (&rows.selection, rows.references.is_empty()) {
+        (Some(text), true) if named(text).is_none() => Some(text),
+        _ => None,
+    }
+}
+
+/// A reference that names rows one by one: a session, message, block,
+/// annotation, alternate, page, role, tool call or kept result. Any other
+/// text, a saved query's name included, is a query.
+fn named(text: &str) -> Option<Reference> {
+    Reference::parse(text.trim()).ok().filter(|reference| {
+        polylogue_query::catalog::reference_unit(reference).is_some()
+            || matches!(
+                reference,
+                Reference::Result { .. }
+                    | Reference::Page(_)
+                    | Reference::Role(_)
+                    | Reference::Variant { .. }
+                    | Reference::ToolCall(..)
+            )
+    })
+}
+
+/// What the line names.
+fn given(rows: &Rows) -> Result<Given, Failure> {
+    match (&rows.selection, rows.references.as_slice()) {
+        (Some(_), [_, ..]) => Err(Failure::bad_request(
+            "a line takes a selection or references, not both",
+        )),
+        (None, []) => Ok(Given::None),
+        (None, references) => references
+            .iter()
+            .map(|text| Reference::parse(text).map_err(Failure::bad_value))
+            .collect::<Result<_, _>>()
+            .map(Given::References),
+        (Some(text), []) => Ok(match named(text) {
+            Some(reference) => Given::Reference(reference),
+            None => Given::Query(text.clone()),
+        }),
+    }
+}
+
+/// The refusals of a line's shape, before anything resolves.
+fn check(rows: &Rows, given: &Given) -> Result<(), Failure> {
+    if rows.steps.iter().any(|step| matches!(step, Step::Pick(_))) {
+        return Err(refused_pick());
+    }
+    if let Some(position) = rows
+        .steps
+        .iter()
+        .position(|step| matches!(step, Step::Read(read) if read.follow))
+        && position + 1 != rows.steps.len()
+    {
+        return Err(Failure::bad_request("read --follow must be the last step"));
+    }
+    if rows.wait.is_some() {
+        return Err(Failure::new(Code::NotBuilt, "--wait is not built yet"));
+    }
+    if *given == Given::None {
+        match rows.steps.as_slice() {
+            [] => return Err(Failure::bad_request("a listing needs a selection")),
+            [Step::Brief(_) | Step::Resume(_)] => {}
+            [Step::Read(_)] => {
+                return Err(Failure::bad_request(
+                    "read needs rows: name a selection; on a terminal the command line opens the picker",
+                ));
+            }
+            [first, ..] => {
+                return Err(Failure::bad_request(format!(
+                    "{} needs rows first: name a selection",
+                    first.verb()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The selection resolved once, refused when a write or act would reach
+/// several rows of a query without `all`.
+fn prepare(rows: &Rows, given: Given, call: &Call<'_>) -> Result<Selection, Failure> {
+    let selection = resolve(given, &rows.steps, call)?;
+    if let (Given::Query(_), Some(resolved)) = (&selection.given, &selection.resolved)
+        && resolved.len() > 1
+        && !rows.all
+        && rows.access() > ToolAccess::Read
+    {
+        return Err(crate::protocol::failure(
+            Code::NeedsAll,
+            format!(
+                "{} rows match; a write or act on all of them needs --all",
+                resolved.len()
+            ),
+        )
+        .with_candidates(resolved.iter().take(5).map(ToString::to_string).collect())
+        .into());
+    }
+    Ok(selection)
+}
+
+/// Resolves the rows when the line has two or more steps, a step that
+/// writes or acts, or a one-row step. A single read-only step is not
+/// resolved: it reads the selection as it streams.
+fn resolve(given: Given, steps: &[Step], call: &Call<'_>) -> Result<Selection, Failure> {
+    let question = match &given {
+        Given::Query(text) => Some(text.clone()),
+        _ => None,
+    };
+    let needed = steps.len() > 1
+        || steps
+            .iter()
+            .any(|step| step.access() > ToolAccess::Read || rows_rule(step) == RowRule::One);
+    let resolved = match &given {
+        _ if !needed => None,
+        Given::None => None,
+        Given::Reference(reference) => Some(vec![reference.clone()]),
+        Given::References(references) => Some(references.clone()),
+        Given::Query(text) => {
+            let reader = call.reader()?;
+            if selects_rows(call, &reader, text)? {
+                Some(query_targets(call.daemon, &reader, text, call.invocation)?)
+            } else if let Some(step) = steps.iter().find(|step| rows_rule(step) != RowRule::Any) {
+                return Err(Failure::bad_request(format!(
+                    "{} needs archive rows; the selection is grouped or measured",
+                    step.verb()
+                )));
+            } else {
+                None
+            }
+        }
+    };
+    Ok(Selection {
+        given,
+        resolved,
+        question,
+    })
+}
+
+/// Whether a query's rows are archive rows rather than groups, a summary
+/// or a measurement.
+fn selects_rows(
+    call: &Call<'_>,
+    reader: &polylogue_store::Reader<'_>,
+    text: &str,
+) -> Result<bool, Failure> {
+    let ask = crate::daemon::query::Ask {
+        text,
+        cursor: None,
+        page_size: None,
+        why: false,
+        session: None,
+        context: call.context()?,
+        embeddings: false,
+        ranking_identity: None,
+        near: None,
+        fields: &[],
+    };
+    crate::daemon::query::selects_rows(reader, &ask)
+}
+
+/// The resolved rows as the answer states them.
+fn summary(selection: &Selection) -> Option<Resolved> {
+    let resolved = selection.resolved.as_ref()?;
+    Some(Resolved {
+        question: selection.question.clone(),
+        count: resolved.len() as u64,
+        named: !matches!(selection.given, Given::Query(_)),
+        first: resolved.iter().take(20).map(ToString::to_string).collect(),
+    })
+}
+
+fn step_request(line: &str, index: usize) -> String {
+    format!("{line}-{}", index + 1)
+}
+
+/// Runs the steps in order until one fails: each step's report, the line's
+/// notes and next calls, and the failure that stopped it.
+fn run_steps(
+    steps: Vec<Step>,
+    selection: &Selection,
+    call: &Call<'_>,
+) -> (Vec<StepReport>, Envelope, Option<Failure>) {
+    let mut reports = Vec::with_capacity(steps.len());
+    let mut envelope = Envelope::default();
+    let mut failed = None;
+    for (index, step) in steps.into_iter().enumerate() {
+        let verb = step.verb();
+        if failed.is_some() {
+            reports.push(StepReport {
+                verb: verb.into(),
+                request_id: None,
+                outcome: StepOutcome::NotRun,
+            });
+            continue;
+        }
+        let request_id = step_request(call.request_id, index);
+        let step_call = StepCall::new(call, &request_id);
+        let outcome = match verbs::run_step(step, selection, &step_call) {
+            Ok(done) => {
+                envelope.notes.extend(done.envelope.notes);
+                if !done.envelope.next.is_empty() {
+                    envelope.next = done.envelope.next;
+                }
+                StepOutcome::Done {
+                    reply: done.reply,
+                    undo: done.undo,
+                }
+            }
+            Err(failure) => {
+                envelope.notes.push(format!(
+                    "step {} ({verb}) failed: {}",
+                    index + 1,
+                    failure.message
+                ));
+                let error = failure.error.clone();
+                failed = Some(failure);
+                StepOutcome::Failed { error }
+            }
+        };
+        reports.push(StepReport {
+            verb: verb.into(),
+            request_id: Some(request_id),
+            outcome,
+        });
+    }
+    (reports, envelope, failed)
+}
+
+/// The selection alone: its rows, a page at a time.
+fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswer>, Failure> {
+    let query = Selection {
+        given,
+        resolved: None,
+        question: None,
+    }
+    .query_text()
+    .ok_or_else(|| Failure::bad_request("a listing needs a selection"))?;
+    Ok(handlers::Query::run(
+        crate::protocol::query::Arguments {
+            query,
+            limit: rows.page_size.map(std::num::NonZeroU64::get),
+            why: rows.why,
+            session: None,
+            fields: rows.fields,
+        },
+        call,
+    )?
+    .map(|found| LineAnswer::Listing(Box::new(found))))
+}
+
+/// How the line is read and what each step would do; nothing resolves.
+fn explain(rows: &Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswer>, Failure> {
+    let form = match &given {
+        Given::None => SelectionForm::None,
+        Given::Query(_) => SelectionForm::Query,
+        Given::Reference(Reference::Result { .. }) => SelectionForm::KeptResult,
+        Given::Reference(_) => SelectionForm::Reference,
+        Given::References(_) => SelectionForm::References,
+    };
+    let plan = match &given {
+        Given::Query(text) => Some(plan(call, text)?),
+        _ => None,
+    };
+    let selection = Selection {
+        question: match &given {
+            Given::Query(text) => Some(text.clone()),
+            _ => None,
+        },
+        given,
+        resolved: None,
+    };
+    let steps = rows
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(index, step)| {
+            let request_id = step_request(call.request_id, index);
+            let step_call = StepCall::new(call, &request_id);
+            let plain = || format!("would {} {}", step.verb(), selection.described());
+            // A step that acts on rows one by one cannot look at a query's
+            // rows here, which are not resolved.
+            let would = if selection.question.is_some() && rows_rule(step) != RowRule::Any {
+                plain()
+            } else {
+                verbs::would(step, &selection, &step_call)
+                    .unwrap_or_else(|failure| format!("{}; refused: {}", plain(), failure.message))
+            };
+            StepExplanation {
+                verb: step.verb().into(),
+                would,
+                access: step.access(),
+            }
+        })
+        .collect();
+    Ok(Answer::ok(LineAnswer::Explained(LineExplanation {
+        form,
+        plan,
+        steps,
+    })))
+}
+
+/// The selection query's plan.
+fn plan(call: &Call<'_>, text: &str) -> Result<serde_json::Value, Failure> {
+    let reader = call.reader()?;
+    let context = call.context()?;
+    let d = call.daemon;
+    crate::daemon::query::with_ranking(&reader, &d.warm, &d.config, |embeddings, ranking, _| {
+        crate::daemon::query::explain(
+            &reader,
+            crate::daemon::query::Ask {
+                text,
+                cursor: None,
+                page_size: None,
+                why: false,
+                session: None,
+                context,
+                embeddings,
+                ranking_identity: ranking,
+                near: None,
+                fields: &[],
+            },
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests;

@@ -107,6 +107,15 @@ fn ranking_text(reader: &Reader<'_>, ask: &Ask<'_>) -> Result<Option<String>, Fa
     Ok(program.near.map(|near| near.text))
 }
 
+/// Whether a query's rows are archive rows: not groups, a summary, the
+/// matches of a pattern or a measurement.
+pub(crate) fn selects_rows(reader: &Reader<'_>, ask: &Ask<'_>) -> Result<bool, Failure> {
+    let opts = options(reader, ask, 0)?;
+    let plan = reader.prepare_query_plan(ask.text, &opts)?;
+    let program = reader.lower_plan(&plan, &opts)?;
+    Ok(program.shape == Shape::Rows && program.measure.is_none())
+}
+
 fn with_similarity<T>(
     reader: &Reader<'_>,
     program: &Program,

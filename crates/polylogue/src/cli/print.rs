@@ -94,6 +94,48 @@ pub fn read(page: &polylogue_model::read::ReadPage, _style: TextStyle) -> String
     String::from_utf8(bytes).expect("read encoder writes UTF-8")
 }
 
+/// A line: its listing, or each step's reply in order with the failed and
+/// skipped steps named, then the lines that take its writes back.
+pub fn line(answer: &protocol::line::LineAnswer, style: TextStyle) -> String {
+    use protocol::line::{LineAnswer, StepAnswer, StepOutcome};
+    let steps = match answer {
+        LineAnswer::Listing(found) => return query(found, style),
+        LineAnswer::Explained(explanation) => return json(explanation, style),
+        LineAnswer::Steps(steps) => &steps.steps,
+    };
+    let mut out = String::new();
+    let mut undo = Vec::new();
+    for step in steps {
+        match &step.outcome {
+            StepOutcome::Done { reply, undo: lines } => {
+                out.push_str(&match reply {
+                    StepAnswer::Read(page) => read(page, style),
+                    StepAnswer::Brief(prepared) => context(prepared, style),
+                    StepAnswer::Resume(found) => resume(found, style),
+                    other => json(other, style),
+                });
+                undo.extend(lines);
+            }
+            StepOutcome::Failed { error } => {
+                let _ = writeln!(out, "{} failed: {}", step.verb, error.message);
+            }
+            StepOutcome::NotRun => {
+                let _ = writeln!(out, "{} not run", step.verb);
+            }
+            StepOutcome::WouldDo { would, refusal } => {
+                let _ = writeln!(out, "{would}");
+                if let Some(refusal) = refusal {
+                    let _ = writeln!(out, "  refused: {}", refusal.message);
+                }
+            }
+        }
+    }
+    for line in undo {
+        let _ = writeln!(out, "undo: {line}");
+    }
+    out
+}
+
 /// A prepared brief, takeover or recall.
 pub fn context(answer: &protocol::context::Answer, _style: TextStyle) -> String {
     polylogue_render::terminal::escape(&answer.prepared.text)

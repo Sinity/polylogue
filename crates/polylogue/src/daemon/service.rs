@@ -12,6 +12,7 @@ use state::ModeState;
 
 pub(crate) mod browser;
 pub(crate) mod handlers;
+pub(crate) mod line;
 pub(crate) mod read;
 
 #[cfg(test)]

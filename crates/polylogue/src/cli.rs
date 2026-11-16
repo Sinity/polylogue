@@ -86,43 +86,53 @@ pub fn command() -> clap::Command {
                     .args(row_args(c))
                     .subcommand(subcommand(c).name("find"));
             }
-            Cli::Subcommand | Cli::Hidden => {
-                let sub = subcommand(c);
-                root = match c.name.split_once(' ') {
-                    None => root.subcommand(sub),
-                    Some((group, _)) => {
-                        if root.find_subcommand(group).is_none() {
-                            let help = GROUPS
-                                .iter()
-                                .find(|g| g.name == group)
-                                .map_or("", |g| g.help);
-                            // A group whose commands are all hidden is hidden.
-                            let hidden = COMMANDS
-                                .iter()
-                                .filter(|x| x.name.split_once(' ').is_some_and(|(g, _)| g == group))
-                                .all(|x| x.cli == Cli::Hidden);
-                            root = root.subcommand(
-                                clap::Command::new(group)
-                                    .about(help)
-                                    .hide(hidden)
-                                    .subcommand_required(true)
-                                    .arg_required_else_help(true),
-                            );
-                        }
-                        root.mut_subcommand(group, |g| g.subcommand(sub))
-                    }
-                };
+            Cli::Subcommand | Cli::Hidden | Cli::Line => {
+                let words: Vec<&str> = c.name.split(' ').collect();
+                root = place(root, "", &words[..words.len() - 1], subcommand(c));
             }
         }
     }
     crate::config::augment_command(root)
 }
 
+/// Places a row's subcommand under its group words (`dev schema infer`
+/// under `dev`, then `schema`), creating each group on first use; a group
+/// whose rows are all hidden is hidden.
+fn place(parent: clap::Command, above: &str, groups: &[&str], sub: clap::Command) -> clap::Command {
+    let Some((group, below)) = groups.split_first() else {
+        return parent.subcommand(sub);
+    };
+    let path = if above.is_empty() {
+        (*group).to_owned()
+    } else {
+        format!("{above} {group}")
+    };
+    let mut parent = parent;
+    if parent.find_subcommand(group).is_none() {
+        let help = GROUPS
+            .iter()
+            .find(|g| g.name == path)
+            .map_or("", |g| g.help);
+        let hidden = COMMANDS
+            .iter()
+            .filter(|x| x.name.starts_with(&format!("{path} ")))
+            .all(|x| x.cli.hidden());
+        parent = parent.subcommand(
+            clap::Command::new(group.to_string())
+                .about(help)
+                .hide(hidden)
+                .subcommand_required(true)
+                .arg_required_else_help(true),
+        );
+    }
+    parent.mut_subcommand(group, |g| place(g, &path, below, sub))
+}
+
 fn subcommand(c: &Command) -> clap::Command {
     let word = c.name.rsplit(' ').next().unwrap_or(c.name);
     let mut sub = clap::Command::new(word)
         .about(c.help)
-        .hide(c.cli == Cli::Hidden)
+        .hide(c.cli.hidden())
         .args(row_args(c));
     if !c.examples.is_empty() {
         sub = sub.after_help(format!("Examples:\n  {}", c.examples.join("\n  ")));
@@ -263,10 +273,12 @@ fn chosen(matches: &ArgMatches) -> Option<(&'static Command, &ArgMatches)> {
     if word == "find" {
         return crate::commands::command("query").map(|command| (command, sub));
     }
-    let (name, leaf) = match sub.subcommand() {
-        Some((second, leaf)) => (format!("{word} {second}"), leaf),
-        None => (word.to_owned(), sub),
-    };
+    let mut name = word.to_owned();
+    let mut leaf = sub;
+    while let Some((next, below)) = leaf.subcommand() {
+        name = format!("{name} {next}");
+        leaf = below;
+    }
     crate::commands::command(&name).map(|c| (c, leaf))
 }
 
