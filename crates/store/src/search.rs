@@ -26,6 +26,65 @@ pub(crate) enum SearchDriver {
     Recency,
 }
 
+// The maximum number of hit occurrences sampled before considering the scope.
+pub(crate) const HIT_BUDGET: i64 = 256;
+// The maximum number of scope blocks sampled before reading a ranked prefix.
+pub(crate) const SCOPE_BUDGET: i64 = 16_384;
+
+/// The table, block kinds and writer condition of one index.
+pub(crate) fn index_parts(index: SnippetIndex) -> (&'static str, &'static str, &'static str) {
+    match index {
+        SnippetIndex::Prose => (
+            "text_fts",
+            "'text'",
+            " AND (m.written_by IN ('human','model','unknown') OR m.prompt_kind IS 'compaction_summary')",
+        ),
+        SnippetIndex::Output => ("output_fts", "'tool_result','tool_call'", ""),
+    }
+}
+
+/// SQL for a budget: a parameter or a literal.
+pub(crate) struct Budgets<'a> {
+    pub hits: &'a str,
+    pub scope: &'a str,
+}
+
+/// Samples of hits and scope blocks, and the plan they choose. A recency batch
+/// is read whole as the scope; outside batches its JSON parameter is `[]`.
+pub(crate) fn plan_ctes(
+    name: &str,
+    index: SnippetIndex,
+    expression: &str,
+    scope_blocks: &str,
+    budgets: Budgets<'_>,
+    batch: Option<&str>,
+) -> Vec<String> {
+    let (table, kinds, writer) = index_parts(index);
+    let Budgets { hits, scope } = budgets;
+    let limit = batch.map_or_else(
+        || format!("{scope}+1"),
+        |batch| format!("CASE WHEN {batch}='[]' THEN {scope}+1 ELSE -1 END"),
+    );
+    let batched = batch.map_or_else(String::new, |batch| {
+        format!("WHEN {batch}<>'[]' THEN 'scope' ")
+    });
+    vec![
+        format!(
+            "{name}_hit_sample AS MATERIALIZED (SELECT 1 FROM {table} \
+             CROSS JOIN block b INDEXED BY block_text ON b.text_id={table}.rowid \
+             CROSS JOIN message m ON m.pk=b.message_pk \
+             WHERE {table} MATCH {expression} AND b.kind IN ({kinds}){writer} LIMIT {hits}+1)"
+        ),
+        format!("{name}_scope_sample AS MATERIALIZED (SELECT * FROM {scope_blocks} LIMIT {limit})"),
+        format!(
+            "{name}_plan AS MATERIALIZED (SELECT CASE {batched}\
+             WHEN (SELECT count(*) FROM {name}_hit_sample)<={hits} THEN 'every_hit' \
+             WHEN (SELECT count(*) FROM {name}_scope_sample)<={scope} THEN 'scope' \
+             ELSE 'ranked_prefix' END AS plan)"
+        ),
+    ]
+}
+
 /// The words of `text` as the index splits them: runs of letters and
 /// digits, lowercased, letters with a stroke folded as the index folds
 /// them. Punctuation in pasted paths and identifiers splits words instead

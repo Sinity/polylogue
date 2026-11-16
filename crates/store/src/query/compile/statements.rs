@@ -58,6 +58,17 @@ pub struct ScopedSearch {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SearchPlan {
+    /// The SQL choice under the keys statement's CTEs.
+    pub choice: String,
+    /// One-based parameters holding the hit and scope budgets.
+    pub hit_budget: usize,
+    pub scope_budget: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recent: Option<RecentSearch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RecentSearch {
     /// Keys of the scope rows and their final order values, read newest first.
     pub keys: String,
