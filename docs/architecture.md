@@ -161,7 +161,7 @@ the rest of the boot: the commit is visible, so a retry would find it stored
 and report success, and the kernel may have marked the unwritten pages clean,
 so no later sync in that boot, in the same process or a new one, shows that
 they reached the disk. Recovery starts with a reboot
-([installing.md#storage-failure](installing.md#storage-failure)).
+([operations.md#storage-failure](operations.md#storage-failure)).
 
 **Building `index.db`.** A build of the index, the first one or one that
 replaces an index from another schema, writes a private file,

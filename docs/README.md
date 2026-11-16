@@ -48,8 +48,8 @@ runtime and its tests. The target card and tool descriptions are
 | [web designs](web-design.md) | visual baselines, artboards and views to draw |
 | [web reader](web-reader.md) | session reading and control, reports, sharing, documents and messages |
 | [web views](web-views.md) | home, running, search, notes, comparisons, timelines, cost, analysis, status and settings |
-| [operations](operations.md) | the daemon, idle work, `status` and `--verify`, notices, the change feed |
-| [installing](installing.md) | `install`, configuration and `set`, `embed`, `demo`, several machines, deployment, upgrades, storage failure, backup and restore |
+| [operations](operations.md) | the daemon, storage failure, idle work, `status` and `--verify`, notices, the change feed |
+| [installing](installing.md) | `install`, configuration and `set`, `embed`, `demo`, several machines, deployment, upgrades, backup and restore |
 | [primary mode](primary-mode.md) | Polylogue on Sinex, and the move to it |
 | [testing](testing.md) | test archives, properties tested, fault and crash tests, fuzzing, benchmarks |
 | [development](development.md) | building, the dev shell, xtask, CI, the deployment modules |

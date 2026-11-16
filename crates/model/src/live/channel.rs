@@ -301,7 +301,7 @@ pub fn channel_table() -> String {
         Err(refusal) => format!("refused: {}", refusal.reason),
     };
     let mut out = String::from(
-        "| Harness | Session | ping, running | ping, ended | notice | answer | interrupt | resume, ended | context events |\n\
+        "| Harness | Session | send, running | send, ended | notice | answer | interrupt | resume, ended | context events |\n\
          |---|---|---|---|---|---|---|---|---|\n",
     );
     for harness in HARNESSES {

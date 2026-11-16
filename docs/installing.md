@@ -1,6 +1,6 @@
 # Installing and configuring
 
-Setting Polylogue up and keeping it: installing into harnesses, Chrome, shells and Google Drive, configuration and `set`, embedding with `embed`, the `demo` archive, several archives and machines, deployment, upgrades, storage failure, and backup and restore. Running the daemon, `status`, notices and the change feed are [operations.md](operations.md); the command forms and exit codes are [interfaces.md](interfaces.md#commands).
+Setting Polylogue up and keeping it: installing into harnesses, Chrome, shells and Google Drive, configuration and `set`, embedding with `embed`, the `demo` archive, several archives and machines, deployment, upgrades, and backup and restore. Running the daemon, `status`, notices and the change feed are [operations.md](operations.md); the command forms and exit codes are [interfaces.md](interfaces.md#commands).
 
 ## Installing
 
@@ -104,7 +104,7 @@ An upgrade is a version change in `status` and, when a parser changed, a while i
 | a change to the index schema | a new index is built from stored bytes in a private file and installed when its build ends ([below](#replacing-an-index-from-another-schema)) | reads reply `index_building` with the build's progress until the new index is installed |
 | a table added to `embeddings.db` | added in place at start; stored vectors are untouched | down for the restart |
 | `archive.db` or `embeddings.db` in another format than the binary's | refused, exit 78, not restarted | down |
-| the disk failed a sync of `archive.db` (any time, not an upgrade) | exit 74, not restarted, refuses until the machine reboots ([Storage failure](#storage-failure)) | down |
+| the disk failed a sync of `archive.db` (any time, not an upgrade) | exit 74, not restarted, refuses until the machine reboots ([Storage failure](operations.md#storage-failure)) | down |
 
 **Spools across a rollback.** Hooks and the browser host keep writing their spools while the daemon is replaced, and the spools are never deleted, so the build a deployment rolls back to reads what the newer build wrote. A spool line's shape is therefore part of the deployed format: the hook's line shapes are pinned by a fixture that the previous build's reader is checked against, and a change to them is checked against the deployed reader before it ships.
 
@@ -119,21 +119,6 @@ The new index records why it replaced the old one, and `status` reports it under
 The archive is never handled this way: `archive.db`, the segment log and the embeddings store in another format are refused (exit 78) and left as they were, because they hold what cannot be recomputed. The embeddings store from an earlier build only gains the tables added since ([archive.md#evolution](archive.md#evolution)).
 
 The first build reads every input's newest revision chain first and replies to reads with `index_building` and progress until it can serve them. Once those are read (or refused) the first build ends: its read indexes and search are built, the index is installed and the sessions derived, and the older chains, which hold earlier readings of the same inputs, are read afterwards as regular work, with reads reporting parsing as incomplete until they are. Moving `index.db` aside by hand and starting the daemon builds a new index the same way. Moving a whole archive aside and starting fresh is a deliberate act, never something code does to get past a change. The planning query selects newest or older chains before joining parser progress, so each discovery phase reads only its chain set's parser states. Newest means the chain containing the greatest revision number; its stored length remains that chain's maximum declared length, including stored histories that resume an earlier chain with a shorter revision. Input enumeration and historical source metadata still require their existing reads.
-
-## Storage failure
-
-The writer syncs `archive.db`'s log after each commit ([architecture.md#durability](architecture.md#durability)). When that sync, or the sync a writer makes when it starts, fails, the daemon stops writing for the rest of the boot:
-
-- **It stops.** The writer stops at once, so no request gets a reply after the failure, not even a retry that would find its rows already stored. The journal names the file and the operating system's error number (`storage I/O error syncing …/archive.db-wal: … (errno 5); writing stopped for this boot`), and the daemon exits 74. The service does not restart it.
-- **It stays stopped until the machine reboots.** The failure is kept in the archive's runtime directory with the boot's identifier, and a daemon started again in the same boot refuses with the same message and exit 74. After a failed sync the kernel may have marked the unwritten pages clean, and they stay in the page cache across a process restart, so no later sync in that boot can show that they reached the disk. A reboot drops the page cache.
-
-Recovery:
-
-1. Check the device and the filesystem: `dmesg` for I/O errors; on btrfs, `btrfs device stats` and `btrfs scrub`. Replace or repair the device before writing to it again.
-2. Reboot.
-3. Start the daemon. Opening the archive recovers it as after a crash: SQLite's log recovery keeps only the frames whose checksums hold, ending at the last complete commit, and a segment tail past its last committed extent is truncated.
-4. Run `polylogue status --verify` ([operations.md#checking-every-stored-byte](operations.md#checking-every-stored-byte)) and restore from backup if it names a problem.
-5. What the lost commits held is read again where its source still has it. Files that tools keep where they wrote them (session logs, the hook spools, which are never deleted, and the browser host's capture logs) are re-read from their source positions, which are saved only for committed rows. Not re-readable from the machine: a tool database row the tool has since deleted; a file a tool has since pruned or rewritten; an AI Studio prompt revision whose spooled body the Drive collector removed after delivery (only Drive itself or a Takeout has it); an export, which is stored again only by importing it again. Records written through Polylogue itself (notes, tags, judgments, settings and other annotations, and query runs) have no other source; one whose commit was lost is gone, and the client that wrote it was not told it was stored, because the writer stopped before replying.
 
 ## Backup and restore
 

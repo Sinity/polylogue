@@ -45,7 +45,22 @@ A continuous application worker that ends unexpectedly fails the run after clean
 
 **Without sources.** `polylogue daemon --no-sources` reads none of its sources: no root is scanned or watched, no spool or tool database is read, no collector runs and no repository lookup is written, so no input, observation or coverage is recorded from the machine. It plans from stored source identities, recorded parser paths and chain progress, without reconstructing watched machine locations. It parses and derives what the archive already stores (an index behind its archive catches up, a reading-version change re-parses) and serves every request, `import` included. A file that has gone from its location is not observed as gone, because nothing looked. With `--until-idle` it processes what is stored and exits. An archive that receives another archive's contents (`import`) is started this way, so that none of its locations is watched before the import, and the restore drill uses it to check a restored copy without touching the machine's live files.
 
-**Exits:** 0 clean stop; 1 failure or lock held; 74 storage failure (the disk failed a sync of `archive.db`; [installing.md#storage-failure](installing.md#storage-failure)); 78 refused archive (`archive.db` or `embeddings.db` in another format; an index never causes it). The service sets `RestartPreventExitStatus=74 78`, and the service manager's failure notification reports either, since no daemon is running to send a notice.
+**Exits:** 0 clean stop; 1 failure or lock held; 74 storage failure (the disk failed a sync of `archive.db`; [operations.md#storage-failure](#storage-failure)); 78 refused archive (`archive.db` or `embeddings.db` in another format; an index never causes it). The service sets `RestartPreventExitStatus=74 78`, and the service manager's failure notification reports either, since no daemon is running to send a notice.
+
+### Storage failure
+
+The writer syncs `archive.db`'s log after each commit ([architecture.md#durability](architecture.md#durability)). When that sync, or the sync a writer makes when it starts, fails, the daemon stops writing for the rest of the boot:
+
+- **It stops.** The writer stops at once, so no request gets a reply after the failure, not even a retry that would find its rows already stored. The journal names the file and the operating system's error number (`storage I/O error syncing …/archive.db-wal: … (errno 5); writing stopped for this boot`), and the daemon exits 74. The service does not restart it.
+- **It stays stopped until the machine reboots.** The failure is kept in the archive's runtime directory with the boot's identifier, and a daemon started again in the same boot refuses with the same message and exit 74. After a failed sync the kernel may have marked the unwritten pages clean, and they stay in the page cache across a process restart, so no later sync in that boot can show that they reached the disk. A reboot drops the page cache.
+
+Recovery:
+
+1. Check the device and the filesystem: `dmesg` for I/O errors; on btrfs, `btrfs device stats` and `btrfs scrub`. Replace or repair the device before writing to it again.
+2. Reboot.
+3. Start the daemon. Opening the archive recovers it as after a crash: SQLite's log recovery keeps only the frames whose checksums hold, ending at the last complete commit, and a segment tail past its last committed extent is truncated.
+4. Run `polylogue status --verify` ([operations.md#checking-every-stored-byte](operations.md#checking-every-stored-byte)) and restore from backup if it names a problem.
+5. What the lost commits held is read again where its source still has it. Files that tools keep where they wrote them (session logs, the hook spools, which are never deleted, and the browser host's capture logs) are re-read from their source positions, which are saved only for committed rows. Not re-readable from the machine: a tool database row the tool has since deleted; a file a tool has since pruned or rewritten; an AI Studio prompt revision whose spooled body the Drive collector removed after delivery (only Drive itself or a Takeout has it); an export, which is stored again only by importing it again. Records written through Polylogue itself (notes, tags, judgments, settings and other annotations, and query runs) have no other source; one whose commit was lost is gone, and the client that wrote it was not told it was stored, because the writer stopped before replying.
 
 ## Idle and steady-state work
 
