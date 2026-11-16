@@ -89,7 +89,7 @@ impl Source for Fixture {
         if request.selection == "invalid" {
             return Err(Failure::invalid_query("invalid query text"));
         }
-        if self.case == "query" && request.selection == "sessions" {
+        if self.case == "query" && matches!(request.selection.as_str(), "" | "sessions") {
             std::future::pending::<()>().await;
         }
         Ok(Page {
