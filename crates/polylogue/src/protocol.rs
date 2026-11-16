@@ -128,6 +128,7 @@ pub mod import {
     pub type Answer = polylogue_engine::ImportReport;
 }
 
+pub mod line;
 mod scope;
 pub(crate) use scope::{ReadScopes, answer as scope_answer};
 pub mod query;
@@ -238,6 +239,7 @@ pub mod setting {
 }
 
 pub mod status;
+pub mod steps;
 pub mod stream {
     //! Server-sent-event framing for the daemon's finite streams.
     use crate::daemon::Failure;
@@ -323,7 +325,11 @@ pub fn kind(code: polylogue_model::Code) -> FailureKind {
         | Code::SinceIsADateOrTime
         | Code::UnknownOutcome
         | Code::UnknownAttachment
-        | Code::UnknownReport => FailureKind::BadRequest,
+        | Code::UnknownReport
+        | Code::NotAVerb
+        | Code::TooManyWords
+        | Code::NeedsAll
+        | Code::RowNumbersOffTerminal => FailureKind::BadRequest,
         Code::Ambiguous => FailureKind::Ambiguous,
         Code::StaleCursor => FailureKind::StaleCursor,
         Code::NotBuilt
