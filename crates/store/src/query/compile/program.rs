@@ -3,17 +3,96 @@
 
 use super::*;
 
+/// One selection's SQL while it is lowered: its rows, conditions and stages.
+struct SelectionSql {
+    scope: RowContext,
+    top: Vec<Condition>,
+    applied: Vec<(String, String)>,
+    defaults_only: Vec<String>,
+    where_sql: Vec<String>,
+    why: Vec<(String, String)>,
+    matched: Option<MatchRel>,
+    measure: Option<Measure>,
+    explicit_order: Option<Vec<String>>,
+}
+
+struct RowStatements {
+    sql: String,
+    shape: Shape,
+    columns: Vec<Column>,
+    order: Vec<OrderKey>,
+    count: Option<String>,
+    members: Option<String>,
+    keyed: Option<(String, String)>,
+}
+
+impl RowStatements {
+    fn row_kind(&self, unit: Unit) -> RowKind {
+        if self.shape == Shape::Matches {
+            RowKind::Group {
+                columns: vec!["parent".into(), "match".into(), "position".into()],
+            }
+        } else {
+            RowKind::UnitRows {
+                unit,
+                columns: units::spec(unit)
+                    .identity
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| format!("_identity{i}"))
+                    .collect(),
+            }
+        }
+    }
+}
+
 impl<'a> Compiler<'a> {
-    /// A selection and the `stages` that read its rows as they are.
     pub(super) fn unit_rows_program_with(
         mut self,
         selection: &Selection,
         stages: &[Transform],
         preset: Option<MatchRel>,
     ) -> Result<Program, QueryError> {
+        let mut parts = self.selection_sql(selection, preset)?;
+        self.apply_stages(selection, stages, &mut parts)?;
+        let count_relation = self.finish_conditions(selection, &mut parts)?;
+        let recursive = parts.matched.as_ref().is_some_and(|m| m.recursive);
+        let ctes = if self.ctes.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "WITH {}{} ",
+                if recursive { "RECURSIVE " } else { "" },
+                self.ctes.join(", ")
+            )
+        };
+        let rows = self.row_statements(selection, &parts, &ctes, count_relation)?;
+        let mut attach = vec![];
+        if !selection.attach.is_empty() {
+            if rows.shape != Shape::Rows {
+                return Err(QueryError::Invalid {
+                    message: "attached rows apply to rows, not to groups or summaries".into(),
+                    position: selection.attach[0].span.start,
+                });
+            }
+            for child in &selection.attach {
+                attach.push(self.attach(child, &parts.scope)?);
+            }
+        }
+
+        let from = self.from(&parts.scope)?;
+        let why = self.explanations(&parts, &ctes, &from);
+        Ok(self.into_program(parts, rows, attach, why))
+    }
+
+    fn selection_sql(
+        &mut self,
+        selection: &Selection,
+        preset: Option<MatchRel>,
+    ) -> Result<SelectionSql, QueryError> {
         self.measuring = selection.measured;
         self.rank_index = selection.search.rank;
-        let mut scope = RowContext::plain(selection.unit);
+        let scope = RowContext::plain(selection.unit);
         if let Some(semantic) = &selection.semantic {
             if !self.source_near_allowed {
                 return Err(custom_fields::similar_misplaced(semantic.span));
@@ -28,7 +107,7 @@ impl<'a> Compiler<'a> {
                 },
             ));
         }
-        let mut top = selection.top_level();
+        let top = selection.top_level();
         let applied: Vec<(String, String)> = selection
             .defaults
             .iter()
@@ -82,161 +161,235 @@ impl<'a> Compiler<'a> {
         if selection.order == Order::Sorted {
             self.near_request = None;
         }
-        let mut matched = preset;
-        let mut measure: Option<Measure> = None;
-        let mut explicit_order = None;
+        Ok(SelectionSql {
+            scope,
+            top,
+            applied,
+            defaults_only,
+            where_sql,
+            why,
+            matched: preset,
+            measure: None,
+            explicit_order: None,
+        })
+    }
+
+    fn apply_stages(
+        &mut self,
+        selection: &Selection,
+        stages: &[Transform],
+        parts: &mut SelectionSql,
+    ) -> Result<(), QueryError> {
         for stage in stages {
             match &stage.kind {
                 TransformKind::Sort { .. } => {
                     debug_assert!(super::search::recent_sort(
-                        scope.unit,
+                        parts.scope.unit,
                         std::slice::from_ref(stage)
                     ));
-                    let spec = units::spec(scope.unit);
-                    let time = scope.a.expand(spec.time);
+                    let spec = units::spec(parts.scope.unit);
+                    let time = parts.scope.a.expand(spec.time);
                     let mut order = vec![format!("{time} IS NULL"), format!("{time} DESC")];
-                    order.extend(spec.identity.iter().map(|term| scope.a.expand(term)));
-                    explicit_order = Some(order);
+                    order.extend(spec.identity.iter().map(|term| parts.scope.a.expand(term)));
+                    parts.explicit_order = Some(order);
                 }
                 TransformKind::Scope {
                     unit,
                     condition: cond,
                 } => {
-                    if scope.unit != Unit::Sessions {
-                        return Err(QueryError::Invalid {
-                            message: "a `| UNIT where …` stage follows a session query".into(),
-                            position: stage.span.start,
-                        });
-                    }
-                    let sessions = format!(
-                        "SELECT s.pk FROM {} WHERE {}",
-                        self.from(&scope)?,
-                        and_all(&where_sql)
-                    );
-                    // The session ranking selects sessions; children have their own order.
-                    self.near_request = None;
-                    self.rank = None;
-                    self.rank_source = None;
-                    self.text_search = None;
-                    self.rank_index = None;
-                    self.near_rank = None;
-                    self.near_join = None;
-                    self.fusion = None;
-                    self.shown.clear();
-                    let unit = bind_unit(unit)?;
-                    let next = RowContext::plain(unit);
-                    let ntop = cond.as_ref().map(top_level).unwrap_or_default();
-                    let mut w = self.defaults(&next, &ntop)?;
-                    let link = if fields::has_session(unit) {
-                        format!("{}.pk IN ({sessions})", next.a.s)
-                    } else {
-                        self.session_link(&next, &sessions)?
-                    };
-                    w.push(link);
-                    // Snippets look for the terms of the rows shown.
-                    self.snippet_terms.clear();
-                    if let Some(c) = cond {
-                        let filter = self.binder().bind(c, unit)?;
-                        let search = polylogue_query::search::Search::of(Some(&filter), unit);
-                        self.rank_index = search.rank;
-                        w.push(self.lower(&filter, &next, true)?);
-                        self.snippet_terms.extend(search.terms);
-                    }
-                    scope = next;
-                    top = ntop;
-                    where_sql = w;
-                    why.clear();
-                    // A fused rank and the lists it names belong to the
-                    // sessions.
-                    self.fusion = None;
-                    self.shown.retain(|(name, ..)| name != "found_in");
+                    self.scope_stage(unit, cond.as_ref(), stage.span, parts)?;
                 }
                 TransformKind::Extension { name, arguments }
                     if name == polylogue_query::catalog::MEASURE =>
                 {
-                    let [ExtensionArgument::Value(what), rest @ ..] = arguments.as_slice() else {
-                        return Err(not_built("this measure declaration"));
-                    };
-                    if rest.iter().any(|argument| !matches!(argument, ExtensionArgument::Optional(values) if values.is_empty())) {
-                        return Err(not_built("measure by"));
-                    }
-                    if scope.unit != Unit::Sessions {
-                        return Err(QueryError::Invalid {
-                            message: "`| measure WHAT` follows a session query and ends it".into(),
-                            position: stage.span.start,
-                        });
-                    }
-                    measure = Some(Measure {
-                        what: value_text(what)?.into(),
-                        population_sql: String::new(),
-                        selection_sql: String::new(),
-                        everything: selection.written.is_empty(),
-                        since: None,
-                        until: None,
-                    });
+                    self.measure_stage(selection, arguments, stage.span, parts)?;
                 }
                 TransformKind::Matches => {
-                    let found: Vec<&Condition> = top
-                        .iter()
-                        .filter(|c| {
-                            matches!(
-                                c.kind,
-                                ConditionKind::Exists { .. } | ConditionKind::Sequence { .. }
-                            )
-                        })
-                        .collect();
-                    let [c] = found.as_slice() else {
-                        return Err(QueryError::Invalid {
-                            message: format!(
-                                "`| matches` needs exactly one top-level exists(...) or seq(...); this query has {}",
-                                found.len()
-                            ),
-                            position: stage.span.start,
-                        });
-                    };
-                    let parent_rows = and_all(&where_sql);
-                    matched = Some(match &c.kind {
-                        ConditionKind::Exists { unit, condition } => self.exists_matches(
-                            bind_unit(unit)?,
-                            condition.as_deref(),
-                            &scope,
-                            &parent_rows,
-                            c.span,
-                        )?,
-                        ConditionKind::Sequence {
-                            steps,
-                            gaps,
-                            all: false,
-                            ..
-                        } => self.seq_matches(steps, gaps, &scope, &parent_rows, c.span)?,
-                        ConditionKind::Sequence { all: true, .. } => {
-                            return Err(not_built("overlapping sequence matches (seq all)"));
-                        }
-                        _ => {
-                            return Err(QueryError::Invalid {
-                                message: "matches requires an exists or sequence qualifier".into(),
-                                position: c.span.start,
-                            });
-                        }
-                    });
-                    self.notes.push("one row per step of each match".into());
+                    self.matches_stage(stage.span, parts)?;
                 }
                 TransformKind::AsOf { .. } => return Err(relations::as_of_unavailable()),
                 _ => return Err(not_built("this shared query stage")),
             }
         }
+        Ok(())
+    }
 
+    fn scope_stage(
+        &mut self,
+        unit: &str,
+        cond: Option<&Condition>,
+        span: Span,
+        parts: &mut SelectionSql,
+    ) -> Result<(), QueryError> {
+        let SelectionSql {
+            scope,
+            top,
+            where_sql,
+            why,
+            ..
+        } = parts;
+        if scope.unit != Unit::Sessions {
+            return Err(QueryError::Invalid {
+                message: "a `| UNIT where …` stage follows a session query".into(),
+                position: span.start,
+            });
+        }
+        let sessions = format!(
+            "SELECT s.pk FROM {} WHERE {}",
+            self.from(scope)?,
+            and_all(where_sql)
+        );
+        // The session ranking selects sessions; children have their own order.
+        self.near_request = None;
+        self.rank = None;
+        self.rank_source = None;
+        self.text_search = None;
+        self.rank_index = None;
+        self.near_rank = None;
+        self.near_join = None;
+        self.fusion = None;
+        self.shown.clear();
+        let unit = bind_unit(unit)?;
+        let next = RowContext::plain(unit);
+        let ntop = cond.map(top_level).unwrap_or_default();
+        let mut w = self.defaults(&next, &ntop)?;
+        let link = if fields::has_session(unit) {
+            format!("{}.pk IN ({sessions})", next.a.s)
+        } else {
+            self.session_link(&next, &sessions)?
+        };
+        w.push(link);
+        // Snippets look for the terms of the rows shown.
+        self.snippet_terms.clear();
+        if let Some(c) = cond {
+            let filter = self.binder().bind(c, unit)?;
+            let search = polylogue_query::search::Search::of(Some(&filter), unit);
+            self.rank_index = search.rank;
+            w.push(self.lower(&filter, &next, true)?);
+            self.snippet_terms.extend(search.terms);
+        }
+        *scope = next;
+        *top = ntop;
+        *where_sql = w;
+        why.clear();
+        // A fused rank and the lists it names belong to the
+        // sessions.
+        self.fusion = None;
+        self.shown.retain(|(name, ..)| name != "found_in");
+        Ok(())
+    }
+
+    fn measure_stage(
+        &mut self,
+        selection: &Selection,
+        arguments: &[ExtensionArgument],
+        span: Span,
+        parts: &mut SelectionSql,
+    ) -> Result<(), QueryError> {
+        let SelectionSql { scope, measure, .. } = parts;
+        let [ExtensionArgument::Value(what), rest @ ..] = arguments else {
+            return Err(not_built("this measure declaration"));
+        };
+        if rest.iter().any(|argument| !matches!(argument, ExtensionArgument::Optional(values) if values.is_empty())) {
+                        return Err(not_built("measure by"));
+                    }
+        if scope.unit != Unit::Sessions {
+            return Err(QueryError::Invalid {
+                message: "`| measure WHAT` follows a session query and ends it".into(),
+                position: span.start,
+            });
+        }
+        *measure = Some(Measure {
+            what: value_text(what)?.into(),
+            population_sql: String::new(),
+            selection_sql: String::new(),
+            everything: selection.written.is_empty(),
+            since: None,
+            until: None,
+        });
+        Ok(())
+    }
+
+    fn matches_stage(&mut self, span: Span, parts: &mut SelectionSql) -> Result<(), QueryError> {
+        let SelectionSql {
+            scope,
+            top,
+            where_sql,
+            matched,
+            ..
+        } = parts;
+        let found: Vec<&Condition> = top
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c.kind,
+                    ConditionKind::Exists { .. } | ConditionKind::Sequence { .. }
+                )
+            })
+            .collect();
+        let [c] = found.as_slice() else {
+            return Err(QueryError::Invalid {
+                message: format!(
+                    "`| matches` needs exactly one top-level exists(...) or seq(...); this query has {}",
+                    found.len()
+                ),
+                position: span.start,
+            });
+        };
+        let parent_rows = and_all(where_sql);
+        *matched = Some(match &c.kind {
+            ConditionKind::Exists { unit, condition } => self.exists_matches(
+                bind_unit(unit)?,
+                condition.as_deref(),
+                scope,
+                &parent_rows,
+                c.span,
+            )?,
+            ConditionKind::Sequence {
+                steps,
+                gaps,
+                all: false,
+                ..
+            } => self.seq_matches(steps, gaps, scope, &parent_rows, c.span)?,
+            ConditionKind::Sequence { all: true, .. } => {
+                return Err(not_built("overlapping sequence matches (seq all)"));
+            }
+            _ => {
+                return Err(QueryError::Invalid {
+                    message: "matches requires an exists or sequence qualifier".into(),
+                    position: c.span.start,
+                });
+            }
+        });
+        self.notes.push("one row per step of each match".into());
+        Ok(())
+    }
+
+    fn finish_conditions(
+        &mut self,
+        selection: &Selection,
+        parts: &mut SelectionSql,
+    ) -> Result<Option<(String, String)>, QueryError> {
+        let SelectionSql {
+            scope,
+            matched,
+            measure,
+            where_sql,
+            defaults_only,
+            explicit_order,
+            ..
+        } = parts;
         let rows_answer = matched.is_none() && measure.is_none();
         if rows_answer {
-            self.setup_near(true, &scope, &where_sql);
+            self.setup_near(true, scope, where_sql);
         }
         let count_relation = if rows_answer {
-            Some((self.from(&scope)?, and_all(&where_sql)))
+            Some((self.from(scope)?, and_all(where_sql)))
         } else {
             None
         };
-        self.fuse_text_and_near(&scope, &mut where_sql)?;
-        self.search_scope(selection, &scope, &defaults_only, explicit_order.as_deref())?;
+        self.fuse_text_and_near(scope, where_sql)?;
+        self.search_scope(selection, scope, defaults_only, explicit_order.as_deref())?;
         if let Some(search) = &self.text_search
             && let Some(scoped) = &search.scope
             && let Some(recent) = &scoped.recent
@@ -250,190 +403,243 @@ impl<'a> Compiler<'a> {
                 recent.batch
             ));
         }
-        let recursive = matched.as_ref().is_some_and(|m| m.recursive);
-        let ctes = if self.ctes.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "WITH {}{} ",
-                if recursive { "RECURSIVE " } else { "" },
-                self.ctes.join(", ")
-            )
-        };
-        let from = self.from(&scope)?;
-        let wh = and_all(&where_sql);
-        let unit = scope.unit;
-        let mut row_count = None;
-        let mut row_membership = None;
-        let mut keyed = None;
-        let (sql, shape, columns, order) =
-            if let Some(rel) = matched {
-                let columns = rel.columns;
-                (
-                    format!("{ctes}{}", rel.sql),
-                    Shape::Matches,
-                    columns,
-                    rel.order,
-                )
-            } else {
-                let order = explicit_order.unwrap_or_else(|| self.default_order(&scope));
-                let (pk, mut cols) =
-                    row_columns(unit, &scope.a, self.opts.clock.now.as_millisecond());
-                if let FieldSelection::Fields(fields) = &selection.field_selection {
-                    cols.clear();
-                    for field in fields {
-                        let (expression, kind) = self.expr(field, &scope, 0)?;
-                        cols.push((
-                            flat(field),
-                            Self::display_value(&expression, kind),
-                            kind,
-                            Self::field_reference(field, &scope),
-                        ));
-                    }
-                    self.shown.clear();
-                }
-                let mut columns: Vec<Column> = cols
-                    .iter()
-                    .map(|(name, _, kind, reference)| Column {
-                        name: name.clone(),
-                        kind: *kind,
-                        reference: *reference,
-                    })
-                    .collect();
-                for (name, expression, kind, reference) in std::mem::take(&mut self.shown) {
-                    if !columns.iter().any(|c| c.name == name) {
-                        columns.push(Column {
-                            name: name.clone(),
-                            kind,
-                            reference,
-                        });
-                        cols.push((name, expression, kind, reference));
-                    }
-                }
-                // The page's rows read their own columns; the rank shown comes
-                // from the key, which holds it already.
-                let row_select: Vec<String> =
-                    [
-                        format!("{pk} AS _pk"),
-                        format!("{} AS _recency", scope.a.expand(units::spec(unit).time)),
-                    ]
-                    .into_iter()
-                    .chain(cols.iter().map(|(name, expression, _, _)| {
-                        format!("{expression} AS {}", column_sql(name))
-                    }))
-                    .chain(units::spec(unit).identity.iter().enumerate().map(
-                        |(index, expression)| {
-                            format!("{} AS _identity{index}", scope.a.expand(expression))
-                        },
-                    ))
-                    .collect();
-                if self.ranking().is_some() {
-                    columns.push(Column {
-                        name: "rank".into(),
-                        kind: ColKind::Number,
-                        reference: None,
-                    });
-                }
-                let mut select = vec![
-                    format!("{pk} AS _pk"),
-                    format!("{} AS _recency", scope.a.expand(units::spec(unit).time)),
-                ];
-                if let Some(rank) = self.ranking() {
-                    select.push(format!("{rank} AS _rank"));
-                }
-                select.extend(cols.iter().map(|(name, expression, _, _)| {
+        Ok(count_relation)
+    }
+
+    fn row_statements(
+        &mut self,
+        selection: &Selection,
+        parts: &SelectionSql,
+        ctes: &str,
+        count_relation: Option<(String, String)>,
+    ) -> Result<RowStatements, QueryError> {
+        let scope = &parts.scope;
+        let from = self.from(scope)?;
+        let wh = and_all(&parts.where_sql);
+        if let Some(rel) = &parts.matched {
+            return Ok(RowStatements {
+                sql: format!("{ctes}{}", rel.sql),
+                shape: Shape::Matches,
+                columns: rel.columns.clone(),
+                order: rel.order.clone(),
+                count: None,
+                members: None,
+                keyed: None,
+            });
+        }
+        let order = parts
+            .explicit_order
+            .clone()
+            .unwrap_or_else(|| self.default_order(scope));
+        let (pk, cols, mut columns) = self.shown_columns(selection, scope)?;
+        let (row_select, mut select) = self.selected_columns(scope, &pk, &cols);
+        if self.ranking().is_some() {
+            columns.push(Column {
+                name: "rank".into(),
+                kind: ColKind::Number,
+                reference: None,
+            });
+        }
+        let without = self.near_rank.as_ref().map_or_else(
+            || "0".to_owned(),
+            |near| format!("count(*) FILTER (WHERE ({near}) IS NULL)"),
+        );
+        let (count_from, count_where) = count_relation
+            .as_ref()
+            .map(|(from, wh)| (from.as_str(), wh.as_str()))
+            .unwrap_or((&from, &wh));
+        let count = Some(format!(
+            "{ctes}SELECT count(*), {without} FROM {count_from} WHERE {count_where}"
+        ));
+        let members = Some(format!(
+            "{ctes}SELECT {pk} AS _pk,{} AS _near FROM {count_from} WHERE {count_where}",
+            self.near_rank.as_deref().unwrap_or("1")
+        ));
+        let (hidden, keys) = self.selection_order(&order);
+        let keyed = parts
+            .measure
+            .is_none()
+            .then(|| self.keyed_statements(scope, ctes, (&from, &wh), &pk, &row_select, &hidden));
+        select.extend(hidden);
+        let sql = format!(
+            "{ctes}SELECT {} FROM {from} WHERE {wh} ORDER BY {}",
+            select.join(", "),
+            order_by(&keys)
+        );
+        Ok(RowStatements {
+            sql,
+            shape: Shape::Rows,
+            columns,
+            order: keys,
+            count,
+            members,
+            keyed,
+        })
+    }
+
+    fn selected_columns(
+        &self,
+        scope: &RowContext,
+        pk: &str,
+        cols: &[RowColumn],
+    ) -> (Vec<String>, Vec<String>) {
+        let row_select: Vec<String> =
+            [
+                format!("{pk} AS _pk"),
+                format!(
+                    "{} AS _recency",
+                    scope.a.expand(units::spec(scope.unit).time)
+                ),
+            ]
+            .into_iter()
+            .chain(
+                cols.iter().map(|(name, expression, _, _)| {
                     format!("{expression} AS {}", column_sql(name))
-                }));
-                select.push(format!(
-                    "{} AS _near",
-                    self.near_rank.as_deref().unwrap_or("1")
-                ));
-                for (index, expression) in units::spec(unit).identity.iter().enumerate() {
-                    select.push(format!(
-                        "{} AS _identity{index}",
-                        scope.a.expand(expression)
-                    ));
+                }),
+            )
+            .chain(units::spec(scope.unit).identity.iter().enumerate().map(
+                |(index, expression)| format!("{} AS _identity{index}", scope.a.expand(expression)),
+            ))
+            .collect();
+        let mut select = vec![
+            format!("{pk} AS _pk"),
+            format!(
+                "{} AS _recency",
+                scope.a.expand(units::spec(scope.unit).time)
+            ),
+        ];
+        if let Some(rank) = self.ranking() {
+            select.push(format!("{rank} AS _rank"));
+        }
+        select.extend(
+            cols.iter()
+                .map(|(name, expression, _, _)| format!("{expression} AS {}", column_sql(name))),
+        );
+        select.push(format!(
+            "{} AS _near",
+            self.near_rank.as_deref().unwrap_or("1")
+        ));
+        for (index, expression) in units::spec(scope.unit).identity.iter().enumerate() {
+            select.push(format!(
+                "{} AS _identity{index}",
+                scope.a.expand(expression)
+            ));
+        }
+        (row_select, select)
+    }
+
+    fn selection_order(&self, order: &[String]) -> (Vec<String>, Vec<OrderKey>) {
+        let (hidden, mut keys) = hidden_order(order, "_o");
+        let rank = self.ranking();
+        let hidden = hidden
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, column)| {
+                if rank.as_deref() == Some(order_term(&order[index]).0) {
+                    keys[index].column = "_rank".into();
+                    None
+                } else {
+                    Some(column)
                 }
-                let without = self.near_rank.as_ref().map_or_else(
-                    || "0".to_owned(),
-                    |near| format!("count(*) FILTER (WHERE ({near}) IS NULL)"),
-                );
-                let (count_from, count_where) = count_relation
-                    .as_ref()
-                    .map(|(from, wh)| (from.as_str(), wh.as_str()))
-                    .unwrap_or((&from, &wh));
-                row_count = Some(format!(
-                    "{ctes}SELECT count(*), {without} FROM {count_from} WHERE {count_where}"
+            })
+            .collect::<Vec<_>>();
+        (hidden, keys)
+    }
+
+    fn keyed_statements(
+        &self,
+        scope: &RowContext,
+        ctes: &str,
+        condition: (&str, &str),
+        pk: &str,
+        row_select: &[String],
+        hidden: &[String],
+    ) -> (String, String) {
+        let (from, wh) = condition;
+        let mut key_select = vec![format!("{pk} AS _pk")];
+        if let Some(rank) = self.ranking() {
+            key_select.push(format!("{rank} AS _rank"));
+        }
+        if self.fusion.is_none()
+            && self.near_rank.is_none()
+            && let Some(source) = &self.rank_source
+        {
+            key_select.push(format!("{} AS _hit_block", source.block));
+        }
+        key_select.push(format!(
+            "{} AS _near",
+            self.near_rank.as_deref().unwrap_or("1")
+        ));
+        key_select.extend(hidden.iter().cloned());
+        (
+            format!(
+                "{ctes}SELECT {} FROM {from} WHERE {wh}",
+                key_select.join(", ")
+            ),
+            format!(
+                "{ctes}SELECT {} FROM {}",
+                row_select.join(", "),
+                base_from(scope.unit, &scope.a)
+            ),
+        )
+    }
+
+    fn shown_columns(
+        &mut self,
+        selection: &Selection,
+        scope: &RowContext,
+    ) -> Result<(String, Vec<RowColumn>, Vec<Column>), QueryError> {
+        let (pk, mut cols) =
+            row_columns(scope.unit, &scope.a, self.opts.clock.now.as_millisecond());
+        if let FieldSelection::Fields(fields) = &selection.field_selection {
+            cols.clear();
+            for field in fields {
+                let (expression, kind) = self.expr(field, scope, 0)?;
+                cols.push((
+                    flat(field),
+                    Self::display_value(&expression, kind),
+                    kind,
+                    Self::field_reference(field, scope),
                 ));
-                row_membership = Some(format!(
-                    "{ctes}SELECT {pk} AS _pk,{} AS _near FROM {count_from} WHERE {count_where}",
-                    self.near_rank.as_deref().unwrap_or("1")
-                ));
-                let (hidden, mut keys) = hidden_order(&order, "_o");
-                let rank = self.ranking();
-                let hidden = hidden
-                    .into_iter()
-                    .enumerate()
-                    .filter_map(|(index, column)| {
-                        if rank.as_deref() == Some(order_term(&order[index]).0) {
-                            keys[index].column = "_rank".into();
-                            None
-                        } else {
-                            Some(column)
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                if measure.is_none() {
-                    let mut key_select = vec![format!("{pk} AS _pk")];
-                    if let Some(rank) = self.ranking() {
-                        key_select.push(format!("{rank} AS _rank"));
-                    }
-                    if self.fusion.is_none()
-                        && self.near_rank.is_none()
-                        && let Some(source) = &self.rank_source
-                    {
-                        key_select.push(format!("{} AS _hit_block", source.block));
-                    }
-                    key_select.push(format!(
-                        "{} AS _near",
-                        self.near_rank.as_deref().unwrap_or("1")
-                    ));
-                    key_select.extend(hidden.iter().cloned());
-                    keyed = Some((
-                        format!(
-                            "{ctes}SELECT {} FROM {from} WHERE {wh}",
-                            key_select.join(", ")
-                        ),
-                        format!(
-                            "{ctes}SELECT {} FROM {}",
-                            row_select.join(", "),
-                            base_from(unit, &scope.a)
-                        ),
-                    ));
-                }
-                select.extend(hidden);
-                let sql = format!(
-                    "{ctes}SELECT {} FROM {from} WHERE {wh} ORDER BY {}",
-                    select.join(", "),
-                    order_by(&keys)
-                );
-                (sql, Shape::Rows, columns, keys)
-            };
-        let mut attach = vec![];
-        if !selection.attach.is_empty() {
-            if shape != Shape::Rows {
-                return Err(QueryError::Invalid {
-                    message: "attached rows apply to rows, not to groups or summaries".into(),
-                    position: selection.attach[0].span.start,
-                });
             }
-            for child in &selection.attach {
-                attach.push(self.attach(child, &scope)?);
+            self.shown.clear();
+        }
+        let mut columns: Vec<Column> = cols
+            .iter()
+            .map(|(name, _, kind, reference)| Column {
+                name: name.clone(),
+                kind: *kind,
+                reference: *reference,
+            })
+            .collect();
+        for (name, expression, kind, reference) in std::mem::take(&mut self.shown) {
+            if !columns.iter().any(|c| c.name == name) {
+                columns.push(Column {
+                    name: name.clone(),
+                    kind,
+                    reference,
+                });
+                cols.push((name, expression, kind, reference));
             }
         }
+        Ok((pk, cols, columns))
+    }
 
-        let why = why
-            .into_iter()
+    fn explanations(
+        &self,
+        parts: &SelectionSql,
+        ctes: &str,
+        from: &str,
+    ) -> (Vec<WhyClause>, String, Vec<WhyClause>) {
+        let SelectionSql {
+            defaults_only,
+            applied,
+            ..
+        } = parts;
+        let why = parts
+            .why
+            .iter()
+            .cloned()
             .map(|(clause, cond)| WhyClause {
                 sql: format!(
                     "{ctes}SELECT count(*) FROM {from} WHERE {}",
@@ -442,23 +648,9 @@ impl<'a> Compiler<'a> {
                 clause,
             })
             .collect();
-        if let Some(measure) = &mut measure {
-            (measure.since, measure.until) = self.session_window;
-            measure.selection_sql = sql.clone();
-            measure.population_sql = format!(
-                "SELECT {s}.pk AS _pk FROM session {s} WHERE {defaults}{parameters}",
-                s = scope.a.s,
-                defaults = and_all(&defaults_only),
-                parameters = if self.params.is_empty() {
-                    String::new()
-                } else {
-                    format!(" AND (?{0} IS ?{0})", self.params.len())
-                }
-            );
-        }
         let why_of = format!(
             "{ctes}SELECT count(*) FROM {from} WHERE {}",
-            and_all(&defaults_only)
+            and_all(defaults_only)
         );
         let why_defaults = applied
             .iter()
@@ -479,6 +671,30 @@ impl<'a> Compiler<'a> {
                 }
             })
             .collect();
+        (why, why_of, why_defaults)
+    }
+
+    fn into_program(
+        mut self,
+        mut parts: SelectionSql,
+        rows: RowStatements,
+        attach: Vec<Attach>,
+        why: (Vec<WhyClause>, String, Vec<WhyClause>),
+    ) -> Program {
+        self.measure_statements(&mut parts, &rows);
+        let row_kind = rows.row_kind(parts.scope.unit);
+        let SelectionSql { scope, measure, .. } = parts;
+        let RowStatements {
+            sql,
+            shape,
+            columns,
+            order,
+            count: row_count,
+            members: row_membership,
+            keyed,
+        } = rows;
+        let (why, why_of, why_defaults) = why;
+        let unit = scope.unit;
         let ranked = self.ranking().is_some();
         let counts_near = shape == Shape::Rows && self.near_rank.is_some();
         let page_size =
@@ -489,53 +705,9 @@ impl<'a> Compiler<'a> {
                 } else {
                     50
                 });
-        if self.near_unavailable {
-            let note = "semantic search is not enabled; rows are ordered by time and unranked";
-            if !self.incomplete.iter().any(|n| n == note) {
-                self.incomplete.push(note.into());
-            }
-        }
-        if columns.iter().any(|c| c.name.ends_with("clustered_time")) {
-            self.notes.push(format!(
-                "clustered_time uses a {}-minute gap, extended across paired tools",
-                polylogue_model::derived::CLUSTER_GAP_MS / 60_000
-            ));
-        }
-        let row_kind = if shape == Shape::Matches {
-            RowKind::Group {
-                columns: vec!["parent".into(), "match".into(), "position".into()],
-            }
-        } else {
-            RowKind::UnitRows {
-                unit,
-                columns: units::spec(unit)
-                    .identity
-                    .iter()
-                    .enumerate()
-                    .map(|(i, _)| format!("_identity{i}"))
-                    .collect(),
-            }
-        };
-        // Only the answer's own rows are read key first; a stage or a
-        // combination over them reads them whole.
-        let statements = match (keyed, row_count) {
-            (Some((keys, rows)), Some(count)) if self.answer => Statements::Keyed(KeyedRows {
-                keys,
-                rows,
-                count,
-                search: if self.fusion.is_none() && self.near_rank.is_none() {
-                    self.text_search
-                } else {
-                    None
-                },
-            }),
-            (_, count) => Statements::Derived(DerivedRows {
-                rows: sql,
-                count,
-                members: row_membership,
-            }),
-        };
-        Ok(Program {
+        self.program_notes(&columns);
+        let statements = self.program_statements(sql, keyed, row_count, row_membership);
+        Program {
             row_kind,
             query: self.text.to_owned(),
             unit,
@@ -569,7 +741,67 @@ impl<'a> Compiler<'a> {
             resolved_times: self.resolved_times.into_inner(),
             measure,
             order,
-        })
+        }
+    }
+
+    fn measure_statements(&self, parts: &mut SelectionSql, rows: &RowStatements) {
+        if let Some(measure) = &mut parts.measure {
+            (measure.since, measure.until) = self.session_window;
+            measure.selection_sql = rows.sql.clone();
+            measure.population_sql = format!(
+                "SELECT {s}.pk AS _pk FROM session {s} WHERE {defaults}{parameters}",
+                s = parts.scope.a.s,
+                defaults = and_all(&parts.defaults_only),
+                parameters = if self.params.is_empty() {
+                    String::new()
+                } else {
+                    format!(" AND (?{0} IS ?{0})", self.params.len())
+                }
+            );
+        }
+    }
+
+    fn program_notes(&mut self, columns: &[Column]) {
+        if self.near_unavailable {
+            let note = "semantic search is not enabled; rows are ordered by time and unranked";
+            if !self.incomplete.iter().any(|n| n == note) {
+                self.incomplete.push(note.into());
+            }
+        }
+        if columns.iter().any(|c| c.name.ends_with("clustered_time")) {
+            self.notes.push(format!(
+                "clustered_time uses a {}-minute gap, extended across paired tools",
+                polylogue_model::derived::CLUSTER_GAP_MS / 60_000
+            ));
+        }
+    }
+
+    fn program_statements(
+        &mut self,
+        sql: String,
+        keyed: Option<(String, String)>,
+        row_count: Option<String>,
+        row_membership: Option<String>,
+    ) -> Statements {
+        // Only the answer's own rows are read key first; a stage or a
+        // combination over them reads them whole.
+        match (keyed, row_count) {
+            (Some((keys, rows)), Some(count)) if self.answer => Statements::Keyed(KeyedRows {
+                keys,
+                rows,
+                count,
+                search: if self.fusion.is_none() && self.near_rank.is_none() {
+                    self.text_search.take()
+                } else {
+                    None
+                },
+            }),
+            (_, count) => Statements::Derived(DerivedRows {
+                rows: sql,
+                count,
+                members: row_membership,
+            }),
+        }
     }
 
     /// Words and `similar:` together: the conditions and both orders are
