@@ -156,7 +156,7 @@ XDG paths. The NixOS module also needs `user`, an existing account, and its
 client commands run as that account; its home and XDG directories can be set.
 
 `settings`, `sinex` and `signals` render the files described in
-[operations](operations.md#configuration). Omitted values keep the binary's
+[installing](installing.md#configuration). Omitted values keep the binary's
 defaults. Credentials are file paths, never Nix strings holding their contents.
 Primary mode refuses a local `settings.day`.
 
@@ -165,7 +165,9 @@ change takes effect at the next service restart. The units use notify
 readiness, a watchdog, the exit code for a refused schema, and CPU and I/O
 weights below interactive work, with no memory cap.
 
-Designed and not built yet: the hooks, MCP registration and browser extension
-host that the Home Manager module installs into harnesses
-([operations](operations.md#installing-into-harnesses)). Completions for the
-archive commands come from the application.
+The Home Manager module also installs the harness hooks and MCP registration,
+the browser extension's host manifest, and each archive command's shell
+completion with its Alt-p key. Each is the output of
+`polylogue install TARGET --dry-run` for that command
+([installing](installing.md#installing)), so the module writes exactly what
+`install` would.

@@ -37,7 +37,7 @@ One embedded fuzzy picker, with no external program, in an inline viewport below
 - for `pick` in a line, over the selection's rows;
 - for a verb with no selection, over its usual rows ([interfaces.md](interfaces.md#a-verb-with-no-selection));
 - for a one-row verb given several rows on a terminal;
-- for Alt-p in any shell line, inserting the chosen references at the cursor (the key `install zsh` and `install fish` bind, [operations.md](operations.md#installing)).
+- for Alt-p in any shell line, inserting the chosen references at the cursor (the key `install zsh` and `install fish` bind, [operations.md](installing.md#installing)).
 
 It opens only when standard input and output are terminals and no machine format (`--json`, `--format json|jsonl`) is asked for; running inside a harness is not a condition of its own, since a harness's tool shell has no terminal. It never opens for one row and never takes a row silently.
 
@@ -126,7 +126,7 @@ One printer for every failure: what is wrong, a caret under it when there is a p
 | a one-row verb over several rows, off a terminal | the candidates (short ID, time, title) and `polylogue SESSION resume` lines |
 | `@3` off a terminal | `row numbers work on a terminal; use the references printed above` |
 | `--blind` on a selection that is not a kept result | `blind judging needs kept rows: polylogue '@1,2' save` |
-| a timeout (exit 7) | `narrower:` and `complete: … --deadline none`, both runnable ([interfaces.md](interfaces.md#writes-and-deadlines)) |
+| a timeout (exit 7) | `narrower:` and `complete: … --deadline none`, both runnable ([interfaces.md](latency.md#writes-and-deadlines)) |
 | a stale cursor or a re-parsed session | what changed and the line to run again |
 | an MCP call with a misplaced argument | the corrected call, as a `next` call |
 

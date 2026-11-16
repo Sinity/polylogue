@@ -1,6 +1,6 @@
 # Sessions
 
-The parsed model every other area reads: sessions, messages and blocks, message authorship, times and their quality, links between sessions, compaction boundaries, attachments, pastes, sidecars, one conversation arriving by several routes, and logical sessions. How these rows are produced from stored bytes is in [archive.md](archive.md#parsing); how they are rendered is in [reading.md](reading.md). Authorship of the user's own records (notes, judgments, pages) is a different thing, in [assertions.md](assertions.md#authorship).
+The parsed model every other area reads: sessions, messages and blocks, message authorship, times and their quality, links between sessions, compaction boundaries, attachments, pastes, sidecars, one conversation arriving by several routes, and logical sessions. How these rows are produced from stored bytes is in [archive.md](archive.md#parsing); how they are read and rendered is in [reading.md](reading.md) and [transcripts.md](transcripts.md). Authorship of the user's own records (notes, tags, judgments) is a different thing, in [authorship.md](authorship.md).
 
 ## Sessions
 
@@ -51,7 +51,7 @@ Links between sessions come only from explicit markers in the sources, in one cl
 | `fork` | a session sharing its parent's prefix up to a branch point | Claude `--fork-session`; Codex fork records |
 | `continuation` | the same work continued in a new session after the parent's context was compacted or exhausted | the provider's continuation marker |
 | `resume` | a provider resume of an earlier session in a new session | Claude `resumeSessionId`; Codex resume records |
-| `reference` | a relationship the provider did not make, with `how`: `briefing` (a delivery's recipient), `ping` (a ping's answer) or `mention` (a pasted ID or URL in a message) | delivery rows, ping rows, the reference parser |
+| `reference` | a relationship the provider did not make, with `how`: `briefing` (a delivery's recipient), `send` (a session resumed by a sent message) or `mention` (a pasted ID or URL in a message) | delivery rows, the reference parser |
 
 - **`copies_prefix`** is a separate boolean: whether the child's file holds copies of the parent's messages. It never decides the kind. A copied-prefix observation creates no relationship on its own; it contributes this fact when an explicit relationship is recorded, whichever arrives first. The copied messages remain readable even when there is no provider relationship. Portable readings stream each copied message's child, original source reading and order with that message, so importing a parent's later messages never extends the child's copied history.
 - **`branch_point`** names the parent message the child continues from; **`spawning_call`** names the parent's call block for a `spawn`.
@@ -69,7 +69,7 @@ A compaction is a discontinuity in the model's context, not a special kind of co
 - **The boundary is an event linked to that message.** It records the tokens before and after (as reported), the trigger (`manual`, `auto`, or the harness's own value), the range of messages it evicted and what it kept. Codex `replacement_history` stays in this event and is not turned into messages.
 - Encodings mapped onto it: Claude Code inline `isCompactSummary` records, main-session `agent-acompact` replays, Codex `compacted` records, claude.ai inline summaries. Providers without compaction (ChatGPT, Gemini, Antigravity) have none.
 - **Microcompaction** (named tool results removed from the context) is an event naming the removed results.
-- Messages before the boundary stay stored and readable; they are no longer in the model's context. Composing the context as the model saw it at a message is a read ([reading.md](reading.md#views)).
+- Messages before the boundary stay stored and readable; they are no longer in the model's context. Composing the context as the model saw it at a message is a read ([transcripts.md](transcripts.md#the-context-view)).
 
 ## Attachments
 
@@ -99,7 +99,7 @@ An attachment is a stored entity, not a flag on a block:
   | Hermes | `pastes/`, `image_cache/` |
 
 - In a ChatGPT export, an attachment is matched to the stored export members by the native file ID and the export's naming and library sidecars; a file ID can match without a name, and several distinct matching files stay separate matches.
-- `polylogue block:<message>#<n> read --to FILE` works for every origin and writes the exact bytes for any caller, through a temporary file that replaces `FILE` only once the length and hash agree ([reading.md](reading.md#writing-out)).
+- `polylogue attachment:<id> read --to FILE` works for every origin and writes the exact bytes for any caller, through a temporary file that replaces `FILE` only once the length and hash agree ([reading.md](reading.md#attachments)).
 
 ## Pastes
 
@@ -116,7 +116,7 @@ An attachment is a stored entity, not a flag on a block:
 
 A conversation can arrive as a live file, a browser capture, an export, a Drive revision, a Takeout and an imported old copy. This redundancy is deliberate. All routes arrive as `<origin>:<native id>` and are one session; every route's reading is stored, and the shown message is composed field by field.
 
-A route is one of `live` (the tool's own file or database), `capture` (the provider's data for one conversation, fetched as it is shown: the extension's capture of the page's data, a Drive revision), `recorded` (Polylogue's own hook, process and collector records), `export` (a provider export), `copy` (an imported tool file, a bundle, an older archive) and `page_text` (text read from the page). Each origin declares the route of its inputs; an input brought in with `polylogue import` is an `export` when the origin is an export and a `copy` otherwise. The shown message is a pure function of each input's latest reading of it, composed in **field groups** taken together from one reading: content (role, prompt kind, blocks and the provider fields indexed by block), time, model, usage (tokens, reported cost and duration), stop reason, parent and production.
+A route is one of `live` (the tool's own file or database), `capture` (the provider's data for one conversation, fetched as it is shown: the extension's capture of the page's data, a Drive revision), `recorded` (Polylogue's own hook, process and collector records), `export` (a provider export), `copy` (an imported tool file, a bundle, an older archive) and `page_text` (text read from the page). Each origin declares the route of its inputs; an input brought in with `import` is an `export` when the origin is an export and a `copy` otherwise. The shown message is a pure function of each input's latest reading of it, composed in **field groups** taken together from one reading: content (role, prompt kind, blocks and the provider fields indexed by block), time, model, usage (tokens, reported cost and duration), stop reason, parent and production.
 
 1. A field group present in one reading and absent in another is taken from where it is present.
 2. Then a reading from a main session wins over a sidechain's copy of the message.

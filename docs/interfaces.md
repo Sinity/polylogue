@@ -1,6 +1,6 @@
 # Interfaces
 
-Polylogue has one table of operations, and every surface is generated from it: the command line, the daemon's socket, HTTP and MCP. This page owns that table, the line grammar (selections, verbs, chains and commands), each verb's words, the rule that keeps the set of words small, latency classes and Polylogue's budgets, the daemon's states as the command line sees them, warm state, and failure kinds and exit codes.
+Polylogue has one table of operations, and every surface is generated from it: the command line, the daemon's socket, HTTP and MCP. This page owns that table, the line grammar (selections, verbs, chains and commands), each verb's words, the rule that keeps the set of words small, option names, and failure kinds and exit codes. Latency classes, deadlines, the daemon's states as the command line sees them and warm state are [latency.md](latency.md).
 
 The [terminal interface](terminal.md) owns what a person sees: the orientation screen, the picker, row numbers, footers, refusals, output, `help` and `--explain`. [Completion](completion.md) owns completion and its catalog file. Selections and the query language are [query.md](query.md), references [references.md](references.md), reading [reading.md](reading.md), annotations and the write path [annotations.md](annotations.md), live sessions [session-control.md](session-control.md), `brief` [agent-context.md](agent-context.md), the three MCP tools [agents.md](agents.md#mcp-server) and the web [web.md](web.md). The generic mechanics (the `Operation` trait, the failure-to-exit-and-HTTP table, request and reply envelopes, deadline classes, SSE framing) are the common [`command-surface`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/command-surface/README.md) crate's.
 
@@ -144,10 +144,10 @@ Commands are not about selected rows.
 | `start` | `start TEXT [--in HARNESS\|WEBCHAT \| --role NAME] [--cwd DIR] [--attach FILE]… [--model M] [--effort E] [--project P]` | starts something that has no row yet ([session-control.md](session-control.md#start)) |
 | `web` | `web` | opens the workbench ([web.md](web.md)) |
 | `import` | `import PATH… [--origin NAME]` · `import PROVIDER [--since TIME] [--cancel]` | takes files or a provider, not rows ([capture.md](capture.md#import), [extension.md](extension.md#importing-a-provider)) |
-| `set` | `set [KEY [VALUE]]` | lists, shows or changes a setting ([operations.md](operations.md#configuration)) |
+| `set` | `set [KEY [VALUE]]` | lists, shows or changes a setting ([operations.md](installing.md#configuration)) |
 | `embed` | `embed [--query 'QUERY'] [--yes]` | spending money is an explicit act ([search.md](search.md#semantic-ranking)) |
-| `install` | `install TARGET [--remove] [--dry-run] [--extension-id ID] [--program NAME]` | wires Polylogue into a harness, Chrome, a shell or Google Drive ([operations.md](operations.md#installing)) |
-| `demo` | `demo DIR` | builds the Morrow sample archive ([operations.md](operations.md#demo)) |
+| `install` | `install TARGET [--remove] [--dry-run] [--extension-id ID] [--program NAME]` | wires Polylogue into a harness, Chrome, a shell or Google Drive ([operations.md](installing.md#installing)) |
+| `demo` | `demo DIR` | builds the Morrow sample archive ([operations.md](installing.md#demo)) |
 | `daemon` | `daemon [--until-idle] [--no-sources]` | the background service ([operations.md](operations.md#the-daemon)) |
 | `mcp` | `mcp` | the MCP server over stdio ([agents.md](agents.md#mcp-server)) |
 | `dev` | `dev sql STATEMENT` · `dev schema infer\|unread\|diff …` · `dev feed --after POSITION` · `dev move-to-sinex [--dry-run]` | read-only SQL over the `v1_*` views ([query.md](query.md#read-only-sql)), parser maintenance ([archive.md](archive.md#schema-tools)), the change feed for programs ([operations.md](operations.md#the-change-feed)), the move into primary mode ([primary-mode.md](primary-mode.md#moving-to-sinex)) |
@@ -195,72 +195,6 @@ One name per concept, on every verb and command that has the concept.
 | labels for excerpts | `--neutral-names` | `read` |
 
 `--since TIME` on `import PROVIDER` is the one option named like the query's `since:` field, and it means the same thing. `--json` is the typed reply itself; `--format json` is the bundle encoding of a reading ([reading.md](reading.md#formats-and-destinations)).
-
-## Latency classes
-
-Each table row declares a latency class, and the class applies on every surface (CLI, MCP, HTTP, web). Budgets are end to end (process start to the last byte of the first screen, through the real binary and socket), with a warm daemon and a real-shaped archive under typical load, at p95. The deadline each request carries comes from its class, in the `command-surface` request envelope. What each class reads is computed before the keystroke ([Warm state](#warm-state)).
-
-| Class | Members | Budget (p95) | Deadline sent |
-|---|---|---|---|
-| **local** | `help`, `--help`, `--version`, grammar refusals, `--explain` of a line's grammar, `install SHELL --dry-run` | ≤ 15 ms | none (no socket) |
-| **completion** | Tab in any shell, MCP `completion/complete`, the web query box | ≤ 50 ms per keystroke, daemon up or down | none for values (catalog file); 30 ms for the count preview, omitted when late |
-| **picker** | first candidates, a keystroke, the preview | 50 ms, 16 ms, 100 ms | none for candidates (catalog file); 100 ms for the preview |
-| **status** | bare `polylogue`, `status`, `status --line` | ≤ 100 ms; `status --line` ≤ 30 ms, because it runs in status bars | 80 ms |
-| **read** | the first screen of a one-row read, the first page of an indexed listing (`origin:`, `repo:`, `since:`, `tag:`, a shipped saved query), a page turn, `resume` | ≤ 100 ms | 250 ms |
-| **write** | one annotation acknowledged as committed | ≤ 100 ms | none ([below](#writes-and-deadlines)) |
-| **search** | the first page of a word search, `similar:` with a stored vector | ≤ 250 ms | 2,000 ms |
-| **brief** | every form of `brief` | ≤ 300 ms warm, ≤ 1 s cold | 2,000 ms |
-| **aggregate** | `group by`, `\| measure`, `\| agg`, facet counts, the count `--dry-run` reports | ≤ 400 ms | 400 ms |
-
-A missed budget is a defect in the code, not a reason to relax the number. Budgets are measured as paired benchmark runs ([testing.md](testing.md#benchmarks)); no test asserts elapsed time.
-
-An MCP `_meta.deadline_ms` absolute bound travels separately from the unchanged shared request as the transport's own `parent_deadline_ms`; the daemon intersects it with the operation lifetime. An HTTP `x-polylogue-deadline-ms` header bounds the whole request; a stream ends at the earlier of that bound and its operation's deadline, and without the header a `null` deadline has no limit. A request already past its bound starts no new write; a write the writer has accepted keeps its effects and acknowledgment.
-
-The read-class `internal advisory` operation has a stricter preparation cap of 20 ms, intersected with its caller's bound on every surface. Hooks send a 20 ms request and emit nothing on failure; `--deadline none` does not lift this optional-advisory cap.
-
-### Writes and deadlines
-
-Pure writes, including imports, await their committed result without a read deadline. Mixed operations keep deadlines for their read preparation and end that phase when they hand the mutation to the writer: a preparation that has run out refuses the handoff, and a handed-over write replies with its committed result however long the commit takes, never a timeout. Classification follows the accepted arguments, so showing a setting stays bounded while writing it keeps its result. In a chain each step has its own class and deadline.
-
-**Deadlines are interactive defaults.** A read whose row declares no latency class, called with the default deadline, stops after 30 seconds; `--deadline none` lifts it. The CLI's socket timeout is the deadline plus 50 ms, so a hung daemon never hangs a shell. Any caller lifts a deadline (`--deadline MS`, `--deadline none`; `deadline: null` over MCP and HTTP); cancellation is in [query.md](query.md#deadlines). A timed-out aggregate prints the narrower query the planner can serve and the same line with the deadline lifted:
-
-```console
-$ polylogue 'tool_calls where outcome:error | group by tool | count'
-polylogue: timeout after 400 ms in transform "group by" (1.2 M rows scanned)
-narrower:  polylogue 'tool_calls where outcome:error since:30d | group by tool | count'
-complete:  polylogue 'tool_calls where outcome:error | group by tool | count' --deadline none
-```
-
-Over MCP the timeout reply carries both as `next` calls.
-
-### The daemon's states
-
-| Daemon | Command line |
-|---|---|
-| busy with a first build or re-parse | interactive replies keep their budgets on the reserved executor place and read connection; replies over data not yet indexed say `up_to_date: false` on standard error |
-| starting (lock held, socket not bound) | waits up to the class deadline, printing "polylogue: waiting for the daemon to finish opening the archive" once on standard error, then exit 7 if the deadline passes |
-| down | the local class, completion and the picker's candidates (from the catalog file) work; everything else exits 6 with one line naming the archive and `polylogue daemon`. Nothing starts a daemon implicitly |
-| hung | the socket timeout ends the command, exit 7 |
-
-Because one daemon assembly answers every transport, the same line gives identical rows, totals and refusals through CLI `--json`, the socket, HTTP and MCP.
-
-## Warm state
-
-The daemon keeps derived state warm so the classes hold. Each item is keyed by what it depends on, so no reply from before a write is served after it; none is a second archive, and each is rebuilt from the archive after a restart (`status` says `warming` until they are built). An LRU may evict items; it never limits replies.
-
-| Warm item | Serves | Keyed by | Refreshed |
-|---|---|---|---|
-| catalog (memory, and published as a file) | completion, short IDs, reference resolution, picker candidates, `help`'s filled lines; it holds the verbs valid per unit, tag names with counts, saved and shipped query names with their one line, and settings | archive write position | incrementally from each committed batch, published within 2 s |
-| sorted session index with titles, last activity, origin, repository, first prompt, shortest unique prefixes | short IDs, prefixes, `latest`, the picker, fuzzy titles in completion | write position | batch delta |
-| status snapshot | bare `polylogue`, `status`, `status --line` | write position and live-state change | after each batch and each hook event |
-| compiled plans, the shipped saved queries' precompiled | every query | normal form, definitions and options | on definition change |
-| first pages, next pages and counts | repeated listings, page turns, footers, the count preview, `--dry-run` counts | question hash and read position | evicted on write |
-| saved-query names and kept-result shapes | compiling | write position | on user write |
-| session item index | the first screen of a one-row read, ranges, `--around` | session and write position | written with the rows |
-| loaded vectors (int8 in memory, f32 on disk) and stored query vectors | `similar:` | vector write counter | on vector write |
-| search vocabulary | fuzzy matching in the brief of a search | write position | batch delta |
-| scope index and session summaries | `brief` | write position and live-state change | batch delta and each hook event |
-| rendered overviews of recent sessions | the picker preview | session, read position, width | evicted on write to that session |
 
 ## Exit codes
 

@@ -1,70 +1,91 @@
 # Query
 
-Polylogue asks every question through one query language: listings, reports, recall, watches, facets and the searches inside briefs are all queries, and every surface answers the same query the same way. This page owns Polylogue's catalog and compiler: units, fields, defaults, times, stages, query objects, paging, deadlines, answers, facets, watch behaviour, acting on rows and read-only SQL.
+Polylogue asks every question through one query language: listings, reports, the searches inside briefs, watches and facets are all queries, and every surface replies to the same query the same way. This page owns selections, Polylogue's catalog and compiler (units, fields, defaults, times, transforms), paging, deadlines, replies, facets and read-only SQL.
 
-The grammar, its spelling, the AST's three-valued semantics, time expressions, the logical day and the cursor type are shared with Sinex and owned by the common [`query-language`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/query-language/README.md) crate and its tests run against Polylogue's catalog. Text and semantic search are in [search.md](search.md); how the command line reads arguments, completion and exit codes are in [interfaces.md](interfaces.md); references are in [references.md](references.md); measures in [measures.md](measures.md); queries that mix Polylogue and Sinex data in [primary-mode.md](primary-mode.md#cross-system-queries).
+The grammar, its spelling, the AST's three-valued semantics, time expressions, the logical day and the cursor type are shared with Sinex and owned by the common [`query-language`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/query-language/README.md) crate, whose tests run against Polylogue's catalog. How a line is read, verbs, chains and exit codes are [interfaces.md](interfaces.md); questions, runs, saved queries, kept results and watches are [saved-queries.md](saved-queries.md); text and semantic search are [search.md](search.md); references are [references.md](references.md); measures are [measures.md](measures.md); queries that mix Polylogue and Sinex data are [primary-mode.md](primary-mode.md#cross-system-queries).
+
+## Selections
+
+A selection is the first argument of a line and says which rows the verbs after it act on. It is always one shell argument; which form a first word is, and in what order the forms are tried, is [interfaces.md](interfaces.md#the-first-word). A selection is one of:
+
+- **a quoted query** in the language on this page, transforms included: `polylogue 'repo:polylogue since:7d'`, `polylogue 'tool_calls where outcome:error | group by tool | count'`;
+- **a reference** ([references.md](references.md#forms)): `polylogue codex:019d0f2a read`, a bare ID prefix, a pasted provider URL, `annotation:<id>`, `query:NAME`, `result:<id>`, `run:<id>`, `role:NAME`;
+- **a reserved word**: `latest`, `self` or `here` ([references.md](references.md#reserved-words));
+- **a row number or range** on a terminal, such as `@3`, `@2-5` or `@all` ([terminal.md](terminal.md#row-numbers));
+- **a saved query name** as the first word, your own first, then the shipped ones: `polylogue waiting` runs `query:waiting` ([saved-queries.md](saved-queries.md#shipped-saved-queries));
+- **a unit name** as the first word: `polylogue tool_calls` lists every tool call, with the unit's defaults;
+- **a single plain word**, which searches for that word in prose and tool input and output, ranked: `polylogue chrono` is the search for "chrono", and its footer says `searched the word "chrono"` ([search.md](search.md#the-plain-word));
+- **`-`**: references read from standard input, one per line, so `grep`, `fzf` and `xargs` compose (`polylogue 'tool_calls where outcome:error' --fields id`, cut with `head`, then piped into `polylogue - read`).
+
+A reference alone drops the query defaults, because it names exactly that thing; how short a reference may be typed and how replies print it is [references.md](references.md#forms).
 
 ## Principles
 
-- **One expressive language instead of small features.** No surface re-implements filtering, totals or paging; a new need is met by the language or a stage, not by a command.
+- **One expressive language instead of small features.** No surface re-implements filtering, totals or paging; a new need is met by the language or a transform, not by a command.
 - **Unknown is not zero; scopes are strict.** An unknown value matches neither a condition nor its `NOT`. A query never widens itself, and never falls back to searching its own text.
-- **No arbitrary limits.** Page sizes are defaults, deadlines can be lifted by any caller, and nothing truncates a valid answer.
-- **Discoverable without shrinking the language.** `explain`, `read_as`, completion and runnable corrections teach the language; every string an agent might pass returns rows, a refusal with a correction, or a typed error.
-- **Agents are callers like the operator,** with the same powers, deadlines and answers.
+- **No arbitrary limits.** Page sizes are defaults, deadlines can be lifted by any caller, and nothing truncates a valid reply.
+- **Discoverable without shrinking the language.** `--explain`, `read_as`, completion and runnable corrections teach the language; every string an agent might pass returns rows, a refusal with a correction, or a typed error.
+- **Agents are callers like the operator,** with the same powers, deadlines and replies.
 
 ## Grammar
 
 Polylogue uses the shared grammar. The shapes it accepts:
 
 ```
-[UNIT [where CONDITIONS]] [with ATTACHED] [| STAGE]...      tool_calls where outcome:error | group by session | count
-CONDITIONS [with ATTACHED] [| STAGE]...                     origin:codex since:7d with messages(id,role)[last:1]
-SESSION-CONDITIONS | UNIT [where CONDITIONS] [| STAGE]...   tag:project:morrow | tool_calls where action:shell
+[UNIT [where CONDITIONS]] [with ATTACHED] [| TRANSFORM]...    tool_calls where outcome:error | group by session | count
+CONDITIONS [with ATTACHED] [| TRANSFORM]...                   origin:codex since:7d with messages(id,role)[last:1]
+SESSION-CONDITIONS | UNIT [where CONDITIONS] [| TRANSFORM]... tag:project:morrow | tool_calls where action:shell
 ```
 
 - Conditions side by side are AND; parentheses group everywhere; without a unit, the unit is `sessions`.
 - **Atoms:** `field:value`; `field OP scalar`; `field between A and B`; `field ~ "text"` (contains); a text term (bare word or `"phrase"`, `word*` prefix, `word~` approximate, see [search.md](search.md)); `exists UNIT(…)`; `count(UNIT [where …]) OP N`; `FIELD in (QUERY)`; `in:result:<id>`; `seq(step -> [next|within:D] step …)`; `query:<hash>` or `query:NAME[(p=v,…)]`; `similar:TEXT|REF`; a reference.
 - **Values:** `word`, `"quoted"` with backslash escapes, `(a|b|c)`, `*` (names the field without restricting it and drops its default), `unknown`.
 - **Comparisons:** `> >= < <= = !=`; durations `ms s m h d w`; money `2.90` or `2.90usd`. An amount is read exactly from its decimal spelling into signed 64-bit nano-USD, half ties rounded away from zero; an amount outside that range is refused, never saturated. There is one spelling: the compact `field:>=N` is refused with `field >= N` as its suggestion.
-- **Depth:** nesting has no limit. Parsing, binding, compiling and evaluation grow their stack as a query nests (`query_language::depth::deeper`), so a deep query answers or is refused for what it says, never for how deep it is. Two negations cancel, and a set inside a set adds its values. Saved-query expansion refuses a cycle and names the chain. No depth or size limit exists.
-
-How the first word of a command line is read (command, query signal, `find`) is in [interfaces.md](interfaces.md#grammar).
+- **Depth:** nesting has no limit. Parsing, binding, compiling and evaluation grow their stack as a query nests (`query_language::depth::deeper`), so a deep query is answered or refused for what it says, never for how deep it is. Two negations cancel, and a set inside a set adds its values. Saved-query expansion refuses a cycle and names the chain.
 
 ### Errors
 
-Every query error carries `kind`, `message`, `position` (byte offset, shown with a caret), `suggestion` (a corrected query that runs as given, whenever one can be formed), `hint`, `candidates` (the matches of an ambiguous reference, or the known fields close to an unknown one) and `retryable`. Polylogue's query error kinds and their exit codes are listed in [interfaces.md](interfaces.md#exit-codes). A unit or field that is part of the design but has no producer yet answers `not_built`, never an empty result.
+Every query error carries `kind`, `message`, `position` (byte offset, shown with a caret), `suggestion` (a corrected query that runs as given, whenever one can be formed), `hint`, `candidates` (the matches of an ambiguous reference, or the known fields close to an unknown one) and `retryable`. Polylogue's error kinds and their exit codes are [interfaces.md](interfaces.md#exit-codes). A unit or field that is part of the design but has no producer yet is refused `not_built`, never an empty result.
 
 ### References inside queries
 
-A reference names exactly one thing and drops the reachability defaults (subagent, hidden, duplicate, active path) for that match. The reference forms and their resolution are in [references.md](references.md#forms); the command line's own forms (`@N`, `@last`) are in [terminal.md#addressing](terminal.md#addressing). A query that is only an exact assertion revision (`assertion:R@X`) reads the `assertions` unit, since the revision is one row; every other lone reference is a condition on the default unit. An ID-shaped word or unique prefix resolves to exactly one session or message, or is `not_found` or `ambiguous` naming the matches; it never silently becomes search text. `self` is the calling session; `last` and `latest` are the most recently active main session that also meets the query's other session conditions (`repo:x last` is the newest session in `x`), never the calling session; they are resolved inside the query when it runs, so a saved query using them follows new sessions.
+A reference names exactly one thing and drops the reachability defaults (subagent, hidden, duplicate, active path) for that match. A query that is only an exact annotation revision (`annotation:01JB7Q2M@2`) reads the `annotations` unit, since the revision is one row; every other lone reference is a condition on the default unit. An ID-shaped word or unique prefix resolves to exactly one session or message, or is `not_found` or `ambiguous` naming the matches; it never silently becomes search text. `self` is the calling session; `latest` is the most recently active main session that also meets the query's other session conditions (`repo:x latest` is the newest session in `x`), never the calling session; both resolve inside the query when it runs, so a saved query using them follows new sessions. Row numbers never reach a query: the command line resolves them to references first ([terminal.md](terminal.md#row-numbers)).
 
 ## Units and fields
 
-Raw tool-call failures are queryable as recorded outcomes: `tool_calls where outcome:error`. These rows report tool results without classifying a command as a verification check.
-
-Each unit declares, once, its rows, key and identity, default filters, default order, search behaviour and relations (`session.`, `message.`, `call.`, `child.`, `next.`, `parent.`, `recipient.`). Each field declares its kind (match, substring, words, subtree, number, money, time, duration, bool, ref), its closed value set taken from the model's stored names (a condition on it compares the stored value, so the column's indexes serve it), its unknown word, a one-line help and the phrase `read_as` uses. Entity-reference fields declare their target independently of their storage unit. A raw provider ID or mixed-reference value has no fixed entity target. An ID list keeps its list shape and declares only its members' target.
+Each unit declares, once, its rows, key and identity, default filters, default order, search behaviour and relations (`session.`, `message.`, `call.`, `child.`, `next.`, `parent.`, `recipient.`). Each field declares its kind (match, substring, words, subtree, number, money, time, duration, bool, ref), its closed value set taken from the model's stored names (a condition on it compares the stored value, so the column's indexes serve it), its unknown word, a one-line help and the phrase `read_as` uses. Entity-reference fields declare their target independently of their storage unit. A raw provider ID or mixed-reference value has no fixed entity target. An ID list holds its list shape and declares only its members' target. `help units` and `help fields [UNIT]` page the declarations.
 
 | Unit | Rows |
 |---|---|
 | `sessions` | logical sessions by default ([sessions.md](sessions.md#logical-sessions)); `physical:true` lists physical sessions |
 | `messages`, `blocks`, `tool_calls`, `documents`, `attachments`, `events`, `links`, `turns`, `files` | as parsed ([sessions.md](sessions.md)) |
 | `pastes` | paste spans: content hash, source of the span, state, message and session; `group by hash` gives repeats |
-| `assertions` | assertions ([assertions.md](assertions.md)) |
-| `variants` | variants and their parts ([assertions.md](assertions.md#variants)) |
-| `deliveries` | deliveries ([agent-context.md#deliveries](agent-context.md#deliveries)) |
-| `changes` | the change feed as rows |
-| `queries`, `runs`, `results` | query objects, query runs and kept results ([below](#query-objects)) |
+| `annotations` | annotations ([annotations.md](annotations.md)) |
+| `alternates` | alternates and their parts ([alternates.md](alternates.md)) |
+| `deliveries` | deliveries ([agent-context.md](agent-context.md#deliveries)) |
+| `feed` | the change feed as rows ([operations.md](operations.md#the-change-feed)) |
+| `queries`, `runs`, `results` | questions and saved queries, runs and kept results ([saved-queries.md](saved-queries.md#query-objects)) |
+| `import_jobs`, `chat_actions` | what the browser extension was asked to do: provider imports and turns drafted or sent in web chats ([extension.md](extension.md)) |
+| `prices` | the price catalog's rows: model, effective date, rates and source ([measures.md](measures.md#the-price-catalog)) |
 | `processes`, `commits` | harness processes; commit and pull-request links (`not_built` until their producers exist) |
+
+Raw tool-call failures are queryable as recorded outcomes: `tool_calls where outcome:error`. These rows report tool results without classifying a command as a verification check.
 
 Field rules:
 
-- **Session-field shorthand.** In a row query, a session field without `session.` means `session.<field>` when the row unit has no field of that name; `explain` shows the full form.
+- **Session-field shorthand.** In a row query, a session field without `session.` means `session.<field>` when the row unit has no field of that name; `--explain` shows the full form.
 - **String matching** is case-insensitive. `title`, `path`, `command` and `input` match substrings; `output` and `thinking` match words; `cwd` and `checkout` match subtrees (whole path components, case-sensitive, `_` and `%` literal); everything else matches whole values.
 - **Two models in one session** match either; `group by model` counts the session under each.
 - **Counts and content fields** include `project`, `has:code` and `code_lang`, per-role counts (`user_words`, `assistant_words`, `tool_use_messages`, `thinking_messages`, `paste_messages`), `since_session:<ref>`, and `time_quality` and `precision` on every time.
-- **Assertion fields**, on `assertions` and as conditions on any unit through `kv:`: `kind`, `key`, `value`, `author`, `by_operator`, `agent`, `unattributed`, `via`, `about`, `evidence`, `scope`, `origin`, `current`, `conflict`, `withdrawn`, `judged`, `judged_by`, `expired`, `changed_since`, `waiting`, `pass`, `rubric`. On any unit: `tag:<name>[:<value>]`, `title:`, `kv:<kind>.<key>=<value>`, `hidden:`, `referenced_by:<ref>`. Grain is strict: an assertion about a session never matches its messages.
-- **Variant fields:** `variant:true` admits variant text into text search; `lang:<code>` matches variant parts in that language and messages by their derived `lang`.
-- **Names shared with Sinex** keep their meaning per product: `seen_by:` is Polylogue's as-of field, and Sinex's "as of" is a different concept. Polylogue does not keep historical query membership at earlier read positions: `| as of POSITION|TIME` answers `not_yet_available`. `seen_by:` selects records received by then, read with current parsers and prices.
+- **Live and open fields on sessions:** `running`, `waiting`, `live_rank`, `live_since` and `last_event_at` ([session-control.md](session-control.md)); `ends_open` (an unanswered prompt, an unfinished tool call, an open todo or handoff, a partial outcome); `triage_score` ([saved-queries.md](saved-queries.md#shipped-saved-queries)).
+- **Cost fields:** every assistant message carries its cost and its tokens per token kind; sessions carry `cost` (their own responses) and `cost_with_parents` (what the session shows, inherited responses included) ([measures.md](measures.md#cost-and-usage)). A day's usage or one model's responses are queries over these: `polylogue 'messages where role:assistant model:gpt-5 since:today'`.
+- **`month_day`** on every timed unit (`11-09`) selects one day of the year across years: `polylogue 'sessions where month_day:11-09'`.
+- **Annotation fields**, on `annotations` and as conditions on any unit through `kv:`: `kind`, `key`, `value`, `author`, `by_operator`, `agent`, `unattributed`, `via`, `about`, `evidence`, `scope`, `origin`, `current`, `conflict`, `withdrawn`, `judged`, `judged_by`, `expired`, `changed_since`, `waiting`, `pass`, `rubric`, `answered` (a question with a current reply), `request` (the request that wrote it, for the undo line of a many-row write), `root` (its first revision, so `root:X withdrawn:*` is a note's history) and `links_to` (what links to a reference). On any unit: `tag:<name>[:<value>]`, `title:`, `kv:<kind>.<key>=<value>`, `hidden:`, `referenced_by:<ref>`. Grain is strict: an annotation about a session never matches its messages.
+- **Query fields** on `queries`: `name` (set on saved queries) and `saved_at`.
+- **Alternate fields:** `alternate:true` admits alternate text into text search; `lang:<code>` matches alternate parts in that language and messages by their derived `lang`.
+- **Names shared with Sinex** retain their meaning per product: `seen_by:` is Polylogue's as-of field, and Sinex's "as of" is a different concept. Polylogue does not store historical query membership at earlier read positions: `| as of POSITION|TIME` replies `not_yet_available`. `seen_by:` selects records received by then, read with current parsers and prices.
+
+Readings that are queries rather than views: a note's history (`annotations where root:X withdrawn:*`), what links to a note (`annotations where links_to:X`), prompts only (`messages where written_by:human`), file edits as rows (`tool_calls where action:file_edit`) and the map of a session (`turns where session:REF`), and several sessions' openings and endings (`polylogue 'repo:sinex since:7d' read --view dialogue --first 2 --last 2`). A row of a word search is read starting at its first hit. Views are [reading.md](reading.md).
 
 ## Defaults
 
@@ -76,172 +97,66 @@ Each unit binds its default filters once, when its source is bound (a unit, `que
 | listings and search over every unit with a session | not `hidden`; measures and population counts include hidden sessions and say how many |
 | `messages`, `blocks`, `tool_calls` | not duplicate copies; on the active path, or path unknown |
 | `tool_calls` | wrapper calls whose children are counted are excluded |
-| `assertions`, `variants` | current and not withdrawn |
+| `annotations`, `alternates` | current and not withdrawn |
 
-A reference drops the reachability defaults for its own match. A group or sort key naming a field keeps its default. Rows kept because their path is unknown are counted in `notes`. No default concerns deletion, because Polylogue has none ([architecture.md](architecture.md#deletion)).
+A reference drops the reachability defaults for its own match. A group or sort key naming a field leaves its default in place. Rows included because their path is unknown are counted in `notes`. No default concerns deletion, because Polylogue has none ([architecture.md](architecture.md#deletion)). A footer names every default that removed rows ([terminal.md](terminal.md#footers-and-next-lines)).
 
 ## Times
 
 Time expressions (relative, calendar, natural-language dates, bounds, daylight-saving rules) and the logical day are the shared language's. Polylogue's use of them:
 
-- A query resolves its times once, against one `now` and zone, recorded in `resolved`. A cursor carries them and a kept result keeps them; a saved query and a watch re-resolve on each run.
+- A query resolves its times once, against one `now` and zone, recorded in `resolved`. A cursor carries them and a kept result records them; a saved query and a watch resolve them again on each run.
 - Every time Polylogue reads carries `time_quality` and `precision` ([sessions.md](sessions.md#times)), in the closed sets shared with Sinex.
 - A tool call's `result_at` is the time of its result or completion notice. `reported_duration` is the harness's own duration in milliseconds, unknown when absent; it is separate from the elapsed `duration` of [measures](measures.md), which needs both times on one clock.
 - **Coarse times.** A coarse or bounded time satisfies a time condition only when its whole period does, fails when none of its period does, and is otherwise `unknown`. A row whose time is unknown never matches a time condition, is counted in `notes`, and `group by day` puts it in an `unknown` group.
 - Period groups (`day()`, `week()`, `month()`) follow the logical day, and each says `period: complete|partial`. Their labels are common's, the same as Sinex's: `2026-11-09`, the ISO week `2026-W46`, `2026-11`.
-- Time columns in answers are RFC 3339 in the logical-day zone with its offset (`2026-11-09T09:12:00+01:00`), so tables show local clock times and the instant stays exact.
-- `last_active` is the latest of the messages’ known source times. Its possible period is the maximum of their whole periods: a recorded period `[0,10)` and a point at 5 give `[5,10)`. Its source quality is known only when every possible latest message has that quality; a combination of different source qualities leaves the derived quality unknown. Calendar bounds are never inferred from the reader’s zone.
-- An order relation’s `at when` and `at start` anchor the outer row at its start; `at end` anchors it at its end. The inner row keeps its source period and start. `match.distance` is the signed time from that outer point to the inner start, in seconds. Coarse periods still have to satisfy the whole-period relation and window.
-- An order condition chooses its nearest satisfying matching row by default. `pick first by E [asc|desc], …` chooses by explicit inner-row sort keys instead, with unknown values last and identity as the final tie-breaker. It keeps the outer row once in its existing order. `abs(match.distance)` compares exact nanosecond distances between source times when choosing a time matching row; the public signed distance remains seconds. All operands of a condition read the relation entering it. After the complete predicate filters those rows, exactly one positive order condition in its top-level AND exposes its matching row; OR, NOT, and multiple positive order conditions preserve the input matching row namespace.
+- Time columns in replies are RFC 3339 in the logical-day zone with its offset (`2026-11-09T09:12:00+01:00`), so tables show local clock times and the instant stays exact.
+- `last_active` is the latest of the messages' known source times. Its possible period is the maximum of their whole periods: a recorded period `[0,10)` and a point at 5 give `[5,10)`. Its source quality is known only when every possible latest message has that quality; a combination of different source qualities leaves the derived quality unknown. Calendar bounds are never inferred from the reader's zone.
+- An order relation's `at when` and `at start` anchor the outer row at its start; `at end` anchors it at its end. The inner row retains its source period and start. `match.distance` is the signed time from that outer point to the inner start, in seconds. Coarse periods still have to satisfy the whole-period relation and window.
+- An order condition chooses its nearest satisfying matching row by default. `pick first by E [asc|desc], …` chooses by explicit inner-row sort keys instead, with unknown values last and identity as the final tie-breaker; the outer row appears once, in its existing order. `abs(match.distance)` compares exact nanosecond distances between source times when choosing a time matching row; the public signed distance remains seconds. All operands of a condition read the relation entering it. After the complete predicate filters those rows, exactly one positive order condition in its top-level AND exposes its matching row; OR, NOT, and multiple positive order conditions preserve the input matching row namespace.
 
-## Related rows, stages, attached rows, combining
+## Related rows, transforms, attached rows, combining
 
-### Conditions over related rows
+Conditions over related rows, transforms after `|`, attached rows and combining queries are [transforms.md](transforms.md).
 
-- `exists child(C)`: one child satisfies all of C; three-valued. `exists child()` is true when any related child exists, and false when there is none.
-- `count(UNIT [where C]) OP N`: a count is always known, so it and its `NOT` partition the rows.
-- `FIELD in (QUERY | group by F)`: the value is one of the other query's grouped values of the same type.
-- `seq(A -> [next] B -> [within:5m] C)`: tool calls in session order. Matches are the earliest non-overlapping; a step's own conditions narrow before matches are chosen; `within` needs both times, the later strictly after; `| matches` returns each match as rows. `seq all(…)` (every, overlapping match) and `gap_steps`/`gap_time` on match rows are part of the language.
+## Reading a query back
 
-### Stages
-
-Stages apply in the order written:
-
-- `sort by F [asc|desc], …`: unknowns last in either direction; row identity is the final tie-break. `sort by random[(seed)]` keeps its seed in the cursor.
-- `group by K1, K2 | count` or `| agg …`: keys are fields and `day()`, `week()`, `month()`. Group keys and `min` or `max` of a reference keep that field's reference metadata. The group or summary has its own row identity and no entity target. Computed aggregate values carry no entity reference.
-- `agg count(), sum(E), avg(E), min(E), max(E), pNN(E), count_distinct(E), histogram(E), corr(E, F), covered(start, end)`: expressions are evaluated at the input row's grain; unknown and partial values are reported as `unknown_F` and `partial_F`; a `sum` over no rows is 0, and a `sum` whose members are all unknown stays unknown; percentiles are nearest-rank. `covered` measures the union of intervals, so overlap is counted once. `histogram` returns ordered JSON bins with `value` and `count`; `corr` is Pearson correlation over complete known pairs and stays unknown for fewer than two pairs or constant input. A numeric total or average is unknown only when it has no known inputs; a nonfinite total over known inputs fails rather than returning unknown. Money is integer nano-USD through every condition, expression and aggregate: an amount scaled by a fraction and an average amount round once to the nano-USD, and a total outside the 64-bit range fails. Answers carry an amount as its exact decimal dollars (`0.000123456`), and a kept result reads them back exactly. Default and explicit field selections carry the same kinds, including turn cost, latency and booleans. Arithmetic preserves dimensions; division by zero and operations on unknown inputs stay unknown.
-- `text(E)` keeps a string value as plain text and clears entity-reference metadata. It propagates unknown values and refuses numbers, times, booleans, lists and objects; a JSON string is decoded as a string. Natural `FIELD:value` matching follows the bound field kind after field selection: plain text uses Unicode lowercase substring matching with accents preserved, references and exact fields use equality, and paths keep whole-component boundaries. Explicit `=` remains equality.
-- `| where C` straight after the source narrows its selection as one conjunction with it: `A | where B` selects, ranks and marks snippets as `A B` does, and never drops a default the source bound. It stays a separate step where the conjunction would mean something else: beside an order condition, `last` or `latest`, or with a later `| matches`. `| where C` after grouping filters groups. Field selection, filtering, sorting, row selection, grouping and aggregation execute at their written relation boundaries. An output alias may use any accepted name, including `_pk`; internal row keys and ordering slots occupy a separate namespace.
-- `| group by K | first N` returns the first N input rows of each stored group, in the input order. It and `| group by K | agg …` read the grouping's input rows once. A key join returns every matching pair, with the right-hand columns under `match.`. An order condition keeps an outer row once and exposes its nearest satisfying matching row under `match.`; a later order condition replaces that namespace.
-- `limit N`, `offset N` are selections and change the question; there is no maximum.
-- `distinct` removes repeated row identities. A field selection changes visible fields while keeping row identity, so equal selected values from different rows remain separate.
-- `matches` keeps the entering row's visible columns under `parent.` with their types and reference metadata; projected aliases keep their names. Its matched child fields are under `step.`. Parent rows keep their entering order, followed by each parent's match and step order.
-- `| UNIT [where C]` returns rows of another unit within the matched sessions; `fields a,b` projects columns (`--fields` on the command line).
-- `| measure WHAT` hands the selection to a measure ([measures.md](measures.md)).
-- Further stages are part of the language and answer `not_built` until built: derived keys (`program(command)`, `fingerprint(text)`), `| series`, `| extract number before "MB/s" as rate`, `| cluster by similar [k:20]`, and `let` names within one query.
-
-### Attached rows
-
-`QUERY with messages(id, role, text)[role:assistant, last:2], tool_calls(…)` returns each parent row with one list per child spec. Inside the brackets, conditions filter first, then `first:` and `last:` take that many per parent in the child's order. An empty field list, `with messages()`, attaches the child unit's own columns. A page's attached rows are read in one statement per child spec over that page's parents. Attaching never changes which parents are returned. There is no page-wide ceiling, and attached text is never cut.
-
-### Combining queries
-
-- `Q | union (R)`, `| intersect (R)` and `| except (R)` combine two queries of the same unit; `| fuse (R)` adds R's order as one more ranking without adding rows.
-- A chain containing `| fuse` or a ranked operand is one reciprocal-rank fusion over all original operands ([search.md](search.md#fusion)); an unranked operand contributes its captured order. A fuse operand's ranks are taken over its full input before membership restriction. Values come from the first membership operand that supplies a row; compatible stored representations are converted to the output column's units. A member without an optional matching row keeps unknown matching row values and coordinates. `found_in` names the membership lists that ranked it. Unranked unions remove duplicate identities and order by identity. `intersect` and `except` keep the left order.
-- Grains must match; a mismatch is `invalid_query` suggesting the explicit lift (`| sessions`). Set operands with selected fields require compatible field declarations, including reference targets; a reference and `text(reference)` need the same explicit field selection on both sides. Combining applies before a terminal aggregate.
-
-## Query objects
-
-Queries, their runs, kept results, figures and findings are stored objects with identities, so a question and its answer can be cited, reused and compared over time.
-
-### Identity
-
-- **`query:<hash>`** is the BLAKE3 hash of the query's normal form and declared parameter types. The form resolves surface references to their stored forms and saved-query names to the hashes they resolved to, sorts operands where order carries no meaning, and removes spelling variants. Its explicit encoding is independent of the Rust AST's serialization layout. Equal normal forms and parameter declarations have equal hashes. The normal form and the hash function belong to the shared language, so Sinex hashes its queries the same way.
-- `query:<hash>` accepts the full 64-hex hash or a unique prefix of at least 12 hex characters. A saved-query name is what `query:NAME` can say: ASCII letters, digits, `_`, `-` and `.`; a save under any other name is refused. Saved-query names cannot be all hex.
-- Relative times stay as expressions in the normal form (`since:7d`, not an instant); each run records what they resolved to.
-
-### Names and composition
-
-- **Names point at hashes.** A name is a `saved_query` assertion ([assertions.md](assertions.md#kinds)) with key = name and value `{text, hash, denominator?}`. Saving under an existing name revises that assertion, with the usual current-revision rules ([assertions.md](assertions.md#current-revisions)); `query:NAME` resolves to the hash of the current revision, and two current revisions under one name are `ambiguous`.
-- **Composition edges are recorded at compile time** in `query_edge(query, uses, how)`, where `how` is `saved` (a name and the hash it resolved to), `result` (a kept result used as source), `combine` or `in` (a sub-query). "Which queries use this one" and "what did this query depend on" are queries over the `queries` unit.
-
-### Runs
-
-- Every executed query writes a run: `query_run(id, query, at, resolved, read_at, author, via, outcome, count, exact)`, with the author computed as for every authored record ([assertions.md](assertions.md#authorship)). `explain` and completion write none.
-- `query(hash, normal_form, first_run)` holds each distinct query once.
-- Runs are written by the writer in its regular groups. A first page reserves space in the bounded user queue within its existing deadline, before acquiring the reader that prepares its page, then hands its completed execution to the writer without waiting for a commit. The run and its outcome commit together; the question is independently reusable under its hash. A cancelled or refused request starts no page and creates no run.
-- Every answer carries `query: "query:<hash>"` and `run: "<run id>"`; a kept answer also carries `result:<id>`.
-
-### Saved queries
-
-- **Shapes.** A saved query whose text is a relation (a unit and conditions, no stages) can stand where a condition can, over the same unit: at the top level it is the source, bound with its own defaults and times; under OR or NOT it means membership. A saved query with stages or `similar:` is a shaped result, which can be read and followed by stages only.
-- **Parameters:** `$word` in the text is a parameter, given as `query:NAME(word=VALUE)`. Values substitute in the parsed tree, never as text; a missing or unused parameter is an error naming it.
-- **A saved definition keeps its executable object and saved dependencies.** Running a saved hash loads that object, its typed source-output schemas and the definitions it captured. It does not resolve its old dependency names against their current revisions. Execution requires the object and every saved definition to be stored.
-- **Only named definitions are read.** A query reads the saved queries, saved questions and kept results it names (and those their definitions name), never the others, so its cost does not grow with how many are stored. A damaged stored definition fails the queries that name it with its storage error; it is never read as empty.
-- **Recorded definitions:** every answer and kept result names each name it used, with the hash and saved-query revision it resolved to (`definitions`). Revising a saved query never changes what an earlier kept result says it ran.
-- **Shipped saved queries** are data in the code, listed beside the operator's own and without an author: `running`, `live`, `notices`, `changes`, `triage`, `needs-review` (non-operator assertions not yet judged by the counted judges), `open-questions`, `unjudged-agent-notes`, `resume_candidates`. A saved query of one's own with the same name takes precedence; withdrawing it brings the shipped one back. Shortcuts are shipped saved queries, never text builders.
-- **`query:triage`** orders sessions across all repositories by a visible sum of named facts, each shown with its contribution: a failed command never followed by a success of the same command; three or more consecutive failures of one normalized command; cost or duration at least three times the repository's 30-day median; three or more operator corrections; open questions and problems. Tagging a session `triaged` removes it; later activity brings it back.
-
-### Kept results
-
-`QUERY keep [--name N]` (and `keep` over MCP and HTTP) stores the answer as it is now under `result:<uuidv7>`. It records:
-
-- `query:<hash>`, the run and the definitions;
-- the resolved bounds (`now`, zone, day start, resolved times) and `read_at`;
-- **exactness**: whether `count` was exact, and whether the answer was complete or `incomplete`, with the missing parts;
-- columns with kinds and references, each row's values and references, and assertions pinned to their revisions;
-- for `exists` or `seq`, the match rows; for a ranked answer, each row's rank and per-list contributions;
-- the version of every derivation the answer read.
-
-Rules:
-
-- **Ranking is kept, or the keep is refused.** Keeping a ranked answer whose ranking is incomplete is `refused` with the missing list named; the caller can keep the unranked membership by removing the ranking term.
-- **Reading back** `result:<id>` (or `#<row>`, `.matches`) reads the stored rows, never a re-run; only stages may follow (`result:<id> | group by origin | count`). Re-running is running `query:<hash>`. Where a derivation version changed since, the read says so ("computed under prices `<hash>`, now `<hash>`").
-- A kept result keeps the producer's bound logical declarations alongside its physical columns, so same-name `text(id) as id` and `text(cwd) as cwd` keep text matching. Declarations do not grant access to source fields, periods or positions. Normalized questions and their saved definitions keep each source declaration, and reading a saved question checks its kept declaration against the immutable result it names.
-- Stages over a kept result use its captured shape, columns and values, including a shaped result with no unit rows. Missing fields and source times or positions are not fetched from current rows. Captured row identity is kept when present; otherwise each stored item has an identity from the result, part and stored ordinal, so equal values remain distinct when paged.
-- **Membership:** `in:result:<id>` restricts any query of the result's unit to its rows; a bulk write over a reviewed population uses it.
-- **One kept result, many uses:** assertions, page slots, briefs, watch baselines and written-out bundles cite the same `result:<id>`; nothing copies rows.
-- **Every row is stored,** in `kept_row(result, position, values_json, refs_json)`, so paging a large result reads by key. Keeping an answer that cannot be read within one deadline keeps it in steps, each its own read transaction, recording every position read.
-- A name is a display label on the result, never a reference.
-- Kept results are user state, not assertions; in primary mode they travel as `polylogue.kept_result` records, and runs as `polylogue.query` and `polylogue.query_run` records ([primary-mode.md](primary-mode.md)).
-
-### Figures
-
-A **figure** is a saved `| measure` or `| agg` query with a declared denominator query: a `saved_query` assertion whose value carries `denominator: query:<hash>`. Running a figure answers the value with its denominator count, its unknown count and its exactness; keeping it keeps all three. A figure without a denominator is refused at save.
-
-```console
-$ polylogue 'sessions since:30d | measure cost by day' save cost-30d --denominator 'sessions since:30d'
-$ polylogue query:cost-30d keep
-```
-
-### Findings
-
-A **finding** is an assertion of kind `finding` that cites the `result:` or `query:` it rests on through a `derived_from` link. `polylogue result:<id> assert finding "…"` writes one about the result with that link; `polylogue result:<id> --stack` lists the findings resting on a result.
-
-### Pre-registration
-
-A run or kept result is **pre-registered** when a `saved_query` assertion naming its `query:<hash>` (or a `claim` or `forecast` whose check names it) was committed before the hash's first run on this archive. Answers and kept results carry `pre_registered: true|false` with the registering assertion. Order is the archive's commit order, never a clock; in primary mode, Sinex's commit order.
-
-## Explain
-
-- `explain query --expression QUERY` compiles without reading rows and returns the parsed query with spans; the defaults applied and which conditions dropped them; units; definitions; resolved times; the ranking in effect (none, relevance, similarity, fused, and which lists); `query:<hash>`; and `read_as`, the query read back in plain language from each field's, operator's and stage's declared phrase. With `--detail full` it adds the compiled plan.
-- `explain syntax` describes the language and its stages; `explain units|fields|operators|capabilities|derived` pages the declarations. `explain fields --unit UNIT` selects one unit; `--page-size N` and `--cursor C` page the declarations.
-- `--why`, on any query, also counts within the aggregate deadline: first each default the unit applied, as `{clause, matches, of}` where `clause` names the conditions that lift it and `matches of of` is the rows it keeps of the rows without it; then per condition `{clause, group, matches, of, hint}`, nested by OR, NOT and parenthesis group, with no limit on entries; for a ranked answer, each shown row's rank in each list and its contribution. For an empty answer it adds the nearest relaxation: the time bound that would admit rows, the closed-set values present, the closest field values.
-- Every answer carries `read_as`.
-- Explain and completion never write, build, embed or call a model.
+- `--explain` on a line ([terminal.md](terminal.md#explain)) compiles the selection without reading rows and returns the parsed query with spans; the defaults applied and which conditions dropped them; units; definitions; resolved times; the ranking in effect (none, relevance, similarity, fused, and which lists); `query:<hash>`; and `read_as`, the query read back in plain language from each field's, operator's and transform's declared phrase. With `--json` the reply also carries the compiled plan.
+- `--why`, a listing option, also counts within the aggregate deadline: first each default the unit applied, as `{clause, matches, of}` where `clause` names the conditions that lift it and `matches of of` is the rows it retains of the rows without it; then per condition `{clause, group, matches, of, hint}`, nested by OR, NOT and parenthesis group, with no limit on entries; for a ranked reply, each shown row's rank in each list and its contribution. For an empty reply it adds the nearest relaxation: the time bound that would admit rows, the closed-set values present, the closest field values.
+- Every reply carries `read_as`.
+- `--explain` and completion never write, build, embed or call a model.
 
 ## Paging
 
-- **Four bounds stay apart.** Selection (`limit`, `[last:k]`) is in the question. `page_size` is how much travels now (default 20 sessions or 50 other rows, the same on every surface). A presentation budget cuts display, never a figure's population. The deadline bounds execution.
+- **Four bounds stay apart.** Selection (`limit`, `[last:k]`) is in the question. The page size (`--page-size`) is how much travels now (default 20 sessions or 50 other rows, the same on every surface). A presentation budget (`--budget`) cuts display, never a figure's population. The deadline bounds execution.
 - **Default order.** A unit's default order puts rows without a time after the dated ones. An index carries that order's leading terms for sessions, messages, tool calls and events, so their first page reads only its own rows.
 - **Key first.** A page of a unit's rows is read in two steps: the selection's keys and order values are ordered and paged, then only the page's rows are read. Sorting and paging touch keys, never the columns of rows off the page.
-- **Cursors** hold the last row's order-key values with row identity as the final key, the resolved `now`, the random seed, the index generation, the first page's read position, and a hash of the resolved question (normal form, fields, caller, zone, day start, ranking options, vector write counter). They are sealed: opaque and integrity-checked.
+- **Cursors** (`--cursor`) hold the last row's order-key values with row identity as the final key, the resolved `now`, the random seed, the index generation, the first page's read position, and a hash of the resolved question (normal form, fields, caller, zone, day start, ranking options, vector write counter). They are opaque and integrity-checked.
 - **Continuation is by key,** never by offset, and no read transaction is held between pages. When the archive changes between pages, no row whose key did not change is skipped or repeated, and `notes` say "the archive changed since the first page", listing rows that moved before the cursor's position.
 - **Refusals:** a cursor from another question is `invalid_query`; one from an earlier index generation, or a ranked cursor after a vector write, is `stale_cursor`, never restarted silently. Only the page size may change between pages.
-- A page may be empty and still carry a cursor; only a page without `next` is the end. An enumeration that must not change is kept first, then paged.
+- A page may be empty and still carry a cursor; only a page without `next` is the end. An enumeration that must not change is saved first ([saved-queries.md](saved-queries.md#kept-results)), then paged.
 - The count is computed once per question and read position, and reused by later pages.
+- On a terminal the pager requests each page as it consumes the last; elsewhere every page ends with the line or call that continues it ([terminal.md](terminal.md#output)).
 
 ## Deadlines
 
-- Every request carries a deadline from its latency class ([interfaces.md](interfaces.md#latency-classes)). Deadlines are defaults for interactive display, not limits on what may be asked.
+- Every request carries a deadline from its latency class ([interfaces.md](latency.md#latency-classes)). Deadlines are defaults for interactive display, not limits on what may be asked.
 - **Any caller can lift the deadline,** agents included: `--deadline MS` or `--deadline none` on the command line, `deadline: null` over MCP and HTTP. No valid query is refused for time.
-- A read past its deadline ends `timeout`, never `ok` with a partial page. The answer names the running stage and rows scanned, a narrower query, and the same query with the deadline lifted.
-- A read stops within 100 ms when its deadline passes or its caller cancels or disconnects (MCP cancellation, a closed HTTP connection or socket, Ctrl-C); no abandoned read keeps running in the daemon.
+- A read past its deadline ends `timeout`, never `ok` with a partial page. The reply names the running transform and rows scanned, a narrower query, and the same query with the deadline lifted.
+- A read stops within 100 ms when its deadline passes or its caller cancels or disconnects (MCP cancellation, a closed HTTP connection or socket, Ctrl-C); no abandoned read goes on running in the daemon.
 - A read's deadline covers the whole read, from waiting for a read connection and opening it through the last statement. A deadline that passes before any statement runs ends the read the same way, past its deadline.
 - Background work never blocks an interactive read; one executor place and one read connection are reserved for latency-bound requests (hook briefs, `status`, completion) ([operations.md](operations.md#idle-and-steady-state-work)).
 
-## Answers
+## Replies
 
-Every surface returns the shared typed answer: `outcome`, a `value` on success
-or `error` on failure, and the request and continuation fields. The query
-document inside `value` has this shape:
+Every surface returns the shared typed reply: `outcome`, a `value` on success or `error` on failure, and the request and continuation fields. The query document inside `value` has this shape:
 
 ```json
 {
   "unit": "sessions", "shape": "rows",
   "columns": [{"name": "id", "kind": "text", "reference": "session"}],
   "rows": [], "count": 3, "next": null, "ranked": true,
-  "query": "query:9f2c…", "run": "…", "result": null, "pre_registered": false,
+  "query": "query:9f2c…", "run": "run:…", "result": null, "pre_registered": false,
   "definitions": [], "read_as": "…", "why": null,
   "notes": [], "incomplete": [],
   "unknown": {"similar": 0, "cost": 2, "unparsed_inputs": 0},
@@ -252,31 +167,20 @@ document inside `value` has this shape:
 }
 ```
 
-- The document carries no outcome of its own: the answer's outcome ([terminal.md#output](terminal.md#output)) says `ok`, `empty` or `degraded`, and a measurement is the document with `measure` and `data` in place of the row fields. Errors are `{"outcome":"error","error":{…}}`. `positions` is filled only for cross-system answers ([primary-mode.md](primary-mode.md#cross-system-queries)).
+- The document carries no outcome of its own: the reply's outcome ([terminal.md](terminal.md#output)) says `ok`, `empty` or `degraded`, and a measurement is the document with `measure` and `data` in place of the row fields. Errors are `{"outcome":"error","error":{…}}`. `positions` is filled only for cross-system replies ([primary-mode.md](primary-mode.md#cross-system-queries)).
 - `empty` comes only from a read that succeeded and matched nothing; a failure never produces `empty`.
-- An answer assembled from parts (the two sides of a hybrid search, recall lists, cross-system parts) is `incomplete` if any part failed, naming each.
+- A reply assembled from parts (the two sides of a hybrid search, the lists fused in the brief of a search, cross-system parts) is `incomplete` if any part failed, naming each.
 - `up_to_date` is false while files have unparsed growth, inputs wait, derived products are behind, or the index is held; `notes` say which.
-- `unknown.unparsed_inputs` counts stored inputs the query's origins cannot read yet; an answer that would be `empty` is then `incomplete`.
+- `unknown.unparsed_inputs` counts stored inputs the query's origins cannot read yet; a reply that would be `empty` is then `incomplete`.
 
 ## Facets
 
-A facet count is `group by F | count` over the same filtered population as the answer, never the visible page, in two views: `scoped` (under the query) and `global` (under the defaults alone), with IDF and lift per value computed from the two. A `facets` request runs several in one read transaction, after the first page; a count past its deadline is reported deferred, never zero. Presentation is the web's ([web.md](web.md)).
-
-## Watches
-
-A watch is a signal rule over a query ([operations.md](operations.md#notices)); the rule schema and the evaluator's behaviour (changes, baselines, cooldowns, thresholds, catching up, downtime) are the common [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/signals/README.md) design. What Polylogue's query side supplies:
-
-- `watch [--name N] QUERY` keeps the current answer as the baseline (a kept result) and re-evaluates as data arrives, re-resolving relative times.
-- Changes are reported as `membership` (rows joined or left), `ranking` or `top_k`, never one for another.
-- A reading taken while the index catches up, or an incomplete answer, is held as incomplete, never reported as a change.
-- Occurrences are keyed by logical session, so a re-parse never fires a watch again and one logical session fires once.
-- A watch over assertions compares by kind, target, key and value.
-- The rule is stored as a `signal` assertion. A watch only notifies; it never starts or resumes an agent ([session-control.md#pings](session-control.md#pings)).
+A facet count is `group by F | count` over the same filtered population as the reply, never the visible page, in two views: `scoped` (under the query) and `global` (under the defaults alone), with IDF and lift per value computed from the two (`| measure facets`, [measures.md](measures.md#sessions-work-and-comparison)). A facets request runs several in one read transaction, after the first page; a count past its deadline is reported deferred, never zero. Presentation is the web's ([web.md](web.md)).
 
 ## Acting on rows
 
-Verbs act on the matched set: `read` (and `read --to`, [reading.md](reading.md#writing-out)), `keep`, `assert`, `revise`, `withdraw`, `judge`, `ping` and the others in [interfaces.md](interfaces.md#command-table). A bulk write over all matches resolves the query in the write's own transaction through the same compiled plan, writes one assertion per row, and reports the committed count with `query:<hash>`; a reviewed population is named with `in:result:<id>`. There is no export verb, because writing out is reading, and no delete verb, because Polylogue has no deletion.
+Verbs after the selection act on the rows it resolved, once, in order: reading, briefing, notes, tags, judgments, saving and acts on live sessions ([interfaces.md](interfaces.md#verbs), [interfaces.md](interfaces.md#chains)). A write over several rows of a query needs `--all`, writes one annotation per row in one request, and reports the committed count with `query:<hash>` and its undo line; a reviewed population is named with `in:result:<id>`. There is no export verb, because writing out is `read --to`, and no delete verb, because Polylogue has no deletion.
 
 ## Read-only SQL
 
-`sql` runs read-only statements against `index.db` with `archive.db` attached, through versioned views (`v1_sessions`, `v1_messages`, `v1_tool_calls`, `v1_links`, `v1_assertions`). It is an escape hatch outside the language: a need met repeatedly only through `sql` is a gap in the language.
+`polylogue dev sql STATEMENT` runs one read-only statement against `index.db` with `archive.db` attached, through versioned views (`v1_sessions`, `v1_messages`, `v1_tool_calls`, `v1_links`, `v1_assertions`): `polylogue dev sql 'select count(*) from v1_sessions'`. It is an escape hatch outside the language: a need met repeatedly only through `dev sql` is a gap in the language. Over MCP it is the `dev sql` operation of every tool ([agents.md](agents.md#mcp-server)).

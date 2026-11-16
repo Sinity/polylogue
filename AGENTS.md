@@ -29,8 +29,9 @@ license leaving a wrong design or a known defect in the code the delivery
 changes. `docs/README.md` indexes
 the pages. Start with `docs/architecture.md` (purpose, principles, modes, stores,
 durability, pipeline, configuration and clocks), then read the page that owns
-the area you are changing. CLI help, MCP tool schemas and module
-documentation describe the current build.
+the area you are changing; `docs/vocabulary.md` lists every surface word.
+CLI help, MCP tool schemas and module documentation describe the current
+build.
 
 Plans, open questions, decisions and acceptance criteria live in Beads, the
 task tracker, outside this repository. A Bead points at the doc section it
@@ -54,17 +55,20 @@ copy.
   come only from explicit markers; a compaction is a context boundary; the
   logical work session is the default unit (`docs/sessions.md`).
 - **Authorship is computed, never supplied**: the daemon derives `author` and
-  `via` from the channel and the harness (`docs/assertions.md`).
-- **Assertions are the substrate of everything authored**: notes, tags,
-  judgments, saved queries, Pages and settings; the current revision is a
-  function of the revision graph (`docs/assertions.md`, `docs/pages.md`).
-- **Queries, results, findings and figures are identified objects**, and every
-  run is recorded (`docs/query.md`); **references** use natural keys and one
-  parser (`docs/references.md`).
+  `via` from the channel and the harness (`docs/authorship.md`).
+- **Annotations are the one record of everything authored**: notes, tags,
+  judgments, comparisons, saved queries, watches and settings; the current
+  revision is a function of the revision graph (`docs/annotations.md`).
+- **Queries, runs, saved queries and kept results are identified objects**,
+  and every run is recorded (`docs/query.md`, `docs/saved-queries.md`);
+  **references** use natural keys and one parser (`docs/references.md`).
 - **Derived data** is computed at session grain as data arrives, with its
   construct and validity evidence declared (`docs/measures.md`).
 - **One operation table drives every surface**: the CLI, the socket, HTTP and
-  MCP are generated from it (`docs/interfaces.md`).
+  MCP are generated from it. A line is one selection (a quoted query, a
+  reference, a row number or a saved name) followed by verbs, or a command;
+  agents use the same grammar through three MCP tools (`docs/interfaces.md`,
+  `docs/agents.md`).
 - **Polylogue has no deletion**; re-parse replaces a chain's rows with a new
   reading of the same bytes (`docs/architecture.md`).
 - **Primary mode** sends bytes and records to Sinex and applies Sinex's
@@ -74,14 +78,14 @@ copy.
 
 | Path | Holds |
 |---|---|
-| `crates/model` | domain types, answers, `Plan` types, references and their parser, closed sets, `Origin`. No I/O |
+| `crates/model` | domain types, replies, `Plan` types, references and their parser, closed sets, `Origin`. No I/O |
 | `crates/sources` | one declaration and one parser per origin, reading versions, markup extraction |
 | `crates/store` | every SQLite connection and all SQL: inputs, chains, versioned rows, row codecs, plan execution, migrations |
 | `crates/query` | the catalog and units, compilation to a `Plan`. No SQL |
-| `crates/render` | text, markdown and HTML over typed answers |
+| `crates/render` | text, markdown and HTML over typed replies |
 | `crates/engine` | discovery, the overlapped ingest pipeline, tool-database capture, recognition, derivations |
 | `crates/sinex` | primary mode: Sinex's producer client wiring, the confirmed-stream consumer, Polylogue's kind declarations (behind the `sinex` feature) |
-| `crates/polylogue` | daemon, CLI, MCP, web, browser host and pack builder |
+| `crates/polylogue` | daemon, CLI, MCP, web, browser host and brief builder |
 | `crates/testkit` | test archives built through the real loop: the synthetic Morrow archive (`examples/morrow/`), independent goldens |
 | `clients/python/` | standard-library Python client and real-daemon contract tests |
 | `extension/` | the browser extension |
@@ -200,7 +204,7 @@ made from the principles here and the pages in `docs/`, and recorded on the
 Bead and in the PR.
 The operator decides product scope and intent, privacy, money (paid APIs,
 purchased vectors) and anything published outward. Deploying, activating,
-restarting, rebuilding an archive and the release cutover are yours: original
+restarting, rebuilding an archive and moving to a new release are yours: original
 inputs stay where their sources keep them and an old archive is set aside, not
 deleted. No stored format or archive is deployed in a sense that needs
 compatibility or migration; target one current format. Original input bytes

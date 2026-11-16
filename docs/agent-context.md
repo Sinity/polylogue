@@ -1,126 +1,129 @@
 # Agent context
 
-Packs, budgets, briefs, takeover, recall, deliveries and advisories use the
-[agent contract](agents.md) and the shared [reading pipeline](reading.md).
-
-## Packs
-
-A pack turns a selection into context for a recipient and a purpose: `polylogue QUERY pack [NAME] [--for SESSION|operator] [--purpose TEXT] [--budget N]`, or MCP `brief`. The selection is a query, a kept `result:`, a page, or references. The session-start brief, takeover and recall are **named packs**: fixed section lists over fixed selections, built by the same builder, with the same fitting, trust rendering, entry map and delivery record.
-
-A pack holds:
-- passages as written, and the assertions on them with author and judgment state;
-- open questions and problems, and whatever a current assertion `blocks`;
-- **contrary assertions:** current operator or operator-accepted agent assertions with a `challenges` or `corrects` link to an included item precede its text; other authors' contrary assertions are counted with references and inspection commands, without inlining their bodies;
-- the repository state of the selected sessions ("HEAD is N commits past <recorded commit>");
-- applicable methods, as nominations with their assessment ([assertions.md#memory](assertions.md#memory));
-- the **entry map**, last: what is whole, what is shortened, what can be expanded and with which command, what was left out and why.
-
-A pack for continuing work lets its recipient recover the goal, the constraints, the approaches already rejected, the current candidate, the limits of what is known and the next useful check.
-
-Sending a pack creates a delivery ([Deliveries](#deliveries)); preparing one without sending creates a delivery in state `prepared`.
-
-**Fitting.**
-- Figures (counts, totals) are computed over every candidate before fitting, so they do not depend on the budget.
-- Candidate entries are fitted across all sections before expanding any passage. Each entry keeps its references and source attribution outside a losslessly JSON-quoted source prefix, on a datamarked `┃` line. Useful first-line prefixes share the remaining space before further expansion in stable order; a last expansion is shortened on a UTF-8 boundary, with its quote closed. The entry map counts whole, shortened and omitted candidates and names their expansion commands.
-- A section whose read failed or ran past its deadline renders "not available (reason)", never "none".
-- **Stable prefixes:** section order is fixed, items within a section are ordered by a stable key, and the manual comes first, so a later delivery to the same session appends a delta and earlier text keeps its prompt-cache reuse.
-- Large relevant documents are legitimate context; a table of contents is never mandatory.
-- No model calls.
-
-## Budgets
-
-A budget is a request-envelope field (`budget_tokens` on the socket, HTTP and MCP, `--budget N` on the CLI; a token counts as 4 bytes), with a default per named pack. Defaults are product values, not settings, adjusted by measured exploration saved.
-
-| Pack | Default budget |
-|---|---|
-| brief at `startup` or `clear` | 10,000 tokens plus the manual |
-| brief at `resume` | 4,000 tokens |
-| brief at `compact` | 10,000 tokens plus the manual and the operator's prompts, which are never cut |
-| takeover | 10,000 tokens per prompt, shared by every session the prompt names |
-| recall | 10,000 tokens |
-
-A missing budget uses the named default. JSON `budget_tokens: null` or CLI `--budget none` lifts the token limit; a numeric budget, including zero, remains explicit. A budget too small for the required header, entry map and one candidate entry is refused; compaction prompts remain outside the fitted budget.
-
-Each harness's inline cap is declared with its hooks. A pack larger than the cap is injected as whole sections up to the cap, then a line naming the command that prints the whole delivery (`polylogue delivery:<id> read`); the delivery stores every byte, and text is never silently cut.
+How Polylogue packages context for an agent: the one `brief` verb and its four forms, the brief for a directory that hooks inject at session start, the brief of a session (its takeover) and of a search (its recall), budgets, deliveries, and advisories. Briefs use the [trust rendering](agents.md#trust-rendering) of the agent pages and the shared [reading pipeline](reading.md); sending text to a session is `send` ([session-control.md](session-control.md#send)), and continuing a session's work in another harness is `resume --in` ([session-control.md](session-control.md#resume)).
 
 ## Brief
 
-The session-start brief is injected by the `SessionStart` hook (and Hermes's first `pre_llm_call`):
+One verb packages context under a budget, and the selection's form, never its row count, chooses what is packaged. Help and completion describe the forms as "brief of a session: take it over" and "brief of a search: recall", and `polylogue help takeover` or `help recall` lands on `brief`.
+
+| Line | Form | What is packaged |
+|---|---|---|
+| `polylogue brief` (`--cwd DIR` for another directory) | the brief for a directory | the operator's notes here, other agents working here now, open work, what recent sessions did, failing checks with no later pass, notices ([below](#the-brief-for-a-directory)) |
+| `polylogue SESSION brief`, where SESSION is a session reference, `latest`, `self`, or a row number whose row is a session | the brief of a session: its takeover | goal, effective context, state, the last exchange, files touched, failed calls, what it left open and what was left out ([below](#the-brief-of-a-session)) |
+| `polylogue 'WORDS' brief`, where the query holds only search words or quoted phrases (no field, unit or transform), a single plain word included | the brief of a search: its recall | what is already known: hits from several ranked searches fused, grouped by session, with their annotations and judgments, the operator's decisions first ([below](#the-brief-of-a-search)) |
+| `polylogue SELECTION brief`, any other selection | the brief of rows | what happened in these rows, decisions and findings, open ends, their annotations and judgments |
+
+- **The first line of every brief names its form**: `brief of a session: takeover of codex:019d0f2a`. A session chosen by a query rather than a reference gets the fourth form, and its footer offers the takeover line (`polylogue codex:019d0f2a brief`), so the form never depends on how many rows matched.
+- **`--for SESSION`** names who will receive the brief, so what that session has already been delivered is left out. **`--cwd DIR`** sets the directory of the first form and the ranking of the third (default the current directory). **`--budget N|none`** sets the budget ([Budgets](#budgets)). **`--to`** writes the brief to a destination such as the clipboard ([reading.md](reading.md#formats-and-destinations)): `polylogue codex:019d0f2a brief --to clipboard`.
+- **Briefs a caller asks for itself record no delivery.** The hooks' injected briefs (session start, a prompt naming an archived session, compaction) are deliveries ([Deliveries](#deliveries)). Handing a brief to another session is `send`, and starting a briefed session in another harness is `resume --in`.
+- Over MCP, `brief` is a step of every tool; with no selection it needs `cwd`:
+
+```json
+polylogue_read {"arguments": {"steps": [{"verb": "brief", "cwd": "/home/op/morrow"}]}}
+polylogue_read {"arguments": {"selection": "codex:019d0f2a", "steps": [{"verb": "brief"}]}}
+polylogue_read {"arguments": {"selection": "flaky attachment test", "steps": [{"verb": "brief"}]}}
+```
+
+### What every brief holds
+
+- passages as written, with the annotations on them and each one's author and judgment state;
+- open questions and problems, and whatever a current annotation `blocks`;
+- **contrary annotations:** current operator or operator-accepted agent annotations with a `challenges` or `corrects` link to an included item come before its text; other authors' contrary annotations are counted with references and the lines that read them, without their bodies;
+- the repository state of the sessions it covers ("HEAD is N commits past <recorded commit>");
+- **the left-out list**, last: what is whole, what is shortened, what can be read further and with which line, what was left out and why.
+
+A brief for continuing work lets its recipient recover the goal, the constraints, the approaches already rejected, the current candidate, the limits of what is known and the next useful check.
+
+**Fitting.**
+- Figures (counts, totals) are computed over every candidate before fitting, so they do not depend on the budget.
+- Candidate entries are fitted across all sections before any passage is expanded. Each entry carries its references and source outside a JSON-quoted source prefix, on a datamarked `┃` line. Useful first-line prefixes share the remaining space before further expansion in stable order; a last expansion is shortened on a UTF-8 boundary, with its quote closed. The left-out list counts whole, shortened and omitted candidates and names the lines that read them.
+- A section whose read failed or ran past its deadline renders "not available (reason)", never "none".
+- **Stable prefixes:** section order is fixed, items within a section are ordered by a stable key, and the skill file comes first, so a later delivery to the same session adds a difference and earlier text keeps its prompt-cache reuse.
+- Large relevant documents are legitimate context; a table of contents is never mandatory.
+- No model calls.
+
+### The brief for a directory
+
+`polylogue brief` packages what an agent starting work in a directory needs. The `SessionStart` hook (and Hermes's first `pre_llm_call`) injects it, by source:
 
 | Source | Content |
 |---|---|
-| `startup`, `clear` | the brief of the payload's `cwd` |
+| `startup`, `clear` | the brief for the payload's `cwd` |
 | `resume` | what changed since the last session-start, resume or compaction delivery this session received with outcome `delivered` |
-| `compact` | the session's own brief: every prompt its operator typed (`written_by: human`), verbatim and never cut; the latest todo list and plan; assertions on the session; failures not later fixed; what the compaction dropped ([sessions.md#compaction-boundaries](sessions.md#compaction-boundaries)) |
+| `compact` | the session's own brief: every prompt its operator typed (`written_by: human`), verbatim and never cut; the latest todo list and plan; annotations on the session; failures not later fixed; what the compaction dropped ([sessions.md](sessions.md#compaction-boundaries)) |
 | `fork` | nothing |
 
-**"Here" is the repository, not the directory:** the current directory, its checkout root, every worktree sharing its Git common directory, the project home, and every repository name recorded for sessions there. Sessions in sibling worktrees are labelled with their worktree.
+**"Here" is the repository, not the directory:** the current directory, its repository root, every worktree sharing its Git directory, the project home, and every repository name recorded for sessions there. Sessions in sibling worktrees are labelled with their worktree.
 
-**Sections, in order.** Each item carries its reference and age (`3 d ago`); each section names what it left out and the command that shows it.
+**Sections, in order.** Each item carries its reference and age (`3 d ago`); each section names what it left out and the line that shows it.
 
-1. Header ([Trust rendering](agents.md#trust-rendering)).
-2. The agent manual ([Agent manual](agents.md#agent-manual)), on `startup`, `clear` and `compact` only.
-3. **Assertions:** the operator's assertions and operator-accepted agent assertions (decisions, lessons, handoffs, problems, goals, questions, findings) scoped to the repository, the directory and the listed sessions. Unjudged agent, script and unattributed assertions are counted, with the query that lists them, and not inlined. The way to have them inlined is judgment: by the operator, or by a calibrated annotation pass.
-4. **Other agents working in this repository now** ([Live sessions](agents.md#live-sessions)): worktree, live state, task, last event; the caller excluded; "⚠ 2 agents in this worktree" when a peer shares the worktree.
-5. **Observed task claims here:** last-observed claims with no observed close or release, without an age cutoff. Their observation time and unknown external tracker state are labelled; Polylogue does not infer verified current activity.
-6. **Recent sessions**, newest first, until the budget is full: title; time and harness; tool-call status; commits, pull requests and files changed; the task it still holds open; the latest observed prose request with its recorded authorship and message reference, before the stored model answer; the first lines of the last answer, datamarked.
+1. Header ([trust rendering](agents.md#trust-rendering)).
+2. The skill file ([agents.md](agents.md)), on `startup`, `clear` and `compact` only.
+3. **Annotations:** the operator's annotations and operator-accepted agent annotations (decisions, lessons, handoffs, problems, goals, questions, findings) scoped to the repository, the directory and the listed sessions. Unjudged agent, script and unattributed annotations are counted, with the query that lists them, and not inlined; judgment is what inlines them ([judging.md](judging.md)).
+4. **Other agents working in this repository now** ([live sessions](live-sessions.md#live-state)): worktree, live state, task, last event; the caller left out; "⚠ 2 agents in this worktree" when a peer shares the worktree.
+5. **Observed task claims here:** last-observed claims with no observed close or release, without an age cutoff. Their observation time and the unknown state of the outside tracker are labelled; Polylogue does not infer that the work is still active.
+6. **Recent sessions**, newest first, until the budget is full: title; time and harness; tool-call status; commits, pull requests and files changed; the task it still holds open; the latest observed prose request with its recorded authorship and message reference, before the stored model reply; the first lines of the last model message, datamarked.
 7. **Plan and todo list** of the most recent session, as stored, with the reference of the tool call that set it.
 8. **Claims** made here since the last brief, with author, judgment state and any check result.
-9. **Open items here** ([measures.md#catalog](measures.md#catalog)): todo and plan items left open, sessions ending on an unanswered prompt, calls without results in ended sessions, with what later resolved any of them.
-10. **Pending signal notices** addressed to this session or in its directory scope, without an age cutoff; any recorded outcome excludes a notice, including an uncertain or failed send. Records with unknown scope or a historical signal-effect state are counted with an inspection command; no global target or unsent state is inferred ([Notices to sessions](session-control.md#notices-to-sessions)).
-11. **Pages here:** the table of contents of pages whose members include this session's role or which target this repository ([pages.md#agents-and-pages](pages.md#agents-and-pages)).
-12. **Code may have moved:** "HEAD is N commits past <recorded commit>" or "<recorded commit> is not in HEAD's history".
-13. **Machine section**, in primary mode only: read from a stored Sinex context pack under a 100 ms deadline, within a declared share of the budget. Standalone, the section is absent.
-14. **Left out:** each group with the command that lists it.
+9. **Open items here** ([measures.md](measures.md#catalog)): todo and plan items left open, sessions ending on an unanswered prompt, calls without results in ended sessions, with what later resolved any of them.
+10. **Pending notices** addressed to this session or in its directory scope, without an age cutoff; any recorded outcome removes a notice, including an uncertain or failed send. Records with unknown scope or an older signal state are counted with the line that reads them; no global target or unsent state is inferred ([notices to sessions](session-control.md#notices-to-sessions)).
+11. **Code may have moved:** "HEAD is N commits past <recorded commit>" or "<recorded commit> is not in HEAD's history".
+12. **Machine section**, in primary mode only: read from a stored Sinex context under a 100 ms deadline, within a declared share of the budget. Standalone, the section is absent.
+13. **Left out:** each group with the line that lists it.
 
-**Latency.** The daemon answers a brief within 300 ms p95 warm and 1 s p95 cold, at any directory (`/` and a directory nobody worked in included); the hook allows 1.5 s including connection. A brief's reads are bounded by what it reports, not by how much work happened under its directory:
-- **Scope index.** The daemon keeps every main session's working directories, repository, activity, stored message count, live facts and task in memory, read once at start and brought forward from the change feed after each commit. Which sessions are under the directory, which work there now and which hold a task there costs no index read.
-- **Session summaries.** What a brief says about a session (its last answer, files changed, commits, pull requests, an unanswered prompt, an unfinished tool call) is composed when the brief is read, from the session's rows through their indexes, so metadata entries need no session-body read. Only fitted expansions read the summary, the latest active nonduplicate prose request and eligible session assertions; direct scoped assertions and pending notices likewise select metadata before reading their fitted bodies.
-- **Deadline.** Sections run cheapest first (assertions, other agents, open tasks, recent sessions, notices) and stop a fifth of the remaining time, at most a second, before the request's deadline. A section that meets it is left out with reason `deadline`, the brief names it and the command that prints the whole brief (`polylogue brief --cwd DIR --deadline none`), and the hook injects the sections that are ready. A deadline never yields an empty brief while a section has items.
-- **Delivery off the answer path.** The answer does not wait for the writer: the delivery record is queued, the hook hands its `delivered` outcome over within 20 ms and exits, and the writer applies both in order, a repeated request ID once. A full writer queue never makes a brief wait: the record waits in the daemon, in order with its outcome event, and goes to the writer after its next commit. An outcome is recorded even when the hook has already exited. Until a delivery's record commits, the daemon remembers it as the recipient's latest brief, so a `resume` or `compact` brief right after it reports only what changed since.
+**Latency.** Every form of `brief` replies within the brief latency class ([interfaces.md](latency.md#latency-classes)), at any directory (`/` and a directory nobody worked in included); the hook allows 1.5 s including connection. A brief's reads are bounded by what it reports, not by how much work happened under its directory:
+- **Scope index.** The daemon holds every main session's working directories, repository, activity, stored message count, live facts and task in memory, read once at start and brought forward from the change feed after each commit. Which sessions are under the directory, which work there now and which hold a task there costs no index read.
+- **Session summaries.** What a brief says about a session (its last model message, files changed, commits, pull requests, an unanswered prompt, an unfinished tool call) is composed when the brief is read, from the session's rows through their indexes, so metadata entries need no session-body read. Only fitted expansions read the summary, the latest active prose request that is not a duplicate, and the session's annotations; scoped annotations and pending notices likewise select metadata before reading their fitted bodies.
+- **Deadline.** Sections run cheapest first (annotations, other agents, open tasks, recent sessions, notices) and stop a fifth of the remaining time, at most a second, before the request's deadline. A section that meets it is left out with reason `deadline`, the brief names it and the line that prints the whole brief (`polylogue brief --cwd ~/morrow --deadline none`), and the hook injects the sections that are ready. A deadline never yields an empty brief while a section has items.
+- **Delivery off the reply path.** The reply does not wait for the writer: the delivery record is queued, the hook hands its `delivered` outcome over within 20 ms and exits, and the writer commits both in order, a repeated request ID once. A full writer queue never makes a brief wait: the record waits in the daemon, in order with its outcome event, and goes to the writer after its next commit. An outcome is recorded even when the hook has already exited. Until a delivery's record commits, the daemon remembers it as the recipient's latest brief, so a `resume` or `compact` brief right after it reports only what changed since.
 
-On a whole-brief timeout, the hook injects one unreferenced line: "Polylogue context timed out; continue with the current task and local instructions." It exits 0. The original preparation is marked `not_sent:timeout` only when the daemon positively confirms its existing queued preparation and its bytes were never emitted. Unconfirmed acceptance remains unresolved; the failure notice does not invent a delivery. If output was emitted but its acknowledgement was lost, its outcome remains unknown for reconciliation, without resending.
+On a whole-brief timeout, the hook injects one unreferenced line: "Polylogue context timed out; carry on with the current task and local instructions." It exits 0. The preparation is marked `not_sent:timeout` only when the daemon confirms its queued preparation and its bytes were never emitted. An unconfirmed acceptance stays unresolved; the failure line does not invent a delivery. If output was emitted but its acknowledgement was lost, its outcome stays `unknown` for reconciliation, without resending.
 
-**Interfaces:** the hook; `polylogue brief [--cwd DIR] [--session SESSION] [--source startup|resume|compact] [--budget N]`; MCP `brief`.
+The hook asks for the brief through `internal hook` with the payload's source, directory and session, so the recipient is the `--for` session.
 
-## Takeover
+### The brief of a session
 
-A prompt (`UserPromptSubmit`, Gemini `BeforeAgent`, Hermes `pre_llm_call`) that contains session references gets a takeover of those sessions. A reference is an origin-prefixed ID, a bare native ID or unique prefix of a parsed origin, or a provider conversation URL, resolved by the one reference parser ([references.md](references.md)).
+A prompt (`UserPromptSubmit`, Gemini `BeforeAgent`, Hermes `pre_llm_call`) that contains session references gets the brief of those sessions injected. A reference is an origin-prefixed ID, a native ID or a unique prefix of at least eight characters, or a provider conversation URL, resolved by the one reference parser ([references.md](references.md)).
 
-- **Exact or nothing.** An ambiguous prefix injects its candidates, never a guess. Plain words never trigger a lookup. A session not in the archive injects "session <ref> is not in the archive (yet)", and a provider URL not yet captured also names `polylogue backfill start`. A session never takes itself over.
-- **Lineage.** A resumed or continued session is taken over through its newest successor, and the takeover says so.
+- **Exact or nothing.** An ambiguous prefix injects its candidates, never a guess. Plain words never trigger a lookup. A session not in the archive injects "session <ref> is not in the archive (yet)"; a provider URL not yet captured also names `polylogue import chatgpt` (or the provider's name). A session never receives its own takeover.
+- **Lineage.** A resumed or continued session is taken over through its newest successor, and the brief says so.
 
 **Content, in order:**
 1. **Goal:** the first prompt, verbatim, labelled with its `written_by`; a session an orchestrator started shows its first message as "written by <parent session>, not the operator".
-2. **Effective context at the end:** read through the `context --at` view, so what precedes the last compaction appears as the compaction summary plus what the boundary kept ([reading.md#views](reading.md#views)).
-3. **State:** latest todo and plan; what was left open (unanswered prompt, unfinished tool call, open todo, what it waits on, open assertions); open claims with author and judgment state.
-4. **Last exchange:** the last operator prompt and the last answer.
+2. **Effective context at the end:** read through the [context view](transcripts.md#the-context-view), so what precedes the last compaction appears as the compaction summary plus what the boundary kept.
+3. **State:** latest todo and plan; what was left open (unanswered prompt, unfinished tool call, open todo, what it waits on, open questions); open claims with author and judgment state.
+4. **Last exchange:** the last operator prompt and the last model message.
 5. **Files touched**, most edited first, with branch, recorded commit and how far HEAD has moved.
-6. **Assertions** on the session and its lineage.
+6. **Annotations** on the session and its lineage.
 7. **Failed tool calls** of the last exchange, by their recorded status.
 8. **Provider link** for web-chat sessions, so an agent can point the operator at the conversation.
-9. **Left out**, with read commands (`polylogue session:<id> read --view dialogue`, `--view actions`, `--view context --at <message>`).
+9. **Left out**, with the lines that read it (`polylogue codex:019d0f2a read --view dialogue`, `polylogue codex:019d0f2a read --view changes`, `polylogue codex:019d0f2a read --view context`).
 
-**Several references share one budget per prompt.** One or two sessions each get a full takeover, split evenly. Three or more inject an index: one line per session (title, harness, cwd, last activity, open state, reference) and "`polylogue REF pack takeover` for any of these"; the budget decides how many lines, and the rest are counted. This also bounds prompts that harnesses write themselves, without detecting them.
+**Several references in one prompt share one budget.** One or two sessions each get a full takeover, split evenly. Three or more inject an index: one line per session (title, harness, directory, last activity, open state, reference) and "`polylogue REF brief` for any of these"; the budget decides how many lines, and the rest are counted. This also bounds prompts that harnesses write themselves, without detecting them.
 
-**Interfaces:** the hook; `polylogue REF pack takeover`; MCP `brief` with a session reference.
+### The brief of a search
 
-## Recall
+`polylogue 'WORDS' brief` replies to "what is already known that bears on this". It fuses ranked lists ([search.md](search.md#recall)): messages holding every word in prose, every word in tool output, similarity to the whole text when vectors exist, and sessions in the `--cwd` repository.
 
-`polylogue [QUERY] pack recall TEXT` (MCP `brief` with `task`) answers "what do I already know that bears on this". It fuses ranked lists by reciprocal rank fusion ([search.md#recall](search.md#recall)): messages holding every word in prose, every word in tool output, similarity to the whole text when vectors exist, and sessions in the caller's repository.
+- Hits are grouped by session, each with its annotations (author, judgment), its `written_by`, and a datamarked snippet; the operator's decisions come first.
+- The reply states how it searched (indexes, hits, sessions, more). With vectors off and no exact hit: "no exact matches; semantic search is not enabled, so related work under other wording may exist".
+- It pages by cursor with no fixed cap.
+- The brief of a search is not injected at the first prompt; it is added there only when its precision on real first prompts is shown to help.
+- The first page arrives within the search latency class, from indexes, never by scanning message bodies.
 
-- An optional query restricts the scope.
-- Hits are grouped by session, each with its assertions (author, judgment), its `written_by`, and a datamarked snippet.
-- The answer states how it searched (indexes, hits, sessions, more). With vectors off and no exact hit: "no exact matches; semantic search is not enabled, so related work under other wording may exist".
-- It pages by cursor with no fixed cap; `--keep` keeps the result as `result:<id>`.
-- Recall is not injected at the first prompt; it is added there only when its precision on real first prompts is shown to help.
-- The first page answers within the `search` latency class ([interfaces.md#latency-classes](interfaces.md#latency-classes)), from indexes, never by scanning message bodies.
+## Budgets
+
+A budget is a request field (`budget_tokens` on the socket, HTTP and MCP, `--budget N` on the CLI), with a default per form; the defaults are in [reading.md](reading.md#paging-and-budgets). They are product values, not settings, adjusted by measured exploration saved. At compaction the operator's prompts are never cut and stay outside the fitted budget; the hook's brief of several sessions named in one prompt shares 10,000 tokens among them.
+
+A missing budget uses the form's default. JSON `budget_tokens: null` or CLI `--budget none` lifts the token limit; a number, zero included, stays explicit. A budget too small for the required header, left-out list and one candidate entry is refused.
+
+Each harness's inline cap is declared with its hooks. A brief larger than the cap is injected as whole sections up to the cap, then a line naming the line that prints the whole delivery (`polylogue delivery:01JD9K2P read`); the delivery stores every byte, and text is never silently cut.
 
 ## Deliveries
 
-Every hand-over of prepared content to a model or a person is a **delivery**: briefs, takeovers, recalls, packs, advisories, notices to sessions, pings, live-control acts and chat actions. A delivery records:
-- `delivery:<id>`; sender (`hook`, `mcp`, `cli`, `web`, `signal`, `ping`, `chat`); event (`session_start`, `resume`, `compaction`, `takeover`, `recall`, `pack`, `advice`, `notice`, `ping`, `control`, `chat`);
-- its computed author; recipient kind and reference (session, operator, web conversation); `cwd`;
+A **delivery** records each time prepared content is handed to a session or a person: the hooks' injected briefs, advisories, notices to sessions, sent messages, live-session acts, the first turn of a session Polylogue starts, and turns written into web chats. A delivery records:
+- `delivery:<id>`; sender (`hook`, `signal`, `send`, `act`); event (`session_start`, `resume`, `compaction`, `takeover`, `advice`, `notice`, `message`, `control`, `first_turn`);
+- its computed author; recipient kind and reference (session, role instance, web conversation); `cwd`;
 - the delivered bytes, `refs`, `left_out`, `content_hash`, and its outcome events.
 
 **Outcomes** (one vocabulary for deliveries and notices):
@@ -128,23 +131,18 @@ Every hand-over of prepared content to a model or a person is a **delivery**: br
 | Outcome | Meaning |
 |---|---|
 | `prepared` | no send attempted yet |
-| `delivered` | handed over and acknowledged: the hook returned the text, the MCP or CLI answer was returned, the harness command exited 0 |
-| `not_sent:<reason>` | `timeout`, `empty`, `failed(<first stderr line>)`, `unsupported`, `session_missing` |
+| `delivered` | handed over and acknowledged: the hook returned the text, the hosted connection accepted it, the harness command exited 0 |
+| `not_sent:<reason>` | `timeout`, `empty`, `failed(<first stderr line>)`, `unsupported`, `session_missing`, `session_ended`, `session_stale`, `session_not_live`, `directory_unknown`, `directory_missing(DIR)`, `already_answered` |
 | `unknown` | a send was attempted and its acknowledgement was lost |
 
-**A delivery acknowledges a hand-over.** A harness may persist a tool result outside
-its inline output, apply its own output cap, or later compact the context. The
-`delivered` outcome alone does not establish that the complete result remains in
-the model's current context. The [context view](reading.md#the-context-view)
-reconstructs what the captured harness records show. A caller can read any
-passage again.
+**A delivery acknowledges a handing over.** A harness may store a tool result outside its inline output, apply its own output cap, or later compact the context. The `delivered` outcome alone does not show that the whole text remains in the model's current context. The [context view](transcripts.md#the-context-view) reconstructs what the captured harness records show, and a caller can read any passage again.
 
 - The delivery reference appears in the delivered text.
 - **Uncertain sends are reconciled, never resent.** For `unknown`, the daemon looks for the delivery's reference line in the recipient's transcript and records `delivered` when it finds it.
 - High-frequency deliveries (advisories) are recorded once per session, advisory and target.
 - Deliveries are user state: they survive rebuilds, travel in `read --to` bundles, and in primary mode go to Sinex as `polylogue.delivery` ([primary-mode.md](primary-mode.md)).
 
-**Delivery use.** A derivation over the recipient session records `used` when a later message written by the recipient's model, or a tool call it made, contains the delivery's ID or one of its `refs`; that message or call is the record of use. There is no window: it runs on the recipient's new messages through the one convergence path ([measures.md#rules](measures.md#rules)). `used` shows the content was referred to, not that it was understood or accepted, and it is never a session link.
+**Delivery use.** A derivation over the recipient session records `used` when a later message written by the recipient's model, or a tool call it made, contains the delivery's ID or one of its `refs`; that message or call is the record of use. There is no window: it runs on the recipient's new messages through the one derivation path ([measures.md](measures.md#rules)). `used` shows the content was referred to, not that it was understood or accepted, and it is never a session link.
 
 **Query:** the `deliveries` unit, with fields `id`, `sender`, `event`, `author`, `recipient`, `recipient_kind`, `cwd`, `outcome`, `used`, `at`, `bytes`, `refs`. For example `polylogue 'deliveries event:session_start outcome:prepared since:1d'` lists lost briefs.
 
@@ -152,8 +150,8 @@ passage again.
 
 One kind of advisory exists: a prompt naming a file path (a token with `/` or a file extension) that an operator-judged decision or correction targets gets one pointer line.
 
-- Only current, unexpired decisions and corrections with the operator’s latest judgment of that revision accepting them trigger it. Archived assertion text is not injected: the pointer names the file and a ready `read` command.
-- A relative file target requires an explicit matching cwd or repository scope. Absolute targets match normalized absolute prompt paths. Selection performs no filesystem or Git probes.
-- At most one advisory appears per prompt, with a 10-minute cooldown per recipient session, kept in daemon memory. The receiving session may not have been captured yet: history matching uses its supplied identity, not a captured-session prefix lookup. A hook or MCP advisory preparation’s assertion revision and file target are recorded in its `refs`; that pair is offered only once to that session, including when delivery is unknown. After the cooldown, a different pair may trigger; a newly judged assertion revision is a distinct pair.
-- Hooks call the typed `advisory PROMPT --cwd PATH --session SESSION` operation. Its existing delivery event is `advice`. Preparation records `prepared`; only hook output that was written is acknowledged as `delivered`. An uncertain send is not retried.
-- Advisories never block: preparation is capped at 20 ms, intersected with the caller’s bound, or the hook says nothing. Cold or incomplete selection also fails open. In primary mode, a pending or uncertain operation in the local producer spool suppresses optional advice until confirmed application removes it; this uses loaded spool metadata without waiting or scanning bodies. Prompts without filepath tokens make no advisory request; explicit archived-session references take precedence and keep takeover behavior.
+- Only current, unexpired decisions and corrections whose latest operator judgment of that revision accepts them trigger it. Annotation text is not injected: the pointer names the file and a ready `read` line.
+- A relative file target needs an explicit matching directory or repository scope. Absolute targets match normalized absolute prompt paths. Choosing an advisory makes no filesystem or Git probes.
+- At most one advisory appears per prompt, with a 10-minute cooldown per recipient session, held in daemon memory. The receiving session may not have been captured yet: history matching uses its supplied identity, not a lookup of captured sessions. The annotation revision and file target of an advisory are recorded in its delivery's `refs`; that pair is offered only once to that session, including when delivery is unknown. After the cooldown a different pair may trigger; a newly judged revision is a different pair.
+- Hooks call the hidden `internal advisory` operation with the prompt, directory and session ([interfaces.md](interfaces.md#operation-table)). Its delivery event is `advice`. Preparation records `prepared`; only hook output that was written is acknowledged as `delivered`. An uncertain send is not retried.
+- Advisories never block: preparation is capped at 20 ms, intersected with the caller's bound, or the hook says nothing. Cold or incomplete selection also fails open. In primary mode, a pending or uncertain operation in the local producer spool suppresses advisories until Sinex confirms it; this uses loaded spool metadata without waiting or scanning bodies. Prompts without file path tokens make no advisory request; archived-session references take precedence and get the brief of a session.
