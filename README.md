@@ -26,11 +26,11 @@ nix develop                             # a development shell
 
 The flake also provides a Home Manager module (the package and one user
 service per named archive) and a NixOS module (the system service). Hooks, MCP
-registration and the browser extension's host are not installed by the module
-yet; register them by hand as [agents](docs/agents.md) and
-[extension](docs/extension.md) describe. See
+registration and the browser extension's host are installed with
+`polylogue install HARNESS` and `polylogue install chrome`
+([operations](docs/installing.md#installing)). See
 [development](docs/development.md#deployment-modules) for their use and
-[operations](docs/operations.md#deployment) for the deployment contract.
+[operations](docs/installing.md#deployment) for the deployment contract.
 
 With Cargo, from a checkout:
 
@@ -50,27 +50,29 @@ claude.ai data export) are brought in with `polylogue import`.
 
 Morrow is a synthetic week of work on a fictional Rust library, in Claude Code,
 Codex, ChatGPT and claude.ai, shipped with Polylogue for examples and tests
-([`examples/morrow/`](examples/morrow/)). The tour builds a separate archive
-from it in a new directory and walks through everyday commands, with each
-command and its answer written to `transcript.md`:
+([`examples/morrow/`](examples/morrow/)). `demo` builds a separate archive
+from it in a new directory and prints the first lines to try:
 
 ```sh
-polylogue demo tour ./morrow-tour
+polylogue demo ./morrow
 ```
 
 ## First commands
 
 ```sh
 polylogue daemon                          # run the daemon (normally a user service)
-polylogue                                 # what the archive holds and what is running
+polylogue                                 # what is waiting, running and recent, with the lines to type next
 polylogue 'repo:morrow since:7d'          # a query: this week's sessions in a repository
-polylogue find chrono read                # search for a word and read the matches
-polylogue @1 read --to browser            # open the first row of the last list in the workbench
+polylogue chrono                          # a plain word searches for it
+polylogue @1 read --to browser            # open row 1 of the last list in the workbench
+polylogue @1 note 'chrono parsing fixed' --as decision
 ```
 
-A query comes first and verbs act on its rows; `polylogue explain syntax` describes
-the language, and `polylogue --help` lists commands. The command table declares
-which operations MCP and HTTP expose; local process commands run through the CLI.
+The quotes hold which rows; the words after them say what to do. Tab completes
+every position, `polylogue help` is one screen, and `--explain` on any line says
+how it is read without running it ([interfaces](docs/interfaces.md),
+[terminal](docs/terminal.md)). Agents use the same grammar through three MCP
+tools ([agents](docs/agents.md#mcp-server)).
 
 ## Where to read next
 

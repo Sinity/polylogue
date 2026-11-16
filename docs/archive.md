@@ -37,12 +37,12 @@ Polylogue keeps every input and every reading of it; the deletion stance is stat
 
 ## Evolution
 
-- **An archive from before the baseline is an input.** A database without Polylogue's format identity (`application_id` "PLG1") was written by an earlier Polylogue. It is a declared older input format, imported once into a fresh archive with `polylogue import --from-archive PATH` ([capture.md](capture.md#an-archive-from-before-the-baseline)), never migrated in place.
+- **An archive from before the baseline is an input.** A database without Polylogue's format identity (`application_id` "PLG1") was written by an earlier Polylogue. It is a declared older input format, imported once into a fresh archive with `polylogue import PATH` ([capture.md](capture.md#an-archive-from-before-the-baseline)), never migrated in place.
 - **One current format.** Each store is created and opened only at its current version: the register (`archive.db`) at version 3, the standalone index at version 6 and the primary cache at version 8. A format change edits the current schema, its writers and its readers together and regenerates test data; no conversion step and no reader for an earlier version is kept. A reading-version change re-parses exactly the chains it affects ([Parsing](#parsing)).
 - **Parsed rows refer to message versions by a narrow key.** Each stored message version has an integer key that source memberships, layouts, shared text, attachments and parser context refer to. The canonical hash stays in the version's metadata row and is translated at read and export boundaries; compressed bodies are kept in a separate one-to-one payload table. Each text row also records BLAKE3 of its NFC UTF-8 for request lookup beside the BLAKE3 of its raw UTF-8, which stays its identity; several raw spellings may share the normalized identity. Local keys never enter citations or portable records. Removing the final source or parser-context reference deletes metadata, payload and child rows in the same transaction.
 - **Text bodies are compressed in groups.** A distinct text is one `text` row (its hashes, search membership, and its place in a group); its bytes are in a `text_group` row, one zstd frame holding the UTF-8 of up to about 64 KiB of texts one after another, or one longer text alone. The parse worker that read the texts groups and compresses them in reading order, so texts of one session share groups; the writer stores a group in the transaction that first writes one of its texts and copies its bytes unchanged. Reading a text decodes its group, and consecutive reads from one group decode it once. A group leaves in the transaction that removes its last text; until then the bytes of its removed texts stay in it. A step's texts already in the index get no new row, but their bytes stay in that step's groups when a group has new texts too; on a sample of real transcripts such repeated bytes were about 2% of the text. Groups of about 64 KiB at zstd level 9 store text about a fifth smaller than each text compressed alone at level 1 (24% on the generated corpus, 21% on the real sample); reading one text then decodes about 60 KB, some 40 µs instead of 4.
 - **`embeddings.db` gains tables in place.** It holds paid vectors, so it is never set aside or rebuilt. Its schema is the vectors and failures tables followed by an ordered list of added tables (with their indexes and triggers); a schema change appends one to the list and never edits a released one. At open, a file whose tables, indexes and triggers are those of the base and an earlier part of that list gains the rest in one transaction; the vectors table and its rows are never rewritten. Any other schema, a change to an existing table included, is refused (exit 78) with what differs from the nearest schema a build created, and the file is left as it was; such a change needs its own written plan.
-- **An index from another schema is replaced, never converted.** The daemon moves it into the build directory as the previous index, builds a new index from stored bytes in a private file, reports the rebuild in `status`, installs the new index when its build ends and then removes the previous one ([operations.md](operations.md#replacing-an-index-from-another-schema)). `archive.db` in another format is refused with the version it found and left as it was.
+- **An index from another schema is replaced, never converted.** The daemon moves it into the build directory as the previous index, builds a new index from stored bytes in a private file, reports the rebuild in `status`, installs the new index when its build ends and then removes the previous one ([installing.md](installing.md#replacing-an-index-from-another-schema)). `archive.db` in another format is refused with the version it found and left as it was.
 
 ## Parsing
 
@@ -51,7 +51,7 @@ Polylogue keeps every input and every reading of it; the deletion stance is stat
 - **One parser per origin, written from format knowledge.** Each parser carries the full knowledge of its origin's formats in every era (Claude Code todos, history and orchestration; Codex; Hermes; the Antigravity RPC; Gemini CLI sidecars; ChatGPT attachment resolution) and reads records as they are; there are no repair passes over parsed rows.
 - **A malformed record is presumed to be Polylogue's bug.** It is counted per input with its reason, never skipped silently.
 - **Origin, format, route and harness are separate coordinates.** A record's model field is trusted over the harness name: a DeepSeek model running under the Claude Code harness is DeepSeek.
-- **Markup** (`::kind(args)` in transcripts) is extracted at parse time into assertions authored by the message's author, with IDs derived from the message and position so a re-parse writes the same assertions ([assertions.md](assertions.md#markup)).
+- **Markup** (`::kind(args)` in transcripts) is extracted at parse time into annotations authored by the message's author, with IDs derived from the message and position so a re-parse writes the same annotations ([markup.md](markup.md)).
 
 ### Reading versions
 
@@ -76,7 +76,7 @@ Polylogue keeps every input and every reading of it; the deletion stance is stat
 Query records keep their source insertion position for incremental
 readers. Older records whose position was never recorded keep an unknown
 position; startup snapshots include them. This metadata does not change the
-query's sealed bytes, normal-form hash or saved dependencies.
+query's stored bytes, normal-form hash or saved dependencies.
 
 ### Keyed continuation
 
@@ -100,20 +100,20 @@ Providers change their formats without notice. Drift is found by field accountin
 
 ### Schema tools
 
-The schema tools describe the real shape of an origin's stored inputs without ingesting anything, for looking at a format by hand. They run in the daemon at idle priority, read only stored bytes (never provider files), and write nothing into the archive or the repository. In primary mode they read the materials through Sinex.
+The schema tools, `polylogue dev schema infer|unread|diff …`, describe the real shape of an origin's stored inputs without ingesting anything, for looking at a format by hand. They sit under `dev` because they are parser maintenance, not everyday acts ([interfaces.md#discipline](interfaces.md#discipline)). They run in the daemon at idle priority, read only stored bytes (never provider files), and write nothing into the archive or the repository. In primary mode they read the materials through Sinex.
 
 | Command | Does |
 |---|---|
-| `schema infer [ORIGIN \| --all] [--input ID…] [--since TIME] [--revision N]` | the structure of the selected stored inputs (all of the origin's by default, every origin with `--all`): field paths, types, presence and counts, streamed, with coverage (inputs and bytes read, what was unreadable) |
-| `schema diff BEFORE AFTER` | added and removed paths, changed type sets, changed requiredness |
-| `schema unread [ORIGIN \| --all]` | paths stored inputs carry that the parser neither reads nor declares kept, at any depth |
+| `dev schema infer [ORIGIN] [--input ID]… [--since TIME] [--revision N] [--field NAME]…` | the structure of the selected stored inputs (all of the origin's, or of every origin when no origin is named): field paths, types, presence and counts, streamed, with coverage (inputs and bytes read, what was unreadable) |
+| `dev schema diff BEFORE AFTER` | added and removed paths, changed type sets, changed requiredness |
+| `dev schema unread [ORIGIN]` | paths stored inputs carry that the parser neither reads nor declares kept, at any depth, for one origin or every origin |
 
 - **No values.** Values never appear as examples, lists or enums. Object member names do, except identifier-shaped keys (UUIDs, long hexadecimal hashes, long numerals, dates and timestamps, paths), which are grouped under `*`, as are members of maps with many distinct sibling names. `--field NAME` keeps a name ungrouped.
 - **Paths** start at the root and use `/` between components; `[]` is an array element and `*` an unnamed member; literal `~`, `/`, `*` and `[]` in names are escaped as `~0`, `~1`, `~2`, `~3`.
 - **Counts per path:** `types` (values of each JSON type), `occurrences` (all values), `present` (parents with at least one value there), `parents` (eligible parents), `missing` (`parents - present`) and `required` (every eligible parent had it). These are observations of the sample, not a guarantee about future inputs.
-- **Selection.** Inference reads each input's latest revision, or the exact `--revision N`, reporting an absent revision. `--input` makes the report a sample. `--since` selects by the time an input was received; inputs whose time is unknown are left out and counted. The answer groups schemas by origin and reports the inputs selected, the bytes stored and the bytes read.
-- **Background work.** One inference runs at a time and gives way to other daemon requests. There is no per-input size cutoff and no default deadline; cancellation and an explicit `--timeout` apply.
-- **Output.** CLI, MCP and HTTP send the same daemon requests. `--output FILE` writes in the CLI process, and `schema diff` reads those files locally.
+- **Selection.** Inference reads each input's latest revision, or the exact `--revision N`, reporting an absent revision. `--input` makes the report a sample. `--since` selects by the time an input was received; inputs whose time is unknown are left out and counted. The reply groups schemas by origin and reports the inputs selected, the bytes stored and the bytes read.
+- **Background work.** One inference runs at a time and gives way to other daemon requests. There is no per-input size cutoff and no default deadline; cancellation and an explicit `--deadline MS` apply.
+- **Output.** CLI, MCP and HTTP send the same daemon requests. `--to FILE` writes in the CLI process, and `dev schema diff` reads those files locally.
 - **A diff** reports each kind of change separately, ordered by path, and labels populations as incomparable when their origins, revisions or reads differ, while still showing what differs.
 - Observation streams records and discards scalar bodies. Memory follows schema shape and nesting depth rather than record count or scalar length; deep JSON is read without a fixed depth cutoff. Malformed input, including an unfinished array or trailing content, is refused.
 - Tool databases contribute their row dumps' column shapes and table structure, reported per table: the declared column types, nullability, primary key, hidden or generated columns and `WITHOUT ROWID` ([capture.md](capture.md#tool-databases)) separately from the JSON types observed in rows, with empty tables and never-filled columns listed. SQL text and default expressions stay out. Browser captures are Polylogue's own format and have no inferred schema.

@@ -2,7 +2,7 @@
 
 Polylogue is an archive and workbench for AI work. This page states what it is
 for, the principles every area follows, the two modes it runs in, how data
-flows from a file on disk to an answer, where it is stored, what a crash can
+flows from a file on disk to a reply, where it is stored, what a crash can
 leave behind, and how configuration and time reach the code. Each area's
 behaviour is on its own page (see the [index](README.md)); the crates and how
 to build them are in [`AGENTS.md`](../AGENTS.md).
@@ -14,8 +14,8 @@ such as Claude Code, Codex and Gemini CLI; web chats such as ChatGPT, claude.ai
 and AI Studio), keeps the original bytes, parses them into one model of
 sessions and their lineage, and lets people and agents search, read, measure
 and annotate that history. On top of the parsed sessions it holds what its
-users author about them: notes, tags, judgments, claims, Pages, saved queries
-and kept results.
+users author about them: notes, tags, judgments, claims, saved queries,
+watches and kept results.
 
 It has two kinds of users with the same powers:
 - **the operator**, the person whose sessions these are, who works mostly in
@@ -34,7 +34,7 @@ deletes or rewrites stays in the archive.
 **Agents are primary users.** Agents get every power the operator has: every
 command, every kind of authored record, every setting. What distinguishes the
 operator is authorship, which the daemon computes from the channel a write
-arrives on and which no caller supplies ([authorship](assertions.md#authorship)).
+arrives on and which no caller supplies ([authorship](authorship.md)).
 
 **Valid input is never refused or truncated for size.** Page sizes are
 defaults, transfer units continue, and memory is bounded by streaming and
@@ -57,7 +57,7 @@ option is not configurable. Polylogue reads each tool's data where the tool
 writes it, and recognises inputs by their declared structure; there are no
 custom roots and no guessing ([capture](capture.md)).
 
-**Polylogue's concepts are its own.** Sessions, lineage, assertions, Pages and
+**Polylogue's concepts are its own.** Sessions, lineage, annotations and
 measures are Polylogue's. Code is shared with Sinex only where the mechanics
 are identical (bytes and segments, the query grammar, the operation and failure
 types, the web shell, signals), and neither product's concepts are bent to fit
@@ -79,7 +79,7 @@ changes.
 
 1. **Capture.** The daemon watches each tool's own locations, reads the
    browser extension's captures and hook events as they arrive, and takes
-   exports when a user runs `polylogue import`
+   exports when a user runs `polylogue import PATH`
    ([capture](capture.md), [extension](extension.md)).
 2. **Store.** Each new revision of an input is hashed, compressed and appended
    to the segment log; its extents and the input's revision and chain rows
@@ -90,12 +90,13 @@ changes.
 4. **Derive.** Derived values are computed at session grain as their data
    arrives, and stored with the rows they belong to
    ([measures](measures.md#rules)).
-5. **Serve.** The daemon answers the CLI, MCP, HTTP and the web workbench from
-   one command table ([interfaces](interfaces.md#command-table)). Queries
+5. **Serve.** The daemon serves the CLI, MCP, HTTP and the web workbench from
+   one operation table ([interfaces](interfaces.md#operation-table)). Queries
    compile to a plan the store executes; every run is recorded
-   ([query](query.md#query-objects)).
-6. **Author.** Users and agents write assertions, Pages and settings through
-   one write path ([assertions](assertions.md#write-path)).
+   ([saved queries](saved-queries.md#query-objects)).
+6. **Author.** Users and agents write annotations (notes, tags, judgments,
+   saved queries, settings) and alternates through one write path
+   ([annotations](annotations.md#the-write-path)).
 
 The daemon is the only process that opens the archive. It holds the archive
 lock, runs the one writer and serves every client over its socket; a command
@@ -107,7 +108,7 @@ that needs the archive with no daemon running fails with "daemon down"
 | Store | Holds | Rebuilt from |
 |---|---|---|
 | segment log | the bytes of every input revision, as content-addressed blobs in append-only segment files of seekable zstd frames | nothing: it is the source |
-| `archive.db` | what cannot be recomputed: inputs, revisions, chains, extents, observations; the request log (every query run and kept result); assertions, Pages and variants; settings; delivery records | nothing |
+| `archive.db` | what cannot be recomputed: inputs, revisions, chains, extents, observations; the request log (every query run and kept result); annotations, settings among them; alternates; delivery records | nothing |
 | `index.db` | everything parsed and derived: sessions, messages, blocks, tool calls, attachments, links, derived columns and tables, the search indexes; the positions in `archive.db` and the request log it has applied. Built whole in a private file and installed when the build ends ([durability](#durability)) | the segment log and `archive.db` |
 | embeddings store | message vectors for semantic ranking, selected by the [paid-vector restore policy](search.md#what-is-embedded), with earlier values preserved in original source stores | the model that made them (vectors bought from a paid provider are kept as data) |
 
@@ -126,7 +127,7 @@ Writes reach disk in one order:
    The next group is appended only after this group commits: appending it
    during the sync left its pages unwritten while the commit's database syncs
    ran, which then paid for them. In paired release-build runs with groups
-   arriving faster than they are stored, the overlapped writer answered a
+   arriving faster than they are stored, the overlapped writer acknowledged a
    group later than the serial one (typical latency 3.2 s against 2.4 s for
    2 MiB groups, 1.2 s against 0.8 s for 256 KiB groups), also when each
    appended range's writeback was started early.
@@ -155,9 +156,9 @@ visible and outside the lock readers take to start a read, so a read never
 waits for a disk sync; a power loss during that sync loses only that commit,
 which nothing was written after. A writer also syncs `archive.db` and its log
 when it starts, so what an earlier process committed and the kernel still
-holds is written before it answers anything. A failed sync stops writing for
+holds is written before it replies to anything. A failed sync stops writing for
 the rest of the boot: the commit is visible, so a retry would find it stored
-and answer success, and the kernel may have marked the unwritten pages clean,
+and report success, and the kernel may have marked the unwritten pages clean,
 so no later sync in that boot, in the same process or a new one, shows that
 they reached the disk. Recovery starts with a reboot
 ([operations.md#storage-failure](operations.md#storage-failure)).
@@ -189,10 +190,10 @@ derive thread open `index.db` once it is installed, so no reader can hold up
 the switch to WAL or a stop. With a rollback journal a held read blocks
 the writer, so the pipeline's reads of the build file are short: a resumed
 parse looks up its committed context one statement at a time, and a
-tool-database comparison copies its recorded rows out in one read. While the build runs, reads are answered from
+tool-database comparison copies its recorded rows out in one read. While the build runs, reads are served from
 the previous index when it has this build's schema identity, and otherwise
-answer `index_building` with the build's progress
-([operations.md](operations.md#replacing-an-index-from-another-schema)).
+reply `index_building` with the build's progress
+([installing.md](installing.md#replacing-an-index-from-another-schema)).
 
 ## Pipeline
 
@@ -302,9 +303,9 @@ daemon refuses to start; paths are absolute.
   mode, archive path, the logical day, listen address and authentication, the
   optional notification command, the Sinex endpoint. The changeable settings
   catalog holds what any author may change at run time (quiet hours, the
-  interrupt budget, enabled variants, briefing switches), each key with a
+  interrupt budget, enabled alternates, briefing switches), each key with a
   type, default and scope; unknown keys are refused. How they are loaded is in
-  [operations](operations.md#configuration).
+  [installing](installing.md#configuration).
 - **Derived outputs and cursors record the settings they were made under**, so
   a changed setting re-derives them through the usual version mechanism.
 - **One instant type, one clock, one error type** whose kind names are stable
@@ -315,7 +316,7 @@ daemon refuses to start; paths are absolute.
 
 A query resolves to a closed `Plan`, which the store executes. All SQL lives in
 the `store` crate, with one row codec per table; no other crate opens SQLite. Clients of the daemon receive typed
-answers, never connections or SQL.
+replies, never connections or SQL.
 
 ## Deletion
 

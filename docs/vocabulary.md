@@ -75,14 +75,16 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **sources**: everything the daemon reads inputs from on its own: its roots'
   locations, the spools, tool databases and collectors. `daemon --no-sources`
   reads none of them; an `import` is not a source.
-- **hook event**: one event a harness reports to `polylogue hook`, spooled whole.
+- **hook event**: one event a harness reports to `polylogue internal hook`, spooled whole.
 - **process identity**: a harness process's pid, start time and boot ID.
 - **capture**: one conversation saved by the browser extension.
 - **capture read**: one read of original bytes from a provider location, with
   its byte range, hash and route.
-- **backfill**: the extension capturing a web chat's older conversations.
+- **provider import**: `import PROVIDER`, the browser extension fetching a web
+  chat's conversations the archive lacks or holds older copies of; one
+  **import job** per provider, listed in the unit `import_jobs`.
 - **chat action**: a turn the extension drafts or sends in a web chat on a
-  user's request.
+  user's request (`send`, `start --in chatgpt`); the unit `chat_actions`.
 - **native ID**: the ID an origin itself gives a session or message.
 - **content ID**: the ID of a message whose source gives none: its session, a
   hash of its role and content, and its occurrence among equal messages
@@ -157,115 +159,147 @@ generated page of the thing they belong to, or on the area page that owns them.
 
 ## References and queries
 
-- **reference**: a natural-key name for anything (`session:…`, `message:…`,
-  `assertion:…@…`, `query:…`); one parser reads them on every surface.
-- **query**, **unit** (what a query lists), **field**, **condition**,
-  **stage** (`| …`).
-- **field selection**: a stage or default that changes which fields a row
+- **reference**: a name for exactly one thing (`session:codex:…`,
+  `message:…`, `annotation:…@…`, `query:NAME`, `self`); one parser reads them
+  on every surface.
+- **reserved words**: `latest` (the most recently active main session
+  matching the line, never the caller), `self` (the calling session) and
+  `here` (the current repository with its worktrees).
+- **selection**: the first argument of a line: a quoted query, a reference, a
+  row number, a saved query name, a unit name, a plain word or `-`.
+- **query**: the question in quotes, saying which rows. **unit**: what the
+  rows are (`sessions`, `messages`, `tool_calls`, `annotations`, …).
+  **field**: a property a query filters on (`repo:`, `since:`, `outcome:`).
+  **condition**: a field with a value.
+- **transform**: a step after `|` inside a query (`group by`, `sort by`,
+  `measure`).
+- **plain-word search**: a single plain first word, read as a search for that
+  word in prose and tool input and output.
+- **field selection**: a transform or default that changes which fields a row
   shows, keeping its row identity.
-- **query signal**: what makes a first argument a query rather than a command.
-- **query object**: `query:<hash>`, the identity of a query's normal form.
-- **run**: one recorded execution of a query.
-- **saved query**: a name pointing at a query's hash; a **shipped saved query**
+- **question**: `query:<hash>`, the identity of a query's normal form.
+- **run**: one evaluation of a query (`run:<id>`): its question, read
+  position, author and count; it holds no rows.
+- **saved query**: a question saved under a name, re-run each time it is used
+  (`query:NAME`, or the name as the first word); a **shipped saved query**
   comes with Polylogue.
-- **kept result**: `result:<id>`, a query's rows kept as they were.
+- **kept result**: the rows of one run, stored and never re-run
+  (`result:<id>`, `result:NAME`).
+- **watch**: a saved query that tells you when rows start matching
+  (`save NAME --watch`).
 - **figure**: a saved measure query with a declared denominator query.
-- **finding**: an assertion that rests on a result or query.
+- **finding**: an annotation that rests on a result or query.
 - **pre-registration**: saving a query before its first run.
-- **explanation**: how a query is read and compiled, without running it.
-- **page size** and **cursor**: answers come in pages; a cursor continues from
-  the last row shown. A page of rows is never the answer's limit.
+- **page size** and **cursor**: replies come in pages; a cursor continues from
+  the last row shown. A page of rows is never the reply's limit.
 - **deadline**: how long an operation may run before it stops and names a
   narrower query.
 - **latency class**: an operation's declared speed budget.
 - **logical day**: the day boundary every date means: a named zone and a start
   time (`DaySetting`).
 - **facet**: a read-time grouped count.
-- **watch**: a rule that reports changes in a query's rows.
 - **search leg**: the full-text part of a compiled query.
 - **semantic ranking**: ordering rows by meaning (`similar:`).
 - **fusion**: ranking rows by their places in several ordered lists.
-- **recall**: the query that answers "what do I already know about this".
 - **warm state**: what the daemon keeps in memory between requests, keyed by
   read position.
 
 ## Reading
 
-- **read target**: what a reference or query selects for `read`.
-- **view**: how a read shows its target (`full`, `dialogue`, `prompts`,
-  `actions`, context, links, …).
+- **reading**: what `read` produces: rows, view, show and hide, range and
+  presentation at one read position, as one typed document.
+- **view**: which content a reading shows (`transcript`, `dialogue`,
+  `overview`, `context`, `tree`, `changes`, `live`, `raw`, `compare`).
+- **show** and **hide**: how much of each item kind a reading shows
+  (`--show tools:full`).
+- **range**: which part of a session a reading shows (`--from`, `--until`,
+  `--first`, `--last`, `--around`).
 - **indicator**: a one-line marker in place (continues, compacted, branches).
 - **inherited message**: a message shown from a parent's copied prefix.
 - **value state**: how a shown value stands: known, unknown, partial, inferred.
-- **budget**: the size a read, pack or brief may take, in tokens.
+- **budget**: how many tokens a page of a reading, brief or listing may use;
+  what it leaves out is named, with the line that continues.
+- **format**: how a reading is encoded (`markdown`, `html`, `jsonl`,
+  `citation`, …). **destination**: where the CLI writes it (`--to clipboard`,
+  `browser`, a file, a directory).
 - **bundle**: what `read --to DIR` writes: typed records that `import` reads
   back.
-- **variant**: transformed content (translation, transliteration,
-  simplification, summary) bound to an exact source revision; a **variant
-  part** maps to one original message or block.
+- **alternate**: another rendering of content (a translation,
+  transliteration, simplification or summary) bound to an exact source
+  revision, shown in place of the original when enabled and always marked; an
+  **alternate part** maps to one original message or block.
+- **blind**: a comparison shown with labels `A`, `B` instead of references and
+  with identifying fields removed.
+- **neutral names**: `--neutral-names`, labelling the human `user` instead of
+  `you` in excerpts shared with others.
 
 ## Authored records
 
-- **assertion**: an authored statement that a key has a value for a target,
-  with evidence and scope.
-- **kind**: the closed type of an assertion (`note`, `tag`, `highlight`,
-  `claim`, `decision`, `judgment`, `memory`, `setting`, …).
-- **link role**: how an assertion points at a reference (`about`, `evidence`,
-  `scope`, `origin`, or a relation such as `answers` or `revises`).
-- **stack**: assertions about assertions, joined by typed relations.
+- **annotation**: anything people or agents wrote about the archive: notes,
+  tags, judgments, comparisons, saved queries, watches, settings; an authored
+  statement that a key has a value for what it is about, with evidence and
+  scope.
+- **kind**: the closed type of an annotation (`note`, `tag`, `decision`,
+  `title`, `judgment`, `memory`, `setting`, …).
+- **note**: text written about something, of a kind (`note TEXT --as KIND`).
+- **tag**: a label, optionally with a value (`rate-limits`, `priority:high`).
+- **link role**: how an annotation points at a reference (`about`, `evidence`,
+  `scope`, `origin`, or a relation such as `replies_to` or `revises`).
+- **stack**: annotations about annotations, joined by typed relations.
 - **current revision**: a revision no unwithdrawn `revises` points at; two
   current revisions of one record are a **conflict**. A write names its
   **base**, the revisions it revises; one naming an outdated base is
   **stale** and refused.
-- **withdrawal**: an authored statement that retracts assertions.
+- **withdrawal**: an authored statement that takes annotations back; nothing
+  is deleted.
+- **undo line**: the line a write prints that withdraws what it wrote.
 - **author**: who wrote a record (`operator`, `agent:<session>`,
   `script:<unit>`, `unattributed`), computed by the daemon. **via**: the
   channel the write arrived on.
-- **judgment**: a verdict on one exact revision; a **comparison** judges two or
-  more references on one dimension.
+- **judgment**: a verdict on one exact revision (`accept`, `reject`,
+  `defer`); a **comparison** records which of two or more rows is better on
+  one dimension.
 - **rubric** and **pass**: the declared schema of a bulk annotation run, and
-  the run itself, with its coverage and abstentions.
+  the run itself, with its coverage and abstentions; a **rubric value** is one
+  rubric field's value for one row.
 - **checked claim**: a claim that carries a query checking it.
-- **marker**: a `::kind(args)` line in a transcript, read as an assertion by
+- **marker**: a `::kind(args)` line in a transcript, read as an annotation by
   the message's author.
-- **memory**: assertions an agent's memory tool writes, through the
+- **annotation lines**: a file of JSON annotation writes brought in with
+  `import`, checked line by line and written as one request.
+- **memory**: annotations an agent's memory tool writes, through the
   **memory-tool adapter**; a **method** is a procedure with checkable
   conditions.
 - **setting**: a changeable value from the settings catalog, stored as an
-  assertion with its history.
-
-## Pages
-
-- **page**: a container of slots, rendered in a **layout** (linear, board,
-  wiki, table).
-- **slot**: one placed reference, live query, heading or nested page; it shows
-  the current revision (**follow**) or one exact revision (**fixed**).
-- **member**: a session that belongs to a page under an alias.
-- **role**: reusable instructions plus a harness; a **role instance** is a
-  session running them.
-- **toc**: a page's generated table of contents, an agent's starting point.
-- **check-out** and **check-in**: editing a page as files, refused on a stale
-  base.
-- **template**: a page whose headings are copied into new pages
-  (**investigation**, **experiment**).
-- **checkpoint**: a page revision with every slot fixed.
-- **ping**: an explicit address plus text, delivered to a session.
+  annotation with its history (`set`).
+- **role**: a named kind of agent with a harness and instructions
+  (`role:reviewer`); a **role instance** is a session running them.
 
 ## Agents
 
-- **pack**: prepared context for a recipient and purpose, built under a
-  budget by one pack builder; **brief**, **takeover** and **recall** are named
-  packs.
-- **entry map**: the closing section of a pack: what is whole, shortened,
-  expandable or left out.
-- **delivery**: one hand-over of prepared content into a model's context, with
-  its outcome; **used** when the recipient later refers to it.
+- **brief**: packaged context under a budget: alone, for a directory; of a
+  session, to take it over (its **takeover**); of search words, what is
+  already known (its **recall**); of other rows, what matters in them.
+  "Takeover" and "recall" are words help and completion use for two forms of
+  `brief`.
+- **left-out list**: the closing section of a brief: what is whole,
+  shortened, expandable or left out, with the line that reads each.
+- **delivery**: the record that a brief, message or notice was handed to a
+  session, with its outcome; **used** when the recipient later refers to it.
 - **advisory**: a one-line pointer shown before a prompt touches a judged
   target.
-- **agent manual**: the generated description of every operation, installed
-  with the hooks and carried as the brief's first section.
+- **skill file**: `help --all`, the full reference of every operation,
+  installed with the hooks and carried as the brief's first section.
 - **live state**: whether a session is `working`, `waiting`, `idle`,
   `stale`, `ended` or `unknown`.
+- **send**: deliver text to sessions. **answer**: reply to what a session is
+  waiting for (`allow`, `deny` or text). **interrupt**: stop a session's
+  current turn. **resume**: reopen a session in its own harness; with `--in`,
+  continue its work in a new session of another harness.
+- **web chat**: a conversation on ChatGPT, Claude.ai or Grok, captured and
+  reached through the browser extension.
+- **held web-chat turn**: a turn Polylogue wrote into an existing web chat,
+  waiting for the operator's `answer allow`.
 - **peers**: other live sessions in the same repository or worktree.
 - **task**: a session's open claim in a task tracker.
 - **delegation**: a parent session handing work to a child session.
@@ -276,8 +310,8 @@ generated page of the thing they belong to, or on the area page that owns them.
   construct, unit, denominator and unknown rule.
 - **validity kind**: how a derivation's validity is shown: `exact`,
   `parameterized`, `extracted` or `judged`.
-- **measure**: a named computation over derived data (cost, quota, time,
-  survival, compare).
+- **measure**: a computation a pipeline cannot express, named after `| measure`
+  (`usage`, `quota`, `survival`, `contrast`, …).
 - **population**: which responses a usage figure counts.
 - **money kind**: where a cost comes from (`api_equivalent`,
   `provider_reported`, `subscription_share`, `manual`, `estimated`).
@@ -295,29 +329,50 @@ generated page of the thing they belong to, or on the area page that owns them.
 
 ## The daemon and its surfaces
 
-- **daemon**: the one process on the archive; it holds the lock, runs the
-  writer and serves every client.
+- **daemon**: the one process on the archive, the background service; it
+  holds the lock, runs the writer and serves every client.
 - **writer**: the one thread that appends and commits.
 - **stop request**: the one request a process makes to stop, carried by the
   archive it opened; every read, wait and reconstructible write observes it.
   A request's **cancellation** (its client hung up, its stream was dropped) is
   a child of it.
-- **command table**: every operation, once; the CLI, socket, HTTP and MCP are
-  generated from it.
+- **operation table**: every operation, once; the CLI, socket, HTTP and MCP
+  are generated from it.
+- **line**: one invocation: a selection and its verbs, or a command, with
+  options. **step**: one verb of a line.
+- **verb**: a word after the selection that says what to do with the rows;
+  **command**: a first word that is not about selected rows (`status`,
+  `import`, …).
+- **line option**: an option that goes anywhere on a line (`--json`,
+  `--deadline`, `--request-id`, `--dry-run`, `--explain`, `--all`).
+- **usual rows**: the saved query a verb with no selection picks from
+  (`recent` for `read`, `unfinished` for `resume`).
+- **reply**: what an operation returns. **next call**: a ready call or line
+  offered after a reply, from the verb's **affordance table**.
+- **dry run**: `--dry-run`: resolve the selection and report what a line
+  would do, doing nothing. **explain**: `--explain`: say how a line is read and
+  what it would do, running nothing.
 - **failure kind**: a stable name for why an operation failed, mapped to an
   exit code and an HTTP status.
-- **orientation**: what bare `polylogue` prints.
+- **orientation screen**: what bare `polylogue` shows.
+- **cheatsheet**: the one screen `polylogue help` prints.
 - **status**: figures and a verdict about the daemon and archive.
 - **halt state**: work that cannot proceed and is reported, not retried.
 - **notice**: a delivery a signal rule fired; an **interrupting** one is also a
   desktop notification. A **shipped rule** is defined in code. A rule's
   **pending deliveries** are those it fired that are not yet delivered.
-- **picker**: the embedded fuzzy selector; `@N` names row N of the last list.
-- **catalog file**: the completion data the daemon publishes.
+- **picker**: the embedded chooser with fuzzy matching, a preview and its keys
+  in the footer.
+- **row number**: `@3`, row 3 of the last list printed on this terminal.
+- **completion**: what Tab offers at the cursor, with descriptions.
+- **catalog file**: the completion data the daemon publishes, so completion
+  works without asking it.
 - **scope index**: the daemon's in-memory map of main sessions by the working
   directories they recorded, with repository, activity, stored message count,
   live facts and task; it answers which sessions are under a directory, live
   there or hold a task there without reading the index.
+- **change feed**: `dev feed`, the position-based stream of changes programs
+  read; the unit `feed`.
 - **workbench**: the web UI.
 - **host**: the browser extension's native messaging host.
 
@@ -348,12 +403,65 @@ generated page of the thing they belong to, or on the area page that owns them.
   carries the first one.
 - **write identity**: the identity of a prepared write, saved with it and
   reused on retry.
-- **cutover**: the one-way move of a standalone archive to primary mode.
+- **move to Sinex**: the one-way move of a standalone archive to primary mode
+  (`dev move-to-sinex`).
 
 ## Development
 
-- **Morrow**: the synthetic example archive in `examples/morrow/`.
+- **Morrow**: the synthetic example archive in `examples/morrow/`, which
+  `demo` builds and the examples use.
 - **fault point**: a named point where a test can stop a write; a **writer
   pause** holds the writer at one.
 - **scenario**: an end-to-end test against the real daemon, CLI and MCP.
 - **paired run**: a base and a change benchmarked together on one sample.
+
+## Removed words
+
+These words are not part of the surface. Each row names what says it now;
+`polylogue help WORD` prints the same line.
+
+| Word | Now |
+|---|---|
+| `find`, `query`, `list` (commands) | the selection alone: `polylogue 'QUERY'` |
+| `live` (as a list) | the saved query `running` |
+| `follow` | `read --follow` |
+| `takeover` (as a command) | `polylogue SESSION brief` |
+| `recall` (as a command) | `polylogue 'WORDS' brief` |
+| `assert`, `assert-query`, assertion | `note TEXT --as KIND`, `tag NAME`; the unit `annotations`, `annotation:<id>` |
+| `revise` | `edit` |
+| `keep` | `save` with no name |
+| `watch` (as a verb) | `save NAME --watch` |
+| `ping` | `send` |
+| `continue` (as a verb) | `resume` |
+| `hand-off` | `resume --in HARNESS` |
+| `chat send`, `chat approve`, `chat decline`, `chat list` | `send`, `start --in chatgpt`, `answer allow`, `answer deny`; the unit `chat_actions` |
+| `backfill` | `import PROVIDER`; the unit `import_jobs` |
+| `attachment` (command) | `attachment:… read` |
+| `explain` (command) | `--explain`, `help query` |
+| `setting`, `settings` | `set` |
+| `verify` | `status --verify` |
+| `completions` | `install zsh`, `install bash`, `install fish` |
+| `sql`, `schema`, `changes` (commands) | `dev sql`, `dev schema`, `dev feed` |
+| `install-agent`, `hooks install`, `hooks uninstall` | `install HARNESS`, `install HARNESS --remove` |
+| `auth drive` | `install drive` |
+| `cutover`, `sinex cutover`, `move-to-sinex` (as a first word) | `dev move-to-sinex` |
+| `demo tour` | `demo DIR` |
+| `manual` | `help --all` |
+| `next` (command) | the pager, and the continuation line every page prints |
+| `pack` | `brief` |
+| `trace` | `read --view raw` |
+| `fetch` | `import PROVIDER` |
+| `timeline`, `cost`, `measure NAME` (commands) | queries with `\| measure` |
+| variant | alternate: `note --as translation:LANG`, `read --alternate`, the unit `alternates` |
+| stage (in a query) | transform |
+| fold | `--show` and `--hide` |
+| `summary`, `links` (views) | the views `overview` and `tree` |
+| answer (for a query run) | run: `run:<id>`, the unit `runs` |
+| `answers` (link role) | `--replies-to` |
+| `annotation` (rubric kind) | `rubric_value` |
+| `toc`, `checkout`, `checkin`, `applies`, Pages | not built ([set-aside.md](set-aside.md)) |
+| `--limit`, `--out`, `--output`, `--for-session`, `--print`, `--exec`, `--harness`, `--for-others`, `--variant`, `--answers`, `--page-tokens`, `--all-matches`, `--first` (picker) | `--page-size`, `--to`, `--for`, `--dry-run`, `--in`, `--neutral-names`, `--alternate`, `--replies-to`, `--budget`, `--all` |
+| `@[QUERY]`, `@last`, `@N.M`, `@*` | `--all`; exact references; `@all` |
+| `last` (reference) | `latest` |
+| `--format` on `import` | `--origin` |
+| `--since` on the change feed | `--after` |

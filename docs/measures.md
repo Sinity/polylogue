@@ -1,21 +1,21 @@
 # Derived data and measures
 
-Everything Polylogue computes from parsed sessions: the rules every derived product follows, the catalog of products, and the measures over them (usage and cost, quota and plans, time, tool behaviour, comparison, reports). The parsed rows these products read are [sessions.md](sessions.md); query grammar, `group by`, `agg` and paging are [query.md](query.md); kept results, findings and judgment notes are [query.md](query.md#query-objects) and [assertions.md](assertions.md); semantic ranking is [search.md](search.md#semantic-ranking); how figures appear in a read is [reading.md](reading.md); chart and page layout is [web.md](web.md); the brief and packs are [agents.md](agents.md).
+Everything Polylogue computes from parsed sessions: the rules every derived product follows, the catalog of products, and the measures over them (usage and cost, quota and plans, time, tool behaviour, comparison, reports). The parsed rows these products read are [sessions.md](sessions.md); query grammar, `group by`, `agg` and paging are [query.md](query.md); kept results, figures and findings are [saved-queries.md](saved-queries.md) and judgment notes [annotations.md](annotations.md); semantic ranking is [search.md](search.md#semantic-ranking); how figures appear in a read is [reading.md](reading.md); chart and page layout is [web.md](web.md); the brief is [agent-context.md](agent-context.md#brief).
 
-Measurement answers four questions for someone who runs many agents on subscriptions: how much of the subscription is left and when it runs out; what something cost, and would have cost at API prices; where an agent's time went and how agents behave; what one set of sessions looks like beside another. Every figure is computed from records, never guessed from prose, and says what it counts and what it could not count.
+Measurement addresses four questions for someone who runs many agents on subscriptions: how much of the subscription is left and when it runs out; what something cost, and would have cost at API prices; where an agent's time went and how agents behave; what one set of sessions looks like beside another. Every figure is computed from records, never guessed from prose, and says what it counts and what it could not count.
 
-Measurement options are one query scalar. Quote an option containing commas, for example `sessions | measure "compare:origin,words"`. The `measure` CLI builds the same literal.
+A measure is the last transform of a query, `| measure NAME`, so every measure, report, day and cost figure is a query: `polylogue 'repo:sinex since:30d | measure usage'`. Options follow the name after colons, and the whole is one query scalar: quote an option containing commas, for example `sessions | measure "contrast:origin,words"`. `help transforms` lists the measures with their options.
 
 ## Principles
 
-- **The outlook leads for a subscription user.** The current window, its burn and when it runs out come first in status, the overview, the cost page and `analyze --cost`. API-equivalent money follows, labelled as a comparison.
+- **The outlook leads for a subscription user.** The current window, its burn and when it runs out come first in status, the overview, the cost page and `| measure outlook`. API-equivalent money follows, labelled as a comparison.
 - **Unknown is never zero.** Every sum states its known part and how many items it could not count, in the items' own unit. A partial value is a lower bound ("at least"); a missing time is never placed.
 - **One definition per figure, one function per rule.** One cost function prices a response; every other cost is a sum of its results. Surfaces never recompute.
-- **Denominators and grain are part of the answer.** Every rate names its denominator, every count names its unit, and figures from different definitions are labelled not comparable.
+- **Denominators and grain are part of the reply.** Every rate names its denominator, every count names its unit, and figures from different definitions are labelled not comparable.
 - **Computed, not interpreted.** Counts, sums, durations, joins and statistics over recorded structure are in scope. Labels inferred from prose (work kind, phases, success, abandonment) are not, because they would claim what the records do not show.
 - **No umbrella category.** Users see fields, units, measures and reports. The code's name for a stored or computed product is *derivation*, and the current generated reference page is [Derived data](derived.md).
 - **Measurement is the query language plus named computations.** Anything a pipeline can express is a pipeline. A measure exists only for what pipelines cannot express: windows, forecasts, survival, level changes, transitions, ranking.
-- **Every number reaches every surface the same way,** through the command table; `explain` prints the pipeline behind a report.
+- **Every number reaches every surface the same way,** through the operation table; `--explain` prints the pipeline behind a report.
 - **Precise accounting with existing libraries.** Use established libraries for token counting and cost tracking.
 - **Reports are general.** No report is specific to one person's own tools or setup.
 
@@ -42,7 +42,7 @@ Analyses are computed when their data arrives, and at read only when that cannot
 - **Session-grain values are stored as their data arrives** when a query filters, sorts or groups on them across the archive, or when they are costly per read (graph walks, interval unions).
 - **Grouped figures are computed at read** from stored session rows: logical session, day, week, repository, project. Grouping stored rows is exact, so a late import, a re-parse or a newly arrived link changes them with nothing stale to invalidate. A grouped figure measured too slow at read may be stored as well, keyed by session (for example by session and UTC quarter hour), so it changes with its session; nothing is keyed by day, repository or root.
 - **Read-time products** are those that depend on the clock (live state, windows, forecasts, "quiet for 6 hours"), on a setting (logical day, plan) or on an arbitrary selection (aggregates, comparisons, rankings), and per-turn or per-pair computations no archive-wide query sorts on.
-- **Stored products read only parsed rows,** never assertions, settings or the clock, so a note or a setting change never makes a stored product stale.
+- **Stored products read only parsed rows,** never annotations, settings or the clock, so a note or a setting change never makes a stored product stale.
 - **Storing a product does not make it citable.** Citation is served by [kept results](#citation-and-figures). Whether a product that is neither stored nor a field is best served as a named query is decided per product.
 
 **Two storage forms:**
@@ -64,14 +64,14 @@ Analyses are computed when their data arrives, and at read only when that cannot
 
 ### Convergence
 
-Derived data converges through one path, with no separate stage and no backfill, refresh, rebuild or recompute command.
+Derived data converges through one path, with no separate pass and no refresh, rebuild or recompute command.
 
 - Row values are written with their rows, by the same function the derivation uses, and recomputed only when their derivation's version moves. Per-change values are kept in the transaction of every change to the rows they combine, so an append adds its own rows' share and nothing reads the session again: the session counts by the existing transaction change summary, including changes to duplicates, the active path and late tool outcomes. Each affected session receives one count update after its selected rows agree. A missing stored count baseline is computed once before applying further changes, without marking a stale derivation version current; the first or last recorded script command recomputes the affected session's tool-action population because it changes which earlier code calls count; the commit and pull-request links by the writer from the transaction's change summary, adding the links of the calls the transaction finished; a transaction that rewrote a stored message marks the session due for its links instead (`derive_due.rewritten`), and the derive step derives them again. They are recomputed only when their version moves. Session products are recomputed for exactly the sessions whose rows or derivation version changed. The session span resumes instead of rereading: its row keeps the calculation's state at the last settled message (timed with the latest time so far, with no later message or call starting before it, every earlier call's result at or before it, and no earlier call still waiting for its result), and an append reads only the messages after it. The session is read from the start when a transaction changes or inserts a message at or before that point, a call before it gets its result after it, a call's outcome is reported outside its messages, the session gains or loses a script-run command, or the derivation's version moves.
 - **Marks:** `derive_due(session, rows_changed)` names the sessions behind, set in the transaction that changed their rows (a trigger on `session.changed`); a derivation whose version moved since the last pass marks every session for that derivation alone. `derive_due.marked` counts the markings of a session, so it moves with every cause, including those outside its rows. `derive_state(name, session, version)` records the version each derivation last derived a session at. The derive step finds its work through the marks, never by scanning sessions, and never moves `session.changed`, which says when the session's own rows changed; a session it derives reaches the change feed through `session.derived_changed`.
 - **Cross-session causes** delete the affected marks in their own transaction: a link change marks the logical-session root of the child's subtree and the session cost of its ancestors; a changed repository lookup marks the sessions at or under its directory due for the repository derivation alone (`derive_due.repo_lookup`, a range over the session working-directory index), without moving their `session.changed`.
 - **Duplicate marks:** duplicate derivation finds already marked messages through a sparse index by session, including marks to clear after a capture input disappears. Unmarked sessions have no entries in this index. The writer maintains it during first build and later changes; adding it to an existing index reads the message table once and keeps all rows and parser progress.
 - **Recompute:** the derive step runs on a thread of its own beside the writer and never in the writer's transactions. It takes behind sessions, newest first, a bounded number per round, and runs each round's derivations in waves: a derivation's wave is one past the latest wave of the derivations it reads, so each wave reads what the earlier waves committed. For each session and wave it reads the derivation's inputs and computes its values on its own read connection, then sends the wave's values to the writer, which only writes them; parse batches and user writes are served while a derivation computes. Each session's values carry the session's `changed` counter and `derive_due.marked` as its inputs were read, and the writer stores them, with the derivation versions and, after the last wave, the removal of the mark, only while both are unchanged. A session whose rows or causes changed meanwhile keeps its mark and its earlier values and is derived by the next pass. A crash leaves marks behind, which the open path treats as pending work.
-- **Reads of behind sessions:** an aggregate counts behind sessions as `pending` and never shows their old values as current; a read of one session computes its products on the spot with the same function, so a single-session answer is never stale.
+- **Reads of behind sessions:** an aggregate counts behind sessions as `pending` and never shows their old values as current; a read of one session computes its products on the spot with the same function, so a single-session reply is never stale.
 - **Versions:** rule edits bump `Rules(n)`; shipped tables (prices, command classes) are versioned by content hash, so a forgotten bump cannot ship. Changing a derivation's version re-derives exactly that derivation; there is no index-wide version. A golden-output test per derivation fails when output changes without a version change.
 - **Re-parse:** `ON DELETE CASCADE` from parsed rows removes their products; a retracted chain changes its session, which marks every derivation behind.
 - Ongoing cost is per changed session, never per archive.
@@ -105,12 +105,12 @@ struct Construct {
 - Read-time fields, units, measures and aggregates carry the same `Construct` in their registries.
 - The current [derived-data reference](derived.md) is rendered from the declarations and registries; a test fails when a stored table has no declaration or a declaration has no entry.
 - A registration test refuses an `Extracted` or `Judged` declaration without a recorded figure, and an `Exact` or `Parameterized` one without a named test.
-- `explain derived` and `explain fields --unit U` serve the catalog to agents through CLI and MCP. Each field's help is its `represents` sentence; its unknown word is its `unknown` rule.
+- `help fields [UNIT]` and `help --all` serve the catalog to people and agents through the CLI and MCP `help`. Each field's help is its `represents` sentence; its unknown word is its `unknown` rule.
 
 ### Citation and figures
 
 - A kept result records the query hash, resolved bounds, rows and the version of every derivation it read. Reading it later shows "computed under prices `<hash>`, now `<hash>`" when they differ.
-- A **figure** is a saved `| measure` or `| agg` query with a declared denominator query ([query.md](query.md#query-objects)). Shipped figure definitions (cost, tokens by token kind, tool error rate, turn latency) are saved queries.
+- A **figure** is a saved `| measure` or `| agg` query with a declared denominator query ([saved-queries.md](saved-queries.md#figures)). Shipped figure definitions (cost, tokens by token kind, tool error rate, turn latency) are saved queries.
 - Every figure a measure or report returns names its definition (measure or pipeline text), population, unit, and its unknown, partial, pending and untimed counts.
 
 ### The default unit
@@ -119,7 +119,7 @@ struct Construct {
 
 ## Catalog
 
-Store: **row** (a column on a parsed row), **session** (stored at session grain), **read** (computed at read). Compositions (the brief, takeover, packs, recall, and the `summary`, `context` and `links` views) are not products: they compose these at read and are stored only as deliveries.
+Store: **row** (a column on a parsed row), **session** (stored at session grain), **read** (computed at read). Compositions (every form of the brief, and the `overview`, `context` and `tree` views) are not products: they compose these at read and are stored only as deliveries.
 
 | Product | Fields or unit | Store | Validity |
 |---|---|---|---|
@@ -131,21 +131,21 @@ Store: **row** (a column on a parsed row), **session** (stored at session grain)
 | Logical session | `root`, `depth`, `root_pending` | session | exact |
 | Session counts | messages, prompts, words, tool calls, errors, … | session | exact |
 | Message cost | `cost` on a response | row | exact |
-| Session cost | `session_cost`: `cost`, `tree_cost`, `subagent_cost`, `cost_complete` | session | exact |
+| Session cost | `session_cost`: `cost`, `cost_with_parents`, `tree_cost`, `subagent_cost`, `cost_complete` | session | exact |
 | Usage over a selection | `measure usage` | read | exact |
 | Quota readings | `quota_reading` | row | extracted |
-| Subscription windows, burn, forecast, spend at past limit hits | `measure windows` | read | parameterized |
+| Subscription windows, burn, forecast, spend at past limit hits | `measure quota` | read | parameterized |
 | Billing-cycle outlook | `measure outlook` | read | parameterized |
-| Daily series, baselines, level changes, rhythm | `group by day(at)` | read | parameterized |
+| Daily series, baselines, level changes, rhythm | `group by day(at)`, `measure daily`, `measure rhythm` | read | parameterized |
 | Context pressure | `context_tokens` | row, read | exact |
 | Cache economics | cache shares and costs | read | exact |
 | Tool-call result time and duration | `result_at`, `duration`, `reported_duration` | row | exact |
 | Session span | `session_span`: `wall_span`, `clustered_time`, `ends_with`, … | session | parameterized |
-| Where the time went | `session_time`; `waiting_model`, `waiting_human` | session | parameterized |
+| Where the time went | `session_time`; `waiting_model`, `waiting_human`; `measure time` | session | parameterized |
 | Turn fields | the `turns` unit | read | exact |
 | Concurrency | sessions active at once | read | parameterized |
 | Normalized command and command class | `command_norm`, `command_class` | row | extracted |
-| Outcome counts, failure-rate bounds, transitions | `agg failure_rate` | read | exact |
+| Outcome counts, failure-rate bounds, transitions | `agg failure_rate`, `measure outcomes`, `measure transitions` | read | exact |
 | Reruns | retry chains, fail-then-pass, edits between checks | read | exact |
 | Failing checks | `measure failing` | read | exact |
 | Survival | `measure survival` | read | parameterized |
@@ -156,14 +156,15 @@ Store: **row** (a column on a parsed row), **session** (stored at session grain)
 | Landed work | landed and not landed commits | read | exact |
 | Delegations | per `spawn` link | read | exact |
 | Live state | rank, waiting state, open call, task, peers | read | exact |
+| Hook coverage | `measure hooks` | read | exact |
 | Open items | the `open_items` unit | read | exact or extracted per item kind |
 | Repeated instructions | repeated sentences | read | exact |
 | Rework | re-edits, re-reads | read | parameterized |
 | Related sessions | `related:REF` | read | judged |
-| Facet counts with IDF and lift | facets | read | exact |
-| Compare | session and selection compare | read | exact |
+| Facet counts with IDF and lift | `measure facets` | read | exact |
+| Contrast | `measure contrast` | read | exact |
 | Distributions and correlation | `p50`, `p90`, `histogram`, `corr` | read | exact |
-| Reports | `analyze` | read | exact |
+| Reports | queries joining the above | read | exact |
 | Embeddings | vectors in the embeddings store | row | judged |
 | Format drift | the `drift` unit ([archive.md](archive.md#format-drift)) | read | exact |
 
@@ -190,21 +191,21 @@ Activity sessions, presence, agency, interruption and resumption, cross-day epis
 ### Token kinds and populations
 
 - **Five token kinds** on every response a model wrote, as reported: uncached input; cache read; cache write (with its 1-hour part when reported); output excluding reasoning; reasoning. NULL means not reported, never 0. Reasoning is priced at the output rate; the token total is all five token kinds.
-- **Counted tokens where no usage is recorded.** For sessions whose source records no usage (web chats), tokens of the visible text are counted with the tokenizer library for the model's family where one is published, otherwise with the shared [token estimator](reading.md#budgets). Counted tokens are their own state (`counted`, shown `≈`), name the tokenizer, are a lower bound of billed input (hidden system prompts and tools are not visible), are never summed with reported tokens without that label, and price only to the `estimated` money kind.
+- **Counted tokens where no usage is recorded.** For sessions whose source records no usage (web chats), tokens of the visible text are counted with the tokenizer library for the model's family where one is published, otherwise with the shared [token estimator](reading.md#paging-and-budgets). Counted tokens are their own state (`counted`, shown `≈`), name the tokenizer, are a lower bound of billed input (hidden system prompts and tools are not visible), are never summed with reported tokens without that label, and price only to the `estimated` money kind.
 - **Populations,** one per figure, named in the result:
 
   | Population | Contents |
   |---|---|
   | `own` (default) | each recorded response once across the archive: the shown version only (`duplicate_of` NULL), on and off the active path |
-  | `with_parents` | a session's own responses plus those of the sessions it composes from ([reading.md](reading.md#composed-transcripts)); per session only, never summed across sessions |
+  | `with_parents` | a session's own responses plus those of the sessions it composes from ([reading.md](transcripts.md#composed-transcripts)); per session only, never summed across sessions |
   | `tree` | a session's own responses plus those of every session below it through `spawn` links |
   | `recorded_reports` | usage a source reports without naming its response (Codex `token_count`); its own unit and denominator: validated, unconfirmed and untimed reports |
 
-- Display filters from assertions (tags, `hidden`) never change a population; a measure states how many hidden sessions it includes.
+- Display filters from annotations (tags, `hidden`) never change a population; a measure states how many hidden sessions it includes.
 - A source that cannot assign usage to responses makes the response count and response-based totals of that scope unknown; its recorded reports are still summed as a known part.
 - **Codex completeness by reconciliation:** `token_count` reports are validated per request (the running total grew by exactly the last counts). A session whose validated reports cover its final running total, with no unconfirmed report, has complete usage and an API-equivalent cost at grain "usage reports"; otherwise it is partial, with the gap in tokens.
 - **Time bounds** select response times (`timed_by: source_record_time`), not session activity. Untimed rows are counted as `untimed` and excluded from bounded sums.
-- A measure that counts messages (`usage`, `outcomes`, `failing`, `process`, `daily`, `rhythm`) counts only the messages inside the query's top-level `since:` and `until:`, and a selected session's figures include the subagent sessions it spawned, at any depth; each response still counts once.
+- A measure that counts messages (`usage`, `outcomes`, `failing`, `transitions`, `daily`, `rhythm`) counts only the messages inside the query's top-level `since:` and `until:`, and a selected session's figures include the subagent sessions it spawned, at any depth; each response still counts once.
 - `measure usage` returns: population, `timed_by`, sessions, responses (known, and items with unknown boundaries), tokens per token kind (known, and unknown responses), money by kind and by model, unpriced models with counts, recorded reports, the price catalog hash and label, and untimed items.
 - A provider's own total for a child (Claude `toolUseResult.totalTokens`) is kept for comparison only and is never added. A token kind the provider does not charge is NULL, adds nothing and does not make the response partial (`n/a`).
 
@@ -216,7 +217,7 @@ Activity sessions, presence, agency, interruption and resumption, cross-day epis
 - **The version is the content hash** of the effective shipped table plus overrides; a different hash reprices through the derive path with no re-parse. A human label is shown beside it, never used as the key.
 - No row on or before the response time, a tier or mode without a rate, or a cache token kind with tokens but no rate leaves the cost unknown; zero tokens need no rate. Cache writes with no reported lifetime use the 5-minute rate and are counted as `assumed_cache_lifetime`.
 - A malformed override file is refused with line and field; the shipped table stays in force and status shows the error. Status and usage reports list every model seen with no price, with counts and newest time.
-- `polylogue prices [--model NAME]` lists rows, sources and the active hash, or the row a model resolves to and why.
+- The unit `prices` lists the rows with their sources (`polylogue 'prices where name:claude-opus-4-1'`); `--why` on it names the row a model resolves to at a time and why; `status` shows the active hash.
 
 ### Money
 
@@ -227,7 +228,7 @@ Activity sessions, presence, agency, interruption and resumption, cross-day epis
   | `api_equivalent` | list price of the recorded tokens; the default cost |
   | `provider_reported` | a total the harness or provider recorded |
   | `subscription_share` | a plan's price for a cycle spread over its responses in proportion to their API-equivalent cost |
-  | `manual` | an amount the user entered (a `cost` assertion) |
+  | `manual` | an amount the user entered (a `cost` annotation) |
   | `estimated` | computed from incomplete or counted data, with what it assumed |
 
 - A separate type per kind makes adding across kinds a type error.
@@ -237,7 +238,7 @@ Activity sessions, presence, agency, interruption and resumption, cross-day epis
 
 **Message cost.** One function prices a response from its token counts by kind and its model's catalog row at its time. Unknown when any billed token kind is unreported or the model is unpriced. A row column whose version is the catalog hash. Every stored message cost equals the function applied to its usage.
 
-**Session cost.** `own` (the sum of message cost over the own population), `own_unpriced`, `complete` (no unpriced response; for Codex, reconciled), `tree` (own plus every session below through `spawn` links), `tree_unpriced` and `tree_missing_children` (children a spawning call names that are not in the archive, with those calls' references). A partial value shows "at least". A child belongs to exactly one tree. Cross-session cause: a change in a session marks the tree cost of each ancestor. Fields `cost`, `tree_cost`, `subagent_cost` (tree minus own, partial if either is) and `cost_complete`. Continuations, forks and resumes are not trees: a logical session's cost is the sum of its sessions' own costs, once each. Stored so that sorting by cost and tree sums are indexed reads.
+**Session cost.** `own` (the sum of message cost over the own population), `own_unpriced`, `complete` (no unpriced response; for Codex, reconciled), `tree` (own plus every session below through `spawn` links), `tree_unpriced` and `tree_missing_children` (children a spawning call names that are not in the archive, with those calls' references). A partial value shows "at least". A child belongs to exactly one tree. Cross-session cause: a change in a session marks the tree cost of each ancestor. Fields `cost`, `cost_with_parents` (the `with_parents` population: what the session shows, inherited responses included), `tree_cost`, `subagent_cost` (tree minus own, partial if either is) and `cost_complete`; every assistant message also carries its own cost and tokens per token kind as fields. Continuations, forks and resumes are not trees: a logical session's cost is the sum of its sessions' own costs, once each. Stored so that sorting by cost and tree sums are indexed reads.
 
 ### Subscription quota
 
@@ -245,7 +246,7 @@ Activity sessions, presence, agency, interruption and resumption, cross-day epis
 - **Windows** are computed at read per account and limit: *reported* (a reading gives its reset), *projected* (whole window lengths from the last reported reset, for fixed schedules), *inferred* (a limit that starts at the first response after the previous window ended, labelled `≈`). Window usage: start, end, source, usage by token kind, API-equivalent cost and active sessions; "at least" when it holds unknown usage.
 - **Burn and forecast:** percent burn per hour between the first and last readings at least 5 minutes apart; the exhaustion time if before the reset, else "lasts to reset", labelled as a linear projection; token and money burn per hour; projected tokens at reset. A reading lower than the previous one restarts burn; a reset earlier than its reading is stale, ignored and counted; quota at 0% or 100% at the first reading never divides by zero.
 - **Spend at past limit hits:** when no reading in the window carries a percent, the API-equivalent spend in earlier windows of the same limit at the moment a rejection was recorded, with `n` and range; absent when `n = 0`. The name says what is measured, not a capacity.
-- Each rejected reading is an event (`events where kind:rate_limit`). `measure windows` and `analyze --windows` list past windows newest first, with usage, peak percent and whether the limit was hit.
+- Each rejected reading is an event (`events where kind:rate_limit`). `| measure quota` lists past windows newest first, with usage, peak percent and whether the limit was hit.
 - Untimed reports are listed as `unplaced` and affect only windows they could belong to. Accounts are separated by recorded identity, else stated as one.
 - **Lead position:** status and the overview show, per subscribed account, one line per active limit: used percent or tokens, reset, burn, exhaustion or "lasts to reset", with inferred values marked.
 
@@ -255,7 +256,7 @@ Activity sessions, presence, agency, interruption and resumption, cross-day epis
 - A session counts against a subscription only when its records show it: a quota reading in its files, or the plan setting in force at its time; otherwise its billing is `unknown`.
 - **Cycle outlook:** a calendar month from the anchor day (days 29–31 clamp to the month's end; UTC dates). Projections per unit (API-equivalent, provider-reported, each token kind), each method named: `linear` (used ÷ elapsed × total) and `trailing-7d-mean`. Each carries coverage, missing days and untimed or incomplete usage. Observations after the as-of instant are excluded, so the outlook is reproducible.
 - **Subscription value:** per cycle, API-equivalent cost against the plan price, as a ratio; `subscription_share` derives from it. An optional user budget gives used and projected ratios, a breach day and overage at a user rate, labelled "your budget". A plan changed mid-cycle splits the cycle.
-- Interfaces: `measure outlook[:PLAN[:METHOD]]`, `analyze --cost`, the web cost page.
+- Interfaces: `| measure outlook[:PLAN[:METHOD]]`, the cost report, the web cost page.
 
 ### Daily series and rhythm
 
@@ -263,7 +264,7 @@ Activity sessions, presence, agency, interruption and resumption, cross-day epis
 - Each day carries `complete`, `unknown_items` and `untimed_items` for that metric; untimed items go to an `unknown day` row. A session crossing midnight contributes by each item's own time.
 - `baseline_7d` is computed only over 7 complete previous days. **Level changes** are found by binary segmentation with a BIC-style penalty, minimum segment 7 days, over runs of at least 14 complete days, each with means before and after, and labelled "level change", never "trend".
 - **Rhythm:** a 7 × 24 grid by logical weekday and clock hour, of any countable unit.
-- Calendar and this-day views read the same series. Nothing per day is stored, so a setting change re-buckets at the next read. A 23- or 25-hour day is one day. One daily path serves outlooks, the cost and timeline pages and `analyze --by day`.
+- Calendar and this-day views read the same series. Nothing per day is stored, so a setting change re-buckets at the next read. A 23- or 25-hour day is one day. One daily path serves outlooks, `| measure daily`, the web cost and calendar pages and reports by day. A day's activity and usage are queries with a time condition (`polylogue 'sessions since:today | measure usage'`); the same day across years uses `month_day` ([query.md](query.md#units-and-fields)).
 
 ### Context pressure and cache economics
 
@@ -288,9 +289,9 @@ Activity sessions, presence, agency, interruption and resumption, cross-day epis
 
 `ends_with` describes the last item and never claims success, failure or abandonment. Only times of quality `intrinsic` or `captured` ([sessions.md](sessions.md#times)) enter these clocks; others are counted apart. Fields `wall_span`, `clustered_time`, `tool_time`, `tool_time_union`, `ends_with`, `last_stop_reason`. Parameterized: the 5-minute gap is printed in field help and read headers, with a sensitivity figure for 5 against 10 minutes.
 
-**Where the time went.** Every instant of a session's wall span is attributed to exactly one party: `tool`, keyed by normalized command for shell calls and by action otherwise; `model` (from a human prompt or a tool result to the next model message); `human` (from a model message ending a turn to the next human prompt; unknown, with no value rather than 0, for a session none of whose model messages states a stop reason, since its provider reports no turn end, and that time is unattributed); `unattributed` (missing or reversed times), never merged into another party. Overlapping tool calls share their union proportionally, and the overlap is reported. Unit: milliseconds per party and key; denominator: the session's `wall_ms`. Stored as `session_time(session, party, key, ms)`. Fields `waiting_model`, `waiting_human`; `analyze --time --by K`; the read header "75 min wall, 41 min clustered: cargo test 12m, edits 6m, model 18m, you 5m". Evidence: Morrow #2 (10:00–11:15).
+**Where the time went.** Every instant of a session's wall span is attributed to exactly one party: `tool`, keyed by normalized command for shell calls and by action otherwise; `model` (from a human prompt or a tool result to the next model message); `human` (from a model message ending a turn to the next human prompt; unknown, with no value rather than 0, for a session none of whose model messages states a stop reason, since its provider reports no turn end, and that time is unattributed); `unattributed` (missing or reversed times), never merged into another party. Overlapping tool calls share their union proportionally, and the overlap is reported. Unit: milliseconds per party and key; denominator: the session's `wall_ms`. Stored as `session_time(session, party, key, ms)`. Fields `waiting_model`, `waiting_human`; `| measure time`; the read header "75 min wall, 41 min clustered: cargo test 12m, edits 6m, model 18m, you 5m". Evidence: Morrow #2 (10:00–11:15).
 
-**Turn fields** (the `turns` unit, at read): `latency` (last prompt to first model message), `reply_gap` (turn end to next human prompt), `attempts` (replies under the last prompt, branches included), `burst`, tool calls, errors, tokens and cost, `interrupted` (the harness's interrupt record), `corrected` (a current correction assertion), and `unanswered` (the turn ended the session with no answer). Per-session latency medians are aggregates (`turns where session:X | agg p50:latency`).
+**Turn fields** (the `turns` unit, at read): `latency` (last prompt to first model message), `reply_gap` (turn end to next human prompt), `attempts` (replies under the last prompt, branches included), `burst`, tool calls, errors, tokens and cost, `interrupted` (the harness's interrupt record), `corrected` (a current correction annotation), and `unanswered` (the turn ended the session with no reply). Per-session latency medians are aggregates (`turns where session:X | agg p50:latency`).
 
 **Concurrency.** For each instant, the number of sessions whose clustered intervals contain it, split by main and spawned sessions and by repository; per hour, the time-weighted mean and the maximum. Sessions without intervals are counted apart. Parameterized by the clustering gap.
 
@@ -298,17 +299,17 @@ Activity sessions, presence, agency, interruption and resumption, cross-day epis
 
 ## Tool behaviour
 
-**Normalized command and command class.** `command_norm` is the shell command normalized for comparison across sessions; `command_class` comes from one declared table mapping normalized prefixes and subcommands, per tool family (cargo, nix, make and just, npm and pnpm, pytest, go, git, gh, bd, read-only probes), to `test`, `build`, `lint`, `format`, `vcs`, `package`, `probe` or `other`. A call with no command has NULL. The table is general. It is Polylogue's one command classifier, labelled **extracted**, and it serves only the analysis of agent tool use (outcome counts, reruns, failing checks, survival, cost of a failure, `analyze --by command_class`). No brief section, advisory, notice or verification state reads it, because deciding what a command means from its name is brittle. A row column whose version is the table's hash. **Precision evidence** is required before any class-based figure ships and is shown with it: coverage weighted by time, and precision on the 200 most frequent normalized commands, checked by hand. Each class-based figure is labelled "by command class (extracted)".
+**Normalized command and command class.** `command_norm` is the shell command normalized for comparison across sessions; `command_class` comes from one declared table mapping normalized prefixes and subcommands, per tool family (cargo, nix, make and just, npm and pnpm, pytest, go, git, gh, bd, read-only probes), to `test`, `build`, `lint`, `format`, `vcs`, `package`, `probe` or `other`. A call with no command has NULL. The table is general. It is Polylogue's one command classifier, labelled **extracted**, and it serves only the analysis of agent tool use (outcome counts, reruns, failing checks, survival, cost of a failure, `group by command_class`). No brief section, advisory, notice or verification state reads it, because deciding what a command means from its name is brittle. A row column whose version is the table's hash. **Precision evidence** is required before any class-based figure ships and is shown with it: coverage weighted by time, and precision on the 200 most frequent normalized commands, checked by hand. Each class-based figure is labelled "by command class (extracted)".
 
-**Outcome counts, failure-rate bounds, transitions.** Outcomes `ok`, `error`, `unknown` (with reason) and `pending` (at read). `| agg failure_rate` returns `[error/n, (error + unknown + pending)/n]` with all counts; `n = 0` is unmeasured. The harness verdict and `exit_code != 0` are two definitions, never mixed. Directly-follows transitions between calls, with counts after failure and common three-call sequences, are paged, never cut at a fixed count. An origin that records no tool calls shows "no tool data", never 0. A wrapper call has its own outcome.
+**Outcome counts, failure-rate bounds, transitions.** Outcomes `ok`, `error`, `unknown` (with reason) and `pending` (at read). `| agg failure_rate` returns `[error/n, (error + unknown + pending)/n]` with all counts; `n = 0` is unmeasured. The harness verdict and `exit_code != 0` are two definitions, never mixed. `| measure outcomes` reports the counts. Directly-follows transitions between calls (`| measure transitions`), with counts after failure and common three-call sequences, are paged, never cut at a fixed count. An origin that records no tool calls shows "no tool data", never 0. A wrapper call has its own outcome.
 
 **Reruns.** In one session and working directory, ordered by time: *retry chains* (consecutive failing runs of one normalized command, with the edits between them counted); *fail-then-pass* (a failing run followed by an `ok` run of the same command and arguments, with the edits and minutes between; named for what it records, not a claimed fix); *edits between checks* (file edits between consecutive check-class runs). Untimed calls are counted apart. Evidence: Morrow #2 (`cargo test` exit 101, one edit to `src/parse.rs`, then ok) and #4 (`cargo clippy` exit 1, then ok).
 
-**Failing checks.** Per repository, the check-class runs whose latest run failed with no later `ok` run of the same normalized command, with the failures since the last success. Read by `measure failing` and `analyze` only, labelled extracted through the command class.
+**Failing checks.** Per repository, the check-class runs whose latest run failed with no later `ok` run of the same normalized command, with the failures since the last success. Read by `| measure failing` and reports only, labelled extracted through the command class.
 
-**Survival.** Kaplan-Meier estimates with Greenwood error over session spans: time to the first failed tool call (in minutes and prompts); time to ending on an unanswered prompt (`ends_with: human_prompt` and quiet for 6 hours at reading, censored otherwise); time to the first passing test-class run, labelled "first ok run of a test command", never "solved". Live sessions are censored at now; untimed sessions are unmeasured.
+**Survival.** `| measure survival` gives Kaplan-Meier estimates with Greenwood error over session spans, with one option naming the event: `survival:failure` (the default; time to the first failed tool call, in minutes), `survival:failure-turns` (the same, in human prompts) and `survival:unanswered` (time to ending on an unanswered prompt: `ends_with: human_prompt` and quiet for 6 hours at reading, censored otherwise). Time to the first passing test-class run is, labelled "first ok run of a test command", never "solved". Live sessions are censored at now; untimed sessions are unmeasured.
 
-**Operator interventions.** Per turn and session: interrupts (harness interrupt records), rejected tool calls (with the operator's typed reason when present), prompts queued while the agent was busy (Claude Code `queue-operation` enqueue records), permission answers (hook events) and corrections (correction assertions, at read). Each marker is a row flag or event kind set by the parser, declared per harness version beside it; sums are computed at read. Rates are per clustered agent hour and per 100 model turns, each named; they are measures in `analyze` and on the web cost and compare pages, not brief content. A harness that records none of the markers reports "not recorded" from its origin declaration. Evidence: a recorded example of each marker per harness, and marker counts by harness version, so a version that stopped writing one shows as a gap rather than a quiet month.
+**Operator interventions.** Per turn and session: interrupts (harness interrupt records), rejected tool calls (with the operator's typed reason when present), prompts queued while the agent was busy (Claude Code `queue-operation` enqueue records), permission answers (hook events) and corrections (correction annotations, at read). Each marker is a row flag or event kind set by the parser, declared per harness version beside it; sums are computed at read. Rates are per clustered agent hour and per 100 model turns, each named; they are figures in reports and on the web cost and contrast pages, not brief content. A harness that records none of the markers reports "not recorded" from its origin declaration. Evidence: a recorded example of each marker per harness, and marker counts by harness version, so a version that stopped writing one shows as a gap rather than a quiet month.
 
 **Service interruptions.** Events of kind `api_error` with the provider's error kind (overload, rate-limit refusals, API errors), and per session the wall time from each error to the next successful model message. They feed spend at past limit hits.
 
@@ -320,11 +321,13 @@ Activity sessions, presence, agency, interruption and resumption, cross-day epis
 
 **Landed work.** For each linked commit, whether it is reachable from the repository's default branch at the time of reading, and each pull request's state from a captured forge record; per session and repository, commits landed and not yet landed. Read-time, cached per commit hash with the default-branch head it was checked against. Polylogue reads the repository itself.
 
-**Delegations.** Per `spawn` link: the parent and its spawning call, the child, the instruction, the model requested and used, the child's final answer and the parent's tool result, the outcome, the child's cost and wall time, `retry_of`, `result_use`, and how the link was made. Read-time; [agents.md](agents.md) and the delegation card read it.
+**Delegations.** Per `spawn` link: the parent and its spawning call, the child, the instruction, the model requested and used, the child's final message and the parent's tool result, the outcome, the child's cost and wall time, `retry_of`, `result_use`, and how the link was made. Read-time; [agents.md](agents.md) and the delegation card read it.
 
-**Live state.** From the live columns the writer keeps and the time of reading: rank, waiting state, open call, live task, peers. Never stored, because it depends on the clock.
+**Live state.** From the live columns the writer holds and the time of reading: rank, waiting state, open call, live task, peers. Never stored, because it depends on the clock.
 
-**Open items.** Per repository: tasks claimed and not closed (task linkage, [agents.md](agents.md)); todo and plan items whose last recorded state is not completed; sessions ending on an unanswered prompt; calls without results in ended sessions; background tasks never reported. Each item has `opened_by`, `state` (`open`, `resolved`, `superseded`) and `resolved_by` (the later structural record: the explicit task close or release, the later todo state, the answer). Read-time, so a later arrival resolves an item with nothing to invalidate. The brief and takeover read this one unit. Each item kind declares its own validity.
+**Hook coverage.** `| measure hooks`: per harness and hook event, whether the event is declared in the harness's settings, whether it was seen recently, and when it was last seen, so a hook that stopped firing shows as a gap. How hooks are installed is [operations.md](installing.md#installing).
+
+**Open items.** Per repository: tasks claimed and not closed (task linkage, [agents.md](agents.md)); todo and plan items whose last recorded state is not completed; sessions ending on an unanswered prompt; calls without results in ended sessions; background tasks never reported. Each item has `opened_by`, `state` (`open`, `resolved`, `superseded`) and `resolved_by` (the later structural record: the explicit task close or release, the later todo state, the reply to the prompt). Read-time, so a later arrival resolves an item with nothing to invalidate. Every form of the brief reads this one unit. Each item kind declares its own validity.
 
 **Repeated instructions.** Human prose prompts split into sentences and normalized (case, whitespace, punctuation, numbers); a sentence of at least six words seen in at least three logical sessions is listed with its sessions, first and last dates and repositories. Only normalized matches count.
 
@@ -334,21 +337,21 @@ Activity sessions, presence, agency, interruption and resumption, cross-day epis
 
 **Facet counts with IDF and lift.** Per facet family, `group by F | count` over the selection beside the same count under the unit's defaults alone; IDF = ln(global sessions ÷ global sessions with the value); lift = selected share ÷ global share. A session counts once per value. Values are paged per family. Default families: origin, model, repository, project, tag, logical month, `ends_with`; deep families add every directory's repository, author, block kind, action and flags. An empty selection returns zero counts with outcome `empty`.
 
-**Compare.** Session compare renders chosen fields of two or more sessions with a "varies" mark per field. Selection compare puts two populations side by side, each component (cost per session median and p90, failure bounds, clustered time, prompts, the `ends_with` distribution) with its own denominator and unknown count, labelled with both populations: never one score, and no component can be hidden.
+**Contrast.** `| measure contrast[:FIELDS]` renders chosen fields of two or more sessions with a "varies" mark per field; reading the sessions themselves side by side is the `compare` view ([reading.md](reading.md)). With a second population in parentheses, `| measure contrast (QUERY)`, it puts the two populations side by side, each component (cost per session median and p90, failure bounds, clustered time, prompts, the `ends_with` distribution) with its own denominator and unknown count, labelled with both populations: never one score, and no component can be hidden.
 
 **Distributions and correlation.** Aggregates over any numeric field: `p50`, `p90`, `max`, `histogram:F(bins)` (equal-width or explicit edges, with the unknown count), `corr:X:Y` (Pearson r with pairs, missing pairs, and a reason below 3 pairs or at zero variance). Percentiles are nearest-rank, one definition. Unknowns are excluded and counted; zeros take part.
 
-**Reports.** `polylogue QUERY analyze [--by KEY[,KEY]] [--cost] [--tools] [--time] [--windows] [--compare QUERY]`. `analyze` is the report verb and `measure NAME` the named computation. Each report is plain pipelines joined on the key, and `explain` prints them. Keys: `origin`, `model`, `day`, `week`, `month`, `repo`, `project`, `root`, `tool`, `action`, `command_class` (extracted). Rows carry unknown, partial and pending counts and a `total` row computed before rounding; a two-model session counts under each model and once in the total. Counting is by item time within `since:` and `until:`.
+**Reports.** A report is a query: plain pipelines and measures over a selection, grouped by a key, which `--explain` prints. Keys: `origin`, `model`, `day`, `week`, `month`, `repo`, `project`, `root`, `tool`, `action`, `command_class` (extracted). Rows carry unknown, partial and pending counts and a `total` row computed before rounding; a two-model session counts under each model and once in the total. Counting is by item time within `since:` and `until:`.
 
-| Report | Columns |
+| Report | Query |
 |---|---|
-| default | logical sessions, physical sessions, prompts, tool calls, API-equivalent cost (with unknown and partial) |
-| `--cost` | the quota and plan outlook first, then per key the five token kinds, API-equivalent and provider-reported; recorded reports apart |
-| `--tools` | calls, ok, error, unknown, pending, failure bounds, exit ≠ 0 |
-| `--time` | wall span, clustered time, tool time by command, waiting for model, waiting for human |
-| `--windows` | window history |
-| `--compare Q2` | selection compare |
+| sessions, prompts, tool calls and API-equivalent cost per key | `'repo:sinex since:30d \| group by origin \| agg count(), sum(prompts), sum(tool_calls), sum(cost)'` |
+| cost | `\| measure outlook` for the quota and plan outlook first, then `\| measure usage`: per key the five token kinds, API-equivalent and provider-reported; recorded reports apart |
+| tools | `\| measure outcomes`: calls, ok, error, unknown, pending, failure bounds, exit ≠ 0 |
+| time | `\| measure time`: wall span, clustered time, tool time by command, waiting for model, waiting for human |
+| windows | `\| measure quota`: window history |
+| two selections | `\| measure contrast (QUERY)` |
 
-An empty selection gives zero counts with outcome `empty`; a failed component gives `degraded` with that component's error while the other columns stay. Any report can be saved and kept; a kept report records its pipelines, scope, clock, unknowns and derivation versions, and renders to a file through [`read --to`](reading.md#writing-out) like any kept result.
+An empty selection gives zero counts with outcome `empty`; a failed component gives `degraded` with that component's error while the other columns stay. Any report can be saved like any query (`save NAME`, [saved-queries.md](saved-queries.md#save)); a kept report records its pipelines, scope, clock, unknowns and derivation versions, and renders to a file through `read --to` like any kept result ([reading.md](reading.md#formats-and-destinations)).
 
-**Embeddings.** A vector per message or chunk, used as a ranking score, never as a filter. The derive consumer embeds new or changed text while the `embeddings` setting is on; the setting carries the spend budget ([search.md](search.md#semantic-ranking)) and is the user's one authorization. Model calls are off by default; stored and purchased vectors are kept and used. Judged: recall at 10 on known pairs before it is relied on. Search behaviour and providers are search.md's.
+**Embeddings.** A vector per message or chunk, used as a ranking score, never as a filter. The derive consumer embeds new or changed text while model calls are on (`polylogue set embed.calls on`), within the spend budget the settings carry ([search.md](search.md#semantic-ranking)); turning calls on is the user's one authorization. Model calls are off by default; stored and purchased vectors are kept and used. Judged: recall at 10 on known pairs before it is relied on. Search behaviour and providers are search.md's.

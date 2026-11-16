@@ -1,6 +1,6 @@
 # Primary mode
 
-Polylogue on Sinex: what changes and what does not, what Polylogue sends, how it applies Sinex's confirmed stream, local state, write identity, several machines, Sinex's lifecycle applied to Polylogue's materials, moving user state, the cutover, and cross-system queries from Polylogue's side.
+Polylogue on Sinex: what changes and what does not, what Polylogue sends, how it applies Sinex's confirmed stream, local state, write identity, several machines, Sinex's lifecycle applied to Polylogue's materials, moving user state, moving to Sinex, and cross-system queries from Polylogue's side.
 
 The producer client, the NATS ingress, the confirmed stream, refusals, kind registration and the lifecycle on the wire are Sinex's contract, in Sinex's [producers](https://github.com/Sinity/sinex/blob/master/docs/producers.md) and [lifecycle](https://github.com/Sinity/sinex/blob/master/docs/lifecycle.md) pages; this page states only Polylogue's side. The two modes are introduced in [architecture.md#modes](architecture.md#modes).
 
@@ -9,8 +9,8 @@ The producer client, the NATS ingress, the confirmed stream, refusals, kind regi
 Capture is identical in both modes ([capture.md](capture.md)); parsing, the parsed model, queries and every surface behave the same. What changes is where bytes and records are stored and how the local index is written.
 
 - **Bytes go to Sinex as materials** through Sinex's producer client: each captured input, each appended step of a growing file as a part, export ZIPs whole. A document its source saves whole is a material sent as its content-defined chunks ([archive.md](archive.md)): the frame names the chunks in order and carries every chunk's encoding, and Sinex stores only the chunks it does not hold and records the material once the chunks read back as its bytes. The input's extents then name the chunks, and `index.db` catalogs each chunk's blob. No source byte is stored outside Sinex.
-- **Confirmed originals drive local parsing.** Polylogue's local rows come from parsing source materials Sinex has confirmed. The events of each parse (`polylogue.*` events: messages, tool calls, sessions, documents, links and the rest) are prepared in the producer spool first; then the rows and the parser checkpoint commit in one index transaction, without waiting for Sinex to acknowledge those events or for them to come back on the stream. The spool sends them like any producer's frames, and a resend after a crash between the spool and the commit is answered as a repeat. Sinex keeps these events with their source and time quality, usable independently of Polylogue; the local index never reads them back as rows and stays reconstructible from the originals.
-- **Authored records originate from request materials.** Each authored write is a request material (the write as received, with its request ID and computed author) plus its event. Its targets (sessions, messages, blocks, assertions, pages) are references in the payload with their `seen_hash`, never Sinex parents. A parser-upgrade replay of a session therefore archives the session's readings and their derived chain but never a note, judgment, highlight or page slot about it; those references resolve to the new readings by natural key. Marker assertions travel with their derived IDs, so the same marker sent from two hosts is one record.
+- **Confirmed originals drive local parsing.** Polylogue's local rows come from parsing source materials Sinex has confirmed. The events of each parse (`polylogue.*` events: messages, tool calls, sessions, documents, links and the rest) are prepared in the producer spool first; then the rows and the parser checkpoint commit in one index transaction, without waiting for Sinex to acknowledge those events or for them to come back on the stream. The spool sends them like any producer's frames, and a resend after a crash between the spool and the commit is acknowledged as a repeat. Sinex keeps these events with their source and time quality, usable independently of Polylogue; the local index never reads them back as rows and stays reconstructible from the originals.
+- **Authored records originate from request materials.** Each authored write is a request material (the write as received, with its request ID and computed author) plus its event. Its targets (sessions, messages, blocks, annotations) are references in the payload with their `seen_hash`, never Sinex parents. A parser-upgrade replay of a session therefore archives the session's readings and their derived chain but never a note, tag, judgment or highlight about it; those references resolve to the new readings by natural key. Annotations from markup ([markup.md](markup.md)) travel with their derived IDs, so the same markup sent from two hosts is one record.
 - **Sinex-confirmed state alone enters `index.db`.** One subscription supplies confirmed originals, Polylogue's own events and lifecycle changes in commit order. Local parsing and application save the processed position in the same transaction as their complete result. A new stream that starts at a current-state origin first supplies a snapshot of Sinex's current state; the same writer then follows its deltas. This covers this host's writes, other hosts' writes and a rebuild alike. Open-class events arrive whole on the stream. An event of another class, or one too large for a stream message, arrives by ID and is fetched under Polylogue's own grant, so Polylogue receives its own payloads whole.
 - **Lifecycle changes arrive on the stream** and are applied by the same consumer in commit order. Archiving an original material retracts the chains parsed from it through the writer, which keeps what other sources still supply; restoring it makes those chains contribute again when they are parsed. Archiving, restoring or tombstoning one of Polylogue's own `polylogue.*` events changes only Sinex's copy and the follower's record of that event: the local rows come from the original bytes, so they stay. Session tables recompute for the sessions touched ([measures.md#rules](measures.md#rules)).
 - **Sinex's lifecycle applies to Polylogue's materials** as to any source's, through Sinex's own surfaces. Polylogue itself offers no deletion in either mode ([architecture.md#deletion](architecture.md#deletion)).
@@ -36,7 +36,7 @@ with a stored refusal returns the same reason from its verified acknowledgment.
 
 Each acknowledgment is one typed result (admitted, kinds registered, replayed
 or refused), and Polylogue checks that the result fits the operation it
-answers: a kind registration is answered by its registered kinds (or, when it
+acknowledges: a kind registration is acknowledged by its registered kinds (or, when it
 declares nothing, by an empty admission), a replay by a replay, and every
 other frame by an admission whose material is the prepared one. A complete
 producer acknowledgment can carry no admitted-event position: an
@@ -261,14 +261,14 @@ without acknowledgments retry their original identities. A later live spool or a
 producer label alone cannot replace this artifact. A missing participant leaves
 the unacknowledged spool entries incomplete.
 
-**Reads see what Sinex committed.** A write becomes visible to queries once its record arrives on the confirmed stream and is applied. The stale-base check of an authored write is the one exception: it runs against the applied position plus this host's prepared writes not yet confirmed, so two quick revisions on one host (an MCP memory `create` followed by `str_replace`) see each other ([assertions.md#current-revisions](assertions.md#current-revisions)).
+**Reads see what Sinex committed.** A write becomes visible to queries once its record arrives on the confirmed stream and is applied. The stale-base check of an authored write is the one exception: it runs against the applied position plus this host's prepared writes not yet confirmed, so two quick revisions on one host (an MCP memory `create` followed by `str_replace`) see each other ([annotations.md#current-revisions](annotations.md#current-revisions)).
 
 Literal deliveries and advice already printed by a hook fix their body and
 write result directly from the admitted request. They do not copy authored history or
 select targets again. Other authored writes still prepare against the confirmed
 state plus this host's pending effects saved in the spool. Both paths keep the
 original request outcome on retry and apply the same validated recorded effects. Recording
-these deliveries in standalone mode also leaves variant derivation work to its
+these deliveries in standalone mode also leaves alternate derivation work to its
 own mutations and derivation. Restored delivery snapshots keep later events from
 other requests; the original request still keeps its own body and write result.
 
@@ -282,10 +282,10 @@ other requests; the original request still keeps its own body and write result.
 ## Degraded primary
 
 When Sinex is unreachable or refuses this producer:
-- reads answer from `index.db`, marked with the stream position they reflect and its lag;
+- reads are served from `index.db`, marked with the stream position they reflect and its lag;
 - capture keeps collecting into the producer client's spool, and the sender retries with the same write identities;
 - material bytes not yet acknowledged are not parsed; chains already confirmed are still parsed, their rows commit and their events wait in the spool;
-- an authored write is prepared in the spool and answered with its identity and the state `pending` (exit 5, degraded); it becomes visible when Sinex commits it; setting writes keep their write result, including `id`, `repeat` and `pending`;
+- an authored write is prepared in the spool and replied to with its identity and the state `pending` (exit 5, degraded); it becomes visible when Sinex commits it; setting writes keep their write result, including `id`, `repeat` and `pending`;
 - the verdict is `degraded` with the reason `sinex blocked` and the error in plain words, and the shipped `Sinex blocked` rule fires after 10 minutes;
 - Polylogue never falls back to standalone, whatever the cause, a broken configuration file included.
 
@@ -294,15 +294,15 @@ Send and read failures remain distinct observations in that status. A successful
 
 ## Rebuild and parser upgrades
 
-Browser writes distinguish preparation from enqueue. If attached bytes are saved but unconfirmed, the reply is degraded with their capture `identity`; no action has been enqueued. If the authored chat action or backfill job is saved but unconfirmed, the reply carries its write result with `pending: true`, without looking up or claiming a confirmed queued action. A confirmed write returns the current action or job as before. Retries keep the corresponding capture or authored identity.
+Browser writes distinguish preparation from enqueue. If attached bytes are saved but unconfirmed, the reply is degraded with their capture `identity`; no action has been enqueued. If the authored chat action or provider import job is saved but unconfirmed, the reply carries its write result with `pending: true`, without looking up or claiming a confirmed queued action. A confirmed write returns the current action or job as before. Retries keep the corresponding capture or authored identity.
 
-**Rebuild.** A new local `index.db` (one from another schema set aside at start, [operations.md](operations.md#replacing-an-index-from-another-schema), or one moved aside by hand) resets its subscription position and reads Sinex-confirmed records, with progress in `status`. Reconstruction reads the stored originals and confirmed records; nothing reads the set-aside cache. The producer spool, including pending authored intent, stays under the separate Sinex store root; paid vectors remain in `embeddings.db`. Both keep their original identities and bytes.
+**Rebuild.** A new local `index.db` (one from another schema set aside at start, [installing.md](installing.md#replacing-an-index-from-another-schema), or one moved aside by hand) resets its subscription position and reads Sinex-confirmed records, with progress in `status`. Reconstruction reads the stored originals and confirmed records; nothing reads the set-aside cache. The producer spool, including pending authored intent, stays under the separate Sinex store root; paid vectors remain in `embeddings.db`. Both keep their original identities and bytes.
 
 The set-aside cache remains until the stream is applied through Sinex's latest position and every stored chain has parser progress at its current source length. A known incomplete suffix can end as waiting; a refused or failed attempt needs its program identity. Missing progress and unreadable Sinex events keep it. Its removal runs at local flush or open, rather than scanning the source catalog on each confirmed position.
 
 A stream with origin zero starts with the live stream. When Sinex requires a snapshot, Polylogue clears its reconstructible cache and stages bounded snapshot pages on disk. The producer queue, source bytes and paid vector stores are kept as they are.
 
-Snapshot pages are read at one position B, at or after the stream origin, for one scope and stream instance. Each page carries its events whole or withheld; a withheld one is fetched and must match its ID, position and payload hash. Archived readings keep their original admission and lifecycle order. A page and its next cursor commit together; interruption resumes that cursor. When Sinex answers that the snapshot must restart (changed scope, catalog or stream instance, or a reading tombstoned since B), Polylogue discards the partial snapshot, reports the reason as a failed turn, and starts again. When Sinex is unavailable, the staged pages and cursor stay for retry. Partial pages are invisible and advance no applied position.
+Snapshot pages are read at one position B, at or after the stream origin, for one scope and stream instance. Each page carries its events whole or withheld; a withheld one is fetched and must match its ID, position and payload hash. Archived readings keep their original admission and lifecycle order. A page and its next cursor commit together; interruption resumes that cursor. When Sinex replies that the snapshot must restart (changed scope, catalog or stream instance, or a reading tombstoned since B), Polylogue discards the partial snapshot, reports the reason as a failed turn, and starts again. When Sinex is unavailable, the staged pages and cursor stay for retry. Partial pages are invisible and advance no applied position.
 
 The last page names B and the last stream message Sinex saw before reading it. The writer makes the entire staged snapshot visible and saves that record with applied position B in one transaction. The next consumer request names that message, and Sinex starts delivery after it; every event that message or an earlier one delivered is in the snapshot. After the first completion marker, resuming names that marker instead. A changed scope or stream instance replaces the older cache, including events absent from the new snapshot. The snapshot supplies source metadata, Polylogue's own confirmed events and authored effects. The parser reads confirmed materials to rebuild the rows.
 Its due-chain query supplies the selected format and recorded path even when
@@ -317,19 +317,19 @@ recorded path on the local filesystem. Rebuilding the local index does not send 
 - Each host is its own producer identity (credential and frame namespace) under one Polylogue kind family.
 - A chain is re-parsed by the host that captured it, or by another host reading its materials from Sinex under a declared ownership rule that names it.
 - Convergence through stable keys holds whichever host sends.
-- Which revisions of an authored record are current follows the revision graph identically on every host; no host sees another's unconfirmed writes, so concurrent edits on two hosts become two visible heads, resolved by an edit that revises both ([assertions.md#current-revisions](assertions.md#current-revisions)).
+- Which revisions of an authored record are current follows the revision graph identically on every host; no host sees another's unconfirmed writes, so concurrent edits on two hosts become two visible heads, resolved by an edit that revises both ([annotations.md#current-revisions](annotations.md#current-revisions)).
 
 ## Moving user state
 
-User state (assertions, their revisions and links, variants, pages, deliveries) moves between archives without Sinex as a bundle: `polylogue QUERY read --to DIR` writes the matched sessions with their assertions and variants, and a query over the user-data units writes user state alone ([reading.md#writing-out](reading.md#writing-out)). `polylogue import DIR` replays the records through the one write path ([assertions.md](assertions.md#write-path)), keeping each record's stored author with `via: import`; it is idempotent by request ID, and conflicting revisions become visible heads.
+User state (annotations, their revisions and links, alternates, deliveries) moves between archives without Sinex as a bundle: `polylogue 'repo:sinex' read --to DIR` writes the matched sessions with their annotations and alternates, and a query over the annotation units writes user state alone (`polylogue 'annotations where author:operator' read --to DIR`; [reading.md#formats-and-destinations](reading.md#formats-and-destinations)). `polylogue import DIR` replays the records through the one write path ([annotations.md#the-write-path](annotations.md#the-write-path)), keeping each record's stored author with `via: import`; it is idempotent by request ID, and conflicting revisions become visible heads.
 
-Python Polylogue's authored records are imported as a declared older format ([assertions.md](assertions.md#write-path)).
+Python Polylogue's authored records are imported as a declared older format ([capture.md#import](capture.md#import)).
 
-## Cutover
+## Moving to Sinex
 
-Moving an archive to primary mode is a technical act, run by whoever builds it once the comparison passes.
+Moving an archive to primary mode is a technical act, run once by whoever builds it when the comparison passes. It sits under `dev` because it is a one-time move, not an everyday act ([interfaces.md#discipline](interfaces.md#discipline)).
 
-`polylogue sinex cutover`:
+`polylogue dev move-to-sinex`:
 1. checks that the primary daemon has collected every provider location and is idle;
 2. sends every standalone input as materials, including inputs whose provider files are gone (imports, browser captures, older spools), and replays all authored state with its stored authors (`via: import`);
 3. compares the two archives by natural keys (sessions, messages, attachments, authored records and their current revisions); any difference stops the act and is reported with the keys;
@@ -338,7 +338,7 @@ Moving an archive to primary mode is a technical act, run by whoever builds it o
 
 `--dry-run` performs steps 1 and 3 against what Sinex already holds and changes nothing.
 
-Where a deployment manages Polylogue's configuration (a Nix module option, for example), the mode switch of step 5 is that deployment's change: whoever runs the cutover makes it through the deployment and applies it the deployment's way. The binary never edits a deployment's configuration.
+Where a deployment manages Polylogue's configuration (a Nix module option, for example), the mode switch of step 5 is that deployment's change: whoever runs the move makes it through the deployment and applies it the deployment's way. The binary never edits a deployment's configuration.
 
 ## Cross-system queries
 
@@ -346,5 +346,5 @@ The Polylogue daemon evaluates queries that mix Polylogue and Sinex data, becaus
 
 - Names are bound from the parsed query with the `pl.` and `sx.` prefixes, never from strings; namespace binding is defined by the shared language in common's [query-language](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/query-language/README.md).
 - Sinex parts are compiled for and run by Sinex through its API; results join on references and time.
-- Every answer reports the positions it read in each product and their lag, so a mixed answer is reproducible and its staleness visible.
+- Every reply reports the positions it read in each product and their lag, so a mixed reply is reproducible and its staleness visible.
 - `sx:` references are a form whose grammar Sinex owns ([references.md#forms](references.md#forms)).
