@@ -375,15 +375,12 @@ fn queued_import_yields_after_admitted_capture_or_replay_and_resumes_from_durabl
                 "SELECT COALESCE(max(p.parsed_upto),0) AS n FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1",
                 &[polylogue_store::SqlValue::Text(input.clone())],
             ))[0]["n"].as_u64().unwrap();
-            let captured = home
-                .reads()
-                .reader()
-                .unwrap()
-                .query(
+            let captured = home.read(|reader| {
+                reader.query(
                     "SELECT max(length) AS n FROM a.revision WHERE input=?1",
                     &[polylogue_store::SqlValue::Text(input.clone())],
                 )
-                .unwrap()[0]["n"]
+            })[0]["n"]
                 .as_u64()
                 .unwrap();
             let response = answer.recv_timeout(Duration::from_secs(5));
