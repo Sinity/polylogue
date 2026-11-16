@@ -124,17 +124,21 @@ fn ignored_files_matching_any_path_are_one_entry_per_reason() {
 
 /// A refused coverage report is the pass's error; the files the walk found
 /// are still stored and read.
+#[cfg(feature = "faults")]
 #[test]
 fn a_refused_coverage_report_does_not_stop_reading() {
+    use polylogue_store::fault::{self, Action};
+
     let home = ClaudeHome::new();
     home.append("kept.jsonl", &claude_user("one", "kept", "kept words"));
     let (mut engine, _lock) = crate::import::tests::engine(&home, 1024);
-    engine.config.machine = String::new();
-    let pass = engine.run_pass().unwrap();
+    fault::clear();
+    fault::arm("write.coverage", "test-machine", Action::Fail, 0, u32::MAX);
+    let pass = engine.run_pass();
+    fault::clear();
+    let pass = pass.unwrap();
     assert!(
-        pass.errors
-            .iter()
-            .any(|e| e.contains("coverage machine is empty")),
+        pass.errors.iter().any(|e| e.contains("write.coverage")),
         "{pass:?}"
     );
     assert_eq!(home.texts("kept"), ["kept words"]);
