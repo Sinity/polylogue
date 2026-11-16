@@ -459,7 +459,8 @@ pub struct Engine {
     reparsing: HashMap<PathBuf, usize>,
     /// The executable and parser settings for stopped-work selection.
     stopped_attempt: StoppedAttempt,
-    loaded: bool,
+    watched_loaded: bool,
+    readings_pending: bool,
     captures: Databases,
     wake: Option<Sender<LoopMsg>>,
     watcher: Option<watch::Roots>,
@@ -528,7 +529,8 @@ impl Engine {
             inputs: HashMap::new(),
             reparsing: HashMap::new(),
             stopped_attempt,
-            loaded: false,
+            watched_loaded: false,
+            readings_pending: true,
             captures: Databases::default(),
             wake: None,
             watcher: None,
@@ -586,7 +588,7 @@ impl Engine {
         let scope = self.cached_scope()?;
         // Kept replay plans from stored chains, not machine locations.
         // Leave discovery unloaded so enabling sources can still restore it.
-        if !self.config.reads_sources || self.loaded {
+        if !self.config.reads_sources || self.watched_loaded {
             return Ok(());
         }
         let reader = self.reads.reader()?;
@@ -603,7 +605,7 @@ impl Engine {
             self.adopt_watched_input(&path, k);
         }
         scope.check()?;
-        self.loaded = true;
+        self.watched_loaded = true;
         Ok(())
     }
 

@@ -385,7 +385,8 @@ impl Engine {
         if !dry_run {
             // The next pass reloads the watched locations, now including
             // the imported inputs, and reads their chains into the index.
-            self.loaded = false;
+            self.watched_loaded = false;
+            self.readings_pending = true;
         }
         Ok(report)
     }

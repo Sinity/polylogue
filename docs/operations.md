@@ -72,6 +72,7 @@ Requests that need the archive, schema inference, verification and import includ
 ## Idle and steady-state work
 
 An idle daemon reads and writes about as much as changes:
+- With stored readings current, a pass with no changed inputs reads no stored input bytes and runs no archive-wide chain planning. Startup and parser upgrades resume from committed reading progress; completed chains stay finished across passes and restarts. With sources off and stored work finished, the loop blocks for a request or stop.
 - Discovery is event-scoped. A full scan of the declared locations runs only at start and after a watcher error or overflow, never on a schedule.
 - Busy tool databases are captured on the tool's own change signal (its write-ahead log, its modification time) or a minimum interval, never in a zero-delay loop.
 - Idle, the daemon truncates its SQLite write-ahead logs; `journal_size_limit` is set.
