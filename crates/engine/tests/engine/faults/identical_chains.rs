@@ -94,11 +94,11 @@ pub(super) fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
                 format!("(SELECT v.version_hash FROM message_version v WHERE v.pk=t.\"{name}\") AS \"{name}\"")
             } else if matches!(table.as_str(), "wire_shape" | "wire_type") && matches!(name.as_str(), "first" | "last") {
                 // The chain the occurrence record cites, not the read range it took.
-                format!("(SELECT json_extract(r.receipt,'$.chain') FROM wire_occurrence r WHERE r.input_pk=t.input_pk AND r.chain=t.chain AND r.reading_version=t.reading_version AND r.number=t.\"{name}\") AS \"{name}\"")
+                format!("(SELECT json_extract(r.occurrence,'$.chain') FROM wire_occurrence r WHERE r.input_pk=t.input_pk AND r.chain=t.chain AND r.reading_version=t.reading_version AND r.number=t.\"{name}\") AS \"{name}\"")
             } else if table == "wire_occurrence" && name == "number" {
                 "NULL".to_owned()
-            } else if table == "wire_occurrence" && name == "receipt" {
-                "json_extract(t.receipt,'$.chain') AS receipt".to_owned()
+            } else if table == "wire_occurrence" && name == "occurrence" {
+                "json_extract(t.occurrence,'$.chain') AS occurrence".to_owned()
             } else if table == "text" && name == "group_id" {
                 // Which group holds a text's bytes follows the steps that wrote
                 // it (docs/archive.md, evolution); readers see only the text.
