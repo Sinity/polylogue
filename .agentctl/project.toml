@@ -19,10 +19,10 @@ CARGO_INCREMENTAL = "0"
 description = "Formatting, crate boundaries and strict Clippy"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "--quiet", "-p", "xtask", "--", "fast"]
 pool = "compile"
+environment = { CARGO_BUILD_JOBS = "4" }
 result = "exit"
 timeout_seconds = 1800
 scratch = "nvme"
-cache = "none"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.compile]
@@ -30,10 +30,10 @@ description = "Type-check selected packages and targets; pass further Cargo chec
 exec = ["nix", "develop", "--command", "cargo", "check", "--locked"]
 arguments = "required"
 pool = "compile"
+environment = { CARGO_BUILD_JOBS = "4" }
 result = "exit"
 timeout_seconds = 1800
 scratch = "nvme"
-cache = "none"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.check]
@@ -60,11 +60,10 @@ unit_properties = ["MemoryHigh=8G"]
 description = "Run selected tests on the workspace feature graph; Cargo target flags bound compilation"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "--quiet", "-p", "xtask", "--", "test"]
 arguments = "required"
-pool = "compile"
+pool = "normal"
 result = "exit"
 timeout_seconds = 3600
 scratch = "tmpfs"
-cache = "none"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.package]
