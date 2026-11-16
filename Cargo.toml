@@ -23,6 +23,7 @@ polylogue-store = { path = "crates/store" }
 polylogue-engine = { path = "crates/engine" }
 polylogue-query = { path = "crates/query" }
 polylogue-render = { path = "crates/render" }
+polylogue-reading = { path = "crates/reading" }
 polylogue-sinex = { path = "crates/sinex" }
 polylogue-testkit = { path = "crates/testkit" }
 hashed-blobs = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }

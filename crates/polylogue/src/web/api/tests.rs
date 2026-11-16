@@ -17,8 +17,8 @@ fn web(daemon: &crate::test_daemon::TestDaemon) -> Arc<Web> {
 fn stream_failure_before_first_event_uses_the_shared_http_status() {
     fn failed(
         _: &Daemon,
-        _: &crate::operation::Invocation,
-        _: &std::sync::Arc<crate::operation::Context>,
+        _: &polylogue_reading::operation::Invocation,
+        _: &std::sync::Arc<polylogue_reading::operation::Context>,
         _: &mut dyn Write,
     ) -> Result<(), crate::daemon::Failure> {
         Err(Failure::bad_request("invalid selection"))
@@ -51,8 +51,8 @@ fn stream_failure_before_first_event_uses_the_shared_http_status() {
 fn stream_failure_after_begin_delivers_error_without_final_completion() {
     fn failed(
         _: &Daemon,
-        _: &crate::operation::Invocation,
-        authorship: &std::sync::Arc<crate::operation::Context>,
+        _: &polylogue_reading::operation::Invocation,
+        authorship: &std::sync::Arc<polylogue_reading::operation::Context>,
         output: &mut dyn Write,
     ) -> Result<(), crate::daemon::Failure> {
         assert_eq!(
@@ -120,8 +120,8 @@ fn stream_failure_after_begin_delivers_error_without_final_completion() {
 fn stream_headers_arrive_before_the_body_of_a_large_stream_is_read() {
     fn large(
         _: &Daemon,
-        _: &crate::operation::Invocation,
-        _: &std::sync::Arc<crate::operation::Context>,
+        _: &polylogue_reading::operation::Invocation,
+        _: &std::sync::Arc<polylogue_reading::operation::Context>,
         output: &mut dyn Write,
     ) -> Result<(), crate::daemon::Failure> {
         let result = (|| {
@@ -253,8 +253,8 @@ fn read_html_negotiates_on_the_same_typed_operation_route() {
 fn scope_reset_ends_a_begun_http_stream_unfinished() {
     fn reset_after_begin(
         daemon: &Daemon,
-        _: &crate::operation::Invocation,
-        _: &std::sync::Arc<crate::operation::Context>,
+        _: &polylogue_reading::operation::Invocation,
+        _: &std::sync::Arc<polylogue_reading::operation::Context>,
         output: &mut dyn Write,
     ) -> Result<(), crate::daemon::Failure> {
         let reader = match daemon.reads.reader() {

@@ -63,8 +63,8 @@ fn report(d: &Daemon, hold: &Held) {
     observations::status(d);
 }
 
-fn operation(d: &Daemon) -> Result<Arc<crate::operation::Context>, Held> {
-    d.operation_context(&crate::operation::Context::worker_authorship(
+fn operation(d: &Daemon) -> Result<Arc<polylogue_reading::operation::Context>, Held> {
+    d.operation_context(&polylogue_reading::operation::Context::worker_authorship(
         "polylogue-signals",
     ))
     .map_err(Held::from)
@@ -75,7 +75,7 @@ struct LocalAttention {
 }
 fn local_attention(
     reader: &polylogue_store::Reader<'_>,
-    context: &crate::operation::Context,
+    context: &polylogue_reading::operation::Context,
 ) -> Result<LocalAttention, String> {
     let catalog = reader
         .settings_catalog(&context.machine)
@@ -90,7 +90,7 @@ fn local_attention(
 }
 fn initial(
     d: &Daemon,
-    context: &crate::operation::Context,
+    context: &polylogue_reading::operation::Context,
     attention: Option<&LocalAttention>,
 ) -> Result<Checkpoint, String> {
     let calendar = DayCalendar::new(context.clock.day.clone());
@@ -128,7 +128,7 @@ fn load(d: &Daemon) -> polylogue_store::Result<Option<Checkpoint>> {
 /// worker acknowledgments are released only after the request is readable.
 fn persist(
     d: &Daemon,
-    context: &crate::operation::Context,
+    context: &polylogue_reading::operation::Context,
     prior: Option<polylogue_model::BlobHash>,
     checkpoint: Checkpoint,
     outbox: Vec<Outbox>,

@@ -10,11 +10,11 @@ use crate::browser::{actions, backfill};
 use crate::cli::print;
 use crate::daemon::Failure;
 use crate::daemon::handler::{Call, Handler};
-use crate::operation::Invocation;
 use crate::protocol::browser as protocol;
 use base64::Engine as _;
 use command_surface::{Answer, TextStyle};
 use polylogue_model::user::{UserOutcome, UserWrite};
+use polylogue_reading::operation::Invocation;
 use polylogue_store::{Reader, StoreError, user_writes};
 
 fn refused(e: &StoreError) -> Failure {

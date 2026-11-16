@@ -594,8 +594,8 @@ fn rows_document(
     rows: serde_json::Value,
     count: u64,
 ) -> serde_json::Value {
-    let context = crate::operation::Context::standalone(
-        crate::operation::Invocation::new(
+    let context = polylogue_reading::operation::Context::standalone(
+        polylogue_reading::operation::Invocation::new(
             polylogue_model::Timestamp::parse_rfc3339("2026-03-01T12:00:00Z").unwrap(),
             "synthetic-print".into(),
             polylogue_model::authorship::Authorship {

@@ -37,7 +37,7 @@ impl crate::daemon::handler::Feed for Follow {
     fn produce(
         arguments: Self::Arguments,
         d: &Daemon,
-        operation: &Arc<crate::operation::Context>,
+        operation: &Arc<polylogue_reading::operation::Context>,
         output: &mut dyn std::io::Write,
     ) -> Result<(), Failure> {
         run(d, operation, &arguments.target, arguments.marks, output)
@@ -46,7 +46,7 @@ impl crate::daemon::handler::Feed for Follow {
 
 fn run(
     d: &Daemon,
-    operation: &Arc<crate::operation::Context>,
+    operation: &Arc<polylogue_reading::operation::Context>,
     query: &str,
     marks: Option<Marks>,
     output: &mut dyn std::io::Write,
@@ -132,7 +132,7 @@ fn run(
 /// sessions that start matching are followed too.
 pub(crate) fn selected(
     reader: &polylogue_store::Reader<'_>,
-    operation: &Arc<crate::operation::Context>,
+    operation: &Arc<polylogue_reading::operation::Context>,
     query: &str,
     now: i64,
 ) -> Result<Vec<String>, Failure> {

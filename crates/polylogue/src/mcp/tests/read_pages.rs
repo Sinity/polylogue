@@ -149,21 +149,26 @@ impl AllItems {
             .unwrap();
         let arguments: crate::protocol::read::Arguments =
             serde_json::from_value(child.arguments).unwrap();
-        let mut request =
-            crate::daemon::service::read::ReadRequest::from_arguments(arguments, None).unwrap();
+        let mut request = crate::daemon::service::read::request_of(arguments, None).unwrap();
         request.delivery = polylogue_model::read::ReadDelivery::Stream;
         request.budget = None;
         request.with_blobs = false;
         let operation = daemon
             .daemon
-            .operation_context(&crate::operation::Context::worker_authorship(
+            .operation_context(&polylogue_reading::operation::Context::worker_authorship(
                 "polylogue-page-oracle",
             ))
             .unwrap();
         let mut bytes = Vec::new();
-        crate::daemon::service::read::produce(&request, &daemon.daemon, &operation, &mut bytes)
-            .unwrap()
-            .unwrap();
+        let reader = daemon.daemon.reads.reader().unwrap();
+        polylogue_reading::stream(
+            &reader,
+            daemon.daemon.as_ref(),
+            &request,
+            &operation,
+            &mut bytes,
+        )
+        .unwrap();
         let mut items = Vec::new();
         let mut began = false;
         let mut header = None;

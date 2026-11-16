@@ -73,48 +73,5 @@ fn output_lines() -> u64 {
 }
 pub type Answer = polylogue_model::read::ReadPage;
 
-impl Arguments {
-    /// The public arguments of a resolved read, for its continuation call.
-    pub(crate) fn from_request(
-        request: &crate::daemon::service::read::ReadRequest,
-    ) -> Result<Self, String> {
-        let crate::daemon::service::read::ReadRequest {
-            target,
-            options,
-            delivery,
-            format,
-            budget,
-            with_blobs,
-            cursor: _,
-        } = request;
-        let (show, hide) = options.show_hide_words();
-        Ok(Self {
-            target: target.clone(),
-            view: options.view,
-            format: Some(
-                Format::parse(format).ok_or_else(|| format!("unknown format {format:?}"))?,
-            ),
-            delivery: *delivery,
-            page_tokens: budget
-                .map(|value| {
-                    NonZeroU64::new(value as u64)
-                        .ok_or_else(|| "budget must be positive".to_string())
-                })
-                .transpose()?,
-            show,
-            hide,
-            output_lines: options.output_lines,
-            for_others: options.for_others,
-            variant: options.variants.clone(),
-            with_blobs: *with_blobs,
-            at: options.at.as_ref().map(ToString::to_string),
-            diff: options.diff.clone(),
-            around: options.around,
-            latest: options.latest,
-            physical: options.physical,
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests;

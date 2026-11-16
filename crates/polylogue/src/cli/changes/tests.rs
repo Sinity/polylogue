@@ -288,7 +288,7 @@ fn a_prepared_feed_survives_daemon_close_without_holding_its_reader() {
     let mut wire = Vec::new();
     let operation = daemon
         .daemon
-        .operation_context(&crate::operation::Context::worker_authorship(
+        .operation_context(&polylogue_reading::operation::Context::worker_authorship(
             "finite-feed-fixture",
         ))
         .unwrap();

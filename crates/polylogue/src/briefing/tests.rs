@@ -655,14 +655,14 @@ fn a_brief_past_its_deadline_answers_with_the_sections_it_has() {
     );
 }
 
-fn fixture_context(now: Timestamp) -> std::sync::Arc<crate::operation::Context> {
+fn fixture_context(now: Timestamp) -> std::sync::Arc<polylogue_reading::operation::Context> {
     let day = query_language::time::DaySetting::new(
         jiff::tz::TimeZone::UTC,
         jiff::civil::Time::constant(4, 0, 0, 0),
     )
     .unwrap();
-    std::sync::Arc::new(crate::operation::Context::standalone(
-        crate::operation::Invocation::new(
+    std::sync::Arc::new(polylogue_reading::operation::Context::standalone(
+        polylogue_reading::operation::Invocation::new(
             now,
             "synthetic-briefing".into(),
             polylogue_model::authorship::Authorship {

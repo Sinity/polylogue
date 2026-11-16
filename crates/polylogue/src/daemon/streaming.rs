@@ -5,7 +5,7 @@ use super::Failure;
 use super::executor::Class;
 use super::service::Daemon;
 use super::stream_buffer::{StreamInput, StreamOutput};
-use crate::operation::{Context, Invocation};
+use polylogue_reading::operation::{Context, Invocation};
 use polylogue_store::read::limit::ReadLimit;
 use std::io::Write;
 use std::sync::Arc;

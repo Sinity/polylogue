@@ -427,7 +427,7 @@ impl Call {
     pub(crate) fn answer_with(
         self,
         daemon: &crate::daemon::service::Daemon,
-        invocation: &crate::operation::Invocation,
+        invocation: &polylogue_reading::operation::Invocation,
     ) -> command_surface::Answer<serde_json::Value> {
         crate::daemon::handler::local(
             &self.operation,
@@ -448,9 +448,9 @@ impl Call {
 }
 
 /// A read the test resolves itself, sent as the read operation's arguments.
-pub(crate) fn read(request: crate::daemon::service::read::ReadRequest) -> Call {
+pub(crate) fn read(request: polylogue_reading::ReadRequest) -> Call {
     let cursor = request.cursor.clone();
-    let arguments = crate::protocol::read::Arguments::from_request(&request)
+    let arguments = crate::daemon::service::read::arguments_of(&request)
         .expect("a test read has public arguments");
     Call::new(
         "read",

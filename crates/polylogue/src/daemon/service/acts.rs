@@ -7,7 +7,7 @@
 //! [`polylogue_model::live::channel::channel`] chooses; a new session
 //! starts on the protocol [`polylogue_model::live::channel::host_channel`]
 //! names.
-use super::{Daemon, Failure, Invocation, authored_preparation, error, ok, writer};
+use super::{Daemon, Failure, authored_preparation, error, ok, writer};
 use crate::daemon::handler::{Call, Handler};
 use crate::live_acts::{ResumeRun, probe};
 use crate::protocol::act as protocol;
@@ -15,6 +15,7 @@ use command_surface::Answer;
 use polylogue_model::live::channel::{Act, Channel, channel};
 use polylogue_model::user::{Delivery, UserOutcome, UserWrite};
 use polylogue_model::{DeliveryEvent, DeliveryOutcome, DeliverySender, SessionId};
+use polylogue_reading::operation::Invocation;
 use serde_json::{Value, json};
 
 #[cfg(test)]
@@ -328,7 +329,9 @@ fn protocol_send(
 /// Records what happened to a message that waited for a hosted session's
 /// running prompt.
 fn record_sent(d: &Daemon, delivery: &str, sent: Result<(), String>) {
-    let invocation = d.invocation(&crate::operation::Context::worker_authorship("hosted"));
+    let invocation = d.invocation(&polylogue_reading::operation::Context::worker_authorship(
+        "hosted",
+    ));
     let (what, detail) = match sent {
         Ok(()) => (
             DeliveryOutcome::Delivered,
@@ -518,7 +521,9 @@ fn claim(d: &Daemon, session: &SessionId) -> Result<Answer<Value>, Failure> {
 /// only sessions whose flag is up are looked at. Items already handed out
 /// are left to their hook or run.
 pub(crate) fn finish_ended(d: &Daemon, now: i64, everyone: bool) {
-    let invocation = d.invocation(&crate::operation::Context::worker_authorship("mailbox"));
+    let invocation = d.invocation(&polylogue_reading::operation::Context::worker_authorship(
+        "mailbox",
+    ));
     let Ok(reader) = d.reads.reader() else {
         return;
     };
@@ -922,7 +927,9 @@ fn resume_session(daemon: &std::sync::Arc<Daemon>, run: ResumeRun) {
 /// `not_sent` (`directory_unknown`, `directory_missing(DIR)`) without one:
 /// the daemon's own directory is never borrowed.
 fn resume_once(d: &Daemon, run: &ResumeRun) {
-    let invocation = d.invocation(&crate::operation::Context::worker_authorship("resume"));
+    let invocation = d.invocation(&polylogue_reading::operation::Context::worker_authorship(
+        "resume",
+    ));
     let record = |what, detail: String| {
         let _ = outcome_event(d, &invocation, &run.delivery, what, detail);
     };

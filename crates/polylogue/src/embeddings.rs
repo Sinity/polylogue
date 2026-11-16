@@ -62,7 +62,7 @@ pub struct Context<'a> {
     pub clock: &'a polylogue_model::WallClock,
     pub settings: &'a polylogue_model::settings::Snapshot,
     pub credentials: &'a Credentials,
-    pub operation: &'a std::sync::Arc<crate::operation::Context>,
+    pub operation: &'a std::sync::Arc<polylogue_reading::operation::Context>,
 }
 
 /// The only origin the Voyage key is ever sent to.
@@ -760,7 +760,7 @@ pub fn ranking_key(reader: &Reader<'_>, provider: Option<&Provider>) -> Option<S
 fn query_sessions(
     reader: &Reader<'_>,
     query: &str,
-    context: &std::sync::Arc<crate::operation::Context>,
+    context: &std::sync::Arc<polylogue_reading::operation::Context>,
 ) -> Result<Vec<String>, Failure> {
     let mut ids = Vec::new();
     let mut cursor: Option<String> = None;

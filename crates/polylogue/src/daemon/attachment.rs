@@ -101,7 +101,7 @@ pub(crate) fn read(range: Range, d: &Daemon) -> Answer<BytePage> {
             if decoded.binding != resolution.binding || decoded.generation != generation {
                 return error(
                     polylogue_model::Code::StaleCursor,
-                    "the selected attachment changed; start again",
+                    "the selected attachment changed; read the attachment again from its start",
                 );
             }
             Some(decoded)
@@ -121,7 +121,7 @@ pub(crate) fn read(range: Range, d: &Daemon) -> Answer<BytePage> {
             {
                 return error(
                     polylogue_model::Code::StaleCursor,
-                    "the inline attachment source changed",
+                    "the inline attachment source changed; read the attachment again from its start",
                 );
             }
             if input.is_some() {
@@ -188,7 +188,7 @@ pub(crate) fn read(range: Range, d: &Daemon) -> Answer<BytePage> {
     if found.blob.is_some_and(|known| known != blob) {
         return error(
             polylogue_model::Code::StaleCursor,
-            "the selected attachment hash changed",
+            "the selected attachment hash changed; read the attachment again from its start",
         );
     }
     if offset > found.size || offset == found.size && offset != 0 {

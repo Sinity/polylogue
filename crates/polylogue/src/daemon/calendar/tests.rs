@@ -280,7 +280,7 @@ fn unrepresentable_price_totals_leave_response_records_readable() {
 
 fn fixture_context(start: &str, now: i64) -> Arc<Context> {
     Arc::new(Context::standalone(
-        crate::operation::Invocation::new(
+        polylogue_reading::operation::Invocation::new(
             jiff::Timestamp::from_millisecond(now).unwrap().into(),
             "synthetic-machine".into(),
             Context::worker_authorship("calendar-fixture"),

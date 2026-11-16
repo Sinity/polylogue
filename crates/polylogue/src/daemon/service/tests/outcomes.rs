@@ -39,9 +39,9 @@ fn query(outcome: Outcome, notes: &[&str]) -> QueryAnswer {
     }
 }
 
-fn synthetic_context() -> crate::operation::Context {
-    crate::operation::Context::standalone(
-        crate::operation::Invocation::new(
+fn synthetic_context() -> polylogue_reading::operation::Context {
+    polylogue_reading::operation::Context::standalone(
+        polylogue_reading::operation::Invocation::new(
             polylogue_model::Timestamp::parse_rfc3339("2026-03-01T12:00:00Z").unwrap(),
             "synthetic-outcomes".into(),
             polylogue_model::authorship::Authorship {

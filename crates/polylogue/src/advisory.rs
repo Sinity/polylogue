@@ -130,7 +130,7 @@ fn already_given(
     session: &SessionId,
     reference: &str,
     target: &str,
-    context: &Arc<crate::operation::Context>,
+    context: &Arc<polylogue_reading::operation::Context>,
 ) -> Result<bool, StoreError> {
     // This recipient is a typed identity supplied by the hook, not an
     // archive prefix: the first prompt can precede provider capture.
@@ -196,7 +196,7 @@ pub fn prepare(
     session: &SessionId,
     delivery: &str,
     pending: &[Vec<String>],
-    context: &Arc<crate::operation::Context>,
+    context: &Arc<polylogue_reading::operation::Context>,
 ) -> Result<Prepared, StoreError> {
     let tokens = paths(prompt);
     if tokens.is_empty() {

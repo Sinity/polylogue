@@ -128,3 +128,44 @@ impl<T> From<Failure> for command_surface::Answer<T> {
         failure.answer()
     }
 }
+
+impl From<polylogue_reading::Error> for Failure {
+    fn from(error: polylogue_reading::Error) -> Self {
+        use polylogue_reading::Error;
+        match error {
+            Error::Store(error) => Self::from(error),
+            Error::Selection(error) => Self::from(error),
+            Error::Operation(error) => Self::from(error),
+            Error::Layout(error) => {
+                let hint = match &error {
+                    polylogue_model::read::ReadError::UnsupportedTarget {
+                        accepted_views, ..
+                    } => Some(format!(
+                        "views that read it: {}",
+                        accepted_views
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )),
+                    polylogue_model::read::ReadError::RequiredExpansion { option, .. } => {
+                        Some(format!("set {option} to full"))
+                    }
+                    _ => None,
+                };
+                let error = Error::Layout(error);
+                let code = polylogue_model::Code::from_name(error.code())
+                    .expect("reading error has a product code");
+                let mut failure = Self::new(code, error);
+                failure.error.hint = hint;
+                failure
+            }
+
+            error => {
+                let code = polylogue_model::Code::from_name(error.code())
+                    .expect("reading error has a product code");
+                Self::new(code, error)
+            }
+        }
+    }
+}

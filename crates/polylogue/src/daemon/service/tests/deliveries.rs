@@ -424,11 +424,11 @@ fn lesson(d: &test_daemon::TestDaemon, text: &str) {
 fn other_delivery(d: &test_daemon::TestDaemon, event: polylogue_model::DeliveryEvent) -> String {
     use polylogue_model::user::{Delivery, UserWrite};
     let id = polylogue_store::user_writes::new_request_id();
-    let invocation = d
-        .daemon
-        .invocation(&crate::operation::Context::worker_authorship(
-            "deliveries-test",
-        ));
+    let invocation =
+        d.daemon
+            .invocation(&polylogue_reading::operation::Context::worker_authorship(
+                "deliveries-test",
+            ));
     crate::daemon::service::acts::author(
         &d.daemon,
         &invocation,

@@ -248,7 +248,7 @@ impl LastBrief {
 pub struct BriefContext<'a, 'reader> {
     pub reader: &'a Reader<'reader>,
     pub delivery_id: &'a str,
-    pub context: &'a std::sync::Arc<crate::operation::Context>,
+    pub context: &'a std::sync::Arc<polylogue_reading::operation::Context>,
     pub ranking_identity: Option<&'a str>,
     pub near: Option<&'a NearFn<'a>>,
 }
@@ -315,7 +315,7 @@ fn operator_note_ids(
     reader: &Reader<'_>,
     targets: Vec<Reference>,
     after_seq: Option<i64>,
-    context: &std::sync::Arc<crate::operation::Context>,
+    context: &std::sync::Arc<polylogue_reading::operation::Context>,
 ) -> Result<Vec<polylogue_model::RevisionReference>, StoreError> {
     let now: Timestamp = context.clock.now.into();
     let kinds = [
@@ -348,7 +348,7 @@ fn operator_note_ids(
 fn eligible_note(
     reader: &Reader<'_>,
     reference: &polylogue_model::RevisionReference,
-    context: &std::sync::Arc<crate::operation::Context>,
+    context: &std::sync::Arc<polylogue_reading::operation::Context>,
 ) -> Result<Option<Assertion>, StoreError> {
     if !reader
         .assertion_revision_state(reference)?
@@ -380,7 +380,7 @@ fn operator_notes(
     reader: &Reader<'_>,
     targets: Vec<Reference>,
     after_seq: Option<i64>,
-    context: &std::sync::Arc<crate::operation::Context>,
+    context: &std::sync::Arc<polylogue_reading::operation::Context>,
 ) -> Result<Vec<Assertion>, StoreError> {
     let mut notes = Vec::new();
     for reference in operator_note_ids(reader, targets, after_seq, context)? {
@@ -395,7 +395,7 @@ fn operator_notes(
 fn unjudged_other_assertions(
     reader: &Reader<'_>,
     targets: &[Reference],
-    context: &std::sync::Arc<crate::operation::Context>,
+    context: &std::sync::Arc<polylogue_reading::operation::Context>,
 ) -> Result<u64, StoreError> {
     assertions::count(
         reader,
@@ -434,7 +434,7 @@ fn note_line(n: &Assertion, zone: &jiff::tz::TimeZone) -> String {
 fn assertion_item(
     reader: &Reader<'_>,
     note: &Assertion,
-    context: &std::sync::Arc<crate::operation::Context>,
+    context: &std::sync::Arc<polylogue_reading::operation::Context>,
 ) -> Result<Item, StoreError> {
     use polylogue_model::assertion::LinkRole;
     let reference = Reference::parse(&format!("assertion:{}@{}", note.fact.root, note.fact.id))
@@ -1423,7 +1423,7 @@ fn takeover(
     session: &SessionId,
     budget: u64,
     delivery_id: &str,
-    context: &std::sync::Arc<crate::operation::Context>,
+    context: &std::sync::Arc<polylogue_reading::operation::Context>,
 ) -> Result<Prepared, StoreError> {
     let id = session.to_string();
     let Some(s) = reader.session(session)? else {

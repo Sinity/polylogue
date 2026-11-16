@@ -37,6 +37,7 @@ toml = "1.1"
 jiff.workspace = true
 libc.workspace = true
 polylogue-render.workspace = true
+polylogue-reading.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 serde.workspace = true

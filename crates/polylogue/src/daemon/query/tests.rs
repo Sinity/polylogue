@@ -1610,13 +1610,13 @@ fn fixture_context(
     now: i64,
     zone: &str,
     start_minutes: u16,
-) -> std::sync::Arc<crate::operation::Context> {
+) -> std::sync::Arc<polylogue_reading::operation::Context> {
     let clock = fixture_clock(now, zone, start_minutes);
-    std::sync::Arc::new(crate::operation::Context::standalone(
-        crate::operation::Invocation::new(
+    std::sync::Arc::new(polylogue_reading::operation::Context::standalone(
+        polylogue_reading::operation::Invocation::new(
             clock.now.into(),
             "synthetic-query-machine".into(),
-            crate::operation::Context::worker_authorship("query-fixture"),
+            polylogue_reading::operation::Context::worker_authorship("query-fixture"),
         ),
         clock.day,
     ))

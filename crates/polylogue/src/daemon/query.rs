@@ -25,7 +25,7 @@ pub struct Ask<'a> {
     pub why: bool,
     pub session: Option<String>,
     /// One captured invocation and its policy for the complete operation.
-    pub context: std::sync::Arc<crate::operation::Context>,
+    pub context: std::sync::Arc<polylogue_reading::operation::Context>,
     pub embeddings: bool,
     /// Captured provider and vector identity; never inferred from availability.
     pub ranking_identity: Option<String>,
@@ -298,6 +298,24 @@ pub fn run(reader: &Reader<'_>, ask: Ask<'_>) -> Result<QueryAnswer, Failure> {
     prepare(reader, ask)?.complete()
 }
 
+fn cursor_failure(mut failure: Failure, text: &str) -> Failure {
+    if failure.code() == "stale_cursor" {
+        if !failure
+            .message
+            .ends_with("; run the query again without its cursor")
+        {
+            failure
+                .error
+                .message
+                .push_str("; run the query again without its cursor");
+        }
+        failure.error = failure
+            .error
+            .with_suggestion(command_surface::Suggestion::Query(text.to_owned()));
+    }
+    failure
+}
+
 pub fn prepare<'read, 'pool>(
     reader: &'read Reader<'pool>,
     ask: Ask<'_>,
@@ -311,7 +329,10 @@ pub fn prepare<'read, 'pool>(
     let question = plan.question_id();
     let cursor = ask
         .cursor
-        .map(|text| page::open(text, &seal, question, &position, index_file, &opts))
+        .map(|text| {
+            page::open(text, &seal, question, &position, index_file, &opts)
+                .map_err(|failure| cursor_failure(failure, ask.text))
+        })
         .transpose()?;
     let mut operation_versions = ask.context.cursor_versions();
     operation_versions.insert(
@@ -330,8 +351,9 @@ pub fn prepare<'read, 'pool>(
     if let Some(cursor) = &cursor {
         for key in ["operation_context", "catalog", "scope", "ranking_identity"] {
             if cursor.context.versions.get(key) != operation_versions.get(key) {
-                return Err(Failure::stale_cursor(
-                    "the captured query context is no longer available",
+                return Err(cursor_failure(
+                    Failure::stale_cursor("the settings or data used by this query changed"),
+                    ask.text,
                 ));
             }
         }
@@ -370,7 +392,10 @@ pub fn prepare<'read, 'pool>(
     };
     let after = cursor
         .as_ref()
-        .map(|cursor| page::check(cursor, &program, &opts, ask.why))
+        .map(|cursor| {
+            page::check(cursor, &program, &opts, ask.why)
+                .map_err(|failure| cursor_failure(failure, ask.text))
+        })
         .transpose()?;
     let mut context = match cursor {
         Some(cursor) => cursor.context,
@@ -681,7 +706,7 @@ pub(crate) use polylogue_store::query::execute::{attach, present, snippets, why}
 pub(crate) fn prepare_usage(
     reader: &Reader<'_>,
     text: &str,
-    context: std::sync::Arc<crate::operation::Context>,
+    context: std::sync::Arc<polylogue_reading::operation::Context>,
     embeddings: bool,
     ranking_identity: Option<String>,
 ) -> Result<(polylogue_query::plan::Plan, Options), Failure> {
@@ -737,7 +762,7 @@ pub(crate) fn select_usage(
 pub(crate) fn usage_selection(
     reader: &Reader<'_>,
     text: &str,
-    context: std::sync::Arc<crate::operation::Context>,
+    context: std::sync::Arc<polylogue_reading::operation::Context>,
     embeddings: bool,
     ranking_identity: Option<String>,
     near: Option<&NearFn<'_>>,

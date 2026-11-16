@@ -26,7 +26,7 @@ fn authored(w: &TestDaemon, request: crate::test_daemon::Call, author: Author) -
 pub(crate) fn operator(w: &TestDaemon, request: crate::test_daemon::Call) -> Value {
     authored(w, request, Author::Operator)
 }
-fn operation(w: &TestDaemon) -> Arc<crate::operation::Context> {
+fn operation(w: &TestDaemon) -> Arc<polylogue_reading::operation::Context> {
     w.daemon
         .operation_context(&Authorship {
             author: Author::Operator,

@@ -1,5 +1,11 @@
 use super::*;
+use crate::briefing::Ask;
 use crate::test_daemon;
+use polylogue_engine::Config;
+use polylogue_model::user::UserWrite;
+use polylogue_store::{Archive, StoreError};
+use std::sync::Arc;
+use std::sync::mpsc::sync_channel;
 
 fn read(
     d: &Daemon,
@@ -23,7 +29,7 @@ fn read(
         resume.arguments = serde_json::to_value(arguments).unwrap();
         crate::test_daemon::Call::from_request(&resume)
     } else {
-        crate::test_daemon::read(crate::daemon::service::read::ReadRequest {
+        crate::test_daemon::read(polylogue_reading::ReadRequest {
             target: "session:claude-code:s1".into(),
             options: polylogue_model::read::ReadOptions {
                 view,
@@ -141,7 +147,7 @@ fn reading_variants_setting_is_the_default_and_is_bound_in_the_cursor() {
     assert!(variants(&fresh).is_empty());
     // `none` asks for the originals whatever the setting holds.
     set(r#"["translation:pl"]"#);
-    let originals = crate::test_daemon::read(crate::daemon::service::read::ReadRequest {
+    let originals = crate::test_daemon::read(polylogue_reading::ReadRequest {
         target: "session:claude-code:s1".into(),
         options: polylogue_model::read::ReadOptions {
             variants: vec!["none".into()],
@@ -451,11 +457,12 @@ mod workers;
 #[test]
 fn an_invalidated_read_phase_does_not_enter_the_authored_writer() {
     let daemon = crate::test_daemon::start("write scope check");
-    let invocation = daemon
-        .daemon
-        .invocation(&crate::operation::Context::worker_authorship(
-            "scope-write-fixture",
-        ));
+    let invocation =
+        daemon
+            .daemon
+            .invocation(&polylogue_reading::operation::Context::worker_authorship(
+                "scope-write-fixture",
+            ));
     let limit = polylogue_store::read::limit::ReadLimit::without_deadline(Default::default());
     let response = limit.scope(|| {
         drop(daemon.daemon.reads.reader().unwrap());
@@ -489,11 +496,12 @@ fn an_invalidated_read_phase_does_not_enter_the_authored_writer() {
 #[test]
 fn read_derived_write_keeps_its_selected_scope_after_reader_release() {
     let daemon = crate::test_daemon::start("pinned authored write");
-    let invocation = daemon
-        .daemon
-        .invocation(&crate::operation::Context::worker_authorship(
-            "pinned-write-fixture",
-        ));
+    let invocation =
+        daemon
+            .daemon
+            .invocation(&polylogue_reading::operation::Context::worker_authorship(
+                "pinned-write-fixture",
+            ));
     let reader = daemon.daemon.reads.reader().unwrap();
     let selected_scope = reader.scope_token();
     drop(reader);
@@ -552,3 +560,9 @@ fn read_derived_write_keeps_its_selected_scope_after_reader_release() {
 }
 
 mod advisory;
+
+mod read_attachments;
+mod read_links;
+mod read_objects;
+
+mod read_failures;

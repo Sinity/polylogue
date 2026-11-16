@@ -16,8 +16,10 @@ selection ─► rows in order ─► view and show/hide ─► layout (reading 
 | Filter | selection, view and show/hide → visible items | one definition of each view's rules, used by the store's kind filter and the renderer |
 | Lay out | visible items → the reading document | `render` |
 | Encode | the reading document → bytes in one format | `render`, one encoder per format |
-| Page | the reading document stream and a budget → a page with `next` and `previous` | `render`'s pager; the daemon signs cursors |
+| Page | the reading document stream and a budget → a page with `next` and `previous` | `reading`, using `render`'s pager |
 | Deliver | bytes → standard output, pager, file, directory, clipboard, browser | the CLI only |
+
+The `reading` crate composes sessions, prepares layout facts and walks records in either direction. It returns typed pages and streams over the store's reader. The daemon adapts requests and supplies ranking, freshness, the writer and ready follow-up calls through `ReadServices`; process hosting stays in the daemon.
 
 A reference keeps its whole ID, whitespace, pipes and quotes included. To run query transforms on a referenced row, write a unit query, for example `messages where message:"claude-code:opaque | id" | sort by id`.
 

@@ -333,6 +333,19 @@ impl WriterArchive {
         self.positions.insert(input.into(), stored.length);
     }
 
+    pub fn corrupt_document_block(&self, ordinal: u64) {
+        let index = rusqlite::Connection::open(self.archive.index_db()).unwrap();
+        assert_eq!(
+            index
+                .execute(
+                    "UPDATE document_block SET body=x'00' WHERE idx=?1",
+                    [i64::try_from(ordinal).unwrap()],
+                )
+                .unwrap(),
+            1,
+        );
+    }
+
     pub fn rows(&self, sql: &str) -> Vec<Json> {
         let pool = ReadPool::open(&self.archive).unwrap();
         pool.reader().unwrap().query(sql, &[]).unwrap()
