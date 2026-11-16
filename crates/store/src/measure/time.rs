@@ -202,7 +202,7 @@ fn from_events(conn: &Connection, pk: i64) -> Result<Prefix> {
     let (first, last): (Option<i64>, Option<i64>) = conn.query_row(
         "SELECT min(at),max(at) FROM event WHERE session_pk=?1",
         [pk],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| <(_, _)>::try_from(r),
     )?;
     let mut prefix = Prefix {
         first,
@@ -788,7 +788,7 @@ pub(crate) fn selected_spans(
     let (count, pk): (i64, Option<i64>) = conn.query_row(
         &format!("SELECT count(*),min(s.pk) FROM session s WHERE {condition}"),
         rusqlite::params_from_iter(params.iter()),
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| <(_, _)>::try_from(r),
     )?;
     if count == 1
         && let Some(pk) = pk

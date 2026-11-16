@@ -2,6 +2,7 @@
 //! session did, whether sessions are hidden, a session's own prompts, what
 //! it left open, earlier deliveries and settings.
 
+use crate::ConnExt as _;
 use crate::encoding::Columns;
 use crate::{Reader, Result};
 use polylogue_model::Timestamp;
@@ -134,7 +135,7 @@ impl Reader<'_> {
                   ORDER BY m.session_order DESC, m.id DESC
                   LIMIT 1",
             )?
-            .query_row([pk], |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_row([pk], |r| <(_, _)>::try_from(r))
             .optional()?
             .unwrap_or_default();
         let unfinished_tool_call: bool = conn
@@ -300,11 +301,9 @@ impl Reader<'_> {
         let Some(row) = self.deliveries("WHERE d.id = ?1", id)?.pop() else {
             return Ok(None);
         };
-        let body: Vec<u8> = self.conn()?.query_row(
-            "SELECT body FROM source_delivery WHERE id = ?1",
-            [id],
-            |r| r.get(0),
-        )?;
+        let body: Vec<u8> = self
+            .conn()?
+            .scalar("SELECT body FROM source_delivery WHERE id = ?1", [id])?;
         let text = crate::encoding::unpack_text(&body)?;
         Ok(Some((row, text)))
     }
@@ -313,12 +312,7 @@ impl Reader<'_> {
     pub fn delivery_refs(&self, id: &str) -> Result<Option<Vec<String>>> {
         let refs: Option<String> = self
             .conn()?
-            .query_row(
-                "SELECT refs_json FROM source_delivery WHERE id=?1",
-                [id],
-                |row| row.get(0),
-            )
-            .optional()?;
+            .scalar_optional("SELECT refs_json FROM source_delivery WHERE id=?1", [id])?;
         refs.map(|refs| serde_json::from_str(&refs).map_err(crate::StoreError::from))
             .transpose()
     }
@@ -384,7 +378,7 @@ impl Reader<'_> {
               ORDER BY d.at DESC, d.id DESC",
         )?;
         Ok(stmt
-            .query_map([reference], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .query_map([reference], |r| <(_, _, _)>::try_from(r))?
             .collect::<rusqlite::Result<_>>()?)
     }
 
@@ -489,7 +483,7 @@ impl Reader<'_> {
             "WHERE d.sender='signal' AND d.signal IS NULL AND NOT EXISTS (SELECT 1 FROM source_delivery_event e WHERE e.delivery=d.id) AND (d.recipient_id=json_extract(?1,'$.session') OR (d.recipient_id IS NULL AND d.cwd IS NOT NULL AND (EXISTS (SELECT 1 FROM json_each(?1,'$.directories') scope WHERE (scope.value='/' AND substr(d.cwd,1,1)='/') OR d.cwd=rtrim(scope.value,'/') OR substr(d.cwd,1,length(rtrim(scope.value,'/'))+1)=rtrim(scope.value,'/')||'/'))))",
             &selection,
         )?;
-        let inspect_count: i64 = self.conn()?.query_row("SELECT count(*) FROM source_delivery d WHERE d.sender='signal' AND ((d.recipient_id IS NULL AND d.cwd IS NULL) OR d.signal IS NOT NULL) AND NOT EXISTS (SELECT 1 FROM source_delivery_event e WHERE e.delivery=d.id)", [], |row| row.get(0))?;
+        let inspect_count: i64 = self.conn()?.scalar("SELECT count(*) FROM source_delivery d WHERE d.sender='signal' AND ((d.recipient_id IS NULL AND d.cwd IS NULL) OR d.signal IS NOT NULL) AND NOT EXISTS (SELECT 1 FROM source_delivery_event e WHERE e.delivery=d.id)", [])?;
         self.check()?;
         Ok((
             candidates,

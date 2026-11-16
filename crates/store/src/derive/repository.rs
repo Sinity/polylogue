@@ -24,7 +24,7 @@ pub(super) const DERIVATION: Derivation = Derivation {
 fn compute(conn: &Connection, session_pk: i64) -> Result<Output> {
     let (cwd, own): (Option<String>, Option<String>) = conn
         .prepare_cached("SELECT cwd, record_repo FROM session WHERE pk = ?1")?
-        .query_row([session_pk], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        .query_row([session_pk], |r| <(_, _)>::try_from(r))?;
     let lookup: Option<(Option<String>, Option<String>)> = match &cwd {
         Some(cwd) => conn
             .prepare_cached(
@@ -32,7 +32,7 @@ fn compute(conn: &Connection, session_pk: i64) -> Result<Output> {
                  WHERE path = ?1 OR substr(?1, 1, length(path) + 1) = path || '/'
                  ORDER BY length(path) DESC LIMIT 1",
             )?
-            .query_row([cwd], |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_row([cwd], |r| <(_, _)>::try_from(r))
             .optional()?,
         None => None,
     };

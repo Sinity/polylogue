@@ -42,7 +42,7 @@ pub(super) fn stored_reading_chain(conn: &Connection, batch: &Batch) -> Result<i
         .prepare_cached(
             "SELECT chain,length FROM revision WHERE input=?1 ORDER BY number DESC LIMIT 1",
         )?
-        .query_row([&batch.input.id], |row| Ok((row.get(0)?, row.get(1)?)))
+        .query_row([&batch.input.id], |row| <(_, _)>::try_from(row))
         .optional()?;
     let stored = match latest {
         Some((latest_chain, stored_length)) if latest_chain == chain => stored_length >= length,

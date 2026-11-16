@@ -14,7 +14,7 @@ impl Reader<'_> {
         let (total, without) = stmt
             .raw_query()
             .next()?
-            .map(|row| Ok::<_, rusqlite::Error>((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
+            .map(<(i64, i64)>::try_from)
             .transpose()?
             .unwrap_or_default();
         let count = |value| crate::to_u64(value, "query returned a negative count");
@@ -111,11 +111,7 @@ where
                 ValueRef::Integer(n) => n.into(),
                 ValueRef::Real(f) => serde_json::json!(f),
                 ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned().into(),
-                ValueRef::Blob(b) => b
-                    .iter()
-                    .map(|x| format!("{x:02x}"))
-                    .collect::<String>()
-                    .into(),
+                ValueRef::Blob(b) => polylogue_model::hex(b).into(),
             };
             obj.insert(name.clone(), v);
         }

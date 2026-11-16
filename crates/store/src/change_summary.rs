@@ -239,7 +239,7 @@ impl ChangeSummary {
                 let next = previous.checked_add(1).ok_or_else(|| {
                     crate::StoreError::Invalid("relationship revision exhausted".into())
                 })?;
-                conn.prepare_cached("INSERT INTO meta(key,value) VALUES ('relationship_revision',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value")?.execute([next.to_string()])?;
+                crate::meta_set(conn, "relationship_revision", next.to_string())?;
                 break;
             }
         }
@@ -299,7 +299,7 @@ impl ChangeSummary {
                 places.push(before.key.clone());
             }
             if let Some(key) = now
-                .query_row([*pk, session_pk], |row| Ok((row.get(0)?, row.get(1)?)))
+                .query_row([*pk, session_pk], |row| <(_, _)>::try_from(row))
                 .optional()?
             {
                 places.push(key);
@@ -325,7 +325,7 @@ impl ChangeSummary {
             let after: Option<(i64, Option<String>)> = match &change.installed {
                 Some(installed) => Some((installed.session, installed.parent.clone())),
                 None => now
-                    .query_row([pk], |row| Ok((row.get(0)?, row.get(1)?)))
+                    .query_row([pk], |row| <(_, _)>::try_from(row))
                     .optional()?,
             };
             let before = before.as_ref().map(|b| (b.session, b.parent.clone()));

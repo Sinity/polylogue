@@ -210,9 +210,7 @@ impl Reader<'_> {
         if matches!(Source::of(self.conn()?)?, Source::Standalone) {
             return Ok(false);
         }
-        Ok(self.conn()?.query_row(
-            "SELECT EXISTS(SELECT 1 FROM confirmed_event WHERE kind='request' AND changed!=committed AND changed>?1)",
-            [after.archive], |row| row.get(0))?)
+        self.conn()?.exists("SELECT EXISTS(SELECT 1 FROM confirmed_event WHERE kind='request' AND changed!=committed AND changed>?1)", [after.archive])
     }
 
     /// Changed objects and their saved dependents, not current names.

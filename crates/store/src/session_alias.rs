@@ -8,7 +8,7 @@
 use crate::ConnExt as _;
 use crate::Result;
 use polylogue_model::{Event, MessageId, Session, SessionId};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, params};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
@@ -71,7 +71,7 @@ impl Identities {
             .prepare_cached(&format!(
                 "SELECT n.alias, s.id FROM ({NAMED}) n JOIN session s ON s.pk = n.session_pk"
             ))?
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .query_map([], |row| <(_, _)>::try_from(row))?
             .collect::<rusqlite::Result<BTreeMap<String, String>>>()?;
         let mut identities = Self {
             stored,
@@ -103,11 +103,8 @@ impl Identities {
                 let other: bool = index.exists("SELECT EXISTS(SELECT 1 FROM session_alias a JOIN session s ON s.pk=a.session_pk
                      WHERE a.alias=?1 AND s.id<>?2)",
                     params![copy, id])?;
-                let held: Option<i64> = index
-                    .query_row("SELECT pk FROM session WHERE id=?1", [&copy], |row| {
-                        row.get(0)
-                    })
-                    .optional()?;
+                let held: Option<i64> =
+                    index.scalar_optional("SELECT pk FROM session WHERE id=?1", [&copy])?;
                 let Some(held) = held.filter(|_| !other) else {
                     continue;
                 };
@@ -272,7 +269,7 @@ fn release(index: &Connection, copy: &str, joined: &str, by: &str) -> crate::Res
             "SELECT r.input_pk, r.chain FROM session_record r JOIN session s ON s.pk = r.session_pk
              WHERE s.id = ?1 AND json_extract(r.facts, '$.id') = ?2 ORDER BY r.input_pk, r.chain",
         )?
-        .query_map(params![joined, copy], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .query_map(params![joined, copy], |row| <(_, _)>::try_from(row))?
         .collect::<rusqlite::Result<Vec<(i64, i64)>>>()?;
     let mut messages = Vec::new();
     let mut events = Vec::new();

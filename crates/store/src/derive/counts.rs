@@ -2,6 +2,7 @@
 //! change summary applies changed contributions once per session. [`compute`]
 //! is the independent full recompute, also run when the derivation version moves.
 use super::{Class, Derivation, Output, Version};
+use crate::ConnExt as _;
 use crate::Result;
 use crate::session_sql::{counts_as_action, own_messages};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -97,7 +98,7 @@ pub(crate) fn message_actions(conn: &Connection, pk: i64) -> Result<(i64, i64)> 
          JOIN tool_call t ON t.call_block_pk=b.pk WHERE b.message_pk=?1 AND {}",
             counts_as_action("t"),
         ))?
-        .query_row([pk], |row| Ok((row.get(0)?, row.get(1)?)))?)
+        .query_row([pk], |row| <(_, _)>::try_from(row))?)
 }
 
 pub(crate) fn session_state(conn: &Connection, session: i64) -> Result<Option<(bool, bool)>> {
@@ -112,7 +113,7 @@ pub(crate) fn session_state(conn: &Connection, session: i64) -> Result<Option<(b
         AND tool_call_count IS NOT NULL AND error_count IS NOT NULL
         FROM session WHERE pk=?1",
         )?
-        .query_row([session], |row| Ok((row.get(0)?, row.get(1)?)))
+        .query_row([session], |row| <(_, _)>::try_from(row))
         .optional()?)
 }
 
@@ -135,7 +136,7 @@ pub(crate) fn actions(conn: &Connection, session: i64) -> Result<(i64, i64)> {
             own_messages("m", Some("=?1")),
             counts_as_action("t"),
         ))?
-        .query_row([session], |row| Ok((row.get(0)?, row.get(1)?)))?)
+        .query_row([session], |row| <(_, _)>::try_from(row))?)
 }
 
 pub(crate) fn apply_delta(
@@ -203,12 +204,11 @@ pub(crate) fn compute(conn: &Connection, pk: i64) -> Result<Counts> {
             })
         },
     )?;
-    counts.compactions = conn.query_row(
+    counts.compactions = conn.scalar(
         "SELECT count(*) FROM event WHERE session_pk=?1 AND kind='compaction'",
         [pk],
-        |r| r.get(0),
     )?;
-    (counts.tool_calls, counts.errors) = conn.query_row(&format!("SELECT count(*),coalesce(sum(t.outcome='error'),0) FROM tool_call t JOIN block b ON b.pk=t.call_block_pk JOIN message m ON m.pk=b.message_pk WHERE {own} AND {}",counts_as_action("t")),[pk],|r|Ok((r.get(0)?,r.get(1)?)))?;
+    (counts.tool_calls, counts.errors) = conn.query_row(&format!("SELECT count(*),coalesce(sum(t.outcome='error'),0) FROM tool_call t JOIN block b ON b.pk=t.call_block_pk JOIN message m ON m.pk=b.message_pk WHERE {own} AND {}",counts_as_action("t")),[pk],|r| <(_, _)>::try_from(r))?;
     Ok(counts)
 }
 

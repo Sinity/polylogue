@@ -1,6 +1,7 @@
 //! One selected call and its recorded counterpart, inside the Reader snapshot.
 //! The indexed foreign-key relation decides pairing; neither arrival order nor
 //! a matching name elsewhere in the archive supplies a result.
+use crate::ConnExt as _;
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{
     Block, MessageId, SessionId,
@@ -107,7 +108,7 @@ impl Reader<'_> {
         let (body, data): (Vec<u8>, bool) = self.conn()?.query_row(
             "SELECT body,data IS NOT NULL FROM block WHERE pk=?1",
             [result.pk],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| <(_, _)>::try_from(row),
         )?;
         let Block::ToolResult {
             call_id,
@@ -320,18 +321,13 @@ impl Reader<'_> {
         let mut block = if full {
             crate::ordered_blocks::one(conn, fact.pk)?
         } else {
-            let body: Vec<u8> =
-                conn.query_row("SELECT body FROM block WHERE pk=?1", [fact.pk], |row| {
-                    row.get(0)
-                })?;
+            let body: Vec<u8> = conn.scalar("SELECT body FROM block WHERE pk=?1", [fact.pk])?;
             crate::encoding::unpack_block(&body)?
         };
         if full && matches!(block, Block::ToolResult { .. }) {
             self.check()?;
             let data: Option<Vec<u8>> =
-                conn.query_row("SELECT data FROM block WHERE pk=?1", [fact.pk], |row| {
-                    row.get(0)
-                })?;
+                conn.scalar("SELECT data FROM block WHERE pk=?1", [fact.pk])?;
             if let Some(data) = data {
                 crate::encoding::restore_data(&mut block, &data)?;
             }

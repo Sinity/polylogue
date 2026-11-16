@@ -39,7 +39,7 @@ pub(crate) fn from_archive(archive: &str) -> Result<SourceSchema> {
         ))?;
     }
     let declarations:Vec<(String,String,String)>=conn.prepare("SELECT type,name,sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'index' THEN 1 ELSE 2 END,name")?
-        .query_map([],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
+        .query_map([],|row| <(_, _, _)>::try_from(row))?.collect::<rusqlite::Result<_>>()?;
     let mut views = String::new();
     for name in &tables {
         let declaration: String = conn.scalar(
@@ -157,7 +157,7 @@ impl Source {
         let sequence = i64::try_from(sequence).map_err(|_| {
             StoreError::Invalid("source commit position exceeds SQLite's integer range".into())
         })?;
-        let observation = conn.query_row(&source.sql("SELECT o.id,o.seen_at FROM @source.observation o LEFT JOIN @source.revision r ON r.input=o.input AND r.number=o.revision WHERE o.input=?1 AND coalesce(o.chain,r.chain)=?2 AND o.length>=?3 ORDER BY o.commit_seq DESC,o.rowid DESC LIMIT 1"),rusqlite::params![input,chain,through],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+        let observation = conn.query_row(&source.sql("SELECT o.id,o.seen_at FROM @source.observation o LEFT JOIN @source.revision r ON r.input=o.input AND r.number=o.revision WHERE o.input=?1 AND coalesce(o.chain,r.chain)=?2 AND o.length>=?3 ORDER BY o.commit_seq DESC,o.rowid DESC LIMIT 1"),rusqlite::params![input,chain,through],|row| <(_, _)>::try_from(row)).optional()?;
         let (observation, observed_at_ms) =
             observation.map_or((None, None), |(id, time)| (Some(id), Some(time)));
         Ok(crate::wire_shapes::ReadingCommit {

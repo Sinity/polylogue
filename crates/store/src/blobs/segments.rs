@@ -3,7 +3,7 @@ use crate::ConnExt as _;
 use crate::ResultExt as _;
 use crate::{Result, StoreError};
 use polylogue_model::BlobHash;
-use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -84,15 +84,10 @@ impl Blobs {
                 OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
             )?);
         }
-        let bytes: Option<Vec<u8>> = slot
-            .as_ref()
-            .expect("opened catalog")
-            .query_row(
-                &format!("SELECT storage FROM {} WHERE hash=?1", self.layout.table()),
-                [hash.0.as_slice()],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let bytes: Option<Vec<u8>> = slot.as_ref().expect("opened catalog").scalar_optional(
+            &format!("SELECT storage FROM {} WHERE hash=?1", self.layout.table()),
+            [hash.0.as_slice()],
+        )?;
         bytes
             .map(|bytes| hashed_blobs::Extent::decode(&bytes).map_err(StoreError::from))
             .transpose()?

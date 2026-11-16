@@ -224,7 +224,7 @@ pub(crate) fn known_run(conn: &Connection, run: &QueryRun) -> Result<bool> {
         .query_row(
             &source.sql("SELECT binding_hash,run_hash FROM @source.query_run WHERE id=?1"),
             [run.id.as_str()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| <(_, _)>::try_from(row),
         )
         .optional()?;
     if let Some((action, intent)) = integrity
@@ -245,7 +245,7 @@ pub(crate) fn known_run_outcome(conn: &Connection, outcome: &QueryRunOutcome) ->
     let source = Source::of(conn)?;
     let stored:Option<(Vec<u8>,String,String)>=conn.query_row(
         &source.sql("SELECT completion,binding_hash,run_hash FROM @source.query_run WHERE id=?1 AND completion IS NOT NULL"),
-        [outcome.run.as_str()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+        [outcome.run.as_str()],|row| <(_, _, _)>::try_from(row),
     ).optional()?;
     let Some((bytes, action, intent)) = stored else {
         return Ok(false);
@@ -289,13 +289,10 @@ pub(crate) fn apply_object(conn: &Connection, object: &QueryObject, counter: i64
     }
     let source = Source::of(conn)?;
     let id = object.id.to_string();
-    let existing: Option<Vec<u8>> = conn
-        .query_row(
-            &source.sql("SELECT object FROM @source.query WHERE hash=?1"),
-            [&id],
-            |row| row.get(0),
-        )
-        .optional()?;
+    let existing: Option<Vec<u8>> = conn.scalar_optional(
+        &source.sql("SELECT object FROM @source.query WHERE hash=?1"),
+        [&id],
+    )?;
     if let Some(existing) = existing {
         let existing: QueryObject = crate::encoding::unpack_json(&existing)?;
         if !equivalent(&existing, object) {
@@ -485,7 +482,7 @@ pub(crate) fn lookup_run(
 ) -> Result<Option<QueryRun>> {
     let stored:Option<(Vec<u8>,String,String)>=conn.query_row(
         &source.sql("SELECT run,binding_hash,run_hash FROM @source.query_run WHERE id=?1 AND run IS NOT NULL"),
-        [id.as_str()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+        [id.as_str()],|row| <(_, _, _)>::try_from(row),
     ).optional()?;
     let mut found = stored
         .map(|(body, action, intent)| -> Result<QueryRun> {
@@ -610,7 +607,7 @@ impl Reader<'_> {
     ) -> Result<Option<QueryRunOutcome>> {
         let stored:Option<(Vec<u8>,String,String)>=self.conn()?.query_row(
             "SELECT completion,binding_hash,run_hash FROM source_query_run WHERE id=?1 AND completion IS NOT NULL",
-            [id.as_str()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+            [id.as_str()],|row| <(_, _, _)>::try_from(row),
         ).optional()?;
         let mut found = stored
             .map(|(body, action, intent)| -> Result<QueryRunOutcome> {

@@ -101,7 +101,7 @@ impl Reader<'_> {
         let found: Option<(i64, Option<String>)> = self
             .conn()?
             .prepare_cached("SELECT pk, cwd_json FROM session WHERE id = ?1")?
-            .query_row([id.to_string()], |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_row([id.to_string()], |r| <(_, _)>::try_from(r))
             .optional()?;
         let Some((pk, cwd_json)) = found else {
             return Ok(None);
@@ -112,7 +112,7 @@ impl Reader<'_> {
                 "SELECT fields,data FROM event WHERE session_pk=?1 AND kind='relocated'
                  ORDER BY seq DESC, id DESC LIMIT 1",
             )?
-            .query_row([pk], |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_row([pk], |r| <(_, _)>::try_from(r))
             .optional()?;
         if let Some((fields, data)) = relocated {
             let event = crate::events::decode_event(&fields, &data)?;

@@ -56,7 +56,7 @@ impl RowWriter<'_, '_> {
                     choice.kind,
                     choice.fields
                 ],
-                |row| Ok((row.get::<_, bool>(0)?, row.get::<_, String>(1)?)),
+                |row| <(bool, String)>::try_from(row),
             )?;
         if unchanged {
             if let Some(session) = choice.session

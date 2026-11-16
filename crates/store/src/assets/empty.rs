@@ -36,7 +36,7 @@ pub(crate) fn source(
             .query_row(
                 "SELECT import_id,member FROM import_member WHERE observation=?1 AND input=?2",
                 params![id, input],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| <(_, _)>::try_from(row),
             )
             .optional()?;
         let Some((namespace, member)) = membership else {
@@ -76,13 +76,10 @@ pub(crate) fn source(
             continue;
         }
         read_record.validate_for(&key)?;
-        let descriptor: Option<Vec<u8>> = conn
-            .query_row(
-                &format!("SELECT storage FROM {prefix}blob WHERE hash=?1 AND size=0"),
-                [&read_record.hash.0[..]],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let descriptor: Option<Vec<u8>> = conn.scalar_optional(
+            &format!("SELECT storage FROM {prefix}blob WHERE hash=?1 AND size=0"),
+            [&read_record.hash.0[..]],
+        )?;
         let Some(descriptor) = descriptor else {
             continue;
         };

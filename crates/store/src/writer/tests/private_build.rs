@@ -322,3 +322,88 @@ fn a_crash_after_the_finish_sync_before_the_marker_is_removed_rebuilds() {
     assert!(archive.index_build().is_some());
     assert_eq!(messages(&ReadPool::open(&archive).unwrap()), 0);
 }
+
+#[cfg(feature = "faults")]
+#[test]
+fn pipeline_readers_open_the_ready_build_and_refuse_it_after_install() {
+    crate::fault::clear();
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    let paths = Paths::of(dir.path());
+    let writer = Writer::start(&archive).unwrap();
+    store_message(
+        &archive,
+        &writer,
+        "ready-build",
+        "read from the installed build",
+    );
+    let pipeline = ReadPool::open(&archive).unwrap();
+    crate::fault::arm(
+        "index.build.before_rename",
+        &archive.root.to_string_lossy(),
+        crate::fault::Action::Hold,
+        0,
+        1,
+    );
+    let sender = writer.sender().unwrap();
+    let installer = std::thread::spawn(move || sender.derive());
+    while !crate::fault::held() && !installer.is_finished() {
+        std::thread::yield_now();
+    }
+    let held = crate::fault::held();
+    let selected_path = archive.index_db();
+    let checkout = pipeline.reader();
+    crate::fault::release();
+    let installed = installer.join();
+    crate::fault::clear();
+
+    assert!(held, "the install reached its rename boundary");
+    installed.unwrap().unwrap();
+    let reader = checkout.expect("a pipeline reader opens the ready build before install");
+    assert_eq!(selected_path, paths.built);
+    assert!(matches!(
+        reader.status(),
+        Err(StoreError::ReadIndexReplaced)
+    ));
+    drop(reader);
+    assert_eq!(archive.index_db(), paths.index);
+    assert_eq!(messages(&pipeline), 1);
+}
+
+#[cfg(feature = "faults")]
+#[test]
+fn a_started_ready_build_reader_keeps_its_snapshot_after_installed_writes() {
+    crate::fault::clear();
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    let writer = Writer::start(&archive).unwrap();
+    store_message(&archive, &writer, "ready-first", "the original snapshot");
+    let pipeline = ReadPool::open(&archive).unwrap();
+    crate::fault::arm(
+        "index.build.before_rename",
+        &archive.root.to_string_lossy(),
+        crate::fault::Action::Hold,
+        0,
+        1,
+    );
+    let sender = writer.sender().unwrap();
+    let installer = std::thread::spawn(move || sender.derive());
+    while !crate::fault::held() && !installer.is_finished() {
+        std::thread::yield_now();
+    }
+    let held = crate::fault::held();
+    let checkout = pipeline.reader();
+    let started = checkout.as_ref().ok().map(|reader| reader.status());
+    crate::fault::release();
+    let installed = installer.join();
+    crate::fault::clear();
+
+    assert!(held, "the install reached its rename boundary");
+    installed.unwrap().unwrap();
+    let reader = checkout.expect("open the ready build before install");
+    assert_eq!(started.unwrap().unwrap().messages, 1);
+    store_message(&archive, &writer, "ready-second", "written after install");
+    drop(writer);
+    assert_eq!(reader.status().unwrap().messages, 1);
+    assert_eq!(messages(&pipeline), 2);
+}

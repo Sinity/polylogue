@@ -426,7 +426,7 @@ impl Resolver {
             let prior = if matches!(b.change, Change::Reparse { .. } | Change::Observed { .. }) {
                 None
             } else {
-                match latest.get(&b.input.id) {Some(prior)=>*prior,None=>archive.query_row("SELECT number,chain FROM revision WHERE input=?1 ORDER BY number DESC LIMIT 1",[&b.input.id],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).optional()?}
+                match latest.get(&b.input.id) {Some(prior)=>*prior,None=>archive.query_row("SELECT number,chain FROM revision WHERE input=?1 ORDER BY number DESC LIMIT 1",[&b.input.id],|r| <(i64, i64)>::try_from(r)).optional()?}
             };
             let chain = match (&b.change, b.continues, prior) {
                 (Change::Reparse { chain } | Change::Observed { chain, .. }, _, _) => *chain,

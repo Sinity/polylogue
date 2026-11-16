@@ -18,6 +18,7 @@
 //! each message's first entry keeps the latest message time up to it
 //! (`time_bound`): the events placed at or after a timed message are exactly
 //! those whose time is at least its bound.
+use crate::ConnExt as _;
 use crate::change_summary::{ChangeSummary, SessionChange};
 use crate::encoding::Columns;
 #[cfg(any(test, feature = "fixture"))]
@@ -525,7 +526,7 @@ pub(crate) fn stored_columns(conn: &Connection, session_pk: i64) -> Result<Store
     let (entries, counts): (i64, Vec<u8>) = conn.query_row(
         "SELECT entries, counts FROM session_item_state WHERE session_pk = ?1",
         [session_pk],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| <(_, _)>::try_from(row),
     )?;
     Ok((out, counter(entries)?, decode_counts(&counts)?))
 }
@@ -1094,7 +1095,7 @@ fn stored_message_entries(conn: &Connection, pk: i64) -> Result<Vec<IndexEntry>>
              AND next.seq>head.seq AND next.unit IS NOT NULL ORDER BY next.seq LIMIT 1)
          FROM session_item head WHERE head.message_pk=?1",
         )?
-        .query_row([pk], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .query_row([pk], |row| <(_, _, _)>::try_from(row))
         .optional()?;
     let Some((session, from, until)) = bounds else {
         return Ok(Vec::new());
@@ -1637,17 +1638,13 @@ impl Reader<'_> {
         };
         let end = match end.filter(|end| *end > start) {
             Some(end) => end,
-            None => conn.query_row(
-                "SELECT coalesce(
+            None => conn.scalar("SELECT coalesce(
                     (SELECT min(s) FROM (
                         SELECT source_start AS s FROM message_source WHERE input_pk = ?1 AND chain = ?2 AND source_start > ?3
                         UNION ALL
                         SELECT source_start FROM event WHERE input_pk = ?1 AND source_chain = ?2 AND source_start > ?3)),
                     (SELECT parsed_upto FROM parse_state WHERE input_pk = ?1 AND chain = ?2),
-                    ?3)",
-                params![input_pk, chain, start],
-                |row| row.get(0),
-            )?,
+                    ?3)", params![input_pk, chain, start])?,
         };
         let (Ok(start), Ok(end)) = (u64::try_from(start), u64::try_from(end)) else {
             return Err(StoreError::Invalid(format!(
@@ -1938,7 +1935,7 @@ impl Reader<'_> {
             .prepare_cached(
                 "SELECT append_seq, rewrite_version FROM session_item_state WHERE session_pk = ?1",
             )?
-            .query_row([session_pk], |row| Ok((row.get(0)?, row.get(1)?)))
+            .query_row([session_pk], |row| <(_, _)>::try_from(row))
             .optional()?
             .map(|(append_seq, rewrite_version)| {
                 Ok(ItemVersions {

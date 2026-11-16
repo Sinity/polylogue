@@ -620,7 +620,7 @@ fn declare(
         .prepare_cached("SELECT expected,dynamic_map,known_kinds FROM wire_declaration WHERE format=?1 AND reading_version=?2 AND record_kind=?3 AND path=?4 AND table_key=?5")?
         .query_row(
             params![format, version, observation.record_kind, observation.path, table_key],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| <(_, _, _)>::try_from(row),
         )
         .optional()?;
     match stored {

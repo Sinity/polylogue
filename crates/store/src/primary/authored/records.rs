@@ -38,7 +38,7 @@ fn kept(conn: &Connection, id: &str) -> Result<KeptResult> {
                 "SELECT name,query,ran_at,read_at,rows_json FROM @source.kept_result WHERE id=?1",
             ),
             [id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            |r| <(_, _, _, _, _)>::try_from(r),
         )?;
     Ok(KeptResult {
         id: id.into(),

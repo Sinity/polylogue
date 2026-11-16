@@ -1,4 +1,5 @@
 //! Export items sorted in a temporary database, private to one import.
+use crate::ConnExt as _;
 use crate::OptionExt as _;
 use crate::{Result, StoreError};
 use polylogue_model::{MessageId, SessionId};
@@ -79,9 +80,7 @@ impl ExportItems {
             CREATE INDEX IF NOT EXISTS item_alternate_order ON item(alternate_sort,ordinal);
             CREATE TABLE IF NOT EXISTS message_first_session(message TEXT PRIMARY KEY,session TEXT NOT NULL) WITHOUT ROWID;
             CREATE TABLE IF NOT EXISTS previous(session TEXT PRIMARY KEY,message TEXT NOT NULL) WITHOUT ROWID; BEGIN;")?;
-        let ordinal = db.query_row("SELECT COALESCE(MAX(ordinal)+1,0) FROM item", [], |r| {
-            r.get(0)
-        })?;
+        let ordinal = db.scalar("SELECT COALESCE(MAX(ordinal)+1,0) FROM item", [])?;
         Ok(Self {
             db,
             payload,
@@ -281,24 +280,19 @@ impl ExportItems {
         if inserted == 1 {
             return Ok(None);
         }
-        let message_first_session: String = self.db.query_row(
+        let message_first_session: String = self.db.scalar(
             "SELECT session FROM message_first_session WHERE message=?1",
             [message],
-            |r| r.get(0),
         )?;
         SessionId::parse(&message_first_session)
             .map(Some)
             .map_err(crate::StoreError::invalid)
     }
     pub fn last_message(&self, session: &SessionId) -> Result<Option<MessageId>> {
-        let message: Option<String> = self
-            .db
-            .query_row(
-                "SELECT message FROM previous WHERE session=?1",
-                [session.to_string()],
-                |r| r.get(0),
-            )
-            .optional()?;
+        let message: Option<String> = self.db.scalar_optional(
+            "SELECT message FROM previous WHERE session=?1",
+            [session.to_string()],
+        )?;
         message
             .map(|id| MessageId::parse(&id).map_err(crate::StoreError::invalid))
             .transpose()

@@ -241,10 +241,9 @@ impl CatalogWriter {
     /// names: those fields' values become exactly the given ones. Values of
     /// other fields (the counted models and tools) stay as they are.
     pub fn put_session(&mut self, session: &Session) -> Result<()> {
-        let existed: bool = self.conn.query_row(
+        let existed: bool = self.conn.exists(
             "SELECT EXISTS(SELECT 1 FROM session WHERE id=?1)",
             [&session.id],
-            |row| row.get(0),
         )?;
         self.conn.execute("INSERT INTO session VALUES(?1,?2,'',?3,?4,?5,?6,?7,?8) ON CONFLICT(id) DO UPDATE SET native_id=excluded.native_id,title=excluded.title,title_key=excluded.title_key,origin=excluded.origin,repo=excluded.repo,last_activity=excluded.last_activity,first_prompt=excluded.first_prompt",
             params![session.id,session.native_id,session.title,text_key(&session.title),session.origin,session.repo,session.last_activity,session.first_prompt])?;
@@ -503,11 +502,8 @@ impl CatalogReader {
         )?;
         configure(&conn)?;
         conn.execute_batch("PRAGMA query_only=ON; BEGIN")?;
-        let get = |key: &str| {
-            conn.query_row("SELECT value FROM metadata WHERE key=?1", [key], |row| {
-                row.get::<_, String>(0)
-            })
-        };
+        let get =
+            |key: &str| conn.scalar::<String>("SELECT value FROM metadata WHERE key=?1", [key]);
         if get("version")? != VERSION.to_string() || get("archive")? != archive {
             return Ok(None);
         }
@@ -536,11 +532,9 @@ impl CatalogReader {
         Ok(())
     }
     pub fn catalog(&self) -> Result<query_language::catalog::Catalog> {
-        let value: String = self.conn.query_row(
-            "SELECT value FROM metadata WHERE key='catalog'",
-            [],
-            |row| row.get(0),
-        )?;
+        let value: String = self
+            .conn
+            .scalar("SELECT value FROM metadata WHERE key='catalog'", [])?;
         Ok(serde_json::from_str(&value)?)
     }
     pub fn values(&self, field: &str, prefix: &str) -> Result<Vec<ValueCount>> {
@@ -589,11 +583,9 @@ impl CatalogReader {
     pub fn session_details(&self, id: &str) -> Result<Option<Session>> {
         let mut value=self.conn.query_row("SELECT id,native_id,prefix,title,origin,repo,last_activity FROM session WHERE id=?1",[id],session).optional()?;
         if let Some(value) = value.as_mut() {
-            value.first_prompt = self.conn.query_row(
-                "SELECT first_prompt FROM session WHERE id=?1",
-                [id],
-                |row| row.get(0),
-            )?;
+            value.first_prompt = self
+                .conn
+                .scalar("SELECT first_prompt FROM session WHERE id=?1", [id])?;
         }
         Ok(value)
     }

@@ -71,7 +71,7 @@ impl Overlay {
             Some(index)
         };
         let selected = match (index.as_ref(), chain) {
-            (Some(index), Some(chain)) => index.query_row("SELECT i.pk,p.chain FROM input_ref i JOIN parse_state p ON p.input_pk=i.pk WHERE i.id=?1 AND p.chain=?2 AND p.reading_version=?3 AND p.parsed_upto=?4",params![input,chain,version,sql_base],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).optional()?,
+            (Some(index), Some(chain)) => index.query_row("SELECT i.pk,p.chain FROM input_ref i JOIN parse_state p ON p.input_pk=i.pk WHERE i.id=?1 AND p.chain=?2 AND p.reading_version=?3 AND p.parsed_upto=?4",params![input,chain,version,sql_base],|r| <(i64, i64)>::try_from(r)).optional()?,
             (None, _) => None,
             (_, None) => return Err(StoreError::Invalid("parser continuation has no selected chain identity".into())),
         };
@@ -214,14 +214,10 @@ impl Overlay {
             limit.check()?;
         }
         let attempt = self.0.lock().or_invalid("parser context lock poisoned")?;
-        let changed: Option<Vec<u8>> = attempt
-            .scratch
-            .query_row(
-                "SELECT value FROM entry WHERE key=?1",
-                [serde_json::to_string(key)?],
-                |r| r.get(0),
-            )
-            .optional()?;
+        let changed: Option<Vec<u8>> = attempt.scratch.scalar_optional(
+            "SELECT value FROM entry WHERE key=?1",
+            [serde_json::to_string(key)?],
+        )?;
         if let Some(bytes) = changed {
             return Ok(Some(crate::encoding::unpack_json(&bytes)?));
         }

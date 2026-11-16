@@ -1,4 +1,5 @@
 use super::Source;
+use crate::ConnExt as _;
 use crate::Result;
 use crate::input_rows::ObservationRow;
 use crate::primary::{ConfirmedSource, SourceSelector, SourceStatus};
@@ -34,11 +35,7 @@ impl Source {
             })),
         ).optional()?;
         let after = by_path_bytes.as_ref().map_or(0, |row| row.0);
-        let unknown: i64 = conn.query_row(
-            &source.sql("SELECT count(DISTINCT o.input) FROM @source.observation o JOIN @source.input i ON i.id=o.input WHERE i.format=?1 AND o.machine=?2 AND o.path_bytes IS NULL AND o.path=?3 AND o.rowid>?4 AND (?5 IS NULL OR o.commit_seq<=?5)"),
-            params![selector.origin,selector.machine,String::from_utf8_lossy(&selector.path_bytes),after,through],
-            |row|row.get(0),
-        )?;
+        let unknown: i64 = conn.scalar(&source.sql("SELECT count(DISTINCT o.input) FROM @source.observation o JOIN @source.input i ON i.id=o.input WHERE i.format=?1 AND o.machine=?2 AND o.path_bytes IS NULL AND o.path=?3 AND o.rowid>?4 AND (?5 IS NULL OR o.commit_seq<=?5)"), params![selector.origin,selector.machine,String::from_utf8_lossy(&selector.path_bytes),after,through])?;
         if unknown > 0 {
             return Ok((
                 if unknown > 1 {
@@ -72,8 +69,7 @@ impl Source {
                 "source commit position exceeds archive address space".into(),
             )
         })?;
-        Ok(conn.query_row(&source.sql("SELECT EXISTS(SELECT 1 FROM @source.observation o JOIN @source.input i ON i.id=o.input WHERE o.id=?1 AND i.format=?2 AND o.machine=?3 AND o.path_bytes=?4 AND (?5 IS NULL OR o.commit_seq<=?5))"),
-            params![observation, selector.origin, selector.machine, selector.path_bytes, through], |row| row.get(0))?)
+        conn.exists(&source.sql("SELECT EXISTS(SELECT 1 FROM @source.observation o JOIN @source.input i ON i.id=o.input WHERE o.id=?1 AND i.format=?2 AND o.machine=?3 AND o.path_bytes=?4 AND (?5 IS NULL OR o.commit_seq<=?5))"), params![observation, selector.origin, selector.machine, selector.path_bytes, through])
     }
 
     pub(crate) fn subject_at(

@@ -1,4 +1,5 @@
 use super::{Selection, hidden_sessions};
+use crate::ConnExt as _;
 use crate::encoding::Columns;
 use crate::{Reader, Result};
 use polylogue_model::money::Amount;
@@ -366,14 +367,13 @@ pub(super) fn unknown_scope(reader: &Reader<'_>, selection: &Selection) -> Resul
         ..selection.clone()
     };
     let (cond, params) = selection.condition();
-    Ok(reader.conn()?.query_row(
+    reader.conn()?.exists(
         &format!(
             "SELECT EXISTS(SELECT 1 FROM event m
         WHERE m.kind='response_boundaries_unknown' AND {cond})"
         ),
         rusqlite::params_from_iter(params.iter()),
-        |r| r.get(0),
-    )?)
+    )
 }
 
 pub(super) fn recorded(reader: &Reader<'_>, selection: &Selection) -> Result<RecordedUsage> {

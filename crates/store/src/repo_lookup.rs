@@ -18,7 +18,7 @@ pub(crate) fn upsert_lookup(
     let roots = serde_json::to_string(&l.root_commits)?;
     let previous: Option<(Option<String>, String)> = tx
         .prepare_cached("SELECT remote, root_commits FROM repo_lookup WHERE path = ?1")?
-        .query_row([&l.path], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_row([&l.path], |r| <(_, _)>::try_from(r))
         .optional()?;
     tx.prepare_cached(
         "INSERT INTO repo_lookup(path, remote, root_commits, input_pk, chain) VALUES (?1, ?2, ?3, ?4, ?5)

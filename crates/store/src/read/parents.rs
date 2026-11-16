@@ -195,7 +195,7 @@ impl<'a> Reader<'a> {
                     frame.issues.push(ParentIssue::Cycle { session: parent });
                     continue;
                 }
-                let explicit: bool = self.conn()?.query_row("SELECT EXISTS(SELECT 1 FROM prefix_copy WHERE parent_id=?1 AND child_id=?2 AND explicit_members=1)",params![parent.to_string(),frame.session.to_string()],|r|r.get(0))?;
+                let explicit: bool = self.conn()?.exists("SELECT EXISTS(SELECT 1 FROM prefix_copy WHERE parent_id=?1 AND child_id=?2 AND explicit_members=1)", params![parent.to_string(),frame.session.to_string()])?;
                 if explicit || link.copies_prefix && link.branch_point.is_none() {
                     let copied = self
                         .conn()?

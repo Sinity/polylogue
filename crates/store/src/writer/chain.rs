@@ -559,10 +559,9 @@ impl Inner {
             }
             return self.replace_index(input, chain, length, reading);
         }
-        let exists: bool = self.archive.query_row(
+        let exists: bool = self.archive.exists(
             "SELECT EXISTS(SELECT 1 FROM revision WHERE input=?1 AND chain=?2 AND length>=?3)",
             params![input.id, chain, length as i64],
-            |r| r.get(0),
         )?;
         if !exists {
             return Err(StoreError::Invalid(

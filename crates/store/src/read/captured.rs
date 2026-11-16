@@ -58,16 +58,12 @@ impl Reader<'_> {
 
     /// Whether the newest capture is still waiting for attachment bytes.
     pub fn downloading_files(&self, session: &polylogue_model::SessionId) -> Result<bool> {
-        let data: Option<Vec<u8>> = self
-            .conn()?
-            .query_row(
-                "SELECT e.data FROM event e JOIN session s ON s.pk = e.session_pk
+        let data: Option<Vec<u8>> = self.conn()?.scalar_optional(
+            "SELECT e.data FROM event e JOIN session s ON s.pk = e.session_pk
              WHERE s.id = ?1 AND e.kind = 'browser_capture'
              ORDER BY e.at DESC, e.pk DESC LIMIT 1",
-                [session.to_string()],
-                |r| r.get(0),
-            )
-            .optional()?;
+            [session.to_string()],
+        )?;
         let Some(data) = data else {
             return Ok(false);
         };

@@ -455,10 +455,7 @@ impl Writer {
         let building = !archive.is_primary() && archive.index_build.building();
         let index = open_index_writer(archive, building)?;
         let installed = archive.root.join("index.db");
-        let empty: bool =
-            index.query_row("SELECT NOT EXISTS (SELECT 1 FROM parse_state)", [], |r| {
-                r.get(0)
-            })?;
+        let empty: bool = index.scalar("SELECT NOT EXISTS (SELECT 1 FROM parse_state)", [])?;
         // A first build inserts rows without maintaining the indexes only
         // reads use, or the unique indexes on natural keys; each is built
         // once from a sorted scan when the build ends. The writer's other
@@ -475,13 +472,10 @@ impl Writer {
                 rusqlite::TransactionBehavior::Immediate,
             )?;
             for name in deferred_index_names() {
-                let sql: Option<String> = expected
-                    .query_row(
-                        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1",
-                        [name],
-                        |r| r.get(0),
-                    )
-                    .optional()?;
+                let sql: Option<String> = expected.scalar_optional(
+                    "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                    [name],
+                )?;
                 if let Some(sql) = sql {
                     tx.execute(&format!("DROP INDEX IF EXISTS \"{name}\""), [])?;
                     defs.push(sql);

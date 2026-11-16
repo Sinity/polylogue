@@ -1,6 +1,5 @@
 //! The index generation: a fresh ID for each index build, so a change feed
 //! position from an earlier build is recognized as one.
-use crate::ConnExt as _;
 use crate::Result;
 use rusqlite::Connection;
 
@@ -22,7 +21,7 @@ fn cursor_key() -> Result<String> {
     use std::io::Read;
     let mut bytes = [0u8; 32];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+    Ok(polylogue_model::hex(&bytes))
 }
 
 pub(crate) fn rotate(index: &Connection) -> Result<()> {
@@ -30,7 +29,7 @@ pub(crate) fn rotate(index: &Connection) -> Result<()> {
         ("generation", uuid::Uuid::now_v7().to_string()),
         ("cursor_key", cursor_key()?),
     ] {
-        index.execute("INSERT INTO meta(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [key, &value])?;
+        crate::meta_set(index, key, value)?;
     }
     Ok(())
 }
@@ -54,15 +53,12 @@ fn begin(
     index.pragma_update(None, "synchronous", previous.max(2))?;
     let result = (|| {
         let tx = index.unchecked_transaction()?;
-        let value = |key| -> Result<Option<String>> {
-            tx.scalar_optional("SELECT value FROM meta WHERE key=?1", [key])
-        };
-        let generation = value("generation")?;
+        let generation = crate::meta_get(&tx, "generation")?;
         let mut changed = false;
         // Changing boot always invalidates cursors. A stale clean-stop marker
         // therefore cannot authorize reuse after a lost NORMAL transaction.
         if generation.as_deref().is_none_or(str::is_empty)
-            || value("boot_id")?.as_deref() != Some(boot)
+            || crate::meta_get(&tx, "boot_id")?.as_deref() != Some(boot)
         {
             if let Some(scope) = scope {
                 let mut reset = scope.begin_reset()?;

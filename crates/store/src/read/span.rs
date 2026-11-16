@@ -1,5 +1,6 @@
 //! A portable span observes only selected original bytes. Resolving a known
 //! prefix never establishes completeness or hashes the unavailable remainder.
+use crate::ConnExt as _;
 use crate::OptionExt as _;
 use crate::{Reader, Result, StoreError};
 use polylogue_model::bundle::{
@@ -12,7 +13,7 @@ use polylogue_model::{
     BlobHash, Reference, SpanBounds,
     bundle::{TextCoverage, TextSourceVersion},
 };
-use rusqlite::{OptionalExtension, params};
+use rusqlite::params;
 use std::ops::ControlFlow;
 
 /// Keeps the Reader snapshot that resolved both coordinate bounds.
@@ -235,10 +236,10 @@ impl<'pool> Reader<'pool> {
     }
     fn require_span_field(&self, container: &Reference, body: NativeTextBody) -> Result<()> {
         let kind: Option<String> = match container {
-            Reference::Message(id) | Reference::Block { message: id, .. } => self.conn()?.query_row("SELECT b.kind FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.id=?1 AND coalesce(b.ordinal,cast(b.idx AS TEXT))=?2", params![id.to_string(), body.block.to_string()], |row| row.get(0)).optional()?,
+            Reference::Message(id) | Reference::Block { message: id, .. } => self.conn()?.scalar_optional("SELECT b.kind FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.id=?1 AND coalesce(b.ordinal,cast(b.idx AS TEXT))=?2", params![id.to_string(), body.block.to_string()])?,
             Reference::Document(id) => {
                 let Ok(ordinal) = i64::try_from(body.block) else { return Err(stale(container)) };
-                self.conn()?.query_row("SELECT b.kind FROM document_block b JOIN document d ON d.pk=b.document_pk WHERE d.id=?1 AND b.idx=?2", params![id.to_string(), ordinal], |row| row.get(0)).optional()?
+                self.conn()?.scalar_optional("SELECT b.kind FROM document_block b JOIN document d ON d.pk=b.document_pk WHERE d.id=?1 AND b.idx=?2", params![id.to_string(), ordinal])?
             }
             _ => return Err(stale(container)),
         };
@@ -260,12 +261,7 @@ impl<'pool> Reader<'pool> {
             Reference::Message(id) | Reference::Block { message: id, .. } => {
                 let pk: Option<i64> = self
                     .conn()?
-                    .query_row(
-                        "SELECT pk FROM message WHERE id=?1",
-                        [id.to_string()],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
+                    .scalar_optional("SELECT pk FROM message WHERE id=?1", [id.to_string()])?;
                 let Some(pk) = pk else { return Ok(None) };
                 let block_selection = self.source_block_selection(pk, container)?;
                 Ok(Some((

@@ -10,28 +10,13 @@ pub enum Format {
     Json,
     Jsonl,
 }
-impl Format {
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Terminal => "terminal",
-            Self::Markdown => "markdown",
-            Self::Html => "html",
-            Self::Json => "json",
-            Self::Jsonl => "jsonl",
-        }
-    }
-    pub const NAMES: &[&str] = &["terminal", "markdown", "html", "json", "jsonl"];
-    pub fn parse(name: &str) -> Option<Self> {
-        Some(match name {
-            "terminal" => Self::Terminal,
-            "markdown" => Self::Markdown,
-            "html" => Self::Html,
-            "json" => Self::Json,
-            "jsonl" => Self::Jsonl,
-            _ => return None,
-        })
-    }
-}
+stored_names!(Format, name, parse {
+    Terminal => "terminal",
+    Markdown => "markdown",
+    Html => "html",
+    Json => "json",
+    Jsonl => "jsonl",
+});
 
 impl std::fmt::Display for Format {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

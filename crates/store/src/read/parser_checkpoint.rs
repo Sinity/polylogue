@@ -19,7 +19,7 @@ impl Reader<'_> {
     ) -> Result<Option<StoredParserCheckpoint>> {
         let row = self.conn()?.query_row(
             "SELECT reading_version,parsed_upto,checkpoint,status,at_length,reason,stopped_attempt FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1 AND p.chain=?2",
-            params![input, chain], |r|Ok((r.get::<_,String>(0)?,r.get::<_,u64>(1)?,r.get::<_,Option<Vec<u8>>>(2)?,r.get::<_,String>(3)?,r.get::<_,Option<i64>>(4)?,r.get::<_,Option<String>>(5)?,r.get::<_,Option<Vec<u8>>>(6)?))).optional()?;
+            params![input, chain], |r| <(String, u64, Option<Vec<u8>>, String, Option<i64>, Option<String>, Option<Vec<u8>>)>::try_from(r)).optional()?;
         row.map(
             |(reading_version, cursor, bytes, status, at_length, reason, attempt)| {
                 let parsed_upto = cursor;

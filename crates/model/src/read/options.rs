@@ -17,42 +17,17 @@ pub enum View {
     Live,
     Raw,
 }
+stored_names!(View, name, parse {
+    Transcript => "transcript",
+    Dialogue => "dialogue",
+    Summary => "summary",
+    Context => "context",
+    Links => "links",
+    Changes => "changes",
+    Live => "live",
+    Raw => "raw",
+});
 impl View {
-    pub const ALL: [Self; 8] = [
-        Self::Transcript,
-        Self::Dialogue,
-        Self::Summary,
-        Self::Context,
-        Self::Links,
-        Self::Changes,
-        Self::Live,
-        Self::Raw,
-    ];
-    pub const NAMES: &[&str] = &[
-        "transcript",
-        "dialogue",
-        "summary",
-        "context",
-        "links",
-        "changes",
-        "live",
-        "raw",
-    ];
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Transcript => "transcript",
-            Self::Dialogue => "dialogue",
-            Self::Summary => "summary",
-            Self::Context => "context",
-            Self::Links => "links",
-            Self::Changes => "changes",
-            Self::Live => "live",
-            Self::Raw => "raw",
-        }
-    }
-    pub fn parse(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|view| view.name() == name)
-    }
     /// The metadata filter and layout consult this same rule.
     pub const fn block_kinds(self) -> &'static [BlockKind] {
         use BlockKind::*;

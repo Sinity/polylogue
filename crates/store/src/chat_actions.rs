@@ -166,7 +166,7 @@ pub(crate) fn enqueue(
         .query_row(
             &source.sql("SELECT id, request_hash FROM @source.chat_action WHERE request_key = ?1"),
             [&new.request_key],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| <(_, _)>::try_from(r),
         )
         .optional()?;
     if let Some((id, hash)) = known {

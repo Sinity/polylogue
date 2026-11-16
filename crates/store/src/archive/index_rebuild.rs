@@ -106,11 +106,7 @@ pub(crate) fn record(
         previous_schema,
         schema,
     };
-    index.execute(
-        "INSERT INTO meta(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        [META_KEY, &serde_json::to_string(&record)?],
-    )?;
-    Ok(())
+    crate::meta_set(index, META_KEY, serde_json::to_string(&record)?)
 }
 
 /// Whether the primary cache has finished its rebuild: it has applied Sinex's

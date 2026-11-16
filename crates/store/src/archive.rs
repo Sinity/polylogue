@@ -145,20 +145,6 @@ impl Archive {
         ))
     }
 
-    /// The index file the build pipeline (the writer, its resolver and
-    /// parser-context reads, the engine's planning reads, tool-database
-    /// catalog reads) opens: the private build file while a standalone build
-    /// runs ([`index_build`]), otherwise `index.db`. Client-facing readers
-    /// open [`Archive::served_index`] instead.
-    pub fn index_db(&self) -> PathBuf {
-        let paths = index_build::Paths::of(&self.root);
-        if !self.is_primary() && self.index_build.building() {
-            paths.build
-        } else {
-            paths.index
-        }
-    }
-
     pub fn embeddings_db(&self) -> PathBuf {
         self.root.join("embeddings.db")
     }
@@ -531,9 +517,7 @@ pub(crate) fn restart_full_log(
         return Ok(false);
     }
     conn.busy_timeout(wait)?;
-    let busy = conn.query_row("PRAGMA main.wal_checkpoint(TRUNCATE)", [], |r| {
-        r.get::<_, i64>(0)
-    });
+    let busy = conn.scalar::<i64>("PRAGMA main.wal_checkpoint(TRUNCATE)", []);
     conn.busy_timeout(BUSY_TIMEOUT)?;
     Ok(busy? == 0)
 }

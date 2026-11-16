@@ -114,7 +114,7 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
                 "a source output position exceeds SQLite's signed integer range".into(),
             )
         })?;
-        let existing:Option<(Vec<u8>,i64,Option<Vec<u8>>)>=tx.query_row("SELECT product,source_order,sinex_context FROM primary_pending WHERE position=?1 AND event=?2 AND change=?3",params![event.position,event.event,change],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
+        let existing:Option<(Vec<u8>,i64,Option<Vec<u8>>)>=tx.query_row("SELECT product,source_order,sinex_context FROM primary_pending WHERE position=?1 AND event=?2 AND change=?3",params![event.position,event.event,change],|row| <(_, _, _)>::try_from(row)).optional()?;
         match existing {
             Some((old, order, context)) => {
                 if order != source_order || old != bytes || context != context_bytes {
@@ -472,11 +472,7 @@ enum StateChange {
 impl StateChange {
     fn of(index: &Connection, kind: &str) -> Result<Self> {
         // A formerly unreadable event can precede already-applied authored state.
-        let rewritten: bool = index.query_row(
-            "SELECT EXISTS(SELECT 1 FROM primary_staged c JOIN main.confirmed_event f ON f.event=c.event WHERE (f.kind=?1 AND f.state!=c.state) OR (f.kind='refused' AND c.kind=?1))",
-            [kind],
-            |row| row.get(0),
-        )?;
+        let rewritten: bool = index.exists("SELECT EXISTS(SELECT 1 FROM primary_staged c JOIN main.confirmed_event f ON f.event=c.event WHERE (f.kind=?1 AND f.state!=c.state) OR (f.kind='refused' AND c.kind=?1))", [kind])?;
         if rewritten {
             return Ok(Self::Rewritten);
         }
@@ -847,15 +843,11 @@ pub(crate) enum Step {
 }
 
 fn generation(index: &Connection) -> Result<Option<String>> {
-    Ok(index
-        .query_row("SELECT value FROM meta WHERE key='generation'", [], |row| {
-            row.get(0)
-        })
-        .optional()?)
+    crate::meta_get(index, "generation")
 }
 
 fn pending(index: &Connection) -> Result<Option<i64>> {
-    Ok(index.query_row("SELECT max(n) FROM primary_pending", [], |row| row.get(0))?)
+    index.scalar("SELECT max(n) FROM primary_pending", [])
 }
 
 fn next_position(index: &Connection) -> Result<Option<i64>> {

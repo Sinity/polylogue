@@ -24,7 +24,7 @@ impl Reader<'_> {
                     (SELECT count(*) FROM session_link_identity l WHERE l.parent_id=s.id OR l.child_id=s.id)
              FROM session s WHERE s.id=?1",
                 [session.to_string()],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                |row| <(i64, i64)>::try_from(row),
             )
             .optional()?;
         counts

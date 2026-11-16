@@ -736,7 +736,7 @@ impl RowWriter<'_, '_> {
         let (copy, session): (String, String) = self.tx.query_row(
             "SELECT (SELECT id FROM session WHERE pk=?1),(SELECT id FROM session WHERE pk=?2)",
             params![from, to],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| <(_, _)>::try_from(r),
         )?;
         // A link naming the copy names the session; where the session already
         // has that link, the copy's link sources join it.
@@ -753,12 +753,7 @@ impl RowWriter<'_, '_> {
             self.changes.link(self.tx, pk)?;
             let existing: Option<i64> = self
                 .tx
-                .query_row(
-                    "SELECT pk FROM link WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND how IS ?4 AND branch_point IS ?5 AND spawning_call IS ?6",
-                    params![parent, child, kind, how, at, call],
-                    |r| r.get(0),
-                )
-                .optional()?;
+                .scalar_optional("SELECT pk FROM link WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND how IS ?4 AND branch_point IS ?5 AND spawning_call IS ?6", params![parent, child, kind, how, at, call])?;
             match existing {
                 Some(existing) => {
                     self.tx.execute(
@@ -1032,7 +1027,7 @@ impl RowWriter<'_, '_> {
                         order,
                         v.in_progress
                     ],
-                    |row| Ok((row.get::<_, bool>(0)?, row.get::<_, bool>(1)?)),
+                    |row| <(bool, bool)>::try_from(row),
                 )?;
             if !unchanged {
                 // Items and completion use the selected body and placement;
@@ -1274,7 +1269,7 @@ impl RowWriter<'_, '_> {
                  OR (event.seq_from_message=1 AND event.seq IS NOT coalesce(s.seq,0)))
              RETURNING pk,session_pk",
             )?
-            .query_map([messages], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .query_map([messages], |row| <(_, _)>::try_from(row))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         self.apply_event_moves(events)
     }
@@ -1330,7 +1325,7 @@ impl RowWriter<'_, '_> {
                 "SELECT t.pk, t.command, t.path FROM tool_call t JOIN block b ON b.pk = t.call_block_pk
                  WHERE b.message_pk = ?1",
             )?
-            .query_map([message_pk], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .query_map([message_pk], |r| <(_, _, _)>::try_from(r))?
             .collect::<rusqlite::Result<_>>()?;
         for (pk, command, path) in old_calls {
             if self.first_build.is_none() {

@@ -49,7 +49,7 @@ impl Reader<'_> {
         let (version,body,source_input,source_chain):(Vec<u8>,Vec<u8>,String,i64)=conn.query_row(
             "SELECT (SELECT version_hash FROM message_version WHERE pk=ms.version_pk),b.body,i.id,ms.chain FROM message m JOIN message_source ms ON ms.message_pk=m.pk AND ms.input_pk=m.input_pk AND ms.chain=m.source_chain JOIN input_ref i ON i.pk=ms.input_pk JOIN block b ON b.message_pk=m.pk WHERE m.id=?1 AND coalesce(b.ordinal,CAST(b.idx AS TEXT))=?2",
             params![message.to_string(),block.to_string()],
-            |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?
+            |r| <(_, _, _, _)>::try_from(r)).optional()?
             .ok_or_else(||StoreError::NotFound(format!("attachment block {message}:{block}")))?;
         let source = match unpack_block(&body)? {
             Block::Image(a) | Block::File(a) if attachment_index == 0 => a,
@@ -278,7 +278,7 @@ impl Reader<'_> {
         let shown = shown
             .query_map(
                 params![message.to_string(), source_version.0.as_slice()],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+                |r| <(String, i64)>::try_from(r),
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut stated = Vec::new();

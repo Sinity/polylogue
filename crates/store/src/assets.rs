@@ -30,7 +30,7 @@ fn asset_source(
         .query_row(
             &format!("SELECT chain,length FROM {schema}revision WHERE input=?1 ORDER BY number DESC LIMIT 1"),
             [input],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| <(_, _)>::try_from(r),
         )
         .optional()?;
     let Some((chain, length)) = revision else {
@@ -156,12 +156,10 @@ impl Reader<'_> {
     pub fn unindexed_import_members(&self) -> Result<(Vec<ObservedMember>, Option<i64>)> {
         let conn = self.conn()?;
         let after: i64 = conn
-            .query_row(
+            .scalar_optional(
                 "SELECT CAST(value AS INTEGER) FROM meta WHERE key='import_observation_row'",
                 [],
-                |r| r.get(0),
-            )
-            .optional()?
+            )?
             .unwrap_or(0);
         let mut out = Vec::new();
         let through = visit_import_members(conn, "source_", after, None, |member| {

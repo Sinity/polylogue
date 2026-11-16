@@ -187,7 +187,7 @@ fn prompt_place(conn: &Connection, pk: i64, session_pk: i64) -> Result<Option<Or
                AND EXISTS (SELECT 1 FROM block b JOIN text t ON t.id = b.text_id
                            WHERE b.message_pk = m.pk AND b.kind = 'text')",
         )?
-        .query_row([pk, session_pk], |row| Ok((row.get(0)?, row.get(1)?)))
+        .query_row([pk, session_pk], |row| <(_, _)>::try_from(row))
         .optional()?)
 }
 

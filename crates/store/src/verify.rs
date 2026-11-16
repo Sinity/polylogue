@@ -229,7 +229,7 @@ fn rows(pool: &ReadPool, found: &mut Verification) -> Result<()> {
     // The counters `status` reads instead of counting.
     let kept: Vec<(String, i64)> = conn
         .prepare("SELECT name, n FROM source_row_count ORDER BY name")?
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .query_map([], |row| <(_, _)>::try_from(row))?
         .collect::<rusqlite::Result<_>>()?;
     for (name, n) in kept {
         let counted = match name.as_str() {
@@ -250,7 +250,7 @@ fn rows(pool: &ReadPool, found: &mut Verification) -> Result<()> {
     let mut listed = |kind: ProblemKind, sql: &str| -> Result<()> {
         let mut statement = conn.prepare(sql)?;
         let rows: Vec<(String, String)> = statement
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .query_map([], |row| <(_, _)>::try_from(row))?
             .collect::<rusqlite::Result<_>>()?;
         for (subject, detail) in rows {
             found.problem(kind, subject, detail);
@@ -475,7 +475,7 @@ fn input_revisions(
                 "SELECT chain, number, length FROM source_revision
                  WHERE input = ?1 ORDER BY chain, length, number",
             )?
-            .query_map([input], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .query_map([input], |row| <(_, _, _)>::try_from(row))?
             .collect::<rusqlite::Result<_>>()?;
         for (chain, number, length) in revisions {
             let length = count(length);

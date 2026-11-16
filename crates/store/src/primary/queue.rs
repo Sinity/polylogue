@@ -341,11 +341,8 @@ impl Queue {
         let connection = archive::open_write(path, archive::cache::SETUP)?;
         let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if version == 0 {
-            let tables: u64 = connection.query_row(
-                "SELECT count(*) FROM sqlite_master WHERE type='table'",
-                [],
-                |row| row.get(0),
-            )?;
+            let tables: u64 =
+                connection.scalar("SELECT count(*) FROM sqlite_master WHERE type='table'", [])?;
             if tables != 0 {
                 return Err(StoreError::Invalid(
                     "producer queue has an unknown format".into(),
@@ -472,11 +469,10 @@ impl Queue {
     }
 
     pub fn references_directory(&self, directory: &str) -> Result<bool> {
-        Ok(self.connection.query_row(
+        self.connection.exists(
             "SELECT EXISTS(SELECT 1 FROM operation WHERE directory=?1)",
             [directory],
-            |row| row.get(0),
-        )?)
+        )
     }
 
     pub fn group_for_member(&self, identity: &str) -> Result<Option<Entry>> {
@@ -486,12 +482,10 @@ impl Queue {
     pub fn member_ordinal(&self, identity: &str) -> Result<Option<u64>> {
         Ok(self
             .connection
-            .query_row(
+            .scalar_optional(
                 "SELECT ordinal FROM operation WHERE identity=?1",
                 [identity],
-                |row| row.get(0),
-            )
-            .optional()?
+            )?
             .flatten())
     }
 
@@ -511,19 +505,15 @@ impl Queue {
     }
 
     pub fn last_order(&self) -> Result<u64> {
-        Ok(self.connection.query_row(
-            "SELECT coalesce(max(ordering),0) FROM operation",
-            [],
-            |row| row.get(0),
-        )?)
+        self.connection
+            .scalar("SELECT coalesce(max(ordering),0) FROM operation", [])
     }
 
     pub fn len(&self) -> Result<u64> {
-        Ok(self.connection.query_row(
+        self.connection.scalar(
             "SELECT count(*) FROM operation WHERE kind!='acquisition'",
             [],
-            |r| r.get(0),
-        )?)
+        )
     }
 
     pub fn is_empty(&self) -> Result<bool> {
@@ -764,14 +754,9 @@ impl Queue {
             let mut upper = prefix[..PARSED_CHAIN_PREFIX_LENGTH - 1].to_owned();
             upper.push(';');
             let next: Option<String> = transaction
-                .query_row(
-                    "SELECT identity FROM operation WHERE identity>?1 AND identity<?2 AND phase='pending'
+                .scalar_optional("SELECT identity FROM operation WHERE identity>?1 AND identity<?2 AND phase='pending'
                        AND ordering>(SELECT ordering FROM operation WHERE identity=?3)
-                     ORDER BY ordering LIMIT 1",
-                    params![prefix, upper, identity],
-                    |row| row.get(0),
-                )
-                .optional()?;
+                     ORDER BY ordering LIMIT 1", params![prefix, upper, identity])?;
             dependents.extend(next);
         }
         for dependent in dependents {
@@ -782,7 +767,7 @@ impl Queue {
     }
 
     pub fn counts(&self) -> Result<(u64, u64, u64)> {
-        Ok(self.connection.query_row("SELECT coalesce(sum(kind IN ('material','request')),0),coalesce(sum(kind IN ('events','replay')),0),coalesce(sum(stored_bytes),0) FROM operation", [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?)
+        Ok(self.connection.query_row("SELECT coalesce(sum(kind IN ('material','request')),0),coalesce(sum(kind IN ('events','replay')),0),coalesce(sum(stored_bytes),0) FROM operation", [], |row| <(_, _, _)>::try_from(row))?)
     }
 }
 

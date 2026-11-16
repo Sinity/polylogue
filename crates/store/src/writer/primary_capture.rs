@@ -564,7 +564,7 @@ impl Inner {
             let chain = if let Some(observation) = &rows.observation {
                 self.index.query_row("SELECT coalesce(o.chain,r.chain) FROM source_observation o LEFT JOIN source_revision r ON r.input=o.input AND r.number=o.revision WHERE o.id=?1",[&observation.id],|row|row.get::<_,Option<i64>>(0)).optional()?.map(|chain|chain.unwrap_or(1))
             } else if let Some(extent) = rows.extents.first() {
-                self.index.query_row("SELECT e.chain FROM source_extent e JOIN source_revision r ON r.input=e.input AND r.chain=e.chain WHERE e.input=?1 AND e.blob=?2 AND e.offset-e.blob_offset=?3 AND r.length>=?4 ORDER BY r.number DESC LIMIT 1",params![input,&extent.blob.0[..],extent.offset-extent.blob_offset,length as i64],|row|row.get(0)).optional()?
+                self.index.scalar_optional("SELECT e.chain FROM source_extent e JOIN source_revision r ON r.input=e.input AND r.chain=e.chain WHERE e.input=?1 AND e.blob=?2 AND e.offset-e.blob_offset=?3 AND r.length>=?4 ORDER BY r.number DESC LIMIT 1", params![input,&extent.blob.0[..],extent.offset-extent.blob_offset,length as i64])?
             } else {
                 None
             };
@@ -611,7 +611,7 @@ impl Inner {
         }
         let value:Option<(String, Option<Vec<u8>>)> = self.index.query_row(
             "SELECT machine,path_bytes FROM source_observation WHERE input=?1 ORDER BY rowid DESC LIMIT 1",
-            [&batch.input.id], |row| Ok((row.get(0)?,row.get(1)?)),
+            [&batch.input.id], |row| <(_, _)>::try_from(row),
         ).optional()?;
         match value {
             Some((machine, Some(path_bytes))) => Ok(crate::primary::SourceSelector {
@@ -655,10 +655,9 @@ impl Inner {
                     .or_else(|| captured.previous.clone()),
             ));
         }
-        let count: i64 = self.index.query_row(
+        let count: i64 = self.index.scalar(
             "SELECT count(*) FROM source_material WHERE input=?1 AND chain=?2",
             params![input, chain],
-            |row| row.get(0),
         )?;
         let previous=self.index.scalar_optional("SELECT id FROM source_material WHERE input=?1 AND chain=?2 ORDER BY offset DESC LIMIT 1",params![input,chain])?;
         Ok((

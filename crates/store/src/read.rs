@@ -2,6 +2,8 @@
 //! sees one consistent read transaction on `index.db` with `archive.db`
 //! attached.
 
+use crate::ConnExt as _;
+use crate::archive::index_build::Reads;
 use crate::archive::{Archive, open_read};
 use crate::blobs::FileFacts;
 use crate::encoding::{Columns, restore_text, unpack_block};
@@ -106,18 +108,6 @@ pub struct ReadPool {
     _release: Option<Arc<dyn Fn() + Send + Sync>>,
     #[cfg(test)]
     changed: Condvar,
-}
-
-/// The index file a pool reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Reads {
-    /// The file the build pipeline writes: the private build file while a
-    /// build runs, otherwise `index.db`.
-    Pipeline,
-    /// The file client-facing reads are served from; while a build runs and
-    /// no previous index can be served, reads answer
-    /// [`StoreError::IndexBuilding`].
-    Serving,
 }
 
 thread_local! {
@@ -357,9 +347,10 @@ impl ReadPool {
     }
 
     fn index_identity(&self) -> Result<IndexIdentity> {
-        let path = self.index_path()?;
-        let metadata = std::fs::metadata(&path)?;
-        Ok((path, metadata.dev(), metadata.ino()))
+        self.archive.with_index_path(self.reads, |path| {
+            let metadata = std::fs::metadata(path)?;
+            Ok((path.to_path_buf(), metadata.dev(), metadata.ino()))
+        })
     }
 
     /// Whether this pool reads a build in progress.
@@ -813,8 +804,8 @@ impl Reader<'_> {
                     |_| Ok(()),
                 );
                 // A build file installed between the check and this start
-                // (`crate::archive::index_build`) has left its directory; once
-                // the read has started, the install waits for it to end.
+                // (`crate::archive::index_build`) changes the path identity. An
+                // already-started read keeps its open file and snapshot.
                 if let Err(error) = started {
                     if Some(self.pool.index_identity()?) != self.index_identity {
                         self.state.set(ReadState::IndexReplaced);
@@ -841,7 +832,7 @@ impl Reader<'_> {
     pub fn confirmed_refusals(&self) -> Result<(u64, Option<String>)> {
         let conn = self.conn()?;
         let count: i64 =
-            conn.query_row("SELECT count(*) FROM primary_refused r LEFT JOIN confirmed_event f ON f.event=r.event WHERE f.event IS NULL OR f.state='live'", [], |row| row.get(0))?;
+            conn.scalar("SELECT count(*) FROM primary_refused r LEFT JOIN confirmed_event f ON f.event=r.event WHERE f.event IS NULL OR f.state='live'", [])?;
         let latest = conn
             .query_row(
                 "SELECT r.kind,r.position,r.reason FROM primary_refused r LEFT JOIN confirmed_event f ON f.event=r.event WHERE f.event IS NULL OR f.state='live' ORDER BY r.position DESC LIMIT 1",
@@ -888,11 +879,9 @@ impl Reader<'_> {
     /// generation that no answer carries, so a cursor a client changed or
     /// made up is refused.
     pub fn cursor_key(&self) -> Result<[u8; 32]> {
-        let secret: String = self.conn()?.query_row(
-            "SELECT value FROM main.meta WHERE key = 'cursor_key'",
-            [],
-            |r| r.get(0),
-        )?;
+        let secret: String = self
+            .conn()?
+            .scalar("SELECT value FROM main.meta WHERE key = 'cursor_key'", [])?;
         Ok(*blake3::hash(secret.as_bytes()).as_bytes())
     }
 
@@ -956,15 +945,13 @@ impl Reader<'_> {
     pub fn display_title(&self, id: &SessionId) -> Result<Option<String>> {
         Ok(self
             .conn()?
-            .query_row(
+            .scalar_optional(
                 &format!(
                     "SELECT {} FROM session WHERE id = ?1",
                     crate::session_sql::display_title("session")
                 ),
                 [id.to_string()],
-                |row| row.get(0),
-            )
-            .optional()?
+            )?
             .flatten())
     }
 
@@ -1066,7 +1053,7 @@ impl Reader<'_> {
             .prepare_cached(&format!("WITH record_ranks AS ({})
                 SELECT m.pk,m.id,c.record_order FROM record_ranks c JOIN message m ON m.pk=c.pk ORDER BY c.record_order",
                 order::session_record_rows("?1")))?
-            .query_map([session_pk], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .query_map([session_pk], |r| <(_, _, _)>::try_from(r))?
             .collect::<rusqlite::Result<_>>()?)
     }
 
@@ -1343,11 +1330,10 @@ impl Reader<'_> {
     pub fn status(&self) -> Result<Status> {
         limit::ReadLimit::set_stage("status counts");
         let c = self.conn()?;
-        let count =
-            |sql: &str| -> Result<u64> { Ok(c.query_row(sql, [], |r| r.get::<_, i64>(0))? as u64) };
+        let count = |sql: &str| -> Result<u64> { Ok(c.scalar::<i64>(sql, [])? as u64) };
         let mut parse_states = BTreeMap::new();
         let mut stmt = c.prepare_cached("SELECT status, n FROM parse_status_count WHERE n > 0")?;
-        for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+        for row in stmt.query_map([], |r| <(String, i64)>::try_from(r))? {
             let (s, n) = row?;
             parse_states.insert(s, n as u64);
         }
@@ -1355,7 +1341,7 @@ impl Reader<'_> {
         let mut stmt = c.prepare_cached(
             "SELECT what, n FROM unused_count WHERE n > 0 ORDER BY n DESC, what LIMIT 20",
         )?;
-        for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+        for row in stmt.query_map([], |r| <(String, i64)>::try_from(r))? {
             let (w, n) = row?;
             unused.push((w, n as u64));
         }
@@ -1421,7 +1407,7 @@ impl Reader<'_> {
 
     fn current_attachment(&self, asset: &crate::assets::AssetMatch) -> Result<()> {
         let current = if asset.size == 0 {
-            let latest: Option<(i64,i64)> = self.conn()?.query_row("SELECT chain,length FROM source_revision WHERE input=?1 ORDER BY number DESC LIMIT 1", [&asset.input], |row| Ok((row.get(0)?,row.get(1)?))).optional()?;
+            let latest: Option<(i64,i64)> = self.conn()?.query_row("SELECT chain,length FROM source_revision WHERE input=?1 ORDER BY number DESC LIMIT 1", [&asset.input], |row| <(_, _)>::try_from(row)).optional()?;
             if latest != Some((asset.chain,0)) {
                 return Err(StoreError::Conflict("the attachment's stored bytes changed; select it again".into()));
             }

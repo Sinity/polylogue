@@ -584,7 +584,7 @@ pub(crate) fn document_text_ids(
 ) -> Result<std::collections::BTreeMap<usize, i64>> {
     Ok(conn
         .prepare_cached("SELECT idx,text_id FROM document_version_text WHERE version_hash=?1")?
-        .query_map([hash], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .query_map([hash], |row| <(_, _)>::try_from(row))?
         .collect::<rusqlite::Result<_>>()?)
 }
 
@@ -595,6 +595,6 @@ pub(crate) fn message_text_ids(
 ) -> Result<std::collections::BTreeMap<usize, i64>> {
     Ok(conn
         .prepare_cached("SELECT idx,text_id FROM message_version_text WHERE version_pk=?1")?
-        .query_map([pk], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .query_map([pk], |row| <(_, _)>::try_from(row))?
         .collect::<rusqlite::Result<_>>()?)
 }

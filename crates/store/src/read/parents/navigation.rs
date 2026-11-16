@@ -1,6 +1,5 @@
 //! Metadata-only positions for the shared reader.
 use super::*;
-use crate::ConnExt as _;
 use crate::ResultExt as _;
 
 fn message_count(count: i64) -> Result<usize> {
@@ -71,15 +70,10 @@ impl MessageSelection<'_, '_> {
         let Some((pk, _)) = &self.own else {
             return Ok(None);
         };
-        Ok(self
-            .reader
-            .conn()?
-            .query_row(
-                "SELECT pk FROM message WHERE session_pk=?1 AND id=?2 AND duplicate_of IS NULL",
-                params![pk, id],
-                |r| r.get(0),
-            )
-            .optional()?)
+        self.reader.conn()?.scalar_optional(
+            "SELECT pk FROM message WHERE session_pk=?1 AND id=?2 AND duplicate_of IS NULL",
+            params![pk, id],
+        )
     }
 
     /// A known message, or the last selected message, without reading bodies.
@@ -198,20 +192,15 @@ impl MessageSelection<'_, '_> {
             AND EXISTS(SELECT 1 FROM block WHERE message_pk=m.pk AND kind IN ({kinds}))
             ORDER BY m.session_order DESC,m.id DESC LIMIT 1"
         );
-        let previous = conn
-            .query_row(&sql, params![session, key, prompts], |row| {
-                row.get::<_, i64>(0)
-            })
-            .optional()?;
+        let previous = conn.scalar_optional::<i64>(&sql, params![session, key, prompts])?;
         previous
             .map(|previous| {
-                let stepped: i64 = conn.query_row(
+                let stepped: i64 = conn.scalar(
                     "SELECT count(*) FROM message m
                 WHERE m.session_pk=?1 AND m.duplicate_of IS NULL
                 AND (m.session_order,m.id)>=(SELECT session_order,id FROM message WHERE pk=?2)
                 AND (m.session_order,m.id)<(SELECT session_order,id FROM message WHERE pk=?3)",
                     params![session, previous, key],
-                    |row| row.get(0),
                 )?;
                 Ok(VisitStart {
                     message: from.message.saturating_sub(message_count(stepped)?),
@@ -232,6 +221,6 @@ impl MessageSelection<'_, '_> {
             .map(|kind| format!("'{}'", kind.as_str()))
             .collect::<Vec<_>>()
             .join(",");
-        Ok(self.reader.conn()?.query_row(&format!("SELECT EXISTS(SELECT 1 FROM message m JOIN block b ON b.message_pk=m.pk WHERE m.pk=?1 AND b.kind IN ({kinds}) AND (?2=0 OR (pl_is_prompt(m.role,m.prompt_kind))))"),params![key,prompts],|row|row.get(0))?)
+        self.reader.conn()?.exists(&format!("SELECT EXISTS(SELECT 1 FROM message m JOIN block b ON b.message_pk=m.pk WHERE m.pk=?1 AND b.kind IN ({kinds}) AND (?2=0 OR (pl_is_prompt(m.role,m.prompt_kind))))"), params![key,prompts])
     }
 }

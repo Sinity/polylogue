@@ -4,7 +4,9 @@
 //! pipeline opens that file: the writer, its resolver and parser-context
 //! reads, the engine's planning reads and tool-database catalog reads. When
 //! the build ends the file is synced, closed, switched to WAL and renamed
-//! over `index.db`; serving readers then open the new file.
+//! over `index.db`; serving readers then open the new file. Pipeline readers
+//! use `built.db` after its first rename. Path metadata and both renames
+//! share the build-state lock, so each selected path still names its file.
 //!
 //! Crash states, each handled by [`prepare`] at the next open:
 //! - `built.db` present: the build was finished, synced and switched to WAL
@@ -78,6 +80,24 @@ impl Paths {
     }
 }
 
+/// The index file a pool reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reads {
+    /// The file the build pipeline writes: the private build file while a
+    /// build runs, otherwise `index.db`.
+    Pipeline,
+    /// The file client-facing reads are served from; while a build runs and
+    /// no previous index can be served, reads answer
+    /// [`StoreError::IndexBuilding`].
+    Serving,
+}
+
+#[derive(Clone, Copy)]
+enum BuildFile {
+    Writing,
+    Ready,
+}
+
 type Release = dyn Fn() + Send + Sync;
 
 /// The build state of one archive in this process, shared by every
@@ -98,7 +118,7 @@ impl std::fmt::Debug for State {
 
 #[derive(Default, Clone)]
 struct Inner {
-    building: bool,
+    file: Option<BuildFile>,
     serving_previous: bool,
     chains: u64,
     chains_read: u64,
@@ -117,9 +137,43 @@ pub(crate) fn state(root: &Path) -> Arc<State> {
     // as one taken without the archive lock, finds a build in progress on
     // disk; the archive's open sets the state from what it prepares.
     let state = Arc::new(State::default());
-    state.set(Paths::of(root).build.exists(), false);
+    let paths = Paths::of(root);
+    let file = if paths.built.exists() {
+        Some(BuildFile::Ready)
+    } else if paths.build.exists() {
+        Some(BuildFile::Writing)
+    } else {
+        None
+    };
+    state.set(file, false);
     archives.insert(key, Arc::downgrade(&state));
     state
+}
+
+impl Inner {
+    fn progress(&self) -> Option<IndexBuild> {
+        self.file.map(|_| IndexBuild {
+            serving_previous: self.serving_previous,
+            chains: self.chains,
+            chains_read: self.chains_read,
+        })
+    }
+
+    fn pipeline_index<'a>(&self, paths: &'a Paths, primary: bool) -> &'a Path {
+        match (primary, self.file) {
+            (false, Some(BuildFile::Writing)) => &paths.build,
+            (false, Some(BuildFile::Ready)) => &paths.built,
+            _ => &paths.index,
+        }
+    }
+
+    fn served_index<'a>(&self, paths: &'a Paths) -> Result<&'a Path> {
+        match self.progress() {
+            None => Ok(&paths.index),
+            Some(build) if build.serving_previous => Ok(&paths.previous),
+            Some(build) => Err(StoreError::IndexBuilding(Box::new(build))),
+        }
+    }
 }
 
 impl State {
@@ -128,16 +182,11 @@ impl State {
     }
 
     pub(crate) fn building(&self) -> bool {
-        self.inner().building
+        self.inner().file.is_some()
     }
 
     pub(crate) fn progress(&self) -> Option<IndexBuild> {
-        let inner = self.inner();
-        inner.building.then(|| IndexBuild {
-            serving_previous: inner.serving_previous,
-            chains: inner.chains,
-            chains_read: inner.chains_read,
-        })
+        self.inner().progress()
     }
 
     pub(crate) fn record_progress(&self, chains: u64, chains_read: u64) {
@@ -146,10 +195,10 @@ impl State {
         inner.chains_read = chains_read;
     }
 
-    fn set(&self, building: bool, serving_previous: bool) {
+    fn set(&self, file: Option<BuildFile>, serving_previous: bool) {
         let mut inner = self.inner();
-        inner.building = building;
-        inner.serving_previous = building && serving_previous;
+        inner.file = file;
+        inner.serving_previous = file.is_some() && serving_previous;
     }
 
     /// `release` runs before the build file is renamed; dropping the
@@ -174,15 +223,38 @@ impl State {
 }
 
 impl Archive {
+    /// The index file the build pipeline (the writer, its resolver and
+    /// parser-context reads, the engine's planning reads, tool-database
+    /// catalog reads) opens: `index-build/index.db` while a standalone build
+    /// writes, then `index-build/built.db` until it is installed as `index.db`
+    /// ([`crate::archive::index_build`]). Client-facing readers open
+    /// [`Archive::served_index`] instead.
+    pub fn index_db(&self) -> PathBuf {
+        self.index_build
+            .inner()
+            .pipeline_index(&Paths::of(&self.root), self.is_primary())
+            .to_path_buf()
+    }
+
+    /// Resolve and inspect a read path while installation cannot rename it.
+    pub(crate) fn with_index_path<T>(
+        &self,
+        reads: Reads,
+        read: impl FnOnce(&Path) -> Result<T>,
+    ) -> Result<T> {
+        let paths = Paths::of(&self.root);
+        let inner = self.index_build.inner();
+        let path = match reads {
+            Reads::Pipeline => inner.pipeline_index(&paths, self.is_primary()),
+            Reads::Serving => inner.served_index(&paths)?,
+        };
+        read(path)
+    }
+
     /// The index file serving readers open, or the build's progress when
     /// no index can be served until it ends.
     pub(crate) fn served_index(&self) -> Result<PathBuf> {
-        let paths = Paths::of(&self.root);
-        match self.index_build.progress() {
-            None => Ok(paths.index),
-            Some(build) if build.serving_previous => Ok(paths.previous),
-            Some(build) => Err(StoreError::IndexBuilding(Box::new(build))),
-        }
+        self.with_index_path(Reads::Serving, |path| Ok(path.to_path_buf()))
     }
 
     /// The build in progress, if `index.db` is being built.
@@ -209,7 +281,7 @@ pub(crate) fn prepare(archive: &Archive) -> Result<()> {
                 // A built index is current; anything in the build directory
                 // is left from before it was installed.
                 remove_build_files(&paths)?;
-                archive.index_build.set(false, false);
+                archive.index_build.set(None, false);
                 crate::fault::check("index.after_creation", "")?;
                 return crate::archive::generation::open(archive, &index);
             }
@@ -259,7 +331,9 @@ pub(crate) fn prepare(archive: &Archive) -> Result<()> {
         build
     };
     let serving_previous = paths.previous.exists() && servable(&paths.previous)?;
-    archive.index_build.set(true, serving_previous);
+    archive
+        .index_build
+        .set(Some(BuildFile::Writing), serving_previous);
     crate::fault::check("index.after_creation", "")?;
     crate::archive::generation::open(archive, &build)
 }
@@ -368,8 +442,12 @@ pub(crate) fn finish(archive: &Archive) -> Result<()> {
         "index.build.after_finish_sync",
         &archive.root.to_string_lossy(),
     )?;
-    fs::rename(&paths.build, &paths.built)?;
-    sync_directory(&paths.dir)?;
+    {
+        let mut inner = archive.index_build.inner();
+        fs::rename(&paths.build, &paths.built)?;
+        inner.file = Some(BuildFile::Ready);
+        sync_directory(&paths.dir)?;
+    }
     remove(&paths.unsynced)?;
     sync_directory(&paths.dir)?;
     crate::fault::check("index.build.before_rename", &archive.root.to_string_lossy())?;
@@ -385,9 +463,13 @@ fn install(archive: &Archive) -> Result<()> {
     for suffix in ["-wal", "-shm"] {
         remove(&with_suffix(&paths.index, suffix))?;
     }
-    fs::rename(&paths.built, &paths.index)?;
-    sync_directory(&archive.root)?;
-    archive.index_build.set(false, false);
+    {
+        let mut inner = archive.index_build.inner();
+        fs::rename(&paths.built, &paths.index)?;
+        inner.file = None;
+        inner.serving_previous = false;
+        sync_directory(&archive.root)?;
+    }
     remove_build_files(&paths)
 }
 

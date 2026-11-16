@@ -211,7 +211,7 @@ impl<'a> Reader<'a> {
             .query_row(
                 "SELECT pk,version_hash,fields FROM document WHERE id=?1",
                 [id.to_string()],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| <(_, _, _)>::try_from(r),
             )
             .optional()?;
         row.map(|(pk, hash, fields)| {
@@ -297,11 +297,10 @@ impl DocumentRead<'_, '_> {
         let Ok(ordinal) = i64::try_from(ordinal) else {
             return Ok(false);
         };
-        Ok(self.reader.conn()?.query_row(
+        self.reader.conn()?.exists(
             "SELECT EXISTS(SELECT 1 FROM document_block WHERE document_pk=?1 AND idx=?2)",
             params![self.pk, ordinal],
-            |row| row.get(0),
-        )?)
+        )
     }
 
     fn visit_blocks_until(

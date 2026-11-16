@@ -28,7 +28,7 @@ pub(crate) const LIVE_EVENT_KINDS: &str = "(kind LIKE 'hook~_%' ESCAPE '~' \
 fn load(tx: &Transaction<'_>, session_pk: i64) -> Result<(LiveFacts, Option<i64>)> {
     let (facts, last): (Option<String>, Option<i64>) = tx
         .prepare_cached("SELECT live_facts, live_last_at FROM session WHERE pk = ?1")?
-        .query_row([session_pk], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_row([session_pk], |r| <(_, _)>::try_from(r))
         .optional()?
         .unwrap_or((None, None));
     let facts = match facts {
@@ -343,7 +343,7 @@ impl crate::Reader<'_> {
                 now - live::STALE_FOR_MS - live::LIVE_WINDOW_MS,
                 now - live::LIVE_WINDOW_MS - 1
             ],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?)),
+            |r| <(String, Option<i64>)>::try_from(r),
         )?;
         let mut out = Vec::new();
         for row in rows {
@@ -593,8 +593,7 @@ impl crate::Reader<'_> {
                AND json_extract(live_facts, '$.root_gone_at') IS NULL
                AND json_extract(live_facts, '$.ended_at') IS NULL",
         )?;
-        let rows =
-            statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let rows = statement.query_map([], |r| <(String, String)>::try_from(r))?;
         let mut out = Vec::new();
         for row in rows {
             let (session, facts) = row?;

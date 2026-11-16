@@ -53,7 +53,7 @@ fn compute(conn: &Connection, session_pk: i64) -> Result<Vec<(i64, Option<i64>)>
              FROM message WHERE session_pk = ?1)
          SELECT pk, v FROM marked WHERE was IS NOT v",
         )?
-        .query_map([session_pk], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .query_map([session_pk], |row| <(_, _)>::try_from(row))?
         .collect::<rusqlite::Result<_>>()?)
 }
 

@@ -112,9 +112,7 @@ impl Reader<'_> {
         if self.pool.reads_build() {
             search_missing.push(CompletenessReason::FirstBuild);
         }
-        if conn.query_row("SELECT EXISTS(SELECT 1 FROM search_pending)", [], |row| {
-            row.get::<_, bool>(0)
-        })? {
+        if conn.exists("SELECT EXISTS(SELECT 1 FROM search_pending)", [])? {
             search_missing.push(CompletenessReason::SearchPending);
         }
         let search = if search_missing.is_empty() {

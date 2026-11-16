@@ -367,7 +367,7 @@ fn observed_pin(
     prefix: &str,
     source: &ObservedMember,
 ) -> Result<Option<(i64, u64)>> {
-    let row: Option<(Option<i64>,Option<i64>,Option<String>)> = conn.query_row(&format!("SELECT coalesce(o.chain,r.chain),coalesce(o.length,r.length),o.details_json FROM {prefix}observation o LEFT JOIN {prefix}revision r ON r.input=o.input AND r.number=o.revision WHERE o.id=?1 AND o.input=?2"), params![source.observation,source.input], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
+    let row: Option<(Option<i64>,Option<i64>,Option<String>)> = conn.query_row(&format!("SELECT coalesce(o.chain,r.chain),coalesce(o.length,r.length),o.details_json FROM {prefix}observation o LEFT JOIN {prefix}revision r ON r.input=o.input AND r.number=o.revision WHERE o.id=?1 AND o.input=?2"), params![source.observation,source.input], |row| <(_, _, _)>::try_from(row)).optional()?;
     let Some((Some(chain), Some(length), Some(details))) = row else {
         return Ok(None);
     };
@@ -426,7 +426,7 @@ fn check_member_is_current(
         .query_row(
             "SELECT import_id,input,member FROM import_member WHERE observation=?1",
             [&byte_match.observation],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| <(_, _, _)>::try_from(row),
         )
         .optional()?;
     let Some((namespace, input, member)) = recorded else {
@@ -440,7 +440,7 @@ fn check_member_is_current(
     }
     // The source observation already stores authorship. Match the
     // membership keys here without replacing its recorded attribution.
-    let row: Option<(Option<i64>,Option<i64>,Option<String>)> = catalog.query_row(&format!("SELECT coalesce(o.chain,r.chain),coalesce(o.length,r.length),o.details_json FROM {prefix}observation o LEFT JOIN {prefix}revision r ON r.input=o.input AND r.number=o.revision WHERE o.id=?1 AND o.input=?2"), params![byte_match.observation,byte_match.member.input], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
+    let row: Option<(Option<i64>,Option<i64>,Option<String>)> = catalog.query_row(&format!("SELECT coalesce(o.chain,r.chain),coalesce(o.length,r.length),o.details_json FROM {prefix}observation o LEFT JOIN {prefix}revision r ON r.input=o.input AND r.number=o.revision WHERE o.id=?1 AND o.input=?2"), params![byte_match.observation,byte_match.member.input], |row| <(_, _, _)>::try_from(row)).optional()?;
     let Some((Some(chain), Some(length), Some(details))) = row else {
         return Ok(false);
     };
@@ -476,7 +476,7 @@ fn source_context(
     prefix: &str,
     context: &BindingContext,
 ) -> Result<bool> {
-    let exists: bool = index.query_row("SELECT EXISTS(SELECT 1 FROM message_source s JOIN message m ON m.pk=s.message_pk JOIN input_ref i ON i.pk=s.input_pk WHERE m.id=?1 AND (SELECT version_hash FROM message_version WHERE pk=s.version_pk)=?2 AND i.id=?3 AND s.chain=?4)", params![context.message.to_string(),context.source_version.0.as_slice(),context.input,context.chain], |row| row.get(0))?;
+    let exists: bool = index.exists("SELECT EXISTS(SELECT 1 FROM message_source s JOIN message m ON m.pk=s.message_pk JOIN input_ref i ON i.pk=s.input_pk WHERE m.id=?1 AND (SELECT version_hash FROM message_version WHERE pk=s.version_pk)=?2 AND i.id=?3 AND s.chain=?4)", params![context.message.to_string(),context.source_version.0.as_slice(),context.input,context.chain])?;
     if !exists {
         return Ok(false);
     }
@@ -486,7 +486,7 @@ fn source_context(
     })?;
     for id in ids {
         let id = id?;
-        let observed: Option<(Option<i64>,Option<String>)> = catalog.query_row(&format!("SELECT coalesce(o.chain,r.chain),o.details_json FROM {prefix}observation o LEFT JOIN {prefix}revision r ON r.input=o.input AND r.number=o.revision WHERE o.id=?1 AND o.input=?2"), params![id,context.input], |row| Ok((row.get(0)?,row.get(1)?))).optional()?;
+        let observed: Option<(Option<i64>,Option<String>)> = catalog.query_row(&format!("SELECT coalesce(o.chain,r.chain),o.details_json FROM {prefix}observation o LEFT JOIN {prefix}revision r ON r.input=o.input AND r.number=o.revision WHERE o.id=?1 AND o.input=?2"), params![id,context.input], |row| <(_, _)>::try_from(row)).optional()?;
         if let Some((Some(chain), Some(details))) = observed {
             let details: serde_json::Value = serde_json::from_str(&details)?;
             if chain == context.chain
@@ -538,27 +538,24 @@ fn binding_body(conn: &Connection, selection: &BindingSelection) -> Result<Optio
     // The key keeps the complete typed stated-binding bytes, rather than a
     // candidate hash or a digest that could silently merge different sources.
     let claim = serde_json::to_vec(&selection.claim)?;
-    Ok(conn
-        .query_row(
-            "SELECT body FROM attachment_binding WHERE message=?1 AND source_version=?2
+    conn.scalar_optional(
+        "SELECT body FROM attachment_binding WHERE message=?1 AND source_version=?2
          AND input=?3 AND chain=?4 AND import_id=?5 AND block=?6 AND attachment=?7
          AND declared_input=?8 AND declared_chain=?9 AND declared_import_id=?10 AND claim=?11",
-            params![
-                selection.context.message.to_string(),
-                selection.context.source_version.0.as_slice(),
-                selection.context.input,
-                selection.context.chain,
-                selection.context.import_id,
-                selection.claim.block.to_string(),
-                selection.claim.attachment.to_string(),
-                selection.claim.namespace.input,
-                selection.claim.namespace.chain,
-                selection.claim.namespace.import_id,
-                claim
-            ],
-            |row| row.get(0),
-        )
-        .optional()?)
+        params![
+            selection.context.message.to_string(),
+            selection.context.source_version.0.as_slice(),
+            selection.context.input,
+            selection.context.chain,
+            selection.context.import_id,
+            selection.claim.block.to_string(),
+            selection.claim.attachment.to_string(),
+            selection.claim.namespace.input,
+            selection.claim.namespace.chain,
+            selection.claim.namespace.import_id,
+            claim
+        ],
+    )
 }
 
 fn stored_bindings(
