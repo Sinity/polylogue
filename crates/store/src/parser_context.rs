@@ -1,5 +1,7 @@
 //! Reconstructible keyed continuation. Speculative values live in one owned
 //! scratch database; committed mappings share the parser checkpoint transaction.
+use crate::ConnExt as _;
+use crate::ResultExt as _;
 use crate::{Archive, Result, StoreError};
 use polylogue_model::parser_context::{Context, Delta, Entry, Key, Reference, Value};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -69,7 +71,7 @@ impl Overlay {
             Some(index)
         };
         let selected = match (index.as_ref(), chain) {
-            (Some(index), Some(chain)) => index.query_row("SELECT i.pk,p.chain FROM input_ref i JOIN parse_state p ON p.input_pk=i.pk WHERE i.id=?1 AND p.chain=?2 AND p.reading_version=?3 AND p.parsed_upto=?4",params![input,chain,version,sql_base],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).optional()?,
+            (Some(index), Some(chain)) => index.query_row("SELECT i.pk,p.chain FROM input_ref i JOIN parse_state p ON p.input_pk=i.pk WHERE i.id=?1 AND p.chain=?2 AND p.reading_version=?3 AND p.parsed_upto=?4",params![input,chain,version,sql_base],|r| <(i64, i64)>::try_from(r)).optional()?,
             (None, _) => None,
             (_, None) => return Err(StoreError::Invalid("parser continuation has no selected chain identity".into())),
         };
@@ -122,10 +124,7 @@ impl Overlay {
         version: &str,
         base: u64,
     ) -> Result<()> {
-        let attempt = self
-            .0
-            .lock()
-            .map_err(|_| StoreError::Invalid("parser context lock poisoned".into()))?;
+        let attempt = self.0.lock().or_invalid("parser context lock poisoned")?;
         if attempt.source != input
             || attempt.source_chain != chain
             || attempt.version != version
@@ -140,10 +139,7 @@ impl Overlay {
     /// Seal this slice's changes while keeping earlier private values for lookup.
     /// Advancing this scratch view never advances the committed checkpoint.
     pub fn checkpoint_delta(&self, through: u64) -> Result<Delta> {
-        let mut attempt = self
-            .0
-            .lock()
-            .map_err(|_| StoreError::Invalid("parser context lock poisoned".into()))?;
+        let mut attempt = self.0.lock().or_invalid("parser context lock poisoned")?;
         sql_cursor(through)?;
         if through < attempt.base {
             return Err(StoreError::Invalid(
@@ -217,18 +213,11 @@ impl Overlay {
         if let Some(limit) = crate::read::limit::ReadLimit::current() {
             limit.check()?;
         }
-        let attempt = self
-            .0
-            .lock()
-            .map_err(|_| StoreError::Invalid("parser context lock poisoned".into()))?;
-        let changed: Option<Vec<u8>> = attempt
-            .scratch
-            .query_row(
-                "SELECT value FROM entry WHERE key=?1",
-                [serde_json::to_string(key)?],
-                |r| r.get(0),
-            )
-            .optional()?;
+        let attempt = self.0.lock().or_invalid("parser context lock poisoned")?;
+        let changed: Option<Vec<u8>> = attempt.scratch.scalar_optional(
+            "SELECT value FROM entry WHERE key=?1",
+            [serde_json::to_string(key)?],
+        )?;
         if let Some(bytes) = changed {
             return Ok(Some(crate::encoding::unpack_json(&bytes)?));
         }
@@ -262,9 +251,7 @@ impl Overlay {
             } => {
                 let row = index
                     .prepare_cached("SELECT v.version_hash,r.source_start,r.source_end FROM parser_context_response r JOIN message_version v ON v.pk=r.version_pk WHERE r.input_pk=?1 AND r.chain=?2 AND r.namespace=?3 AND r.session=?4 AND r.key=?5")?
-                    .query_row(params![input, chain, namespace, session, key], |r| {
-                        Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
-                    })
+                    .query_row(params![input, chain, namespace, session, key], |r| <(Vec<u8>, i64, i64)>::try_from(r))
                     .optional()?;
                 let Some((hash, offset, end)) = row else {
                     return Ok(None);
@@ -328,7 +315,7 @@ pub(crate) fn apply(
     if step.source_prefix_missing {
         return Ok(true);
     }
-    let prior=tx.query_row("SELECT through FROM parser_context_state WHERE input_pk=?1 AND chain=?2 AND reading_version=?3",params![input,chain,step.reading_version],|r|r.get::<_,i64>(0)).optional()?.map(stored_cursor).transpose()?;
+    let prior=tx.scalar_optional::<i64>("SELECT through FROM parser_context_state WHERE input_pk=?1 AND chain=?2 AND reading_version=?3",params![input,chain,step.reading_version])?.map(stored_cursor).transpose()?;
     if delta.base != 0 && prior != Some(delta.base) {
         return Ok(true);
     }
@@ -469,12 +456,11 @@ pub(crate) fn resolved_message(
         params.push(value);
         format!("?{}", params.len())
     });
-    let value: String = conn.query_row(
+    let value: String = conn.scalar(
         &format!("SELECT {expression}"),
         rusqlite::params_from_iter(params),
-        |r| r.get(0),
     )?;
-    polylogue_model::MessageId::parse(&value).map_err(|e| StoreError::Invalid(e.to_string()))
+    polylogue_model::MessageId::parse(&value).map_err(crate::StoreError::invalid)
 }
 
 fn sql_cursor(value: u64) -> Result<i64> {
@@ -485,7 +471,7 @@ fn sql_cursor(value: u64) -> Result<i64> {
 
 fn stored_cursor(value: i64) -> Result<u64> {
     u64::try_from(value)
-        .map_err(|_| StoreError::Invalid("parser context cursor is negative".into()))
+        .map_err(|_| crate::StoreError::stored(0, "parser context cursor is negative"))
 }
 
 #[cfg(test)]

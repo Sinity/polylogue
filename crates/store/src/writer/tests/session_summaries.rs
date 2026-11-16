@@ -14,15 +14,19 @@ fn apply(tx: &Transaction<'_>, mut b: Batch) {
     resolve::prepare_index(tx, &mut b, 1, false).unwrap();
     let changes = crate::change_summary::ChangeSummary::start(tx).unwrap();
     write_rows(
-        &crate::text_rows::TextIds::new(tx, false).unwrap(),
         tx,
         &b,
         &b.parse[0],
-        b.parse[0].resolution.as_ref().unwrap(),
-        1,
-        None,
-        Some(&fixture_commit()),
-        &changes,
+        rows::ReadingWrite {
+            texts: &crate::text_rows::TextIds::new(tx, false).unwrap(),
+            resolution: b.parse[0].resolution.as_ref().unwrap(),
+            counter: 1,
+            first_build: None,
+            source_commit: Some(&fixture_commit()),
+            changes: &changes,
+            retraction: false,
+            replacement: false,
+        },
     )
     .unwrap();
     changes.finish_summaries(tx, Some(1)).unwrap();
@@ -118,15 +122,19 @@ fn fresh_message_counts_update_each_session_once_per_transaction() {
         resolve::prepare_index(&tx, &mut b, 1, false).unwrap();
         let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
         write_rows(
-            &crate::text_rows::TextIds::new(&tx, false).unwrap(),
             &tx,
             &b,
             &b.parse[0],
-            b.parse[0].resolution.as_ref().unwrap(),
-            1,
-            None,
-            Some(&fixture_commit()),
-            &changes,
+            rows::ReadingWrite {
+                texts: &crate::text_rows::TextIds::new(&tx, false).unwrap(),
+                resolution: b.parse[0].resolution.as_ref().unwrap(),
+                counter: 1,
+                first_build: None,
+                source_commit: Some(&fixture_commit()),
+                changes: &changes,
+                retraction: false,
+                replacement: false,
+            },
         )
         .unwrap();
         changes.finish_summaries(&tx, Some(1)).unwrap();
@@ -330,15 +338,19 @@ fn fresh_installed_counts_are_invalidated_by_same_transaction_visibility_or_sess
         resolve::prepare_index(&tx, &mut b, 1, false).unwrap();
         let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
         write_rows(
-            &crate::text_rows::TextIds::new(&tx, false).unwrap(),
             &tx,
             &b,
             &b.parse[0],
-            b.parse[0].resolution.as_ref().unwrap(),
-            1,
-            None,
-            Some(&fixture_commit()),
-            &changes,
+            rows::ReadingWrite {
+                texts: &crate::text_rows::TextIds::new(&tx, false).unwrap(),
+                resolution: b.parse[0].resolution.as_ref().unwrap(),
+                counter: 1,
+                first_build: None,
+                source_commit: Some(&fixture_commit()),
+                changes: &changes,
+                retraction: false,
+                replacement: false,
+            },
         )
         .unwrap();
         let pk = tx

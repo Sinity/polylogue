@@ -25,9 +25,10 @@ pub fn visit_source_block(
     mut visit: impl FnMut(ReadItem) -> bool,
 ) -> Result<(), ReadError> {
     options.validate()?;
-    let ordinal = block.source.block.ok_or_else(|| {
-        ReadError::InvalidPreparedData("source block needs its original ordinal".into())
-    })?;
+    let ordinal = block
+        .source
+        .block
+        .ok_or_else(|| ReadError::invalid("source block needs its original ordinal"))?;
     block_items(
         &block.block,
         block.source.clone(),
@@ -222,7 +223,7 @@ pub fn visit_record(
     match record {
         Record::Message(row) => {
             row.validate()
-                .map_err(|e| ReadError::InvalidPreparedData(e.to_string()))?;
+                .map_err(|e| ReadError::invalid(e.to_string()))?;
             let message = &row.message;
             let by = WrittenBy::of(message);
             let author =
@@ -639,15 +640,15 @@ fn attachment_kind(
         .zip(verified_hash)
         .is_some_and(|(source, verified)| source != verified)
     {
-        return Err(ReadError::InvalidPreparedData(
-            "verified attachment hash disagrees with its stored blob hash".into(),
+        return Err(ReadError::invalid(
+            "verified attachment hash disagrees with its stored blob hash",
         ));
     }
     if let Some(bytes) = &inline_bytes
         && attachment.blob.or(verified_hash) != Some(polylogue_model::BlobHash::of(bytes))
     {
-        return Err(ReadError::InvalidPreparedData(
-            "attachment inline bytes do not match the stored or verified content hash".into(),
+        return Err(ReadError::invalid(
+            "attachment inline bytes do not match the stored or verified content hash",
         ));
     }
     Ok(ItemKind::Attachment {

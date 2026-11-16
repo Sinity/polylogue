@@ -13,7 +13,7 @@ pub fn project_record(
     match &mut record {
         Record::Message(row) => {
             row.validate()
-                .map_err(|error| ReadError::InvalidPreparedData(error.to_string()))?;
+                .map_err(|error| ReadError::invalid(error.to_string()))?;
             let message = &row.message;
             if !options.view.keeps_message(message) {
                 return Ok(None);
@@ -73,7 +73,7 @@ pub fn project_record(
                 return Ok(None);
             }
             row.validate()
-                .map_err(|error| ReadError::InvalidPreparedData(error.to_string()))?;
+                .map_err(|error| ReadError::invalid(error.to_string()))?;
         }
         Record::Event(_) => {
             if matches!(

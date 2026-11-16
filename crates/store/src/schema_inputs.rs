@@ -1,4 +1,5 @@
 //! Read-only selection of exact input revisions for offline inspection.
+use crate::ConnExt as _;
 use crate::{Reader, Result, StoreError};
 use rusqlite::{OptionalExtension, params};
 
@@ -26,7 +27,7 @@ impl Reader<'_> {
              coalesce((SELECT o.path FROM source_observation o WHERE o.input=i.id AND o.revision=r.number ORDER BY o.rowid DESC LIMIT 1),'')
              FROM source_input i JOIN source_revision r ON r.input=i.id
              WHERE i.id=?1 AND (?2 IS NULL OR r.number=?2) ORDER BY r.number DESC LIMIT 1",
-            params![input, revision], |r| Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?))
+            params![input, revision], |r| <(String, i64, i64, i64, String)>::try_from(r)
         ).optional()?;
         row.map(|(format, revision, chain, length, path)| {
             Ok(InputRevision {
@@ -35,7 +36,7 @@ impl Reader<'_> {
                 revision,
                 chain,
                 length: u64::try_from(length)
-                    .map_err(|_| StoreError::Invalid("negative input length".into()))?,
+                    .map_err(|_| crate::StoreError::stored(0, "negative input length"))?,
                 path,
             })
         })
@@ -81,14 +82,11 @@ impl Reader<'_> {
             AND r.number=coalesce(?2,(SELECT max(newer.number) FROM source_revision newer WHERE newer.input=i.id))
           WHERE (?1 IS NULL OR i.format=?1))";
         let unknown_time_inputs = if after.is_none() {
-            let count: i64 = conn.query_row(
-                &format!("{base} SELECT count(*) FROM selected WHERE number IS NOT NULL AND observed_at IS NULL"),
-                params![origin, revision],
-                |row| row.get(0),
-            )?;
+            let count: i64 = conn.scalar(&format!("{base} SELECT count(*) FROM selected WHERE number IS NOT NULL AND observed_at IS NULL"), params![origin, revision])?;
             Some(
-                u64::try_from(count)
-                    .map_err(|_| StoreError::Invalid("negative unknown-time input count".into()))?,
+                u64::try_from(count).map_err(|_| {
+                    crate::StoreError::stored(0, "negative unknown-time input count")
+                })?,
             )
         } else {
             None
@@ -122,7 +120,7 @@ impl Reader<'_> {
                     revision: number,
                     chain: row.get(3)?,
                     length: u64::try_from(length)
-                        .map_err(|_| StoreError::Invalid("negative input length".into()))?,
+                        .map_err(|_| crate::StoreError::stored(0, "negative input length"))?,
                     path: row.get(5)?,
                 });
             } else {

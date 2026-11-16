@@ -628,11 +628,10 @@ impl<'a> MembershipState<'a> {
                 Kind::Document if row.existing => {
                     membership_state.shown_documents.insert(
                         pk,
-                        index
-                            .query_row("SELECT version_hash FROM document WHERE pk=?1", [pk], |r| {
-                                r.get::<_, Vec<u8>>(0)
-                            })
-                            .optional()?,
+                        index.scalar_optional::<Vec<u8>>(
+                            "SELECT version_hash FROM document WHERE pk=?1",
+                            [pk],
+                        )?,
                     );
                     membership_state
                         .documents
@@ -935,7 +934,7 @@ impl<'a> MembershipState<'a> {
             if !self.session_facts.contains_key(&key)
                 && !self.reset_inputs.contains(&(input, chain))
             {
-                let body:Option<String>=self.index.query_row("SELECT facts FROM session_record WHERE session_pk=?1 AND input_pk=?2 AND chain=?3",params![pk,input,chain],|r|r.get(0)).optional()?;
+                let body:Option<String>=self.index.scalar_optional("SELECT facts FROM session_record WHERE session_pk=?1 AND input_pk=?2 AND chain=?3", params![pk,input,chain])?;
                 if let Some(body) = body {
                     self.session_facts.insert(key, serde_json::from_str(&body)?);
                 }
@@ -950,7 +949,7 @@ impl<'a> MembershipState<'a> {
             let explicit_session = merged.kind != polylogue_model::SessionKind::Compaction;
             // A portable header may arrive after its messages. Revisit only
             // this source's indexed memberships, including unloaded rows.
-            let stored_kind:Option<String>=self.index.query_row("SELECT json_extract(facts,'$.kind') FROM session_record WHERE session_pk=?1 AND input_pk=?2 AND chain=?3",params![pk,input,chain],|r|r.get(0)).optional()?;
+            let stored_kind:Option<String>=self.index.scalar_optional("SELECT json_extract(facts,'$.kind') FROM session_record WHERE session_pk=?1 AND input_pk=?2 AND chain=?3",params![pk,input,chain])?;
             if !self.reset_inputs.contains(&(input, chain))
                 && stored_kind.as_deref() != Some(merged.kind.as_str())
             {
@@ -1988,7 +1987,7 @@ impl ValueMember {
         let mut event = self
             .event
             .clone()
-            .ok_or_else(|| StoreError::Invalid("event membership has no fields".into()))?;
+            .or_invalid("event membership has no fields")?;
         if !event.fields.is_empty() {
             return Ok(event);
         }
@@ -2001,7 +2000,7 @@ impl ValueMember {
         }
         let (fields, imported): (Vec<u8>, String) = index.query_row(
             "SELECT fields,imported_sources FROM event_source WHERE event_pk=?1 AND input_pk=?2 AND chain=?3",
-            params![pk,self.input,self.chain], |row| Ok((row.get(0)?,row.get(1)?)))?;
+            params![pk,self.input,self.chain], |row| <(_, _)>::try_from(row))?;
         let canonical: Event = crate::encoding::unpack_json(&fields)?;
         event.kind = canonical.kind;
         event.fields = fields;
@@ -2024,24 +2023,23 @@ impl ValueMember {
         {
             return Ok(body);
         }
-        Ok(index.query_row(
+        index.scalar(
             &format!("SELECT body FROM {} WHERE pk=?1", kind.table()),
             [self.value_pk],
-            |r| r.get(0),
-        )?)
+        )
     }
 }
 
 fn named_link(mut link: Link, ids: &crate::session_alias::Identities) -> Result<Link> {
     link.parent = SessionId::parse(ids.shown_session(&link.parent.to_string()))
-        .map_err(|e| StoreError::Invalid(e.to_string()))?;
+        .map_err(crate::StoreError::invalid)?;
     link.child = SessionId::parse(ids.shown_session(&link.child.to_string()))
-        .map_err(|e| StoreError::Invalid(e.to_string()))?;
+        .map_err(crate::StoreError::invalid)?;
     link.at = link
         .at
         .map(|at| {
             MessageId::parse(ids.shown_message(&at.to_string()).as_ref())
-                .map_err(|e| StoreError::Invalid(e.to_string()))
+                .map_err(crate::StoreError::invalid)
         })
         .transpose()?;
     Ok(link)

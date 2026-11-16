@@ -298,7 +298,7 @@ fn document_block_decode_obeys_cancellation_and_generation_changes_between_items
             } else {
                 StoreError::ReadCancelled
             };
-            assert_eq!(kind, expected.code());
+            assert_eq!(kind, expected.code().as_str());
             assert_eq!(emitted, 1);
         });
     }

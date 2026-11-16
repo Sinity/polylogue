@@ -58,16 +58,12 @@ impl Reader<'_> {
 
     /// Whether the newest capture is still waiting for attachment bytes.
     pub fn downloading_files(&self, session: &polylogue_model::SessionId) -> Result<bool> {
-        let data: Option<Vec<u8>> = self
-            .conn()?
-            .query_row(
-                "SELECT e.data FROM event e JOIN session s ON s.pk = e.session_pk
+        let data: Option<Vec<u8>> = self.conn()?.scalar_optional(
+            "SELECT e.data FROM event e JOIN session s ON s.pk = e.session_pk
              WHERE s.id = ?1 AND e.kind = 'browser_capture'
              ORDER BY e.at DESC, e.pk DESC LIMIT 1",
-                [session.to_string()],
-                |r| r.get(0),
-            )
-            .optional()?;
+            [session.to_string()],
+        )?;
         let Some(data) = data else {
             return Ok(false);
         };
@@ -90,11 +86,7 @@ impl Reader<'_> {
         let mut found: BTreeMap<String, StoredFile> = BTreeMap::new();
         while let Some(row) = rows.next()? {
             let block = unpack_block(&row.get::<_, Vec<u8>>(0)?)?;
-            let attachments = match &block {
-                Block::Image(a) | Block::File(a) => std::slice::from_ref(a),
-                Block::ToolResult { attachments, .. } => attachments.as_slice(),
-                _ => &[],
-            };
+            let attachments = block.attachments();
             for a in attachments {
                 if let (Some(id), Some(blob)) = (&a.source_id, a.blob) {
                     found.entry(id.clone()).or_insert(StoredFile {

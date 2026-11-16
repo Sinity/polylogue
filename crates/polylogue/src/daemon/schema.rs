@@ -206,7 +206,7 @@ impl<B: PlainBlobs> Read for IdleRead<'_, B> {
 
 pub(super) fn infer(d: &Daemon, selection: Infer) -> Answer<Inference> {
     if let Err(message) = selection.validate() {
-        return error("bad_request", message);
+        return error(polylogue_model::Code::BadRequest, message);
     }
     let _turn = match d.idle_gate.background() {
         Ok(turn) => turn,

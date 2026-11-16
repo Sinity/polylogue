@@ -2,6 +2,7 @@
 //! (`polylogue repo:x since:7d`) runs the query language; subcommands cover
 //! everything else. Every command takes `--json` for programs and agents.
 
+use polylogue_model::JsonExt as _;
 pub(crate) mod attachment;
 pub mod changes;
 pub(crate) mod completion;
@@ -436,14 +437,20 @@ pub fn run_local(matches: &ArgMatches, output: crate::config::OutputConfig) -> O
             return Some(fail(
                 output,
                 matches.get_flag("json"),
-                "bad_request",
+                polylogue_model::Code::BadRequest,
                 &error,
                 2,
             ));
         }
     };
     if let Err(error) = validate(&parsed.request.arguments) {
-        return Some(fail(output, parsed.json, "bad_request", &error, 2));
+        return Some(fail(
+            output,
+            parsed.json,
+            polylogue_model::Code::BadRequest,
+            &error,
+            2,
+        ));
     }
     Some(run(command, &parsed, output, parsed.json))
 }
@@ -456,23 +463,29 @@ pub fn run(
     let policy = startup.output;
     let json = matches.get_flag("json");
     let Some((cmd, m)) = chosen(matches) else {
-        return fail(policy, json, "bad_request", "no such command", 2);
+        return fail(
+            policy,
+            json,
+            polylogue_model::Code::BadRequest,
+            "no such command",
+            2,
+        );
     };
     let mut values = match parsed(cmd, m) {
         Ok(parsed) => parsed,
-        Err(error) => return fail(policy, json, "bad_request", &error, 2),
+        Err(error) => return fail(policy, json, polylogue_model::Code::BadRequest, &error, 2),
     };
     match cmd.run {
         Run::Local(run, _, validate) => {
             return match validate(&values.request.arguments) {
                 Ok(()) => run(cmd, &values, policy, json),
-                Err(error) => fail(policy, json, "bad_request", &error, 2),
+                Err(error) => fail(policy, json, polylogue_model::Code::BadRequest, &error, 2),
             };
         }
         Run::ConfiguredLocal(run, _, validate) => {
             return match validate(&values.request.arguments) {
                 Ok(()) => run(cmd, &values, startup, json),
-                Err(error) => fail(policy, json, "bad_request", &error, 2),
+                Err(error) => fail(policy, json, polylogue_model::Code::BadRequest, &error, 2),
             };
         }
         Run::Daemon(_) | Run::Delivered { .. } | Run::Feed { .. } => {}
@@ -484,13 +497,13 @@ pub fn run(
             return fail(
                 policy,
                 json,
-                "bad_request",
+                polylogue_model::Code::BadRequest,
                 "operation arguments must be an object",
                 2,
             );
         };
         if let Err(message) = prepare(&values.calling_process, cwd, arguments) {
-            return fail(policy, json, "bad_request", &message, 2);
+            return fail(policy, json, polylogue_model::Code::BadRequest, &message, 2);
         }
     }
     let call = &values.request;
@@ -500,7 +513,13 @@ pub fn run(
     } = cmd.run
     {
         if let Err(failure) = registration.admit(call) {
-            return fail(policy, json, "bad_request", &failure.error.message, 2);
+            return fail(
+                policy,
+                json,
+                polylogue_model::Code::BadRequest,
+                &failure.error.message,
+                2,
+            );
         }
         return deliver(&values, startup, call);
     }
@@ -514,7 +533,7 @@ pub fn run(
             return fail(
                 policy,
                 json,
-                "daemon_required",
+                polylogue_model::Code::DaemonRequired,
                 &format!(
                     "no daemon is serving {}; start it with `polylogue daemon`",
                     root.display()
@@ -528,9 +547,15 @@ pub fn run(
                 std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
             ) =>
         {
-            return fail(policy, json, "deadline_exceeded", &e.to_string(), 7);
+            return fail(
+                policy,
+                json,
+                polylogue_model::Code::DeadlineExceeded,
+                &e.to_string(),
+                7,
+            );
         }
-        Err(e) => return fail(policy, json, "io", &e.to_string(), 1),
+        Err(e) => return fail(policy, json, polylogue_model::Code::Io, &e.to_string(), 1),
     };
     let outcome_code = answer.exit_code();
     if json && cmd.output.is_none() {
@@ -607,13 +632,7 @@ pub fn status_output(
     let data = answer
         .value()
         .expect("output handlers receive answers with values");
-    if !values
-        .request
-        .arguments
-        .get("line")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
-    {
+    if !values.request.arguments.bool("line").unwrap_or(false) {
         if json {
             println!(
                 "{}",
@@ -631,7 +650,13 @@ pub fn status_output(
         match serde_json::from_value(data["running"].clone()) {
             Ok(running) => running,
             Err(error) => {
-                return fail(startup.output, json, "internal", &error.to_string(), 1);
+                return fail(
+                    startup.output,
+                    json,
+                    polylogue_model::Code::Internal,
+                    &error.to_string(),
+                    1,
+                );
             }
         };
     let line = running.line(startup.clock.now().as_millisecond());
@@ -795,7 +820,7 @@ pub(crate) async fn when_ready<T, F: std::future::Future<Output = std::io::Resul
 pub(crate) fn fail(
     output: crate::config::OutputConfig,
     json: bool,
-    code: &str,
+    code: polylogue_model::Code,
     message: &str,
     _exit: u8,
 ) -> ExitCode {

@@ -20,6 +20,7 @@ pub enum Action {
 #[cfg(feature = "faults")]
 mod armed {
     use super::Action;
+    use polylogue_model::LockExt;
     use std::sync::{Condvar, Mutex};
 
     /// `(point, subject substring, action, reaches to let pass, hits left)`.
@@ -30,8 +31,7 @@ mod armed {
     /// reaches pass, the next `times` act.
     pub fn arm(point: &str, subject: &str, action: Action, skip: u32, times: u32) {
         POINTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .locked()
             .push((point.to_owned(), subject.to_owned(), action, skip, times));
     }
 
@@ -40,13 +40,8 @@ mod armed {
     /// after the held thread has gone past its point (joined, or its work
     /// observed).
     pub fn clear() {
-        POINTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
-        *HOLD
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Hold::default();
+        POINTS.locked().clear();
+        *HOLD.locked() = Hold::default();
     }
 
     #[derive(Default)]
@@ -61,37 +56,27 @@ mod armed {
     static HOLD_CHANGED: Condvar = Condvar::new();
 
     pub(super) fn hold() {
-        let mut state = HOLD
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = HOLD.locked();
         state.held = true;
         HOLD_CHANGED.notify_all();
         while !state.released {
-            state = HOLD_CHANGED
-                .wait(state)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = polylogue_model::unpoisoned(HOLD_CHANGED.wait(state));
         }
     }
 
     /// Whether a thread has reached a point armed with [`Action::Hold`].
     pub fn held() -> bool {
-        HOLD.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .held
+        HOLD.locked().held
     }
 
     /// Lets the thread stopped at an [`Action::Hold`] point continue.
     pub fn release() {
-        HOLD.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .released = true;
+        HOLD.locked().released = true;
         HOLD_CHANGED.notify_all();
     }
 
     pub fn take(point: &str, subject: &str) -> Option<Action> {
-        let mut points = POINTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut points = POINTS.locked();
         let i = points
             .iter()
             .position(|(p, s, _, _, n)| p == point && subject.contains(s.as_str()) && *n > 0)?;

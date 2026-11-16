@@ -10,17 +10,14 @@
 
 use crate::parse::ExtractedBlob;
 use base64::Engine;
+use polylogue_model::JsonExt;
 use polylogue_model::{
     Attachment, AttachmentDirection, BlobHash, Block, ErrorReason, Json, PromptKind, ToolAction,
     ToolOutcome, UnknownReason,
 };
 
-pub fn str_field<'a>(v: &'a Json, key: &str) -> Option<&'a str> {
-    v.get(key).and_then(Json::as_str).filter(|s| !s.is_empty())
-}
-
 fn ty(item: &Json) -> &str {
-    item.get("type").and_then(Json::as_str).unwrap_or("")
+    item.str("type").unwrap_or("")
 }
 
 /// The blocks of a message item's `content`.
@@ -35,12 +32,22 @@ pub fn message_blocks(content: &Json, blobs: &mut Vec<ExtractedBlob>) -> Vec<Blo
 fn content_block(item: &Json, blobs: &mut Vec<ExtractedBlob>) -> Block {
     match ty(item) {
         "input_text" | "output_text" | "text" | "Text" => Block::Text {
-            text: str_field(item, "text").unwrap_or_default().to_owned(),
+            text: item
+                .str("text")
+                .filter(|s| !s.is_empty())
+                .unwrap_or_default()
+                .to_owned(),
         },
         "input_image" | "image" => Block::Image(image(item, AttachmentDirection::Input, blobs)),
         "input_file" => Block::File(Attachment {
-            name: str_field(item, "filename").map(str::to_owned),
-            url: str_field(item, "file_url").map(str::to_owned),
+            name: item
+                .str("filename")
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
+            url: item
+                .str("file_url")
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
             direction: AttachmentDirection::Input,
             ..Attachment::default()
         }),
@@ -58,7 +65,10 @@ fn image(
     direction: AttachmentDirection,
     blobs: &mut Vec<ExtractedBlob>,
 ) -> Attachment {
-    let url = str_field(item, "image_url").or_else(|| str_field(item, "url"));
+    let url = item
+        .str("image_url")
+        .filter(|s| !s.is_empty())
+        .or_else(|| item.str("url").filter(|s| !s.is_empty()));
     let mut attachment = Attachment {
         direction,
         ..Attachment::default()
@@ -93,11 +103,7 @@ fn data_url(url: &str) -> Option<(String, Vec<u8>)> {
 pub fn prompt_kind(content: &Json) -> PromptKind {
     let first = content
         .as_array()
-        .and_then(|items| {
-            items
-                .iter()
-                .find_map(|c| c.get("text").and_then(Json::as_str))
-        })
+        .and_then(|items| items.iter().find_map(|c| c.str("text")))
         .map(str::trim_start)
         .unwrap_or("");
     if first.starts_with("<user_shell_command>") {
@@ -119,18 +125,20 @@ pub fn prompt_kind(content: &Json) -> PromptKind {
 pub fn reasoning_block(item: &Json) -> Block {
     let mut parts: Vec<&str> = Vec::new();
     for key in ["summary", "content"] {
-        if let Some(items) = item.get(key).and_then(Json::as_array) {
-            parts.extend(
-                items
-                    .iter()
-                    .filter_map(|c| c.get("text").and_then(Json::as_str)),
-            );
+        if let Some(items) = item.array(key) {
+            parts.extend(items.iter().filter_map(|c| c.str("text")));
         }
     }
-    let encrypted = str_field(item, "encrypted_content").is_some();
+    let encrypted = item
+        .str("encrypted_content")
+        .filter(|s| !s.is_empty())
+        .is_some();
     Block::Thinking {
         text: (!parts.is_empty()).then(|| parts.join("\n\n")),
-        signature: str_field(item, "encrypted_content").map(str::to_owned),
+        signature: item
+            .str("encrypted_content")
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
         redacted: parts.is_empty() && encrypted,
     }
 }
@@ -139,8 +147,8 @@ pub fn reasoning_block(item: &Json) -> Block {
 /// (`mcp__serena__find_symbol`); Codex's own namespaces (`collaboration`)
 /// stay apart from the name with a dot.
 pub fn tool_name(item: &Json) -> Option<String> {
-    let name = str_field(item, "name")?;
-    Some(match str_field(item, "namespace") {
+    let name = item.str("name").filter(|s| !s.is_empty())?;
+    Some(match item.str("namespace").filter(|s| !s.is_empty()) {
         Some(ns) if ns.starts_with("mcp__") && !name.starts_with(ns) => {
             format!("{}__{name}", ns.trim_end_matches('_'))
         }
@@ -169,7 +177,7 @@ pub fn written_text(tool: &str, input: &Json) -> Option<String> {
     match tool {
         "apply_patch" | "functions.apply_patch" => input
             .as_str()
-            .or_else(|| input.get("input").and_then(Json::as_str))
+            .or_else(|| input.str("input"))
             .map(str::to_owned),
         _ => None,
     }
@@ -223,11 +231,9 @@ fn shell_line(words: &[&str]) -> String {
 /// The file a call edits, for patch tools.
 pub fn call_path(tool: &str, input: &Json) -> Option<String> {
     if tool != "apply_patch" {
-        return input.get("path").and_then(Json::as_str).map(str::to_owned);
+        return input.str("path").map(str::to_owned);
     }
-    let patch = input
-        .as_str()
-        .or_else(|| input.get("input").and_then(Json::as_str))?;
+    let patch = input.as_str().or_else(|| input.str("input"))?;
     patch.lines().find_map(|l| {
         ["*** Update File: ", "*** Add File: ", "*** Delete File: "]
             .iter()
@@ -327,11 +333,7 @@ pub fn output_outcome(tool: &str, output: &str) -> (ToolOutcome, Option<Running>
         );
     }
     if let Ok(Json::Object(map)) = serde_json::from_str::<Json>(output.trim()) {
-        if let Some(code) = map
-            .get("metadata")
-            .and_then(|m| m.get("exit_code"))
-            .and_then(Json::as_i64)
-        {
+        if let Some(code) = map.get("metadata").and_then(|m| m.i64("exit_code")) {
             return (exit(code), None);
         }
         if map.get("timed_out").and_then(Json::as_bool) == Some(true) {
@@ -410,7 +412,7 @@ pub fn output_parts(output: &Json, blobs: &mut Vec<ExtractedBlob>) -> (String, V
                         attachments.push(image(item, AttachmentDirection::Output, blobs));
                     }
                     _ => {
-                        if let Some(t) = item.get("text").and_then(Json::as_str) {
+                        if let Some(t) = item.str("text") {
                             texts.push(t);
                         }
                     }
@@ -436,8 +438,8 @@ pub struct Completed {
 }
 
 pub fn completed(item: &Json) -> Option<Completed> {
-    let status = str_field(item, "status");
-    let code = item.get("exit_code").and_then(Json::as_i64);
+    let status = item.str("status").filter(|s| !s.is_empty());
+    let code = item.i64("exit_code");
     let outcome = match (status, code) {
         (_, Some(code)) => exit(code),
         (Some("completed"), None) => ToolOutcome::Ok,
@@ -454,7 +456,7 @@ pub fn completed(item: &Json) -> Option<Completed> {
     let duration_ms = item
         .get("duration")
         .and_then(duration_ms)
-        .or_else(|| item.get("durationMs").and_then(Json::as_u64));
+        .or_else(|| item.u64("durationMs"));
     Some(Completed {
         outcome,
         duration_ms,
@@ -466,8 +468,8 @@ fn duration_ms(v: &Json) -> Option<u64> {
     if let Some(ms) = v.as_u64() {
         return Some(ms);
     }
-    let secs = v.get("secs")?.as_u64()?;
-    let nanos = v.get("nanos").and_then(Json::as_u64).unwrap_or(0);
+    let secs = v.u64("secs")?;
+    let nanos = v.u64("nanos").unwrap_or(0);
     Some(secs * 1000 + nanos / 1_000_000)
 }
 
@@ -475,7 +477,7 @@ fn duration_ms(v: &Json) -> Option<u64> {
 /// harness ran with no call item of its own (code-mode scripts run
 /// commands this way; the Python version recovered them the same way).
 pub fn recovered_call(item: &Json, blobs: &mut Vec<ExtractedBlob>) -> Option<Vec<Block>> {
-    let id = str_field(item, "id")?.to_owned();
+    let id = item.str("id").filter(|s| !s.is_empty())?.to_owned();
     let (tool, input, command, path, output) = match ty(item) {
         "CommandExecution" => {
             let command = match item.get("command") {
@@ -486,9 +488,11 @@ pub fn recovered_call(item: &Json, blobs: &mut Vec<ExtractedBlob>) -> Option<Vec
                 Some(Json::String(s)) => Some(s.clone()),
                 _ => None,
             };
-            let output = str_field(item, "aggregated_output")
-                .or_else(|| str_field(item, "formatted_output"))
-                .or_else(|| str_field(item, "stdout"))
+            let output = item
+                .str("aggregated_output")
+                .filter(|s| !s.is_empty())
+                .or_else(|| item.str("formatted_output").filter(|s| !s.is_empty()))
+                .or_else(|| item.str("stdout").filter(|s| !s.is_empty()))
                 .map(str::to_owned);
             let input = serde_json::json!({
                 "command": item.get("command"),
@@ -508,16 +512,22 @@ pub fn recovered_call(item: &Json, blobs: &mut Vec<ExtractedBlob>) -> Option<Vec
                 Json::Object(map) => map.keys().min().cloned(),
                 Json::Array(list) => list
                     .first()
-                    .and_then(|c| str_field(c, "path"))
+                    .and_then(|c| c.str("path").filter(|s| !s.is_empty()))
                     .map(str::to_owned),
                 _ => None,
             };
-            let output = str_field(item, "stdout").map(str::to_owned);
+            let output = item
+                .str("stdout")
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned);
             ("file_change", changes, None, path, output)
         }
         "McpToolCall" => {
-            let server = str_field(item, "server").unwrap_or("mcp");
-            let tool = str_field(item, "tool").unwrap_or("?");
+            let server = item
+                .str("server")
+                .filter(|s| !s.is_empty())
+                .unwrap_or("mcp");
+            let tool = item.str("tool").filter(|s| !s.is_empty()).unwrap_or("?");
             let result = item
                 .get("result")
                 .filter(|r| !r.is_null())
@@ -550,7 +560,10 @@ pub fn recovered_call(item: &Json, blobs: &mut Vec<ExtractedBlob>) -> Option<Vec
             ("web_search", input, None, None, None)
         }
         "ImageView" => {
-            let path = str_field(item, "path").map(str::to_owned);
+            let path = item
+                .str("path")
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned);
             let input = serde_json::json!({ "path": item.get("path") });
             ("view_image", input, None, path, None)
         }

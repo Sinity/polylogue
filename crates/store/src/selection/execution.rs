@@ -18,21 +18,21 @@ impl PreparedSelection<'_> {
             || query_options.self_session != self.execution_options.self_session
             || query_options.embeddings != self.execution_options.embeddings
         {
-            return Err(invalid(
-                "invalid_query",
+            return Err(SelectionError::invalid(
+                polylogue_model::Code::InvalidQuery,
                 "execution options differ from the prepared selection",
             ));
         }
         let direct = self.direct.as_ref().map(ReadTarget::reference);
         if query_options.direct_reference.is_some() && query_options.direct_reference != direct {
-            return Err(invalid(
-                "conflict",
+            return Err(SelectionError::invalid(
+                polylogue_model::Code::Conflict,
                 "direct presentation differs from the accepted selection",
             ));
         }
         if self.direct.is_some() && matches!(presentation, ExecutionPresentation::Query) {
-            return Err(invalid(
-                "conflict",
+            return Err(SelectionError::invalid(
+                polylogue_model::Code::Conflict,
                 "query execution requires query rows, not direct read presentation",
             ));
         }
@@ -41,12 +41,12 @@ impl PreparedSelection<'_> {
             ..
         } = &presentation
         {
-            source
-                .validate()
-                .map_err(|error| invalid("invalid_query", error.to_string()))?;
+            source.validate().map_err(|error| {
+                SelectionError::invalid(polylogue_model::Code::InvalidQuery, error.to_string())
+            })?;
             if direct.as_ref() != Some(&source.origin().reference) {
-                return Err(invalid(
-                    "conflict",
+                return Err(SelectionError::invalid(
+                    polylogue_model::Code::Conflict,
                     "span source differs from the accepted direct target",
                 ));
             }
@@ -61,7 +61,12 @@ impl PreparedSelection<'_> {
                     .definitions
                     .iter()
                     .find(|saved| saved.question == definition.question_id)
-                    .ok_or_else(|| invalid("internal", "bound definition has no saved body"))?;
+                    .ok_or_else(|| {
+                        SelectionError::invalid(
+                            polylogue_model::Code::Internal,
+                            "bound definition has no saved body",
+                        )
+                    })?;
                 Ok(FrozenDefinition {
                     name: definition.name.clone(),
                     root: definition.root.clone(),

@@ -1,10 +1,13 @@
 [package]
 name = "polylogue-model"
-description = "Shared types for Polylogue: identities, sessions, messages, blocks, events, notes and the export format"
+description = "Shared types for Polylogue: identities, sessions, messages, blocks, events, notes"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[features]
+fixture = []
 
 [dependencies]
 command-surface.workspace = true

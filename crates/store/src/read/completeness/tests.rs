@@ -522,6 +522,6 @@ fn unreadable_chain_counts_are_stored_value_errors() {
             matches!(error, crate::StoreError::StoredValue { .. }),
             "{state} {n}: {error:?}"
         );
-        assert_eq!(error.code(), "store", "{state} {n}");
+        assert_eq!(error.code(), polylogue_model::Code::Store, "{state} {n}");
     }
 }

@@ -12,7 +12,7 @@ impl Read for Bytes<'_> {
 fn refusal() -> Answer<serde_json::Value> {
     command_surface::Answer {
         outcome: command_surface::Outcome::Error(crate::protocol::failure(
-            "scope_changed",
+            polylogue_model::Code::ScopeChanged,
             "scope changed: λ",
         )),
         envelope: command_surface::Envelope {

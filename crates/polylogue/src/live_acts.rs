@@ -5,6 +5,8 @@
 //! `daemon::service::acts`.
 
 use crate::live_events::CodexConnection;
+use polylogue_model::JsonExt as _;
+use polylogue_model::LockExt as _;
 use polylogue_model::SessionId;
 use polylogue_model::live::LiveFacts;
 use polylogue_model::live::channel::Probe;
@@ -114,9 +116,9 @@ impl HostedCodex {
     /// Takes in what the app-server sent since the last act.
     fn absorb(&mut self) {
         for message in self.connection.take_pending() {
-            let method = message.get("method").and_then(Value::as_str).unwrap_or("");
+            let method = message.str("method").unwrap_or("");
             let params = message.get("params").cloned().unwrap_or(Value::Null);
-            if params.get("threadId").and_then(Value::as_str) != Some(self.thread.as_str()) {
+            if params.str("threadId") != Some(self.thread.as_str()) {
                 continue;
             }
             match (method, message.get("id")) {
@@ -198,11 +200,10 @@ pub(crate) fn answer_result(
         "item/tool/requestUserInput" => {
             let reply = text.unwrap_or(if approve { "yes" } else { "no" });
             let answers: serde_json::Map<String, Value> = params
-                .get("questions")
-                .and_then(Value::as_array)
+                .array("questions")
                 .into_iter()
                 .flatten()
-                .filter_map(|q| q.get("id").and_then(Value::as_str))
+                .filter_map(|q| q.str("id"))
                 .map(|id| (id.to_owned(), json!({"answers": [reply]})))
                 .collect();
             Ok(json!({ "answers": answers }))
@@ -331,27 +332,17 @@ impl Acts {
 
     /// The program that proxies Codex's control socket, and the socket.
     pub(crate) fn codex(&self) -> (PathBuf, PathBuf) {
-        self.codex
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.codex.locked().clone()
     }
 
     /// Points the Codex client at a fixture app-server.
     #[cfg(test)]
     pub(crate) fn set_codex(&self, program: PathBuf, socket: PathBuf) {
-        *self
-            .codex
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = (program, socket);
+        *self.codex.locked() = (program, socket);
     }
 
     fn report(&self, report: Report) -> bool {
-        self.reports
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .send(report)
-            .is_ok()
+        self.reports.locked().send(report).is_ok()
     }
 
     /// Ends the acts worker.
@@ -364,18 +355,13 @@ impl Acts {
     }
 
     pub(crate) fn claim_lock(&self) -> MutexGuard<'_, ()> {
-        self.claims
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.claims.locked()
     }
 
     /// Marks deliveries handed out; returns those not handed out before.
     /// Callers hold the claim lock.
     pub(crate) fn take<T>(&self, pending: Vec<(String, T)>) -> Vec<(String, T)> {
-        let mut claimed = self
-            .claimed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut claimed = self.claimed.locked();
         pending
             .into_iter()
             .filter(|(id, _)| claimed.insert(id.clone()))
@@ -384,18 +370,12 @@ impl Acts {
 
     /// Gives a delivery back to the mailbox.
     pub(crate) fn release(&self, id: &str) {
-        self.claimed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(id);
+        self.claimed.locked().remove(id);
     }
 
     /// Whether a delivery was handed out.
     pub(crate) fn handed_out(&self, id: &str) -> bool {
-        self.claimed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(id)
+        self.claimed.locked().contains(id)
     }
 
     /// The oldest request a hosted session waits on, by its protocol's
@@ -423,11 +403,7 @@ impl Acts {
     }
 
     fn handle(&self, session: &SessionId) -> Option<Handle> {
-        self.hosted
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&session.to_string())
-            .cloned()
+        self.hosted.locked().get(&session.to_string()).cloned()
     }
 
     /// Whether Polylogue holds an open control connection to the session.
@@ -465,11 +441,7 @@ impl Acts {
         if let Hosted::Stdio(stdio) = &hosted {
             // A message that waited for the running prompt is recorded
             // when it is written, or `not_sent` when it is dropped.
-            let reports = self
-                .reports
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
+            let reports = self.reports.locked().clone();
             stdio.on_sent(Arc::new(move |delivery: &str, sent| {
                 let _ = reports.send(Report::Sent {
                     delivery: delivery.to_owned(),
@@ -478,8 +450,7 @@ impl Acts {
             }));
         }
         self.hosted
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .locked()
             .insert(session.to_string(), Arc::new(Mutex::new(hosted)));
     }
 
@@ -521,8 +492,7 @@ impl Acts {
     /// The sessions Polylogue holds a connection to.
     pub(crate) fn hosted_sessions(&self) -> Vec<SessionId> {
         self.hosted
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .locked()
             .keys()
             .filter_map(|k| SessionId::parse(k).ok())
             .collect()
@@ -530,10 +500,7 @@ impl Acts {
 
     /// Lets go of a session that ended: its connection and its record.
     pub(crate) fn release_host(&self, session: &SessionId) {
-        self.hosted
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&session.to_string());
+        self.hosted.locked().remove(&session.to_string());
         for (key, record) in crate::hosting::records(&self.hosts) {
             if record.session == session.to_string() {
                 crate::hosting::remove(&self.hosts, &key);
@@ -551,9 +518,7 @@ impl Acts {
         let handle = self
             .handle(session)
             .ok_or_else(|| "the session is not hosted".to_owned())?;
-        let mut connection = handle
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut connection = handle.locked();
         act(&mut connection).map_err(|e| e.to_string())
     }
 
@@ -586,10 +551,7 @@ impl Acts {
     /// progress; `true` when it started.
     pub(crate) fn resume(&self, run: ResumeRun) -> bool {
         {
-            let mut resuming = self
-                .resuming
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut resuming = self.resuming.locked();
             let key = run.session.to_string();
             if let Some(queue) = resuming.get_mut(&key) {
                 queue.push_back(run);
@@ -612,10 +574,7 @@ impl Acts {
 
     /// The run that follows a finished one, if any is queued.
     pub(crate) fn resume_finished(&self, session: &SessionId) -> Option<ResumeRun> {
-        let mut resuming = self
-            .resuming
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut resuming = self.resuming.locked();
         let key = session.to_string();
         let next = resuming.get_mut(&key).and_then(VecDeque::pop_front);
         if next.is_none() {

@@ -1,6 +1,8 @@
 //! Stored text identity and its deferred full-text entries. Callers group row changes
 //! in their own transaction; indexing consumes committed queue entries.
 
+use crate::ConnExt as _;
+use crate::OptionExt as _;
 use crate::Result;
 mod groups;
 mod identities;
@@ -58,7 +60,7 @@ pub(crate) fn intern(
                 prepared,
                 marked,
             )?
-            .ok_or_else(|| crate::StoreError::Invalid("the text row already exists".into()))?;
+            .or_invalid("the text row already exists")?;
             (id, marked)
         }
     };
@@ -190,7 +192,7 @@ fn pending_batch(conn: &Connection, byte_limit: usize) -> Result<u64> {
             "SELECT p.text_id, p.fts_table FROM search_pending p JOIN text t ON t.id = p.text_id
              ORDER BY p.text_id, p.fts_table LIMIT ?1",
         )?
-        .query_map([SEARCH_ROWS], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .query_map([SEARCH_ROWS], |r| <(_, _)>::try_from(r))?
         .collect::<rusqlite::Result<_>>()?;
     if ids.is_empty() {
         tx.execute(
@@ -250,7 +252,7 @@ pub(crate) fn unindex_unused(i: &Connection, texts: &TextIds, id: i64, bulk: boo
         (1, "b.kind NOT IN ('tool_result','tool_call')", "text_fts"),
         (2, "b.kind IN ('tool_result','tool_call')", "output_fts"),
     ] {
-        let used:bool=i.query_row(&format!("SELECT EXISTS(SELECT 1 FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.text_id=?1 AND {kind}) OR (?2=1 AND EXISTS(SELECT 1 FROM document_block b JOIN document d ON d.pk=b.document_pk WHERE b.text_id=?1))"),params![id,bit],|r|r.get(0))?;
+        let used:bool=i.exists(&format!("SELECT EXISTS(SELECT 1 FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.text_id=?1 AND {kind}) OR (?2=1 AND EXISTS(SELECT 1 FROM document_block b JOIN document d ON d.pk=b.document_pk WHERE b.text_id=?1))"), params![id,bit])?;
         if !used {
             if !bulk {
                 i.execute(&format!("DELETE FROM {table} WHERE rowid=?1"), [id])?;

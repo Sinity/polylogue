@@ -458,7 +458,7 @@ impl<R: BufRead> Parser<R> {
         Ok(kind)
     }
 
-    fn hex(&mut self) -> Result<u16, serde_json::Error> {
+    fn hex_escape(&mut self) -> Result<u16, serde_json::Error> {
         let mut number = 0;
         for _ in 0..4 {
             let digit = (self.byte()? as char).to_digit(16).ok_or_else(invalid)?;
@@ -508,11 +508,11 @@ impl<R: BufRead> Parser<R> {
                     b'r' => '\r',
                     b't' => '\t',
                     b'u' => {
-                        let first = self.hex()?;
+                        let first = self.hex_escape()?;
                         let code = if (0xd800..=0xdbff).contains(&first) {
                             self.expect(b'\\')?;
                             self.expect(b'u')?;
-                            let second = self.hex()?;
+                            let second = self.hex_escape()?;
                             if !(0xdc00..=0xdfff).contains(&second) {
                                 return Err(invalid());
                             }

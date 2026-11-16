@@ -22,8 +22,15 @@ use serde_json::json;
 fn refused(e: &StoreError) -> Failure {
     match e {
         StoreError::ChatAction(code) | StoreError::Backfill(code) => {
+            let Some(code) = polylogue_model::Code::from_name(code) else {
+                return crate::protocol::protocol_mismatch(
+                    "browser action",
+                    format!("unknown failure code {code:?}"),
+                )
+                .into();
+            };
             let refused = actions::refusal(code);
-            Failure::new(refused.0, refused.0)
+            Failure::new(refused.0, refused.0.as_str())
         }
         other => Failure::store(other),
     }
@@ -32,8 +39,7 @@ fn refused(e: &StoreError) -> Failure {
 fn enabled(invocation: &Invocation, reader: &Reader<'_>) -> Result<bool, Failure> {
     match reader.setting_value("browser.actions", &invocation.machine) {
         Ok(Some(polylogue_model::settings::Value::Boolean(value))) => Ok(value),
-        Ok(_) => Err(Failure::new(
-            "invalid",
+        Ok(_) => Err(Failure::invalid(
             "browser.actions has no typed boolean value",
         )),
         Err(error) => Err(Failure::store(&error)),
@@ -90,7 +96,7 @@ fn chat_then_view(
             enabled: None,
             action: Some(actions::view(&action, invocation.at.unix_ms())),
         })),
-        Ok(None) => browser_refusal(actions::refusal("unknown_chat_action")),
+        Ok(None) => browser_refusal(actions::refusal(polylogue_model::Code::UnknownChatAction)),
         Err(e) => store_error(&e),
     }
 }
@@ -122,7 +128,7 @@ fn backfill_then_view(
                 job: Some(backfill::view(&job, invocation.at.unix_ms())),
             },
         )),
-        Ok(None) => browser_refusal(actions::refusal("unknown_backfill_job")),
+        Ok(None) => browser_refusal(actions::refusal(polylogue_model::Code::UnknownBackfillJob)),
         Err(e) => store_error(&e),
     }
 }
@@ -184,7 +190,11 @@ browser!(
         let reader = reader(call)?;
         match enabled(invocation, &reader) {
             Ok(true) => {}
-            Ok(false) => return Ok(browser_refusal(actions::Refused("browser_actions_off"))),
+            Ok(false) => {
+                return Ok(browser_refusal(actions::Refused(
+                    polylogue_model::Code::BrowserActionsOff,
+                )));
+            }
             Err(failure) => return Err(failure),
         }
         drop(reader);

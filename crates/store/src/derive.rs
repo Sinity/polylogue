@@ -34,6 +34,7 @@
 //! A first build and an incremental one derive the same rows from the same
 //! records. Replacing a reading recomputes the derived rows it changes.
 
+use crate::ConnExt as _;
 use crate::{Result, StoreError};
 use polylogue_model::Catalog;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -225,13 +226,12 @@ pub(crate) fn current_versions() -> Result<BTreeMap<String, String>> {
 }
 
 pub(crate) fn is_current(conn: &Connection, name: &str, pk: i64) -> Result<bool> {
-    Ok(conn.query_row(
+    conn.scalar(
         "SELECT NOT EXISTS(SELECT 1 FROM derive_due WHERE session_pk = ?2)
             AND EXISTS(SELECT 1 FROM derive_state d WHERE d.name = ?1 AND d.session_pk = ?2
                        AND pl_derived_current(d.name, d.version))",
         params![name, pk],
-        |r| r.get(0),
-    )?)
+    )
 }
 
 /// Derives every due session on `index` alone, reading and writing through
@@ -308,13 +308,7 @@ impl<'a> Pass<'a> {
             .zip(&versions)
             .map(|(d, v)| (d.name, v.as_str()))
             .collect();
-        let stored: Option<String> = index
-            .query_row(
-                "SELECT value FROM meta WHERE key = 'derived_versions'",
-                [],
-                |r| r.get(0),
-            )
-            .optional()?;
+        let stored: Option<String> = crate::meta_get(index, "derived_versions")?;
         let stored: BTreeMap<String, String> = match stored {
             Some(json) => serde_json::from_str(&json)?,
             None => BTreeMap::new(),
@@ -329,11 +323,7 @@ impl<'a> Pass<'a> {
                  ON CONFLICT(session_pk) DO NOTHING",
                 [],
             )?;
-            tx.execute(
-                "INSERT INTO meta(key, value) VALUES ('derived_versions', ?1)
-                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                [serde_json::to_string(&current)?],
-            )?;
+            crate::meta_set(&tx, "derived_versions", serde_json::to_string(&current)?)?;
             tx.commit()?;
         }
         Self::new(catalog, derivations, versions)
@@ -524,9 +514,7 @@ impl<'a> Pass<'a> {
         let mut stored = std::collections::HashMap::new();
         let mut statement =
             read.prepare_cached("SELECT name, version FROM derive_state WHERE session_pk = ?1")?;
-        for row in statement.query_map([pk], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })? {
+        for row in statement.query_map([pk], |r| <(String, String)>::try_from(r))? {
             let (name, version) = row?;
             stored.insert(name, version);
         }
@@ -682,26 +670,17 @@ pub(crate) fn apply(index: &Connection, write: &Write) -> Result<Vec<bool>> {
 /// Whether no derivation is behind: no session is due and the stored
 /// versions are the current ones.
 pub(crate) fn caught_up(conn: &Connection) -> Result<bool> {
-    let due: bool = conn.query_row(
+    let due: bool = conn.scalar(
         // CROSS JOIN keeps the due marks the outer loop: an empty
         // `derive_due` answers without visiting any session.
         "SELECT EXISTS(SELECT 1 FROM derive_due d CROSS JOIN session s ON s.pk = d.session_pk WHERE s.stub = 0)",
-        [],
-        |r| r.get(0),
-    )?;
+        [])?;
     if due {
         return Ok(false);
     }
-    let stored: Option<String> = conn
-        .query_row(
-            "SELECT value FROM meta WHERE key = 'derived_versions'",
-            [],
-            |r| r.get(0),
-        )
-        .optional()?;
+    let stored: Option<String> = crate::meta_get(conn, "derived_versions")?;
     let current = serde_json::to_string(&current_versions()?)?;
-    let sessions: bool =
-        conn.query_row("SELECT EXISTS(SELECT 1 FROM session)", [], |r| r.get(0))?;
+    let sessions: bool = conn.exists("SELECT EXISTS(SELECT 1 FROM session)", [])?;
     Ok(!sessions || stored.as_deref() == Some(current.as_str()))
 }
 

@@ -1,5 +1,6 @@
 //! The language vocabulary is projected from the product's execution registry.
 use crate::{ast::Unit, fields, units};
+use polylogue_model::LockExt;
 use query_language::catalog::{Catalog, Field, FieldKind, ReferenceForm, UnknownRule};
 use std::sync::{Arc, Mutex};
 
@@ -55,9 +56,7 @@ fn field(value: &fields::Field, name: String) -> Field {
 /// each origin list's catalog is built once and shared.
 pub fn catalog(origins: &[String]) -> Arc<Catalog> {
     static BUILT: Mutex<Vec<(Vec<String>, Arc<Catalog>)>> = Mutex::new(Vec::new());
-    let mut built = BUILT
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut built = BUILT.locked();
     if let Some((_, catalog)) = built.iter().find(|(known, _)| known.as_slice() == origins) {
         return catalog.clone();
     }

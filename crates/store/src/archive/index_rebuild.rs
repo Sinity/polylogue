@@ -6,8 +6,10 @@
 //! the renamed file removed once the rebuild reaches the stream's latest_position.
 //! `archive.db` is never handled here.
 
+use crate::ConnExt as _;
+use crate::OptionExt as _;
 use crate::{Result, StoreError};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -76,9 +78,7 @@ pub(crate) fn reason(error: &StoreError) -> Option<IndexRebuildReason> {
 /// Renames the primary cache (closed by the caller after reading `previous`)
 /// and any write-ahead files it left beside it, under its schema identity.
 pub(crate) fn set_aside(index: &Path, previous: &str) -> Result<()> {
-    let dir = index
-        .parent()
-        .ok_or_else(|| StoreError::Invalid("index.db has no directory".into()))?;
+    let dir = index.parent().or_invalid("index.db has no directory")?;
     let target = dir.join(file_name(previous));
     for suffix in ["-wal", "-shm", ""] {
         let mut from = index.as_os_str().to_owned();
@@ -106,11 +106,7 @@ pub(crate) fn record(
         previous_schema,
         schema,
     };
-    index.execute(
-        "INSERT INTO meta(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        [META_KEY, &serde_json::to_string(&record)?],
-    )?;
-    Ok(())
+    crate::meta_set(index, META_KEY, serde_json::to_string(&record)?)
 }
 
 /// Whether the primary cache has finished its rebuild: it has applied Sinex's
@@ -124,7 +120,7 @@ pub(crate) fn built(index: &Connection) -> Result<bool> {
     ) {
         return Ok(false);
     }
-    let unresolved: bool = index.query_row(
+    let unresolved: bool = index.scalar(
         "WITH chains AS (SELECT input,chain,max(length) AS length FROM source_revision GROUP BY input,chain)
          SELECT EXISTS(SELECT 1 FROM chains c
              LEFT JOIN input_ref i ON i.id=c.input
@@ -137,8 +133,7 @@ pub(crate) fn built(index: &Connection) -> Result<bool> {
                  OR (p.status='no_parser_yet' AND p.at_length=c.length)),0))
          OR EXISTS(SELECT 1 FROM primary_refused r LEFT JOIN confirmed_event f ON f.event=r.event
                    WHERE f.event IS NULL OR f.state='live')",
-        [], |row| row.get(0),
-    )?;
+        [])?;
     Ok(!unresolved)
 }
 
@@ -175,13 +170,8 @@ pub(crate) fn remove_when_built(index: &Connection, path: &Path) -> Result<()> {
 /// an index from another schema. A standalone index is read only once built,
 /// or, while a build replaces it, as the previous index.
 pub(crate) fn status(index: &Connection, archive: &super::Archive) -> Result<Option<IndexRebuild>> {
-    let value: Option<String> = index
-        .query_row(
-            "SELECT value FROM main.meta WHERE key = ?1",
-            [META_KEY],
-            |r| r.get(0),
-        )
-        .optional()?;
+    let value: Option<String> =
+        index.scalar_optional("SELECT value FROM main.meta WHERE key = ?1", [META_KEY])?;
     let Some(value) = value else {
         return Ok(None);
     };

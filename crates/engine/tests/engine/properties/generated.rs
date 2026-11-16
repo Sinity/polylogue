@@ -5,7 +5,7 @@
 //! The generator writes main session files, some of which resume an earlier
 //! session and so begin with a byte-identical copy of its first records.
 
-use polylogue_model::export::SessionExport;
+use polylogue_model::bundle::Record;
 use polylogue_store::{Archive, ReadPool};
 use polylogue_testkit::{
     ClaudeHome, claude_assistant as assistant, claude_user as user, delete_index,
@@ -85,7 +85,7 @@ fn corpus(shape: &Shape) -> Corpus {
 }
 
 /// Everything a reader sees for every session, in session order.
-fn view(w: &ClaudeHome) -> Vec<SessionExport> {
+fn view(w: &ClaudeHome) -> Vec<Vec<Record>> {
     let pool = ReadPool::open(&Archive::at(&w.root)).unwrap();
     let ids = pool
         .reader()
@@ -158,7 +158,7 @@ fn write_whole(w: &ClaudeHome, c: &Corpus) {
     }
 }
 
-fn run_all_at_once(c: &Corpus) -> (ClaudeHome, Vec<SessionExport>) {
+fn run_all_at_once(c: &Corpus) -> (ClaudeHome, Vec<Vec<Record>>) {
     let w = ClaudeHome::new();
     write_whole(&w, c);
     let (mut e, lock) = w.engine(64 << 20);

@@ -125,7 +125,7 @@ fn run(
     });
     match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(message) => super::fail(output, json, "schema", &message, 1),
+        Err(message) => super::fail(output, json, polylogue_model::Code::Schema, &message, 1),
     }
 }
 

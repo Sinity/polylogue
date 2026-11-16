@@ -66,8 +66,8 @@ impl ToolPair {
                 .as_ref()
                 .is_some_and(|result| !matches!(result.block, crate::Block::ToolResult { .. }))
         {
-            return Err(ReadError::InvalidPreparedData(
-                "tool pair needs a call and optional result".into(),
+            return Err(ReadError::invalid(
+                "tool pair needs a call and optional result",
             ));
         }
         if let (
@@ -86,9 +86,7 @@ impl ToolPair {
         ) = (&self.call.block, &self.result)
             && call != result
         {
-            return Err(ReadError::InvalidPreparedData(
-                "tool pair call IDs disagree".into(),
-            ));
+            return Err(ReadError::invalid("tool pair call IDs disagree"));
         }
         Ok(())
     }

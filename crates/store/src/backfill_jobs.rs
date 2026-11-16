@@ -45,14 +45,7 @@ pub(crate) fn read(conn: &Connection, schema: &str, id: &str) -> Result<Option<B
         .prepare_cached(&format!(
             "SELECT provider, since, created_at, execution FROM {schema}backfill_job WHERE id = ?1"
         ))?
-        .query_row([id], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, Option<i64>>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, String>(3)?,
-            ))
-        })
+        .query_row([id], |r| <(String, Option<i64>, i64, String)>::try_from(r))
         .optional()?;
     let Some((provider, since, created_at, execution)) = row else {
         return Ok(None);
@@ -86,7 +79,7 @@ pub(crate) fn read(conn: &Connection, schema: &str, id: &str) -> Result<Option<B
         since,
         created_at,
         execution: polylogue_model::authored::ExecutionEligibility::from_name(&execution)
-            .ok_or_else(|| StoreError::Invalid("unknown execution eligibility".into()))?,
+            .ok_or_else(|| StoreError::stored(3, "unknown execution eligibility"))?,
         events,
     }))
 }

@@ -1,5 +1,6 @@
 //! Spooled capture reads and product preparation for the primary writer.
 use crate::{Error, Result, Sinex};
+use polylogue_model::LockExt;
 use polylogue_model::{
     BlobHash,
     authored::{PendingAuthored, PreparedRequest},
@@ -50,16 +51,15 @@ impl Sinex {
         }
         // Sending owns this complete retry result. Reading the confirmed
         // stream stays separate and cannot erase a failed send.
-        if let Ok(mut health) = self.health.lock() {
+        {
+            let mut health = self.health.locked();
             health.send_error = result.as_ref().err().map(ToString::to_string);
         }
         result
     }
 
     pub(super) fn queue(&self) -> Result<std::sync::MutexGuard<'_, crate::spool::Spool>> {
-        self.spool
-            .lock()
-            .map_err(|_| Error::Invalid("producer spool panicked".into()))
+        Ok(self.spool.locked())
     }
 
     pub(super) fn visit_matching(
@@ -106,8 +106,8 @@ impl Sinex {
         if body.descriptor.hash.0 != expected_hash.0
             || body.descriptor.decoded_len != expected_length
         {
-            return Err(Error::Invalid(
-                "prepared capture descriptor differs from its declared source bytes".into(),
+            return Err(Error::invalid(
+                "prepared capture descriptor differs from its declared source bytes",
             ));
         }
         let mut intent = serde_json::to_value(&captured)?;
@@ -179,7 +179,7 @@ impl Sinex {
                     .map(|id| {
                         id.parse()
                             .map(MaterialId)
-                            .map_err(|error| Error::Invalid(format!("previous material: {error}")))
+                            .map_err(|error| Error::invalid(format!("previous material: {error}")))
                     })
                     .transpose()?,
             ),
@@ -200,8 +200,8 @@ impl Sinex {
         let observation = matches!(captured,Capture::Input(input) if input.raw_range.is_none());
         if matches!(captured, Capture::Input(input) if input.raw_range.is_none() && !input.rows.extents.is_empty())
         {
-            return Err(Error::Invalid(
-                "provider capture read has no original byte range".into(),
+            return Err(Error::invalid(
+                "provider capture read has no original byte range",
             ));
         }
         Ok(Ingress::Material {
@@ -267,16 +267,14 @@ impl Sinex {
         let ack = crate::client::checked(ack)?;
         let descriptor = entry
             .material()
-            .ok_or_else(|| Error::Invalid("capture has no material descriptor".into()))?;
+            .ok_or_else(|| Error::invalid("capture has no material descriptor"))?;
         let sinex_protocol::FrameResult::Admitted {
             material: Some(id),
             material_extents,
             ..
         } = ack.result
         else {
-            return Err(Error::Invalid(
-                "material acknowledgment has no material".into(),
-            ));
+            return Err(Error::invalid("material acknowledgment has no material"));
         };
         let material = Material {
             id: id.to_string(),
@@ -284,7 +282,7 @@ impl Sinex {
                 .blob
                 .strip_prefix("blake3:")
                 .and_then(|hash| BlobHash::parse(hash).ok())
-                .ok_or_else(|| Error::Invalid("invalid material digest".into()))?,
+                .ok_or_else(|| Error::invalid("invalid material digest"))?,
             length: descriptor.length,
             extents: material_extents,
         };
@@ -391,8 +389,8 @@ impl Sinex {
                 .is_none_or(|length| reading.parsed_upto > length)
             || reading.reading_version.is_empty()
         {
-            return Err(Error::Invalid(
-                "interpreted source identity or range is invalid".into(),
+            return Err(Error::invalid(
+                "interpreted source identity or range is invalid",
             ));
         }
         for write in writes {
@@ -408,8 +406,8 @@ impl Sinex {
                 crate::products::require_reading(&write.product, &key)?;
             }
             if write.product.reading() != Some(reading) || write.location.is_none() {
-                return Err(Error::Invalid(
-                    "a parsed fact differs from its original reading".into(),
+                return Err(Error::invalid(
+                    "a parsed fact differs from its original reading",
                 ));
             }
         }
@@ -473,8 +471,8 @@ impl Sinex {
     ) -> Result<PreparedWrite> {
         for write in writes {
             if write.product.reading().is_some() {
-                return Err(Error::Invalid(
-                    "parser events must be sent with their original source".into(),
+                return Err(Error::invalid(
+                    "parser events must be sent with their original source",
                 ));
             }
             crate::products::require_source(&write.product)?;
@@ -484,24 +482,22 @@ impl Sinex {
             let original = queue.decode_frame(identity)?;
             let expected = crate::products::events(writes)?;
             let Ingress::Events { source, events, .. } = &original else {
-                return Err(Error::Invalid(
-                    "named product intent is not an event group".into(),
-                ));
+                return Err(Error::invalid("named product intent is not an event group"));
             };
             if source.as_ref().is_none_or(|source| {
                 source.name != "polylogue"
                     || !matches!(source.version, 5 | 6 | 7 | crate::SOURCE_VERSION)
             }) {
-                return Err(Error::Invalid(
-                    "named product intent has an unsupported source".into(),
+                return Err(Error::invalid(
+                    "named product intent has an unsupported source",
                 ));
             }
             let observation = format!("{identity}:observation");
             if queue.get(&observation)?.is_some() {
                 let kept: Vec<ProductWrite> = crate::spool::decode_json(queue.body(&observation)?)?;
                 if kept != writes {
-                    return Err(Error::Invalid(
-                        "named product identity changed immutable facts".into(),
+                    return Err(Error::invalid(
+                        "named product identity changed immutable facts",
                     ));
                 }
                 return Ok(PreparedWrite {
@@ -510,8 +506,8 @@ impl Sinex {
                 });
             }
             if &expected != events {
-                return Err(Error::Invalid(
-                    "named product identity changed immutable facts".into(),
+                return Err(Error::invalid(
+                    "named product identity changed immutable facts",
                 ));
             }
             return Ok(PreparedWrite {
@@ -528,8 +524,8 @@ impl Sinex {
                 let previous: Vec<ProductWrite> =
                     crate::spool::decode_json(queue.body(&observation)?)?;
                 if previous != writes {
-                    return Err(Error::Invalid(
-                        "named product identity changed immutable facts".into(),
+                    return Err(Error::invalid(
+                        "named product identity changed immutable facts",
                     ));
                 }
                 previous
@@ -539,14 +535,12 @@ impl Sinex {
             let body = serde_json::to_vec(&writes)?;
             let observation_source = if queue.get(&observation)?.is_some() {
                 let Ingress::Material { material, .. } = queue.decode_frame(&observation)? else {
-                    return Err(Error::Invalid("observation has no material".into()));
+                    return Err(Error::invalid("observation has no material"));
                 };
                 if material.source.name != "polylogue"
                     || !matches!(material.source.version, 5 | 6 | 7 | crate::SOURCE_VERSION)
                 {
-                    return Err(Error::Invalid(
-                        "observation has an unsupported source".into(),
-                    ));
+                    return Err(Error::invalid("observation has an unsupported source"));
                 }
                 material.source
             } else {
@@ -654,9 +648,9 @@ impl Sinex {
                 let queue = self.queue()?;
                 crate::spool::decode_json(queue.body(&observation)?)?
             };
-            let identity = observation.strip_suffix(":observation").ok_or_else(|| {
-                Error::Invalid("observation identity has no product operation".into())
-            })?;
+            let identity = observation
+                .strip_suffix(":observation")
+                .ok_or_else(|| Error::invalid("observation identity has no product operation"))?;
             self.prepare_named_products(identity, &writes)?;
         }
         Ok(())
@@ -669,8 +663,8 @@ impl Sinex {
     ) -> Result<PreparedWrite> {
         for write in writes {
             if write.product.reading().is_some() {
-                return Err(Error::Invalid(
-                    "material completion cannot send parser values".into(),
+                return Err(Error::invalid(
+                    "material completion cannot send parser values",
                 ));
             }
         }
@@ -684,7 +678,7 @@ impl Sinex {
         for identity in identities {
             let entry = queue
                 .get(identity)?
-                .ok_or_else(|| Error::Invalid("capture is not prepared".into()))?;
+                .ok_or_else(|| Error::invalid("capture is not prepared"))?;
             if Self::capture_material(&queue, &entry)?.is_none() {
                 return Err(Error::Unreachable(
                     "capture awaits material confirmation".into(),
@@ -719,20 +713,20 @@ impl Sinex {
         let mut source = crate::source_reference();
         let repeat = if queue.get(&identity)?.is_some() {
             let Ingress::Material { material, .. } = queue.decode_frame(&identity)? else {
-                return Err(Error::Invalid("authored intent has no material".into()));
+                return Err(Error::invalid("authored intent has no material"));
             };
             if material.source.name != "polylogue"
                 || !matches!(material.source.version, 5 | 6 | 7 | crate::SOURCE_VERSION)
             {
-                return Err(Error::Invalid(
-                    "authored intent belongs to an unsupported adapter source".into(),
+                return Err(Error::invalid(
+                    "authored intent belongs to an unsupported adapter source",
                 ));
             }
             source = material.source.clone();
             let original: PreparedRequest = crate::spool::decode_json(queue.body(&identity)?)?;
             if original != *request {
-                return Err(Error::Invalid(
-                    "request identity changed immutable prepared effects".into(),
+                return Err(Error::invalid(
+                    "request identity changed immutable prepared effects",
                 ));
             }
             true
@@ -790,10 +784,10 @@ impl Sinex {
             NamedProductSelector::Prefix(prefix) => {
                 queue.visit_names(prefix, &mut |identity| {
                     let entry = queue.get(identity)?.ok_or_else(|| {
-                        Error::Invalid("named operation disappeared while locked".into())
+                        Error::invalid("named operation disappeared while locked")
                     })?;
                     let name = entry.logical_name().ok_or_else(|| {
-                        Error::Invalid("named index points to an unnamed operation".into())
+                        Error::invalid("named index points to an unnamed operation")
                     })?;
                     names.insert(name.to_owned());
                     Ok(())
@@ -804,8 +798,8 @@ impl Sinex {
             let observation = format!("{name}:observation");
             if let Some(entry) = queue.get(&observation)? {
                 if !entry.is_named() {
-                    return Err(Error::Invalid(
-                        "named observation has another operation type".into(),
+                    return Err(Error::invalid(
+                        "named observation has another operation type",
                     ));
                 }
                 let writes: Vec<ProductWrite> =
@@ -815,12 +809,10 @@ impl Sinex {
                 }
             } else if let Some(entry) = queue.get(&name)? {
                 if !entry.is_named() {
-                    return Err(Error::Invalid(
-                        "named product has another operation type".into(),
-                    ));
+                    return Err(Error::invalid("named product has another operation type"));
                 }
                 let Ingress::Events { events, .. } = queue.decode_frame(&name)? else {
-                    return Err(Error::Invalid("named product has no event facts".into()));
+                    return Err(Error::invalid("named product has no event facts"));
                 };
                 for event in events {
                     let product = crate::products::decode(&event.kind, event.payload)?;
@@ -848,7 +840,7 @@ impl Sinex {
         Ok(self.visit_matching(Lookup::Blobs(None), |_, entry| {
             if let Some(Capture::Blob { hash, length }) = entry.capture().cloned() {
                 visit(&polylogue_store::NewBlob::whole(hash, length))
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                    .map_err(|error| Error::invalid(error.to_string()))?;
             }
             Ok(())
         })?)
@@ -888,13 +880,13 @@ impl Sinex {
         let request: PreparedRequest = {
             let queue = self.queue()?;
             let Ingress::Material { material, .. } = queue.decode_frame(identity)? else {
-                return Err(Error::Invalid("authored intent has no material".into()));
+                return Err(Error::invalid("authored intent has no material"));
             };
             if material.source.name != "polylogue"
                 || !matches!(material.source.version, 5 | 6 | 7 | crate::SOURCE_VERSION)
             {
-                return Err(Error::Invalid(
-                    "authored intent belongs to an unsupported adapter source".into(),
+                return Err(Error::invalid(
+                    "authored intent belongs to an unsupported adapter source",
                 ));
             }
             crate::spool::decode_json(queue.body(identity)?)?

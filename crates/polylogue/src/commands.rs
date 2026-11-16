@@ -2096,12 +2096,10 @@ pub fn declarations() -> &'static std::sync::Arc<command_surface::OperationDecla
                 command_surface::OperationDeclarations::builder(PRODUCT, deadlines());
             declarations.accept(command_surface::RequestOption::Cursor);
             declarations.accept(command_surface::RequestOption::BudgetTokens);
-            for (kind, codes) in crate::protocol::FAILURE_CLASSES {
-                for code in *codes {
-                    declarations
-                        .register_failure_code(*code, *kind)
-                        .expect("failure classification is unique");
-                }
+            for code in polylogue_model::Code::ALL {
+                declarations
+                    .register_failure_code(code.as_str(), crate::protocol::kind(*code))
+                    .expect("failure classification is unique");
             }
             for tool in Tool::ALL {
                 if COMMANDS

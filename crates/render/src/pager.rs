@@ -465,9 +465,6 @@ impl PageBuilder {
     pub fn position(&self) -> Option<&ItemPlace> {
         self.next.as_ref()
     }
-    pub fn is_full(&self) -> bool {
-        self.full
-    }
     /// Static footers must already have their encoded space reserved. Dynamic
     /// product follow-ups use finish_with so any trim regenerates the cursor.
     pub fn finish(self, mut footer: ReadFooter) -> Result<ReadDocument, PageError> {

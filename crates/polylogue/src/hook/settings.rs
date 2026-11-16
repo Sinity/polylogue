@@ -133,48 +133,66 @@ fn command(harness: Harness, event: &str) -> String {
     }
 }
 
-fn invalid(path: &str, expected: &str) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidData,
-        format!("{path}: expected {expected}"),
-    )
-}
-
 fn validate(settings: &Value) -> io::Result<()> {
-    let settings = settings
-        .as_object()
-        .ok_or_else(|| invalid("settings", "an object"))?;
+    let settings = settings.as_object().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{}: expected {}", "settings", "an object"),
+        )
+    })?;
     let Some(hooks) = settings.get("hooks") else {
         return Ok(());
     };
-    let events = hooks
-        .as_object()
-        .ok_or_else(|| invalid("hooks", "an object"))?;
+    let events = hooks.as_object().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{}: expected {}", "hooks", "an object"),
+        )
+    })?;
     for (event, entries) in events {
         let path = format!("hooks.{event}");
-        let entries = entries
-            .as_array()
-            .ok_or_else(|| invalid(&path, "an array"))?;
+        let entries = entries.as_array().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{path}: expected an array"),
+            )
+        })?;
         for (index, entry) in entries.iter().enumerate() {
             let path = format!("{path}[{index}]");
-            let entry = entry
-                .as_object()
-                .ok_or_else(|| invalid(&path, "an object"))?;
+            let entry = entry.as_object().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{path}: expected an object"),
+                )
+            })?;
             let hooks = entry
                 .get("hooks")
-                .and_then(Value::as_array)
-                .ok_or_else(|| invalid(&format!("{path}.hooks"), "an array"))?;
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("{path}.hooks: expected an array"),
+                    )
+                })?;
             for (index, hook) in hooks.iter().enumerate() {
                 let path = format!("{path}.hooks[{index}]");
-                let hook = hook
-                    .as_object()
-                    .ok_or_else(|| invalid(&path, "an object"))?;
-                let kind = hook
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| invalid(&format!("{path}.type"), "a string"))?;
+                let hook = hook.as_object().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("{path}: expected an object"),
+                    )
+                })?;
+                let kind = hook.get("type").and_then(Value::as_str).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("{path}.type: expected a string"),
+                    )
+                })?;
                 if kind == "command" && !hook.get("command").is_some_and(Value::is_string) {
-                    return Err(invalid(&format!("{path}.command"), "a string"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("{path}.command: expected a string"),
+                    ));
                 }
             }
         }
@@ -237,7 +255,10 @@ fn edit(
     validate(&parse::settings(text)?)?;
     let root = spans::read(text)?;
     let Kind::Object(members) = &root.kind else {
-        return Err(invalid("settings", "an object"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{}: expected {}", "settings", "an object"),
+        ));
     };
     let wanted = harness_events(harness, version);
     let mut edits = Vec::new();
@@ -263,7 +284,10 @@ fn edit(
         return Ok(spans::apply(text, edits));
     };
     let Kind::Object(events) = &hooks.kind else {
-        return Err(invalid("hooks", "an object"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{}: expected {}", "hooks", "an object"),
+        ));
     };
     let is_ours = |hook: &spans::Spanned| {
         serde_json::from_str::<Value>(&text[hook.start..hook.end]).is_ok_and(|hook| ours(&hook))

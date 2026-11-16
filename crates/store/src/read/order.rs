@@ -1,6 +1,7 @@
 //! Export order is metadata over the full own session, before any
 //! query, parent prefix or view subset. Source coordinates remain separate.
 use super::*;
+use crate::OptionExt as _;
 
 #[derive(Clone, Copy)]
 pub(super) enum RecordOrder {
@@ -17,8 +18,7 @@ pub(super) fn session_record_rows(session: &str) -> String {
 }
 
 pub(super) fn checked(value: i64) -> Result<u64> {
-    u64::try_from(value)
-        .map_err(|_| StoreError::Invalid("negative message snapshot ordinal".into()))
+    u64::try_from(value).map_err(|_| StoreError::stored(0, "negative message snapshot ordinal"))
 }
 
 impl Reader<'_> {
@@ -71,7 +71,7 @@ impl Reader<'_> {
                 format!("?{}", params.len())
             },
         )
-        .ok_or_else(|| StoreError::Invalid("a message range has message membership".into()))?;
+        .or_invalid("a message range has message membership")?;
         let from = i64::try_from(from).map_err(|_| {
             StoreError::Invalid("range ordinal exceeds SQLite's integer range".into())
         })?;

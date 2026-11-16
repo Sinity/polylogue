@@ -1,6 +1,7 @@
 //! One selected call and its recorded counterpart, inside the Reader snapshot.
 //! The indexed foreign-key relation decides pairing; neither arrival order nor
 //! a matching name elsewhere in the archive supplies a result.
+use crate::ConnExt as _;
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{
     Block, MessageId, SessionId,
@@ -107,7 +108,7 @@ impl Reader<'_> {
         let (body, data): (Vec<u8>, bool) = self.conn()?.query_row(
             "SELECT body,data IS NOT NULL FROM block WHERE pk=?1",
             [result.pk],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| <(_, _)>::try_from(row),
         )?;
         let Block::ToolResult {
             call_id,
@@ -115,15 +116,20 @@ impl Reader<'_> {
             ..
         } = crate::encoding::unpack_block(&body)?
         else {
-            return Err(invalid("indexed result is not a tool result"));
+            return Err(crate::StoreError::stored(
+                0,
+                "indexed result is not a tool result",
+            ));
         };
         if call_id != fact.call.call_id {
-            return Err(invalid(
+            return Err(crate::StoreError::stored(
+                0,
                 "indexed result identity differs from its stored block",
             ));
         }
-        let count = u64::try_from(attachments.len())
-            .map_err(|_| invalid("attachment count exceeds its address space"))?;
+        let count = u64::try_from(attachments.len()).map_err(|_| {
+            crate::StoreError::stored(0, "attachment count exceeds its address space")
+        })?;
         self.check()?;
         Ok(Some((data, count)))
     }
@@ -165,10 +171,14 @@ impl Reader<'_> {
         }
         let call = self.tool_pair_block(&fact.call, full)?;
         let Block::ToolCall { call_id, .. } = &call.block else {
-            return Err(invalid("indexed call is not a tool call"));
+            return Err(crate::StoreError::stored(
+                0,
+                "indexed call is not a tool call",
+            ));
         };
         if call_id != &fact.call.call_id {
-            return Err(invalid(
+            return Err(crate::StoreError::stored(
+                0,
                 "indexed call identity differs from its stored block",
             ));
         }
@@ -182,10 +192,14 @@ impl Reader<'_> {
         };
         if let Some(result) = &result {
             let Block::ToolResult { call_id, .. } = &result.block else {
-                return Err(invalid("indexed result is not a tool result"));
+                return Err(crate::StoreError::stored(
+                    0,
+                    "indexed result is not a tool result",
+                ));
             };
             if call_id != &fact.call.call_id {
-                return Err(invalid(
+                return Err(crate::StoreError::stored(
+                    0,
                     "indexed result identity differs from its stored block",
                 ));
             }
@@ -210,7 +224,7 @@ impl Reader<'_> {
             edit: None,
         };
         pair.validate()
-            .map_err(|error| invalid(&error.to_string()))?;
+            .map_err(|error| crate::StoreError::stored(0, error.to_string()))?;
         self.check()?;
         Ok(Some(pair))
     }
@@ -235,7 +249,8 @@ impl Reader<'_> {
         };
         let input = BlockFact::read(row, 0)?;
         if rows.next()?.is_some() {
-            return Err(invalid(
+            return Err(crate::StoreError::stored(
+                0,
                 "one original block ordinal has conflicting current rows",
             ));
         }
@@ -286,7 +301,8 @@ impl Reader<'_> {
                 .transpose()?
                 .unwrap_or(false);
         if rows.next()?.is_some() {
-            return Err(invalid(
+            return Err(crate::StoreError::stored(
+                0,
                 "one source block has conflicting current tool relations",
             ));
         }
@@ -305,18 +321,13 @@ impl Reader<'_> {
         let mut block = if full {
             crate::ordered_blocks::one(conn, fact.pk)?
         } else {
-            let body: Vec<u8> =
-                conn.query_row("SELECT body FROM block WHERE pk=?1", [fact.pk], |row| {
-                    row.get(0)
-                })?;
+            let body: Vec<u8> = conn.scalar("SELECT body FROM block WHERE pk=?1", [fact.pk])?;
             crate::encoding::unpack_block(&body)?
         };
         if full && matches!(block, Block::ToolResult { .. }) {
             self.check()?;
             let data: Option<Vec<u8>> =
-                conn.query_row("SELECT data FROM block WHERE pk=?1", [fact.pk], |row| {
-                    row.get(0)
-                })?;
+                conn.scalar("SELECT data FROM block WHERE pk=?1", [fact.pk])?;
             if let Some(data) = data {
                 crate::encoding::restore_data(&mut block, &data)?;
             }
@@ -343,9 +354,6 @@ impl Reader<'_> {
             block,
         })
     }
-}
-fn invalid(message: &str) -> StoreError {
-    StoreError::Invalid(message.into())
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@
 //! contributes now, so a transaction's cost follows what it changed. A row
 //! whose count changes takes the transaction's write counter, and the
 //! completion catalog copies the rows changed since it was published.
+use crate::ConnExt as _;
 use crate::Result;
 use crate::change_summary::{ChangeSummary, OrderKey, SessionChange};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -41,12 +42,10 @@ pub(crate) fn of_message(conn: &Connection, pk: i64, session_pk: i64) -> Result<
 
 pub(crate) fn write_counter(conn: &Connection) -> Result<i64> {
     Ok(conn
-        .query_row(
+        .scalar_optional(
             "SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'write_counter'",
             [],
-            |row| row.get(0),
-        )
-        .optional()?
+        )?
         .unwrap_or(0))
 }
 
@@ -188,7 +187,7 @@ fn prompt_place(conn: &Connection, pk: i64, session_pk: i64) -> Result<Option<Or
                AND EXISTS (SELECT 1 FROM block b JOIN text t ON t.id = b.text_id
                            WHERE b.message_pk = m.pk AND b.kind = 'text')",
         )?
-        .query_row([pk, session_pk], |row| Ok((row.get(0)?, row.get(1)?)))
+        .query_row([pk, session_pk], |row| <(_, _)>::try_from(row))
         .optional()?)
 }
 

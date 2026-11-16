@@ -53,7 +53,7 @@ pub(crate) fn read(id: SessionId, r: &Row<'_>) -> rusqlite::Result<Session> {
     }
     s.cwd = r
         .get::<_, Option<String>>(3)?
-        .map(|c| serde_json::from_str(&c).map_err(|e| invalid(3, e)))
+        .map(|c| serde_json::from_str(&c).map_err(|e| unreadable_json(3, e)))
         .transpose()?
         .unwrap_or_default();
     s.git_branch = r.get(4)?;
@@ -78,12 +78,13 @@ fn name<T: serde::Serialize>(v: &T) -> String {
     }
 }
 
-fn invalid(column: usize, error: serde_json::Error) -> rusqlite::Error {
+fn unreadable_json(column: usize, error: serde_json::Error) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(column, rusqlite::types::Type::Text, Box::new(error))
 }
 
 fn decode_name<T: serde::de::DeserializeOwned>(s: &str, column: usize) -> rusqlite::Result<T> {
-    serde_json::from_value(serde_json::Value::String(s.to_owned())).map_err(|e| invalid(column, e))
+    serde_json::from_value(serde_json::Value::String(s.to_owned()))
+        .map_err(|e| unreadable_json(column, e))
 }
 
 mod remove;

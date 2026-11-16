@@ -2,6 +2,7 @@
 //! Parents are watched nonrecursively to exclude unrelated state writes.
 use crate::{Config, LoopMsg, collect};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use polylogue_model::LockExt;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -51,7 +52,7 @@ impl Roots {
         let changes = Arc::new(Mutex::new(Changes::default()));
         let recorded = Arc::clone(&changes);
         let watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
-            let mut changes = recorded.lock().expect("watch changes");
+            let mut changes = recorded.locked();
             let pending = changes.pending();
             changes.record(result);
             if !pending && changes.pending() {
@@ -65,17 +66,13 @@ impl Roots {
             retry: false,
         };
         if let Err(error) = roots.refresh(config) {
-            roots
-                .changes
-                .lock()
-                .expect("watch changes")
-                .record(Err(error));
+            roots.changes.locked().record(Err(error));
         }
         Ok(roots)
     }
 
     pub fn take(&mut self) -> Changes {
-        let changes = std::mem::take(&mut *self.changes.lock().expect("watch changes"));
+        let changes = std::mem::take(&mut *self.changes.locked());
         self.retry |= changes.full;
         changes
     }

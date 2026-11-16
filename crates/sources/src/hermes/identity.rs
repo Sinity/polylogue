@@ -1,3 +1,4 @@
+use polylogue_model::JsonExt;
 use polylogue_model::{BlobHash, Json};
 use std::path::{Component, Path, PathBuf};
 
@@ -10,10 +11,7 @@ pub(super) fn profile(source: Option<&Json>) -> Result<Option<String>, &'static 
     let Some(source) = source.filter(|source| !source.is_null()) else {
         return Ok(None);
     };
-    let raw = source
-        .get("path")
-        .and_then(Json::as_str)
-        .ok_or("missing source path")?;
+    let raw = source.str("path").ok_or("missing source path")?;
     let mut path = PathBuf::new();
     for component in Path::new(raw).components() {
         match component {

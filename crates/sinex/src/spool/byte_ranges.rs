@@ -39,7 +39,9 @@ impl PinnedRange {
             && (whole.finalize().as_bytes() != &self.range.hash.0
                 || length != self.range.decoded_length)
         {
-            return invalid("captured chunks differ from their original body");
+            return Err(Error::invalid(
+                "captured chunks differ from their original body",
+            ));
         }
         Ok(self.range)
     }
@@ -56,11 +58,11 @@ fn group_outcome(
     }
     let group = parent.parent().expect("capture group directory");
     let header = read_checked::<CaptureGroupHeader>(&group.join("acquisition.json"))?
-        .ok_or_else(|| Error::Invalid("body has no published capture group header".into()))?;
+        .ok_or_else(|| Error::invalid("body has no published capture group header"))?;
     if group.file_name().and_then(|name| name.to_str())
         != Some(hash(header.identity.as_bytes()).as_str())
     {
-        return invalid("capture group header has another identity");
+        return Err(Error::invalid("capture group header has another identity"));
     }
     Ok(Some(header.disposition))
 }
@@ -98,21 +100,24 @@ impl Spool {
     pub fn pin_body_range(&self, identity: &str) -> Result<PinnedRange> {
         let prepared = self.required(identity)?;
         let Some(Capture::Input(input)) = prepared.capture() else {
-            return invalid("body range reference is not an input");
+            return Err(Error::invalid("body range reference is not an input"));
         };
-        let generation = input.generation.clone().ok_or_else(|| {
-            Error::Invalid("captured body's observed source state is unknown".into())
-        })?;
+        let generation = input
+            .generation
+            .clone()
+            .ok_or_else(|| Error::invalid("captured body's observed source state is unknown"))?;
         let range = input
             .raw_range
-            .ok_or_else(|| Error::Invalid("captured body has no provider byte range".into()))?;
+            .ok_or_else(|| Error::invalid("captured body has no provider byte range"))?;
         let parts = self.encoded_body(identity)?;
         let named = match parts.as_slice() {
             [(_, one)] => one.hash.0 == input.hash.0 && one.decoded_len == input.length,
             several => several.iter().map(|(_, d)| d.decoded_len).sum::<u64>() == input.length,
         };
         if !named || range.length()? != input.length {
-            return invalid("captured body differs from its original byte range");
+            return Err(Error::invalid(
+                "captured body differs from its original byte range",
+            ));
         }
         Ok(PinnedRange {
             order: prepared.order,
@@ -203,7 +208,7 @@ impl Spool {
             after = entries.last().map(|entry| entry.order);
             count = count
                 .checked_add(entries.len() as u64)
-                .ok_or_else(|| Error::Invalid("captured body count overflow".into()))?;
+                .ok_or_else(|| Error::invalid("captured body count overflow"))?;
         }
     }
 }

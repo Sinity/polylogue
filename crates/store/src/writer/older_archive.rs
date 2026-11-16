@@ -101,7 +101,7 @@ fn held(conn: &Connection, input: &Input) -> Result<Option<Option<String>>> {
     for r in &input.revisions {
         let found: Option<(String, i64, i64)> = revision
             .query_row(params![input.id, r.number], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                <(_, _, _)>::try_from(row)
             })
             .optional()?;
         if found != Some((r.produced.clone(), r.chain, r.length)) {
@@ -117,7 +117,7 @@ fn held(conn: &Connection, input: &Input) -> Result<Option<Option<String>>> {
     for e in &input.extents {
         let found: Option<(i64, Vec<u8>, i64)> = extent
             .query_row(params![input.id, e.chain, e.offset], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                <(_, _, _)>::try_from(row)
             })
             .optional()?;
         if found != Some((e.length, e.blob.0.to_vec(), e.blob_offset)) {

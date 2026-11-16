@@ -25,6 +25,7 @@ use crate::briefing::{Ask, StartSource};
 use crate::config::Startup;
 use command_surface::Answer;
 use polylogue_model::DeliveryOutcome;
+use polylogue_model::JsonExt as _;
 use polylogue_model::SessionId;
 use polylogue_sources::origin::by_name;
 use polylogue_sources::{ORIGINS, Support};
@@ -588,7 +589,7 @@ fn prompt_context(
         return None;
     }
     let session = session_of(harness, payload, startup)?;
-    let cwd = payload.get("cwd").and_then(Value::as_str)?;
+    let cwd = payload.str("cwd")?;
     context(
         startup,
         Ask::Advisory {

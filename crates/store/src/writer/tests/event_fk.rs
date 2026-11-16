@@ -92,15 +92,19 @@ fn removal_steps(unrelated: usize, indexed: bool) -> u64 {
     )
     .unwrap();
     write_rows(
-        &crate::text_rows::TextIds::new(&tx, false).unwrap(),
         &tx,
         &removed,
         &removed.parse[0],
-        removed.parse[0].resolution.as_ref().unwrap(),
-        4,
-        Some(&first),
-        Some(&commit),
-        &changes,
+        rows::ReadingWrite {
+            texts: &crate::text_rows::TextIds::new(&tx, false).unwrap(),
+            resolution: removed.parse[0].resolution.as_ref().unwrap(),
+            counter: 4,
+            first_build: Some(&first),
+            source_commit: Some(&commit),
+            changes: &changes,
+            retraction: false,
+            replacement: false,
+        },
     )
     .unwrap();
     tx.progress_handler(0, None::<fn() -> bool>).unwrap();

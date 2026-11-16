@@ -269,6 +269,9 @@ fn input_size(config: &Config) -> u64 {
 }
 
 fn main() {
+    polylogue_store::timing::set_workers_enabled(
+        std::env::var_os("POLYLOGUE_TIMING_WORKERS").is_some(),
+    );
     let args: Vec<String> = std::env::args().collect();
     let arg = |name: &str| {
         args.iter()
@@ -486,7 +489,7 @@ struct BuildDatabase {
 /// measurement of a first build.
 fn checkpoint_first_build(archive: &Archive) -> polylogue_store::Result<Vec<BuildDatabase>> {
     if let Some(build) = archive.index_build() {
-        return Err(polylogue_store::StoreError::Invalid(format!(
+        return Err(polylogue_store::StoreError::invalid(format!(
             "the pass ended before installing the built index: {build}"
         )));
     }
@@ -511,7 +514,7 @@ fn checkpoint_first_build(archive: &Archive) -> polylogue_store::Result<Vec<Buil
         conn.busy_timeout(std::time::Duration::ZERO)?;
         let busy: i64 = conn.query_row("PRAGMA main.wal_checkpoint(TRUNCATE)", [], |r| r.get(0))?;
         if busy != 0 {
-            return Err(polylogue_store::StoreError::Invalid(format!(
+            return Err(polylogue_store::StoreError::invalid(format!(
                 "completed build still has a reader of {name}"
             )));
         }
@@ -520,7 +523,7 @@ fn checkpoint_first_build(archive: &Archive) -> polylogue_store::Result<Vec<Buil
         drop(conn);
         let after = wal_bytes()?;
         if after != 0 {
-            return Err(polylogue_store::StoreError::Invalid(format!(
+            return Err(polylogue_store::StoreError::invalid(format!(
                 "completed build left {after} WAL bytes in {name}"
             )));
         }

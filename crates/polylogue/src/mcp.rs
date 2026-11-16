@@ -171,7 +171,7 @@ fn run(
     let structured = match &answer {
         Ok(answer) => serde_json::to_value(answer).expect("answer serializes"),
         Err(error) => serde_json::to_value(command_surface::Answer::<Value>::error(
-            crate::protocol::failure("not_running", error.to_string()),
+            crate::protocol::failure(polylogue_model::Code::NotRunning, error.to_string()),
         ))
         .expect("failure serializes"),
     };
@@ -409,9 +409,11 @@ impl Reply {
                 ) {
                     Ok(answer) => answer,
                     Err(text) => {
-                        let answer = command_surface::Answer::<Value>::error(
-                            crate::protocol::failure("bad_request", text.clone()),
-                        );
+                        let answer =
+                            command_surface::Answer::<Value>::error(crate::protocol::failure(
+                                polylogue_model::Code::BadRequest,
+                                text.clone(),
+                            ));
                         (
                             text,
                             serde_json::to_value(answer).expect("failure serializes"),

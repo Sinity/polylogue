@@ -462,19 +462,16 @@ fn context_output_records_a_parsable_emission() {
             .output
             .events
             .iter()
-            .filter_map(polylogue_sources::hook_spool::context_emission)
+            .filter(|event| event.kind.ends_with("hook_context_emitted"))
             .collect::<Vec<_>>();
         if printed {
             assert_eq!(emissions.len(), 1);
-            assert_eq!(emissions[0].invocation, invocation);
+            assert_eq!(emissions[0].data["invocation"], invocation);
+            assert_eq!(emissions[0].data["session"], "claude-code:emission-session");
+            assert_eq!(emissions[0].data["hook_event"], "SessionStart");
             assert_eq!(
-                emissions[0].session.to_string(),
-                "claude-code:emission-session"
-            );
-            assert_eq!(emissions[0].hook_event, "SessionStart");
-            assert_eq!(
-                emissions[0].deliveries,
-                ["delivery:first-receipt", "delivery:second:receipt"]
+                emissions[0].data["deliveries"],
+                serde_json::json!(["delivery:first-receipt", "delivery:second:receipt"])
             );
             assert_ne!(step.output.events[1].data["event_id"], invocation);
         } else {
@@ -597,7 +594,7 @@ fn a_context_timeout_emits_an_unreferenced_notice_and_names_only_the_original_pr
         BufReader::new(&stream).read_line(&mut line).unwrap();
         let prepare: Value = serde_json::from_str(&line).unwrap();
         let failure = command_surface::Answer::<Value>::error(crate::protocol::failure(
-            "deadline_exceeded",
+            polylogue_model::Code::DeadlineExceeded,
             "fixture timeout",
         ));
         writeln!(stream, "{}", serde_json::to_string(&failure).unwrap()).unwrap();
@@ -667,7 +664,7 @@ fn file_advisory_hook_uses_the_shared_request_and_silences_timeout() {
             assert_eq!(id.get_timestamp().unwrap().to_unix().0, 1767225600);
             let answer = if timed_out {
                 command_surface::Answer::error(crate::protocol::failure(
-                    "deadline_exceeded",
+                    polylogue_model::Code::DeadlineExceeded,
                     "fixture timeout",
                 ))
             } else {

@@ -62,105 +62,102 @@ impl Databases {
         let cancelled = Arc::clone(&stop);
         let bytes = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let captured = Arc::clone(&bytes);
-        let thread = std::thread::Builder::new()
-            .name("polylogue-databases".into())
-            .spawn(move || {
-                let _worker = polylogue_store::timing::worker();
-                let mut completed = Completed::default();
-                let mut pending = Vec::new();
-                for source in &inputs {
-                    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-                        break;
-                    }
-                    if let Err(error) =
-                        reader.recall(&source.path, &archive, &source.input, &source.observation)
-                    {
+        let thread = polylogue_model::spawn_named("polylogue-databases", move || {
+            let _worker = polylogue_store::timing::worker();
+            let mut completed = Completed::default();
+            let mut pending = Vec::new();
+            for source in &inputs {
+                if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                if let Err(error) =
+                    reader.recall(&source.path, &archive, &source.input, &source.observation)
+                {
+                    completed
+                        .errors
+                        .push(format!("read database {}: {error}", source.path.display()));
+                    continue;
+                }
+                let Some(due) = reader.observe(&source.path) else {
+                    continue;
+                };
+                completed.inputs_seen += 1;
+                let mut queue = match InputWriter::new(
+                    &archive,
+                    &writer,
+                    source,
+                    notify.clone(),
+                    wake.clone(),
+                    Arc::clone(&captured),
+                ) {
+                    Ok(queue) => queue,
+                    Err(error) => {
                         completed
                             .errors
                             .push(format!("read database {}: {error}", source.path.display()));
                         continue;
                     }
-                    let Some(due) = reader.observe(&source.path) else {
-                        continue;
-                    };
-                    completed.inputs_seen += 1;
-                    let mut queue = match InputWriter::new(
+                };
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    reader.read(
+                        &source.path,
                         &archive,
-                        &writer,
-                        source,
-                        notify.clone(),
-                        wake.clone(),
-                        Arc::clone(&captured),
-                    ) {
-                        Ok(queue) => queue,
-                        Err(error) => {
-                            completed
-                                .errors
-                                .push(format!("read database {}: {error}", source.path.display()));
-                            continue;
-                        }
-                    };
-                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        reader.read(
-                            &source.path,
-                            &archive,
-                            &source.input,
-                            &source.observation,
-                            due,
-                            |bytes, observation| queue.append(bytes, observation),
-                        )
-                    }));
-                    match outcome {
-                        Ok(Ok(report)) => {
-                            completed.changed = true;
-                            if let Err(error) = queue.enqueue_staged(report.snapshot) {
-                                reader.forget(&source.path);
-                                completed.errors.push(format!(
-                                    "stage database {}: {error}",
-                                    source.path.display()
-                                ));
-                                continue;
-                            }
-                        }
-                        Ok(Err(error)) => {
+                        &source.input,
+                        &source.observation,
+                        due,
+                        |bytes, observation| queue.append(bytes, observation),
+                    )
+                }));
+                match outcome {
+                    Ok(Ok(report)) => {
+                        completed.changed = true;
+                        if let Err(error) = queue.enqueue_staged(report.snapshot) {
                             reader.forget(&source.path);
-                            completed.changed = true;
                             completed
                                 .errors
-                                .push(format!("read database {}: {error}", source.path.display()));
-                            continue;
-                        }
-                        Err(_) => {
-                            completed.changed = true;
-                            completed.errors.push(format!(
-                                "read database {}: worker panicked",
-                                source.path.display()
-                            ));
-                            reader = DatabaseReader::default();
-                            reader.stop_when(Arc::clone(&cancelled));
+                                .push(format!("stage database {}: {error}", source.path.display()));
                             continue;
                         }
                     }
-                    // Another source can be read while these groups commit.
-                    pending.push((source, queue));
-                }
-                for (source, mut queue) in pending {
-                    match queue.finish() {
-                        Ok(pending) => completed.primary_pending |= pending,
-                        Err(error) => {
-                            reader.forget(&source.path);
-                            completed.changed = true;
-                            completed
-                                .errors
-                                .push(format!("write database {}: {error}", source.path.display()));
-                        }
+                    Ok(Err(error)) => {
+                        reader.forget(&source.path);
+                        completed.changed = true;
+                        completed
+                            .errors
+                            .push(format!("read database {}: {error}", source.path.display()));
+                        continue;
+                    }
+                    Err(_) => {
+                        completed.changed = true;
+                        completed.errors.push(format!(
+                            "read database {}: worker panicked",
+                            source.path.display()
+                        ));
+                        reader = DatabaseReader::default();
+                        reader.stop_when(Arc::clone(&cancelled));
+                        continue;
                     }
                 }
-                let _ = tx.send((reader, completed));
-                if let Some(wake) = wake {
-                    let _ = wake.send(LoopMsg::Changed);
+                // Another source can be read while these groups commit.
+                pending.push((source, queue));
+            }
+            for (source, mut queue) in pending {
+                match queue.finish() {
+                    Ok(pending) => completed.primary_pending |= pending,
+                    Err(error) => {
+                        reader.forget(&source.path);
+                        completed.changed = true;
+                        completed
+                            .errors
+                            .push(format!("write database {}: {error}", source.path.display()));
+                    }
                 }
-            })?;
+            }
+            let _ = tx.send((reader, completed));
+            if let Some(wake) = wake {
+                let _ = wake.send(LoopMsg::Changed);
+            }
+        })?;
         self.worker = Some(Worker {
             thread,
             result,
@@ -325,9 +322,7 @@ impl<'a> InputWriter<'a> {
             return Ok(());
         }
         let snapshot = snapshot.ok_or_else(|| {
-            polylogue_store::StoreError::Invalid(
-                "database sample has no consistent-read token".into(),
-            )
+            polylogue_store::StoreError::invalid("database sample has no consistent-read token")
         })?;
         let start = self.staged.iter().find_map(|part| {
             part.batch
@@ -400,7 +395,7 @@ impl Engine {
         let reader = self.reads.reader()?;
         for (path, name) in &self.databases {
             let origin = polylogue_sources::origin::by_name(name).ok_or_else(|| {
-                polylogue_store::StoreError::Invalid(format!("unknown database origin {name}"))
+                polylogue_store::StoreError::invalid(format!("unknown database origin {name}"))
             })?;
             let input_id = self
                 .inputs
@@ -484,7 +479,7 @@ impl Engine {
             let mut databases = Vec::with_capacity(sources.len());
             for (path, origin) in sources {
                 polylogue_sources::origin::by_name(origin).ok_or_else(|| {
-                    polylogue_store::StoreError::Invalid(format!(
+                    polylogue_store::StoreError::invalid(format!(
                         "unknown database origin {origin}"
                     ))
                 })?;

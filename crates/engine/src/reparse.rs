@@ -14,7 +14,7 @@ struct Charge<'a>(&'a Memory, u64);
 
 impl Memory {
     fn take(&self, bytes: u64) -> Charge<'_> {
-        let mut used = self.used.lock().expect("reading memory");
+        let mut used = self.used.locked();
         while *used != 0 && used.saturating_add(bytes) > self.limit {
             used = self.room.wait(used).expect("reading memory");
         }
@@ -25,7 +25,7 @@ impl Memory {
 
 impl Drop for Charge<'_> {
     fn drop(&mut self) {
-        *self.0.used.lock().expect("reading memory") -= self.1;
+        *self.0.used.locked() -= self.1;
         self.0.room.notify_all();
     }
 }
@@ -108,7 +108,7 @@ impl Engine {
                                 {
                                     break;
                                 }
-                                let plan = { waiting.lock().expect("reading queue").pop_front() };
+                                let plan = { waiting.locked().pop_front() };
                                 let Some(mut plan) = plan else { break };
                                 polylogue_store::timing::reading_queue(-1, 0);
                                 let mut bytes_read = 0;
@@ -215,8 +215,7 @@ impl Engine {
                 if !stopping && (self.archive.stop().is_cancelled() || self.poll_request()) {
                     // Readings being prepared commit; the rest are not started.
                     stopping = true;
-                    let unstarted: Vec<Plan> =
-                        waiting.lock().expect("reading queue").drain(..).collect();
+                    let unstarted: Vec<Plan> = waiting.locked().drain(..).collect();
                     remaining -= unstarted.len();
                     polylogue_store::timing::reading_queue(-(unstarted.len() as i64), 0);
                     for plan in unstarted {
@@ -343,8 +342,8 @@ impl Engine {
     /// pooled stored parsing and replacement readings wait for confirmation.
     pub(crate) fn confirmed_reading(&self, plan: &Plan) -> Result<bool, EngineError> {
         let Change::Reparse { chain } = plan.change else {
-            return Err(polylogue_store::StoreError::Invalid(
-                "a stored reading needs its confirmed source chain".into(),
+            return Err(polylogue_store::StoreError::invalid(
+                "a stored reading needs its confirmed source chain",
             )
             .into());
         };

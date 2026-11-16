@@ -57,13 +57,10 @@ fn expand_query(
         } = query.source.clone()
         {
             if stack.contains(&name) {
-                return Err(QueryError::Invalid {
-                    message: format!(
-                        "query:{name} refers to itself (through {})",
-                        stack.join(" -> ")
-                    ),
-                    position: 0,
-                });
+                return Err(QueryError::invalid(format!(
+                    "query:{name} refers to itself (through {})",
+                    stack.join(" -> ")
+                )));
             }
             let definition = saved::saved_definition(text, 0, &name, options)?;
             let mut base = parse_query(definition.executable_text()?, options)?;

@@ -1,11 +1,12 @@
 //! Whole immutable authored requests. A local commit is kept distinct from an
 //! event Sinex confirmed.
 use super::Reader;
+use crate::ConnExt as _;
 use crate::{Result, StoreError};
 use polylogue_model::{
     Reference, RevisionReference, authored::PreparedRequest, bundle::AuthoredRecord,
 };
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AuthoredReadIssue {
@@ -161,10 +162,9 @@ impl Reader<'_> {
                 issue: AuthoredReadIssue::MissingAssociation,
             }));
         };
-        let commit: i64 = conn.query_row(
+        let commit: i64 = conn.scalar(
             "SELECT commit_seq FROM source_client_request WHERE id=?1",
             [&prepared.request.id],
-            |row| row.get(0),
         )?;
         if commit <= 0 {
             return Ok(Some(AuthoredRead::Incomplete {
@@ -185,13 +185,10 @@ impl Reader<'_> {
 
     fn whole_authored_request(&self, id: &str) -> Result<Option<AuthoredRead>> {
         let conn = self.conn()?;
-        let commit: Option<i64> = conn
-            .query_row(
-                "SELECT commit_seq FROM source_client_request WHERE id=?1",
-                [id],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let commit: Option<i64> = conn.scalar_optional(
+            "SELECT commit_seq FROM source_client_request WHERE id=?1",
+            [id],
+        )?;
         let Some(commit) = commit else {
             self.check()?;
             return Ok(None);

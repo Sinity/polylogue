@@ -9,10 +9,56 @@ pub struct Failure {
 }
 
 impl Failure {
-    pub fn new(code: &str, message: impl ToString) -> Self {
+    pub fn new(code: polylogue_model::Code, message: impl ToString) -> Self {
         Self {
             error: crate::protocol::failure(code, message.to_string()),
         }
+    }
+
+    pub fn invalid_query(message: impl ToString) -> Self {
+        Self::new(polylogue_model::Code::InvalidQuery, message)
+    }
+    pub fn bad_value(message: impl ToString) -> Self {
+        Self::new(polylogue_model::Code::BadValue, message)
+    }
+    pub fn bad_request(message: impl ToString) -> Self {
+        Self::new(polylogue_model::Code::BadRequest, message)
+    }
+    pub fn invalid(message: impl ToString) -> Self {
+        Self::new(polylogue_model::Code::Invalid, message)
+    }
+    pub fn stale_cursor(message: impl ToString) -> Self {
+        Self::new(polylogue_model::Code::StaleCursor, message)
+    }
+    pub fn not_yet_available(message: impl ToString) -> Self {
+        Self::new(polylogue_model::Code::NotYetAvailable, message)
+    }
+    pub fn refused(message: impl ToString) -> Self {
+        Self::new(polylogue_model::Code::Refused, message)
+    }
+    pub fn not_found(message: impl ToString) -> Self {
+        Self::new(polylogue_model::Code::NotFound, message)
+    }
+    pub fn conflict(message: impl ToString) -> Self {
+        Self::new(polylogue_model::Code::Conflict, message)
+    }
+    pub fn shutting_down(message: impl ToString) -> Self {
+        Self::new(polylogue_model::Code::ShuttingDown, message)
+    }
+    pub fn deadline_exceeded(message: impl ToString) -> Self {
+        Self::new(polylogue_model::Code::DeadlineExceeded, message)
+    }
+    pub fn io(message: impl ToString) -> Self {
+        Self::new(polylogue_model::Code::Io, message)
+    }
+    pub fn internal(message: impl ToString) -> Self {
+        Self::new(polylogue_model::Code::Internal, message)
+    }
+    pub fn sinex_unavailable(message: impl ToString) -> Self {
+        Self::new(polylogue_model::Code::SinexUnavailable, message)
+    }
+    pub fn primary_context_invalid(message: impl ToString) -> Self {
+        Self::new(polylogue_model::Code::PrimaryContextInvalid, message)
     }
 
     pub fn store(error: &polylogue_store::StoreError) -> Self {

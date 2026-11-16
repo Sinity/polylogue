@@ -36,7 +36,7 @@ pub(super) fn read(tx: &Transaction<'_>, input: i64, chain: i64) -> Result<Optio
     Ok(Some(Stored {
         state: State {
             cursor: u64::try_from(cursor)
-                .map_err(|_| StoreError::Invalid("stored parser cursor is negative".into()))?,
+                .map_err(|_| crate::StoreError::stored(0, "stored parser cursor is negative"))?,
             version,
             progress: crate::read::stored_parse_progress(&status, at_length, reason)?,
             counts,

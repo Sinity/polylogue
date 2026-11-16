@@ -1,13 +1,16 @@
 //! Stated hook fields are checked independently of message content.
 use crate::encoding::PreparedMessage;
-use crate::{Result, StoreError};
+use crate::{OptionExt as _, Result, ResultExt as _, StoreError};
 use polylogue_model::{Block, HookFieldClaim, Output};
 use std::collections::BTreeMap;
 
+const HOOK_FIELD_MISMATCH: &str =
+    "stated hook field does not match its message block and source record";
+
 pub(super) fn validate(output: &Output, messages: &[PreparedMessage]) -> Result<()> {
     for (&index, stated) in &output.hook_fields {
-        let row = output.messages.get(index).ok_or_else(invalid)?;
-        let prepared = messages.get(index).ok_or_else(invalid)?;
+        let row = output.messages.get(index).or_invalid(HOOK_FIELD_MISMATCH)?;
+        let prepared = messages.get(index).or_invalid(HOOK_FIELD_MISMATCH)?;
         let mut by_block = BTreeMap::<u64, &HookFieldClaim>::new();
         let mut by_pointer = BTreeMap::new();
         for field in stated {
@@ -15,30 +18,30 @@ pub(super) fn validate(output: &Output, messages: &[PreparedMessage]) -> Result<
                 .block_selection
                 .block_ordinals
                 .binary_search(&field.block)
-                .map_err(|_| invalid())?;
+                .or_invalid(HOOK_FIELD_MISMATCH)?;
             if field.start != row.offset
                 || field.end != row.end
                 || field.start >= field.end
                 || !matches!(row.message.blocks.get(selected), Some(Block::Text { .. }))
                 || !valid_hook_pointer(&field.pointer)
             {
-                return Err(invalid());
+                return Err(StoreError::invalid(HOOK_FIELD_MISMATCH));
             }
             if let Some(prior) = by_pointer.insert(field.pointer.as_str(), field.block)
                 && prior != field.block
             {
-                return Err(invalid());
+                return Err(StoreError::invalid(HOOK_FIELD_MISMATCH));
             }
             if let Some(prior) = by_block.insert(field.block, field)
                 && prior != field
             {
-                return Err(invalid());
+                return Err(StoreError::invalid(HOOK_FIELD_MISMATCH));
             }
         }
     }
     for (&index, injections) in &output.declared_injections {
-        let row = output.messages.get(index).ok_or_else(invalid)?;
-        let prepared = messages.get(index).ok_or_else(invalid)?;
+        let row = output.messages.get(index).or_invalid(HOOK_FIELD_MISMATCH)?;
+        let prepared = messages.get(index).or_invalid(HOOK_FIELD_MISMATCH)?;
         for injection in injections {
             injection.validate_for(&row.message.id, &prepared.block_selection)?;
         }
@@ -122,12 +125,6 @@ fn valid_hook_pointer(pointer: &str) -> bool {
     index
         .parse::<u64>()
         .is_ok_and(|parsed| parsed.to_string() == index)
-}
-
-fn invalid() -> StoreError {
-    StoreError::Invalid(
-        "stated hook field does not match its message block and source record".into(),
-    )
 }
 
 #[cfg(test)]

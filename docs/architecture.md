@@ -177,7 +177,12 @@ so far and nothing else. When the build ends, its writer syncs the file,
 closes it, switches it to WAL while nothing else has it open, renames it
 `index-build/built.db`, removes the marker and renames it over `index.db`,
 syncing the directory after each step; a start that finds `built.db`
-completes the rename. Only the build pipeline opens the private file: the
+completes the rename. Pipeline reads use `built.db` between the two renames.
+The active file changes with each rename under the same lock that selects
+read paths and reads their file identity, including when a following sync
+fails. A reader opened before a rename is refused as replaced before its
+first database read; an already-started read keeps its open snapshot.
+Only the build pipeline opens the private file: the
 writer, its resolver and parser-context reads, the engine's planning reads
 and tool-database catalog reads. Serving readers, the search thread and the
 derive thread open `index.db` once it is installed, so no reader can hold up

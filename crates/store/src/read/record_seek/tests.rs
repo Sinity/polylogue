@@ -1,4 +1,5 @@
 use super::*;
+use crate::StoreError;
 use crate::{
     ReadPool,
     fixture::{Fixture, SessionFacts},

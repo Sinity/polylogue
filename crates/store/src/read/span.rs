@@ -1,5 +1,7 @@
 //! A portable span observes only selected original bytes. Resolving a known
 //! prefix never establishes completeness or hashes the unavailable remainder.
+use crate::ConnExt as _;
+use crate::OptionExt as _;
 use crate::{Reader, Result, StoreError};
 use polylogue_model::bundle::{
     TextSpanOrigin,
@@ -11,7 +13,7 @@ use polylogue_model::{
     BlobHash, Reference, SpanBounds,
     bundle::{TextCoverage, TextSourceVersion},
 };
-use rusqlite::{OptionalExtension, params};
+use rusqlite::params;
 use std::ops::ControlFlow;
 
 /// Keeps the Reader snapshot that resolved both coordinate bounds.
@@ -118,19 +120,17 @@ impl<'pool> Reader<'pool> {
         let Some((version, committed)) = self.span_identity(container)? else {
             return Ok(None);
         };
-        let mut bounds = SpanBounds::new(*unit, *start, *end)
-            .map_err(|error| StoreError::Invalid(error.to_string()))?;
+        let mut bounds =
+            SpanBounds::new(*unit, *start, *end).map_err(crate::StoreError::invalid)?;
         let mut bytes = 0u64;
         let mut stopped = false;
         let mut start_position = None;
         let mut end_position = None;
         let found = self.source_text_while(container, false, None, &mut |piece, text| {
-            bounds
-                .push(text)
-                .map_err(|error| StoreError::Invalid(error.to_string()))?;
+            bounds.push(text).map_err(crate::StoreError::invalid)?;
             let next = bytes
                 .checked_add(text.len() as u64)
-                .ok_or_else(|| StoreError::Invalid("span text length overflows".into()))?;
+                .or_invalid("span text length overflows")?;
             if let Some(bound) = bounds.resolved_start()
                 && bound >= bytes
                 && bound <= next
@@ -162,9 +162,7 @@ impl<'pool> Reader<'pool> {
         if !found {
             return Ok(None);
         }
-        let range = bounds
-            .finish()
-            .map_err(|error| StoreError::Invalid(error.to_string()))?;
+        let range = bounds.finish().map_err(crate::StoreError::invalid)?;
         let empty = NativeTextPosition {
             piece: NativeTextPiece::Empty,
             byte: 0,
@@ -203,14 +201,14 @@ impl<'pool> Reader<'pool> {
         };
         version
             .validate_container(container)
-            .map_err(|error| StoreError::Invalid(error.to_string()))?;
+            .map_err(crate::StoreError::invalid)?;
         let coverage = TextCoverage {
             start: origin.start,
             end: origin.end,
             total_bytes: None,
         };
         seek.validate(container, &coverage)
-            .map_err(|error| StoreError::Invalid(error.to_string()))?;
+            .map_err(crate::StoreError::invalid)?;
         let Some((current, committed)) = self.span_identity(container)? else {
             return Err(stale(&origin.reference));
         };
@@ -238,10 +236,10 @@ impl<'pool> Reader<'pool> {
     }
     fn require_span_field(&self, container: &Reference, body: NativeTextBody) -> Result<()> {
         let kind: Option<String> = match container {
-            Reference::Message(id) | Reference::Block { message: id, .. } => self.conn()?.query_row("SELECT b.kind FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.id=?1 AND coalesce(b.ordinal,cast(b.idx AS TEXT))=?2", params![id.to_string(), body.block.to_string()], |row| row.get(0)).optional()?,
+            Reference::Message(id) | Reference::Block { message: id, .. } => self.conn()?.scalar_optional("SELECT b.kind FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.id=?1 AND coalesce(b.ordinal,cast(b.idx AS TEXT))=?2", params![id.to_string(), body.block.to_string()])?,
             Reference::Document(id) => {
                 let Ok(ordinal) = i64::try_from(body.block) else { return Err(stale(container)) };
-                self.conn()?.query_row("SELECT b.kind FROM document_block b JOIN document d ON d.pk=b.document_pk WHERE d.id=?1 AND b.idx=?2", params![id.to_string(), ordinal], |row| row.get(0)).optional()?
+                self.conn()?.scalar_optional("SELECT b.kind FROM document_block b JOIN document d ON d.pk=b.document_pk WHERE d.id=?1 AND b.idx=?2", params![id.to_string(), ordinal])?
             }
             _ => return Err(stale(container)),
         };
@@ -263,12 +261,7 @@ impl<'pool> Reader<'pool> {
             Reference::Message(id) | Reference::Block { message: id, .. } => {
                 let pk: Option<i64> = self
                     .conn()?
-                    .query_row(
-                        "SELECT pk FROM message WHERE id=?1",
-                        [id.to_string()],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
+                    .scalar_optional("SELECT pk FROM message WHERE id=?1", [id.to_string()])?;
                 let Some(pk) = pk else { return Ok(None) };
                 let block_selection = self.source_block_selection(pk, container)?;
                 Ok(Some((
@@ -283,8 +276,8 @@ impl<'pool> Reader<'pool> {
                 let Some(document) = self.select_document(id)? else {
                     return Ok(None);
                 };
-                let hash = BlobHash::parse(&document.version())
-                    .map_err(|error| StoreError::Invalid(error.to_string()))?;
+                let hash =
+                    BlobHash::parse(&document.version()).map_err(crate::StoreError::invalid)?;
                 Ok(Some((
                     TextSourceVersion::ContentHash {
                         record: container.clone(),

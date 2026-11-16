@@ -3,9 +3,7 @@ use crate::archive::{Archive, cache, open_archive_writer, open_read, open_write}
 use crate::schema;
 
 fn meta(conn: &Connection, key: &str) -> Option<String> {
-    conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
-        .optional()
-        .unwrap()
+    crate::meta_get(conn, key).unwrap()
 }
 
 fn build_files(root: &Path) -> Vec<String> {

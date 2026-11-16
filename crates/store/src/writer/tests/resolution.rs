@@ -504,15 +504,19 @@ fn original_readings_use_confirmed_blob_sizes_without_a_local_source_database() 
     let tx = index.transaction().unwrap();
     let step = &input.parse[0];
     write_rows(
-        &crate::text_rows::TextIds::new(&tx, false).unwrap(),
         &tx,
         &input,
         step,
-        step.resolution.as_ref().unwrap(),
-        1,
-        None,
-        Some(&fixture_commit()),
-        &crate::change_summary::ChangeSummary::start(&tx).unwrap(),
+        rows::ReadingWrite {
+            texts: &crate::text_rows::TextIds::new(&tx, false).unwrap(),
+            resolution: step.resolution.as_ref().unwrap(),
+            counter: 1,
+            first_build: None,
+            source_commit: Some(&fixture_commit()),
+            changes: &crate::change_summary::ChangeSummary::start(&tx).unwrap(),
+            retraction: false,
+            replacement: false,
+        },
     )
     .unwrap();
     tx.commit().unwrap();
@@ -743,15 +747,19 @@ fn apply_source_batches(index: &mut Connection, batches: &[Batch]) -> Result<()>
     for batch in batches {
         for step in &batch.parse {
             write_rows(
-                &crate::text_rows::TextIds::new(&tx, false).unwrap(),
                 &tx,
                 batch,
                 step,
-                step.resolution.as_ref().unwrap(),
-                1,
-                None,
-                Some(&fixture_commit()),
-                &changes,
+                rows::ReadingWrite {
+                    texts: &crate::text_rows::TextIds::new(&tx, false).unwrap(),
+                    resolution: step.resolution.as_ref().unwrap(),
+                    counter: 1,
+                    first_build: None,
+                    source_commit: Some(&fixture_commit()),
+                    changes: &changes,
+                    retraction: false,
+                    replacement: false,
+                },
             )?;
         }
     }
@@ -1431,13 +1439,21 @@ fn record_visitors_stop_before_decoding_later_session_payloads() {
     let reader = reads.reader().unwrap();
     let mut events = 0;
     reader
-        .visit_event_records(&sid("visitor-session"), |_| {
+        .visit_event_records_from_ordinal(&sid("visitor-session"), 0, |_| {
             events += 1;
             ControlFlow::Break(())
         })
         .unwrap();
     assert_eq!(events, 1);
-    assert!(reader.event_records(&sid("visitor-session")).is_err());
+    assert!(
+        reader
+            .visit_event_records_from_ordinal(
+                &sid("visitor-session"),
+                0,
+                |_| ControlFlow::Continue(())
+            )
+            .is_err()
+    );
     let mut links = 0;
     reader
         .visit_links(&sid("visitor-session"), |_| {

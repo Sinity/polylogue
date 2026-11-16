@@ -51,13 +51,15 @@ struct Patch {
 impl PresentationMap {
     pub fn insert(&mut self, original: Reference, variant: VariantText) -> Result<(), ReadError> {
         if self.0.contains_key(&original) {
-            return Err(invalid("multiple renditions for one original"));
+            return Err(ReadError::invalid("multiple renditions for one original"));
         }
         if variant.mark.original != original.to_string() {
-            return Err(invalid("variant mark and original reference disagree"));
+            return Err(ReadError::invalid(
+                "variant mark and original reference disagree",
+            ));
         }
         if variant.relations.is_empty() {
-            return Err(invalid(
+            return Err(ReadError::invalid(
                 "variant presentation needs declared part relations",
             ));
         }
@@ -73,7 +75,7 @@ impl PresentationMap {
                 _ => false,
             };
             if !exact {
-                return Err(invalid(
+                return Err(ReadError::invalid(
                     "multi-body or unresolved variant target needs original body alignment",
                 ));
             }
@@ -88,9 +90,10 @@ impl PresentationMap {
                 });
         } else {
             for (n, range) in variant.alignment.iter().enumerate() {
-                Reference::parse(&range.source.reference).map_err(|e| invalid(&e.to_string()))?;
+                Reference::parse(&range.source.reference)
+                    .map_err(|e| ReadError::invalid(e.to_string()))?;
                 if range.start > range.end {
-                    return Err(invalid("reversed variant body range"));
+                    return Err(ReadError::invalid("reversed variant body range"));
                 }
                 let patch = Patch {
                     original: original.clone(),
@@ -100,7 +103,7 @@ impl PresentationMap {
                 };
                 let ranges = pending.entry(body_key(&range.source)).or_default();
                 if ranges.iter().any(|prior| overlap(prior, &patch)) {
-                    return Err(invalid("overlapping variant body ranges"));
+                    return Err(ReadError::invalid("overlapping variant body ranges"));
                 }
                 ranges.push(patch);
             }
@@ -111,7 +114,9 @@ impl PresentationMap {
                     .iter()
                     .any(|patch| prior.iter().any(|prior| overlap(patch, prior)))
             {
-                return Err(invalid("overlapping distinct variant replacements"));
+                return Err(ReadError::invalid(
+                    "overlapping distinct variant replacements",
+                ));
             }
         }
         self.0.insert(original, variant);
@@ -174,15 +179,15 @@ impl PresentationMap {
                 &variant.text
             };
             let start = usize::try_from(patch.start)
-                .map_err(|_| invalid("variant range exceeds address space"))?;
+                .map_err(|_| ReadError::invalid("variant range exceeds address space"))?;
             let end = patch
                 .end
                 .map(usize::try_from)
                 .transpose()
-                .map_err(|_| invalid("variant range exceeds address space"))?
+                .map_err(|_| ReadError::invalid("variant range exceeds address space"))?
                 .unwrap_or(original.len());
             if original.get(start..end).is_none() {
-                return Err(invalid(
+                return Err(ReadError::invalid(
                     "variant range is outside original UTF-8 body boundaries",
                 ));
             }
@@ -196,7 +201,9 @@ impl PresentationMap {
         let mut at = 0;
         for (start, end, replacement) in patches {
             if start < at {
-                return Err(invalid("overlapping distinct variant replacements"));
+                return Err(ReadError::invalid(
+                    "overlapping distinct variant replacements",
+                ));
             }
             text.push_str(&original[at..start]);
             text.push_str(replacement);
@@ -221,9 +228,6 @@ fn overlap(a: &Patch, b: &Patch) -> bool {
         || b.end.is_none()
         || (a.start < b.end.unwrap() && b.start < a.end.unwrap())
         || a.start == b.start
-}
-fn invalid(why: &str) -> ReadError {
-    ReadError::InvalidPreparedData(why.into())
 }
 impl TryFrom<BTreeMap<Reference, VariantText>> for PresentationMap {
     type Error = ReadError;

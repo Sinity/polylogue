@@ -166,12 +166,7 @@ pub fn daily(
         "SELECT m.at, {expr}, m.session_pk, ({missing}) FROM {from} WHERE m.at IS NOT NULL AND {known_rows} AND {cond}"
     ))?;
     let rows = stmt.query_map(rusqlite::params_from_iter(params), |r| {
-        Ok((
-            r.get::<_, i64>(0)?,
-            r.get::<_, i64>(1)?,
-            r.get::<_, i64>(2)?,
-            r.get::<_, bool>(3)?,
-        ))
+        <(i64, i64, i64, bool)>::try_from(r)
     })?;
     for row in rows {
         let (at, v, session, missing) = row?;
@@ -240,9 +235,7 @@ pub fn daily(
         let mut d = first;
         while d <= last {
             days.push((d.to_string(), by_day.get(&d).copied().unwrap_or(0)));
-            d = d
-                .tomorrow()
-                .map_err(|e| crate::StoreError::Invalid(e.to_string()))?;
+            d = d.tomorrow().map_err(crate::StoreError::invalid)?;
         }
     }
     let xs: Vec<f64> = days.iter().map(|d| d.1 as f64).collect();
@@ -315,7 +308,7 @@ pub fn rhythm(reader: &Reader<'_>, selection: &Selection, day: &DaySetting) -> R
         let local = ts.to_zoned(zone.clone());
         let wd = day
             .logical_day(ts)
-            .map_err(|error| crate::StoreError::Invalid(error.to_string()))?
+            .map_err(crate::StoreError::invalid)?
             .weekday()
             .to_monday_zero_offset() as usize;
         grid[wd][local.hour() as usize] += 1;

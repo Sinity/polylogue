@@ -1,6 +1,7 @@
 use super::{decoded, identity, native, text};
 use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
+use polylogue_model::JsonExt;
 use polylogue_model::{Block, Json, Message, MessageId, PromptKind, Role, SessionId, ToolAction};
 use std::collections::HashSet;
 
@@ -31,10 +32,7 @@ pub(super) static FIELDS: Fields = Fields::new(
 );
 
 pub(super) fn active(row: &Json) -> Option<bool> {
-    match (
-        row.get("active").and_then(Json::as_i64),
-        row.get("compacted").and_then(Json::as_i64),
-    ) {
+    match (row.i64("active"), row.i64("compacted")) {
         (Some(1), _) | (_, Some(1)) => Some(true),
         (Some(0), Some(0)) => Some(false),
         _ => None,
@@ -42,7 +40,7 @@ pub(super) fn active(row: &Json) -> Option<bool> {
 }
 
 pub(super) fn seed(row: &Json) -> Option<String> {
-    match row.get("role").and_then(Json::as_str)? {
+    match row.str("role")? {
         "user" | "assistant" | "tool" | "system" => {}
         _ => return None,
     }
@@ -98,7 +96,7 @@ pub(super) fn parse(
     session: SessionId,
     model: Option<String>,
 ) -> Result<(Message, Diagnostics), &'static str> {
-    let role = match row.get("role").and_then(Json::as_str) {
+    let role = match row.str("role") {
         Some("user") => Role::User,
         Some("assistant") => Role::Assistant,
         Some("tool" | "system") => Role::System,
@@ -123,7 +121,7 @@ pub(super) fn parse(
     {
         diagnostics.push(("hermes_message_diagnostic".into(), serde_json::json!({"field":"timestamp","reason":"declared epoch seconds are unreadable or out of range; time remains unknown"})));
     }
-    let tool = row.get("role").and_then(Json::as_str) == Some("tool");
+    let tool = row.str("role") == Some("tool");
     let content = text(row, "content");
     let harness = role == Role::System
         || row
@@ -167,15 +165,13 @@ pub(super) fn parse(
         let mut prose = Vec::new();
         if let Some(items) = codex.as_ref().and_then(Json::as_array) {
             for item in items {
-                if item.get("type").and_then(Json::as_str) == Some("function_call") {
+                if item.str("type") == Some("function_call") {
                     function_calls.push(tool_call(item));
-                } else if item.get("type").and_then(Json::as_str) == Some("message") {
-                    if let Some(parts) = item.get("content").and_then(Json::as_array) {
+                } else if item.str("type") == Some("message") {
+                    if let Some(parts) = item.array("content") {
                         for part in parts {
-                            if matches!(
-                                part.get("type").and_then(Json::as_str),
-                                Some("output_text" | "text")
-                            ) && let Some(text) = text(part, "text")
+                            if matches!(part.str("type"), Some("output_text" | "text"))
+                                && let Some(text) = text(part, "text")
                             {
                                 prose.push(text);
                             }
@@ -207,12 +203,12 @@ pub(super) fn parse(
             .and_then(Json::as_array)
         {
             for item in items {
-                if item.get("type").and_then(Json::as_str) != Some("reasoning") {
+                if item.str("type") != Some("reasoning") {
                     continue;
                 }
                 let mut parts = Vec::new();
                 for field in ["summary", "content"] {
-                    if let Some(values) = item.get(field).and_then(Json::as_array) {
+                    if let Some(values) = item.array(field) {
                         for part in values {
                             if let Some(text) = text(part, "text")
                                 && !thinking_covered.contains(text.trim())
@@ -302,7 +298,7 @@ pub(super) fn parse(
         .then_some(model)
         .flatten();
     message.stop_reason = text(row, "finish_reason");
-    if let Some(tokens) = row.get("token_count").and_then(Json::as_u64) {
+    if let Some(tokens) = row.u64("token_count") {
         if role == Role::User {
             message.usage.input = Some(tokens);
         } else if role == Role::Assistant {

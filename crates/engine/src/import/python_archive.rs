@@ -139,7 +139,7 @@ pub(super) fn visit(
     // Every blob no raw session cites, checked against its name.
     let cited: BTreeSet<String> = inputs
         .iter()
-        .map(|input| input.blob_hash.iter().map(|b| format!("{b:02x}")).collect())
+        .map(|input| polylogue_model::hex(&input.blob_hash))
         .collect();
     let mut prefixes: Vec<_> =
         std::fs::read_dir(root.join("blob"))?.collect::<std::io::Result<Vec<_>>>()?;
@@ -174,9 +174,9 @@ pub(super) fn visit(
                         output.write_all(&buffer[..n])?;
                     }
                     let actual: [u8; 32] = actual.finalize().into();
-                    let actual: String = actual.iter().map(|b| format!("{b:02x}")).collect();
+                    let actual: String = polylogue_model::hex(&actual);
                     if actual != name {
-                        return Err(polylogue_store::StoreError::Invalid(format!(
+                        return Err(polylogue_store::StoreError::invalid(format!(
                             "Python Polylogue blob {name} differs from its name"
                         )));
                     }
@@ -204,10 +204,10 @@ fn copy_blob(
     input: &Input,
     output: &mut dyn std::io::Write,
 ) -> polylogue_store::Result<()> {
-    let hash: String = input.blob_hash.iter().map(|b| format!("{b:02x}")).collect();
+    let hash: String = polylogue_model::hex(&input.blob_hash);
     let path = root.join("blob").join(&hash[..2]).join(&hash[2..]);
     if !std::fs::symlink_metadata(&path)?.is_file() {
-        return Err(polylogue_store::StoreError::Invalid(format!(
+        return Err(polylogue_store::StoreError::invalid(format!(
             "non-regular Python Polylogue blob {hash}"
         )));
     }
@@ -226,7 +226,7 @@ fn copy_blob(
     }
     let actual: [u8; 32] = actual.finalize().into();
     if length != input.blob_size || actual != input.blob_hash {
-        return Err(polylogue_store::StoreError::Invalid(format!(
+        return Err(polylogue_store::StoreError::invalid(format!(
             "Python Polylogue blob {hash} differs from its catalog hash or size"
         )));
     }

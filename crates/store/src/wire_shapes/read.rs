@@ -131,10 +131,8 @@ ORDER BY r.format,s.reading_version,s.record_kind,s.path,json_extract(s.table_ke
             known_kinds: declarations(row, 8)?,
             unknown_kind_count: integer(row, 9)?,
             unknown_table_count: integer(row, 10)?,
-            first: occurrence(row, 11)?
-                .ok_or_else(|| StoreError::Invalid("wire shape has no first occurrence".into()))?,
-            last: occurrence(row, 12)?
-                .ok_or_else(|| StoreError::Invalid("wire shape has no last occurrence".into()))?,
+            first: occurrence(row, 11)?.or_invalid("wire shape has no first occurrence")?,
+            last: occurrence(row, 12)?.or_invalid("wire shape has no last occurrence")?,
             complete_presence: occurrence(row, 13)?,
             present_in_latest: row.get(14)?,
             unused_count: integer(row, 15)?,
@@ -311,13 +309,12 @@ fn kind_order(kind: Kind) -> u8 {
     }
 }
 fn integer(row: &rusqlite::Row<'_>, at: usize) -> Result<u64> {
-    u64::try_from(row.get::<_, i64>(at)?)
-        .map_err(|_| StoreError::Invalid("negative wire count in index".into()))
+    u64::try_from(row.get::<_, i64>(at)?).or_invalid("negative wire count in index")
 }
 fn decimal(row: &rusqlite::Row<'_>, at: usize) -> Result<u64> {
     row.get::<_, String>(at)?
         .parse()
-        .map_err(|_| StoreError::Invalid("invalid wire count in index".into()))
+        .or_invalid("invalid wire count in index")
 }
 fn occurrence(row: &rusqlite::Row<'_>, at: usize) -> Result<Option<Occurrence>> {
     row.get::<_, Option<String>>(at)?

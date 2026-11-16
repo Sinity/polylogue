@@ -29,15 +29,14 @@ fn locator(kind: ReadRecordKind, ordinal: u64) -> ReadRecordLocator {
 }
 
 fn stale_record() -> Failure {
-    Failure::new("stale_cursor", "continued record is no longer selected")
+    Failure::stale_cursor("continued record is no longer selected")
 }
 
 fn required_commit(commit: Option<u64>, reference: &str) -> Result<u64, Failure> {
     commit.ok_or_else(|| {
-        Failure::new(
-            "not_yet_available",
-            format!("{reference} has no stored commit position for its source"),
-        )
+        Failure::not_yet_available(format!(
+            "{reference} has no stored commit position for its source"
+        ))
     })
 }
 
@@ -115,7 +114,7 @@ pub(super) fn reference(
             let document = reader
                 .document(id)
                 .map_err(Failure::from)?
-                .ok_or_else(|| Failure::new("not_found", format!("no document {id}")))?;
+                .ok_or_else(|| Failure::not_found(format!("no document {id}")))?;
             let reference = format!("document:{id}");
             let commit = required_commit(
                 reader.document_commit(id).map_err(Failure::from)?,
@@ -137,7 +136,7 @@ pub(super) fn reference(
             let record = reader
                 .event_record(id)
                 .map_err(Failure::from)?
-                .ok_or_else(|| Failure::new("not_found", format!("no event {id}")))?;
+                .ok_or_else(|| Failure::not_found(format!("no event {id}")))?;
             visit(Record::Event(record).into(), LayoutFacts::default(), at)
         }
         ReadTarget::Assertion { .. } | ReadTarget::Delivery(_) => {
@@ -158,7 +157,7 @@ fn message(
     let (mut message, mut block_selection) = reader
         .message_with_block_selection(id)
         .map_err(Failure::from)?
-        .ok_or_else(|| Failure::new("not_found", format!("no message {id}")))?;
+        .ok_or_else(|| Failure::not_found(format!("no message {id}")))?;
     let reference = format!("message:{id}");
     let commit = required_commit(
         reader.message_commit(id).map_err(Failure::from)?,
@@ -168,10 +167,7 @@ fn message(
         .message_order(id)
         .map_err(Failure::from)?
         .ok_or_else(|| {
-            Failure::new(
-                "not_yet_available",
-                format!("{reference} has no reading position"),
-            )
+            Failure::not_yet_available(format!("{reference} has no reading position"))
         })?;
     if let Some(n) = block {
         let Some(position) = block_selection
@@ -179,10 +175,9 @@ fn message(
             .iter()
             .position(|ordinal| *ordinal == n)
         else {
-            return Err(Failure::new(
-                "not_yet_available",
-                format!("block:{id}#{n} is not recorded in the selected source version"),
-            ));
+            return Err(Failure::not_yet_available(format!(
+                "block:{id}#{n} is not recorded in the selected source version"
+            )));
         };
         message.blocks = vec![message.blocks.swap_remove(position)];
         block_selection.block_ordinals = vec![n];
@@ -212,7 +207,7 @@ fn session(
         let session = reader
             .session(id)
             .map_err(Failure::from)?
-            .ok_or_else(|| Failure::new("not_found", format!("no session {id}")))?;
+            .ok_or_else(|| Failure::not_found(format!("no session {id}")))?;
         let commit = required_commit(
             reader.session_commit(id).map_err(Failure::from)?,
             &reference,

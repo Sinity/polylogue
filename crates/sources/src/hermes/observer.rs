@@ -5,6 +5,7 @@ use crate::RecordOutcome;
 use crate::export::{ExportParser, ExportState, Input, ItemSink, ScanError, ScanStats};
 use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
+use polylogue_model::JsonExt;
 use std::path::Path;
 
 pub(super) fn recognize(path: &Path, head: &[u8]) -> bool {
@@ -50,11 +51,8 @@ static FIELDS: Fields = Fields::new(
 );
 
 fn kind(value: &Json) -> Option<&'static str> {
-    match value.get("kind")?.as_str()? {
-        "scope" => match (
-            value.get("category")?.as_str()?,
-            value.get("scope_category")?.as_str()?,
-        ) {
+    match value.str("kind")? {
+        "scope" => match (value.str("category")?, value.str("scope_category")?) {
             ("tool", "start") => Some("hermes_tool_start"),
             ("tool", "end") => Some("hermes_tool_end"),
             ("llm", "start") => Some("hermes_llm_start"),
@@ -64,7 +62,7 @@ fn kind(value: &Json) -> Option<&'static str> {
             (_, "start" | "end") => Some("hermes_observer_scope"),
             _ => None,
         },
-        "mark" => Some(match value.get("name").and_then(Json::as_str) {
+        "mark" => Some(match value.str("name") {
             Some("hermes.approval.request") => "hermes_approval_request",
             Some("hermes.approval.response") => "hermes_approval_response",
             Some("hermes.subagent.start") => "hermes_subagent_start",
@@ -102,19 +100,16 @@ impl ExportParser for Atof {
         _: &mut dyn ExportState,
     ) -> Result<(), String> {
         let value: Json = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-        if value.get("atof_version").and_then(Json::as_str) != Some("0.1") {
+        if value.str("atof_version") != Some("0.1") {
             sink.records.record(
                 "atof",
                 &RecordOutcome::skipped("unsupported ATOF version; original record kept"),
             );
             return Ok(());
         }
-        let Some(kind) = kind(&value).filter(|_| {
-            value
-                .get("uuid")
-                .and_then(Json::as_str)
-                .is_some_and(|id| !id.is_empty())
-        }) else {
+        let Some(kind) =
+            kind(&value).filter(|_| value.str("uuid").is_some_and(|id| !id.is_empty()))
+        else {
             sink.records.record(
                 "atof",
                 &RecordOutcome::skipped(

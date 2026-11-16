@@ -34,8 +34,7 @@ pub fn answer(
     page_size: Option<u64>,
     cursor: Option<&str>,
 ) -> Result<Value, Failure> {
-    declarations(subject, expression, unit, page_size, cursor)
-        .map_err(|message| Failure::new("bad_request", message))
+    declarations(subject, expression, unit, page_size, cursor).map_err(Failure::bad_request)
 }
 
 fn declarations(

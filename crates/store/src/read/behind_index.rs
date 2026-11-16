@@ -168,10 +168,8 @@ impl Reader<'_> {
                 .iter()
                 .find(|(name, _)| name == &origin)
                 .is_some_and(|(_, expected)| version.as_ref() != Some(expected));
-            let length = u64::try_from(row.get::<_, i64>(2)?)
-                .map_err(|_| StoreError::Invalid("stored chain length is negative".into()))?;
-            let parsed_upto = u64::try_from(row.get::<_, i64>(7)?)
-                .map_err(|_| StoreError::Invalid("stored parser cursor is negative".into()))?;
+            let length = row.get::<_, u64>(2)?;
+            let parsed_upto = row.get::<_, u64>(7)?;
             let progress = row
                 .get::<_, Option<String>>(11)?
                 .map(|status| {

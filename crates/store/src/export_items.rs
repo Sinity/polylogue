@@ -1,4 +1,6 @@
 //! Export items sorted in a temporary database, private to one import.
+use crate::ConnExt as _;
+use crate::OptionExt as _;
 use crate::{Result, StoreError};
 use polylogue_model::{MessageId, SessionId};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -78,9 +80,7 @@ impl ExportItems {
             CREATE INDEX IF NOT EXISTS item_alternate_order ON item(alternate_sort,ordinal);
             CREATE TABLE IF NOT EXISTS message_first_session(message TEXT PRIMARY KEY,session TEXT NOT NULL) WITHOUT ROWID;
             CREATE TABLE IF NOT EXISTS previous(session TEXT PRIMARY KEY,message TEXT NOT NULL) WITHOUT ROWID; BEGIN;")?;
-        let ordinal = db.query_row("SELECT COALESCE(MAX(ordinal)+1,0) FROM item", [], |r| {
-            r.get(0)
-        })?;
+        let ordinal = db.scalar("SELECT COALESCE(MAX(ordinal)+1,0) FROM item", [])?;
         Ok(Self {
             db,
             payload,
@@ -175,14 +175,7 @@ impl ExportItems {
             .query_row(
                 "SELECT start,end,compressed_start,compressed_end FROM item WHERE source_key=?1",
                 [source_key],
-                |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, i64>(1)?,
-                        r.get::<_, i64>(2)?,
-                        r.get::<_, i64>(3)?,
-                    ))
-                },
+                |r| <(i64, i64, i64, i64)>::try_from(r),
             )
             .optional()?;
         row.map(|(start, end, compressed_start, compressed_end)| {
@@ -210,16 +203,7 @@ impl ExportItems {
             FROM item WHERE ({column},ordinal)>(?1,?2) ORDER BY {column},ordinal LIMIT 1"
                 ),
                 params![sort, ordinal],
-                |r| {
-                    Ok((
-                        r.get::<_, Vec<u8>>(0)?,
-                        r.get::<_, i64>(1)?,
-                        r.get::<_, i64>(2)?,
-                        r.get::<_, i64>(3)?,
-                        r.get::<_, i64>(4)?,
-                        r.get::<_, i64>(5)?,
-                    ))
-                },
+                |r| <(Vec<u8>, i64, i64, i64, i64, i64)>::try_from(r),
             )
             .optional()?;
         let Some((sort, ordinal, start, end, compressed_start, compressed_end)) = row else {
@@ -274,9 +258,7 @@ impl ExportItems {
         Ok(())
     }
     pub fn rollback_scan(&mut self) -> Result<()> {
-        let (ordinal, at) = self
-            .scan_group
-            .ok_or_else(|| StoreError::Invalid("no export scan group".into()))?;
+        let (ordinal, at) = self.scan_group.or_invalid("no export scan group")?;
         self.db
             .execute_batch("ROLLBACK TO scan_group; RELEASE scan_group")?;
         self.payload.set_len(at)?;
@@ -298,26 +280,21 @@ impl ExportItems {
         if inserted == 1 {
             return Ok(None);
         }
-        let message_first_session: String = self.db.query_row(
+        let message_first_session: String = self.db.scalar(
             "SELECT session FROM message_first_session WHERE message=?1",
             [message],
-            |r| r.get(0),
         )?;
         SessionId::parse(&message_first_session)
             .map(Some)
-            .map_err(|e| StoreError::Invalid(e.to_string()))
+            .map_err(crate::StoreError::invalid)
     }
     pub fn last_message(&self, session: &SessionId) -> Result<Option<MessageId>> {
-        let message: Option<String> = self
-            .db
-            .query_row(
-                "SELECT message FROM previous WHERE session=?1",
-                [session.to_string()],
-                |r| r.get(0),
-            )
-            .optional()?;
+        let message: Option<String> = self.db.scalar_optional(
+            "SELECT message FROM previous WHERE session=?1",
+            [session.to_string()],
+        )?;
         message
-            .map(|id| MessageId::parse(&id).map_err(|e| StoreError::Invalid(e.to_string())))
+            .map(|id| MessageId::parse(&id).map_err(crate::StoreError::invalid))
             .transpose()
     }
     pub fn set_last_message(&mut self, session: &SessionId, message: &MessageId) -> Result<()> {

@@ -47,7 +47,13 @@ pub(crate) fn output(
             }
             ExitCode::SUCCESS
         }
-        Err(e) => fail(startup.output, json, "attachment_output", &e, 1),
+        Err(e) => fail(
+            startup.output,
+            json,
+            polylogue_model::Code::AttachmentOutput,
+            &e,
+            1,
+        ),
     }
 }
 

@@ -320,8 +320,8 @@ impl Engine {
                 return Ok(found);
             };
             if after.is_some_and(|previous| next <= previous) {
-                return Err(polylogue_store::StoreError::Invalid(
-                    "spooled group page did not advance".into(),
+                return Err(polylogue_store::StoreError::invalid(
+                    "spooled group page did not advance",
                 )
                 .into());
             }

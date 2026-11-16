@@ -43,9 +43,7 @@ impl DeriveThread {
             conn: None,
             unreported: Vec::new(),
         };
-        let handle = std::thread::Builder::new()
-            .name("polylogue-derive".into())
-            .spawn(move || thread.run(&rx))?;
+        let handle = polylogue_model::spawn_named("polylogue-derive", move || thread.run(&rx))?;
         Ok(Self {
             requests: Some(requests),
             stopping,
@@ -189,6 +187,7 @@ pub(super) const DERIVE_COMPUTED: &str = "derive: computed";
 impl WriterSender {
     /// Holds the derive thread once it computed its next wave, before the
     /// writer is sent anything, until the pause is released.
+    #[cfg(any(test, feature = "fixture"))]
     pub fn pause_derive_for_test(&self) -> DispatchPause {
         self.pause_user_dispatch_for_test(DERIVE_COMPUTED, DispatchPhase::Owned)
     }

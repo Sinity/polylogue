@@ -1,36 +1,31 @@
 //! Local-image references in session files are read when observed. Recorded directories
 //! alone resolve relative paths; coverage facts survive with the captured bytes.
 use crate::*;
-use polylogue_model::Json;
+use polylogue_model::{Json, JsonExt};
 use std::io::{BufRead, Seek, Write};
 use std::os::unix::fs::OpenOptionsExt;
 
 fn visit(value: &Json, emit: &mut impl FnMut(&str) -> std::io::Result<()>) -> std::io::Result<()> {
     match value {
         Json::Object(o) => {
-            if let Some(images) = o.get("local_images").and_then(Json::as_array) {
+            if let Some(images) = value.array("local_images") {
                 for image in images {
-                    if let Some(path) = image
-                        .as_str()
-                        .or_else(|| image.get("path").and_then(Json::as_str))
-                    {
+                    if let Some(path) = image.as_str().or_else(|| image.str("path")) {
                         emit(path)?;
                     }
                 }
             }
-            if o.get("type").and_then(Json::as_str) == Some("local_image")
-                && let Some(path) = o.get("path").and_then(Json::as_str)
+            if value.str("type") == Some("local_image")
+                && let Some(path) = value.str("path")
             {
                 emit(path)?;
             }
-            if matches!(
-                o.get("type").and_then(Json::as_str),
-                Some("input_image" | "image")
-            ) && let Some(path) = o
-                .get("image_url")
-                .or_else(|| o.get("url"))
-                .and_then(Json::as_str)
-                .filter(|p| p.starts_with("file://"))
+            if matches!(value.str("type"), Some("input_image" | "image"))
+                && let Some(path) = o
+                    .get("image_url")
+                    .or_else(|| o.get("url"))
+                    .and_then(Json::as_str)
+                    .filter(|p| p.starts_with("file://"))
             {
                 emit(path)?;
             }
@@ -91,12 +86,9 @@ impl Engine {
         while source.read_until(b'\n', &mut line)? > 0 {
             if let Ok(value) = serde_json::from_slice::<Json>(&line) {
                 if matches!(
-                    value.get("type").and_then(Json::as_str),
+                    value.str("type"),
                     Some("session_meta" | "turn_context" | "older_header")
-                ) && let Some(cwd) = value
-                    .get("payload")
-                    .and_then(|p| p.get("cwd"))
-                    .and_then(Json::as_str)
+                ) && let Some(cwd) = value.get("payload").and_then(|p| p.str("cwd"))
                 {
                     // A relative recorded cwd is insufficient to resolve a ref.
                     directory = Some(PathBuf::from(cwd));

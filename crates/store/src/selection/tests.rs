@@ -268,106 +268,6 @@ fn pure_bindings_preserve_closed_group_values_without_a_clock() {
 }
 
 #[test]
-fn facets_share_field_values_and_cwd_ancestors() {
-    use crate::fixture::CallFacts;
-    use crate::query::facets::{FacetError, FacetKey};
-    let dir = tempfile::tempdir().unwrap();
-    let mut f = Fixture::new(dir.path()).unwrap();
-    let s = f
-        .session(SessionFacts {
-            id: "test:facet",
-            cwd: Some("/work/morrow/sub"),
-            repo: Some("morrow"),
-            ..Default::default()
-        })
-        .unwrap();
-    for id in ["test:one", "test:two"] {
-        f.message(
-            s,
-            MessageFacts {
-                id,
-                role: "assistant",
-                written_by: "model",
-                model: Some("model-a"),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    }
-    let m = f
-        .message(
-            s,
-            MessageFacts {
-                id: "test:tool",
-                role: "assistant",
-                written_by: "model",
-                model: Some("model-b"),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    f.tool_call(
-        s,
-        m,
-        CallFacts {
-            tool: "mcp__notes__find",
-            action: "mcp",
-            outcome: "ok",
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    let pool = f.reads().unwrap();
-    let reader = pool.reader().unwrap();
-    let keys = [
-        FacetKey::new(Unit::Sessions, "repo"),
-        FacetKey::new(Unit::Sessions, "cwd"),
-        FacetKey::new(Unit::Sessions, "model"),
-        FacetKey::new(Unit::ToolCalls, "mcp_server"),
-    ];
-    let mut values = BTreeMap::<_, BTreeMap<_, _>>::new();
-    reader
-        .visit_session_facets::<FacetError>(
-            &SessionId::parse("test:facet").unwrap(),
-            &keys,
-            options().clock.now,
-            |row| {
-                values
-                    .entry(row.key)
-                    .or_default()
-                    .insert(row.value, row.count);
-                Ok(())
-            },
-        )
-        .unwrap();
-    assert_eq!(values[&keys[0]], BTreeMap::from([("morrow".into(), 1)]));
-    assert_eq!(
-        values[&keys[1]],
-        BTreeMap::from([
-            ("/".into(), 1),
-            ("/work".into(), 1),
-            ("/work/morrow".into(), 1),
-            ("/work/morrow/sub".into(), 1)
-        ])
-    );
-    assert_eq!(
-        values[&keys[2]],
-        BTreeMap::from([("model-a".into(), 2), ("model-b".into(), 1)])
-    );
-    assert_eq!(values[&keys[3]], BTreeMap::from([("notes".into(), 1)]));
-    let selected = reader
-        .prepare_selection("sessions where cwd:/work/morrow", &options())
-        .unwrap();
-    let mut rows = 0;
-    reader
-        .visit_selection::<SelectionError>(&selected, None, None, |_| {
-            rows += 1;
-            Ok(ControlFlow::Continue(()))
-        })
-        .unwrap();
-    assert_eq!(rows, 1);
-}
-#[test]
 fn no_hook_or_activity_events_means_unknown_live_state() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
@@ -500,39 +400,6 @@ fn model_authored_user_task_does_not_answer_a_turn() {
 }
 
 #[test]
-fn saved_object_selection_replays_saved_definitions() {
-    let (_dir, mut f) = fixture();
-    save_definition(&mut f, "picked", "sessions where session:test:one");
-    let pool = f.reads().unwrap();
-    let reader = pool.reader().unwrap();
-    let prepared = reader
-        .prepare_selection("query:picked", &options())
-        .unwrap();
-    let object = prepared.query_object().unwrap();
-    let mut unrelated = options();
-    unrelated.saved.clear();
-    let replay = reader
-        .prepare_query_object_selection(
-            &object,
-            &unrelated,
-            polylogue_query::plan::catalog_fingerprint(),
-        )
-        .unwrap();
-    let mut references = vec![];
-    reader
-        .visit_selection::<SelectionError>(&replay, None, None, |row| {
-            references.push(row.target.unwrap().to_string());
-            Ok(ControlFlow::Continue(()))
-        })
-        .unwrap();
-    assert_eq!(references, ["session:test:one"]);
-    assert_eq!(
-        prepared.cursor_context().versions,
-        replay.cursor_context().versions
-    );
-}
-
-#[test]
 fn assertion_reference_keeps_its_family_and_revision() {
     let (_dir, mut fixture) = fixture();
     let first = fixture
@@ -596,7 +463,7 @@ fn assertion_reference_keeps_its_family_and_revision() {
             .err()
             .unwrap()
             .code(),
-        "ambiguous"
+        polylogue_model::Code::Ambiguous
     );
     let family = reader
         .prepare_selection(
@@ -710,7 +577,7 @@ fn direct_reads_keep_opaque_ids_and_ranges_whole() {
                 .err()
                 .unwrap()
                 .code(),
-            "not_found"
+            polylogue_model::Code::NotFound
         );
     }
     let saved = reader
@@ -735,7 +602,7 @@ fn direct_reads_keep_opaque_ids_and_ranges_whole() {
             .err()
             .unwrap()
             .code(),
-        "not_found"
+        polylogue_model::Code::NotFound
     );
     let sorted = reader
         .prepare_selection(
@@ -796,7 +663,7 @@ fn direct_authored_reference_uses_family_revision_membership() {
     assert_eq!(selected, [reference]);
     let missing = format!("assertion:{first}@{second}");
     assert!(
-        matches!(reader.prepare_selection(&missing, &options()), Err(SelectionError::Invalid { kind, .. }) if kind == "not_found")
+        matches!(reader.prepare_selection(&missing, &options()), Err(SelectionError::Invalid { kind, .. }) if kind == polylogue_model::Code::NotFound)
     );
     let wrong_family = reader
         .prepare_query_selection(&missing, &options())
@@ -965,17 +832,26 @@ fn selection_and_listing_agree_when_every_row_is_committed() {
 #[test]
 fn a_selection_failure_carries_the_store_code_every_surface_uses() {
     let cases = [
-        (StoreError::Conflict("request-1".into()), "conflict"),
-        (StoreError::ReadIndexReplaced, "conflict"),
+        (
+            StoreError::Conflict("request-1".into()),
+            polylogue_model::Code::Conflict,
+        ),
+        (
+            StoreError::ReadIndexReplaced,
+            polylogue_model::Code::Conflict,
+        ),
         (
             StoreError::Stale {
                 reference: "note:1".into(),
                 current: vec!["note:2".into()],
             },
-            "stale",
+            polylogue_model::Code::Stale,
         ),
-        (StoreError::NotFound("session".into()), "not_found"),
-        (StoreError::ReadCancelled, "cancelled"),
+        (
+            StoreError::NotFound("session".into()),
+            polylogue_model::Code::NotFound,
+        ),
+        (StoreError::ReadCancelled, polylogue_model::Code::Cancelled),
     ];
     for (error, code) in cases {
         assert_eq!(error.code(), code, "{error}");

@@ -217,38 +217,31 @@ impl Supervisor {
         let inputs = inputs.clone();
         let (started, receive) = oneshot::channel();
         let (ready, ready_receiver) = mpsc::sync_channel(1);
-        let thread = std::thread::Builder::new()
-            .name("polylogue-lifecycle".into())
-            .spawn(move || {
-                let prepared = (|| {
-                    let executor = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()?;
-                    let signals = {
-                        let _entered = executor.enter();
-                        Signals::new()?
-                    };
-                    let notifications = inputs.notify.map(Notifications::new).transpose()?;
-                    Ok::<_, io::Error>((executor, signals, notifications))
-                })();
-                match prepared {
-                    Ok((executor, signals, notifications)) => {
-                        if ready.send(Ok(())).is_err() {
-                            return Ok(());
-                        }
-                        executor.block_on(supervise(
-                            receive,
-                            signals,
-                            notifications,
-                            inputs.watchdog,
-                        ))
+        let thread = polylogue_model::spawn_named("polylogue-lifecycle", move || {
+            let prepared = (|| {
+                let executor = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()?;
+                let signals = {
+                    let _entered = executor.enter();
+                    Signals::new()?
+                };
+                let notifications = inputs.notify.map(Notifications::new).transpose()?;
+                Ok::<_, io::Error>((executor, signals, notifications))
+            })();
+            match prepared {
+                Ok((executor, signals, notifications)) => {
+                    if ready.send(Ok(())).is_err() {
+                        return Ok(());
                     }
-                    Err(error) => {
-                        let _ = ready.send(Err(error));
-                        Ok(())
-                    }
+                    executor.block_on(supervise(receive, signals, notifications, inputs.watchdog))
                 }
-            })?;
+                Err(error) => {
+                    let _ = ready.send(Err(error));
+                    Ok(())
+                }
+            }
+        })?;
         match ready_receiver.recv() {
             Ok(Ok(())) => Ok(Self {
                 started: Some(started),
@@ -488,7 +481,7 @@ fn drain(mut app: Started) -> io::Result<()> {
     let started = std::time::Instant::now();
     eprintln!(
         "polylogue: shutdown started at {} ms since Unix epoch",
-        super::service::now_ms()
+        app.runtime.daemon.clock.now_ms()
     );
     app.runtime.stop_accepting();
     eprintln!(
@@ -517,6 +510,22 @@ fn drain(mut app: Started) -> io::Result<()> {
         started.elapsed()
     );
     failure.map_or(Ok(()), Err)
+}
+
+/// Waits for an index-install commit; a stopped worker marks its exit expected.
+pub(crate) fn wait_for_index(
+    subscription: &polylogue_store::completion::CommitSubscription,
+    stopped: &std::sync::atomic::AtomicBool,
+    completed: &std::sync::atomic::AtomicBool,
+) -> bool {
+    if subscription.recv().is_ok() {
+        true
+    } else {
+        if stopped.load(std::sync::atomic::Ordering::Acquire) {
+            completed.store(true, std::sync::atomic::Ordering::Release);
+        }
+        false
+    }
 }
 
 #[cfg(test)]

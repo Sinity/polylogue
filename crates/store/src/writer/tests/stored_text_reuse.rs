@@ -35,15 +35,19 @@ fn current_blocks_reuse_stored_text_identities() {
     .unwrap();
     assert_eq!(
         write_rows(
-            &texts,
             &tx,
             &b,
             &b.parse[0],
-            b.parse[0].resolution.as_ref().unwrap(),
-            1,
-            None,
-            Some(&fixture_commit()),
-            &crate::change_summary::ChangeSummary::start(&tx).unwrap()
+            rows::ReadingWrite {
+                texts: &texts,
+                resolution: b.parse[0].resolution.as_ref().unwrap(),
+                counter: 1,
+                first_build: None,
+                source_commit: Some(&fixture_commit()),
+                changes: &crate::change_summary::ChangeSummary::start(&tx).unwrap(),
+                retraction: false,
+                replacement: false
+            }
         )
         .unwrap(),
         32

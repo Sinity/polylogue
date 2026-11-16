@@ -29,7 +29,7 @@ pub fn providers() -> impl Iterator<Item = &'static str> {
 
 /// A refusal: an HTTP status for the route and a stable code.
 #[derive(Debug, PartialEq, Eq)]
-pub struct Refused(pub &'static str);
+pub struct Refused(pub polylogue_model::Code);
 
 /// A request to draft or submit one turn in a chat web page.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -84,28 +84,29 @@ pub fn new_action(
     files: Vec<ChatAttachment>,
 ) -> Result<NewChatAction, Refused> {
     if !providers().any(|p| p == req.provider) {
-        return Err(Refused("unsupported_provider"));
+        return Err(Refused(polylogue_model::Code::UnsupportedProvider));
     }
     if req.text.trim().is_empty() {
-        return Err(Refused("empty_text"));
+        return Err(Refused(polylogue_model::Code::EmptyText));
     }
     if req.model.trim().is_empty() {
-        return Err(Refused("model_required"));
+        return Err(Refused(polylogue_model::Code::ModelRequired));
     }
     for file in &files {
         let basename = Path::new(&file.name)
             .file_name()
             .is_some_and(|n| n == file.name.as_str());
         if !basename || file.name.chars().any(char::is_control) {
-            return Err(Refused("attachment_name_not_a_basename"));
+            return Err(Refused(polylogue_model::Code::AttachmentNameNotABasename));
         }
     }
-    let request = serde_json::to_value(req).map_err(|_| Refused("invalid_action"))?;
+    let request =
+        serde_json::to_value(req).map_err(|_| Refused(polylogue_model::Code::InvalidAction))?;
     let mut hashed = request.clone();
     hashed["files"] = json!(files.iter().map(|f| f.blob.to_string()).collect::<Vec<_>>());
     let request_hash = BlobHash(
         *canonical_json::canonical_hash("polylogue-browser-action", &hashed)
-            .map_err(|_| Refused("invalid_action"))?
+            .map_err(|_| Refused(polylogue_model::Code::InvalidAction))?
             .as_bytes(),
     );
     Ok(NewChatAction {
@@ -183,7 +184,7 @@ pub fn view(a: &ChatAction, now: i64) -> Value {
 }
 
 /// The product code is classified at the shared operation boundary.
-pub fn refusal(code: &'static str) -> Refused {
+pub fn refusal(code: polylogue_model::Code) -> Refused {
     Refused(code)
 }
 

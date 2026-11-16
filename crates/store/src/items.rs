@@ -18,6 +18,7 @@
 //! each message's first entry keeps the latest message time up to it
 //! (`time_bound`): the events placed at or after a timed message are exactly
 //! those whose time is at least its bound.
+use crate::ConnExt as _;
 use crate::change_summary::{ChangeSummary, SessionChange};
 use crate::encoding::Columns;
 #[cfg(any(test, feature = "fixture"))]
@@ -525,7 +526,7 @@ pub(crate) fn stored_columns(conn: &Connection, session_pk: i64) -> Result<Store
     let (entries, counts): (i64, Vec<u8>) = conn.query_row(
         "SELECT entries, counts FROM session_item_state WHERE session_pk = ?1",
         [session_pk],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| <(_, _)>::try_from(row),
     )?;
     Ok((out, counter(entries)?, decode_counts(&counts)?))
 }
@@ -664,9 +665,7 @@ fn start(conn: &Connection, session_pk: i64, change: &SessionChange) -> Result<S
             lower(&mut limit, seq);
         }
         let order: Option<(String, String)> = shown
-            .query_row(params![pk, session_pk], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
+            .query_row(params![pk, session_pk], |row| <(_, _)>::try_from(row))
             .optional()?;
         if let Some(order) = order {
             // Its own header and insertion bounds already cover this parent.
@@ -717,9 +716,7 @@ fn start(conn: &Connection, session_pk: i64, change: &SessionChange) -> Result<S
             lower(&mut limit, seq);
         }
         let now: Option<(Option<i64>, Option<i64>, bool)> = event
-            .query_row(params![pk, session_pk], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })
+            .query_row(params![pk, session_pk], |row| <(_, _, _)>::try_from(row))
             .optional()?;
         match now {
             None => {}
@@ -807,7 +804,7 @@ fn rebuild(
              WHERE session_pk = ?1 AND seq >= ?2 AND unit IS NOT NULL ORDER BY seq",
         )?
         .query_map(params![session_pk, first_seq], |row| {
-            Ok((row.get(0)?, row.get(1)?))
+            <(_, _)>::try_from(row)
         })?
         .collect::<rusqlite::Result<_>>()?;
     let state: Option<(i64, i64, Vec<u8>, Vec<u8>)> = conn
@@ -815,9 +812,7 @@ fn rebuild(
             "SELECT append_seq, rewrite_version, links, counts FROM session_item_state
              WHERE session_pk = ?1",
         )?
-        .query_row([session_pk], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-        })
+        .query_row([session_pk], |row| <(_, _, _, _)>::try_from(row))
         .optional()?;
     let links = links_identity(conn, session_pk)?;
     let mut same = 0;
@@ -990,9 +985,7 @@ fn located_by(conn: &Connection, session_pk: i64, seq: i64) -> Result<(Option<i6
         .prepare_cached(
             "SELECT message_pk, event_pk FROM session_item WHERE session_pk = ?1 AND seq = ?2",
         )?
-        .query_row(params![session_pk, seq], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })?)
+        .query_row(params![session_pk, seq], |row| <(_, _)>::try_from(row))?)
 }
 
 fn located_columns(unit: &Unit) -> (Option<i64>, Option<i64>) {
@@ -1030,8 +1023,7 @@ fn unit_entries(
                     "changed message items were not prepared".into(),
                 ));
             }
-            let id =
-                MessageId::parse(id).map_err(|error| StoreError::Invalid(error.to_string()))?;
+            let id = MessageId::parse(id).map_err(crate::StoreError::invalid)?;
             for entry in &mut entries {
                 if let polylogue_model::read::EntryKey::Message { message, .. } = &mut entry.key {
                     *message = id.clone();
@@ -1103,7 +1095,7 @@ fn stored_message_entries(conn: &Connection, pk: i64) -> Result<Vec<IndexEntry>>
              AND next.seq>head.seq AND next.unit IS NOT NULL ORDER BY next.seq LIMIT 1)
          FROM session_item head WHERE head.message_pk=?1",
         )?
-        .query_row([pk], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .query_row([pk], |row| <(_, _, _)>::try_from(row))
         .optional()?;
     let Some((session, from, until)) = bounds else {
         return Ok(Vec::new());
@@ -1475,7 +1467,7 @@ impl<'c> Run<'c> {
                  ORDER BY i.seq DESC LIMIT 1",
             )?
             .query_row(params![self.session_pk, seq], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                <(_, _, _, _)>::try_from(row)
             })
             .optional()?;
         let Some((start, entry, call_id, Some(id))) = found else {
@@ -1490,7 +1482,7 @@ impl<'c> Run<'c> {
 }
 
 fn message_id(id: &str) -> Result<MessageId> {
-    MessageId::parse(id).map_err(|error| StoreError::Invalid(error.to_string()))
+    MessageId::parse(id).map_err(crate::StoreError::invalid)
 }
 
 /// The counts stored on the unit whose first entry is at `seq`.
@@ -1560,11 +1552,11 @@ fn class_of(bits: i64) -> Result<EntryClass> {
 }
 
 fn position(seq: u64) -> Result<i64> {
-    i64::try_from(seq).map_err(|_| StoreError::Invalid("item index position out of range".into()))
+    crate::to_i64(seq, "item index position out of range")
 }
 
 fn counter(value: i64) -> Result<u64> {
-    u64::try_from(value).map_err(|_| StoreError::Invalid("negative item index counter".into()))
+    u64::try_from(value).map_err(|_| crate::StoreError::stored(0, "negative item index counter"))
 }
 
 /// Recorded parent history: a branch from a branch point, or messages
@@ -1638,15 +1630,7 @@ impl Reader<'_> {
                      FROM {table} x JOIN input_ref i ON i.pk = x.input_pk WHERE x.id = ?1"
                 ),
                 [id],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
+                |row| <(_, _, _, _, _)>::try_from(row),
             )
             .optional()?;
         let Some((input_pk, input, Some(chain), Some(start), end)) = found else {
@@ -1654,17 +1638,13 @@ impl Reader<'_> {
         };
         let end = match end.filter(|end| *end > start) {
             Some(end) => end,
-            None => conn.query_row(
-                "SELECT coalesce(
+            None => conn.scalar("SELECT coalesce(
                     (SELECT min(s) FROM (
                         SELECT source_start AS s FROM message_source WHERE input_pk = ?1 AND chain = ?2 AND source_start > ?3
                         UNION ALL
                         SELECT source_start FROM event WHERE input_pk = ?1 AND source_chain = ?2 AND source_start > ?3)),
                     (SELECT parsed_upto FROM parse_state WHERE input_pk = ?1 AND chain = ?2),
-                    ?3)",
-                params![input_pk, chain, start],
-                |row| row.get(0),
-            )?,
+                    ?3)", params![input_pk, chain, start])?,
         };
         let (Ok(start), Ok(end)) = (u64::try_from(start), u64::try_from(end)) else {
             return Err(StoreError::Invalid(format!(
@@ -1724,9 +1704,7 @@ impl Reader<'_> {
                 "SELECT append_seq, rewrite_version, entries, counts FROM session_item_state
                  WHERE session_pk = ?1",
             )?
-            .query_row([pk], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-            })
+            .query_row([pk], |row| <(_, _, _, _)>::try_from(row))
             .optional()?;
         let Some((append_seq, rewrite_version, entries, counts)) = state else {
             return Err(StoreError::Invalid(format!(
@@ -1779,7 +1757,7 @@ impl Reader<'_> {
                  ORDER BY seq DESC LIMIT 1",
             )?
             .query_row(params![session_pk, position(seq)?], |row| {
-                Ok((row.get(0)?, row.get(1)?))
+                <(_, _)>::try_from(row)
             })
             .optional()?;
         let Some((first, counts)) = unit else {
@@ -1957,7 +1935,7 @@ impl Reader<'_> {
             .prepare_cached(
                 "SELECT append_seq, rewrite_version FROM session_item_state WHERE session_pk = ?1",
             )?
-            .query_row([session_pk], |row| Ok((row.get(0)?, row.get(1)?)))
+            .query_row([session_pk], |row| <(_, _)>::try_from(row))
             .optional()?
             .map(|(append_seq, rewrite_version)| {
                 Ok(ItemVersions {

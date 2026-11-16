@@ -1,5 +1,6 @@
 //! Calendar billing outlooks from dated plan settings and grouped recorded usage.
 use super::{Selection, reports, usage};
+use crate::OptionExt as _;
 use crate::{Reader, Result, StoreError};
 use polylogue_model::settings::PLAN_UNITS;
 use serde::Serialize;
@@ -92,7 +93,7 @@ enum PlanAt {
 fn plans(reader: &Reader<'_>, provider: &str, now: i64) -> Result<Vec<(i64, PlanAt)>> {
     use crate::assertions::settings::SettingAt;
     let now = polylogue_model::Timestamp::from_unix_ms(now)
-        .ok_or_else(|| StoreError::Invalid("plan history time is out of range".into()))?;
+        .or_invalid("plan history time is out of range")?;
     let mut result = Vec::new();
     for (at, value) in reader.archive_setting_history(&format!("plan.{provider}"), now)? {
         let plan = match value {
@@ -363,15 +364,12 @@ pub fn outlook(
 
 fn as_i64(value: Option<u64>) -> Result<Option<i64>> {
     value
-        .map(|v| {
-            i64::try_from(v)
-                .map_err(|_| StoreError::Invalid("usage exceeds SQLite's integer range".into()))
-        })
+        .map(|v| crate::to_i64(v, "usage exceeds SQLite's integer range"))
         .transpose()
 }
 fn add(a: i64, b: i64) -> Result<i64> {
     a.checked_add(b)
-        .ok_or_else(|| StoreError::Invalid("billing sum exceeds SQLite's integer range".into()))
+        .or_invalid("billing sum exceeds SQLite's integer range")
 }
 fn ratio(amount: i64, numerator: i64, denominator: i64) -> Result<i64> {
     if denominator <= 0 {
@@ -536,8 +534,7 @@ fn validate_method(method: &str) -> Result<()> {
     }
 }
 fn validate_plan(plan: &Plan) -> Result<()> {
-    plan.validate()
-        .map_err(|error| StoreError::Invalid(error.to_string()))
+    plan.validate().map_err(crate::StoreError::invalid)
 }
 
 fn window(now: i64, anchor: i8) -> Result<Window> {

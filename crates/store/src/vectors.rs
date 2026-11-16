@@ -17,9 +17,11 @@
 //! ([`Vectors::query_vector`]), so a query text is paid for once and ranks
 //! with model calls off.
 
+use crate::ConnExt as _;
 use crate::archive::{Archive, open_read, open_write};
 use crate::read::Reader;
 use crate::{Result, StoreError};
+use polylogue_model::LockExt;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -143,7 +145,13 @@ impl Vectors {
     /// Stores the provider's vector for a query text (NFC) under its
     /// embedding key. A text already stored under the key keeps the vector
     /// stored first, the one every earlier ranking used.
-    pub fn put_query_vector(&self, key: &str, text: &str, values: &[f32]) -> Result<()> {
+    pub fn put_query_vector(
+        &self,
+        key: &str,
+        text: &str,
+        values: &[f32],
+        clock: &polylogue_model::WallClock,
+    ) -> Result<()> {
         let bytes: Vec<u8> = values.iter().flat_map(|f| f.to_le_bytes()).collect();
         let tx = rusqlite::Transaction::new_unchecked(
             &self.conn,
@@ -152,7 +160,7 @@ impl Vectors {
         tx.execute(
             "INSERT INTO query_vector(key, text_hash, vector, embedded_at) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(key, text_hash) DO NOTHING",
-            params![key, query_text_hash(text), bytes, now_ms()],
+            params![key, query_text_hash(text), bytes, clock.now_ms()],
         )?;
         tx.commit()?;
         Ok(())
@@ -241,7 +249,7 @@ impl Vectors {
             "SELECT text_hash,chunk FROM embedded WHERE model=?1 AND text_hash IN ({placeholders})"
         ))?;
         for row in statement.query_map(rusqlite::params_from_iter(arguments), |row| {
-            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, u32>(1)?))
+            <(Vec<u8>, u32)>::try_from(row)
         })? {
             let (hash, chunk) = row?;
             if let Some(chunks) = missing.get_mut(&hash) {
@@ -267,7 +275,12 @@ impl Vectors {
     /// written once: the same values again are already stored, and different
     /// values for the same text, key and chunk are refused, since the stored
     /// one was paid for. Nothing of a refused call is stored.
-    pub fn put(&mut self, key: &str, vectors: &[Vector]) -> Result<()> {
+    pub fn put(
+        &mut self,
+        key: &str,
+        vectors: &[Vector],
+        clock: &polylogue_model::WallClock,
+    ) -> Result<()> {
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -280,7 +293,7 @@ impl Vectors {
                 "INSERT INTO embedded(text_hash, model, chunk, dims, vector, embedded_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?;
-            let now = now_ms();
+            let now = clock.now_ms();
             for v in vectors {
                 let bytes: Vec<u8> = v.values.iter().flat_map(|f| f.to_le_bytes()).collect();
                 let known: Option<Vec<u8>> = find
@@ -355,7 +368,7 @@ impl Vectors {
                 }
                 let known: Option<(i64, i64, Vec<u8>, i64)> = find
                     .query_row(params![v.text_hash, v.model, v.chunk], |r| {
-                        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                        <(_, _, _, _)>::try_from(r)
                     })
                     .optional()?;
                 out.push(match known {
@@ -437,11 +450,23 @@ impl Vectors {
     }
 
     /// A text the provider permanently rejected, with its error as given.
-    pub fn fail(&self, key: &str, text_hash: &[u8], error: &str) -> Result<()> {
-        self.record_failure(key, text_hash, error)
+    pub fn fail(
+        &self,
+        key: &str,
+        text_hash: &[u8],
+        error: &str,
+        clock: &polylogue_model::WallClock,
+    ) -> Result<()> {
+        self.record_failure(key, text_hash, error, clock)
     }
 
-    fn record_failure(&self, key: &str, text_hash: &[u8], error: &str) -> Result<()> {
+    fn record_failure(
+        &self,
+        key: &str,
+        text_hash: &[u8],
+        error: &str,
+        clock: &polylogue_model::WallClock,
+    ) -> Result<()> {
         let tx = rusqlite::Transaction::new_unchecked(
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
@@ -450,7 +475,7 @@ impl Vectors {
             "INSERT INTO embed_failure(text_hash, model, error, failed_at) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(text_hash, model) DO UPDATE SET error = excluded.error,
                  failed_at = excluded.failed_at",
-            params![text_hash, key, error, now_ms()],
+            params![text_hash, key, error, clock.now_ms()],
         )?;
         tx.commit()?;
         Ok(())
@@ -459,28 +484,21 @@ impl Vectors {
     /// An embedding key starting with `prefix` that has vectors, without
     /// counting them.
     pub fn key_with_prefix(&self, prefix: &str) -> Result<Option<String>> {
-        use rusqlite::OptionalExtension;
         let _read = self.read_transaction()?;
-        Ok(self
-            .conn
-            .query_row(
-                "SELECT model FROM embedded WHERE substr(model, 1, length(?1)) = ?1 LIMIT 1",
-                [prefix],
-                |r| r.get(0),
-            )
-            .optional()?)
+        self.conn.scalar_optional(
+            "SELECT model FROM embedded WHERE substr(model, 1, length(?1)) = ?1 LIMIT 1",
+            [prefix],
+        )
     }
 
     /// Revision of a model in this handle's SQLite read snapshot.
     pub fn revision(&self, key: &str) -> Result<i64> {
         Ok(self
             .conn
-            .query_row(
+            .scalar_optional(
                 "SELECT revision FROM embedding_revision WHERE model = ?1",
                 [key],
-                |row| row.get(0),
-            )
-            .optional()?
+            )?
             .unwrap_or(0))
     }
 
@@ -687,12 +705,6 @@ fn floats(bytes: &[u8]) -> Vec<f32> {
 /// A query text's key in `query_vector`: the BLAKE3 hash of its NFC bytes.
 fn query_text_hash(text: &str) -> Vec<u8> {
     blake3::hash(text.as_bytes()).as_bytes().to_vec()
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64)
 }
 
 /// Every vector of one embedding key, in memory, as runs in stored order.
@@ -908,10 +920,7 @@ impl Similarity {
 
     /// The best similarity of a text's chunks, which may sit in several runs.
     pub fn of(&self, hash: &[u8]) -> Option<f32> {
-        let mut scores = self
-            .scores
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut scores = self.scores.locked();
         if let Some(score) = scores.get(hash) {
             return *score;
         }
@@ -934,8 +943,7 @@ impl Similarity {
         }
         let mut best: Vec<(Box<[u8]>, f32)> = self
             .scores
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .locked()
             .iter()
             .filter_map(|(hash, score)| Some((hash.clone(), (*score)?)))
             .collect();
@@ -943,10 +951,7 @@ impl Similarity {
         best.truncate(RESCORED);
         let hashes: Vec<&[u8]> = best.iter().map(|(hash, _)| &**hash).collect();
         let stored = store.stored(&self.loaded.key, &hashes)?;
-        let mut scores = self
-            .scores
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut scores = self.scores.locked();
         for (hash, chunks) in stored {
             let score = chunks
                 .iter()

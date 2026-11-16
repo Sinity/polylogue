@@ -151,7 +151,7 @@ fn similar_is_the_semantic_leg() {
 fn similar_by_a_reference_is_not_built() {
     assert_eq!(
         error("sessions where similar:claude-code:abc").kind(),
-        "not_built"
+        polylogue_model::Code::NotBuilt
     );
 }
 

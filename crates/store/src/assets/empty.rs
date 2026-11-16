@@ -1,5 +1,6 @@
 //! Empty members are backed by a receiving observation and encoded body.
 use super::*;
+use crate::OptionExt as _;
 use crate::primary::{AcquisitionReceipt, AcquisitionRoute, RawRange};
 use polylogue_model::BlobHash;
 
@@ -35,7 +36,7 @@ pub(crate) fn source(
             .query_row(
                 "SELECT import_id,member FROM import_member WHERE observation=?1 AND input=?2",
                 params![id, input],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| <(_, _)>::try_from(row),
             )
             .optional()?;
         let Some((namespace, member)) = membership else {
@@ -75,13 +76,10 @@ pub(crate) fn source(
             continue;
         }
         read_record.validate_for(&key)?;
-        let descriptor: Option<Vec<u8>> = conn
-            .query_row(
-                &format!("SELECT storage FROM {prefix}blob WHERE hash=?1 AND size=0"),
-                [&read_record.hash.0[..]],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let descriptor: Option<Vec<u8>> = conn.scalar_optional(
+            &format!("SELECT storage FROM {prefix}blob WHERE hash=?1 AND size=0"),
+            [&read_record.hash.0[..]],
+        )?;
         let Some(descriptor) = descriptor else {
             continue;
         };
@@ -123,7 +121,7 @@ pub(crate) fn read(reader: &Reader<'_>, source: &AssetSource) -> Result<Vec<u8>>
     let hash = source
         .blob
         .filter(|hash| source.length == 0 && *hash == BlobHash::of(b""))
-        .ok_or_else(|| StoreError::Invalid("empty attachment has no bound body".into()))?;
+        .or_invalid("empty attachment has no bound body")?;
     let extent = crate::blobs::load_extent(reader.conn()?, "source_", &hashed_blobs::Hash(hash.0))?
         .ok_or_else(|| StoreError::NotFound("empty attachment body".into()))?;
     if extent.decoded_len != 0

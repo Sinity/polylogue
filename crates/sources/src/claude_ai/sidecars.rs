@@ -6,6 +6,7 @@ use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
 use crate::parse::{Output, Parse, Step};
 use crate::{RecordOutcome, Records};
+use polylogue_model::JsonExt;
 use polylogue_model::{
     Block, Document, DocumentId, DocumentPurpose, DocumentRow, Json, NativeId, Origin,
 };
@@ -388,8 +389,7 @@ impl ExportParser for Sidecars {
                 .get(&item.parent)
                 .ok_or_else(|| ScanError::Callback("missing sidecar source identity".into()))?;
             let id = fields
-                .get(if account { "account_uuid" } else { "uuid" })
-                .and_then(Json::as_str)
+                .str(if account { "account_uuid" } else { "uuid" })
                 .filter(|id| !id.is_empty());
             let (scope, missing) = scope(
                 input,
@@ -421,7 +421,7 @@ impl ExportParser for Sidecars {
                     .expect("decoded source time is valid");
             }
             if doc.purpose == DocumentPurpose::Instruction {
-                doc.title = fields.get("name").and_then(Json::as_str).map(str::to_owned);
+                doc.title = fields.str("name").map(str::to_owned);
             }
         }
         Ok(ScanStats {

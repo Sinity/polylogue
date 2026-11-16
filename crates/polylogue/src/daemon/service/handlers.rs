@@ -263,7 +263,7 @@ impl Handler for Sql {
             match reader.query_untrusted(&arguments.statement) {
                 Ok(rows) if rows.is_empty() => Answer::empty(rows),
                 Ok(rows) => Answer::ok(rows),
-                Err(e) => error("sql", e),
+                Err(e) => error(polylogue_model::Code::Sql, e),
             },
         )
     }
@@ -281,14 +281,14 @@ impl Handler for Complete {
             Ok(position) => position.unwrap_or(text.len()),
             Err(_) => {
                 return Ok(error(
-                    "bad_request",
+                    polylogue_model::Code::BadRequest,
                     "completion position cannot be represented on this host",
                 ));
             }
         };
         if position > text.len() || !text.is_char_boundary(position) {
             return Ok(error(
-                "bad_request",
+                polylogue_model::Code::BadRequest,
                 "completion position must be a UTF-8 byte boundary within the query",
             ));
         }
@@ -353,12 +353,15 @@ impl Handler for Explain {
         let result = if subject == "query" {
             if unit.is_some() || page_size.is_some() || call.cursor.is_some() {
                 return Ok(error(
-                    "bad_request",
+                    polylogue_model::Code::BadRequest,
                     "unit, page_size and cursor apply to declaration pages",
                 ));
             }
             let Some(text) = expression.as_deref().filter(|s| !s.trim().is_empty()) else {
-                return Ok(error("bad_request", "expression is required for query"));
+                return Ok(error(
+                    polylogue_model::Code::BadRequest,
+                    "expression is required for query",
+                ));
             };
             let reader = call.reader()?;
             let context = call.context()?;
@@ -500,10 +503,16 @@ impl Handler for SchemaInfer {
             field,
         } = arguments;
         if origin.is_some() && all {
-            return Ok(error("bad_request", "choose an origin or --all"));
+            return Ok(error(
+                polylogue_model::Code::BadRequest,
+                "choose an origin or --all",
+            ));
         }
         let Ok(revision) = revision.map(i64::try_from).transpose() else {
-            return Ok(error("bad_request", "revision exceeds signed range"));
+            return Ok(error(
+                polylogue_model::Code::BadRequest,
+                "revision exceeds signed range",
+            ));
         };
         Ok(super::super::schema::infer(
             call.daemon,
@@ -525,7 +534,10 @@ impl Handler for SchemaUnread {
     type Answer = polylogue_store::wire_shapes::Report;
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         if arguments.origin.is_some() && arguments.all {
-            return Ok(error("bad_request", "choose an origin or --all"));
+            return Ok(error(
+                polylogue_model::Code::BadRequest,
+                "choose an origin or --all",
+            ));
         }
         Ok(match call.reader() {
             Ok(reader) => super::super::schema::unread(&reader, arguments.origin.as_deref()),
@@ -583,7 +595,7 @@ impl Handler for Attachment {
         })();
         Ok(match read {
             Ok(range) => super::super::attachment::read(range, call.daemon),
-            Err(message) => error("bad_request", message),
+            Err(message) => error(polylogue_model::Code::BadRequest, message),
         })
     }
 }
@@ -605,19 +617,25 @@ impl Handler for Import {
         let from_archive = match arguments.from_archive.as_deref() {
             Some(_) if !paths.is_empty() => {
                 return Ok(error(
-                    "bad_request",
+                    polylogue_model::Code::BadRequest,
                     "--from-archive names one archive and takes no other paths",
                 ));
             }
             Some(_) if arguments.format.is_some() => {
-                return Ok(error("bad_request", "--from-archive takes no --format"));
+                return Ok(error(
+                    polylogue_model::Code::BadRequest,
+                    "--from-archive takes no --format",
+                ));
             }
             Some(archive) => {
                 let archive = call.path(archive, "archive path")?;
                 Some(archive)
             }
             None if arguments.dry_run => {
-                return Ok(error("bad_request", "--dry-run applies to --from-archive"));
+                return Ok(error(
+                    polylogue_model::Code::BadRequest,
+                    "--dry-run applies to --from-archive",
+                ));
             }
             None => None,
         };
@@ -626,7 +644,12 @@ impl Handler for Import {
         let (reply, wait) = sync_channel(1);
         let tx = match d.loop_tx.lock() {
             Ok(tx) => tx,
-            Err(_) => return Ok(error("internal", "the loop has stopped")),
+            Err(_) => {
+                return Ok(error(
+                    polylogue_model::Code::Internal,
+                    "the loop has stopped",
+                ));
+            }
         };
         if let Err(error) = invocation.check_parent_lifetime() {
             return Ok(store_error(&error));
@@ -644,15 +667,18 @@ impl Handler for Import {
             .is_ok();
         drop(tx);
         if !sent {
-            return Ok(error("internal", "the loop has stopped"));
+            return Ok(error(
+                polylogue_model::Code::Internal,
+                "the loop has stopped",
+            ));
         }
         Ok(match wait.recv() {
             Ok(Ok(report)) => super::import_answer(report),
             Ok(Err(polylogue_engine::ImportFailure::Parent(error))) => store_error(&error),
             Ok(Err(polylogue_engine::ImportFailure::Import(error))) => {
-                super::error("import", error)
+                super::error(polylogue_model::Code::Import, error)
             }
-            Err(_) => error("internal", "the loop has stopped"),
+            Err(_) => error(polylogue_model::Code::Internal, "the loop has stopped"),
         })
     }
 }
@@ -663,7 +689,10 @@ impl Handler for Assert {
     type Answer = polylogue_model::user::UserOutcome;
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         if arguments.assertions.is_empty() {
-            return Ok(error("bad_request", "assertions must not be empty"));
+            return Ok(error(
+                polylogue_model::Code::BadRequest,
+                "assertions must not be empty",
+            ));
         }
         Ok(write(
             call.daemon,
@@ -687,7 +716,10 @@ impl Handler for AssertQuery {
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let protocol::assertion::AssertQuery { query, assertion } = arguments;
         if query.trim().is_empty() {
-            return Ok(error("bad_request", "query must not be empty"));
+            return Ok(error(
+                polylogue_model::Code::BadRequest,
+                "query must not be empty",
+            ));
         }
         let (d, invocation) = (call.daemon, call.invocation);
         let reader = call.reader()?;
@@ -706,7 +738,7 @@ impl Handler for AssertQuery {
                     .any(|link| link.role == polylogue_model::assertion::LinkRole::About)
                 {
                     return Ok(error(
-                        "bad_request",
+                        polylogue_model::Code::BadRequest,
                         "a query assertion cannot supply its own about links",
                     ));
                 }
@@ -721,7 +753,12 @@ impl Handler for AssertQuery {
         };
         let targets = match &resolved {
             UserWrite::AssertQuery { resolved, .. } => resolved.len(),
-            _ => return Ok(error("conflict", "stored request has another action")),
+            _ => {
+                return Ok(error(
+                    polylogue_model::Code::Conflict,
+                    "stored request has another action",
+                ));
+            }
         };
         drop(reader);
         Ok(super::submit(
@@ -741,7 +778,10 @@ impl Handler for Revise {
     type Answer = polylogue_model::user::UserOutcome;
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         if arguments.bases.is_empty() {
-            return Ok(error("bad_request", "bases must not be empty"));
+            return Ok(error(
+                polylogue_model::Code::BadRequest,
+                "bases must not be empty",
+            ));
         }
         Ok(write(
             call.daemon,
@@ -761,7 +801,10 @@ impl Handler for Withdraw {
     type Answer = polylogue_model::user::UserOutcome;
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         if arguments.targets.is_empty() {
-            return Ok(error("bad_request", "targets must not be empty"));
+            return Ok(error(
+                polylogue_model::Code::BadRequest,
+                "targets must not be empty",
+            ));
         }
         Ok(write(
             call.daemon,
@@ -790,22 +833,27 @@ impl Handler for Judge {
             Ok(polylogue_model::Reference::Assertion(reference)) => reference,
             Ok(_) => {
                 return Ok(error(
-                    "bad_request",
+                    polylogue_model::Code::BadRequest,
                     "a judgment needs a natural assertion reference",
                 ));
             }
-            Err(e) => return Ok(error("bad_request", e)),
+            Err(e) => return Ok(error(polylogue_model::Code::BadRequest, e)),
         };
         let reader = call.reader()?;
         let selected_scope = reader.scope_token();
         let found = match reader.assertion(&reference) {
             Ok(Some(found)) => found,
-            Ok(None) => return Ok(error("not_found", format!("no assertion {note}"))),
+            Ok(None) => {
+                return Ok(error(
+                    polylogue_model::Code::NotFound,
+                    format!("no assertion {note}"),
+                ));
+            }
             Err(e) => return Ok(store_error(&e)),
         };
         if !found.fact.author.is_agent() {
             return Ok(error(
-                "bad_request",
+                polylogue_model::Code::BadRequest,
                 "only assertions agents wrote are accepted or rejected; revise or withdraw the operator's own",
             ));
         }
@@ -886,7 +934,7 @@ impl Handler for Watch {
             && crate::signals::duration(hold).is_none()
         {
             return Ok(error(
-                "invalid",
+                polylogue_model::Code::Invalid,
                 format!("--for {hold:?} is not a duration such as 20m"),
             ));
         }
@@ -1034,7 +1082,10 @@ impl Handler for Setting {
         let invocation = call.invocation;
         if let Some(value) = value {
             let Some(key) = key else {
-                return Ok(error("bad_request", "a value requires a setting key"));
+                return Ok(error(
+                    polylogue_model::Code::BadRequest,
+                    "a value requires a setting key",
+                ));
             };
             call.reader()?;
             return Ok(write(
@@ -1057,7 +1108,7 @@ impl Handler for Setting {
                 machine.as_deref(),
                 &invocation.machine,
             ) {
-                return Ok(error("bad_value", e));
+                return Ok(error(polylogue_model::Code::BadValue, e));
             }
             return Ok(match reader.setting_current(&key, selected) {
                 Ok(current) => Answer::ok(protocol::setting::Answer::Current(Box::new(current))),
@@ -1073,7 +1124,7 @@ impl Handler for Setting {
                 machine.as_deref(),
                 &invocation.machine,
             ) {
-                return Ok(error("bad_value", e));
+                return Ok(error(polylogue_model::Code::BadValue, e));
             }
         }
         Ok(match reader.settings_catalog(selected) {
@@ -1164,6 +1215,7 @@ fn embed(
         limit,
         yes,
         crate::embeddings::Context {
+            clock: &d.clock,
             settings: &settings,
             credentials: &d.config.embedding_credentials,
             operation: &context,
@@ -1355,7 +1407,7 @@ impl Handler for SelectionNote {
         let targets = query_targets_in(d, &reader, &query, invocation, Some(&session))?;
         if targets.as_slice() != [message] {
             return Ok(error(
-                "conflict",
+                polylogue_model::Code::Conflict,
                 "the supplied message is missing, ambiguous or belongs to another conversation; capture the conversation and retry",
             ));
         }

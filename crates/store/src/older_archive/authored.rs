@@ -386,8 +386,11 @@ pub fn requests(
                 body.at.unix_ms(),
             ),
             "delivery_event" => {
-                let delivery = body.payload.get("delivery").and_then(|d| d.as_str());
-                let what = body.payload.get("what").and_then(|w| w.as_str());
+                let delivery = body
+                    .payload
+                    .get("delivery")
+                    .and_then(serde_json::Value::as_str);
+                let what = body.payload.get("what").and_then(serde_json::Value::as_str);
                 let (Some(delivery), Some(what)) = (delivery, what) else {
                     continue;
                 };
@@ -492,14 +495,12 @@ pub fn requests(
                     Some(RequestClass::DeliveryEvent) => (|| {
                         let delivery = body
                             .payload
-                            .get("delivery")
-                            .and_then(|d| d.as_str())
+                            .get("delivery").and_then(serde_json::Value::as_str)
                             .ok_or("it names no delivery")?
                             .to_owned();
                         let outcome_of = what(
                             body.payload
-                                .get("what")
-                                .and_then(|w| w.as_str())
+                                .get("what").and_then(serde_json::Value::as_str)
                                 .ok_or("it names no outcome")?,
                         )?;
                         let detail = match body.payload.get("detail") {
@@ -550,8 +551,7 @@ pub fn requests(
                         };
                         let query = body
                             .payload
-                            .get("query")
-                            .and_then(|q| q.as_str())
+                            .get("query").and_then(serde_json::Value::as_str)
                             .ok_or("it names no query")?
                             .to_owned();
                         if name != row.name || query != row.query {

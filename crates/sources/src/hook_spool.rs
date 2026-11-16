@@ -29,10 +29,11 @@
 //! That ID, the line's time and its process stay in its data; storing the
 //! same file again adds none.
 
+use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 2;
 
-use crate::document::{first_key, session_id, str_of};
+use crate::document::{first_key, session_id};
 use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
 use crate::lines::Record;
@@ -60,33 +61,6 @@ const WRAPPER_FIELDS: &[&str] = &[
     "boot_id",
     "native_unavailable",
 ];
-
-/// Decode a stated context emission kept by this parser. It is not a Sinex
-/// event and gives imported bytes no standing. Its event ID alone does not
-/// attribute the context to a transcript message; that needs a link to it.
-pub fn context_emission(event: &Event) -> Option<polylogue_model::HookContextEmission> {
-    if event.kind != event_kind(CONTEXT_EMITTED) {
-        return None;
-    }
-    let mut payload = event.data.as_object()?.clone();
-    let event_id = payload.get("event_id")?.as_str()?.to_owned();
-    for key in WRAPPER_FIELDS {
-        payload.remove(*key);
-    }
-    let emission: polylogue_model::HookContextEmission =
-        serde_json::from_value(Json::Object(payload)).ok()?;
-    if event_id.is_empty() || emission.invocation.is_empty() || event_id == emission.invocation
-        || emission.hook_event.is_empty() || event.session.as_ref() != Some(&emission.session)
-        || emission.deliveries.is_empty()
-        || !emission.deliveries.iter().all(|reference| {
-            matches!(polylogue_model::Reference::parse(reference),
-                Ok(parsed @ polylogue_model::Reference::Delivery(_)) if parsed.to_string() == *reference)
-        })
-    {
-        return None;
-    }
-    Some(emission)
-}
 
 pub const LOCATIONS: &[&str] = &[
     "polylogue/hooks/*.jsonl",
@@ -155,11 +129,6 @@ static FIELDS: Fields = Fields::new(
     ],
 );
 
-/// `PreToolUse` → `hook_pre_tool_use`.
-fn event_kind(event_type: &str) -> String {
-    routed_kind(polylogue_model::live::HOOK_PREFIX, event_type)
-}
-
 /// The event kind of a line of `route`, or `None` for an unknown route.
 fn route_prefix(route: Option<&str>) -> Option<&'static str> {
     match route {
@@ -192,8 +161,10 @@ impl Parser for HookSpool {
     type ParserState = ParserState;
 
     fn kind(&self, value: &Json) -> String {
-        str_of(value, "event_type")
-            .or_else(|| str_of(value, "event"))
+        value
+            .str("event_type")
+            .filter(|s| !s.is_empty())
+            .or_else(|| value.str("event").filter(|s| !s.is_empty()))
             .unwrap_or("?")
             .to_owned()
     }
@@ -208,21 +179,26 @@ impl Parser for HookSpool {
     ) -> RecordOutcome {
         let kind = self.kind(value);
         records.fields(&kind, value, &FIELDS);
-        let Some(event_type) = str_of(value, "event_type").or_else(|| str_of(value, "event"))
+        let Some(event_type) = value
+            .str("event_type")
+            .filter(|s| !s.is_empty())
+            .or_else(|| value.str("event").filter(|s| !s.is_empty()))
         else {
             return RecordOutcome::unreadable("no event_type");
         };
         // The hook command's lines from before it named the harness are
         // Claude Code's.
-        let Some(prefix) = route_prefix(str_of(value, "route")) else {
+        let Some(prefix) = route_prefix(value.str("route").filter(|s| !s.is_empty())) else {
             return RecordOutcome::unreadable("unknown route");
         };
-        let provider = match str_of(value, "provider") {
+        let provider = match value.str("provider").filter(|s| !s.is_empty()) {
             Some(p) => p,
             None if value.get("at_ns").is_some() => "claude-code",
             None => return RecordOutcome::unreadable("no provider"),
         };
-        let native = str_of(value, "session_id")
+        let native = value
+            .str("session_id")
+            .filter(|s| !s.is_empty())
             .or_else(|| value.pointer("/payload/session_id").and_then(Json::as_str))
             .filter(|s| !s.is_empty());
         let Some(native) = native else {

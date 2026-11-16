@@ -978,7 +978,12 @@ fn query_failure_detail(
     position: usize,
 ) -> Value {
     assert_eq!(failure.code(), kind.code());
-    assert_eq!(failure.kind, crate::protocol::kind(kind.code()));
+    assert_eq!(
+        failure.kind,
+        crate::protocol::kind(
+            polylogue_model::Code::from_name(kind.code()).expect("shared language failure code")
+        )
+    );
     assert_eq!(failure.position.as_ref().unwrap().offset, position);
     let mut detail = serde_json::to_value(&failure.error).unwrap();
     // The message carries the source line and caret below its first line.
@@ -1152,7 +1157,15 @@ fn similarity(w: &TestArchive, like: &str) -> std::sync::Arc<polylogue_store::ve
         })
         .collect();
     let key = "local/test/2/document/unit";
-    reader.vectors_writer().unwrap().put(key, &vectors).unwrap();
+    reader
+        .vectors_writer()
+        .unwrap()
+        .put(
+            key,
+            &vectors,
+            &polylogue_model::WallClock::new(jiff::Timestamp::now),
+        )
+        .unwrap();
     let loaded = std::sync::Arc::new(reader.vectors().unwrap().load(key).unwrap());
     std::sync::Arc::new(loaded.similarity(&[1.0, 0.0]).unwrap())
 }

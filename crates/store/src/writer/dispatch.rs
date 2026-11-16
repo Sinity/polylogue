@@ -124,6 +124,7 @@ mod fixture {
         }
     }
     impl WriterSender {
+        #[cfg(any(test, feature = "fixture"))]
         pub fn pause_user_dispatch_for_test(
             &self,
             id: &str,

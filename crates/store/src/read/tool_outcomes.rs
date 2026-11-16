@@ -17,7 +17,7 @@ impl Reader<'_> {
         for row in rows {
             let (block, outcome) = row?;
             let block = block.parse::<usize>().map_err(|_| {
-                StoreError::Invalid("a tool call has an invalid source block index".into())
+                StoreError::stored(0, "a tool call has an invalid source block index")
             })?;
             outcomes.push((block, outcome));
         }

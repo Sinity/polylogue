@@ -15,6 +15,9 @@ impl WallClock {
     pub fn fixed(instant: jiff::Timestamp) -> Self {
         Self::new(move || instant)
     }
+    pub fn now_ms(&self) -> i64 {
+        self.now().as_millisecond()
+    }
     pub fn now(&self) -> jiff::Timestamp {
         (self.sample)()
     }

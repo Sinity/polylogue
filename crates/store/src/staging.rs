@@ -1,9 +1,10 @@
 //! Input bytes use one encoded preparation in both modes. The standalone
 //! writer appends it to its segment; the primary producer sends the stored
 //! encoding.
+use crate::ConnExt as _;
 use crate::{Result, StoreError};
 use polylogue_model::BlobHash;
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 
 /// One pool batch and the private encodings its new blobs were written to.
 pub struct PreparedBatch {
@@ -180,12 +181,10 @@ pub(crate) fn require_range(
         return Err(StoreError::Invalid("invalid stored range".into()));
     }
     let length: Option<i64> = conn
-        .query_row(
+        .scalar_optional(
             &format!("SELECT max(length) FROM {schema}revision WHERE input=?1 AND chain=?2"),
             rusqlite::params![input, chain],
-            |r| r.get(0),
-        )
-        .optional()?
+        )?
         .flatten();
     if length.is_none_or(|length| length < 0 || range.end > length as u64) {
         return Err(StoreError::NotFound(format!(

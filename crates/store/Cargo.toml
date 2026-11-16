@@ -31,6 +31,8 @@ tempfile.workspace = true
 authored.workspace = true
 
 [dev-dependencies]
+polylogue-model = { workspace = true, features = ["fixture"] }
+polylogue-query = { workspace = true, features = ["fixture"] }
 authored-generator.workspace = true
 proptest.workspace = true
 shared-signals.workspace = true

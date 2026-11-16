@@ -1,6 +1,7 @@
 //! Typed reads of assertions over the stored current-revision index. Direct
 //! association is exact; container membership belongs to the query backend.
 use super::*;
+use crate::ConnExt as _;
 use crate::Reader;
 use std::ops::ControlFlow;
 
@@ -24,7 +25,9 @@ impl Reader<'_> {
         match state.heads.into_iter().next() {
             Some(Reference::Assertion(exact)) => Ok(Some(exact)),
             None => Ok(None),
-            Some(_) => Err(invalid("assertion family contains another reference kind")),
+            Some(_) => Err(crate::StoreError::invalid(
+                "assertion family contains another reference kind",
+            )),
         }
     }
 
@@ -36,7 +39,7 @@ impl Reader<'_> {
         let id = exact
             .revision
             .as_ref()
-            .ok_or_else(|| invalid("assertion revision is not exact"))?;
+            .ok_or_else(|| crate::StoreError::invalid("assertion revision is not exact"))?;
         let row = get(self.conn()?, id)?.filter(|row| row.fact.root == exact.root);
         self.check()?;
         Ok(row)
@@ -54,7 +57,7 @@ impl Reader<'_> {
         };
         let conn = self.conn()?;
         let source = Source::reading(conn)?;
-        let value = conn.query_row(&source.sql("SELECT EXISTS(SELECT 1 FROM @source.assertion WHERE root=?1 AND id=?2 AND (valid_until IS NULL OR valid_until>?3))"), params![exact.root, exact.revision, at.unix_ms()], |row| row.get(0))?;
+        let value = conn.scalar(&source.sql("SELECT EXISTS(SELECT 1 FROM @source.assertion WHERE root=?1 AND id=?2 AND (valid_until IS NULL OR valid_until>?3))"), params![exact.root, exact.revision, at.unix_ms()])?;
         self.check()?;
         Ok(value)
     }

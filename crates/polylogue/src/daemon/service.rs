@@ -22,6 +22,7 @@ use std::time::Instant;
 
 /// What request handlers share.
 pub struct Daemon {
+    pub(crate) clock: polylogue_model::WallClock,
     pub(crate) config: Arc<crate::config::Config>,
     pub archive: Archive,
     pub reads: ReadPool,
@@ -81,7 +82,7 @@ impl Daemon {
                 invocation,
                 self.config
                     .standalone_day()
-                    .map_err(|problem| Failure::new("not_yet_available", problem.to_string()))?
+                    .map_err(|problem| Failure::not_yet_available(problem.to_string()))?
                     .clone(),
             ),
             #[cfg(feature = "sinex")]
@@ -94,7 +95,7 @@ impl Daemon {
                 crate::operation::Context::primary(invocation, policy)?
             }
             ModeState::Blocked { error: reason, .. } => {
-                return Err(Failure::new("sinex_unavailable", reason.clone()));
+                return Err(Failure::sinex_unavailable(reason.clone()));
             }
         };
         Ok(Arc::new(context))
@@ -246,7 +247,7 @@ fn import_answer(report: polylogue_engine::ImportReport) -> Answer<polylogue_eng
     crate::protocol::written(report, pending)
 }
 
-pub(crate) fn error<T>(code: &str, message: impl ToString) -> Answer<T> {
+pub(crate) fn error<T>(code: polylogue_model::Code, message: impl ToString) -> Answer<T> {
     Failure::new(code, message).answer()
 }
 
@@ -396,15 +397,17 @@ fn context(
             .map_err(|e| Box::new(store_error(&e)))?
             .archive;
         let prepared = briefing::prepare(
-            &reader,
+            crate::briefing::BriefContext {
+                reader: &reader,
+                delivery_id: &request_id,
+                context: operation,
+                ranking_identity: ranking_identity.as_deref(),
+                near,
+            },
             &d.scope,
             queued,
             &pending_refs,
             ask,
-            &request_id,
-            operation,
-            ranking_identity.as_deref(),
-            near,
             budget_tokens,
         )
         .map_err(|e| match &request_limit {
@@ -641,13 +644,7 @@ fn write_from_read(
 }
 
 pub(crate) fn browser_refusal<T>(refused: crate::browser::actions::Refused) -> Answer<T> {
-    error(refused.0, refused.0)
-}
-
-pub(crate) fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+    error(refused.0, refused.0.as_str())
 }
 
 /// A list read: empty when it matched nothing.
@@ -663,14 +660,14 @@ fn listed<T: serde::Serialize>(items: Vec<T>) -> Answer<Value> {
             },
         },
         Ok(value) => Answer::ok(value),
-        Err(cause) => error("internal", cause),
+        Err(cause) => error(polylogue_model::Code::Internal, cause),
     }
 }
 
 pub(crate) fn ok(data: impl serde::Serialize) -> Answer<Value> {
     match serde_json::to_value(data) {
         Ok(data) => Answer::ok(data),
-        Err(cause) => error("internal", cause),
+        Err(cause) => error(polylogue_model::Code::Internal, cause),
     }
 }
 
@@ -704,7 +701,7 @@ pub(super) fn accepting(d: &Daemon) -> Result<(), Failure> {
 /// The refusal of a request that arrives, or was queued, while the daemon
 /// stops.
 pub(crate) fn shutting_down() -> Failure {
-    Failure::new("shutting_down", "the daemon has stopped accepting requests")
+    Failure::shutting_down("the daemon has stopped accepting requests")
 }
 
 /// Resolve bulk targets through the same pinned selection and acknowledged
@@ -750,8 +747,7 @@ fn query_targets_in(
                 super::query::options(reader, &ask, uuid::Uuid::new_v4().as_u128() as u64)?;
             let selection = reader.prepare_query_selection(query, &options)?;
             if selection.program().shape != polylogue_query::Shape::Rows {
-                return Err(Failure::new(
-                    "bad_request",
+                return Err(Failure::bad_request(
                     "assertions require identifiable rows, not a grouped or aggregate population",
                 ));
             }
@@ -765,7 +761,7 @@ fn query_targets_in(
                 .accepted_request()
                 .map(serde_json::to_value)
                 .transpose()
-                .map_err(|problem| Failure::new("internal", problem))?;
+                .map_err(Failure::internal)?;
             let mut binding = selection.execution_binding(
                 query_options,
                 ExecutionPresentation::Query,
@@ -787,9 +783,7 @@ fn query_targets_in(
                     execution: Box::new(binding),
                 },
             };
-            let hash = run
-                .binding_hash()
-                .map_err(|problem| Failure::new("internal", problem))?;
+            let hash = run.binding_hash().map_err(Failure::internal)?;
             let writes = writer(d)?;
             operation.check_parent_lifetime()?;
             match operation.parent_lifetime() {
@@ -804,8 +798,7 @@ fn query_targets_in(
                 || d.config.requests.now(),
                 || {
                     if !selection.program().incomplete.is_empty() {
-                        return Err(Failure::new(
-                            "not_yet_available",
+                        return Err(Failure::not_yet_available(
                             "the query population is incomplete; no assertion was written",
                         ));
                     }
@@ -813,16 +806,15 @@ fn query_targets_in(
                     let mut targets = Vec::new();
                     let mut seen = HashSet::new();
                     reader.visit_selection::<Failure>(&selection, None, Some(near), |row| {
-                        row_count = row_count.checked_add(1).ok_or_else(|| {
-                            Failure::new("internal", "selected row count exceeds u64")
-                        })?;
+                        row_count = row_count
+                            .checked_add(1)
+                            .ok_or_else(|| Failure::internal("selected row count exceeds u64"))?;
                         let reference = row
                             .target
                             .as_ref()
                             .map(polylogue_model::read::ReadTarget::reference)
                             .ok_or_else(|| {
-                                Failure::new(
-                                    "not_yet_available",
+                                Failure::not_yet_available(
                                     "the selected row has no source reference",
                                 )
                             })?;
@@ -834,13 +826,10 @@ fn query_targets_in(
                     if let Some(polylogue_model::Reference::Session(expected)) = container {
                         let Some(polylogue_model::Reference::Message(message)) = targets.first()
                         else {
-                            return Err(Failure::new(
-                                "conflict",
-                                format!(
-                                    "the supplied source is not a recorded message; the query selected {row_count} rows, first {:?}",
-                                    targets.first()
-                                ),
-                            ));
+                            return Err(Failure::conflict(format!(
+                                "the supplied source is not a recorded message; the query selected {row_count} rows, first {:?}",
+                                targets.first()
+                            )));
                         };
                         let mut memberships = 0_u8;
                         let mut matches = false;
@@ -854,26 +843,24 @@ fn query_targets_in(
                             })
                         })?;
                         if memberships != 1 || !matches {
-                            return Err(Failure::new(
-                                "conflict",
+                            return Err(Failure::conflict(
                                 "the message has missing, ambiguous or mismatching recorded conversation membership",
                             ));
                         }
                     }
                     if container.is_some() && row_count != 1 {
-                        return Err(Failure::new(
-                            "conflict",
+                        return Err(Failure::conflict(
                             "the supplied message is missing or ambiguous; capture the conversation and retry",
                         ));
                     }
                     if targets.is_empty() {
                         return Err(Failure::new(
-                            "empty",
+                            polylogue_model::Code::Empty,
                             "the query returns no rows; no assertion was written",
                         ));
                     }
                     let count = u64::try_from(targets.len())
-                        .map_err(|_| Failure::new("internal", "selected row count exceeds u64"))?;
+                        .map_err(|_| Failure::internal("selected row count exceeds u64"))?;
                     Ok(self::execution::Completed {
                         value: targets,
                         count: Some(count),
@@ -914,20 +901,15 @@ impl Runtime {
         let stopped = stop.clone();
         let daemon = Arc::clone(&self.daemon);
         let worker_events = self.worker_events.clone();
-        let worker = std::thread::Builder::new()
-            .name("polylogue-signals".into())
-            .spawn(move || {
-                let _exit = super::lifecycle::WorkerExit::new(
-                    worker_events,
-                    "signal worker terminated",
-                    None,
-                );
-                let result = crate::signals::run(daemon, stopped);
-                if let Err(error) = &result {
-                    eprintln!("polylogue: signal worker: {error}");
-                }
-                result
-            })?;
+        let worker = polylogue_model::spawn_named("polylogue-signals", move || {
+            let _exit =
+                super::lifecycle::WorkerExit::new(worker_events, "signal worker terminated", None);
+            let result = crate::signals::run(daemon, stopped);
+            if let Err(error) = &result {
+                eprintln!("polylogue: signal worker: {error}");
+            }
+            result
+        })?;
         self.signals_stop = Some(stop);
         self.signals = Some(worker);
         Ok(())
@@ -1163,10 +1145,8 @@ impl ModeState {
             ..
         } = self
         {
-            let mut failure = Failure::new(
-                "sinex_unavailable",
-                format!("archive writes are paused: {reason}"),
-            );
+            let mut failure =
+                Failure::sinex_unavailable(format!("archive writes are paused: {reason}"));
             failure.error.hint = Some(format!("fix the Sinex settings in {}", path.display()));
             return failure;
         }
@@ -1264,8 +1244,9 @@ pub fn start(
     }));
     let mail = crate::mailbox::dir(&deployment.paths, &archive.root);
     let hosts = crate::hosting::dir(&deployment.paths, &archive.root);
-    let warm = super::warm::Warm::new(&archive);
+    let warm = super::warm::Warm::new(&archive, settings.clock.clone());
     let daemon = Arc::new(Daemon {
+        clock: settings.clock.clone(),
         config: deployment,
         operations: std::sync::OnceLock::new(),
         archive,
@@ -1308,9 +1289,9 @@ pub fn start(
     });
     let acts_worker = {
         let daemon = Arc::clone(&daemon);
-        std::thread::Builder::new()
-            .name("polylogue-acts".into())
-            .spawn(move || acts::run_reports(daemon, act_reports_received))?
+        polylogue_model::spawn_named("polylogue-acts", move || {
+            acts::run_reports(daemon, act_reports_received)
+        })?
     };
     // Hosted sessions outlive a daemon restart: their hosts, or Codex's
     // app-server, kept them running; connect to each again.
@@ -1371,46 +1352,40 @@ pub fn start(
     // A failed register sync stops the writer; the daemon then stops too,
     // with its storage exit code.
     let storage_events = runtime.worker_events.clone();
-    std::thread::Builder::new()
-        .name("polylogue-storage".into())
-        .spawn(move || {
-            polylogue_store::storage_failure::wait();
-            storage_events.send_replace(Some("the register failed a disk sync"));
-        })?;
+    polylogue_model::spawn_named("polylogue-storage", move || {
+        polylogue_store::storage_failure::wait();
+        storage_events.send_replace(Some("the register failed a disk sync"));
+    })?;
     let (ready, wait) = sync_channel(1);
     let worker_events = runtime.worker_events.clone();
     let idle = Arc::clone(&runtime.idle);
-    runtime.engine = Some(
-        std::thread::Builder::new()
-            .name("polylogue-loop".into())
-            .spawn(move || {
-                let expected = Arc::new(AtomicBool::new(false));
-                let _exit = super::lifecycle::WorkerExit::new(
-                    worker_events,
-                    "engine worker terminated",
-                    Some(Arc::clone(&expected)),
-                );
-                let started = ready.clone();
-                let result = engine.run(tx, rx, &status, lifetime, || {
-                    let _ = started.send(Ok(()));
-                });
-                match result {
-                    Ok(summary) => {
-                        // Stopping a service loop is the runtime's own shutdown;
-                        // an idle loop's end is the run's end.
-                        if lifetime == Lifetime::UntilIdle {
-                            expected.store(true, Ordering::Release);
-                            idle.send_replace(Some(summary));
-                        }
-                        Ok(())
-                    }
-                    Err(error) => {
-                        let _ = ready.try_send(Err(error.to_string()));
-                        Err(std::io::Error::other(error.to_string()))
-                    }
+    runtime.engine = Some(polylogue_model::spawn_named("polylogue-loop", move || {
+        let expected = Arc::new(AtomicBool::new(false));
+        let _exit = super::lifecycle::WorkerExit::new(
+            worker_events,
+            "engine worker terminated",
+            Some(Arc::clone(&expected)),
+        );
+        let started = ready.clone();
+        let result = engine.run(tx, rx, &status, lifetime, || {
+            let _ = started.send(Ok(()));
+        });
+        match result {
+            Ok(summary) => {
+                // Stopping a service loop is the runtime's own shutdown;
+                // an idle loop's end is the run's end.
+                if lifetime == Lifetime::UntilIdle {
+                    expected.store(true, Ordering::Release);
+                    idle.send_replace(Some(summary));
                 }
-            })?,
-    );
+                Ok(())
+            }
+            Err(error) => {
+                let _ = ready.try_send(Err(error.to_string()));
+                Err(std::io::Error::other(error.to_string()))
+            }
+        }
+    })?);
     wait.recv()
         .map_err(|_| std::io::Error::other("loop thread exited during startup"))?
         .map_err(std::io::Error::other)?;
@@ -1428,35 +1403,26 @@ pub fn start(
         codex_program: runtime.daemon.acts.codex().0,
     };
     let clock = settings.clock.clone();
-    runtime.live_events = Some(
-        std::thread::Builder::new()
-            .name("polylogue-live".into())
-            .spawn(move || {
-                let _exit = super::lifecycle::WorkerExit::new(
-                    worker_events,
-                    "live event worker terminated",
-                    None,
-                );
-                crate::live_events::run(daemon, paths, clock, stopped)
-            })?,
-    );
+    runtime.live_events = Some(polylogue_model::spawn_named("polylogue-live", move || {
+        let _exit =
+            super::lifecycle::WorkerExit::new(worker_events, "live event worker terminated", None);
+        crate::live_events::run(daemon, paths, clock, stopped)
+    })?);
     // Load the vectors `similar:` ranks by before the first query needs them.
     let daemon = Arc::clone(&runtime.daemon);
-    std::thread::Builder::new()
-        .name("polylogue-warm".into())
-        .spawn(move || {
-            let Ok(reader) = daemon.reads.reader() else {
-                return;
-            };
-            if let Ok(settings) = reader.settings_snapshot(daemon.config.requests.machine())
-                && let Ok(Some(provider)) = crate::embeddings::Provider::from_settings(
-                    &settings,
-                    &daemon.config.embedding_credentials,
-                )
-            {
-                let _ = daemon.warm.vectors(&reader, &provider);
-            }
-        })?;
+    polylogue_model::spawn_named("polylogue-warm", move || {
+        let Ok(reader) = daemon.reads.reader() else {
+            return;
+        };
+        if let Ok(settings) = reader.settings_snapshot(daemon.config.requests.machine())
+            && let Ok(Some(provider)) = crate::embeddings::Provider::from_settings(
+                &settings,
+                &daemon.config.embedding_credentials,
+            )
+        {
+            let _ = daemon.warm.vectors(&reader, &provider);
+        }
+    })?;
     Ok(runtime)
 }
 

@@ -5,6 +5,7 @@
 //! and accounted with the reason; sessions name their plan by `slug`
 //! (a `plan` event from the transcript).
 
+use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 2;
 
@@ -264,8 +265,7 @@ fn job_state(bytes: &[u8], len: usize, out: &mut Output) -> RecordOutcome {
         Err(d) => return d,
     };
     let Some(sid) = v
-        .get("sessionId")
-        .and_then(Json::as_str)
+        .str("sessionId")
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
     else {
@@ -277,27 +277,26 @@ fn job_state(bytes: &[u8], len: usize, out: &mut Output) -> RecordOutcome {
     };
     let mut s = Session::new(id.clone(), SessionKind::Main);
     s.mode = Some("bg".to_owned());
-    if let Some(name) = v.get("name").and_then(Json::as_str) {
-        let source = match v.get("nameSource").and_then(Json::as_str) {
+    if let Some(name) = v.str("name") {
+        let source = match v.str("nameSource") {
             Some("user") => TitleSource::Custom,
             _ => TitleSource::Generated,
         };
         s.offer_title(name, source);
     }
-    if let Some(cwd) = v.get("cwd").and_then(Json::as_str) {
+    if let Some(cwd) = v.str("cwd") {
         s.offer_cwd(cwd);
     }
     if let Some(at) = v.get("createdAt").and_then(time::rfc3339) {
         s.offer_start(at.timestamp(), at.accuracy())
             .expect("decoded source time is valid");
     }
-    if let Some(version) = v.get("cliVersion").and_then(Json::as_str) {
+    if let Some(version) = v.str("cliVersion") {
         s.tool_version = Some(version.to_owned());
     }
     out.sessions.push(s);
     if let Some(parent) = v
-        .get("resumeSessionId")
-        .and_then(Json::as_str)
+        .str("resumeSessionId")
         .filter(|p| *p != sid)
         .and_then(session_id)
     {
@@ -318,10 +317,10 @@ fn job_state(bytes: &[u8], len: usize, out: &mut Output) -> RecordOutcome {
 /// The spawn link a subagent's meta file states: the call that started it,
 /// in the parent agent it names or else the session it was filed under.
 fn spawn_link(stem: &str, session: Option<&str>, v: &Json, out: &mut Output) {
-    let Some(call) = v.get("toolUseId").and_then(Json::as_str) else {
+    let Some(call) = v.str("toolUseId") else {
         return;
     };
-    let parent = match v.get("parentAgentId").and_then(Json::as_str) {
+    let parent = match v.str("parentAgentId") {
         Some(agent) => session_id(&format!("agent-{agent}")),
         None => session.and_then(session_id),
     };
@@ -362,11 +361,7 @@ impl Parser for History {
         out: &mut Output,
         _records: &mut Records,
     ) -> RecordOutcome {
-        let Some(sid) = v
-            .get("sessionId")
-            .and_then(Json::as_str)
-            .filter(|s| !s.is_empty())
-        else {
+        let Some(sid) = v.str("sessionId").filter(|s| !s.is_empty()) else {
             return RecordOutcome::skipped(
                 "written before the tool recorded session IDs; project and time stay in the stored bytes",
             );

@@ -5,12 +5,27 @@
 //! ([`crate::user_writes`]), so two extension instances never claim the
 //! same action.
 
+/// The report fields recorded for one chat action event.
+pub(crate) struct ChatEvent<'a> {
+    pub request: &'a str,
+    pub id: &'a str,
+    pub at: i64,
+    pub kind: &'a str,
+    pub phase: &'a str,
+    pub detail: Option<&'a str>,
+    pub by: Option<&'a str>,
+    pub receipt: Option<&'a serde_json::Value>,
+    pub seq: i64,
+}
+
 use crate::{Reader, Result, StoreError};
 use polylogue_model::BlobHash;
+use polylogue_model::JsonExt;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use polylogue_model::user::{
-    ChatAction, ChatAttachment, ChatEvent, ChatStatus, NewChatAction, chat_outcome,
+    ChatAction, ChatAttachment, ChatEvent as StoredChatEvent, ChatStatus, NewChatAction,
+    chat_outcome,
 };
 
 impl Reader<'_> {
@@ -67,17 +82,7 @@ pub(crate) fn read(conn: &Connection, schema: &str, id: &str) -> Result<Option<C
             "SELECT request_key, request_hash, request_json, stage_only, needs_approval, created_at, execution
              FROM {schema}chat_action WHERE id = ?1"
         ))?
-        .query_row([id], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, Vec<u8>>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, bool>(3)?,
-                r.get::<_, bool>(4)?,
-                r.get::<_, i64>(5)?,
-                r.get::<_, String>(6)?,
-            ))
-        })
+        .query_row([id], |r| <(String, Vec<u8>, String, bool, bool, i64, String)>::try_from(r))
         .optional()?;
     let Some((request_key, hash, request, stage_only, needs_approval, created_at, execution)) = row
     else {
@@ -89,13 +94,7 @@ pub(crate) fn read(conn: &Connection, schema: &str, id: &str) -> Result<Option<C
              WHERE action = ?1 ORDER BY id"
         ))?
         .query_map([id], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, Vec<u8>>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, i64>(4)?,
-            ))
+            <(String, Vec<u8>, String, String, u64)>::try_from(r)
         })?
         .map(|row| {
             let (id, blob, name, media_type, size) = row?;
@@ -103,11 +102,11 @@ pub(crate) fn read(conn: &Connection, schema: &str, id: &str) -> Result<Option<C
                 id,
                 blob: BlobHash(
                     blob.try_into()
-                        .map_err(|_| StoreError::Invalid("invalid attachment blob".into()))?,
+                        .map_err(|_| StoreError::stored(1, "invalid attachment blob"))?,
                 ),
                 name,
                 media_type,
-                size: u64::try_from(size).unwrap_or(0),
+                size,
             })
         })
         .collect::<Result<_>>()?;
@@ -116,20 +115,10 @@ pub(crate) fn read(conn: &Connection, schema: &str, id: &str) -> Result<Option<C
             "SELECT at, kind, phase, detail, by, receipt_json, request FROM {schema}chat_action_event
              WHERE action = ?1 ORDER BY n"
         ))?
-        .query_map([id], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, Option<String>>(3)?,
-                r.get::<_, Option<String>>(4)?,
-                r.get::<_, Option<String>>(5)?,
-                r.get::<_, String>(6)?,
-            ))
-        })?
+        .query_map([id], |r| <(i64, String, String, Option<String>, Option<String>, Option<String>, String)>::try_from(r))?
         .map(|row| {
             let (at, kind, phase, detail, by, receipt, request) = row?;
-            Ok(ChatEvent {
+            Ok(StoredChatEvent {
                 request,
                 at,
                 kind,
@@ -145,14 +134,14 @@ pub(crate) fn read(conn: &Connection, schema: &str, id: &str) -> Result<Option<C
         request_key,
         request_hash: BlobHash(
             hash.try_into()
-                .map_err(|_| StoreError::Invalid("invalid request hash".into()))?,
+                .map_err(|_| StoreError::stored(1, "invalid request hash"))?,
         ),
         request: serde_json::from_str(&request)?,
         stage_only,
         needs_approval,
         created_at,
         execution: polylogue_model::authored::ExecutionEligibility::from_name(&execution)
-            .ok_or_else(|| StoreError::Invalid("unknown execution eligibility".into()))?,
+            .ok_or_else(|| StoreError::stored(6, "unknown execution eligibility"))?,
         attachments,
         events,
     }))
@@ -177,7 +166,7 @@ pub(crate) fn enqueue(
         .query_row(
             &source.sql("SELECT id, request_hash FROM @source.chat_action WHERE request_key = ?1"),
             [&new.request_key],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| <(_, _)>::try_from(r),
         )
         .optional()?;
     if let Some((id, hash)) = known {
@@ -226,7 +215,18 @@ pub(crate) fn enqueue(
         "queued"
     };
     add_event(
-        tx, request, &new.id, at, phase, phase, None, None, None, seq,
+        tx,
+        ChatEvent {
+            request,
+            id: &new.id,
+            at,
+            kind: phase,
+            phase,
+            detail: None,
+            by: None,
+            receipt: None,
+            seq,
+        },
     )?;
     Ok(new.id.clone())
 }
@@ -254,33 +254,35 @@ pub(crate) fn claim(tx: &Connection, by: &str, at: i64, seq: i64, request: &str)
     let id = next.ok_or_else(|| StoreError::NotFound("a queued chat action".into()))?;
     add_event(
         tx,
-        request,
-        &id,
-        at,
-        "claimed",
-        "claimed",
-        None,
-        Some(by),
-        None,
-        seq,
+        ChatEvent {
+            request,
+            id: &id,
+            at,
+            kind: "claimed",
+            phase: "claimed",
+            detail: None,
+            by: Some(by),
+            receipt: None,
+            seq,
+        },
     )?;
     Ok(id)
 }
 
 /// A report from the extension instance holding the claim.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn report(
-    tx: &Connection,
-    id: &str,
-    by: &str,
-    kind: &str,
-    phase: &str,
-    detail: Option<&str>,
-    receipt: Option<&serde_json::Value>,
-    at: i64,
-    seq: i64,
-    request: &str,
-) -> Result<()> {
+pub(crate) fn report(tx: &Connection, event: ChatEvent<'_>) -> Result<()> {
+    let ChatEvent {
+        request,
+        id,
+        at,
+        kind,
+        phase,
+        detail,
+        by,
+        receipt,
+        seq,
+    } = event;
+    let by = by.ok_or_else(|| refused("not_the_claimant"))?;
     let source = crate::source::Source::of(tx)?;
     let action = read(tx, source.prefix(), id)?.ok_or_else(|| refused("unknown_chat_action"))?;
     let next = chat_outcome(kind).ok_or_else(|| refused("unknown_outcome"))?;
@@ -310,8 +312,7 @@ pub(crate) fn report(
         };
         if action
             .request
-            .get("conversation")
-            .and_then(|value| value.as_str())
+            .str("conversation")
             .is_some_and(|requested| requested != conversation)
         {
             return Err(refused("submission_conversation_mismatch"));
@@ -319,15 +320,17 @@ pub(crate) fn report(
     }
     add_event(
         tx,
-        request,
-        id,
-        at,
-        kind,
-        phase,
-        detail,
-        Some(by),
-        receipt,
-        seq,
+        ChatEvent {
+            request,
+            id,
+            at,
+            kind,
+            phase,
+            detail,
+            by: Some(by),
+            receipt,
+            seq,
+        },
     )
 }
 
@@ -354,31 +357,32 @@ pub(crate) fn decide(
     };
     add_event(
         tx,
-        &request.id,
+        ChatEvent {
+            request: &request.id,
+            id,
+            at,
+            kind,
+            phase,
+            detail,
+            by: Some(by),
+            receipt: None,
+            seq,
+        },
+    )
+}
+
+fn add_event(tx: &Connection, event: ChatEvent<'_>) -> Result<()> {
+    let ChatEvent {
+        request,
         id,
         at,
         kind,
         phase,
         detail,
-        Some(by),
-        None,
+        by,
+        receipt,
         seq,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn add_event(
-    tx: &Connection,
-    request: &str,
-    id: &str,
-    at: i64,
-    kind: &str,
-    phase: &str,
-    detail: Option<&str>,
-    by: Option<&str>,
-    receipt: Option<&serde_json::Value>,
-    seq: i64,
-) -> Result<()> {
+    } = event;
     let source = crate::source::Source::of(tx)?;
     tx.execute(
         &source.sql("INSERT INTO @source.chat_action_event(action, n, at, kind, phase, detail, by, receipt_json, request, commit_seq)

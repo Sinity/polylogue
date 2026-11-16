@@ -55,7 +55,7 @@ impl SourceTime {
 }
 
 pub(super) fn read(bytes: Option<&[u8]>, storage: &str) -> Result<SourceTime, Failure> {
-    let storage = TimeStorage::from_code(storage).ok_or("unknown time storage")?;
+    let storage = TimeStorage::from_name(storage).ok_or("unknown time storage")?;
     let Some(bytes) = bytes else {
         return Ok(SourceTime::default());
     };

@@ -20,6 +20,7 @@ pub(crate) fn record(
 
 impl crate::Reader<'_> {
     /// Locally recorded source memberships never supply an original authored time.
+    #[cfg(any(test, feature = "fixture"))]
     pub fn assertion_imports(
         &self,
         reference: &RevisionReference,

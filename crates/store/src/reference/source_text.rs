@@ -1,13 +1,14 @@
 //! The source Message/Block/Document text walker. Full text, bounded spans and
 //! resumed spans share these source loaders and the same two-LF body recipe.
 use super::{ReferenceText, unavailable};
+use crate::ConnExt as _;
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{
     Block, Reference, TEXT_BODY_SEPARATOR,
     bundle::fragments::seek::{NativeTextBody, NativeTextPiece, NativeTextPosition, TextField},
     text_body,
 };
-use rusqlite::{OptionalExtension, params};
+use rusqlite::params;
 use std::ops::ControlFlow;
 
 type Visit<'a> = dyn FnMut(NativeTextPiece, &str) -> Result<ControlFlow<()>> + 'a;
@@ -131,13 +132,8 @@ impl ReferenceText<'_> {
         let conn = self.original;
         match reference {
             Reference::Message(id) => {
-                let pk: Option<i64> = conn
-                    .query_row(
-                        "SELECT pk FROM message WHERE id=?1",
-                        [id.to_string()],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
+                let pk: Option<i64> =
+                    conn.scalar_optional("SELECT pk FROM message WHERE id=?1", [id.to_string()])?;
                 let Some(pk) = pk else { return Ok(false) };
                 let selection = self.source_block_selection(pk, reference)?;
                 if complete {
@@ -147,7 +143,7 @@ impl ReferenceText<'_> {
                     return Ok(true);
                 }
                 let from = if let Some(first) = first {
-                    let index: Option<i64> = conn.query_row("SELECT idx FROM block WHERE message_pk=?1 AND coalesce(ordinal,cast(idx AS TEXT))=?2", params![pk, first.to_string()], |row| row.get(0)).optional()?;
+                    let index: Option<i64> = conn.scalar_optional("SELECT idx FROM block WHERE message_pk=?1 AND coalesce(ordinal,cast(idx AS TEXT))=?2", params![pk, first.to_string()])?;
                     index.ok_or_else(|| {
                         unavailable(reference, "the bound source block is unavailable")
                     })?
@@ -160,7 +156,7 @@ impl ReferenceText<'_> {
                 let mut rows = statement.query(params![pk, from])?;
                 while let Some(row) = rows.next()? {
                     let index = usize::try_from(row.get::<_, i64>(1)?)
-                        .map_err(|_| StoreError::Invalid("invalid stored block index".into()))?;
+                        .map_err(|_| crate::StoreError::stored(1, "invalid stored block index"))?;
                     let ordinal =
                         selection
                             .block_ordinals
@@ -195,15 +191,10 @@ impl ReferenceText<'_> {
             }
             Reference::Block { message, n } => {
                 let pk: Option<i64> = conn
-                    .query_row(
-                        "SELECT pk FROM message WHERE id=?1",
-                        [message.to_string()],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
+                    .scalar_optional("SELECT pk FROM message WHERE id=?1", [message.to_string()])?;
                 let Some(pk) = pk else { return Ok(false) };
                 let selection = self.source_block_selection(pk, reference)?;
-                let block: Option<i64> = conn.query_row("SELECT pk FROM block WHERE message_pk=?1 AND coalesce(ordinal,cast(idx AS TEXT))=?2", params![pk,n.to_string()], |row| row.get(0)).optional()?;
+                let block: Option<i64> = conn.scalar_optional("SELECT pk FROM block WHERE message_pk=?1 AND coalesce(ordinal,cast(idx AS TEXT))=?2", params![pk,n.to_string()])?;
                 let Some(block) = block else {
                     return if *n < selection.block_count {
                         Err(unavailable(

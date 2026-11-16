@@ -80,7 +80,7 @@ impl Cursor {
         }
         if self.left == 0 {
             let extent = extents
-                .ok_or_else(|| StoreError::Invalid("stored byte range missing".into()))?
+                .or_invalid("stored byte range missing")?
                 .select(self.position)?;
             let mut reader = store.open_plain(&hashed_blobs::Hash(extent.hash.0), extent.size)?;
             reader.seek(SeekFrom::Start(

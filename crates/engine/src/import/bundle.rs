@@ -4,9 +4,6 @@ use polylogue_model::bundle::{Counts, InventoryRecord, MemberKind, Record};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 
-fn invalid(message: impl Into<String>) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::InvalidData, message.into())
-}
 fn verify(
     member: &package::Member,
     file: &polylogue_model::bundle::FileDescriptor,
@@ -24,10 +21,13 @@ fn verify(
         size += n as u64;
     }
     if hash.finalize().as_bytes() != &file.hash.0 || size != file.size {
-        return Err(invalid(format!(
-            "bundle member {} differs from its declared hash or size",
-            file.path
-        )));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "bundle member {} differs from its declared hash or size",
+                file.path
+            ),
+        ));
     }
     Ok(())
 }
@@ -127,7 +127,10 @@ pub(super) fn preflight(members: &mut [package::Member]) -> std::io::Result<()> 
                 .is_some_and(|origin| origin.name == "polylogue-bundle")
         })
     {
-        return Err(invalid("a bundle is missing its primary manifest"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "a bundle is missing its primary manifest",
+        ));
     }
     let names: BTreeMap<_, _> = members
         .iter()
@@ -150,13 +153,16 @@ pub(super) fn preflight(members: &mut [package::Member]) -> std::io::Result<()> 
                 .reader()
                 .map_err(std::io::Error::other)?,
         )
-        .map_err(invalid)?;
+        .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidData, message))?;
         let mut records = vec![primary];
         let mut listed = BTreeSet::from([primary]);
         if let Some(inventory) = &manifest.inventory {
-            let inventory_index = *names
-                .get(&root.join(&inventory.path))
-                .ok_or_else(|| invalid("bundle inventory is missing"))?;
+            let inventory_index = *names.get(&root.join(&inventory.path)).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "bundle inventory is missing",
+                )
+            })?;
             verify(&members[inventory_index], inventory)?;
             listed.insert(inventory_index);
             members[inventory_index].origin = polylogue_sources::origin::by_name(KEPT);
@@ -169,15 +175,18 @@ pub(super) fn preflight(members: &mut [package::Member]) -> std::io::Result<()> 
             for entry in serde_json::Deserializer::from_reader(input).into_iter::<InventoryRecord>()
             {
                 let entry = entry.map_err(std::io::Error::other)?;
-                entry
-                    .file
-                    .validate()
-                    .map_err(|error| invalid(error.to_string()))?;
+                entry.file.validate().map_err(|error| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+                })?;
                 let index = *names.get(&root.join(&entry.file.path)).ok_or_else(|| {
-                    invalid(format!("bundle member {} is missing", entry.file.path))
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("bundle member {} is missing", entry.file.path),
+                    )
                 })?;
                 if !listed.insert(index) {
-                    return Err(invalid(
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
                         "bundle inventory repeats a member or lists its primary/inventory",
                     ));
                 }
@@ -234,7 +243,10 @@ pub(super) fn preflight(members: &mut [package::Member]) -> std::io::Result<()> 
             count(&mut actual, &record);
         }
         if actual != manifest.counts {
-            return Err(invalid("bundle record counts differ from the manifest"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "bundle record counts differ from the manifest",
+            ));
         }
         for (index, member) in members.iter().enumerate() {
             if !member.container
@@ -242,10 +254,10 @@ pub(super) fn preflight(members: &mut [package::Member]) -> std::io::Result<()> 
                 && member.parent.map(|p| p.0) == members[primary].parent.map(|p| p.0)
                 && !listed.contains(&index)
             {
-                return Err(invalid(format!(
-                    "bundle member {} is not declared",
-                    member.path.display()
-                )));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("bundle member {} is not declared", member.path.display()),
+                ));
             }
         }
         claimed.extend(listed);

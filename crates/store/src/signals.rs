@@ -1,13 +1,15 @@
 //! Signal checkpoints and delivery receipts share the authored source
 //! transaction. The evaluator and delivery worker make the decisions; this
 //! module stores them unchanged.
+use crate::ConnExt as _;
+use crate::OptionExt as _;
 use crate::{Result, StoreError, source::Source};
 use polylogue_model::{
     authored::{AuthoredEffect, DeliveryRecord, ExecutionEligibility},
     signal::{Checkpoint, Commit, EventRecord, Metadata},
     user::{UserOutcome, UserRequest},
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, params};
 use shared_signals::notifications::Outlets;
 use std::collections::BTreeSet;
 
@@ -16,24 +18,19 @@ pub(crate) fn checkpoint(
     source: Source,
     evaluator: &str,
 ) -> Result<Option<Checkpoint>> {
-    let body: Option<Vec<u8>> = conn
-        .query_row(
-            &source.sql("SELECT body FROM @source.signal_state WHERE owner=?1"),
-            [evaluator],
-            |r| r.get(0),
-        )
-        .optional()?;
+    let body: Option<Vec<u8>> = conn.scalar_optional(
+        &source.sql("SELECT body FROM @source.signal_state WHERE owner=?1"),
+        [evaluator],
+    )?;
     body.map(|body| crate::encoding::unpack_json(&body))
         .transpose()
 }
 pub(crate) fn metadata(conn: &Connection, source: Source, id: &str) -> Result<Option<Metadata>> {
     let body: Option<Vec<u8>> = conn
-        .query_row(
+        .scalar_optional(
             &source.sql("SELECT signal FROM @source.delivery WHERE id=?1"),
             [id],
-            |r| r.get(0),
-        )
-        .optional()?
+        )?
         .flatten();
     body.map(|body| crate::encoding::unpack_json(&body))
         .transpose()
@@ -93,7 +90,7 @@ pub(crate) fn write(
             ));
         }
         let at = polylogue_model::Timestamp::from_unix_ms(pending.metadata.delivery.at)
-            .ok_or_else(|| StoreError::Invalid("signal time is out of range".into()))?;
+            .or_invalid("signal time is out of range")?;
         crate::primary::authored::store_delivery(
             conn,
             &DeliveryRecord {
@@ -122,14 +119,13 @@ pub(crate) fn write(
         let position = events(conn, source, id)?.last().map_or(Ok(1), |e| {
             e.position
                 .checked_add(1)
-                .ok_or_else(|| StoreError::Invalid("signal receipt position overflow".into()))
+                .or_invalid("signal receipt position overflow")
         })?;
         insert_event(
             conn,
             &EventRecord {
                 request: request.id.clone(),
-                ordinal: u64::try_from(ordinal)
-                    .map_err(|_| StoreError::Invalid("signal event ordinal overflow".into()))?,
+                ordinal: crate::to_u64(ordinal, "signal event ordinal overflow")?,
                 position,
                 at: request.at,
                 event: event.clone(),
@@ -150,8 +146,7 @@ fn store_checkpoint(conn: &Connection, value: &Checkpoint, counter: i64) -> Resu
     Ok(())
 }
 fn number(value: u64) -> Result<i64> {
-    i64::try_from(value)
-        .map_err(|_| StoreError::Invalid("signal commit order exceeds SQLite range".into()))
+    crate::to_i64(value, "signal commit order exceeds SQLite range")
 }
 fn insert_event(conn: &Connection, value: &EventRecord, counter: i64) -> Result<()> {
     if value.position == 0 || value.request.is_empty() {
@@ -159,7 +154,7 @@ fn insert_event(conn: &Connection, value: &EventRecord, counter: i64) -> Result<
     }
     let source = Source::of(conn)?;
     let id = value.event.delivery_id();
-    let old:Option<Vec<u8>>=conn.query_row(&source.sql("SELECT body FROM @source.signal_event WHERE (request=?1 AND ordinal=?2) OR (delivery=?3 AND position=?4)"),params![value.request,number(value.ordinal)?,id,number(value.position)?],|r|r.get(0)).optional()?;
+    let old:Option<Vec<u8>>=conn.scalar_optional(&source.sql("SELECT body FROM @source.signal_event WHERE (request=?1 AND ordinal=?2) OR (delivery=?3 AND position=?4)"),params![value.request,number(value.ordinal)?,id,number(value.position)?])?;
     if let Some(old) = old {
         let old: EventRecord = crate::encoding::unpack_json(&old)?;
         return if old == *value {
@@ -254,7 +249,7 @@ pub(crate) fn validate(prepared: &polylogue_model::authored::PreparedRequest) ->
             .iter()
             .find(|d| d.delivery.id == id)
             .and_then(|d| d.delivery.signal.as_ref())
-            .ok_or_else(|| StoreError::Invalid("signal event has no recorded delivery".into()))?;
+            .or_invalid("signal event has no recorded delivery")?;
         if let polylogue_model::signal::Event::HostDecision { delivery } = &event.event
             && delivery.fired.trigger != metadata.delivery.fired.trigger
         {

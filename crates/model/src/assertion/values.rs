@@ -1,5 +1,6 @@
 //! Closed value shapes. Dynamic annotation and setting values still require
 //! their resolved rubric or catalog at the accepting snapshot.
+use crate::JsonExt;
 use crate::{BlobHash, Json, Origin, Reference, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -149,9 +150,7 @@ impl PartialEq for OptionalTextValue {
 impl Eq for OptionalTextValue {}
 
 pub fn text(value: &Json) -> Option<&str> {
-    value
-        .as_str()
-        .or_else(|| value.get("text").and_then(Json::as_str))
+    value.as_str().or_else(|| value.str("text"))
 }
 record!(Annotation {value:Json,confidence:Option<Probability>,rationale:Option<String>});
 record!(Member {});

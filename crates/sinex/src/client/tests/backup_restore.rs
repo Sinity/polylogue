@@ -2,6 +2,7 @@
 use super::super::*;
 use crate::{Mode, Sinex};
 use polylogue_model::BlobHash;
+use polylogue_model::LockExt;
 use polylogue_store::primary::{Material, Product, ProductWrite, SourceLocation};
 use polylogue_store::{Archive, ReadPool, Writer};
 use std::path::Path;
@@ -64,7 +65,7 @@ fn encoding(
     sinex: &Sinex,
     identity: &str,
 ) -> (hashed_blobs::EncodedBlob, hashed_blobs::EncodedBlob) {
-    let queue = sinex.spool.lock().unwrap();
+    let queue = sinex.spool.locked();
     (
         queue.prepared_frame(identity).unwrap().descriptor(),
         queue.prepared_body(identity).unwrap()[0].descriptor(),
@@ -80,8 +81,7 @@ fn send_and_apply(sinex: &Arc<Sinex>, cache: &Path, items: &[(&str, &[u8])]) {
         items.iter().all(|(identity, _)| {
             sinex
                 .spool
-                .lock()
-                .unwrap()
+                .locked()
                 .acknowledgment(identity)
                 .unwrap()
                 .is_some()
@@ -90,8 +90,7 @@ fn send_and_apply(sinex: &Arc<Sinex>, cache: &Path, items: &[(&str, &[u8])]) {
     for (identity, bytes) in items {
         let acknowledgment = sinex
             .spool
-            .lock()
-            .unwrap()
+            .locked()
             .acknowledgment(identity)
             .unwrap()
             .unwrap();
@@ -139,7 +138,7 @@ fn send_and_apply(sinex: &Arc<Sinex>, cache: &Path, items: &[(&str, &[u8])]) {
             Err(error) => panic!("read Sinex primary cache: {error}"),
         };
         items.iter().all(|(identity, bytes)| {
-            if sinex.spool.lock().unwrap().get(identity).unwrap().is_some() {
+            if sinex.spool.locked().get(identity).unwrap().is_some() {
                 return false;
             }
             let blobs = match reader.blob_reader() {
@@ -200,8 +199,7 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_confirmed_removal(
         entered.send(()).map_err(|error| error.to_string())?;
         // No production mutex is held while the fixture waits.
         wait_resume
-            .lock()
-            .unwrap()
+            .locked()
             .recv_timeout(Duration::from_secs(90))
             .map_err(|error| error.to_string())?;
         capture_backup(&spool, &cancelled)
@@ -218,7 +216,7 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_confirmed_removal(
             true,
         ))
         .unwrap();
-    *sinex.client.lock().unwrap() = Some(client);
+    *sinex.client.locked() = Some(client);
     let before = b"synthetic pending before the core backup";
     let before_id = prepare(&sinex, before);
     let before_encoding = encoding(&sinex, &before_id);
@@ -284,7 +282,7 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_confirmed_removal(
     );
     for identity in [&before_id, &during_id] {
         assert_eq!(frame_count(&running, identity), 1);
-        assert!(sinex.spool.lock().unwrap().get(identity).unwrap().is_none());
+        assert!(sinex.spool.locked().get(identity).unwrap().is_none());
     }
     drop(sinex);
     let restored_store = root.path().join("restored-store");

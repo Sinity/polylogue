@@ -1,6 +1,7 @@
 //! Executing the one compiled query and shaping declared public values.
 use super::compile::PageColumns;
 use super::{ColKind, Program};
+use crate::ResultExt as _;
 use crate::search::{SearchDriver, SnippetIndex, SnippetQuery, Within};
 use crate::selection::{sql_value, values};
 use crate::{Reader, SqlValue, selection::SelectionError};
@@ -40,13 +41,13 @@ impl Reader<'_> {
             if let Some(request) = &program.near {
                 let near = near.ok_or_else(|| {
                     E::from(SelectionError::Invalid {
-                        kind: "embed",
+                        kind: polylogue_model::Code::Embed,
                         message: "semantic search unavailable".into(),
                     })
                 })?;
                 let similarity = near(&request.text).map_err(|message| {
                     E::from(SelectionError::Invalid {
-                        kind: "embed",
+                        kind: polylogue_model::Code::Embed,
                         message,
                     })
                 })?;
@@ -94,7 +95,7 @@ impl Reader<'_> {
         self.validate_selection(program)?;
         if program.page_size == 0 {
             return Err(SelectionError::Invalid {
-                kind: "bad_request",
+                kind: polylogue_model::Code::BadRequest,
                 message: "page size must be positive".into(),
             });
         }
@@ -160,7 +161,7 @@ impl Reader<'_> {
             let mut cache = self
                 .count_cache()
                 .lock()
-                .map_err(|_| crate::StoreError::Invalid("count cache lock poisoned".into()))?;
+                .or_invalid("count cache lock poisoned")?;
             if cache.position.as_ref() == Some(&position) {
                 if let Some((_, count)) = cache.entries.iter().find(|(entry, _)| *entry == key) {
                     return Ok(*count);
@@ -177,7 +178,7 @@ impl Reader<'_> {
         let mut cache = self
             .count_cache()
             .lock()
-            .map_err(|_| crate::StoreError::Invalid("count cache lock poisoned".into()))?;
+            .or_invalid("count cache lock poisoned")?;
         if cache.position.as_ref() == Some(&position) {
             // This bounded cache evicts reusable answers, never query rows.
             if cache.entries.len() == 64 {
@@ -310,7 +311,7 @@ impl Reader<'_> {
                     );
                     let row = self.query(&row_at, &row_params)?.pop().ok_or_else(|| {
                         StreamError::Selection(SelectionError::Invalid {
-                            kind: "stale_cursor",
+                            kind: polylogue_model::Code::StaleCursor,
                             message: "the selected row position is unavailable".into(),
                         })
                     })?;
@@ -467,7 +468,7 @@ impl Reader<'_> {
         }
         let missing = |what: &str| {
             StreamError::Selection(SelectionError::Invalid {
-                kind: "store",
+                kind: polylogue_model::Code::Store,
                 message: format!("a selected row has no {what}"),
             })
         };
@@ -530,13 +531,21 @@ impl Reader<'_> {
                 program
                     .measure
                     .as_ref()
-                    .ok_or_else(|| invalid("query has no measure selection"))?
+                    .ok_or_else(|| SelectionError::invalid(
+                        polylogue_model::Code::BadRequest,
+                        "query has no measure selection"
+                    ))?
                     .selection_sql
             ),
             QueryPopulation::MeasurePopulation => program
                 .measure
                 .as_ref()
-                .ok_or_else(|| invalid("query has no measure population"))?
+                .ok_or_else(|| {
+                    SelectionError::invalid(
+                        polylogue_model::Code::BadRequest,
+                        "query has no measure population",
+                    )
+                })?
                 .population_sql
                 .clone(),
         };
@@ -550,12 +559,6 @@ impl Reader<'_> {
             })
         })?;
         Ok(keys)
-    }
-}
-fn invalid(message: &str) -> SelectionError {
-    SelectionError::Invalid {
-        kind: "bad_request",
-        message: message.into(),
     }
 }
 
@@ -710,7 +713,7 @@ pub fn shape_value(
         ColKind::Json => {
             if let Some(text) = v.as_str() {
                 *v = serde_json::from_str(text).map_err(|_| SelectionError::Invalid {
-                    kind: "store",
+                    kind: polylogue_model::Code::Store,
                     message: "invalid stored JSON value".into(),
                 })?;
             }
@@ -721,7 +724,7 @@ pub fn shape_value(
             }
             let selection: Value = if let Some(text) = v.as_str() {
                 serde_json::from_str(text).map_err(|e| SelectionError::Invalid {
-                    kind: "store",
+                    kind: polylogue_model::Code::Store,
                     message: format!("invalid stored selection: {e}"),
                 })?
             } else {
@@ -736,7 +739,7 @@ pub fn shape_value(
                     .all(|id| id.as_str().is_some_and(|id| !id.is_empty()))
             }) {
                 return Err(SelectionError::Invalid {
-                    kind: "store",
+                    kind: polylogue_model::Code::Store,
                     message: "a stored selection must be an array of IDs".into(),
                 });
             }
@@ -760,7 +763,7 @@ pub fn shape_value(
                 *v = Value::Number(polylogue_model::money::usd_number(nusd));
             } else if !v.is_null() {
                 return Err(SelectionError::Invalid {
-                    kind: "store",
+                    kind: polylogue_model::Code::Store,
                     message: "a money value must be integer nano-USD".into(),
                 });
             }
@@ -851,7 +854,9 @@ pub fn options_snapshot(
             .as_deref()
             .map(polylogue_model::SessionId::parse)
             .transpose()
-            .map_err(|error| invalid(&error.to_string()))?,
+            .map_err(|error| {
+                SelectionError::invalid(polylogue_model::Code::BadRequest, error.to_string())
+            })?,
         embeddings: options.embeddings,
         why,
         ranking_identity,
@@ -894,7 +899,10 @@ pub fn prepare_measure(
     };
     // A measured selection is a derived relation: its sessions in order.
     let super::compile::Statements::Derived(derived) = &mut program.statements else {
-        return Err(invalid("a measured query reads a derived relation"));
+        return Err(SelectionError::invalid(
+            polylogue_model::Code::BadRequest,
+            "a measured query reads a derived relation",
+        ));
     };
     match paging {
         Some(crate::measure::Paging::Sessions) => {

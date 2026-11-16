@@ -76,9 +76,7 @@ impl Reader<'_> {
                 ));
             }
         };
-        record
-            .validate()
-            .map_err(|error| StoreError::Invalid(error.to_string()))?;
+        record.validate().map_err(crate::StoreError::invalid)?;
         let check = || self.check();
         let mut digest = Digest {
             hash: blake3::Hasher::new(),

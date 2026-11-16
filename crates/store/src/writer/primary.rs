@@ -183,22 +183,17 @@ impl Inner {
         file: Option<crate::staging::PreparedBytes>,
     ) -> Result<BlobHash> {
         self.primary_cache_ready()?;
-        let known: Option<i64> = self
-            .index
-            .query_row(
-                "SELECT size FROM source_blob WHERE hash=?1",
-                [&new_blob.hash.0[..]],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let known: Option<i64> = self.index.scalar_optional(
+            "SELECT size FROM source_blob WHERE hash=?1",
+            [&new_blob.hash.0[..]],
+        )?;
         if let Some(size) = known {
             if u64::try_from(size).ok() != Some(new_blob.size) {
                 return Err(StoreError::BlobCorrupt(new_blob.hash));
             }
             return Ok(new_blob.hash);
         }
-        let prepared = file
-            .ok_or_else(|| StoreError::Invalid("new primary blob has no prepared bytes".into()))?;
+        let prepared = file.or_invalid("new primary blob has no prepared bytes")?;
         if prepared.owner != self.location.root
             || prepared.hash() != new_blob.hash
             || prepared.len() != new_blob.size
@@ -218,10 +213,9 @@ impl Inner {
                 error => error,
             });
         }
-        if self.index.query_row(
+        if self.index.scalar::<bool>(
             "SELECT EXISTS(SELECT 1 FROM source_blob WHERE hash=?1)",
             [&new_blob.hash.0[..]],
-            |row| row.get::<_, bool>(0),
         )? {
             Ok(new_blob.hash)
         } else {
@@ -253,7 +247,7 @@ pub(super) fn product_writes(
                 reading.chain,
                 start,
             )?;
-            let machine=index.query_row("SELECT machine FROM source_observation WHERE input=?1 ORDER BY commit_seq DESC,rowid DESC LIMIT 1",[&reading.input.id],|row|row.get::<_,String>(0)).optional()?;
+            let machine=index.scalar_optional::<String>("SELECT machine FROM source_observation WHERE input=?1 ORDER BY commit_seq DESC,rowid DESC LIMIT 1",[&reading.input.id])?;
             (location, machine)
         } else {
             match &product {
@@ -311,10 +305,9 @@ pub(super) fn validate_primary_reading(index: &Connection, batch: &Batch) -> Res
             "a stored reading cannot capture or rebind its source".into(),
         ));
     }
-    let known: bool = index.query_row(
+    let known: bool = index.exists(
         "SELECT EXISTS(SELECT 1 FROM source_input WHERE id=?1 AND format=?2)",
         params![batch.input.id, batch.input.format],
-        |row| row.get(0),
     )?;
     if !known {
         return Err(StoreError::Invalid(

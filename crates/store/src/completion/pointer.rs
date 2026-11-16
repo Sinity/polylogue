@@ -1,5 +1,6 @@
 //! A derived cache pointer follows the archive's read-scope fence.
 use super::{CatalogWriter, Metadata};
+use crate::OptionExt as _;
 use crate::{ReadScopeToken, Result, StoreError};
 use std::{
     fs,
@@ -60,7 +61,7 @@ impl CatalogPointer {
             let parent = self
                 .path
                 .parent()
-                .ok_or_else(|| StoreError::Invalid("completion catalog has no parent".into()))?;
+                .or_invalid("completion catalog has no parent")?;
             let temporary = parent.join(format!(".catalog-pointer-{}", uuid::Uuid::now_v7()));
             symlink(name, &temporary)?;
             let result = (|| {

@@ -1,5 +1,6 @@
 //! Client delivery of the same finite reading. Files and directories publish
 //! only after a validated completion; staged failures keep their diagnosis.
+use polylogue_model::JsonExt as _;
 pub(crate) mod bundle;
 
 use super::{Archive, fail};
@@ -35,9 +36,13 @@ pub(crate) fn run(
 ) -> ExitCode {
     match deliver(values, startup, accepted) {
         Ok(code) => ExitCode::from(code),
-        Err(DeliveryError::Text(error)) => {
-            fail(startup.output, values.json, "read_output", &error, 1)
-        }
+        Err(DeliveryError::Text(error)) => fail(
+            startup.output,
+            values.json,
+            polylogue_model::Code::ReadOutput,
+            &error,
+            1,
+        ),
         Err(DeliveryError::Answer(answer)) => {
             let code = answer.exit_code();
             if values.json {
@@ -259,10 +264,6 @@ impl<W: Write> Write for BoldFirstLine<W> {
     }
 }
 
-fn invalid(message: impl ToString) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message.to_string())
-}
-
 fn deliver(
     values: &command_surface::ParsedCommand,
     startup: &crate::config::Startup,
@@ -339,8 +340,7 @@ fn deliver(
             let mut show = values
                 .request
                 .arguments
-                .get("show")
-                .and_then(serde_json::Value::as_array)
+                .array("show")
                 .into_iter()
                 .flatten()
                 .filter_map(|value| value.as_str().map(str::to_owned))
@@ -400,39 +400,66 @@ fn consume(
         match frame.event.as_str() {
             "begin" => {
                 if sink.is_some() {
-                    return Err(invalid("the read repeated its header"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "the read repeated its header".to_string(),
+                    ));
                 }
-                let begin: ReadBegin = serde_json::from_str(&frame.data).map_err(invalid)?;
-                begin.options.validate().map_err(invalid)?;
+                let begin: ReadBegin = serde_json::from_str(&frame.data).map_err(|error| {
+                    io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+                })?;
+                begin.options.validate().map_err(|error| {
+                    io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+                })?;
                 if !begin.snapshot.freshness.up_to_date() || !begin.snapshot.incomplete.is_empty() {
                     code = 5;
                 }
                 sink = Some(if directory {
                     Sink::Directory(Box::new(
                         bundle::Bundle::new(
-                            destination.ok_or_else(|| invalid("directory destination missing"))?,
+                            destination.ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "directory destination missing".to_string(),
+                                )
+                            })?,
                             begin,
-                            package_format.ok_or_else(|| invalid("directory format missing"))?,
+                            package_format.ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidData,
+                                    "directory format missing".to_string(),
+                                )
+                            })?,
                             with_blobs,
                         )
-                        .map_err(invalid)?,
+                        .map_err(|error| {
+                            io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+                        })?,
                     ))
                 } else {
                     Sink::Encoded {
                         begin: Box::new(begin),
-                        items: Box::new(ExportItems::new().map_err(invalid)?),
+                        items: Box::new(ExportItems::new().map_err(|error| {
+                            io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+                        })?),
                         received: Counts::default(),
                         ordinal: 0,
                     }
                 });
             }
             "record" => {
-                let record: ReadRecord = serde_json::from_str(&frame.data).map_err(invalid)?;
-                match sink
-                    .as_mut()
-                    .ok_or_else(|| invalid("the read omitted its header"))?
-                {
-                    Sink::Directory(bundle) => bundle.push(record).map_err(invalid)?,
+                let record: ReadRecord = serde_json::from_str(&frame.data).map_err(|error| {
+                    io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+                })?;
+                match sink.as_mut().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "the read omitted its header".to_string(),
+                    )
+                })? {
+                    Sink::Directory(bundle) => bundle.push(record).map_err(|error| {
+                        io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+                    })?,
                     Sink::Encoded {
                         items,
                         received,
@@ -440,7 +467,9 @@ fn consume(
                         ..
                     } => {
                         if let Some(record) = record.record() {
-                            record.validate().map_err(invalid)?;
+                            record.validate().map_err(|error| {
+                                io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+                            })?;
                             count(received, record)?;
                         }
                         items
@@ -450,32 +479,51 @@ fn consume(
                                 None,
                                 frame.data.as_bytes(),
                             )
-                            .map_err(invalid)?;
-                        *ordinal = ordinal
-                            .checked_add(1)
-                            .ok_or_else(|| invalid("read transfer count overflow"))?;
+                            .map_err(|error| {
+                                io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+                            })?;
+                        *ordinal = ordinal.checked_add(1).ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "read transfer count overflow".to_string(),
+                            )
+                        })?;
                     }
                 }
             }
             "blob" => {
-                let chunk: ReadBlobChunk = serde_json::from_str(&frame.data).map_err(invalid)?;
+                let chunk: ReadBlobChunk = serde_json::from_str(&frame.data).map_err(|error| {
+                    io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+                })?;
                 let bytes = base64::engine::general_purpose::STANDARD
                     .decode(chunk.base64)
-                    .map_err(invalid)?;
-                match sink
-                    .as_mut()
-                    .ok_or_else(|| invalid("blob preceded the read header"))?
-                {
+                    .map_err(|error| {
+                        io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+                    })?;
+                match sink.as_mut().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "blob preceded the read header".to_string(),
+                    )
+                })? {
                     Sink::Directory(bundle) => bundle
                         .blob_chunk(chunk.hash, chunk.offset, &bytes)
-                        .map_err(invalid)?,
+                        .map_err(|error| {
+                            io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+                        })?,
                     Sink::Encoded { .. } => {
-                        return Err(invalid("blob transfer requires directory delivery"));
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "blob transfer requires directory delivery".to_string(),
+                        ));
                     }
                 }
             }
             "complete" => {
-                let complete: ReadComplete = serde_json::from_str(&frame.data).map_err(invalid)?;
+                let complete: ReadComplete =
+                    serde_json::from_str(&frame.data).map_err(|error| {
+                        io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+                    })?;
                 if complete
                     .footer
                     .coverage
@@ -487,12 +535,17 @@ fn consume(
                 if code == 0 && complete.footer.shown == 0 && complete.counts == Counts::default() {
                     code = 1;
                 }
-                let finished_sink = sink
-                    .take()
-                    .ok_or_else(|| invalid("the read completed before its header"))?;
+                let finished_sink = sink.take().ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "the read completed before its header".to_string(),
+                    )
+                })?;
                 match finished_sink {
                     Sink::Directory(bundle) => {
-                        let summary = bundle.finish(complete).map_err(invalid)?;
+                        let summary = bundle.finish(complete).map_err(|error| {
+                            io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+                        })?;
                         if json {
                             written(
                                 serde_json::json!({"written":summary.destination,"counts":summary.counts,"previous":summary.previous}),
@@ -511,8 +564,9 @@ fn consume(
                         ..
                     } => {
                         if complete.counts != received {
-                            return Err(invalid(
-                                "read completion counts disagree with its records",
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "read completion counts disagree with its records".to_string(),
                             ));
                         }
                         if let Some(path) = destination {
@@ -540,7 +594,12 @@ fn consume(
                 completed = true;
                 return Ok(true);
             }
-            _ => return Err(invalid("unknown read stream event")),
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "unknown read stream event".to_string(),
+                ));
+            }
         }
         Ok(false)
     });
@@ -625,10 +684,14 @@ fn encode(
         },
         output,
     )?;
-    while let Some(mut item) = items.next_item().map_err(invalid)? {
+    while let Some(mut item) = items
+        .next_item()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?
+    {
         let mut raw = Vec::new();
         item.reader.read_to_end(&mut raw)?;
-        let record: ReadRecord = serde_json::from_slice(&raw).map_err(invalid)?;
+        let record: ReadRecord = serde_json::from_slice(&raw)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
         for part in record.parts() {
             if let ReadPart::Item(item) = part {
                 encoder.push(item)?;
@@ -652,10 +715,18 @@ fn count(counts: &mut Counts, record: &polylogue_model::bundle::Record) -> io::R
         Record::VariantPart(_) => &mut counts.variant_parts,
         Record::TextFragment(_) => &mut counts.text_fragments,
         Record::Blob(_) => &mut counts.blobs,
-        Record::Manifest(_) => return Err(invalid("a read cannot contain an embedded manifest")),
+        Record::Manifest(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a read cannot contain an embedded manifest".to_string(),
+            ));
+        }
     };
-    *value = value
-        .checked_add(1)
-        .ok_or_else(|| invalid("read count overflow"))?;
+    *value = value.checked_add(1).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "read count overflow".to_string(),
+        )
+    })?;
     Ok(())
 }

@@ -99,9 +99,7 @@ pub(crate) fn apply_resolving(
                 )?
                 .exists(params![
                     &attachment.blob.0[..],
-                    i64::try_from(attachment.size).map_err(|_| StoreError::Invalid(
-                        "attachment size is out of range".into()
-                    ))?
+                    crate::to_i64(attachment.size, "attachment size is out of range")?
                 ])?)
         },
         preparation,
@@ -393,15 +391,17 @@ pub(crate) fn apply_using(
         } => {
             crate::chat_actions::report(
                 tx,
-                action,
-                by,
-                outcome,
-                phase,
-                detail.as_deref(),
-                receipt.as_ref(),
-                at,
-                seq,
-                &r.id,
+                crate::chat_actions::ChatEvent {
+                    id: action,
+                    by: Some(by),
+                    kind: outcome,
+                    phase,
+                    detail: detail.as_deref(),
+                    receipt: receipt.as_ref(),
+                    at,
+                    seq,
+                    request: &r.id,
+                },
             )?;
             Ok(UserOutcome {
                 pending: false,
@@ -457,7 +457,7 @@ pub(crate) fn apply_using(
             machine,
         } => {
             let value = polylogue_model::settings::parse(key, value, mode)
-                .map_err(|error| StoreError::Invalid(error.to_string()))?;
+                .map_err(crate::StoreError::invalid)?;
             let statement = polylogue_model::assertion::NewAssertion {
                 kind: polylogue_model::assertion::AssertionKind::Setting,
                 key: Some(key.clone()),

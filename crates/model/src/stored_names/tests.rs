@@ -15,9 +15,9 @@ macro_rules! check {
     ($ty:ty) => {
         assert_eq!(<$ty>::ALL.len(), <$ty>::NAMES.len());
         for (v, name) in <$ty>::ALL.iter().zip(<$ty>::NAMES) {
-            assert_eq!(v.as_str(), *name);
+            assert_eq!(crate::StoredName::as_str(*v), *name);
             assert_eq!(serde_name(*v), *name, "{} serde name", stringify!($ty));
-            assert_eq!(<$ty>::from_name(name), Some(*v));
+            assert_eq!(<$ty as crate::StoredName>::from_name(name), Some(*v));
         }
     };
 }
@@ -65,6 +65,11 @@ fn stored_name_round_trips_for_every_enum() {
     check!(EmbeddingProvider);
     check!(VariantKind);
     check!(VariantRelation);
+    check!(crate::read::IndicatorKind);
+    check!(crate::read::TargetKind);
+    check!(crate::read::Format);
+    check!(crate::read::View);
+    check!(crate::read::EntryKind);
 }
 
 #[test]

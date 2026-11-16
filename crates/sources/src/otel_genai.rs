@@ -9,6 +9,7 @@
 //! `gen_ai.output.messages` follow it, with the call's token usage. Spans
 //! that are not GenAI spans are counted and set aside.
 
+use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 2;
 
@@ -91,7 +92,7 @@ fn nanos(span: &Json, key: &str) -> Option<u64> {
 fn span(raw: &Json) -> Span<'_> {
     let start_ns = nanos(raw, "startTimeUnixNano");
     Span {
-        trace: raw.get("traceId").and_then(Json::as_str).unwrap_or(""),
+        trace: raw.str("traceId").unwrap_or(""),
         start: raw
             .get("startTimeUnixNano")
             .and_then(crate::time::epoch_nanos),
@@ -219,7 +220,7 @@ impl ExportParser for OtelGenAi {
 fn attributes(value: Option<&Json>) -> BTreeMap<String, Json> {
     let mut map = BTreeMap::new();
     for kv in value.and_then(Json::as_array).into_iter().flatten() {
-        if let (Some(k), Some(v)) = (kv.get("key").and_then(Json::as_str), kv.get("value")) {
+        if let (Some(k), Some(v)) = (kv.str("key"), kv.get("value")) {
             map.insert(k.to_owned(), any_value(v));
         }
     }
@@ -298,7 +299,7 @@ fn model_span(
         let Some(id) = message_id(ORIGIN, &format!("{conversation}#{place}")) else {
             continue;
         };
-        let role = match m.get("role").and_then(Json::as_str) {
+        let role = match m.str("role") {
             Some("user") => Role::User,
             Some("system") => Role::System,
             Some("tool") => Role::User,
@@ -323,23 +324,18 @@ fn model_span(
                 at_precision: time_evidence.precision,
                 at_until: time_evidence.until,
                 model: is_output.then(|| model.clone()).flatten(),
-                prompt_kind: (role == Role::User).then_some(
-                    if m.get("role").and_then(Json::as_str) == Some("tool") {
-                        PromptKind::Harness
-                    } else {
-                        PromptKind::Prose
-                    },
-                ),
+                prompt_kind: (role == Role::User).then_some(if m.str("role") == Some("tool") {
+                    PromptKind::Harness
+                } else {
+                    PromptKind::Prose
+                }),
                 blocks,
                 usage: if is_output && place == n {
                     usage.clone()
                 } else {
                     Usage::default()
                 },
-                stop_reason: m
-                    .get("finish_reason")
-                    .and_then(Json::as_str)
-                    .map(str::to_owned),
+                stop_reason: m.str("finish_reason").map(str::to_owned),
                 reported_cost_usd: None,
                 duration_ms: match (is_output, span.start_ns, span.end_ns) {
                     (true, Some(a), Some(b)) if b >= a => Some((b - a) / 1_000_000),
@@ -397,14 +393,9 @@ fn tool_span(span: &Span, sid: &polylogue_model::SessionId, sink: &mut Sink<'_>)
 /// call responses; others kept whole.
 fn parts(m: &Json) -> Vec<Block> {
     let mut blocks = Vec::new();
-    for p in m
-        .get("parts")
-        .and_then(Json::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let text = || p.get("content").and_then(Json::as_str).map(str::to_owned);
-        match p.get("type").and_then(Json::as_str) {
+    for p in m.array("parts").into_iter().flatten() {
+        let text = || p.str("content").map(str::to_owned);
+        match p.str("type") {
             Some("text") => {
                 if let Some(t) = text() {
                     blocks.push(Block::Text { text: t });
@@ -418,8 +409,8 @@ fn parts(m: &Json) -> Vec<Block> {
             Some("tool_call") => blocks.push(Block::ToolCall {
                 written_text: None,
                 run_by_script: false,
-                call_id: p.get("id").and_then(Json::as_str).map(str::to_owned),
-                tool: p.get("name").and_then(Json::as_str).map(str::to_owned),
+                call_id: p.str("id").map(str::to_owned),
+                tool: p.str("name").map(str::to_owned),
                 action: ToolAction::Other,
                 input: p.get("arguments").cloned().unwrap_or(Json::Null),
                 command: None,
@@ -427,7 +418,7 @@ fn parts(m: &Json) -> Vec<Block> {
             }),
             Some("tool_call_response") => blocks.push(Block::ToolResult {
                 reported_duration_ms: None,
-                call_id: p.get("id").and_then(Json::as_str).map(str::to_owned),
+                call_id: p.str("id").map(str::to_owned),
                 outcome: ToolOutcome::Ok,
                 output: match p.get("response") {
                     Some(Json::String(s)) => Some(s.clone()),

@@ -10,9 +10,11 @@
 //! archive's staging folder and the copy is read. Nothing in the older
 //! archive's folder is written, renamed or deleted.
 
+use crate::ConnExt as _;
 use crate::input_rows::{Extent, ObservationRow, Revision};
 use crate::{Result, StoreError};
 use polylogue_model::BlobHash;
+use polylogue_model::hex;
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use std::collections::{BTreeMap, BTreeSet};
@@ -479,9 +481,7 @@ impl OlderArchive {
         }
         for name in ["embedded", "embed_failure"] {
             let n: i64 = match &self.embeddings {
-                Some(conn) => {
-                    conn.query_row(&format!("SELECT COUNT(*) FROM {name}"), [], |r| r.get(0))?
-                }
+                Some(conn) => conn.scalar(&format!("SELECT COUNT(*) FROM {name}"), [])?,
                 None => 0,
             };
             counts.insert(name.to_owned(), n as u64);
@@ -1125,10 +1125,6 @@ impl crate::read::Reader<'_> {
             .collect::<rusqlite::Result<_>>()?;
         Ok(StoredDeliveries { ids, events })
     }
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 pub(crate) fn json_value(value: ValueRef<'_>) -> serde_json::Value {

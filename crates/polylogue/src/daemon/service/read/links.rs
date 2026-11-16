@@ -113,12 +113,7 @@ impl<'r, 'a> Walk<'r, 'a> {
         starts: Vec<String>,
         place: &LinksPlace,
     ) -> Result<Self, Failure> {
-        let stale = || {
-            Failure::new(
-                "stale_cursor",
-                "the links changed since the cursor was issued",
-            )
-        };
+        let stale = || Failure::stale_cursor("the links changed since the cursor was issued");
         let mut walk = Self::start(reader, starts);
         let mut frames = place.frames.iter();
         let top = frames
@@ -401,11 +396,11 @@ pub(super) fn page(
         ..
     } = request;
     let format =
-        Format::parse(format).ok_or_else(|| Failure::new("bad_request", "unknown read format"))?;
+        Format::parse(format).ok_or_else(|| Failure::bad_request("unknown read format"))?;
     let mut limits = PageBudget::default();
     if let Some(tokens) = budget {
         limits.tokens = std::num::NonZeroU64::new(*tokens as u64)
-            .ok_or_else(|| Failure::new("bad_request", "read budget must be positive"))?;
+            .ok_or_else(|| Failure::bad_request("read budget must be positive"))?;
     }
     let digest = options_digest(&(options, format));
     let key = super::cursor_seal(reader)?;
@@ -424,20 +419,17 @@ pub(super) fn page(
                 .check(target, &digest)
                 .map_err(super::cursor_failure)?;
             if opened.rewritten(&graph_version) {
-                return Err(Failure::new(
-                    "stale_cursor",
+                return Err(Failure::stale_cursor(
                     "the relationships changed since the cursor was issued",
                 ));
             }
             let PagePosition::Links { place } = &opened.position else {
-                return Err(Failure::new(
-                    "invalid_query",
+                return Err(Failure::invalid_query(
                     "the cursor names no place in a links walk",
                 ));
             };
             if opened.direction == ReadDirection::Past {
-                return Err(Failure::new(
-                    "invalid_query",
+                return Err(Failure::invalid_query(
                     "a links reading continues forward or backward only",
                 ));
             }

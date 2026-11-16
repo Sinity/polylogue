@@ -6,28 +6,24 @@ pub mod index_rebuild;
 mod metadata;
 pub use metadata::Mode;
 
+use crate::ConnExt as _;
+use crate::OptionExt as _;
 use crate::{Result, StoreError, schema};
-use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction};
+use rusqlite::{Connection, OpenFlags, Transaction};
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 /// Increments the database's write counter; one value per transaction.
 pub(crate) fn bump_counter(tx: &Transaction<'_>) -> Result<i64> {
     let next: i64 = tx
-        .query_row(
+        .scalar_optional(
             "SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'write_counter'",
             [],
-            |r| r.get(0),
-        )
-        .optional()?
+        )?
         .unwrap_or(0_i64)
         .checked_add(1)
-        .ok_or_else(|| StoreError::Invalid("write counter exhausted".into()))?;
-    tx.execute(
-        "INSERT INTO meta(key, value) VALUES ('write_counter', ?1)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        [next.to_string()],
-    )?;
+        .or_invalid("write counter exhausted")?;
+    crate::meta_set(tx, "write_counter", next.to_string())?;
     Ok(next)
 }
 
@@ -147,20 +143,6 @@ impl Archive {
             catalog,
             layout,
         ))
-    }
-
-    /// The index file the build pipeline (the writer, its resolver and
-    /// parser-context reads, the engine's planning reads, tool-database
-    /// catalog reads) opens: the private build file while a standalone build
-    /// runs ([`index_build`]), otherwise `index.db`. Client-facing readers
-    /// open [`Archive::served_index`] instead.
-    pub fn index_db(&self) -> PathBuf {
-        let paths = index_build::Paths::of(&self.root);
-        if !self.is_primary() && self.index_build.building() {
-            paths.build
-        } else {
-            paths.index
-        }
     }
 
     pub fn embeddings_db(&self) -> PathBuf {
@@ -530,14 +512,12 @@ pub(crate) fn restart_full_log(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error.into()),
     };
-    let page: i64 = conn.query_row("PRAGMA main.page_size", [], |r| r.get(0))?;
+    let page: i64 = conn.scalar("PRAGMA main.page_size", [])?;
     if size <= limit.saturating_mul(page) as u64 {
         return Ok(false);
     }
     conn.busy_timeout(wait)?;
-    let busy = conn.query_row("PRAGMA main.wal_checkpoint(TRUNCATE)", [], |r| {
-        r.get::<_, i64>(0)
-    });
+    let busy = conn.scalar::<i64>("PRAGMA main.wal_checkpoint(TRUNCATE)", []);
     conn.busy_timeout(BUSY_TIMEOUT)?;
     Ok(busy? == 0)
 }

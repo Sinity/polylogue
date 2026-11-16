@@ -1,3 +1,4 @@
+use polylogue_model::JsonExt;
 use polylogue_model::{Block, ErrorReason, Json, ToolOutcome, UnknownReason};
 
 fn unknown() -> ToolOutcome {
@@ -43,9 +44,8 @@ pub(super) fn result(
     };
     let (outcome, diagnostic) = verdict(&data);
     let output = data
-        .get("output")
-        .and_then(Json::as_str)
-        .or_else(|| data.get("error").and_then(Json::as_str))
+        .str("output")
+        .or_else(|| data.str("error"))
         .map(str::to_owned);
     let mut blocks = vec![Block::ToolResult {
         reported_duration_ms: None,
@@ -90,7 +90,7 @@ fn verdict(data: &Json) -> (ToolOutcome, Option<&'static str>) {
             None => (unknown(), Some("status_field_unreadable")),
         };
     }
-    match data.get("status").and_then(Json::as_str) {
+    match data.str("status") {
         Some("success" | "unchanged") => (ToolOutcome::Ok, None),
         Some("error" | "not_found") => (ToolOutcome::Error { reason: None }, None),
         Some("timeout") => (

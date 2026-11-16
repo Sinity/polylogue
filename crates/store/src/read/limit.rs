@@ -1,6 +1,7 @@
 //! One request's clock and cancellation, shared by every reader it opens.
 use crate::cancellation::Cancellation;
 use crate::{Result, StoreError};
+use polylogue_model::LockExt;
 use rusqlite::Connection;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -69,21 +70,14 @@ impl ReadLimit {
     }
 
     pub fn stage(&self) -> Option<&'static str> {
-        self.stages
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .current
-            .map(|(name, _)| name)
+        self.stages.locked().current.map(|(name, _)| name)
     }
 
     /// Enters a named stage; the time since the previous stage began is added
     /// to that stage's total. Re-entering the current stage changes nothing.
     pub fn set_stage(stage: &'static str) {
         if let Some(limit) = Self::current() {
-            let mut stages = limit
-                .stages
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
+            let mut stages = limit.stages.locked();
             if stages.current.is_some_and(|(name, _)| name == stage) {
                 return;
             }
@@ -96,11 +90,7 @@ impl ReadLimit {
     /// Elapsed time per stage in first-entered order, the current stage
     /// counted up to now.
     pub fn stage_timings(&self) -> Vec<(&'static str, Duration)> {
-        let mut stages = self
-            .stages
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clone();
+        let mut stages = self.stages.locked().clone();
         stages.close(Instant::now());
         stages.totals
     }
@@ -111,10 +101,7 @@ impl ReadLimit {
 
     pub(crate) fn bind_scope(&self, scope: super::scope::ReadScopeToken) -> Result<()> {
         scope.check()?;
-        let mut scopes = self
-            .scopes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut scopes = self.scopes.locked();
         if !scopes.iter().any(|existing| existing.same(&scope)) {
             scopes.push(scope);
         }
@@ -128,12 +115,7 @@ impl ReadLimit {
     }
 
     pub fn check(&self) -> Result<()> {
-        for scope in self
-            .scopes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-        {
+        for scope in self.scopes.locked().iter() {
             scope.check()?;
         }
         self.cancellation.check()?;

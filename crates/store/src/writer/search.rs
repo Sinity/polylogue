@@ -3,6 +3,7 @@
 //! commit.
 
 use super::*;
+use polylogue_model::LockExt;
 
 /// The search thread's handle: it writes the entries in `search_pending`
 /// shortly after the writer commits them, in its own
@@ -25,9 +26,9 @@ impl Search {
         let seen = flag.clone();
         let turn = Arc::new(Mutex::new(()));
         let thread_turn = Arc::clone(&turn);
-        let handle = std::thread::Builder::new()
-            .name("polylogue-search".into())
-            .spawn(move || search_thread(&index_db, &seen, &rx, &thread_turn))?;
+        let handle = polylogue_model::spawn_named("polylogue-search", move || {
+            search_thread(&index_db, &seen, &rx, &thread_turn)
+        })?;
         Ok(Self {
             wake: Some(wake),
             ready: flag,
@@ -86,10 +87,7 @@ pub(super) fn search_thread(
             }
         }
         if let Some(c) = &conn
-            && let Err(e) = crate::text_rows::index_pending(c, || {
-                turn.lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-            })
+            && let Err(e) = crate::text_rows::index_pending(c, || turn.locked())
         {
             eprintln!("polylogue: search thread: {e}");
         }

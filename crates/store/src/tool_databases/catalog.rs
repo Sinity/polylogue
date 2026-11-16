@@ -1,4 +1,7 @@
 use super::*;
+use crate::ConnExt as _;
+use crate::OptionExt as _;
+use polylogue_model::JsonExt;
 
 /// The row-dump records whose comparison hashes commit with this step.
 #[derive(
@@ -14,20 +17,16 @@ impl Comparison {
     pub fn records(bytes: &[u8]) -> crate::Result<Self> {
         let mut out = Self::default();
         for line in bytes.split(|b| *b == b'\n').filter(|line| !line.is_empty()) {
-            let value: Value = serde_json::from_slice(line)
-                .map_err(|e| crate::StoreError::Invalid(e.to_string()))?;
+            let value: Value = serde_json::from_slice(line).map_err(crate::StoreError::invalid)?;
             if let Some(schema) = value.get("schema") {
                 out.schema =
                     Some(json!({"schema":schema,"table_metadata":value.get("table_metadata")}));
                 continue;
             }
-            let table = value
-                .get("t")
-                .and_then(Value::as_str)
-                .ok_or_else(|| crate::StoreError::Invalid("row dump record has no table".into()))?;
+            let table = value.str("t").or_invalid("row dump record has no table")?;
             let key = value
                 .get("k")
-                .ok_or_else(|| crate::StoreError::Invalid("row dump record has no key".into()))?
+                .or_invalid("row dump record has no key")?
                 .to_string();
             let hash = if value.get("gone") == Some(&Value::Bool(true)) {
                 None
@@ -58,13 +57,10 @@ impl Comparison {
         let length = i64::try_from(self.length).map_err(|_| {
             crate::StoreError::Invalid("database comparison exceeds archive address space".into())
         })?;
-        let previous: Option<i64> = conn
-            .query_row(
-                "SELECT length FROM tool_database WHERE input_pk=?1",
-                [input_pk],
-                |r| r.get(0),
-            )
-            .optional()?;
+        let previous: Option<i64> = conn.scalar_optional(
+            "SELECT length FROM tool_database WHERE input_pk=?1",
+            [input_pk],
+        )?;
         let previous = previous.map(u64::try_from).transpose().map_err(|_| {
             crate::StoreError::Invalid("negative database comparison length".into())
         })?;
@@ -180,12 +176,9 @@ impl Catalog {
 
 /// The header the archive's comparison state holds for `input`, if any.
 pub(super) fn recorded_schema(index: &Connection, input: &str) -> crate::Result<Option<Value>> {
-    let schema: Option<String> = index
-        .query_row(
-            "SELECT t.schema FROM tool_database t JOIN input_ref i ON i.pk=t.input_pk WHERE i.id=?1",
-            [input],
-            |r| r.get(0),
-        )
-        .optional()?;
+    let schema: Option<String> = index.scalar_optional(
+        "SELECT t.schema FROM tool_database t JOIN input_ref i ON i.pk=t.input_pk WHERE i.id=?1",
+        [input],
+    )?;
     Ok(schema.map(|s| serde_json::from_str(&s)).transpose()?)
 }

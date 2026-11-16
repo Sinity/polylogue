@@ -12,7 +12,7 @@ pub(super) fn visit(
     visit: &mut dyn FnMut(&PendingAuthored) -> polylogue_store::Result<()>,
 ) -> Result<()> {
     let Ingress::Material { material, .. } = queue.decode_frame(&entry.identity)? else {
-        return Err(Error::Invalid("authored intent has no material".into()));
+        return Err(Error::invalid("authored intent has no material"));
     };
     match material.parser.as_str() {
         "polylogue-request" => {
@@ -30,8 +30,8 @@ pub(super) fn visit(
                         PendingAuthored::RestoreAssertion { fact }
                     }
                     _ => {
-                        return Err(Error::Invalid(
-                            "non-restoration product in authored restore frame".into(),
+                        return Err(Error::invalid(
+                            "non-restoration product in authored restore frame",
                         ));
                     }
                 };
@@ -39,6 +39,6 @@ pub(super) fn visit(
             }
             Ok(())
         }
-        _ => Err(Error::Invalid("unknown authored material parser".into())),
+        _ => Err(Error::invalid("unknown authored material parser")),
     }
 }

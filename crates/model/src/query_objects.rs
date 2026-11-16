@@ -313,6 +313,7 @@ impl RunBinding {
             Self::OriginalObject { .. } => None,
         }
     }
+    #[cfg(any(test, feature = "fixture"))]
     pub fn original_mut(&mut self) -> Option<&mut ExecutionBinding> {
         match self {
             Self::Original { execution } => Some(execution),

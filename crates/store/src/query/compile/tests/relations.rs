@@ -212,7 +212,11 @@ fn historical_read_positions_refuse_without_substituting_current_membership() {
         "sessions | group by repo | as of seq 42",
     ] {
         let error = compile(text, &opts(&[])).unwrap_err();
-        assert_eq!(error.kind(), "not_yet_available", "{text}: {error}");
+        assert_eq!(
+            error.kind(),
+            polylogue_model::Code::NotYetAvailable,
+            "{text}: {error}"
+        );
         assert!(error.to_string().contains("seen_by:"), "{error}");
     }
 }

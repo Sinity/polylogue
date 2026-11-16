@@ -127,8 +127,7 @@ impl Context {
     ) -> Result<Self, Failure> {
         let observed_at =
             Timestamp::from_unix_ns(policy.observed_at.unix_ns()).ok_or_else(|| {
-                Failure::new(
-                    "primary_context_invalid",
+                Failure::primary_context_invalid(
                     "the Sinex observation time is outside the supported range",
                 )
             })?;
@@ -203,8 +202,7 @@ impl Context {
     /// Only an authenticated evaluation clock may be replayed; capture time stays current.
     pub fn replay_clock(&self, clock: Clock) -> Result<Self, Failure> {
         if clock.day != self.clock.day {
-            return Err(Failure::new(
-                "stale_cursor",
+            return Err(Failure::stale_cursor(
                 "the logical day setting changed since this cursor was issued",
             ));
         }

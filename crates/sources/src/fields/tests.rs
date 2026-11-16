@@ -15,13 +15,14 @@ fn unused_leaf_counted_below_declared_containers_and_unknown_arrays() {
         ],
     );
     assert_eq!(
-        unaccounted(
+        inspect(
             &json!({
                 "message":{"content":[{"text":"a","future":{"x":1}},{"text":"b","future":{"x":2}}]},
                 "saved":{"nested":[1,2]},"ignored":{"reason":true},"unknown":[[3],{"leaf":4}]
             }),
             &FIELDS
-        ),
+        )
+        .unused,
         [
             "ignored.reason",
             "message.content[].future.x",
@@ -46,14 +47,14 @@ fn kept_attributes_copy_wire_values_not_unknown_siblings() {
         )
         .unwrap()
     );
-    assert_eq!(unaccounted(&source, &FIELDS), ["message.other.x"]);
+    assert_eq!(inspect(&source, &FIELDS).unused, ["message.other.x"]);
 }
 
 #[test]
 fn empty_containers_and_null_are_values_at_their_own_paths() {
     static FIELDS: Fields = Fields::new("record", &[("read", Rule::Read(T::String))]);
     assert_eq!(
-        unaccounted(&json!({"a":[],"b":{},"c":null,"read":[]}), &FIELDS),
+        inspect(&json!({"a":[],"b":{},"c":null,"read":[]}), &FIELDS).unused,
         ["a", "b", "c"]
     );
 }
@@ -66,7 +67,7 @@ fn declaration_lookup_is_shared_by_parsing_threads() {
             .map(|_| {
                 scope.spawn(|| {
                     assert_eq!(
-                        unaccounted(&json!({"a":[{"x":1,"y":2}]}), &FIELDS),
+                        inspect(&json!({"a":[{"x":1,"y":2}]}), &FIELDS).unused,
                         ["a[].y"]
                     );
                     FIELDS.compiled() as *const _ as usize
@@ -141,7 +142,7 @@ fn literal_keys_do_not_impersonate_declared_nested_or_array_paths() {
         ],
     );
     let source = json!({"a.b":1,"a":{"b":2},"list[].n":3,"list":[{"n":4}]});
-    assert_eq!(unaccounted(&source, &FIELDS), ["a.b", "list[].n"]);
+    assert_eq!(inspect(&source, &FIELDS).unused, ["a.b", "list[].n"]);
     let observed = inspect(&source, &FIELDS);
     assert!(observed.shapes["/a.b"].expected.is_empty());
     assert_eq!(observed.shapes["/a/b"].expected, ["null", "number"]);

@@ -95,9 +95,7 @@ pub(crate) fn prune_sessions(
         AND NOT EXISTS(SELECT 1 FROM event_source e WHERE e.session_pk=s.pk)
         AND NOT EXISTS(SELECT 1 FROM link l WHERE l.child_id=s.id OR l.parent_id=s.id)",
         )?
-        .query_map(params![input, chain], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
-        })?
+        .query_map(params![input, chain], |r| <(i64, String)>::try_from(r))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for (pk, id) in sessions {
         crate::session_row::remove(tx, pk, &id, counter)?;

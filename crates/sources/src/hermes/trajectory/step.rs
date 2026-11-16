@@ -1,11 +1,12 @@
 //! ATIF step text and actions, as document blocks. A step's role is kept as
 //! written; it does not say a model wrote the text or read it.
+use polylogue_model::JsonExt;
 use polylogue_model::{Attachment, AttachmentDirection, Block, Json, ToolOutcome, UnknownReason};
 
 pub(super) fn blocks(step: &Json) -> (Vec<Block>, Vec<&'static str>) {
     let mut out = Vec::new();
     let mut limits = Vec::new();
-    if let Some(text) = step.get("reasoning_content").and_then(Json::as_str) {
+    if let Some(text) = step.str("reasoning_content") {
         out.push(Block::Thinking {
             text: Some(text.into()),
             signature: None,
@@ -37,7 +38,7 @@ pub(super) fn blocks(step: &Json) -> (Vec<Block>, Vec<&'static str>) {
                             .or_else(|| args.get("cmd"))
                             .and_then(Json::as_str)
                             .map(str::to_owned),
-                        path: args.get("path").and_then(Json::as_str).map(str::to_owned),
+                        path: args.str("path").map(str::to_owned),
                     });
                 } else {
                     limits.push("tool call requires textual IDs/name and object arguments; original call kept");
@@ -52,7 +53,7 @@ pub(super) fn blocks(step: &Json) -> (Vec<Block>, Vec<&'static str>) {
         }
     }
     if let Some(observation) = step.get("observation").filter(|v| !v.is_null()) {
-        if let Some(results) = observation.get("results").and_then(Json::as_array) {
+        if let Some(results) = observation.array("results") {
             for result in results {
                 let Some(fields) = result.as_object() else {
                     limits.push("observation result is not an object; original result kept");
@@ -96,10 +97,7 @@ pub(super) fn blocks(step: &Json) -> (Vec<Block>, Vec<&'static str>) {
 }
 
 fn nonempty_str<'a>(value: &'a Json, field: &str) -> Option<&'a str> {
-    value
-        .get(field)
-        .and_then(Json::as_str)
-        .filter(|s| !s.is_empty())
+    value.str(field).filter(|s| !s.is_empty())
 }
 
 fn content(value: &Json, blocks: &mut Vec<Block>, limits: &mut Vec<&'static str>) {
@@ -107,8 +105,8 @@ fn content(value: &Json, blocks: &mut Vec<Block>, limits: &mut Vec<&'static str>
         blocks.push(Block::Text { text: text.into() });
     } else if let Some(parts) = value.as_array() {
         for part in parts {
-            if part.get("type").and_then(Json::as_str) == Some("text")
-                && let Some(text) = part.get("text").and_then(Json::as_str)
+            if part.str("type") == Some("text")
+                && let Some(text) = part.str("text")
             {
                 blocks.push(Block::Text { text: text.into() });
             } else if let Some(image) = image(part) {
@@ -131,7 +129,7 @@ fn content(value: &Json, blocks: &mut Vec<Block>, limits: &mut Vec<&'static str>
 }
 
 fn image(value: &Json) -> Option<Attachment> {
-    if value.get("type").and_then(Json::as_str) != Some("image") {
+    if value.str("type") != Some("image") {
         return None;
     }
     let source = value.get("source")?;
@@ -156,8 +154,8 @@ fn result_content(
             let mut text = String::new();
             let mut images = Vec::new();
             for part in parts {
-                if part.get("type").and_then(Json::as_str) == Some("text")
-                    && let Some(value) = part.get("text").and_then(Json::as_str)
+                if part.str("type") == Some("text")
+                    && let Some(value) = part.str("text")
                 {
                     text.push_str(value);
                 } else if let Some(image) = image(part) {

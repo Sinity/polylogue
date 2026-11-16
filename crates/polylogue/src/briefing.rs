@@ -245,24 +245,33 @@ impl LastBrief {
     }
 }
 
+pub struct BriefContext<'a, 'reader> {
+    pub reader: &'a Reader<'reader>,
+    pub delivery_id: &'a str,
+    pub context: &'a std::sync::Arc<crate::operation::Context>,
+    pub ranking_identity: Option<&'a str>,
+    pub near: Option<&'a NearFn<'a>>,
+}
+
 /// Prepares the context `ask` wants. `delivery_id` goes in the text, so a
 /// reader of the transcript can find the delivery record. `scope` is the
 /// daemon's scope index; `queued` is the latest delivered brief to the
 /// ask's recipient whose delivery record the writer has not committed yet. `near`
 /// ranks a recall by similarity when vectors exist.
-#[allow(clippy::too_many_arguments)]
 pub fn prepare(
-    reader: &Reader<'_>,
+    brief: BriefContext<'_, '_>,
     scope: &SharedScopeIndex,
     queued: Option<LastBrief>,
     pending_advice: &[Vec<String>],
     ask: &Ask,
-    delivery_id: &str,
-    context: &std::sync::Arc<crate::operation::Context>,
-    ranking_identity: Option<&str>,
-    near: Option<&NearFn<'_>>,
     budget_tokens: command_surface::TokenBudget,
 ) -> Result<Prepared, StoreError> {
+    let BriefContext {
+        reader,
+        delivery_id,
+        context,
+        ..
+    } = brief;
     let budget = budget_tokens
         .resolve(Some(ask.default_budget_tokens()))
         .map_or(u64::MAX, u64::from);
@@ -272,15 +281,13 @@ pub fn prepare(
             session,
             source,
         } => session_start(
-            reader,
+            &brief,
             scope,
             queued,
             cwd,
             session.as_ref(),
             *source,
             budget,
-            delivery_id,
-            context,
         ),
         Ask::Advisory {
             prompt,
@@ -299,17 +306,7 @@ pub fn prepare(
         Ask::Takeover { session, .. } => takeover(reader, session, budget, delivery_id, context),
         Ask::Recall {
             text, cwd, cursor, ..
-        } => recall(
-            reader,
-            text,
-            cwd.as_deref(),
-            cursor.as_deref(),
-            budget,
-            delivery_id,
-            context,
-            ranking_identity,
-            near,
-        ),
+        } => recall(&brief, text, cwd.as_deref(), cursor.as_deref(), budget),
     }
 }
 /// Notes a brief carries: the operator's, and agents' the operator
@@ -1092,18 +1089,21 @@ fn session_item(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn session_start(
-    reader: &Reader<'_>,
+    brief: &BriefContext<'_, '_>,
     scope: &SharedScopeIndex,
     queued: Option<LastBrief>,
     cwd: &Path,
     session: Option<&SessionId>,
     source: StartSource,
     budget: u64,
-    delivery_id: &str,
-    context: &std::sync::Arc<crate::operation::Context>,
 ) -> Result<Prepared, StoreError> {
+    let BriefContext {
+        reader,
+        delivery_id,
+        context,
+        ..
+    } = *brief;
     let now: Timestamp = context.clock.now.into();
     let dirs = scope_dirs(cwd);
     let here = cwd.display().to_string();
@@ -1644,18 +1644,20 @@ fn recall_query(
     Some((query, lists.iter().map(|(name, _)| *name).collect()))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn recall(
-    reader: &Reader<'_>,
+    brief: &BriefContext<'_, '_>,
     text_in: &str,
     cwd: Option<&Path>,
     cursor: Option<&str>,
     budget: u64,
-    delivery_id: &str,
-    context: &std::sync::Arc<crate::operation::Context>,
-    ranking_identity: Option<&str>,
-    near: Option<&NearFn<'_>>,
 ) -> Result<Prepared, StoreError> {
+    let BriefContext {
+        reader,
+        delivery_id,
+        context,
+        ranking_identity,
+        near,
+    } = *brief;
     let words = search::words(text_in);
     let text = text_in.trim();
     let directory = cwd.and_then(|c| scope_dirs(c).pop());

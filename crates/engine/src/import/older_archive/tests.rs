@@ -60,9 +60,7 @@ fn rows(conn: &rusqlite::Connection, sql: &str) -> Vec<Vec<String>> {
                         rusqlite::types::ValueRef::Text(t) => {
                             String::from_utf8_lossy(t).into_owned()
                         }
-                        rusqlite::types::ValueRef::Blob(b) => {
-                            b.iter().map(|b| format!("{b:02x}")).collect()
-                        }
+                        rusqlite::types::ValueRef::Blob(b) => polylogue_model::hex(b),
                     })
                 })
                 .collect()
@@ -656,7 +654,7 @@ fn a_refused_input_is_set_aside_with_every_row_and_its_stored_bytes() {
         .iter()
         .find(|line| line["row"]["place"] == "file")
         .unwrap();
-    let hex: String = damaged.iter().map(|b| format!("{b:02x}")).collect();
+    let hex: String = polylogue_model::hex(&damaged);
     assert_eq!(file["file_hex"], hex.as_str());
     assert!(
         blobs

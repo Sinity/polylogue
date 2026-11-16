@@ -15,6 +15,7 @@
 //! ancestors (the Python rule). Images and files the export stores
 //! separately are referred to by their asset pointer and file ID.
 
+use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 2;
 
@@ -22,7 +23,7 @@ use crate::fields::ExpectedType as T;
 pub mod assets;
 
 use crate::RecordOutcome;
-use crate::document::{Sink, message_id, session_id, str_of, string_of, time_of};
+use crate::document::{Sink, message_id, session_id, time_of};
 use crate::fields::{Fields, Rule};
 use crate::parse::{MessageRow, Parse};
 use polylogue_model::{
@@ -235,7 +236,11 @@ fn conversation_with_sessions(
         );
         return Ok(());
     }
-    let Some(native) = str_of(conv, "conversation_id").or_else(|| str_of(conv, "id")) else {
+    let Some(native) = conv
+        .str("conversation_id")
+        .filter(|s| !s.is_empty())
+        .or_else(|| conv.str("id").filter(|s| !s.is_empty()))
+    else {
         sink.records.record(
             "conversation",
             &RecordOutcome::unreadable("no conversation ID"),
@@ -249,14 +254,14 @@ fn conversation_with_sessions(
         );
         return Ok(());
     };
-    let Some(mapping) = conv.get("mapping").and_then(Json::as_object) else {
+    let Some(mapping) = conv.object("mapping") else {
         sink.records
             .record("conversation", &RecordOutcome::unreadable("no mapping"));
         return Ok(());
     };
 
     let mut session = Session::new(sid.clone(), SessionKind::Main);
-    if let Some(title) = str_of(conv, "title") {
+    if let Some(title) = conv.str("title").filter(|s| !s.is_empty()) {
         session.offer_title(title, TitleSource::Generated);
     }
     if let Some(at) = conv.get("create_time").and_then(time_of) {
@@ -296,7 +301,10 @@ fn conversation_with_sessions(
     );
     let tree = Tree::new(mapping);
     let places = tree.places();
-    let default_model = string_of(conv, "default_model_slug");
+    let default_model = conv
+        .str("default_model_slug")
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
     let mut rows: Vec<(f64, usize, Message)> = Vec::new();
     let mut nodes: Vec<(&String, &Json)> = mapping.iter().collect();
     nodes.sort_by_key(|(id, _)| places.get(id.as_str()).copied());
@@ -392,7 +400,10 @@ fn conversation_with_sessions(
         });
     }
 
-    if let Some(leaf) = str_of(conv, "current_node").and_then(|n| tree.nearest_message(n))
+    if let Some(leaf) = conv
+        .str("current_node")
+        .filter(|s| !s.is_empty())
+        .and_then(|n| tree.nearest_message(n))
         && let Some(id) = message_id(ORIGIN, &leaf)
     {
         sink.out.events.push({
@@ -424,7 +435,7 @@ impl<'a> Tree<'a> {
     }
 
     fn parent(&self, node: &str) -> Option<&'a str> {
-        self.nodes.get(node)?.get("parent")?.as_str()
+        self.nodes.get(node)?.str("parent")
     }
 
     /// Each node's place in a walk from the roots through every node's
@@ -446,12 +457,7 @@ impl<'a> Tree<'a> {
                     continue;
                 }
                 place.insert(n, place.len());
-                if let Some(children) = self
-                    .nodes
-                    .get(n)
-                    .and_then(|v| v.get("children"))
-                    .and_then(Json::as_array)
-                {
+                if let Some(children) = self.nodes.get(n).and_then(|v| v.array("children")) {
                     stack.extend(
                         children
                             .iter()
@@ -474,8 +480,9 @@ impl<'a> Tree<'a> {
         let n = self.nodes.get(node)?;
         let msg = n.get("message").filter(|m| !m.is_null())?;
         Some(
-            str_of(msg, "id")
-                .or_else(|| str_of(n, "id"))
+            msg.str("id")
+                .filter(|s| !s.is_empty())
+                .or_else(|| n.str("id").filter(|s| !s.is_empty()))
                 .unwrap_or(node)
                 .to_owned(),
         )
@@ -543,18 +550,18 @@ fn message(
         .pointer("/author/role")
         .and_then(Json::as_str)
         .ok_or_else(|| RecordOutcome::unreadable("no author role"))?;
-    let native = str_of(msg, "id").unwrap_or(node_id);
+    let native = msg.str("id").filter(|s| !s.is_empty()).unwrap_or(node_id);
     let id = message_id(ORIGIN, native).ok_or_else(|| RecordOutcome::unreadable("unusable ID"))?;
     let meta = msg.get("metadata").unwrap_or(&Json::Null);
-    let recipient = str_of(msg, "recipient").filter(|r| *r != "all");
+    let recipient = msg
+        .str("recipient")
+        .filter(|s| !s.is_empty())
+        .filter(|r| *r != "all");
 
     let (role, prompt_kind) = match role_name {
         "user" => {
-            let hidden = meta
-                .get("is_visually_hidden_from_conversation")
-                .and_then(Json::as_bool)
-                == Some(true)
-                || meta.get("is_user_system_message").and_then(Json::as_bool) == Some(true);
+            let hidden = meta.bool("is_visually_hidden_from_conversation") == Some(true)
+                || meta.bool("is_user_system_message") == Some(true);
             (
                 Role::User,
                 Some(if hidden {
@@ -622,11 +629,20 @@ fn message(
 
     // The model that answered, else the message's default, else the
     // conversation's.
-    let model = string_of(meta, "model_slug").or_else(|| {
-        (role == Role::Assistant && recipient.is_none())
-            .then(|| string_of(meta, "default_model_slug").or(default_model.map(str::to_owned)))
-            .flatten()
-    });
+    let model = meta
+        .str("model_slug")
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            (role == Role::Assistant && recipient.is_none())
+                .then(|| {
+                    meta.str("default_model_slug")
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                        .or(default_model.map(str::to_owned))
+                })
+                .flatten()
+        });
     Ok({
         let (at, time_evidence) = crate::time::parts(msg.get("create_time").and_then(time_of));
         Message {
@@ -677,26 +693,34 @@ fn message_attrs(msg: &Json) -> serde_json::Map<String, Json> {
 
 /// The request settings ChatGPT recorded beside a response.
 fn production(meta: &Json) -> polylogue_model::Production {
-    let answered = str_of(meta, "model_slug");
+    let answered = meta.str("model_slug").filter(|s| !s.is_empty());
     polylogue_model::Production {
-        effort: string_of(meta, "thinking_effort"),
-        requested_model: str_of(meta, "requested_model_slug")
+        effort: meta
+            .str("thinking_effort")
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
+        requested_model: meta
+            .str("requested_model_slug")
+            .filter(|s| !s.is_empty())
             .filter(|r| Some(*r) != answered)
             .map(str::to_owned),
-        request: string_of(meta, "request_id"),
+        request: meta
+            .str("request_id")
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
         ..Default::default()
     }
 }
 
 /// Text of a content object, for the content types that carry one.
 fn content_text(content: &Json) -> Option<String> {
-    if let Some(parts) = content.get("parts").and_then(Json::as_array) {
+    if let Some(parts) = content.array("parts") {
         let text: Vec<&str> = parts.iter().filter_map(Json::as_str).collect();
         let joined = text.join("\n");
         return (!joined.is_empty()).then_some(joined);
     }
     for key in ["text", "result", "content"] {
-        if let Some(t) = str_of(content, key) {
+        if let Some(t) = content.str(key).filter(|s| !s.is_empty()) {
             return Some(t.to_owned());
         }
     }
@@ -704,10 +728,7 @@ fn content_text(content: &Json) -> Option<String> {
 }
 
 fn content_type(content: &Json) -> &str {
-    content
-        .get("content_type")
-        .and_then(Json::as_str)
-        .unwrap_or("")
+    content.str("content_type").unwrap_or("")
 }
 
 /// The blocks of a message that is neither a tool call nor a result.
@@ -720,12 +741,7 @@ fn content_blocks(content: &Json, direction: AttachmentDirection) -> Vec<Block> 
             }
         }
         "multimodal_text" => {
-            for part in content
-                .get("parts")
-                .and_then(Json::as_array)
-                .into_iter()
-                .flatten()
-            {
+            for part in content.array("parts").into_iter().flatten() {
                 if let Some(text) = part.as_str() {
                     if !text.is_empty() {
                         blocks.push(Block::Text {
@@ -738,7 +754,7 @@ fn content_blocks(content: &Json, direction: AttachmentDirection) -> Vec<Block> 
             }
         }
         "thoughts" => {
-            let thoughts = content.get("thoughts").and_then(Json::as_array);
+            let thoughts = content.array("thoughts");
             if thoughts.is_none()
                 && let Some(text) = content_text(content)
             {
@@ -750,8 +766,8 @@ fn content_blocks(content: &Json, direction: AttachmentDirection) -> Vec<Block> 
                 });
             }
             for thought in thoughts.into_iter().flatten() {
-                let summary = str_of(thought, "summary");
-                let body = str_of(thought, "content");
+                let summary = thought.str("summary").filter(|s| !s.is_empty());
+                let body = thought.str("content").filter(|s| !s.is_empty());
                 let text = match (summary, body) {
                     (Some(s), Some(b)) => Some(format!("{s}\n\n{b}")),
                     (s, b) => s.or(b).map(str::to_owned),
@@ -776,7 +792,7 @@ fn content_blocks(content: &Json, direction: AttachmentDirection) -> Vec<Block> 
             // Custom instructions, sent as a hidden system message.
             let parts: Vec<String> = ["user_profile", "user_instructions"]
                 .iter()
-                .filter_map(|k| string_of(content, k))
+                .filter_map(|k| content.str(k).filter(|s| !s.is_empty()).map(str::to_owned))
                 .collect();
             if !parts.is_empty() {
                 blocks.push(Block::Text {
@@ -794,10 +810,7 @@ fn content_blocks(content: &Json, direction: AttachmentDirection) -> Vec<Block> 
 
 /// One non-text part of a multimodal message.
 fn part_block(part: &Json, direction: AttachmentDirection) -> Block {
-    let kind = part
-        .get("content_type")
-        .and_then(Json::as_str)
-        .unwrap_or("");
+    let kind = part.str("content_type").unwrap_or("");
     match kind {
         // A media part whose pointer is missing names no file to attach.
         k if k.ends_with("asset_pointer") && part.get("asset_pointer").is_none() => Block::Other {
@@ -805,7 +818,11 @@ fn part_block(part: &Json, direction: AttachmentDirection) -> Block {
             data: part.clone(),
         },
         "image_asset_pointer" => Block::Image(asset(part, direction)),
-        "audio_transcription" => match string_of(part, "text") {
+        "audio_transcription" => match part
+            .str("text")
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+        {
             Some(text) => Block::Text { text },
             None => Block::Other {
                 type_name: kind.to_owned(),
@@ -824,15 +841,21 @@ fn part_block(part: &Json, direction: AttachmentDirection) -> Block {
 /// `sediment://…`). The pointer's last segment is the file ID the
 /// export's asset files are named by.
 fn asset(part: &Json, direction: AttachmentDirection) -> Attachment {
-    let pointer = string_of(part, "asset_pointer");
+    let pointer = part
+        .str("asset_pointer")
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
     let source_id = pointer
         .as_deref()
         .and_then(|p| p.rsplit('/').next())
         .map(str::to_owned);
     Attachment {
         name: None,
-        media_type: string_of(part, "mime_type"),
-        size: part.get("size_bytes").and_then(Json::as_u64),
+        media_type: part
+            .str("mime_type")
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
+        size: part.u64("size_bytes"),
         blob: None,
         url: pointer,
         source_id,
@@ -844,19 +867,22 @@ fn asset(part: &Json, direction: AttachmentDirection) -> Attachment {
 /// made (`ada_visualizations`).
 fn metadata_attachments(meta: &Json, direction: AttachmentDirection) -> Vec<Block> {
     let mut out = Vec::new();
-    for a in meta
-        .get("attachments")
-        .and_then(Json::as_array)
-        .into_iter()
-        .flatten()
-    {
+    for a in meta.array("attachments").into_iter().flatten() {
         let attachment = Attachment {
-            name: string_of(a, "name"),
-            media_type: string_of(a, "mime_type").or_else(|| string_of(a, "mimeType")),
-            size: a.get("size").and_then(Json::as_u64),
+            name: a.str("name").filter(|s| !s.is_empty()).map(str::to_owned),
+            media_type: a
+                .str("mime_type")
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .or_else(|| {
+                    a.str("mimeType")
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                }),
+            size: a.u64("size"),
             blob: None,
             url: None,
-            source_id: string_of(a, "id"),
+            source_id: a.str("id").filter(|s| !s.is_empty()).map(str::to_owned),
             direction,
         };
         let image = attachment
@@ -869,15 +895,14 @@ fn metadata_attachments(meta: &Json, direction: AttachmentDirection) -> Vec<Bloc
             Block::File(attachment)
         });
     }
-    for v in meta
-        .get("ada_visualizations")
-        .and_then(Json::as_array)
-        .into_iter()
-        .flatten()
-    {
-        if let Some(id) = string_of(v, "file_id") {
+    for v in meta.array("ada_visualizations").into_iter().flatten() {
+        if let Some(id) = v
+            .str("file_id")
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+        {
             out.push(Block::File(Attachment {
-                name: string_of(v, "title"),
+                name: v.str("title").filter(|s| !s.is_empty()).map(str::to_owned),
                 source_id: Some(id),
                 direction: AttachmentDirection::Output,
                 ..Attachment::default()
@@ -944,8 +969,7 @@ fn tool_result(
         attachments.push(asset(shot, direction));
     }
     for part in content
-        .get("parts")
-        .and_then(Json::as_array)
+        .array("parts")
         .into_iter()
         .flatten()
         .filter(|p| p.is_object())
@@ -991,7 +1015,7 @@ fn outcome(kind: &str, msg: &Json, meta: &Json) -> ToolOutcome {
             };
         }
     }
-    match str_of(msg, "status") {
+    match msg.str("status").filter(|s| !s.is_empty()) {
         Some("finished_successfully") => ToolOutcome::Ok,
         None => ToolOutcome::Unknown {
             reason: UnknownReason::StatusFieldUnreadable,

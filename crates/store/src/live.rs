@@ -13,6 +13,7 @@
 //! instant may arrive in any order, and a line stored again must not count
 //! twice. Both paths give the same rows.
 
+use crate::ConnExt as _;
 use crate::Result;
 use polylogue_model::Json;
 use polylogue_model::live::{self, LiveFacts, LiveInterval};
@@ -27,7 +28,7 @@ pub(crate) const LIVE_EVENT_KINDS: &str = "(kind LIKE 'hook~_%' ESCAPE '~' \
 fn load(tx: &Transaction<'_>, session_pk: i64) -> Result<(LiveFacts, Option<i64>)> {
     let (facts, last): (Option<String>, Option<i64>) = tx
         .prepare_cached("SELECT live_facts, live_last_at FROM session WHERE pk = ?1")?
-        .query_row([session_pk], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_row([session_pk], |r| <(_, _)>::try_from(r))
         .optional()?
         .unwrap_or((None, None));
     let facts = match facts {
@@ -181,13 +182,7 @@ pub(crate) fn recompute_live(
          WHERE e.session_pk = ?1 AND e.at IS NOT NULL AND {LIVE_EVENT_KINDS}
          ORDER BY e.at, i.id, e.source_start, e.id"
     ))?;
-    let rows = statement.query_map([session_pk], |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, i64>(1)?,
-            r.get::<_, Vec<u8>>(2)?,
-        ))
-    })?;
+    let rows = statement.query_map([session_pk], |r| <(String, i64, Vec<u8>)>::try_from(r))?;
     let mut events = Vec::new();
     for row in rows {
         let (kind, at, data) = row?;
@@ -348,7 +343,7 @@ impl crate::Reader<'_> {
                 now - live::STALE_FOR_MS - live::LIVE_WINDOW_MS,
                 now - live::LIVE_WINDOW_MS - 1
             ],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?)),
+            |r| <(String, Option<i64>)>::try_from(r),
         )?;
         let mut out = Vec::new();
         for row in rows {
@@ -373,14 +368,7 @@ impl crate::Reader<'_> {
                 now - live::STALE_FOR_MS - live::LIVE_WINDOW_MS,
                 now - live::LIVE_WINDOW_MS - 1
             ],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, Option<String>>(1)?,
-                    r.get::<_, Option<i64>>(2)?,
-                    r.get::<_, Option<String>>(3)?,
-                ))
-            },
+            |r| <(String, Option<String>, Option<i64>, Option<String>)>::try_from(r),
         )?;
         let mut out = Vec::new();
         for row in rows {
@@ -421,11 +409,7 @@ impl crate::Reader<'_> {
         let found = conn
             .prepare_cached("SELECT live_facts, last_activity_at, cwd FROM session WHERE id = ?1")?
             .query_row([session], |r| {
-                Ok((
-                    r.get::<_, Option<String>>(0)?,
-                    r.get::<_, Option<i64>>(1)?,
-                    r.get::<_, Option<String>>(2)?,
-                ))
+                <(Option<String>, Option<i64>, Option<String>)>::try_from(r)
             })
             .optional()?;
         let Some((facts, grew_at, cwd)) = found else {
@@ -451,14 +435,7 @@ impl crate::Reader<'_> {
                 "SELECT s.pk, s.live_facts, s.last_activity_at, {peers} FROM session s WHERE s.id = ?1",
                 peers = sessions_peers(&aliases, now)
             ))?
-            .query_row([session], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, Option<String>>(1)?,
-                    r.get::<_, Option<i64>>(2)?,
-                    r.get::<_, Option<String>>(3)?,
-                ))
-            })
+            .query_row([session], |r| <(i64, Option<String>, Option<i64>, Option<String>)>::try_from(r))
             .optional()?;
         let Some((pk, facts, grew_at, peers)) = found else {
             return Ok(None);
@@ -506,11 +483,9 @@ impl crate::Reader<'_> {
     /// follower that last looked at `after` needs to look at again.
     pub fn sessions_changed_after(&self, after: i64) -> Result<(i64, BTreeSet<String>)> {
         let conn = self.conn()?;
-        let now = conn.query_row(
+        let now = conn.scalar(
             "SELECT COALESCE((SELECT CAST(value AS INTEGER) FROM main.meta WHERE key='write_counter'),0)",
-            [],
-            |r| r.get(0),
-        )?;
+            [])?;
         let changed = conn
             .prepare_cached(
                 "SELECT id FROM session WHERE changed > ?1
@@ -535,11 +510,7 @@ impl crate::Reader<'_> {
         let found = conn
             .prepare_cached("SELECT pk, live_facts, last_activity_at FROM session WHERE id = ?1")?
             .query_row([session], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, Option<String>>(1)?,
-                    r.get::<_, Option<i64>>(2)?,
-                ))
+                <(i64, Option<String>, Option<i64>)>::try_from(r)
             })
             .optional()?;
         let Some((pk, facts, grew_at)) = found else {
@@ -591,14 +562,7 @@ impl crate::Reader<'_> {
         )?;
         let rows = statement.query_map(
             params![now - live::STALE_FOR_MS - live::LIVE_WINDOW_MS],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, Option<i64>>(2)?,
-                    r.get::<_, String>(3)?,
-                ))
-            },
+            |r| <(String, String, Option<i64>, String)>::try_from(r),
         )?;
         let mut out = Vec::new();
         for row in rows {
@@ -629,8 +593,7 @@ impl crate::Reader<'_> {
                AND json_extract(live_facts, '$.root_gone_at') IS NULL
                AND json_extract(live_facts, '$.ended_at') IS NULL",
         )?;
-        let rows =
-            statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let rows = statement.query_map([], |r| <(String, String)>::try_from(r))?;
         let mut out = Vec::new();
         for row in rows {
             let (session, facts) = row?;

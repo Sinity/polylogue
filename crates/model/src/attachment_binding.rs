@@ -119,14 +119,9 @@ pub struct AttachmentSlot {
 /// The unresolved attachments of a message's blocks. `ordinals[i]` is the
 /// original ordinal of `blocks[i]`.
 pub fn attachment_slots(blocks: &[crate::Block], ordinals: &[u64]) -> Vec<AttachmentSlot> {
-    use crate::Block;
     let mut slots = Vec::new();
     for (block, ordinal) in blocks.iter().zip(ordinals) {
-        let attachments: &[crate::Attachment] = match block {
-            Block::Image(attachment) | Block::File(attachment) => std::slice::from_ref(attachment),
-            Block::ToolResult { attachments, .. } => attachments,
-            _ => &[],
-        };
+        let attachments = block.attachments();
         for (index, attachment) in attachments.iter().enumerate() {
             if attachment.blob.is_none()
                 && let Some(source_id) = attachment.source_id.as_deref().filter(|id| !id.is_empty())
@@ -145,7 +140,7 @@ pub fn attachment_slots(blocks: &[crate::Block], ordinals: &[u64]) -> Vec<Attach
 pub(crate) fn validate_record(
     record: &crate::bundle::MessageRecord,
 ) -> Result<(), crate::bundle::BundleError> {
-    use crate::{Block, bundle::BundleError};
+    use crate::bundle::BundleError;
     let mut seen = std::collections::HashSet::new();
     for binding in &record.bindings {
         binding.validate()?;
@@ -158,12 +153,10 @@ pub(crate) fn validate_record(
             .map_err(|_| BundleError::InvalidAttachmentBinding)?;
         let index = usize::try_from(binding.attachment)
             .map_err(|_| BundleError::InvalidAttachmentBinding)?;
-        let attachment = match &record.message.blocks[position] {
-            Block::Image(attachment) | Block::File(attachment) if index == 0 => Some(attachment),
-            Block::ToolResult { attachments, .. } => attachments.get(index),
-            _ => None,
-        }
-        .ok_or(BundleError::InvalidAttachmentBinding)?;
+        let attachment = record.message.blocks[position]
+            .attachments()
+            .get(index)
+            .ok_or(BundleError::InvalidAttachmentBinding)?;
         if attachment.blob.is_some()
             || attachment.source_id.as_deref() != Some(binding.source_id.as_str())
         {

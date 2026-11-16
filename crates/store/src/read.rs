@@ -2,10 +2,13 @@
 //! sees one consistent read transaction on `index.db` with `archive.db`
 //! attached.
 
+use crate::ConnExt as _;
+use crate::archive::index_build::Reads;
 use crate::archive::{Archive, open_read};
 use crate::blobs::FileFacts;
 use crate::encoding::{Columns, restore_text, unpack_block};
 use crate::{Result, StoreError};
+use polylogue_model::LockExt;
 use polylogue_model::{
     Block, Message, MessageId, PromptKind, Role, Session, SessionId, Usage,
     bundle::MessageProjection,
@@ -30,11 +33,7 @@ pub use completeness::ReadingContract;
 mod captured;
 mod cursor_generation;
 pub use cursor_generation::open_cursor;
-mod fragment;
 mod hook_fields;
-pub use fragment::{
-    FragmentAgreement, FragmentAvailability, FragmentConflict, FragmentSelection, StatedFragment,
-};
 mod parser_checkpoint;
 pub use parser_checkpoint::StoredParserCheckpoint;
 mod import_counts;
@@ -67,9 +66,10 @@ struct MessageArrival {
 
 impl MessageArrival {
     fn record(self, conn: &Connection) -> Result<(Option<u64>, u64)> {
-        let order = order::checked(self.order.ok_or_else(|| {
-            StoreError::Invalid("message snapshot ordinal was not selected".into())
-        })?)?;
+        let order =
+            order::checked(self.order.ok_or_else(|| {
+                StoreError::stored(0, "message snapshot ordinal was not selected")
+            })?)?;
         Ok((self.resolve(conn)?, order))
     }
 
@@ -77,13 +77,13 @@ impl MessageArrival {
         if let Some(fact) = self.fact {
             return u64::try_from(fact)
                 .map(Some)
-                .map_err(|_| StoreError::Invalid("negative message commit".into()));
+                .map_err(|_| StoreError::stored(0, "negative message commit"));
         }
         let Some((input, chain, end)) = self.source else {
             return Ok(None);
         };
         let end = u64::try_from(end)
-            .map_err(|_| StoreError::Invalid("negative message source endpoint".into()))?;
+            .map_err(|_| StoreError::stored(0, "negative message source endpoint"))?;
         crate::source::Source::committed_through(conn, &input, chain, end)
     }
 }
@@ -108,18 +108,6 @@ pub struct ReadPool {
     _release: Option<Arc<dyn Fn() + Send + Sync>>,
     #[cfg(test)]
     changed: Condvar,
-}
-
-/// The index file a pool reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Reads {
-    /// The file the build pipeline writes: the private build file while a
-    /// build runs, otherwise `index.db`.
-    Pipeline,
-    /// The file client-facing reads are served from; while a build runs and
-    /// no previous index can be served, reads answer
-    /// [`StoreError::IndexBuilding`].
-    Serving,
 }
 
 thread_local! {
@@ -306,7 +294,7 @@ impl ReadPool {
         let release = (reads == Reads::Pipeline).then(|| {
             let state = Arc::clone(&state);
             let release: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-                let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+                let mut state = state.locked();
                 state.live -= state.idle.len();
                 state.idle.clear();
             });
@@ -359,9 +347,10 @@ impl ReadPool {
     }
 
     fn index_identity(&self) -> Result<IndexIdentity> {
-        let path = self.index_path()?;
-        let metadata = std::fs::metadata(&path)?;
-        Ok((path, metadata.dev(), metadata.ino()))
+        self.archive.with_index_path(self.reads, |path| {
+            let metadata = std::fs::metadata(path)?;
+            Ok((path.to_path_buf(), metadata.dev(), metadata.ino()))
+        })
     }
 
     /// Whether this pool reads a build in progress.
@@ -556,7 +545,7 @@ impl ReadPool {
     /// Readers that have started keep their read; a slot not yet used must
     /// pass the closed check at its first read.
     pub fn close(&self) {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let mut state = self.state.locked();
         state.closed = true;
         state.live -= state.idle.len();
         state.idle.clear();
@@ -566,9 +555,7 @@ impl ReadPool {
 
 fn wake_all(state: &Mutex<PoolState>, available: &Condvar) {
     // Taking the lock orders the wake after a waiter's last check.
-    let _held = state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _held = state.locked();
     available.notify_all();
 }
 
@@ -590,11 +577,7 @@ impl Drop for Reader<'_> {
             matches!(self.state.get(), ReadState::Deferred | ReadState::Ready)
                 && conn.execute_batch("ROLLBACK").is_ok()
         });
-        let mut state = self
-            .pool
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let mut state = self.pool.state.locked();
         if let Some(held) = state.holders.get_mut(&self.holder) {
             *held -= 1;
             if *held == 0 {
@@ -654,9 +637,9 @@ pub(crate) fn stored_parse_progress(
     let at_length = at_length
         .map(u64::try_from)
         .transpose()
-        .map_err(|_| StoreError::Invalid("a stored waiting length is negative".into()))?;
+        .map_err(|_| StoreError::stored(0, "a stored waiting length is negative"))?;
     polylogue_model::batch::ParseProgress::from_stored(status, at_length, reason)
-        .map_err(StoreError::Invalid)
+        .map_err(|error| StoreError::stored(0, error))
 }
 
 impl Reader<'_> {
@@ -665,6 +648,7 @@ impl Reader<'_> {
     /// call, which resets the count. Tests bound a request's reads with it.
     #[cfg(any(test, feature = "fixture"))]
     #[allow(unsafe_code)]
+    #[cfg(any(test, feature = "fixture"))]
     pub fn take_page_reads(&self) -> Result<u64> {
         let conn = self.conn()?;
         let (mut current, mut highest) = (0, 0);
@@ -820,8 +804,8 @@ impl Reader<'_> {
                     |_| Ok(()),
                 );
                 // A build file installed between the check and this start
-                // (`crate::archive::index_build`) has left its directory; once
-                // the read has started, the install waits for it to end.
+                // (`crate::archive::index_build`) changes the path identity. An
+                // already-started read keeps its open file and snapshot.
                 if let Err(error) = started {
                     if Some(self.pool.index_identity()?) != self.index_identity {
                         self.state.set(ReadState::IndexReplaced);
@@ -848,7 +832,7 @@ impl Reader<'_> {
     pub fn confirmed_refusals(&self) -> Result<(u64, Option<String>)> {
         let conn = self.conn()?;
         let count: i64 =
-            conn.query_row("SELECT count(*) FROM primary_refused r LEFT JOIN confirmed_event f ON f.event=r.event WHERE f.event IS NULL OR f.state='live'", [], |row| row.get(0))?;
+            conn.scalar("SELECT count(*) FROM primary_refused r LEFT JOIN confirmed_event f ON f.event=r.event WHERE f.event IS NULL OR f.state='live'", [])?;
         let latest = conn
             .query_row(
                 "SELECT r.kind,r.position,r.reason FROM primary_refused r LEFT JOIN confirmed_event f ON f.event=r.event WHERE f.event IS NULL OR f.state='live' ORDER BY r.position DESC LIMIT 1",
@@ -866,18 +850,7 @@ impl Reader<'_> {
         Ok((u64::try_from(count).unwrap_or_default(), latest))
     }
 
-    /// The context Sinex recorded for the event, whether or not its source
-    /// contributes now. Missing older metadata stays unknown.
-    pub fn sinex_event_context(
-        &self,
-        event: &str,
-    ) -> Result<Option<crate::primary::SinexEventContext>> {
-        if !self.pool.archive.is_primary() {
-            return Ok(None);
-        }
-        crate::primary::confirmed::sinex_context(self.conn()?, event)
-    }
-
+    #[cfg(any(test, feature = "fixture"))]
     pub fn confirmed_replay_state(&self) -> Result<crate::primary::ReplayState> {
         crate::primary::confirmed::replay_state(self.conn()?)
     }
@@ -893,10 +866,6 @@ impl Reader<'_> {
         Ok(scope)
     }
 
-    pub fn primary_cache_identity(&self) -> Result<String> {
-        crate::primary::cache_identity(self.conn()?)
-    }
-
     /// The index file this reader's read transaction started on.
     pub fn index_identity(&self) -> Result<(u64, u64)> {
         self.conn()?;
@@ -910,11 +879,9 @@ impl Reader<'_> {
     /// generation that no answer carries, so a cursor a client changed or
     /// made up is refused.
     pub fn cursor_key(&self) -> Result<[u8; 32]> {
-        let secret: String = self.conn()?.query_row(
-            "SELECT value FROM main.meta WHERE key = 'cursor_key'",
-            [],
-            |r| r.get(0),
-        )?;
+        let secret: String = self
+            .conn()?
+            .scalar("SELECT value FROM main.meta WHERE key = 'cursor_key'", [])?;
         Ok(*blake3::hash(secret.as_bytes()).as_bytes())
     }
 
@@ -978,15 +945,13 @@ impl Reader<'_> {
     pub fn display_title(&self, id: &SessionId) -> Result<Option<String>> {
         Ok(self
             .conn()?
-            .query_row(
+            .scalar_optional(
                 &format!(
                     "SELECT {} FROM session WHERE id = ?1",
                     crate::session_sql::display_title("session")
                 ),
                 [id.to_string()],
-                |row| row.get(0),
-            )
-            .optional()?
+            )?
             .flatten())
     }
 
@@ -1017,9 +982,7 @@ impl Reader<'_> {
         ).optional()?;
         match hash {
             Some(Some(hash)) => crate::versions::read_message(conn, &hash),
-            Some(None) => Err(StoreError::Invalid(
-                "the message has no source reading".into(),
-            )),
+            Some(None) => Err(StoreError::stored(0, "the message has no source reading")),
             None => Ok(None),
         }
     }
@@ -1066,17 +1029,6 @@ impl Reader<'_> {
         selected.visit(&mut visit)
     }
 
-    pub fn visit_messages_with_block_selection(
-        &self,
-        id: &SessionId,
-        with_parents: bool,
-        mut visit: impl FnMut(Message, MessageProjection) -> std::ops::ControlFlow<()>,
-    ) -> Result<()> {
-        let selected = self.select_messages(id, with_parents)?;
-        selected.require_complete()?;
-        selected.visit_with_block_selection(&mut visit)
-    }
-
     /// The keys of the messages a session shows with its parents, each once.
     /// Totals with parents refuse a missing parent rather than count what is
     /// stored as complete.
@@ -1101,7 +1053,7 @@ impl Reader<'_> {
             .prepare_cached(&format!("WITH record_ranks AS ({})
                 SELECT m.pk,m.id,c.record_order FROM record_ranks c JOIN message m ON m.pk=c.pk ORDER BY c.record_order",
                 order::session_record_rows("?1")))?
-            .query_map([session_pk], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .query_map([session_pk], |r| <(_, _, _)>::try_from(r))?
             .collect::<rusqlite::Result<_>>()?)
     }
 
@@ -1166,9 +1118,7 @@ impl Reader<'_> {
                     "SELECT session_order, id FROM message
                      WHERE pk = ?1 AND session_pk = ?2",
                 )?
-                .query_row(rusqlite::params![pk, session_pk], |r| {
-                    Ok((r.get(0)?, r.get(1)?))
-                })
+                .query_row(rusqlite::params![pk, session_pk], |r| <(_, _)>::try_from(r))
                 .optional()?,
             None => None,
         };
@@ -1264,13 +1214,14 @@ impl Reader<'_> {
                 source_end,
                 record_order,
             ) = row?;
-            let id = MessageId::parse(&id)
-                .map_err(|_| StoreError::Invalid(format!("message row {pk} has an invalid ID")))?;
+            let id = MessageId::parse(&id).map_err(|_| {
+                StoreError::stored(1, format!("message row {pk} has an invalid ID"))
+            })?;
             if !keep(pk) {
                 continue;
             }
             let named = id.to_string();
-            let invalid = |what: &str| StoreError::Invalid(format!("message {named} has {what}"));
+            let invalid = |what: &str| StoreError::stored(0, format!("message {named} has {what}"));
             let attrs: Option<serde_json::Value> = attrs
                 .map(|a| serde_json::from_str(&a))
                 .transpose()
@@ -1349,9 +1300,7 @@ impl Reader<'_> {
                             message.blocks.len()
                         } else {
                             usize::try_from(stored_block_count).map_err(|_| {
-                                StoreError::Invalid(
-                                    "a message has an invalid stored block count".into(),
-                                )
+                                StoreError::stored(0, "a message has an invalid stored block count")
                             })?
                         },
                     )?;
@@ -1381,11 +1330,10 @@ impl Reader<'_> {
     pub fn status(&self) -> Result<Status> {
         limit::ReadLimit::set_stage("status counts");
         let c = self.conn()?;
-        let count =
-            |sql: &str| -> Result<u64> { Ok(c.query_row(sql, [], |r| r.get::<_, i64>(0))? as u64) };
+        let count = |sql: &str| -> Result<u64> { Ok(c.scalar::<i64>(sql, [])? as u64) };
         let mut parse_states = BTreeMap::new();
         let mut stmt = c.prepare_cached("SELECT status, n FROM parse_status_count WHERE n > 0")?;
-        for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+        for row in stmt.query_map([], |r| <(String, i64)>::try_from(r))? {
             let (s, n) = row?;
             parse_states.insert(s, n as u64);
         }
@@ -1393,7 +1341,7 @@ impl Reader<'_> {
         let mut stmt = c.prepare_cached(
             "SELECT what, n FROM unused_count WHERE n > 0 ORDER BY n DESC, what LIMIT 20",
         )?;
-        for row in stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+        for row in stmt.query_map([], |r| <(String, i64)>::try_from(r))? {
             let (w, n) = row?;
             unused.push((w, n as u64));
         }
@@ -1459,7 +1407,7 @@ impl Reader<'_> {
 
     fn current_attachment(&self, asset: &crate::assets::AssetMatch) -> Result<()> {
         let current = if asset.size == 0 {
-            let latest: Option<(i64,i64)> = self.conn()?.query_row("SELECT chain,length FROM source_revision WHERE input=?1 ORDER BY number DESC LIMIT 1", [&asset.input], |row| Ok((row.get(0)?,row.get(1)?))).optional()?;
+            let latest: Option<(i64,i64)> = self.conn()?.query_row("SELECT chain,length FROM source_revision WHERE input=?1 ORDER BY number DESC LIMIT 1", [&asset.input], |row| <(_, _)>::try_from(row)).optional()?;
             if latest != Some((asset.chain,0)) {
                 return Err(StoreError::Conflict("the attachment's stored bytes changed; select it again".into()));
             }
@@ -1672,12 +1620,7 @@ impl Reader<'_> {
             if let Some(chain) = k.chain
                 && let Some((upto, status, at_length, reason)) = stmt
                     .query_row(params![k.input_id, chain], |r| {
-                        Ok((
-                            r.get::<_, i64>(0)?,
-                            r.get::<_, String>(1)?,
-                            r.get::<_, Option<i64>>(2)?,
-                            r.get::<_, Option<String>>(3)?,
-                        ))
+                        <(i64, String, Option<i64>, Option<String>)>::try_from(r)
                     })
                     .optional()?
             {
@@ -1701,16 +1644,7 @@ impl Reader<'_> {
              LEFT JOIN parse_state p ON p.input_pk = i.pk AND p.chain = r.chain
              WHERE r.input = ?1 ORDER BY r.number DESC LIMIT 1",
             )?
-            .query_row([id], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, bool>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, bool>(4)?,
-                    r.get::<_, i64>(5)?,
-                ))
-            })
+            .query_row([id], |r| <(i64, i64, bool, String, bool, i64)>::try_from(r))
             .optional()?;
         let Some((length, parsed_upto, parsed, produced, waiting, chain)) = row else {
             return Ok(None);
@@ -1719,9 +1653,10 @@ impl Reader<'_> {
             "imported" => true,
             "first" | "appended" | "rewritten" => false,
             _ => {
-                return Err(StoreError::Invalid(format!(
-                    "unknown revision source: {produced}"
-                )));
+                return Err(StoreError::stored(
+                    3,
+                    format!("unknown revision source: {produced}"),
+                ));
             }
         };
         Ok(Some(ChainProgress {

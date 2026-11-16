@@ -29,6 +29,15 @@ pub(crate) fn start_runtime(
     mode: service::ArchiveMode,
 ) -> std::io::Result<service::Runtime> {
     let deployment = crate::config::Config::for_test(&engine, root);
+    start_with_deployment(deployment, engine, mode)
+}
+
+/// Starts a fixture runtime and waits for its initial index build before status reads.
+fn start_with_deployment(
+    deployment: Arc<crate::config::Config>,
+    engine: Config,
+    mode: service::ArchiveMode,
+) -> std::io::Result<service::Runtime> {
     let runtime = service::start(
         deployment,
         engine,
@@ -155,14 +164,9 @@ fn start_with_clock_and_workers(
     if let Some(day) = day {
         deployment = deployment.standalone_for_archive(root, day).unwrap();
     }
-    let runtime = service::start(
-        deployment,
-        config.clone(),
-        service::ArchiveMode::Standalone,
-        polylogue_engine::Lifetime::UntilStopped,
-        Some(polylogue_testkit::stopped_attempt()),
-    )
-    .unwrap();
+    let runtime =
+        start_with_deployment(deployment, config.clone(), service::ArchiveMode::Standalone)
+            .unwrap();
     let daemon = Arc::clone(&runtime.daemon);
     let server =
         server::Server::start(Arc::clone(&daemon), Arc::clone(&runtime.operations)).unwrap();

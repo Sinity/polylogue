@@ -2,6 +2,7 @@
 //! and compare previous revisions; they never assign a source revision or a
 //! Sinex acknowledgment.
 use super::{CapturedInput, PendingCapture, PreparedBody};
+use crate::OptionExt as _;
 use crate::{Result, StoreError};
 use serde::{Deserialize, Serialize};
 
@@ -139,7 +140,7 @@ impl RawRange {
     pub fn length(self) -> Result<u64> {
         self.end
             .checked_sub(self.start)
-            .ok_or_else(|| StoreError::Invalid("reversed captured source range".into()))
+            .or_invalid("reversed captured source range")
     }
 }
 

@@ -22,6 +22,7 @@
 //! exists, each change of a loaded thread's status is written as one
 //! `ThreadStatus` line carrying the status object whole.
 
+use polylogue_model::JsonExt as _;
 use polylogue_model::SessionId;
 use polylogue_model::live::ProcessIdentity;
 use serde_json::{Value, json};
@@ -542,10 +543,8 @@ impl Registry {
             else {
                 continue;
             };
-            let (Some(native), Some(status)) = (
-                registry.get("sessionId").and_then(Value::as_str),
-                registry.get("status").and_then(Value::as_str),
-            ) else {
+            let (Some(native), Some(status)) = (registry.str("sessionId"), registry.str("status"))
+            else {
                 continue;
             };
             let Ok(session) = SessionId::parse(&format!("claude-code:{native}")) else {
@@ -553,8 +552,7 @@ impl Registry {
             };
             let mut payload = json!({"status": status, "registry": registry});
             if let Some(identity) = registry
-                .get("pid")
-                .and_then(Value::as_u64)
+                .u64("pid")
                 .and_then(|pid| u32::try_from(pid).ok())
                 .and_then(&identity_of)
             {
@@ -602,18 +600,16 @@ impl CodexConnection {
         let input = child.stdin.take().expect("piped stdin");
         let output = child.stdout.take().expect("piped stdout");
         let (sender, lines) = std::sync::mpsc::channel();
-        std::thread::Builder::new()
-            .name("polylogue-codex".into())
-            .spawn(move || {
-                for line in std::io::BufReader::new(output).lines() {
-                    let Ok(line) = line else { return };
-                    if let Ok(value) = serde_json::from_str::<Value>(&line)
-                        && sender.send(value).is_err()
-                    {
-                        return;
-                    }
+        polylogue_model::spawn_named("polylogue-codex", move || {
+            for line in std::io::BufReader::new(output).lines() {
+                let Ok(line) = line else { return };
+                if let Ok(value) = serde_json::from_str::<Value>(&line)
+                    && sender.send(value).is_err()
+                {
+                    return;
                 }
-            })?;
+            }
+        })?;
         let mut connection = Self {
             child,
             input,
@@ -659,9 +655,7 @@ impl CodexConnection {
                     format!("codex app-server did not answer {method}"),
                 )
             })?;
-            if message.get("id").and_then(Value::as_u64) == Some(id)
-                && message.get("method").is_none()
-            {
+            if message.u64("id") == Some(id) && message.get("method").is_none() {
                 if let Some(error) = message.get("error") {
                     return Err(std::io::Error::other(format!(
                         "codex app-server refused {method}: {error}"
@@ -712,8 +706,7 @@ impl Drop for CodexConnection {
 /// `idle`, `systemError`, `notLoaded`).
 pub(crate) fn codex_status_word(status: &Value) -> Option<String> {
     status
-        .get("activeFlags")
-        .and_then(Value::as_array)
+        .array("activeFlags")
         .and_then(|flags| flags.first())
         .or_else(|| status.get("type"))
         .and_then(Value::as_str)
@@ -770,8 +763,7 @@ impl CodexStatus {
         loop {
             let page = connection.call("thread/loaded/list", json!({"cursor": cursor}))?;
             threads.extend(
-                page.get("data")
-                    .and_then(Value::as_array)
+                page.array("data")
                     .into_iter()
                     .flatten()
                     .filter_map(Value::as_str)
@@ -828,7 +820,7 @@ impl CodexStatus {
                 return None;
             }
         };
-        if message.get("method").and_then(Value::as_str) != Some("thread/status/changed") {
+        if message.str("method") != Some("thread/status/changed") {
             return None;
         }
         let params = message.get("params")?;
@@ -1114,10 +1106,10 @@ pub(crate) fn run(
             clock.clone(),
             std::sync::Arc::clone(&codex_stop),
         );
-        std::thread::Builder::new()
-            .name("polylogue-codex-status".into())
-            .spawn(move || run_codex(reader, spool, boot, clock, stop))
-            .ok()
+        polylogue_model::spawn_named("polylogue-codex-status", move || {
+            run_codex(reader, spool, boot, clock, stop)
+        })
+        .ok()
     };
     let mut watcher = Watcher::new(PathBuf::from("/proc"), boot.clone(), boot_time_ms());
     let mut registry = Registry::new(paths.claude_sessions.clone());

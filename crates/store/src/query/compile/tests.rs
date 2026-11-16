@@ -259,7 +259,7 @@ fn every_stored_value_can_be_queried() {
     c("sessions where link:fork");
     c("sessions where link:resume");
     let refusal = compile("sessions where kind:chat", &opts(&[])).unwrap_err();
-    assert_eq!(refusal.kind(), "bad_value");
+    assert_eq!(refusal.kind(), polylogue_model::Code::BadValue);
     for known in ["chat", "sessions", "main"] {
         assert!(refusal.to_string().contains(known), "{refusal}");
     }

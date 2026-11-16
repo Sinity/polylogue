@@ -1,5 +1,6 @@
 //! Current producer observations; the cache keeps the confirmed position.
 use crate::{Result, Sinex};
+use polylogue_model::LockExt;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
@@ -55,10 +56,7 @@ impl Sinex {
         applied_position: Option<i64>,
         applied_scope: Option<String>,
     ) -> Result<polylogue_model::freshness::IndexFreshness> {
-        let health = self
-            .health
-            .lock()
-            .map_err(|_| crate::Error::Invalid("producer health panicked".into()))?;
+        let health = self.health.locked();
         let same_scope = applied_scope
             .as_ref()
             .is_some_and(|scope| health.sinex_scope.as_ref() == Some(scope));
@@ -78,10 +76,7 @@ impl Sinex {
     }
     pub fn status(&self) -> Result<Status> {
         let (reachable, error, sinex_position, sinex_position_seconds_ago, family) = {
-            let health = self
-                .health
-                .lock()
-                .map_err(|_| crate::Error::Invalid("producer health panicked".into()))?;
+            let health = self.health.locked();
             (
                 health.reachable,
                 health.error(),
@@ -92,10 +87,7 @@ impl Sinex {
                 health.family.clone(),
             )
         };
-        let queue = self
-            .spool
-            .lock()
-            .map_err(|_| crate::Error::Invalid("producer spool panicked".into()))?;
+        let queue = self.spool.locked();
         // From the spool, so a restart during an outage still says how long
         // Sinex has been silent.
         let last_ack_seconds_ago = queue.last_acknowledged()?.map(|at| {

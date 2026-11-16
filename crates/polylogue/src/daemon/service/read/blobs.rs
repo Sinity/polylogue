@@ -53,16 +53,8 @@ impl Blobs {
         check: &dyn Fn() -> Result<(), Failure>,
     ) -> Result<(), Failure> {
         for block in blocks {
-            match block {
-                Block::Image(attachment) | Block::File(attachment) => {
-                    self.attachment(attachment, stream, check)?
-                }
-                Block::ToolResult { attachments, .. } => {
-                    for attachment in attachments {
-                        self.attachment(attachment, stream, check)?;
-                    }
-                }
-                _ => {}
+            for attachment in block.attachments() {
+                self.attachment(attachment, stream, check)?;
             }
         }
         Ok(())
@@ -112,7 +104,7 @@ impl Blobs {
         let mut buffer = [0_u8; 16 << 10];
         loop {
             check()?;
-            let length = bytes.read(&mut buffer).map_err(|e| Failure::new("io", e))?;
+            let length = bytes.read(&mut buffer).map_err(Failure::io)?;
             if length == 0 {
                 break;
             }
@@ -124,14 +116,13 @@ impl Blobs {
             })?;
             offset = offset
                 .checked_add(length as u64)
-                .ok_or_else(|| Failure::new("io", "blob offset overflow"))?;
+                .ok_or_else(|| Failure::io("blob offset overflow"))?;
         }
         check()?;
         if offset != size || digest.finalize().as_bytes() != &hash.0 {
-            return Err(Failure::new(
-                "io",
-                format!("stored blob {hash} failed its size or content hash"),
-            ));
+            return Err(Failure::io(format!(
+                "stored blob {hash} failed its size or content hash"
+            )));
         }
         if size == 0 {
             stream.blob(&ReadBlobChunk {

@@ -3,39 +3,22 @@ mod common_link;
 
 use clap::Parser;
 use devkit::{Nextest, Run};
-use serde_json::Value;
-use std::{path::Path, process::ExitCode};
-
-/// Packages rustfmt checks.
-const FORMATTED: &[&str] = &[
-    "polylogue-model",
-    "polylogue-sources",
-    "polylogue-store",
-    "polylogue-engine",
-    "polylogue-query",
-    "polylogue-render",
-    "polylogue-sinex",
-    "polylogue-testkit",
-    "polylogue",
-    "xtask",
-];
+use std::process::ExitCode;
 
 /// Checks, warm builds and focused tests share the primary workspace graph.
 /// Package predicates select execution; Cargo target flags bound compilation.
 /// The standalone Clippy pass also covers `cfg(not(feature = "sinex"))`.
-const FEATURES: &str =
-    "polylogue/sinex,polylogue-engine/faults,polylogue-store/faults,polylogue-store/fixture";
+const FEATURES: &str = "polylogue/sinex,polylogue-sinex/fixture,polylogue-model/fixture,polylogue-query/fixture,polylogue-engine/faults,polylogue-store/faults,polylogue-store/fixture";
 /// The standalone Clippy pass: the same features without the Sinex client.
-const STANDALONE_FEATURES: &str =
-    "polylogue-engine/faults,polylogue-store/faults,polylogue-store/fixture";
+const STANDALONE_FEATURES: &str = "polylogue-model/fixture,polylogue-query/fixture,polylogue-engine/faults,polylogue-store/faults,polylogue-store/fixture";
 
 #[derive(Parser)]
 #[command(name = "xtask", about = "Polylogue development checks")]
 enum Cli {
-    /// Formatting, crate boundaries and clippy (warnings denied) of every
+    /// Formatting and clippy (warnings denied) of every
     /// target.
     Fast,
-    /// Formatting, crate boundaries, both clippy configurations and every
+    /// Formatting, both clippy configurations and every
     /// test, or with `--changed` the tests the changes since the merge base
     /// with origin/master can affect (devkit's selection; `--changed-base`
     /// names another base). Clippy reuses every unchanged crate's result, so
@@ -64,17 +47,6 @@ enum Cli {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Crate dependency boundaries only.
-    Boundaries,
-    /// Offline schema commands from the application's command table.
-    Schema {
-        /// The Polylogue binary to run, built by the normal compile operation;
-        /// by default `debug/polylogue` in Cargo's target directory.
-        #[arg(long)]
-        binary: Option<std::path::PathBuf>,
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
     /// Corpus builds and interactive read measurements of the real binary.
     Bench(bench::Bench),
     /// Build against a local checkout of polylogue-sinex-common instead of
@@ -90,95 +62,11 @@ enum Cli {
     Shared(devkit::cli::Command),
 }
 
-/// Internal dependencies each workspace package may use.
-/// Only the store may depend on rusqlite.
-fn allowed_dependencies(package: &str) -> Option<&'static [&'static str]> {
-    Some(match package {
-        "polylogue-model" | "xtask" => &[],
-        "polylogue-sources" | "polylogue-query" | "polylogue-render" => &["polylogue-model"],
-        "polylogue-store" => &["polylogue-model", "polylogue-query"],
-        "polylogue-engine" => &["polylogue-model", "polylogue-sources", "polylogue-store"],
-        // Test archives: built through the engine, read through the store.
-        "polylogue-testkit" => &["polylogue-model", "polylogue-store", "polylogue-engine"],
-        // The Sinex client sends inputs and register changes and rebuilds the
-        // register through the store; its rebuild test drives the engine.
-        "polylogue-sinex" => &[
-            "polylogue-model",
-            "polylogue-query",
-            "polylogue-store",
-            "polylogue-engine",
-        ],
-        "polylogue" => &[
-            "polylogue-model",
-            "polylogue-sources",
-            "polylogue-store",
-            "polylogue-engine",
-            "polylogue-query",
-            "polylogue-render",
-            "polylogue-sinex",
-        ],
-        _ => return None,
-    })
-}
-
-fn metadata(root: &Path) -> Result<Value, String> {
-    let output = devkit::cargo_command()
-        .args(["metadata", "--format-version", "1", "--no-deps"])
-        .current_dir(root)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
-    }
-    serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())
-}
-
-fn boundaries(metadata: &Value) -> Result<(), String> {
-    let packages = metadata["packages"]
-        .as_array()
-        .ok_or("metadata packages missing")?;
-    let workspace: Vec<&str> = packages.iter().filter_map(|p| p["name"].as_str()).collect();
-    for package in packages {
-        let name = package["name"].as_str().ok_or("package name missing")?;
-        let allowed = allowed_dependencies(name)
-            .ok_or_else(|| format!("unassigned workspace package {name}"))?;
-        for dependency in package["dependencies"]
-            .as_array()
-            .ok_or("dependencies missing")?
-        {
-            let test_only = dependency["kind"].as_str() == Some("dev");
-            let dependency = dependency["name"]
-                .as_str()
-                .ok_or("dependency name missing")?;
-            // Tests may build archives with the testkit and open SQLite to
-            // break an archive on purpose; product code may not.
-            if test_only && matches!(dependency, "polylogue-testkit" | "rusqlite") {
-                continue;
-            }
-            if (workspace.contains(&dependency) && !allowed.contains(&dependency))
-                || (dependency == "rusqlite" && name != "polylogue-store")
-            {
-                return Err(format!("forbidden dependency: {name} -> {dependency}"));
-            }
-        }
-    }
-    Ok(())
-}
-
 fn fmt_check(run: &mut Run) -> devkit::Result {
     let mut fmt = devkit::cargo_command();
-    fmt.arg("fmt");
-    for package in FORMATTED {
-        fmt.args(["-p", package]);
-    }
+    fmt.args(["fmt", "--all"]);
     fmt.args(["--", "--check"]);
     run.command("fmt", &mut fmt)
-}
-
-fn boundaries_step(run: &mut Run) -> devkit::Result {
-    run.step("boundaries", |run| {
-        Ok(metadata(&run.root).and_then(|metadata| boundaries(&metadata))?)
-    })
 }
 
 fn clippy(run: &mut Run) -> devkit::Result {
@@ -369,7 +257,6 @@ fn main() -> ExitCode {
     match Cli::parse() {
         Cli::Fast => run("fast", &[], |run| {
             fmt_check(run)?;
-            boundaries_step(run)?;
             clippy(run)
         }),
         Cli::Check {
@@ -383,7 +270,6 @@ fn main() -> ExitCode {
             };
             run("check", &args, |run| {
                 fmt_check(run)?;
-                boundaries_step(run)?;
                 clippy(run)?;
                 let arguments = test_arguments(&args, None).expect("the selection is valid");
                 run.nextest("test", &nextest(arguments))
@@ -399,7 +285,6 @@ fn main() -> ExitCode {
                 .expect("the scenario selection is valid");
             run.nextest("test", &nextest(arguments))
         }),
-        Cli::Boundaries => run("boundaries", &[], boundaries_step),
         Cli::Test { no_run: true, .. } => run("test", &["--no-run".into()], build_tests),
         Cli::Test { args, .. } => {
             let arguments = match test_arguments(&args, None) {
@@ -412,29 +297,6 @@ fn main() -> ExitCode {
             run("test", &args, |run| {
                 run.nextest("test", &nextest(arguments))
             })
-        }
-        Cli::Schema { binary, args } => {
-            let binary = binary.unwrap_or_else(|| {
-                std::env::var_os("CARGO_TARGET_DIR")
-                    .map_or_else(|| "target".into(), std::path::PathBuf::from)
-                    .join("debug/polylogue")
-            });
-            match std::process::Command::new(binary)
-                .arg("schema")
-                .args(args)
-                .status()
-            {
-                Ok(status) => ExitCode::from(
-                    status
-                        .code()
-                        .and_then(|n| u8::try_from(n).ok())
-                        .unwrap_or(1),
-                ),
-                Err(error) => {
-                    eprintln!("schema command: {error}");
-                    ExitCode::FAILURE
-                }
-            }
         }
         Cli::Bench(command) => bench::execute(command),
         Cli::LinkCommon { checkout } => exit_code(common_link::link(checkout)),

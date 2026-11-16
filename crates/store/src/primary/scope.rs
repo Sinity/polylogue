@@ -3,13 +3,7 @@ use crate::{Archive, Result, StoreError};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 
 pub(crate) fn current(index: &Connection) -> Result<Option<String>> {
-    Ok(index
-        .query_row(
-            "SELECT value FROM meta WHERE key='confirmed_scope'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()?)
+    crate::meta_get(index, "confirmed_scope")
 }
 
 pub(crate) fn require_readable(index: &Connection) -> Result<()> {
@@ -56,7 +50,7 @@ pub(crate) fn reset(
         let synchronous: i64 = index.pragma_query_value(None, "synchronous", |row| row.get(0))?;
         previous = Some(synchronous);
         index.pragma_update(None, "synchronous", synchronous.max(2))?;
-        index.execute("INSERT INTO meta(key,value) VALUES ('confirmed_scope_pending',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [scope])?;
+        crate::meta_set(index, "confirmed_scope_pending", scope)?;
         Ok(())
     })();
     let invalidated = reset.invalidate();
@@ -80,7 +74,7 @@ fn clear(
     index.flush_prepared_statement_cache();
     let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.pragma_update(None, "defer_foreign_keys", true)?;
-    let temporary: Vec<(String,String)> = tx.prepare("SELECT name,type FROM temp.sqlite_schema WHERE type IN ('view','trigger','table') AND name NOT LIKE 'sqlite_%' ORDER BY type DESC")?.query_map([], |row| Ok((row.get(0)?,row.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+    let temporary: Vec<(String,String)> = tx.prepare("SELECT name,type FROM temp.sqlite_schema WHERE type IN ('view','trigger','table') AND name NOT LIKE 'sqlite_%' ORDER BY type DESC")?.query_map([], |row| <(_, _)>::try_from(row))?.collect::<rusqlite::Result<_>>()?;
     for (name, kind) in temporary {
         tx.execute_batch(&format!("DROP {kind} {}", quoted(&name)))?;
     }

@@ -262,7 +262,7 @@ fn send(
     let mut arguments = serde_json::to_value(action).unwrap();
     arguments["files"] = serde_json::json!(files);
     let request = crate::test_daemon::Call::new("chat send", arguments).id(key);
-    match (request).answer(&w.daemon) {
+    match request.answer(&w.daemon) {
         command_surface::Answer {
             outcome: command_surface::Outcome::Ok(data),
             ..

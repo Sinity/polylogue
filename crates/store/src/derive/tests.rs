@@ -184,10 +184,11 @@ fn session_read_and_export_preserve_every_recorded_fact() {
     let reads = crate::ReadPool::open(&w.archive).unwrap();
     let reader = reads.reader().unwrap();
     assert_eq!(reader.session(&session.id).unwrap(), Some(session.clone()));
-    let exported = reader.session_export(&session.id).unwrap().unwrap();
-    assert_eq!(exported.session, session);
-    assert_eq!(exported.messages.len(), 1);
-    assert_eq!(exported.messages[0].session, exported.session.id);
+    let exported = reader.session(&session.id).unwrap().unwrap();
+    assert_eq!(exported, session);
+    let messages = reader.messages(&session.id, false).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].session, exported.id);
 }
 
 fn versioned_rules(version: i64) -> [super::Derivation; 4] {

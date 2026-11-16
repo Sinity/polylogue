@@ -330,8 +330,7 @@ pub fn prepare<'read, 'pool>(
     if let Some(cursor) = &cursor {
         for key in ["operation_context", "catalog", "scope", "ranking_identity"] {
             if cursor.context.versions.get(key) != operation_versions.get(key) {
-                return Err(Failure::new(
-                    "stale_cursor",
+                return Err(Failure::stale_cursor(
                     "the captured query context is no longer available",
                 ));
             }
@@ -572,7 +571,10 @@ fn answer(
         .into_iter()
         .map(|row| match row {
             Value::Object(fields) => Ok(fields),
-            _ => Err(Failure::new("store", "a query row is not a record")),
+            _ => Err(Failure::new(
+                polylogue_model::Code::Store,
+                "a query row is not a record",
+            )),
         })
         .collect::<Result<_, _>>()?;
     let notes = program.notes.clone();
@@ -651,7 +653,8 @@ fn read_page(
 fn read_at(reader: &Reader<'_>) -> Result<crate::protocol::query::Position, Failure> {
     let position = reader.change_position()?;
     let counter = |value: i64| {
-        u64::try_from(value).map_err(|_| Failure::new("store", "a change counter is negative"))
+        u64::try_from(value)
+            .map_err(|_| Failure::new(polylogue_model::Code::Store, "a change counter is negative"))
     };
     Ok(crate::protocol::query::Position {
         freshness: None,
@@ -709,7 +712,7 @@ pub(crate) fn select_usage(
     let m = program
         .measure
         .as_ref()
-        .ok_or_else(|| Failure::new("bad_request", "cost requires a sessions query"))?;
+        .ok_or_else(|| Failure::bad_request("cost requires a sessions query"))?;
     let select = || -> Result<Option<Vec<i64>>, Failure> {
         Ok(if m.everything {
             None

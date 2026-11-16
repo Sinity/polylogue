@@ -314,20 +314,16 @@ impl Inner {
                 .query_row(
                     "SELECT chain, length FROM revision WHERE input = ?1 ORDER BY number DESC LIMIT 1",
                     [&b.input.id],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    |r| <(_, _)>::try_from(r),
                 )
                 .optional()?;
             let again = !seen.insert(b.input.id.clone());
             if b.input.route.is_imported() && b.new_blob.is_some() && (known.is_some() || again) {
                 let new_blob = b.new_blob.as_ref().expect("checked new_blob");
                 // Empty bytes are stored with no extent.
-                let same: bool = tx.query_row(
-                    "SELECT CASE WHEN ?2 <> ?3 THEN 0 WHEN ?3 = 0 THEN count(*) = 0
+                let same: bool = tx.scalar("SELECT CASE WHEN ?2 <> ?3 THEN 0 WHEN ?3 = 0 THEN count(*) = 0
                             ELSE count(*) = 1 AND min(offset) = 0 AND min(length) = ?3 AND min(blob) = ?4 END
-                     FROM extent WHERE input = ?1 AND chain = (SELECT chain FROM revision WHERE input = ?1 ORDER BY number DESC LIMIT 1)",
-                    params![b.input.id, known.map_or(b.length as i64, |k| k.1), b.length as i64, &new_blob.hash.0[..]],
-                    |r| r.get(0),
-                )?;
+                     FROM extent WHERE input = ?1 AND chain = (SELECT chain FROM revision WHERE input = ?1 ORDER BY number DESC LIMIT 1)", params![b.input.id, known.map_or(b.length as i64, |k| k.1), b.length as i64, &new_blob.hash.0[..]])?;
                 if !same {
                     return Err(StoreError::Conflict(
                         "an import named by its bytes holds other bytes".into(),
@@ -337,8 +333,7 @@ impl Inner {
                 b.new_blob = None;
             }
             let (chain, _) = write_bytes(&tx, b, seq)?;
-            let chain = chain
-                .ok_or_else(|| StoreError::Invalid("stored bytes produced no chain".into()))?;
+            let chain = chain.or_invalid("stored bytes produced no chain")?;
             crate::fault::check("import.rows", &b.input.id)?;
             let already_stored =
                 again || matches!(b.change, Change::Unchanged | Change::Observed { .. });
@@ -389,7 +384,7 @@ impl Inner {
                    AND EXISTS(SELECT 1 FROM extent x WHERE x.input=?1 AND x.chain=r.chain AND x.offset=0 AND x.length=?2 AND x.blob=?3)
                    AND EXISTS(SELECT 1 FROM observation o WHERE o.input=?1 AND o.machine=?4 AND o.path_bytes=?5 AND o.class='imported' AND json_extract(o.details_json,'$.import') IS json_extract(?6,'$.import') AND json_extract(o.details_json,'$.import_format') IS json_extract(?6,'$.import_format'))",
                 params![b.input.id,b.length as i64,&blob.hash.0[..],observation.machine,observation.path_bytes,details],
-                |row| Ok((row.get(0)?,row.get(1)?)),
+                |row| <(_, _)>::try_from(row),
             ).optional()?;
             let Some((chain, length)) = known else {
                 return Ok(None);
@@ -411,8 +406,7 @@ impl Inner {
         if b.input.id.is_empty() {
             return Err(StoreError::Invalid("stored bytes need an input".into()));
         }
-        i64::try_from(b.length)
-            .map_err(|_| StoreError::Invalid("input exceeds archive address space".into()))?;
+        crate::to_i64(b.length, "input exceeds archive address space")?;
         check_import_format(
             &self.archive,
             &b.input.id,

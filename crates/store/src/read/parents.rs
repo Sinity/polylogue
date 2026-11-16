@@ -195,7 +195,7 @@ impl<'a> Reader<'a> {
                     frame.issues.push(ParentIssue::Cycle { session: parent });
                     continue;
                 }
-                let explicit: bool = self.conn()?.query_row("SELECT EXISTS(SELECT 1 FROM prefix_copy WHERE parent_id=?1 AND child_id=?2 AND explicit_members=1)",params![parent.to_string(),frame.session.to_string()],|r|r.get(0))?;
+                let explicit: bool = self.conn()?.exists("SELECT EXISTS(SELECT 1 FROM prefix_copy WHERE parent_id=?1 AND child_id=?2 AND explicit_members=1)", params![parent.to_string(),frame.session.to_string()])?;
                 if explicit || link.copies_prefix && link.branch_point.is_none() {
                     let copied = self
                         .conn()?
@@ -330,7 +330,7 @@ fn copied_order(
     let mut incoming: std::collections::BTreeMap<i64, usize> =
         keys.keys().map(|key| (*key, 0)).collect();
     let message = |key: i64| -> Result<MessageId> {
-        MessageId::parse(&keys[&key].id).map_err(|e| StoreError::Invalid(e.to_string()))
+        MessageId::parse(&keys[&key].id).map_err(|error| StoreError::stored(0, error.to_string()))
     };
     for positions in sources.values_mut() {
         positions.sort_unstable_by_key(|(sequence, position, _)| (*sequence, *position));
@@ -454,34 +454,6 @@ impl MessageSelection<'_, '_> {
         self.visit_from(VisitStart::default(), visit).map(drop)
     }
 
-    pub fn visit_with_block_selection(
-        &self,
-        visit: impl FnMut(Message, MessageProjection) -> ControlFlow<()>,
-    ) -> Result<()> {
-        self.visit_from_with_block_selection(VisitStart::default(), visit)
-            .map(drop)
-    }
-
-    /// Visit stored facts, original block positions and their commit in
-    /// the same selected row. Whether the source bytes are still stored does not affect the commit.
-    pub fn visit_with_arrival(
-        &self,
-        visit: impl FnMut(Message, MessageProjection, Option<u64>) -> ControlFlow<()>,
-    ) -> Result<()> {
-        self.visit_from_with_arrival(VisitStart::default(), visit)
-            .map(drop)
-    }
-
-    /// Stored facts with the full own-session snapshot ordinal, before
-    /// inherited prefixes or caller subsets change the visited sequence.
-    pub fn visit_with_record_arrival(
-        &self,
-        visit: impl FnMut(Message, MessageProjection, Option<u64>, u64) -> ControlFlow<()>,
-    ) -> Result<()> {
-        self.visit_from_with_record_arrival(VisitStart::default(), visit)
-            .map(drop)
-    }
-
     pub fn visit_from_with_record_arrival(
         &self,
         start: VisitStart,
@@ -513,38 +485,6 @@ impl MessageSelection<'_, '_> {
         mut visit: impl FnMut(Message) -> ControlFlow<()>,
     ) -> Result<Option<i64>> {
         self.visit_from_rows(start, false, |message, _, _| visit(message))
-    }
-
-    pub fn visit_from_with_block_selection(
-        &self,
-        start: VisitStart,
-        mut visit: impl FnMut(Message, MessageProjection) -> ControlFlow<()>,
-    ) -> Result<Option<i64>> {
-        self.visit_from_selected_blocks(start, false, |message, block_selection, _| {
-            visit(message, block_selection)
-        })
-    }
-
-    pub fn visit_from_with_arrival(
-        &self,
-        start: VisitStart,
-        mut visit: impl FnMut(Message, MessageProjection, Option<u64>) -> ControlFlow<()>,
-    ) -> Result<Option<i64>> {
-        let mut error = None;
-        let last =
-            self.visit_from_selected_blocks(start, false, |message, block_selection, commit| {
-                match self.reader.conn().and_then(|conn| commit.resolve(conn)) {
-                    Ok(committed) => visit(message, block_selection, committed),
-                    Err(err) => {
-                        error = Some(err);
-                        ControlFlow::Break(())
-                    }
-                }
-            })?;
-        match error {
-            Some(error) => Err(error),
-            None => Ok(last),
-        }
     }
 
     fn visit_from_selected_blocks(

@@ -325,9 +325,9 @@ fn session_last_activity_reads_real_message_times() {
     let sql = format!(
         "SELECT pl_time_attribute({}, '{}', 'precision'), pl_time_order({}, '{}', ?1, 'tuple', 'before', NULL, 'when') FROM session s WHERE s.id='claude-code:clock'",
         field.bytes,
-        field.storage.code(),
+        field.storage.as_str(),
         field.bytes,
-        field.storage.code()
+        field.storage.as_str()
     );
     let later = stored_time("1970-01-01T00:00:08Z", TimeQuality::Intrinsic, None);
     let (precision, before): (Option<String>, Option<bool>) = conn

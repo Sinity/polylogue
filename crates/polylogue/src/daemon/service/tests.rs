@@ -9,10 +9,10 @@ fn read(
     cursor: Option<&command_surface::RunnableRequest>,
 ) -> command_surface::Answer<serde_json::Value> {
     let Some(view) = polylogue_model::read::View::parse(view) else {
-        return error("bad_request", "unknown reading view");
+        return error(polylogue_model::Code::BadRequest, "unknown reading view");
     };
     if polylogue_render::Format::parse(format).is_none() {
-        return error("bad_request", "unknown reading format");
+        return error(polylogue_model::Code::BadRequest, "unknown reading format");
     }
     let request = if let Some(resume) = cursor {
         let mut resume = resume.clone();
@@ -36,7 +36,7 @@ fn read(
             cursor: None,
         })
     };
-    (request).answer(d)
+    request.answer(d)
 }
 
 fn typed(response: command_surface::Answer<serde_json::Value>) -> polylogue_model::read::ReadPage {

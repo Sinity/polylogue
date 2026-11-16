@@ -1,4 +1,5 @@
 //! The identity form of a conversation, independent of response order.
+use polylogue_model::JsonExt;
 use polylogue_model::{BlobHash, Json};
 
 pub(super) fn native<'a>(
@@ -36,7 +37,7 @@ pub(super) fn time(value: &Json) -> Result<Option<crate::time::SourceTime>, &'st
             {
                 return Err("unrecognized Grok creation time; no time was inferred");
             }
-            if let Some(millis) = date.get("$numberLong").and_then(Json::as_str) {
+            if let Some(millis) = date.str("$numberLong") {
                 millis
                     .parse::<i64>()
                     .ok()

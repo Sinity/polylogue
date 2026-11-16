@@ -3,7 +3,7 @@
 //! descendant rule. Writes recompute exactly the roots they can affect in the
 //! writing transaction, so the index always equals the rule over the links;
 //! reads only look it up.
-use super::{StoredLinks, currency_error, exact, invalid};
+use super::{StoredLinks, currency_error, exact};
 use crate::{Reader, Result, source::Source};
 use authored::Currency;
 use polylogue_model::{Reference, RevisionReference, Timestamp};
@@ -104,7 +104,7 @@ fn family(conn: &Connection, root: &str) -> Result<Option<FamilyState>> {
 /// rows belong to the pinned read transaction.
 pub(crate) fn prepare_history(conn: &Connection, cutoff: i64) -> Result<()> {
     if conn.is_autocommit() {
-        return Err(invalid(
+        return Err(crate::StoreError::invalid(
             "as-of assertion state requires a pinned read transaction",
         ));
     }
@@ -118,7 +118,7 @@ pub(crate) fn prepare_history(conn: &Connection, cutoff: i64) -> Result<()> {
         ) STRICT, WITHOUT ROWID;",
     )?;
     let until = Timestamp::from_unix_ms(cutoff)
-        .ok_or_else(|| invalid("as-of assertion cutoff is out of range"))?;
+        .ok_or_else(|| crate::StoreError::invalid("as-of assertion cutoff is out of range"))?;
     let source = Source::reading(conn)?;
     let roots = conn
         .prepare_cached(&source.sql("SELECT DISTINCT root FROM @source.assertion ORDER BY root"))?
@@ -145,7 +145,9 @@ pub(crate) fn prepare_history(conn: &Connection, cutoff: i64) -> Result<()> {
 impl Reader<'_> {
     pub fn assertion_family_state(&self, root: &RevisionReference) -> Result<Option<FamilyState>> {
         if root.revision.is_some() {
-            return Err(invalid("family state requires an assertion root"));
+            return Err(crate::StoreError::invalid(
+                "family state requires an assertion root",
+            ));
         }
         let state = family(self.conn()?, &root.root)?;
         self.check()?;
@@ -156,7 +158,9 @@ impl Reader<'_> {
         revision: &RevisionReference,
     ) -> Result<Option<RevisionState>> {
         let Some(id) = &revision.revision else {
-            return Err(invalid("revision state requires an exact assertion"));
+            return Err(crate::StoreError::invalid(
+                "revision state requires an exact assertion",
+            ));
         };
         let conn = self.conn()?;
         let source = Source::reading(conn)?;

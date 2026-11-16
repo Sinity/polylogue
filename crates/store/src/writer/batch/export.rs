@@ -12,15 +12,15 @@ impl ParseStep {
     ) -> Result<ExportCursor> {
         let delivery =
             ExportDelivery::new(ordinal, source, self.export_body_hash()?, previous_prefix)
-                .map_err(invalid_export)?;
-        let cursor = delivery.cursor().map_err(invalid_export)?;
+                .map_err(StoreError::invalid)?;
+        let cursor = delivery.cursor().map_err(StoreError::invalid)?;
         self.delivery = Some(delivery);
         Ok(cursor)
     }
 
     pub fn validate_export(&self) -> Result<()> {
         if let Some(delivery) = &self.delivery {
-            delivery.validate().map_err(invalid_export)?;
+            delivery.validate().map_err(StoreError::invalid)?;
             if delivery.body_hash != self.export_body_hash()? {
                 return Err(StoreError::Invalid(
                     "export callback changed its sealed body".into(),
@@ -53,8 +53,4 @@ impl ParseStep {
             .map_err(crate::encoding::identity_encoding)?;
         Ok(BlobHash(*hash.as_bytes()))
     }
-}
-
-fn invalid_export(error: impl std::fmt::Display) -> StoreError {
-    StoreError::Invalid(error.to_string())
 }

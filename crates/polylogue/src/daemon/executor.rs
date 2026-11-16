@@ -15,8 +15,9 @@
 //! as many as there are places stay parked for the next work; parked threads
 //! wake only when work arrives.
 
+use polylogue_model::LockExt as _;
 use std::collections::BinaryHeap;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 /// How long a stop waits for running work.
@@ -166,7 +167,7 @@ impl Executor {
         job: impl FnOnce() + Send + 'static,
     ) -> bool {
         let rank = rank(deadline);
-        let mut state = self.shared.lock();
+        let mut state = self.shared.state.locked();
         if state.stopping {
             return false;
         }
@@ -206,37 +207,38 @@ impl Executor {
     pub(crate) fn stop(&self, wait: Duration) -> usize {
         let until = Instant::now() + wait;
         self.refuse();
-        let mut state = self.shared.lock();
+        let mut state = self.shared.state.locked();
         while state.threads > 0 {
             let left = until.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 return state.running;
             }
-            state = self
-                .shared
-                .finished
-                .wait_timeout(state, left)
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .0;
+            state = polylogue_model::unpoisoned(self.shared.finished.wait_timeout(state, left)).0;
         }
         0
     }
 
     #[cfg(test)]
     pub(crate) fn threads(&self) -> usize {
-        self.shared.lock().threads
+        self.shared.state.locked().threads
     }
 
     /// Work started and not yet finished, holding a place or waiting
     /// outside one.
     #[cfg(test)]
     pub(crate) fn running(&self) -> usize {
-        self.shared.lock().running
+        self.shared.state.locked().running
     }
 
     #[cfg(test)]
     pub(crate) fn queued(&self) -> usize {
-        self.shared.lock().queues.iter().map(BinaryHeap::len).sum()
+        self.shared
+            .state
+            .locked()
+            .queues
+            .iter()
+            .map(BinaryHeap::len)
+            .sum()
     }
 }
 
@@ -244,7 +246,7 @@ impl Executor {
     /// Refuses new jobs and releases queued callers without waiting for work
     /// that already owns its execution. Transport drain can then precede join.
     pub(crate) fn refuse(&self) {
-        let mut state = self.shared.lock();
+        let mut state = self.shared.state.locked();
         state.stopping = true;
         let queued: Vec<_> = state.queues.iter_mut().flat_map(std::mem::take).collect();
         for queued in queued {
@@ -276,21 +278,12 @@ fn rank(deadline: Option<Instant>) -> Instant {
 
 impl Resumption {
     fn grant(&self, place: Option<Place>) {
-        *self
-            .granted
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(place);
+        *self.granted.locked() = Some(place);
         self.ready.notify_one();
     }
 }
 
 impl Shared {
-    fn lock(&self) -> MutexGuard<'_, State> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
     /// The queued work to start now and the place it takes: the earliest
     /// ranked work that has a free place it may use.
     fn take(state: &mut State) -> Option<(Queued, Place)> {
@@ -344,24 +337,21 @@ impl Shared {
             return;
         }
         let shared = Arc::clone(self);
-        match std::thread::Builder::new()
-            .name("polylogue-request".into())
-            .spawn(move || shared.serve())
-        {
+        match polylogue_model::spawn_named("polylogue-request", move || shared.serve()) {
             Ok(_) => state.threads += 1,
             Err(error) => eprintln!("polylogue: start a request thread: {error}"),
         }
     }
 
     fn release(self: &Arc<Self>, place: Place) {
-        let mut state = self.lock();
+        let mut state = self.state.locked();
         state.free[place.index()] += 1;
         self.dispatch(&mut state);
     }
 
     fn serve(self: Arc<Self>) {
         loop {
-            let mut state = self.lock();
+            let mut state = self.state.locked();
             let (queued, place) = loop {
                 if let Some(taken) = Self::take(&mut state) {
                     break taken;
@@ -372,10 +362,7 @@ impl Shared {
                     return;
                 }
                 state.parked += 1;
-                state = self
-                    .work
-                    .wait(state)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state = polylogue_model::unpoisoned(self.work.wait(state));
                 state.parked -= 1;
             };
             // More work may be startable than this thread can take.
@@ -403,7 +390,7 @@ impl Shared {
                 eprintln!("polylogue: a request panicked");
             }
             let held = HOLDING.with(|holding| holding.borrow_mut().take());
-            let mut state = self.lock();
+            let mut state = self.state.locked();
             state.running -= 1;
             if let Some(place) = held.and_then(|held| held.place) {
                 state.free[place.index()] += 1;
@@ -427,7 +414,7 @@ pub(crate) fn outside<T>(wait: impl FnOnce() -> T) -> T {
     let result = wait();
     let resumption = Arc::new(Resumption::default());
     {
-        let mut state = holding.shared.lock();
+        let mut state = holding.shared.state.locked();
         if state.stopping {
             drop(state);
             HOLDING.with(|current| {
@@ -448,18 +435,12 @@ pub(crate) fn outside<T>(wait: impl FnOnce() -> T) -> T {
         });
         holding.shared.dispatch(&mut state);
     }
-    let mut granted = resumption
-        .granted
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut granted = resumption.granted.locked();
     let place = loop {
         if let Some(place) = *granted {
             break place;
         }
-        granted = resumption
-            .ready
-            .wait(granted)
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        granted = polylogue_model::unpoisoned(resumption.ready.wait(granted));
     };
     drop(granted);
     HOLDING.with(|current| *current.borrow_mut() = Some(Holding { place, ..holding }));

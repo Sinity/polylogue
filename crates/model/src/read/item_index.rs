@@ -26,36 +26,17 @@ pub enum EntryKind {
     Other,
     Event,
 }
-impl EntryKind {
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Header => "header",
-            Self::Text => "text",
-            Self::Thinking => "thinking",
-            Self::ThinkingEncrypted => "thinking_encrypted",
-            Self::Call => "call",
-            Self::Result => "result",
-            Self::Attachment => "attachment",
-            Self::Other => "other",
-            Self::Event => "event",
-        }
-    }
-    pub fn parse(name: &str) -> Option<Self> {
-        [
-            Self::Header,
-            Self::Text,
-            Self::Thinking,
-            Self::ThinkingEncrypted,
-            Self::Call,
-            Self::Result,
-            Self::Attachment,
-            Self::Other,
-            Self::Event,
-        ]
-        .into_iter()
-        .find(|kind| kind.name() == name)
-    }
-}
+stored_names!(EntryKind, name, parse {
+    Header => "header",
+    Text => "text",
+    Thinking => "thinking",
+    ThinkingEncrypted => "thinking_encrypted",
+    Call => "call",
+    Result => "result",
+    Attachment => "attachment",
+    Other => "other",
+    Event => "event",
+});
 
 /// The context facts an in-place event carries for composition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]

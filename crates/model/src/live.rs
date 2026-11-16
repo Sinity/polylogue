@@ -12,6 +12,7 @@
 //! prose or shell-command text.
 
 use crate::Json;
+use crate::JsonExt;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -325,7 +326,7 @@ const PATCH_HEADERS: &[&str] = &[
 
 /// The files a finished tool call changed, from its structured input.
 fn edited_paths(data: &Json) -> Vec<String> {
-    let tool = data.get("tool_name").and_then(Json::as_str).unwrap_or("");
+    let tool = data.str("tool_name").unwrap_or("");
     if let Some((_, pointer)) = EDIT_TOOLS.iter().find(|(name, _)| *name == tool) {
         return data
             .pointer(pointer)
@@ -356,13 +357,13 @@ fn edited_paths(data: &Json) -> Vec<String> {
 
 /// The in-progress item of a `TodoWrite` call, as text.
 fn todo_in_progress(data: &Json) -> Option<String> {
-    if data.get("tool_name").and_then(Json::as_str) != Some("TodoWrite") {
+    if data.str("tool_name") != Some("TodoWrite") {
         return None;
     }
     data.pointer("/tool_input/todos")?
         .as_array()?
         .iter()
-        .find(|t| t.get("status").and_then(Json::as_str) == Some("in_progress"))
+        .find(|t| t.str("status") == Some("in_progress"))
         .and_then(|t| {
             t.get("activeForm")
                 .or_else(|| t.get("content"))
@@ -470,13 +471,10 @@ impl LiveFacts {
             "user_prompt_submit" | "before_agent" | "pre_llm_call" => self.resume_work(at),
             "pre_tool_use" | "before_tool" => {
                 self.resume_work(at);
-                let tool = data.get("tool_name").and_then(Json::as_str).unwrap_or("");
+                let tool = data.str("tool_name").unwrap_or("");
                 self.open_call = Some(OpenCall {
                     tool: tool.to_owned(),
-                    call_id: data
-                        .get("tool_use_id")
-                        .and_then(Json::as_str)
-                        .map(str::to_owned),
+                    call_id: data.str("tool_use_id").map(str::to_owned),
                     at,
                 });
                 match tool {
@@ -498,18 +496,14 @@ impl LiveFacts {
             "permission_request" => {
                 self.set_waiting(WaitingOn::Permission, at);
                 self.pending_request = Some(PendingRequest {
-                    tool: data
-                        .get("tool_name")
-                        .and_then(Json::as_str)
-                        .unwrap_or("")
-                        .to_owned(),
+                    tool: data.str("tool_name").unwrap_or("").to_owned(),
                     input: data.get("tool_input").cloned().unwrap_or(Json::Null),
                     at,
                 });
             }
             "permission_denied" | "elicitation_result" => self.resume_work(at),
             "elicitation" => self.set_waiting(WaitingOn::Question, at),
-            "notification" => match data.get("notification_type").and_then(Json::as_str) {
+            "notification" => match data.str("notification_type") {
                 Some("permission_prompt") => self.set_waiting(WaitingOn::Permission, at),
                 Some("elicitation_dialog") => self.set_waiting(WaitingOn::Question, at),
                 Some("idle_prompt") => self.stop(at),
@@ -517,7 +511,7 @@ impl LiveFacts {
             },
             "stop" | "after_agent" => {
                 self.stop(at);
-                if data.get("ending").and_then(Json::as_str) == Some("question") {
+                if data.str("ending") == Some("question") {
                     self.set_waiting(WaitingOn::Question, at);
                 }
             }
@@ -541,9 +535,9 @@ impl LiveFacts {
                 self.edited_files.clear();
             }
             "task_claimed" => {
-                self.task = data.get("task").and_then(Json::as_str).map(str::to_owned);
+                self.task = data.str("task").map(str::to_owned);
             }
-            "task_released" if self.task.as_deref() == data.get("task").and_then(Json::as_str) => {
+            "task_released" if self.task.as_deref() == data.str("task") => {
                 self.task = None;
             }
             _ => {}
@@ -570,8 +564,7 @@ impl LiveFacts {
             return;
         }
         for path in data
-            .get("files")
-            .and_then(Json::as_array)
+            .array("files")
             .into_iter()
             .flatten()
             .filter_map(Json::as_str)
@@ -602,7 +595,7 @@ impl LiveFacts {
             self.edited_files.clear();
             return;
         }
-        if let Some(word) = data.get("status").and_then(Json::as_str) {
+        if let Some(word) = data.str("status") {
             self.harness_status = Some(HarnessStatus {
                 word: word.to_owned(),
                 at,

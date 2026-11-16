@@ -2,7 +2,6 @@
 //! exported file name the sender's inputs and never decide local ones.
 use crate::{Reader, Result, StoreError};
 use polylogue_model::bundle::{ImportedEventIdentity, InputEventRecord, SourceClaim};
-use polylogue_model::export::EventExport;
 use polylogue_model::{Event, SessionId};
 use rusqlite::OptionalExtension;
 
@@ -48,17 +47,21 @@ impl Reader<'_> {
         let through = end
             .map(u64::try_from)
             .transpose()
-            .map_err(|_| StoreError::Invalid("negative event source coordinate".into()))?;
+            .map_err(|_| StoreError::stored(5, "negative event source coordinate"))?;
         let stored_commit = committed
-            .and_then(|n| u64::try_from(n).ok())
-            .filter(|n| *n > 0);
+            .map(|value| {
+                u64::try_from(value)
+                    .ok()
+                    .filter(|value| *value > 0)
+                    .ok_or_else(|| StoreError::stored(6, "invalid event commit position"))
+            })
+            .transpose()?;
         let committed = match stored_commit {
             Some(commit) => Some(commit),
             None => self.source_commit(&input, chain, through)?,
         };
-        let commit = committed.ok_or_else(|| {
-            StoreError::Invalid("selected event has no stored commit position".into())
-        })?;
+        let commit = committed
+            .ok_or_else(|| StoreError::stored(6, "selected event has no stored commit position"))?;
         let mut sources = Vec::new();
         let mut statement = self.conn()?.prepare_cached(
             "SELECT i.id,i.format,s.chain,s.source_start,s.source_end,s.imported_sources
@@ -67,32 +70,16 @@ impl Reader<'_> {
              JOIN input_ref i ON i.pk=s.input_pk
              WHERE s.event_pk=?1 AND s.value_pk=selected.value_pk AND s.fields=selected.fields ORDER BY i.id,s.chain")?;
         let rows = statement.query_map([pk], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, Option<i64>>(3)?,
-                r.get::<_, Option<i64>>(4)?,
-                r.get::<_, String>(5)?,
-            ))
+            <(String, String, i64, Option<u64>, Option<u64>, String)>::try_from(r)
         })?;
         for row in rows {
             let (input, source, source_chain, start, end, original) = row?;
-            let coordinate = |value: Option<i64>| {
-                value
-                    .map(|value| {
-                        u64::try_from(value).map_err(|_| {
-                            StoreError::Invalid("negative event source coordinate".into())
-                        })
-                    })
-                    .transpose()
-            };
             sources.push(SourceClaim {
                 input,
                 source,
                 source_chain,
-                source_start: coordinate(start)?,
-                source_end: coordinate(end)?,
+                source_start: start,
+                source_end: end,
             });
             sources.extend(serde_json::from_str::<Vec<SourceClaim>>(&original)?);
         }
@@ -103,32 +90,13 @@ impl Reader<'_> {
         identity.canonicalize();
         identity
             .validate()
-            .map_err(|error| StoreError::Invalid(error.to_string()))?;
+            .map_err(|error| StoreError::stored(2, error.to_string()))?;
         Ok(Some(InputEventRecord {
             reference: format!("event:{id}"),
             commit,
             identity,
             event,
         }))
-    }
-
-    /// Events in the session's reading order, keeping identities and source citations.
-    pub fn event_records(&self, session: &SessionId) -> Result<Vec<InputEventRecord>> {
-        let mut records = Vec::new();
-        self.visit_event_records(session, |record| {
-            records.push(record);
-            std::ops::ControlFlow::Continue(())
-        })?;
-        Ok(records)
-    }
-
-    /// Visit selected events in reading order without retaining the session's payloads.
-    pub fn visit_event_records(
-        &self,
-        session: &SessionId,
-        visit: impl FnMut(InputEventRecord) -> std::ops::ControlFlow<()>,
-    ) -> Result<()> {
-        self.visit_event_records_from_ordinal(session, 0, visit)
     }
 
     /// Seek within the physical session's stored event order before decoding.
@@ -147,7 +115,7 @@ impl Reader<'_> {
             let id: String = row.get(0)?;
             let record = self
                 .event_record(&id)?
-                .ok_or_else(|| StoreError::Invalid("selected event disappeared".into()))?;
+                .ok_or_else(|| StoreError::stored(0, "selected event disappeared"))?;
             if visit(record).is_break() {
                 break;
             }
@@ -155,26 +123,11 @@ impl Reader<'_> {
         Ok(())
     }
 
-    pub fn event_export(&self, id: &str) -> Result<Option<EventExport>> {
-        let Some(record) = self.event_record(id)? else {
-            return Ok(None);
-        };
-        let local: (String,String,i64,Option<i64>,Option<i64>) = self.conn()?.query_row(
-            "SELECT i.id,i.format,e.source_chain,e.source_start,e.source_end FROM event e JOIN input_ref i ON i.pk=e.input_pk WHERE e.id=?1",
-            [id],|r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
-        Ok(Some(EventExport {
-            id: id.to_owned(),
-            input: local.0,
-            source: local.1,
-            source_chain: local.2,
-            source_start: local.3.map(|n| n as u64),
-            source_end: local.4.map(|n| n as u64),
-            event: record.event,
-        }))
-    }
-
     pub fn event_sources(&self, id: &str) -> Result<Vec<polylogue_model::Json>> {
         self.query("SELECT i.id AS input,i.format AS source,s.chain,s.source_start,s.source_end
             FROM event_source s JOIN event e ON e.pk=s.event_pk JOIN input_ref i ON i.pk=s.input_pk WHERE e.id=?1 ORDER BY i.id,s.chain",&[crate::SqlValue::Text(id.into())])
     }
 }
+
+#[cfg(test)]
+mod tests;

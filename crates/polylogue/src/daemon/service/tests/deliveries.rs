@@ -149,7 +149,7 @@ fn brief(d: &test_daemon::TestDaemon, request_id: &str, source: StartSource) -> 
     )
     .id(request_id)
     .surface(crate::commands::Surface::Hook);
-    match (request).answer(&d.daemon) {
+    match request.answer(&d.daemon) {
         command_surface::Answer {
             outcome: command_surface::Outcome::Ok(data),
             ..

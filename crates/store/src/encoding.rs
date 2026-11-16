@@ -668,10 +668,5 @@ pub(crate) fn session_order(
     format!("{time}{input}\u{1}{}{}", sortable(seq), sortable(position))
 }
 
-/// Lowercase hexadecimal.
-pub(crate) fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 #[cfg(test)]
 mod tests;

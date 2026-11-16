@@ -36,7 +36,7 @@ pub(super) const SHELL_CALLS: &str =
 fn normalize(conn: &Connection, session_pk: i64) -> Result<Vec<(i64, Option<String>)>> {
     let calls: Vec<(i64, Option<String>)> = conn
         .prepare_cached(SHELL_CALLS)?
-        .query_map([session_pk], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .query_map([session_pk], |r| <(_, _)>::try_from(r))?
         .collect::<rusqlite::Result<_>>()?;
     Ok(calls
         .into_iter()
@@ -83,7 +83,7 @@ fn passed_without_result(conn: &Connection, session_pk: i64) -> Result<Vec<(i64,
              WHERE session_pk = ?1 AND result_block_pk IS NULL AND outcome = 'unknown'
                AND outcome_reason IN ('no_result', 'passed_without_result')",
         )?
-        .query_map([session_pk], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .query_map([session_pk], |r| <(_, _, _)>::try_from(r))?
         .collect::<rusqlite::Result<_>>()?;
     Ok(calls
         .into_iter()

@@ -46,7 +46,7 @@ impl Call<'_> {
     /// A reader from the pool; a closed pool means the daemon is stopping.
     pub fn reader(&self) -> Result<polylogue_store::Reader<'_>, Failure> {
         let reader = self.daemon.reads.reader().map_err(|error| match error {
-            polylogue_store::StoreError::ReadPoolClosed => Failure::new("shutting_down", error),
+            polylogue_store::StoreError::ReadPoolClosed => Failure::shutting_down(error),
             error => Failure::from(error),
         })?;
         #[cfg(test)]
@@ -70,12 +70,9 @@ impl Call<'_> {
         match (named, &self.caller.cwd) {
             (Some(dir), Some(base)) => Ok(base.join(dir)),
             (Some(dir), None) if dir.is_absolute() => Ok(dir.into()),
-            (Some(_), None) => Err(Failure::new(
-                "bad_request",
-                "`cwd` must be an absolute path",
-            )),
+            (Some(_), None) => Err(Failure::bad_request("`cwd` must be an absolute path")),
             (None, Some(base)) => Ok(base.clone()),
-            (None, None) => Err(Failure::new("bad_request", "`cwd` is required")),
+            (None, None) => Err(Failure::bad_request("`cwd` is required")),
         }
     }
 
@@ -96,12 +93,9 @@ pub(crate) fn resolve_path(
         return Ok(path.into());
     }
     cwd.map(|base| base.join(path)).ok_or_else(|| {
-        Failure::new(
-            "bad_request",
-            format!(
-                "a relative {what} requires the caller's working directory; supply an absolute path"
-            ),
-        )
+        Failure::bad_request(format!(
+            "a relative {what} requires the caller's working directory; supply an absolute path"
+        ))
     })
 }
 
@@ -329,10 +323,10 @@ impl Registration {
     ) -> Result<(), Failure> {
         match self.produce {
             Some(produce) => produce(arguments, row, daemon, invocation, caller, context, output),
-            None => Err(Failure::new(
-                "bad_request",
-                format!("{} answers once; it has no stream", row.name),
-            )),
+            None => Err(Failure::bad_request(format!(
+                "{} answers once; it has no stream",
+                row.name
+            ))),
         }
     }
 }
@@ -358,7 +352,7 @@ impl FeedRegistration {
 }
 
 fn decode<T: DeserializeOwned>(arguments: &Value) -> Result<T, Failure> {
-    T::deserialize(arguments).map_err(|error| Failure::new("bad_request", error))
+    T::deserialize(arguments).map_err(Failure::bad_request)
 }
 
 fn declare<H: Handler>(declarations: &mut DeclarationsBuilder, row: &'static Command) {
@@ -413,26 +407,27 @@ fn answer_local<H: Handler>(
             .ok()
     });
     match problem {
-        Some(error) => Failure::new("internal", error).answer(),
+        Some(error) => Failure::internal(error).answer(),
         None => serialized.map(|value| value.expect("serialized without a problem")),
     }
 }
 
 fn admit_feed<F: Feed>(request: &command_surface::RunnableRequest) -> Result<(), Failure> {
     if request.request_id.is_empty() {
-        return Err(Failure::new("bad_request", "request_id must not be empty"));
+        return Err(Failure::bad_request("request_id must not be empty"));
     }
     if !request.arguments.is_object() {
-        return Err(Failure::new("bad_request", "arguments must be an object"));
+        return Err(Failure::bad_request("arguments must be an object"));
     }
     if let Some(option) = command_surface::RequestOption::ALL
         .into_iter()
         .find(|option| option.used_by(request))
     {
-        return Err(Failure::new(
-            "bad_request",
-            format!("{} does not take {}", request.operation, option.name()),
-        ));
+        return Err(Failure::bad_request(format!(
+            "{} does not take {}",
+            request.operation,
+            option.name()
+        )));
     }
     decode::<F::Arguments>(&request.arguments).map(drop)
 }
@@ -822,14 +817,10 @@ pub(crate) fn finish_read_phase(stage: &'static str) -> Result<(), Failure> {
 /// daemon's own pages and for tests.
 pub(crate) fn local(operation: &str, arguments: Value, local: &Local<'_>) -> Answer<Value> {
     let Some(row) = crate::commands::command(operation) else {
-        return Failure::new("bad_request", format!("unknown operation {operation}")).answer();
+        return Failure::bad_request(format!("unknown operation {operation}")).answer();
     };
     let Some(registration) = row.registration() else {
-        return Failure::new(
-            "bad_request",
-            format!("{operation} runs in the calling process"),
-        )
-        .answer();
+        return Failure::bad_request(format!("{operation} runs in the calling process")).answer();
     };
     registration.answer(&arguments, row, local)
 }

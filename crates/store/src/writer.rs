@@ -11,9 +11,12 @@
 //! behind its bytes; the loop parses them again, and every write here is an
 //! upsert, so that changes nothing.
 
+use crate::ConnExt as _;
+use crate::OptionExt as _;
 use crate::archive::{Archive, bump_counter, open_runtime_writer};
 use crate::blobs::{Change, FileFacts, NewBlob};
 use crate::{Result, StoreError};
+use polylogue_model::LockExt;
 use polylogue_model::{
     BlobHash, Block, ErrorReason, Event, Json, Link, Message, MessageRow, Output, RecordCounts,
     Session, SessionId, Timestamp, ToolAction, ToolOutcome,
@@ -452,10 +455,7 @@ impl Writer {
         let building = !archive.is_primary() && archive.index_build.building();
         let index = open_index_writer(archive, building)?;
         let installed = archive.root.join("index.db");
-        let empty: bool =
-            index.query_row("SELECT NOT EXISTS (SELECT 1 FROM parse_state)", [], |r| {
-                r.get(0)
-            })?;
+        let empty: bool = index.scalar("SELECT NOT EXISTS (SELECT 1 FROM parse_state)", [])?;
         // A first build inserts rows without maintaining the indexes only
         // reads use, or the unique indexes on natural keys; each is built
         // once from a sorted scan when the build ends. The writer's other
@@ -472,13 +472,10 @@ impl Writer {
                 rusqlite::TransactionBehavior::Immediate,
             )?;
             for name in deferred_index_names() {
-                let sql: Option<String> = expected
-                    .query_row(
-                        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1",
-                        [name],
-                        |r| r.get(0),
-                    )
-                    .optional()?;
+                let sql: Option<String> = expected.scalar_optional(
+                    "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                    [name],
+                )?;
                 if let Some(sql) = sql {
                     tx.execute(&format!("DROP INDEX IF EXISTS \"{name}\""), [])?;
                     defs.push(sql);
@@ -548,9 +545,7 @@ impl Writer {
             stream_error: None,
         };
 
-        let handle = std::thread::Builder::new()
-            .name("polylogue-writer".into())
-            .spawn(move || inner.run(&rx))?;
+        let handle = polylogue_model::spawn_named("polylogue-writer", move || inner.run(&rx))?;
         let follower = stream_source
             .map(|sinex| follow::Follower::start(sinex, queue.clone(), archive))
             .transpose()?;
@@ -574,7 +569,7 @@ impl Writer {
         let follower = self
             .follower
             .as_ref()
-            .ok_or_else(|| StoreError::Invalid("this writer is standalone".into()))?;
+            .or_invalid("this writer is standalone")?;
         follower.synchronize()?;
         // Acknowledged material can now produce input/reading events. Wait
         // outside the writer thread while the follower reads the next page.
@@ -1436,9 +1431,7 @@ impl Inner {
             let _busy = crate::timing::writer_started();
             self.serve_users();
             let turn = Arc::clone(&self.search.turn);
-            let _turn = turn
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _turn = turn.locked();
             let mut stopping = false;
             let mut group = Vec::new();
             let mut rows = 0;
@@ -2072,8 +2065,7 @@ impl Inner {
         {
             return Ok(new_blob.hash);
         }
-        let file =
-            file.ok_or_else(|| StoreError::Invalid("new blob has no prepared bytes".into()))?;
+        let file = file.or_invalid("new blob has no prepared bytes")?;
         if file.owner != self.location.root
             || file.hash() != new_blob.hash
             || file.len() != new_blob.size
@@ -2145,18 +2137,15 @@ impl Inner {
         }
         let tx = self.archive.transaction()?;
         scoped::require_current(&self.location, scope)?;
-        let known: bool = tx.query_row(
+        let known: bool = tx.exists(
             "SELECT EXISTS(SELECT 1 FROM client_request WHERE id=?1)",
             [&request.id],
-            |row| row.get(0),
         )?;
         let seq = if known {
-            tx.query_row(
+            tx.scalar_optional(
                 "SELECT CAST(value AS INTEGER) FROM meta WHERE key='write_counter'",
                 [],
-                |row| row.get(0),
-            )
-            .optional()?
+            )?
             .unwrap_or(0)
         } else {
             bump_counter(&tx)?
@@ -2329,15 +2318,19 @@ impl Inner {
                         p.parsed_upto,
                     )?;
                     stats.1 += write_rows(
-                        &self.texts,
                         &itx,
                         b,
                         p,
-                        resolution,
-                        counter,
-                        self.first_build.as_deref(),
-                        Some(&source_commit),
-                        &changes,
+                        rows::ReadingWrite {
+                            texts: &self.texts,
+                            resolution,
+                            counter,
+                            first_build: self.first_build.as_deref(),
+                            source_commit: Some(&source_commit),
+                            changes: &changes,
+                            retraction: false,
+                            replacement: false,
+                        },
                     )?;
                 }
                 if b.parse.iter().any(|p| p.progress.reached_end()) {

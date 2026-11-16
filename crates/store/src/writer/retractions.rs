@@ -60,7 +60,21 @@ pub(crate) fn apply_source_retractions(
                 .ok_or_else(|| {
                     StoreError::Invalid("source retraction was not resolved for its chain".into())
                 })?;
-            rows::retract_source(texts, tx, batch, step, resolution, counter, changes)?;
+            rows::retract_source(
+                tx,
+                batch,
+                step,
+                rows::ReadingWrite {
+                    texts,
+                    resolution,
+                    counter,
+                    first_build: None,
+                    source_commit: None,
+                    changes,
+                    retraction: false,
+                    replacement: false,
+                },
+            )?;
         }
         rows::prune_sessions(tx, &batch.input.id, chain, counter)?;
     }

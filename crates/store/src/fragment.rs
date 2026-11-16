@@ -2,7 +2,7 @@
 //! source memberships and commits are independent of every coordinate and
 //! commit the sender's payload states.
 use crate::{Result, StoreError};
-use polylogue_model::bundle::fragments::{TextFragmentError, TextSourceVersion};
+use polylogue_model::bundle::fragments::TextSourceVersion;
 use polylogue_model::{BlobHash, Output, batch::FragmentRow};
 use rusqlite::{Connection, params};
 
@@ -17,14 +17,10 @@ struct PreparedFragment {
     body: Vec<u8>,
 }
 
-pub(crate) fn invalid(error: TextFragmentError) -> StoreError {
-    StoreError::Invalid(error.to_string())
-}
-
 pub(crate) fn version_key(version: &TextSourceVersion) -> Result<String> {
     let bytes =
         canonical_json::canonical_json(version).map_err(crate::encoding::identity_encoding)?;
-    String::from_utf8(bytes).map_err(|error| StoreError::Invalid(error.to_string()))
+    String::from_utf8(bytes).map_err(crate::StoreError::invalid)
 }
 
 impl PreparedFragments {
@@ -34,7 +30,7 @@ impl PreparedFragments {
             .fragments
             .iter()
             .map(|row| {
-                row.record.validate().map_err(invalid)?;
+                row.record.validate().map_err(crate::StoreError::invalid)?;
                 if row.offset > row.end || i64::try_from(row.end).is_err() {
                     return Err(StoreError::Invalid(
                         "invalid receiving fragment byte range".into(),

@@ -577,8 +577,10 @@ fn an_answer_from_another_protocol_is_refused_before_it_is_printed() {
             "{name}"
         );
     }
-    let failed: Answer<serde_json::Value> =
-        Answer::error(crate::protocol::failure("not_found", "nothing"));
+    let failed: Answer<serde_json::Value> = Answer::error(crate::protocol::failure(
+        polylogue_model::Code::NotFound,
+        "nothing",
+    ));
     assert!(
         crate::commands::declarations()
             .validate_answer("query", &failed)

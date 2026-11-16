@@ -8,6 +8,7 @@
 //! thinking, tool use and results); claude.ai runs some tools itself, so a
 //! tool result can sit in the assistant message that made the call.
 
+use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 2;
 
@@ -16,7 +17,7 @@ mod fields;
 mod sidecars;
 
 use crate::chatgpt::first_byte;
-use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
+use crate::document::{Sink, first_key, message_id, session_id, time_of};
 use crate::fields::{Fields, Rule};
 use crate::parse::{DocumentParser, ExtractedBlob, MessageRow, Output, Parse};
 use crate::{RecordOutcome, Records};
@@ -233,7 +234,7 @@ static CONVERSATION_FIELDS: Fields = Fields::new(
 
 /// One claude.ai conversation object, shared with browser captures.
 pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
-    let Some(native) = str_of(conv, "uuid") else {
+    let Some(native) = conv.str("uuid").filter(|s| !s.is_empty()) else {
         sink.records
             .record("conversation", &RecordOutcome::unreadable("no uuid"));
         return;
@@ -243,7 +244,7 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
             .record("conversation", &RecordOutcome::unreadable("unusable uuid"));
         return;
     };
-    let Some(messages) = conv.get("chat_messages").and_then(Json::as_array) else {
+    let Some(messages) = conv.array("chat_messages") else {
         sink.records.record(
             "conversation",
             &RecordOutcome::unreadable("no chat_messages"),
@@ -251,10 +252,10 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
         return;
     };
     let mut session = Session::new(sid.clone(), SessionKind::Main);
-    if let Some(name) = str_of(conv, "name") {
+    if let Some(name) = conv.str("name").filter(|s| !s.is_empty()) {
         session.offer_title(name, TitleSource::Generated);
     }
-    if let Some(summary) = str_of(conv, "summary") {
+    if let Some(summary) = conv.str("summary").filter(|s| !s.is_empty()) {
         session.offer_title(summary, TitleSource::Summary);
     }
     if let Some(at) = conv.get("created_at").and_then(time_of) {
@@ -293,27 +294,35 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
         &crate::fields::header(conv, &["chat_messages"]),
         &CONVERSATION_FIELDS,
     );
-    let model = string_of(conv, "model");
+    let model = conv
+        .str("model")
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
     let mut rows = Vec::new();
     let mut summary_ids = crate::content_ids::ContentIds::default();
     for (i, m) in messages.iter().enumerate() {
-        let kind = str_of(m, "sender").unwrap_or("?").to_owned();
+        let kind = m
+            .str("sender")
+            .filter(|s| !s.is_empty())
+            .unwrap_or("?")
+            .to_owned();
         sink.records.fields(&kind, m, &MESSAGE_FIELDS);
         match message(&sid, native, i, m, model.as_deref()) {
             Ok(msg) => {
                 // Summaries are readable messages; the boundary names that
                 // message and preserves the provider's replacement context.
                 if let Some(summary) = m
-                    .get("compaction_summary")
-                    .and_then(Json::as_array)
+                    .array("compaction_summary")
                     .filter(|parts| !parts.is_empty())
                 {
                     let mut blocks: Vec<_> = summary
                         .iter()
                         .filter_map(|part| {
-                            str_of(part, "text").map(|text| Block::Text {
-                                text: text.to_owned(),
-                            })
+                            part.str("text")
+                                .filter(|s| !s.is_empty())
+                                .map(|text| Block::Text {
+                                    text: text.to_owned(),
+                                })
                         })
                         .collect();
                     let summary_id = (!blocks.is_empty())
@@ -334,7 +343,7 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
                                 .attrs
                                 .insert("content".into(), Json::Array(details));
                         }
-                        let index = m.get("index").and_then(Json::as_i64).unwrap_or(i as i64);
+                        let index = m.i64("index").unwrap_or(i as i64);
                         rows.push((
                             msg.at.map(|at| at.unix_ms()),
                             index,
@@ -379,7 +388,7 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
                 }
                 collect_inline(m, &mut sink.out.blobs);
                 let at = msg.at.map(|t| t.unix_ms());
-                let index = m.get("index").and_then(Json::as_i64).unwrap_or(i as i64);
+                let index = m.i64("index").unwrap_or(i as i64);
                 rows.push((at, index, i, 1, polylogue_model::IdKind::Native, msg));
                 sink.records.record(&kind, &RecordOutcome::Used);
             }
@@ -397,7 +406,9 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
             message,
         });
     }
-    if let Some(leaf) = str_of(conv, "current_leaf_message_uuid")
+    if let Some(leaf) = conv
+        .str("current_leaf_message_uuid")
+        .filter(|s| !s.is_empty())
         && let Some(id) = message_id(ORIGIN, leaf)
     {
         sink.out.events.push({
@@ -427,19 +438,16 @@ fn message(
     // A message the export wrote without a uuid keeps its identity by its
     // place in the conversation: the same place is the
     // same message, and changed text there is a new version of it.
-    let native = match str_of(m, "uuid") {
+    let native = match m.str("uuid").filter(|s| !s.is_empty()) {
         Some(u) => u.to_owned(),
         None => {
-            let place = m
-                .get("index")
-                .and_then(Json::as_u64)
-                .unwrap_or(position as u64);
+            let place = m.u64("index").unwrap_or(position as u64);
             format!("{conversation}#{place}")
         }
     };
     let id =
         message_id(ORIGIN, &native).ok_or_else(|| RecordOutcome::unreadable("unusable uuid"))?;
-    let (role, prompt_kind, direction) = match str_of(m, "sender") {
+    let (role, prompt_kind, direction) = match m.str("sender").filter(|s| !s.is_empty()) {
         Some("human") => (
             Role::User,
             Some(PromptKind::Prose),
@@ -450,7 +458,7 @@ fn message(
         None => return Err(RecordOutcome::unreadable("no sender")),
     };
     let mut blocks = Vec::new();
-    let content = m.get("content").and_then(Json::as_array);
+    let content = m.array("content");
     for (position, b) in content.into_iter().flatten().enumerate() {
         if let Some(block) = content_block(b, direction) {
             blocks.push(block);
@@ -467,12 +475,14 @@ fn message(
     }
     // Older exports carry only the flat text.
     if content.is_none_or(|c| c.is_empty())
-        && let Some(text) = string_of(m, "text")
+        && let Some(text) = m.str("text").filter(|s| !s.is_empty()).map(str::to_owned)
     {
         blocks.push(Block::Text { text });
     }
     blocks.extend(attachments(m, direction));
-    let parent = str_of(m, "parent_message_uuid")
+    let parent = m
+        .str("parent_message_uuid")
+        .filter(|s| !s.is_empty())
         .filter(|p| *p != ROOT_PARENT)
         .and_then(|p| message_id(ORIGIN, p));
     Ok({
@@ -487,12 +497,20 @@ fn message(
             at_precision: time_evidence.precision,
             at_until: time_evidence.until,
             model: (role == Role::Assistant)
-                .then(|| string_of(m, "model").or_else(|| model.map(str::to_owned)))
+                .then(|| {
+                    m.str("model")
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                        .or_else(|| model.map(str::to_owned))
+                })
                 .flatten(),
             prompt_kind,
             blocks,
             usage: Default::default(),
-            stop_reason: string_of(m, "stop_reason"),
+            stop_reason: m
+                .str("stop_reason")
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
             reported_cost_usd: None,
             duration_ms: None,
             attrs: content_attrs(m),
@@ -507,8 +525,7 @@ fn content_attrs(message: &Json) -> serde_json::Map<String, Json> {
         attrs.insert("metadata".into(), value.clone());
     }
     let details = message
-        .get("content")
-        .and_then(Json::as_array)
+        .array("content")
         .map(|parts| content_details(parts))
         .unwrap_or_default();
     if !details.is_empty() {
@@ -540,38 +557,48 @@ fn content_details(parts: &[Json]) -> Vec<Json> {
 
 /// One content block. Provider-only kinds remain structured index blocks.
 fn content_block(b: &Json, direction: AttachmentDirection) -> Option<Block> {
-    let kind = str_of(b, "type").unwrap_or("");
+    let kind = b.str("type").filter(|s| !s.is_empty()).unwrap_or("");
     Some(match kind {
         "text" => Block::Text {
-            text: string_of(b, "text")?,
+            text: b.str("text").filter(|s| !s.is_empty()).map(str::to_owned)?,
         },
         "voice_note" => Block::Text {
-            text: string_of(b, "text")?,
+            text: b.str("text").filter(|s| !s.is_empty()).map(str::to_owned)?,
         },
         "thinking" => {
-            let text = string_of(b, "thinking").or_else(|| {
-                // When the reasoning itself is withheld, its summaries remain.
-                let summaries: Vec<&str> = b
-                    .get("summaries")
-                    .and_then(Json::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|s| str_of(s, "summary").or_else(|| str_of(s, "text")))
-                    .collect();
-                (!summaries.is_empty()).then(|| summaries.join("\n"))
-            });
+            let text = b
+                .str("thinking")
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .or_else(|| {
+                    // When the reasoning itself is withheld, its summaries remain.
+                    let summaries: Vec<&str> = b
+                        .array("summaries")
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|s| {
+                            s.str("summary")
+                                .filter(|s| !s.is_empty())
+                                .or_else(|| s.str("text").filter(|s| !s.is_empty()))
+                        })
+                        .collect();
+                    (!summaries.is_empty()).then(|| summaries.join("\n"))
+                });
             Block::Thinking {
                 text,
-                signature: string_of(b, "signature"),
-                redacted: b.get("thinking_hidden").and_then(Json::as_bool) == Some(true),
+                signature: b
+                    .str("signature")
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned),
+                redacted: b.bool("thinking_hidden") == Some(true),
             }
         }
         "tool_use" => Block::ToolCall {
             written_text: None,
             run_by_script: false,
-            call_id: string_of(b, "id"),
-            tool: string_of(b, "name"),
-            action: action(str_of(b, "name").unwrap_or("")),
+            call_id: b.str("id").filter(|s| !s.is_empty()).map(str::to_owned),
+            tool: b.str("name").filter(|s| !s.is_empty()).map(str::to_owned),
+            action: action(b.str("name").filter(|s| !s.is_empty()).unwrap_or("")),
             input: b.get("input").cloned().unwrap_or(Json::Null),
             command: b
                 .pointer("/input/command")
@@ -595,8 +622,10 @@ fn content_block(b: &Json, direction: AttachmentDirection) -> Option<Block> {
 }
 
 fn inline_bytes(block: &Json) -> Option<Vec<u8>> {
-    if !matches!(str_of(block, "type"), Some("image" | "document"))
-        || block.pointer("/source/type").and_then(Json::as_str) != Some("base64")
+    if !matches!(
+        block.str("type").filter(|s| !s.is_empty()),
+        Some("image" | "document")
+    ) || block.pointer("/source/type").and_then(Json::as_str) != Some("base64")
     {
         return None;
     }
@@ -608,7 +637,16 @@ fn inline_bytes(block: &Json) -> Option<Vec<u8>> {
 fn media_attachment(block: &Json, direction: AttachmentDirection) -> Attachment {
     let bytes = inline_bytes(block);
     Attachment {
-        name: string_of(block, "name").or_else(|| string_of(block, "title")),
+        name: block
+            .str("name")
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .or_else(|| {
+                block
+                    .str("title")
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+            }),
         media_type: block
             .pointer("/source/media_type")
             .and_then(Json::as_str)
@@ -667,9 +705,13 @@ fn tool_result(b: &Json, direction: AttachmentDirection) -> Block {
         Some(Json::String(s)) => texts.push(s.clone()),
         Some(Json::Array(items)) => {
             for item in items {
-                match str_of(item, "type") {
+                match item.str("type").filter(|s| !s.is_empty()) {
                     Some("text") => {
-                        if let Some(t) = string_of(item, "text") {
+                        if let Some(t) = item
+                            .str("text")
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned)
+                        {
                             texts.push(t);
                         }
                     }
@@ -682,18 +724,21 @@ fn tool_result(b: &Json, direction: AttachmentDirection) -> Block {
         }
         _ => {}
     }
-    let error = b.get("is_error").and_then(Json::as_bool) == Some(true);
+    let error = b.bool("is_error") == Some(true);
     let mut structured = b
         .get("structured_content")
         .filter(|v| !v.is_null())
         .cloned();
-    if let Some(items) = b.get("content").and_then(Json::as_array) {
+    if let Some(items) = b.array("content") {
         structured = Some(serde_json::json!({"structured_content":structured,"content":items}));
     }
 
     Block::ToolResult {
         reported_duration_ms: None,
-        call_id: string_of(b, "tool_use_id"),
+        call_id: b
+            .str("tool_use_id")
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
         outcome: if error {
             ToolOutcome::Error { reason: None }
         } else {
@@ -709,20 +754,25 @@ fn tool_result(b: &Json, direction: AttachmentDirection) -> Block {
 /// them) and `files` (by file UUID).
 fn attachments(m: &Json, direction: AttachmentDirection) -> Vec<Block> {
     let mut out = Vec::new();
-    for a in m
-        .get("attachments")
-        .and_then(Json::as_array)
-        .into_iter()
-        .flatten()
-    {
+    for a in m.array("attachments").into_iter().flatten() {
         out.push(Block::File(Attachment {
-            name: string_of(a, "file_name"),
-            media_type: string_of(a, "file_type"),
-            size: a.get("file_size").and_then(Json::as_u64),
+            name: a
+                .str("file_name")
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
+            media_type: a
+                .str("file_type")
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
+            size: a.u64("file_size"),
             direction,
             ..Attachment::default()
         }));
-        if let Some(text) = string_of(a, "extracted_content") {
+        if let Some(text) = a
+            .str("extracted_content")
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+        {
             // The text claude.ai read out of the file and gave the model.
             out.push(Block::Other {
                 type_name: "attachment_text".into(),
@@ -731,13 +781,24 @@ fn attachments(m: &Json, direction: AttachmentDirection) -> Vec<Block> {
         }
     }
     for key in ["files", "files_v2"] {
-        for f in m.get(key).and_then(Json::as_array).into_iter().flatten() {
-            let image = str_of(f, "file_kind") == Some("image")
-                || str_of(f, "file_type").is_some_and(|t| t.starts_with("image/"));
+        for f in m.array(key).into_iter().flatten() {
+            let image = f.str("file_kind").filter(|s| !s.is_empty()) == Some("image")
+                || f.str("file_type")
+                    .filter(|s| !s.is_empty())
+                    .is_some_and(|t| t.starts_with("image/"));
             let attachment = Attachment {
-                name: string_of(f, "file_name"),
-                media_type: string_of(f, "file_type"),
-                source_id: string_of(f, "file_uuid"),
+                name: f
+                    .str("file_name")
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned),
+                media_type: f
+                    .str("file_type")
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned),
+                source_id: f
+                    .str("file_uuid")
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned),
                 direction,
                 ..Attachment::default()
             };
@@ -776,13 +837,17 @@ impl DocumentParser for Design {
 }
 
 fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
-    let Some(sid) = str_of(chat, "uuid").and_then(|u| session_id(DESIGN_ORIGIN, u)) else {
+    let Some(sid) = chat
+        .str("uuid")
+        .filter(|s| !s.is_empty())
+        .and_then(|u| session_id(DESIGN_ORIGIN, u))
+    else {
         sink.records
             .record("chat", &RecordOutcome::unreadable("no uuid"));
         return;
     };
     let mut session = Session::new(sid.clone(), SessionKind::Main);
-    if let Some(title) = str_of(chat, "title") {
+    if let Some(title) = chat.str("title").filter(|s| !s.is_empty()) {
         session.offer_title(title, TitleSource::Generated);
     }
     if let Some(at) = chat.get("created_at").and_then(time_of) {
@@ -809,14 +874,17 @@ fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
         });
     }
     let mut previous: Option<polylogue_model::MessageId> = None;
-    for m in chat
-        .get("messages")
-        .and_then(Json::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let role_name = str_of(m, "role").unwrap_or("?").to_owned();
-        let Some(id) = str_of(m, "uuid").and_then(|u| message_id(DESIGN_ORIGIN, u)) else {
+    for m in chat.array("messages").into_iter().flatten() {
+        let role_name = m
+            .str("role")
+            .filter(|s| !s.is_empty())
+            .unwrap_or("?")
+            .to_owned();
+        let Some(id) = m
+            .str("uuid")
+            .filter(|s| !s.is_empty())
+            .and_then(|u| message_id(DESIGN_ORIGIN, u))
+        else {
             sink.records
                 .record(&role_name, &RecordOutcome::unreadable("no uuid"));
             continue;
@@ -845,15 +913,26 @@ fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
             }
             _ => {}
         }
-        for a in body
-            .get("attachments")
-            .and_then(Json::as_array)
-            .into_iter()
-            .flatten()
-        {
+        for a in body.array("attachments").into_iter().flatten() {
             blocks.push(Block::File(Attachment {
-                name: string_of(a, "name").or_else(|| string_of(a, "file_name")),
-                media_type: string_of(a, "type").or_else(|| string_of(a, "mime_type")),
+                name: a
+                    .str("name")
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        a.str("file_name")
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned)
+                    }),
+                media_type: a
+                    .str("type")
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        a.str("mime_type")
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned)
+                    }),
                 direction,
                 ..Attachment::default()
             }));

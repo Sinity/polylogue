@@ -19,11 +19,10 @@ pub(super) fn visit(
         current = Some(row);
         Ok(ControlFlow::Break(()))
     })?;
-    let current = current
-        .ok_or_else(|| Failure::new("stale_cursor", "the backward row is no longer selected"))?;
+    let current =
+        current.ok_or_else(|| Failure::stale_cursor("the backward row is no longer selected"))?;
     if start_row.is_some_and(|page_start| page_start.values != current.position.values) {
-        return Err(Failure::new(
-            "stale_cursor",
+        return Err(Failure::stale_cursor(
             "the backward row is no longer selected",
         ));
     }
@@ -44,7 +43,7 @@ pub(super) fn visit(
     reader.visit_selection_before_row::<Failure>(selection, &start_row_position, near, |row| {
         ordinal = ordinal
             .checked_sub(1)
-            .ok_or_else(|| Failure::new("stale_cursor", "the backward row number underflowed"))?;
+            .ok_or_else(|| Failure::stale_cursor("the backward row number underflowed"))?;
         rows.keys.insert(ordinal, row.position.clone());
         Ok(if walk.row(ordinal, row, None, near)? {
             ControlFlow::Continue(())
@@ -78,10 +77,7 @@ impl Walk<'_, '_, '_, '_> {
                 ordinal: 0,
             };
             if start.is_some_and(|start| start != record) {
-                return Err(Failure::new(
-                    "stale_cursor",
-                    "the backward result row changed",
-                ));
+                return Err(Failure::stale_cursor("the backward result row changed"));
             }
             return (self.emit)(
                 &presentation(self.selection, &row.values),
@@ -117,8 +113,7 @@ impl Walk<'_, '_, '_, '_> {
                     },
                 };
                 if position.is_some_and(|position| position.selection != at || position.item != 0) {
-                    return Err(Failure::new(
-                        "stale_cursor",
+                    return Err(Failure::stale_cursor(
                         "the backward document omission changed",
                     ));
                 }
@@ -141,8 +136,7 @@ impl Walk<'_, '_, '_, '_> {
                 Some(&record_position),
                 &mut |record, facts, actual| {
                     if observed || actual != record_position {
-                        return Err(Failure::new(
-                            "stale_cursor",
+                        return Err(Failure::stale_cursor(
                             "the backward record coordinate changed",
                         ));
                     }
@@ -179,8 +173,7 @@ impl Walk<'_, '_, '_, '_> {
                         };
                         keep = output::emit_record(self.reader, &record, at, &layout, self.emit)?;
                     } else if start_required {
-                        return Err(Failure::new(
-                            "stale_cursor",
+                        return Err(Failure::stale_cursor(
                             "the backward page start is no longer visible",
                         ));
                     }
@@ -189,8 +182,7 @@ impl Walk<'_, '_, '_, '_> {
                 },
             )?;
             if !observed {
-                return Err(Failure::new(
-                    "stale_cursor",
+                return Err(Failure::stale_cursor(
                     "the backward record is no longer selected",
                 ));
             }

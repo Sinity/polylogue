@@ -57,15 +57,19 @@ fn apply(tx: &Transaction<'_>, mut input: Batch, counter: i64) -> Work {
     WORK.with(|work| work.set(Work::default()));
     tx.trace_v2(TraceEventCodes::SQLITE_TRACE_PROFILE, Some(observe));
     write_rows(
-        &texts,
         tx,
         &input,
         &input.parse[0],
-        input.parse[0].resolution.as_ref().unwrap(),
-        counter,
-        None,
-        Some(&fixture_commit()),
-        &changes,
+        rows::ReadingWrite {
+            texts: &texts,
+            resolution: input.parse[0].resolution.as_ref().unwrap(),
+            counter,
+            first_build: None,
+            source_commit: Some(&fixture_commit()),
+            changes: &changes,
+            retraction: false,
+            replacement: false,
+        },
     )
     .unwrap();
     tx.trace_v2(TraceEventCodes::empty(), None);

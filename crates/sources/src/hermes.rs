@@ -1,5 +1,6 @@
 //! Hermes state rows, read from one stored row dump. Session facts
 //! and record identities are metadata; message bodies are decoded one at a time.
+use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 3;
 
@@ -163,20 +164,16 @@ fn lines(
     Ok(stats)
 }
 fn key(value: &Json) -> Option<String> {
-    Some(format!(
-        "{}\0{}",
-        value.get("t")?.as_str()?,
-        value.get("k")?
-    ))
+    Some(format!("{}\0{}", value.str("t")?, value.get("k")?))
 }
 fn text(value: &Json, field: &str) -> Option<String> {
-    value.get(field).and_then(Json::as_str).map(str::to_owned)
+    value.str(field).map(str::to_owned)
 }
 fn native(value: &Json, field: &str) -> Option<String> {
     text(value, field).filter(|value| !value.is_empty())
 }
 fn decoded(value: &Json, field: &str) -> Option<Json> {
-    serde_json::from_str(value.get(field)?.as_str()?).ok()
+    serde_json::from_str(value.str(field)?).ok()
 }
 
 impl Database {
@@ -309,8 +306,7 @@ impl ExportParser for Database {
                 return Ok(());
             }
             let Some(table) = value
-                .get("t")
-                .and_then(Json::as_str)
+                .str("t")
                 .filter(|table| matches!(*table, "sessions" | "messages"))
             else {
                 return Ok(());
@@ -366,7 +362,7 @@ impl ExportParser for Database {
             } else {
                 Selected {
                     session: native(row, "session_id"),
-                    number: row.get("id").and_then(Json::as_i64),
+                    number: row.i64("id"),
                     seed: message::seed(row),
                     id: None,
                     previous: None,
@@ -388,7 +384,7 @@ impl ExportParser for Database {
             .rewind()
             .map_err(|error| ScanError::Input(serde_json::Error::io(error)))?;
         lines(reader, |range, value, raw| {
-            let table = value.get("t").and_then(Json::as_str);
+            let table = value.str("t");
             let row_key = key(value);
             let positive = value.get("gone") != Some(&Json::Bool(true));
             let known =
@@ -447,7 +443,7 @@ impl ExportParser for Database {
         _: &mut dyn ExportState,
     ) -> Result<(), String> {
         let value: Json = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-        let table = value.get("t").and_then(Json::as_str).unwrap_or("?");
+        let table = value.str("t").unwrap_or("?");
         if let Some(reason) = &self.refusal {
             sink.records.record(table, &RecordOutcome::skipped(reason));
             return Ok(());

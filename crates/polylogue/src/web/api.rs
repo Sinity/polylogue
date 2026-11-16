@@ -97,11 +97,17 @@ async fn answer(
         Ok(_) => {
             return json_answer(
                 web,
-                crate::daemon::service::error("bad_request", "route does not match operation"),
+                crate::daemon::service::error(
+                    polylogue_model::Code::BadRequest,
+                    "route does not match operation",
+                ),
             );
         }
         Err(error) => {
-            return json_answer(web, crate::daemon::service::error("bad_request", error));
+            return json_answer(
+                web,
+                crate::daemon::service::error(polylogue_model::Code::BadRequest, error),
+            );
         }
     };
     let parent_deadline = super::parent_deadline();
@@ -347,12 +353,17 @@ async fn stream(
             return json_answer(
                 web,
                 crate::daemon::service::error(
-                    "internal",
+                    polylogue_model::Code::Internal,
                     "stream completed without producing events",
                 ),
             );
         }
-        Err(error) => return json_answer(web, crate::daemon::service::error("io", error)),
+        Err(error) => {
+            return json_answer(
+                web,
+                crate::daemon::service::error(polylogue_model::Code::Io, error),
+            );
+        }
     };
     cancel.0.take();
     let body = StreamBody {

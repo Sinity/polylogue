@@ -2,6 +2,7 @@
 use super::{Event, Json, Parse, Sink, lines};
 use crate::RecordOutcome;
 use crate::export::{ExportParser, ExportState, Input, ItemSink, ScanError, ScanStats};
+use polylogue_model::JsonExt;
 use std::path::Path;
 
 pub(super) fn recognize(path: &Path) -> bool {
@@ -38,7 +39,7 @@ impl ExportParser for Verification {
         _: &mut dyn ExportState,
     ) -> Result<(), String> {
         let value: Json = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-        let table = value.get("t").and_then(Json::as_str).unwrap_or("export");
+        let table = value.str("t").unwrap_or("export");
         if table == "meta" && value["r"]["key"] == "schema_version" {
             self.version = Some(value["r"]["value"].clone());
         }

@@ -73,7 +73,17 @@ fn takeout_cells_keep_interleaved_parents_and_events_after_a_rebuild() {
         }
         assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 6);
         let alpha = w.export("gemini-app:alpha");
-        let activity = alpha.events.iter().find(|e| e.kind == "activity").unwrap();
+        let activity = alpha
+            .iter()
+            .find_map(|record| match record {
+                polylogue_model::bundle::Record::Event(record)
+                    if record.event.kind == "activity" =>
+                {
+                    Some(&record.event)
+                }
+                _ => None,
+            })
+            .unwrap();
         let messages = messages_of(&w.root, "gemini-app:alpha");
         assert_eq!(activity.after, Some(messages[1].id.clone()));
         let (a, b) = activity.range.unwrap();

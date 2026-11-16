@@ -7,10 +7,11 @@
 //! (`stage1_outputs`). The thread-history tables are derived from the
 //! rollouts, which are parsed; they stay in the stored export.
 
+use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 2;
 
-use super::{items::str_field, session_id};
+use super::session_id;
 use crate::lines::Record;
 use crate::origin::Root;
 use crate::parse::{Output, Parse, Parser};
@@ -73,7 +74,9 @@ pub struct Database;
 pub struct NoState {}
 
 fn row_session(row: &Json, field: &str) -> Option<polylogue_model::SessionId> {
-    str_field(row, field).and_then(session_id)
+    row.str(field)
+        .filter(|s| !s.is_empty())
+        .and_then(session_id)
 }
 
 static ROW_ENVELOPE: crate::fields::Fields = crate::fields::Fields::new(
@@ -178,7 +181,7 @@ impl Parser for Database {
         if v.get("schema").is_some() {
             return "schema".into();
         }
-        let t = str_field(v, "t").unwrap_or("?");
+        let t = v.str("t").filter(|s| !s.is_empty()).unwrap_or("?");
         if v.get("gone").is_some() {
             format!("{t}/gone")
         } else {
@@ -197,7 +200,7 @@ impl Parser for Database {
         if v.get("schema").is_some() {
             return RecordOutcome::Used;
         }
-        let Some(table) = str_field(v, "t") else {
+        let Some(table) = v.str("t").filter(|s| !s.is_empty()) else {
             return RecordOutcome::unreadable("export line without a table");
         };
         if v.get("gone").is_some() {
@@ -213,35 +216,38 @@ impl Parser for Database {
                 let Some(id) = row_session(row, "id") else {
                     return RecordOutcome::unreadable("thread row without an ID");
                 };
-                let kind = if str_field(row, "thread_source") == Some("subagent")
-                    || str_field(row, "source").is_some_and(|s| s.contains("\"subagent\""))
+                let kind = if row.str("thread_source").filter(|s| !s.is_empty()) == Some("subagent")
+                    || row
+                        .str("source")
+                        .filter(|s| !s.is_empty())
+                        .is_some_and(|s| s.contains("\"subagent\""))
                 {
                     SessionKind::Subagent
                 } else {
                     SessionKind::Main
                 };
                 let mut s = Session::new(id, kind);
-                if let Some(name) = str_field(row, "name") {
+                if let Some(name) = row.str("name").filter(|s| !s.is_empty()) {
                     s.offer_title(name, TitleSource::Generated);
                 }
                 // Codex fills `title` with the whole first prompt until a
                 // thread is named; that copy is not a title, and the derived
                 // title is its first line.
-                if let Some(title) = str_field(row, "title")
-                    .filter(|title| Some(*title) != str_field(row, "first_user_message"))
-                {
+                if let Some(title) = row.str("title").filter(|s| !s.is_empty()).filter(|title| {
+                    Some(*title) != row.str("first_user_message").filter(|s| !s.is_empty())
+                }) {
                     s.offer_title(title, TitleSource::Summary);
                 }
-                if let Some(nick) = str_field(row, "agent_nickname") {
+                if let Some(nick) = row.str("agent_nickname").filter(|s| !s.is_empty()) {
                     s.offer_title(nick, TitleSource::AgentName);
                 }
-                if let Some(cwd) = str_field(row, "cwd") {
+                if let Some(cwd) = row.str("cwd").filter(|s| !s.is_empty()) {
                     s.offer_cwd(cwd);
                 }
-                if let Some(b) = str_field(row, "git_branch") {
+                if let Some(b) = row.str("git_branch").filter(|s| !s.is_empty()) {
                     s.git_branch = Some(b.to_owned());
                 }
-                if let Some(v) = str_field(row, "cli_version") {
+                if let Some(v) = row.str("cli_version").filter(|s| !s.is_empty()) {
                     s.tool_version = Some(v.to_owned());
                 }
                 if let Some(at) = row

@@ -30,6 +30,7 @@ pub use usage::{
     ModelUsage, Money, RecordedUsage, SessionUsage, TokenCount, TokensByKind, Totals, UsageReport,
 };
 
+use crate::ConnExt as _;
 use crate::{Reader, Result};
 
 /// Which messages a measurement covers. Nothing given is the whole archive.
@@ -158,7 +159,7 @@ pub(crate) fn hidden_sessions(reader: &Reader<'_>, selection: &Selection) -> Res
     );
     let n: i64 = reader
         .conn()?
-        .query_row(&sql, rusqlite::params_from_iter(params), |r| r.get(0))?;
+        .scalar(&sql, rusqlite::params_from_iter(params))?;
     Ok(n as u64)
 }
 

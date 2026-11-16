@@ -4,7 +4,7 @@ use serde_json::json;
 #[test]
 fn held_signal_observations_preserve_reasons_without_inventing_available_rules() {
     let failure = crate::daemon::service::error::<()>(
-        "not_yet_available",
+        polylogue_model::Code::NotYetAvailable,
         "Sinex context has not been obtained",
     );
     let observed =

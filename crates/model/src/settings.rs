@@ -403,6 +403,7 @@ impl Snapshot {
             None => Ok(None),
         }
     }
+    #[cfg(any(test, feature = "fixture"))]
     pub fn browser_actions(&self) -> Result<bool, Error> {
         match self.get("browser.actions")? {
             Some(Value::Boolean(value)) => Ok(*value),

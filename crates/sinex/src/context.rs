@@ -1,6 +1,7 @@
 //! One Sinex-observed temporal and policy snapshot. Resolution performs no I/O
 //! except the explicit named-zone callback supplied by the application boundary.
 use crate::Sinex;
+use polylogue_model::LockExt;
 use serde::Serialize;
 use sinex_protocol::PublicContext;
 use std::time::{Duration, Instant};
@@ -192,16 +193,7 @@ impl Sinex {
         &self,
         resolve_zone: impl FnOnce(&str) -> Result<jiff::tz::TimeZone, String>,
     ) -> Result<ResolvedContext, ContextFailure> {
-        let context = self
-            .health
-            .lock()
-            .map_err(|_| ContextFailure {
-                kind: ContextFailureKind::Unavailable,
-                reason: "Sinex public context cache is unavailable".into(),
-                last_known_identity: None,
-            })?
-            .context
-            .clone();
+        let context = self.health.locked().context.clone();
         context.resolve(resolve_zone)
     }
 }

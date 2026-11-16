@@ -194,7 +194,7 @@ fn shared_units_stages_and_nested_queries_use_product_names() {
     let query = with_catalog(source, &catalog).unwrap();
     assert_eq!(
         parse(source).unwrap_err().kind(),
-        "unknown_field",
+        polylogue_model::Code::UnknownField,
         "elapsed duration has no product producer yet"
     );
     assert_eq!(query.transforms.len(), 6);
@@ -246,7 +246,7 @@ fn saved_arguments_are_values_and_literals_do_not_bind_namespaces() {
 #[test]
 fn former_near_spelling_suggests_similar() {
     let error = parse("near:dates").unwrap_err();
-    assert_eq!(error.kind(), "unknown_field");
+    assert_eq!(error.kind(), polylogue_model::Code::UnknownField);
     assert_eq!(error.suggestion(), Some("similar:dates"));
     assert!(matches!(
         &cond("similar:dates"),

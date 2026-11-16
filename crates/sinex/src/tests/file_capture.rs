@@ -1,6 +1,7 @@
 use super::client;
 use crate::Sinex;
 use polylogue_engine::Engine;
+use polylogue_model::LockExt;
 use polylogue_store::primary::{
     ByteCursorQuery, Capture, RawRange, SourceGeneration, SourceSelector,
 };
@@ -1008,7 +1009,7 @@ fn a_disappeared_pending_source_survives_reader_failure_and_no_event_continuatio
     });
     let deadline = Instant::now() + Duration::from_secs(10);
     let observed = loop {
-        let now = status.lock().unwrap().clone();
+        let now = status.locked().clone();
         if now.passes > 0 {
             break Some(now);
         }
@@ -1021,7 +1022,7 @@ fn a_disappeared_pending_source_survives_reader_failure_and_no_event_continuatio
     // to keep visiting the owned source without another watcher event.
     std::fs::rename(&held, archive.index_db()).unwrap();
     let recovered = loop {
-        let now = status.lock().unwrap().clone();
+        let now = status.locked().clone();
         if now.passes > observed.as_ref().map_or(0, |s| s.passes) && now.last_pass.errors.is_empty()
         {
             break Some(now);
@@ -1032,7 +1033,7 @@ fn a_disappeared_pending_source_survives_reader_failure_and_no_event_continuatio
         std::thread::sleep(Duration::from_millis(1));
     };
     let continued = loop {
-        let now = status.lock().unwrap().clone();
+        let now = status.locked().clone();
         if recovered
             .as_ref()
             .is_some_and(|s| now.passes >= s.passes + 2)
@@ -1285,7 +1286,7 @@ fn a_late_other_host_original_is_parsed_with_an_empty_local_home() {
     let started = std::time::Instant::now();
     let sent = loop {
         let queued = {
-            let queue = sdk.spool.lock().unwrap();
+            let queue = sdk.spool.locked();
             let parsed = queue
                 .ready(&[], 32)
                 .unwrap()

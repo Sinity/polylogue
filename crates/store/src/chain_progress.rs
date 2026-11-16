@@ -15,8 +15,9 @@
 //! and then forgets them ([`forget`]). A writer that stops without doing so
 //! leaves `meta.chain_progress` other than `kept`, and the next writer
 //! start recomputes every chain ([`open`]).
+use crate::ConnExt as _;
 use crate::Result;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, params};
 
 /// The `meta` key whose value is `kept` while the rows reflect every
 /// committed source row.
@@ -122,12 +123,7 @@ fn input_sql(input: &str) -> [String; 2] {
 pub(crate) fn open(index: &Connection, standalone: bool) -> Result<()> {
     install_triggers(index, !standalone)?;
     let kept: bool = index
-        .query_row(
-            "SELECT value = 'kept' FROM meta WHERE key = ?1",
-            [KEPT],
-            |row| row.get(0),
-        )
-        .optional()?
+        .scalar_optional("SELECT value = 'kept' FROM meta WHERE key = ?1", [KEPT])?
         .unwrap_or(false);
     if kept && !standalone {
         return Ok(());
@@ -144,11 +140,7 @@ pub(crate) fn open(index: &Connection, standalone: bool) -> Result<()> {
             chain_rows(EVERY_CHAIN)
         ))?;
     }
-    tx.execute(
-        "INSERT INTO meta(key, value) VALUES (?1, ?2)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![KEPT, if standalone { "open" } else { "kept" }],
-    )?;
+    crate::meta_set(&tx, KEPT, if standalone { "open" } else { "kept" })?;
     tx.commit()?;
     index.pragma_update(None, "synchronous", synchronous)?;
     Ok(())
@@ -156,12 +148,7 @@ pub(crate) fn open(index: &Connection, standalone: bool) -> Result<()> {
 
 /// Marks counts current after committed source changes or an empty cache reset.
 pub(crate) fn mark_current(index: &Connection) -> Result<()> {
-    index.execute(
-        "INSERT INTO meta(key,value) VALUES (?1,'kept')
-         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        [KEPT],
-    )?;
-    Ok(())
+    crate::meta_set(index, KEPT, "kept")
 }
 
 /// Temporary triggers on `index` that recompute a chain's row when its
@@ -259,7 +246,7 @@ pub(crate) struct SourceChanges {
 pub(crate) fn recorded(archive: &Connection) -> Result<SourceChanges> {
     let chains = archive
         .prepare_cached("SELECT input, chain FROM temp.chain_progress_chains")?
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .query_map([], |row| <(_, _)>::try_from(row))?
         .collect::<rusqlite::Result<_>>()?;
     let inputs = archive
         .prepare_cached("SELECT input FROM temp.chain_progress_inputs")?

@@ -3,10 +3,6 @@ use query_language::catalog::{Field, FieldKind, OutputSchema};
 
 impl Kept {
     pub fn validate_output_metadata(&self) -> Result<(), QueryError> {
-        let invalid = |message: String| QueryError::Invalid {
-            message,
-            position: 0,
-        };
         for (declared, columns) in [
             (&self.output_metadata.rows, &self.columns),
             (&self.output_metadata.matches, &self.match_columns),
@@ -17,8 +13,8 @@ impl Kept {
             let unique: std::collections::BTreeSet<_> =
                 schema.fields.iter().map(|field| &field.name).collect();
             if unique.len() != schema.fields.len() || schema.fields.len() != columns.len() {
-                return Err(invalid(
-                    "kept logical declarations disagree with physical columns".into(),
+                return Err(QueryError::invalid(
+                    "kept logical declarations disagree with physical columns",
                 ));
             }
             for (field, column) in schema.fields.iter().zip(columns) {
@@ -27,7 +23,7 @@ impl Kept {
                     || column.reference.is_some()
                         && (column.kind != ColKind::Text || field.kind != FieldKind::Reference)
                 {
-                    return Err(invalid(format!(
+                    return Err(QueryError::invalid(format!(
                         "kept logical declaration disagrees with physical column {:?}",
                         column.name
                     )));
@@ -39,8 +35,8 @@ impl Kept {
                     .iter()
                     .any(|field| &field.name == name && field.kind == FieldKind::Time)
             }) {
-                return Err(invalid(
-                    "kept main time does not name a declared time column".into(),
+                return Err(QueryError::invalid(
+                    "kept main time does not name a declared time column",
                 ));
             }
         }
@@ -58,8 +54,8 @@ impl Kept {
                 .as_ref()
                 .is_some_and(|schema| schema.unit.is_some())
         {
-            return Err(invalid(
-                "kept grouped, summary and match outputs have no row domain".into(),
+            return Err(QueryError::invalid(
+                "kept grouped, summary and match outputs have no row domain",
             ));
         }
         Ok(())

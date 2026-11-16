@@ -63,8 +63,7 @@ impl Answer {
         match self {
             Self::Rows(rows) => Ok(*rows),
             Self::PagedMeasure(PagedMeasure { measure, .. })
-            | Self::Measure(Measure { measure, .. }) => Err(crate::daemon::Failure::new(
-                "bad_request",
+            | Self::Measure(Measure { measure, .. }) => Err(crate::daemon::Failure::bad_request(
                 format!("the query measures {measure}, where rows were expected"),
             )),
         }

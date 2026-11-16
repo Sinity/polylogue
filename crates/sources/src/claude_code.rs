@@ -14,6 +14,7 @@
 //! earlier history) keeps its ID and its original session, so it is stored
 //! once. Copying is recorded independently of explicit provider links.
 
+use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 8;
 
@@ -217,7 +218,7 @@ impl ParserState {
 
     /// The message a record's parent pointer names, through aliases.
     fn parent(&self, v: &Json) -> Option<MessageId> {
-        self.resolve(str_field(v, "parentUuid")?)
+        self.resolve(v.str("parentUuid").filter(|s| !s.is_empty())?)
     }
 
     fn resolve(&self, uuid: &str) -> Option<MessageId> {
@@ -251,10 +252,6 @@ fn origin() -> Origin {
     Origin::new("claude-code").expect("constant origin")
 }
 
-fn str_field<'a>(v: &'a Json, key: &str) -> Option<&'a str> {
-    v.get(key).and_then(Json::as_str).filter(|s| !s.is_empty())
-}
-
 fn session_id(native: &str) -> Option<SessionId> {
     Some(SessionId::new(origin(), NativeId::new(native).ok()?))
 }
@@ -273,7 +270,9 @@ impl ClaudeCode {
     fn record_session(&self, v: &Json) -> RecordSession {
         match &self.file {
             File::Subagent { stem } => {
-                let native = str_field(v, "agentId")
+                let native = v
+                    .str("agentId")
+                    .filter(|s| !s.is_empty())
                     .map(|a| format!("agent-{a}"))
                     .unwrap_or_else(|| stem.clone());
                 // The call that compacted the parent's history runs as an
@@ -290,8 +289,12 @@ impl ClaudeCode {
                 kind: SessionKind::Main,
             },
             File::Main { stem } => {
-                let base = str_field(v, "sessionId").unwrap_or(stem).to_owned();
-                if v.get("isSidechain").and_then(Json::as_bool) == Some(true) {
+                let base = v
+                    .str("sessionId")
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(stem)
+                    .to_owned();
+                if v.bool("isSidechain") == Some(true) {
                     RecordSession {
                         native: format!("{base}/sidechain"),
                         kind: SessionKind::Sidechain,
@@ -318,8 +321,14 @@ impl ClaudeCode {
     ) -> Option<&'c mut Session> {
         let record_session = self.record_session(v);
         let id = session_id(&record_session.native)?;
-        let parent = str_field(v, "sessionId").and_then(session_id);
-        if let Some(parent) = str_field(v, "resumeSessionId").and_then(session_id)
+        let parent = v
+            .str("sessionId")
+            .filter(|s| !s.is_empty())
+            .and_then(session_id);
+        if let Some(parent) = v
+            .str("resumeSessionId")
+            .filter(|s| !s.is_empty())
+            .and_then(session_id)
             && parent != id
         {
             link(
@@ -369,20 +378,20 @@ impl ClaudeCode {
             .sessions
             .entry(record_session.native)
             .or_insert_with(|| Session::new(id, record_session.kind));
-        if let Some(cwd) = str_field(v, "cwd") {
+        if let Some(cwd) = v.str("cwd").filter(|s| !s.is_empty()) {
             s.offer_cwd(cwd);
         }
-        if let Some(branch) = str_field(v, "gitBranch") {
+        if let Some(branch) = v.str("gitBranch").filter(|s| !s.is_empty()) {
             s.git_branch = Some(branch.to_owned());
         }
-        if let Some(version) = str_field(v, "version") {
+        if let Some(version) = v.str("version").filter(|s| !s.is_empty()) {
             s.tool_version = Some(version.to_owned());
         }
         if let Some(at) = v.get("timestamp").and_then(time::rfc3339) {
             s.offer_start(at.timestamp(), at.accuracy())
                 .expect("decoded source time is valid");
         }
-        if let Some(mode) = str_field(v, "sessionKind") {
+        if let Some(mode) = v.str("sessionKind").filter(|s| !s.is_empty()) {
             s.mode = Some(mode.to_owned());
         }
         Some(s)
@@ -415,11 +424,11 @@ impl ClaudeCode {
         v: &Json,
         out: &mut Output,
     ) {
-        if let Some(slug) = str_field(v, "slug") {
+        if let Some(slug) = v.str("slug").filter(|s| !s.is_empty()) {
             let data = serde_json::json!({ "slug": slug, "file": format!("plans/{slug}.md") });
             self.name_event(parser_state, record, v, out, "plan", slug, data);
         }
-        if let Some(team) = str_field(v, "teamName") {
+        if let Some(team) = v.str("teamName").filter(|s| !s.is_empty()) {
             let data = serde_json::json!({ "team": team });
             self.name_event(parser_state, record, v, out, "team", team, data);
         }
@@ -436,10 +445,14 @@ impl ClaudeCode {
         name: &str,
         data: Json,
     ) {
-        let Some(stem) = str_field(v, "sessionId").or(match &self.file {
-            File::Main { stem } | File::Subagent { stem } => Some(stem.as_str()),
-            File::Journal { .. } => None,
-        }) else {
+        let Some(stem) = v
+            .str("sessionId")
+            .filter(|s| !s.is_empty())
+            .or(match &self.file {
+                File::Main { stem } | File::Subagent { stem } => Some(stem.as_str()),
+                File::Journal { .. } => None,
+            })
+        else {
             return;
         };
         let key = format!("{kind}\u{0}{stem}");
@@ -556,7 +569,7 @@ impl ClaudeCode {
             let Some(session) = self.session(parser_state, v, out).map(|s| s.id.clone()) else {
                 return RecordOutcome::unreadable("session ID is empty");
             };
-            let (id, id_kind) = match str_field(v, "uuid") {
+            let (id, id_kind) = match v.str("uuid").filter(|s| !s.is_empty()) {
                 Some(uuid) => (message_id(uuid), IdKind::Native),
                 None => (
                     parser_state.ids.next(&session, Role::System, &blocks),
@@ -645,7 +658,7 @@ impl ClaudeCode {
         let msg = v.get("message").unwrap_or(&Json::Null);
         let content = msg.get("content").unwrap_or(&Json::Null);
         let mut blocks = blocks::blocks(v, content, &mut out.blobs);
-        let (id, id_kind) = match str_field(v, "uuid") {
+        let (id, id_kind) = match v.str("uuid").filter(|s| !s.is_empty()) {
             Some(uuid) => (message_id(uuid), IdKind::Native),
             None => (
                 parser_state.ids.next_blocks(&session, role, &mut blocks),
@@ -657,20 +670,27 @@ impl ClaudeCode {
         };
         let native = id.native().as_str().to_owned();
         let usage = msg.get("usage").map(usage).unwrap_or_default();
-        let stop_reason = str_field(msg, "stop_reason").map(str::to_owned);
-        let model = str_field(msg, "model");
+        let stop_reason = msg
+            .str("stop_reason")
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        let model = msg.str("model").filter(|s| !s.is_empty());
         // This reserved value marks a runtime-authored notice.
         let harness = role == Role::Assistant && model == Some("<synthetic>");
         let model = model.filter(|_| !harness).map(str::to_owned);
         let cost = v.get("costUSD").and_then(Json::as_number).cloned();
-        let duration = v.get("durationMs").and_then(Json::as_u64);
+        let duration = v.u64("durationMs");
         let production = production(v, msg);
         let attrs = message_attrs(v, msg, &blocks);
         let end = range(record).1;
         if let Some(fork) = v.get("forkedFrom")
             && let (Some(parent), Some(at)) = (
-                str_field(fork, "sessionId").and_then(session_id),
-                str_field(fork, "messageUuid").and_then(message_id),
+                fork.str("sessionId")
+                    .filter(|s| !s.is_empty())
+                    .and_then(session_id),
+                fork.str("messageUuid")
+                    .filter(|s| !s.is_empty())
+                    .and_then(message_id),
             )
             && parent != session
         {
@@ -687,20 +707,17 @@ impl ClaudeCode {
         }
         // An agent call's result names the agent it started: the parent's
         // side of the spawn link, with the call.
-        if let Some(agent) = v
-            .get("toolUseResult")
-            .and_then(|r| r.get("agentId"))
-            .and_then(Json::as_str)
+        if let Some(agent) = v.get("toolUseResult").and_then(|r| r.str("agentId"))
             && let Some(child) = session_id(&format!("agent-{agent}"))
             && child != session
         {
             let call = content.as_array().and_then(|items| {
                 let mut results = items
                     .iter()
-                    .filter(|i| str_field(i, "type") == Some("tool_result"));
+                    .filter(|i| i.str("type").filter(|s| !s.is_empty()) == Some("tool_result"));
                 let only = results.next();
                 only.filter(|_| results.next().is_none())
-                    .and_then(|i| str_field(i, "tool_use_id"))
+                    .and_then(|i| i.str("tool_use_id").filter(|s| !s.is_empty()))
                     .map(str::to_owned)
             });
             link_at(
@@ -716,8 +733,10 @@ impl ClaudeCode {
         }
 
         if role == Role::Assistant && !harness {
-            let key = str_field(msg, "id")
-                .or_else(|| str_field(v, "requestId"))
+            let key = msg
+                .str("id")
+                .filter(|s| !s.is_empty())
+                .or_else(|| v.str("requestId").filter(|s| !s.is_empty()))
                 .unwrap_or(&native)
                 .to_owned();
             let same = |r: &Response| r.key == key && r.message.session == session;
@@ -870,7 +889,10 @@ impl ClaudeCode {
         let Some(parent) = self.own_session(parser_state) else {
             return RecordOutcome::unreadable("session ID is empty");
         };
-        if let Some(agent) = str_field(v, "agentId").map(|a| format!("agent-{a}"))
+        if let Some(agent) = v
+            .str("agentId")
+            .filter(|s| !s.is_empty())
+            .map(|a| format!("agent-{a}"))
             && let Some(child) = session_id(&agent)
         {
             link(
@@ -881,7 +903,7 @@ impl ClaudeCode {
                 child.clone(),
                 "workflow journal",
             );
-            if let Some(label) = str_field(v, "label") {
+            if let Some(label) = v.str("label").filter(|s| !s.is_empty()) {
                 parser_state
                     .sessions
                     .entry(agent)
@@ -895,7 +917,7 @@ impl ClaudeCode {
     /// Authorship markers the harness wrote win. Unmarked prose in an unknown
     /// compaction carrier does not establish who originally wrote it.
     fn prompt_kind(&self, v: &Json, content: &Json) -> Option<PromptKind> {
-        if v.get("isCompactSummary").and_then(Json::as_bool) == Some(true) {
+        if v.bool("isCompactSummary") == Some(true) {
             return Some(PromptKind::CompactionSummary);
         }
         let kind = blocks::prompt_kind(v, content);
@@ -907,7 +929,7 @@ impl ClaudeCode {
         if kind == PromptKind::Prose
             && session_kind == SessionKind::Subagent
             && !human
-            && str_field(v, "parentUuid").is_none()
+            && v.str("parentUuid").filter(|s| !s.is_empty()).is_none()
         {
             return Some(PromptKind::Model);
         }
@@ -921,7 +943,7 @@ impl ClaudeCode {
         field: &str,
         source: TitleSource,
     ) -> RecordOutcome {
-        let Some(text) = str_field(v, field) else {
+        let Some(text) = v.str(field).filter(|s| !s.is_empty()) else {
             return RecordOutcome::skipped(format!("no {field}"));
         };
         let Some(id) = self.own_session(parser_state) else {
@@ -1032,11 +1054,11 @@ pub const QUOTA_LIMITS: &[QuotaLimit] = &[
 /// `quotaLimits`, which Claude Code records only when it refuses a turn:
 /// `{status, resetsAt, rateLimitType}`.
 fn quota(q: &Json) -> Option<QuotaReading> {
-    let kind = str_field(q, "rateLimitType")?;
+    let kind = q.str("rateLimitType").filter(|s| !s.is_empty())?;
     let limit = QUOTA_LIMITS
         .iter()
         .find(|l| kind == l.limit || (l.minutes == 10_080 && kind.starts_with("seven_day")))?;
-    let status = str_field(q, "status").map(str::to_owned);
+    let status = q.str("status").filter(|s| !s.is_empty()).map(str::to_owned);
     Some(QuotaReading {
         windows: vec![QuotaWindow {
             limit: QuotaLimit {
@@ -1047,8 +1069,7 @@ fn quota(q: &Json) -> Option<QuotaReading> {
             // not say how much.
             used_percent: (status.as_deref() == Some("rejected")).then_some(100.0),
             resets_at: q
-                .get("resetsAt")
-                .and_then(Json::as_i64)
+                .i64("resetsAt")
                 .and_then(|s| s.checked_mul(1000))
                 .and_then(Timestamp::from_unix_ms),
             status,
@@ -1060,7 +1081,7 @@ fn quota(q: &Json) -> Option<QuotaReading> {
 /// How the harness produced a message: settings, attribution and the
 /// API's diagnostics (`Production`).
 fn production(v: &Json, msg: &Json) -> Production {
-    let s = |k: &str| str_field(v, k).map(str::to_owned);
+    let s = |k: &str| v.str(k).filter(|s| !s.is_empty()).map(str::to_owned);
     let kept = |x: Option<&Json>| x.filter(|x| !x.is_null()).cloned();
     Production {
         server_tool_use: msg
@@ -1079,14 +1100,11 @@ fn production(v: &Json, msg: &Json) -> Production {
             mcp_server: s("attributionMcpServer"),
             mcp_tool: s("attributionMcpTool"),
         },
-        thinking_ms: v.get("thinkingDurationMs").and_then(Json::as_u64),
-        first_token_ms: msg.get("ttftMs").and_then(Json::as_u64),
+        thinking_ms: v.u64("thinkingDurationMs"),
+        first_token_ms: msg.u64("ttftMs"),
         api_error: s("error").map(|kind| ApiError {
             kind,
-            status: v
-                .get("apiErrorStatus")
-                .and_then(Json::as_u64)
-                .and_then(|n| u16::try_from(n).ok()),
+            status: v.u64("apiErrorStatus").and_then(|n| u16::try_from(n).ok()),
         }),
         cache_miss: kept(
             msg.get("diagnostics")
@@ -1139,8 +1157,8 @@ fn context_boundary(kind: &str, value: &Json) -> Json {
                 .pointer("/compactMetadata/preservedSegment")
                 .and_then(|segment| {
                     Some(polylogue_model::KeptRange {
-                        first: segment.get("headUuid")?.as_str().and_then(message_id)?,
-                        last: segment.get("tailUuid")?.as_str().and_then(message_id)?,
+                        first: segment.str("headUuid").and_then(message_id)?,
+                        last: segment.str("tailUuid").and_then(message_id)?,
                     })
                 }),
             kept_after: value
@@ -1165,7 +1183,7 @@ fn context_boundary(kind: &str, value: &Json) -> Json {
 
 fn message_attrs(record: &Json, message: &Json, blocks: &[Block]) -> serde_json::Map<String, Json> {
     let mut attrs = crate::fields::attributes(record, &fields::MESSAGE_FIELDS);
-    if let Some(usage) = message.get("usage").and_then(Json::as_object) {
+    if let Some(usage) = message.object("usage") {
         let details: serde_json::Map<String, Json> = usage
             .iter()
             .filter(|(key, _)| {
@@ -1193,8 +1211,7 @@ fn message_attrs(record: &Json, message: &Json, blocks: &[Block]) -> serde_json:
         }
     }
     let details: Vec<Json> = message
-        .get("content")
-        .and_then(Json::as_array)
+        .array("content")
         .into_iter()
         .flatten()
         .enumerate()
@@ -1228,7 +1245,7 @@ fn merge_attrs(
         if key == "content" {
             if let Some(details) = value.as_array_mut() {
                 for detail in details {
-                    if let Some(position) = detail.get("position").and_then(Json::as_u64) {
+                    if let Some(position) = detail.u64("position") {
                         detail["position"] = Json::from(position + block_offset as u64);
                     }
                 }
@@ -1245,7 +1262,7 @@ fn merge_attrs(
 }
 
 fn usage(u: &Json) -> Usage {
-    let n = |k: &str| u.get(k).and_then(Json::as_u64);
+    let n = |k: &str| u.u64(k);
     let thinking = n("thinking_tokens").or_else(|| {
         u.pointer("/output_tokens_details/thinking_tokens")
             .and_then(Json::as_u64)
@@ -1265,10 +1282,12 @@ fn usage(u: &Json) -> Usage {
         reasoning: thinking,
         cache_write_1h: u
             .get("cache_creation")
-            .and_then(|c| c.get("ephemeral_1h_input_tokens"))
-            .and_then(Json::as_u64),
-        service_tier: str_field(u, "service_tier").map(str::to_owned),
-        speed: str_field(u, "speed").map(str::to_owned),
+            .and_then(|c| c.u64("ephemeral_1h_input_tokens")),
+        service_tier: u
+            .str("service_tier")
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
+        speed: u.str("speed").filter(|s| !s.is_empty()).map(str::to_owned),
     }
 }
 
@@ -1346,7 +1365,7 @@ fn hook_text(v: &Json) -> HookText {
 /// A background task's completion, from the notification the harness
 /// queues for the model.
 fn background_update(v: &Json) -> Option<(String, ToolOutcome, Option<String>, Option<String>)> {
-    let content = v.get("content").and_then(Json::as_str)?;
+    let content = v.str("content")?;
     let tag = |name: &str| {
         let open = format!("<{name}>");
         let start = content.find(&open)? + open.len();
@@ -1403,10 +1422,12 @@ impl Parser for ClaudeCode {
     type ParserState = ParserState;
 
     fn kind(&self, v: &Json) -> String {
-        let ty = str_field(v, "type").unwrap_or("?");
+        let ty = v.str("type").filter(|s| !s.is_empty()).unwrap_or("?");
         let sub = match ty {
-            "system" => str_field(v, "subtype"),
-            "progress" => v.get("data").and_then(|d| str_field(d, "type")),
+            "system" => v.str("subtype").filter(|s| !s.is_empty()),
+            "progress" => v
+                .get("data")
+                .and_then(|d| d.str("type").filter(|s| !s.is_empty())),
             _ => None,
         };
         match sub {
@@ -1426,24 +1447,27 @@ impl Parser for ClaudeCode {
         if !v.is_object() {
             return RecordOutcome::unreadable("record is not a JSON object");
         }
-        let Some(ty) = str_field(v, "type") else {
+        let Some(ty) = v.str("type").filter(|s| !s.is_empty()) else {
             return RecordOutcome::skipped("no type field");
         };
         if let File::Journal { .. } = self.file {
             return self.journal(parser_state, record, v, ty, out);
         }
-        let hook = (ty == "system" && str_field(v, "subtype") == Some("stop_hook_summary"))
-            .then(|| hook_text(v));
+        let hook = (ty == "system"
+            && v.str("subtype").filter(|s| !s.is_empty()) == Some("stop_hook_summary"))
+        .then(|| hook_text(v));
         let message_record = matches!(ty, "user" | "assistant" | "summary")
             || hook
                 .as_ref()
                 .is_some_and(|summary| !summary.blocks.is_empty());
-        if !message_record && let Some(uuid) = str_field(v, "uuid") {
+        if !message_record && let Some(uuid) = v.str("uuid").filter(|s| !s.is_empty()) {
             // A child naming this record as its parent belongs under the
             // nearest message above it; a compaction boundary points there
             // through `logicalParentUuid`.
-            let target = str_field(v, "logicalParentUuid")
-                .or_else(|| str_field(v, "parentUuid"))
+            let target = v
+                .str("logicalParentUuid")
+                .filter(|s| !s.is_empty())
+                .or_else(|| v.str("parentUuid").filter(|s| !s.is_empty()))
                 .and_then(|p| parser_state.resolve(p));
             parser_state.alias(uuid, target);
         }
@@ -1468,12 +1492,12 @@ impl Parser for ClaudeCode {
             records.fields(ty, v, &fields::CONTINUATION_FIELDS);
         }
         match ty {
-            "user" if v.get("isCompactSummary").and_then(Json::as_bool) == Some(true) => {
+            "user" if v.bool("isCompactSummary") == Some(true) => {
                 self.compaction_summary(parser_state, record, v, out, records)
             }
             "user" => self.message(parser_state, record, v, Role::User, out, records),
             "assistant" => self.message(parser_state, record, v, Role::Assistant, out, records),
-            "system" => match str_field(v, "subtype") {
+            "system" => match v.str("subtype").filter(|s| !s.is_empty()) {
                 Some("stop_hook_summary") => self.hook_summary(
                     parser_state,
                     record,
@@ -1533,7 +1557,7 @@ impl Parser for ClaudeCode {
                     out.background.push(BackgroundUpdate {
                         result_at,
                         result_at_evidence,
-                        reported_duration_ms: v.get("durationMs").and_then(Json::as_u64),
+                        reported_duration_ms: v.u64("durationMs"),
                         session,
                         task_id,
                         call_id,
@@ -1544,7 +1568,7 @@ impl Parser for ClaudeCode {
                 self.event(parser_state, record, v, "queue", out)
             }
             "relocated" => {
-                if let Some(dir) = str_field(v, "relocatedCwd")
+                if let Some(dir) = v.str("relocatedCwd").filter(|s| !s.is_empty())
                     && let Some(id) = self.own_session(parser_state)
                     && let Some(s) = parser_state.sessions.get_mut(id.native().as_str())
                 {
@@ -1570,7 +1594,9 @@ impl Parser for ClaudeCode {
             "continued-in" => {
                 let (Some(parent), Some(child)) = (
                     self.own_session(parser_state),
-                    str_field(v, "continuedInSessionId").and_then(session_id),
+                    v.str("continuedInSessionId")
+                        .filter(|s| !s.is_empty())
+                        .and_then(session_id),
                 ) else {
                     return RecordOutcome::skipped("continued-in without a target");
                 };
@@ -1586,14 +1612,20 @@ impl Parser for ClaudeCode {
             }
             "fork-context-ref" => {
                 let child = self.session(parser_state, v, out).map(|s| s.id.clone());
-                let (Some(parent), Some(child)) =
-                    (str_field(v, "parentSessionId").and_then(session_id), child)
-                else {
+                let (Some(parent), Some(child)) = (
+                    v.str("parentSessionId")
+                        .filter(|s| !s.is_empty())
+                        .and_then(session_id),
+                    child,
+                ) else {
                     return RecordOutcome::skipped("fork-context-ref without a parent");
                 };
                 // Evidence for the subagent link, with its branch point:
                 // never a second parent.
-                let at = str_field(v, "parentLastUuid").and_then(message_id);
+                let at = v
+                    .str("parentLastUuid")
+                    .filter(|s| !s.is_empty())
+                    .and_then(message_id);
                 link_at(
                     parser_state,
                     out,
@@ -1608,7 +1640,7 @@ impl Parser for ClaudeCode {
             }
             "progress" => {
                 let data = v.get("data").unwrap_or(&Json::Null);
-                match str_field(data, "type") {
+                match data.str("type").filter(|s| !s.is_empty()) {
                     Some("agent_progress") => {
                         records.fields(
                             "progress/agent_progress",
@@ -1616,12 +1648,17 @@ impl Parser for ClaudeCode {
                             &fields::AGENT_PROGRESS_FIELDS,
                         );
                         let parent = self.session(parser_state, v, out).map(|s| s.id.clone());
-                        let child = str_field(data, "agentId")
+                        let child = data
+                            .str("agentId")
+                            .filter(|s| !s.is_empty())
                             .and_then(|a| session_id(&format!("agent-{a}")));
                         let (Some(parent), Some(child)) = (parent, child) else {
                             return RecordOutcome::skipped("agent progress without an agent ID");
                         };
-                        let call = str_field(v, "parentToolUseID").map(str::to_owned);
+                        let call = v
+                            .str("parentToolUseID")
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned);
                         link_at(
                             parser_state,
                             out,
@@ -1668,7 +1705,7 @@ impl Parser for ClaudeCode {
                                     object.insert("type".into(), role);
                                 }
                             }
-                            let role = match str_field(&embedded, "type") {
+                            let role = match embedded.str("type").filter(|s| !s.is_empty()) {
                                 Some("assistant") => Role::Assistant,
                                 Some("user") => Role::User,
                                 _ => {

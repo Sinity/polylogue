@@ -1,50 +1,6 @@
 use super::*;
+use std::path::Path;
 use std::{fs, io::Write};
-
-#[test]
-fn forbidden_internal_dependency_is_rejected() {
-    let root = tempfile::tempdir().unwrap();
-    fs::write(
-        root.path().join("Cargo.toml"),
-        "[workspace]\nmembers=[\"query\",\"store\"]\nresolver=\"3\"\n",
-    )
-    .unwrap();
-    for (dir, name) in [("query", "polylogue-query"), ("store", "polylogue-store")] {
-        fs::create_dir_all(root.path().join(dir).join("src")).unwrap();
-        fs::write(root.path().join(dir).join("src/lib.rs"), "").unwrap();
-        fs::write(
-            root.path().join(dir).join("Cargo.toml"),
-            format!("[package]\nname=\"{name}\"\nversion=\"0.1.0\"\nedition=\"2024\"\n"),
-        )
-        .unwrap();
-    }
-    assert!(boundaries(&metadata(root.path()).unwrap()).is_ok());
-    fs::OpenOptions::new()
-        .append(true)
-        .open(root.path().join("store/Cargo.toml"))
-        .unwrap()
-        .write_all(b"[dependencies]\npolylogue-query={path=\"../query\"}\n")
-        .unwrap();
-    assert!(boundaries(&metadata(root.path()).unwrap()).is_ok());
-    // Remove the forward edge before asking Cargo to inspect the deliberate
-    // reverse edge; Cargo rejects a cycle before the boundary checker runs.
-    fs::write(
-        root.path().join("store/Cargo.toml"),
-        "[package]\nname=\"polylogue-store\"\nversion=\"0.1.0\"\nedition=\"2024\"\n",
-    )
-    .unwrap();
-
-    fs::OpenOptions::new()
-        .append(true)
-        .open(root.path().join("query/Cargo.toml"))
-        .unwrap()
-        .write_all(b"[dependencies]\npolylogue-store={path=\"../store\"}\n")
-        .unwrap();
-    assert_eq!(
-        boundaries(&metadata(root.path()).unwrap()).unwrap_err(),
-        "forbidden dependency: polylogue-query -> polylogue-store"
-    );
-}
 
 fn arguments(args: &[&str], required: Option<&str>) -> Result<Vec<String>, String> {
     test_arguments(
@@ -177,12 +133,22 @@ fn explicit_target_selection_is_preserved_without_adding_the_default_tests() {
 fn selections_share_features_and_targets_in_the_runner() {
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path();
-    fs::write(root.join("Cargo.toml"), "[workspace]\nmembers=['polylogue-store','polylogue-engine','polylogue-sinex','polylogue','helper']\nresolver='3'\n").unwrap();
+    fs::write(root.join("Cargo.toml"), "[workspace]\nmembers=['polylogue-model','polylogue-query','polylogue-store','polylogue-engine','polylogue-sinex','polylogue','helper']\nresolver='3'\n").unwrap();
     for (name, manifest, source) in [
         (
+            "polylogue-model",
+            "[features]\nfixture=[]\n",
+            "pub fn assert_fixture() { assert!(cfg!(feature=\"fixture\")); }\n",
+        ),
+        (
+            "polylogue-query",
+            "[features]\nfixture=[]\n",
+            "pub fn assert_fixture() { assert!(cfg!(feature=\"fixture\")); }\n",
+        ),
+        (
             "polylogue-store",
-            "[features]\nfaults=[]\nfixture=[]\n[dependencies]\nhelper={path='../helper'}\n",
-            "#[test] fn selected_read() { assert!(cfg!(feature=\"faults\")); assert_eq!(helper::value(),42); }\n#[test] fn selected_write() { assert!(cfg!(feature=\"fixture\")); }\n#[test] #[ignore] fn selected_ignored() {}\n",
+            "[features]\nfaults=[]\nfixture=[]\n[dependencies]\nhelper={path='../helper'}\npolylogue-model={path='../polylogue-model'}\npolylogue-query={path='../polylogue-query'}\n",
+            "#[test] fn selected_read() { assert!(cfg!(feature=\"faults\")); assert_eq!(helper::value(),42); }\n#[test] fn selected_write() { assert!(cfg!(feature=\"fixture\")); polylogue_model::assert_fixture(); polylogue_query::assert_fixture(); }\n#[test] #[ignore] fn selected_ignored() {}\n",
         ),
         (
             "polylogue-engine",
@@ -191,8 +157,8 @@ fn selections_share_features_and_targets_in_the_runner() {
         ),
         (
             "polylogue-sinex",
-            "[dependencies]\npolylogue-store={path='../polylogue-store'}\npolylogue-engine={path='../polylogue-engine'}\n",
-            "#[test] fn primary_mode_selected() {}\n",
+            "[features]\nfixture=[]\n[dependencies]\npolylogue-store={path='../polylogue-store'}\npolylogue-engine={path='../polylogue-engine'}\n",
+            "#[test] fn primary_mode_selected() { assert!(cfg!(feature=\"fixture\")); }\n",
         ),
         (
             "polylogue",

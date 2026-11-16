@@ -1,6 +1,7 @@
 //! Grok account exports. One stored conversation is decoded at a time;
 //! response order stays as supplied, independently of derived identity hashing.
 
+use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 1;
 
@@ -140,7 +141,7 @@ impl Export {
             );
             return;
         };
-        let Some(responses) = value.get("responses").and_then(Json::as_array) else {
+        let Some(responses) = value.array("responses") else {
             sink.records.record(
                 "conversation",
                 &RecordOutcome::unreadable("no Grok responses array"),
@@ -185,8 +186,7 @@ impl Export {
         };
         let mut session = Session::new(sid.clone(), SessionKind::Main);
         if let Some(title) = conversation
-            .get("title")
-            .and_then(Json::as_str)
+            .str("title")
             .filter(|title| title.trim() != "New chat")
         {
             session.offer_title(title, TitleSource::Generated);
@@ -221,8 +221,7 @@ impl Export {
                 continue;
             };
             let role = match fields
-                .get("sender")
-                .and_then(Json::as_str)
+                .str("sender")
                 .map(|sender| sender.trim().to_ascii_lowercase())
                 .as_deref()
             {
@@ -242,7 +241,7 @@ impl Export {
                     continue;
                 }
             };
-            let Some(text) = fields.get("message").and_then(Json::as_str) else {
+            let Some(text) = fields.str("message") else {
                 sink.records.record(
                     "response",
                     &RecordOutcome::unreadable("Grok message is not a supplied string"),
@@ -301,8 +300,7 @@ impl Export {
                         id,
                         session: sid.clone(),
                         parent: fields
-                            .get("parentResponseId")
-                            .and_then(Json::as_str)
+                            .str("parentResponseId")
                             .filter(|id| !id.is_empty())
                             .and_then(|id| message_id(ORIGIN, id)),
                         role,

@@ -524,7 +524,11 @@ fn semantic_and_mixed_annotation_use_the_public_query_population() {
             reader
                 .vectors_writer()
                 .unwrap()
-                .put("local/notes-test/2/document/unit", &vectors)
+                .put(
+                    "local/notes-test/2/document/unit",
+                    &vectors,
+                    &polylogue_model::WallClock::new(jiff::Timestamp::now),
+                )
                 .unwrap();
         }
         for (n, text) in [

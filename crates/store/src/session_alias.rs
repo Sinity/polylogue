@@ -5,9 +5,10 @@
 //! the writer resolves the copy's session and message keys to the session's
 //! rows, and when the recording route arrives after its copies, it moves
 //! their rows in the same transaction.
+use crate::ConnExt as _;
 use crate::Result;
 use polylogue_model::{Event, MessageId, Session, SessionId};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, params};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
@@ -70,7 +71,7 @@ impl Identities {
             .prepare_cached(&format!(
                 "SELECT n.alias, s.id FROM ({NAMED}) n JOIN session s ON s.pk = n.session_pk"
             ))?
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .query_map([], |row| <(_, _)>::try_from(row))?
             .collect::<rusqlite::Result<BTreeMap<String, String>>>()?;
         let mut identities = Self {
             stored,
@@ -99,17 +100,11 @@ impl Identities {
                     }
                     continue;
                 }
-                let other: bool = index.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM session_alias a JOIN session s ON s.pk=a.session_pk
+                let other: bool = index.exists("SELECT EXISTS(SELECT 1 FROM session_alias a JOIN session s ON s.pk=a.session_pk
                      WHERE a.alias=?1 AND s.id<>?2)",
-                    params![copy, id],
-                    |row| row.get(0),
-                )?;
-                let held: Option<i64> = index
-                    .query_row("SELECT pk FROM session WHERE id=?1", [&copy], |row| {
-                        row.get(0)
-                    })
-                    .optional()?;
+                    params![copy, id])?;
+                let held: Option<i64> =
+                    index.scalar_optional("SELECT pk FROM session WHERE id=?1", [&copy])?;
                 let Some(held) = held.filter(|_| !other) else {
                     continue;
                 };
@@ -274,7 +269,7 @@ fn release(index: &Connection, copy: &str, joined: &str, by: &str) -> crate::Res
             "SELECT r.input_pk, r.chain FROM session_record r JOIN session s ON s.pk = r.session_pk
              WHERE s.id = ?1 AND json_extract(r.facts, '$.id') = ?2 ORDER BY r.input_pk, r.chain",
         )?
-        .query_map(params![joined, copy], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .query_map(params![joined, copy], |row| <(_, _)>::try_from(row))?
         .collect::<rusqlite::Result<Vec<(i64, i64)>>>()?;
     let mut messages = Vec::new();
     let mut events = Vec::new();
@@ -300,9 +295,7 @@ fn release(index: &Connection, copy: &str, joined: &str, by: &str) -> crate::Res
                  JOIN event_value v ON v.pk = s.value_pk JOIN session x ON x.pk = e.session_pk
                  WHERE x.id = ?1 AND s.input_pk = ?2 AND s.chain = ?3 ORDER BY e.id",
             )?
-            .query_map(params![joined, input, chain], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?, row.get::<_, Vec<u8>>(2)?))
-            })?
+            .query_map(params![joined, input, chain], |row| <(String, Vec<u8>, Vec<u8>)>::try_from(row))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for (id, fields, data) in rows {
             let mut event: Event = crate::encoding::unpack_json(&fields)?;
@@ -360,13 +353,7 @@ fn copy_events(
 ) -> crate::Result<Vec<(String, String)>> {
     let rows = index
         .prepare_cached("SELECT id, fields, data FROM event WHERE session_pk=?1 ORDER BY id")?
-        .query_map([held], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Vec<u8>>(1)?,
-                row.get::<_, Vec<u8>>(2)?,
-            ))
-        })?
+        .query_map([held], |row| <(String, Vec<u8>, Vec<u8>)>::try_from(row))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut events = Vec::new();
     for (id, fields, data) in rows {

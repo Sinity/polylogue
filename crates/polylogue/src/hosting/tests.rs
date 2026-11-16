@@ -117,7 +117,10 @@ impl Hosting {
 
     /// Ends the agent and waits for its host to exit.
     fn quit(&mut self, through: &HostedStdio) {
-        lock(&through.state.0)
+        through
+            .state
+            .0
+            .locked()
             .write(&json!({"method": "polylogue_test/quit"}))
             .unwrap();
         self.server.take().unwrap().join().unwrap().unwrap();
@@ -150,7 +153,7 @@ fn a_hosted_session_survives_its_daemon_connection() {
         .call("session/new", json!({"cwd": "/", "mcpServers": []}))
         .unwrap();
     assert_eq!(created["sessionId"], "s1");
-    lock(&first.state.0).protocol_session = "s1".into();
+    first.state.0.locked().protocol_session = "s1".into();
     first.send("first turn", None).unwrap();
     wait_until("the permission request", || first.request().is_some());
     // The daemon stops before answering.
@@ -162,7 +165,7 @@ fn a_hosted_session_survives_its_daemon_connection() {
         restarted.elapsed() < Duration::from_secs(2),
         "reattached within 2 s"
     );
-    assert!(lock(&second.state.0).turn, "the hello says a turn runs");
+    assert!(second.state.0.locked().turn, "the hello says a turn runs");
     let (sent, outcomes) = std::sync::mpsc::channel();
     second.on_sent(Arc::new(move |delivery, result| {
         // A failed test may already have dropped its observer during unwind.
@@ -170,7 +173,7 @@ fn a_hosted_session_survives_its_daemon_connection() {
     }));
     // A message sent while the turn runs waits for it.
     assert!(!second.send("second turn", Some("queued-success")).unwrap());
-    assert_eq!(lock(&second.state.0).queued.len(), 1);
+    assert_eq!(second.state.0.locked().queued.len(), 1);
     second.answer(true, None).unwrap();
     // The first prompt finishes and the queued one is sent.
     wait_until("the second prompt", || {
@@ -182,7 +185,7 @@ fn a_hosted_session_survives_its_daemon_connection() {
         ("queued-success".into(), Ok(()))
     );
     second.answer(true, None).unwrap();
-    wait_until("the second turn's end", || !lock(&second.state.0).turn);
+    wait_until("the second turn's end", || !second.state.0.locked().turn);
     assert_eq!(hosting.log().trim(), "2", "every prompt ran exactly once");
     hosting.quit(&second);
     wait_until("the closed host connection", || !second.open());
@@ -243,7 +246,7 @@ fn acp_eof_reports_unsent_queued_deliveries_once() {
             "the host connection closed before the queued prompt was sent"
         );
     }
-    assert!(lock(&client.state.0).queued.is_empty());
+    assert!(client.state.0.locked().queued.is_empty());
     assert!(client.send("after EOF", Some("rejected")).is_err());
     drop(client);
     assert!(
@@ -263,7 +266,9 @@ fn acp_prompts_cancels_and_answers_through_the_protocol() {
     client.send("work", None).unwrap();
     wait_until("the permission request", || client.request().is_some());
     client.interrupt().unwrap();
-    wait_until("the cancelled prompt's end", || !lock(&client.state.0).turn);
+    wait_until("the cancelled prompt's end", || {
+        !client.state.0.locked().turn
+    });
     // The cancel came first, then the pending permission was answered
     // `cancelled`, and only then did the agent end the prompt.
     assert_eq!(

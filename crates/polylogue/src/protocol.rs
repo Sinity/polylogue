@@ -1,146 +1,246 @@
 //! Product failure codes classified once into the shared transport contract.
 pub mod act;
 pub mod assertion;
-pub mod attachment;
+pub mod attachment {
+    //! Attachment descriptors and bytes share one checked range operation.
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    pub struct Arguments {
+        pub message: String,
+        pub block: u64,
+        #[serde(default)]
+        pub attachment: u64,
+        pub input: Option<String>,
+        #[serde(default = "range_bytes")]
+        pub length: u64,
+    }
+    fn range_bytes() -> u64 {
+        crate::daemon::attachment::PAGE_BYTES as u64
+    }
+    pub(crate) type Answer = crate::daemon::attachment::BytePage;
+}
+
 pub mod browser;
 pub mod calendar;
 pub mod caller;
-pub mod complete;
+pub mod complete {
+    //! Full query completion uses the shared replacement span and candidate type.
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    pub struct Arguments {
+        #[serde(default)]
+        pub text: String,
+        pub position: Option<u64>,
+    }
+    pub type Answer = Vec<query_language::complete::Completion>;
+}
+
 pub mod context;
-pub mod embed;
-pub mod explain;
+pub mod embed {
+    //! Embedding builds, their previews and their status.
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+
+    /// `embed status` takes no arguments.
+    #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    pub struct Status {}
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    pub struct Arguments {
+        /// A sessions query limiting the texts (default: every prose text).
+        pub query: Option<String>,
+        /// At most this many texts.
+        pub limit: Option<u64>,
+        /// Confirm a build with a paid provider.
+        #[serde(default)]
+        pub yes: bool,
+    }
+}
+
+pub mod explain {
+    //! Explaining a query, and pages of the language's own description.
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    pub struct Arguments {
+        /// `query`, `syntax`, `units`, `fields`, `operators` or `capabilities`.
+        pub subject: String,
+        /// The query, for subject `query`.
+        pub expression: Option<String>,
+        /// List fields for this unit.
+        pub unit: Option<String>,
+        /// Declarations per page.
+        pub page_size: Option<u64>,
+        /// The calling session, which `self` names.
+        pub session: Option<String>,
+    }
+}
+
 pub mod follow;
-pub mod import;
+pub mod import {
+    //! Explicit file ingestion through the accepting daemon.
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    pub struct Arguments {
+        #[serde(default)]
+        pub paths: Vec<std::path::PathBuf>,
+        /// The declared structure the paths are read as, or the Python Polylogue store
+        /// they are (`python-archive`, `python-user-db`, `python-vectors`).
+        #[serde(default)]
+        pub format: Option<String>,
+        /// The folder of an archive in the older format, imported once in place of paths.
+        #[serde(default)]
+        pub from_archive: Option<std::path::PathBuf>,
+        /// With `from_archive`: read and check it, write nothing, and report counts per class.
+        #[serde(default)]
+        pub dry_run: bool,
+    }
+    pub type Answer = polylogue_engine::ImportReport;
+}
+
 mod scope;
 pub(crate) use scope::{ReadScopes, answer as scope_answer};
 pub mod query;
 pub mod query_aliases;
 pub mod read;
-pub mod resume;
+pub mod resume {
+    //! Resuming a session through its tool's own command.
+    use polylogue_model::SessionId;
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+    use std::path::PathBuf;
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    pub struct Arguments {
+        /// The session; without one, the sessions in `cwd` worth resuming.
+        pub session: Option<SessionId>,
+        pub cwd: Option<PathBuf>,
+        /// At most this many sessions.
+        pub limit: Option<u64>,
+    }
+}
+
 pub mod saved;
-pub mod schema;
-pub mod setting;
+pub mod schema {
+    //! Schema operations validate the declaration's accepted selection arguments.
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    pub struct Infer {
+        pub origin: Option<String>,
+        #[serde(default)]
+        pub all: bool,
+        #[serde(default)]
+        pub input: Vec<String>,
+        pub since: Option<String>,
+        pub revision: Option<u64>,
+        #[serde(default)]
+        pub field: Vec<String>,
+    }
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    pub struct Unread {
+        pub origin: Option<String>,
+        #[serde(default)]
+        pub all: bool,
+    }
+}
+
+pub mod setting {
+    //! Runtime setting catalog, values and write results share one declared operation.
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    pub struct Arguments {
+        pub key: Option<String>,
+        pub value: Option<String>,
+        pub machine: Option<String>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+    #[serde(untagged)]
+    pub enum Answer {
+        Catalog(Vec<polylogue_model::settings::Current>),
+        Current(Box<polylogue_model::settings::Current>),
+        Outcome(polylogue_model::user::UserOutcome),
+    }
+
+    #[cfg(test)]
+    mod tests;
+}
+
 pub mod status;
-pub mod stream;
-pub mod verify;
+pub mod stream {
+    //! Server-sent-event framing for the daemon's finite streams.
+    use crate::daemon::Failure;
+    use serde::Serialize;
+    use std::io::{self, Write};
+
+    pub fn event(output: &mut dyn Write, name: &str, value: &impl Serialize) -> io::Result<()> {
+        let event = command_surface::SseEvent {
+            id: None,
+            event: name.into(),
+            data: serde_json::to_string(value)?,
+            retry: None,
+        };
+        let frame = event.encode().map_err(io::Error::other)?;
+        output.write_all(frame.as_bytes())?;
+        output.flush()
+    }
+
+    /// A failure after the stream began ends it with the error answer.
+    pub fn error(output: &mut dyn Write, failure: Failure) -> io::Result<()> {
+        event(output, "error", &failure.answer::<serde_json::Value>())
+    }
+}
+
+pub mod verify {
+    //! The on-demand check of stored bytes.
+    use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    pub struct Arguments {
+        /// Also hash every revision from its chain and write one line per
+        /// revision to this new file on the daemon's host.
+        pub manifest: Option<std::path::PathBuf>,
+    }
+    pub type Answer = polylogue_store::verify::Verification;
+}
+
 pub mod wire;
 use command_surface::{Answer, Failure, FailureKind, InputSpan};
-
-pub const FAILURE_CLASSES: &[(FailureKind, &[&str])] = &[
-    (
-        FailureKind::InvalidQuery,
-        &["query", "sql", "invalid_query", "invalid_cursor"],
-    ),
-    (FailureKind::UnknownField, &["unknown_field"]),
-    (FailureKind::BadValue, &["bad_value"]),
-    (FailureKind::NotAQuery, &["not_a_query"]),
-    (
-        FailureKind::BadRequest,
-        &[
-            "bad_request",
-            "invalid",
-            "incomplete_parents",
-            "unsupported_provider",
-            "empty_text",
-            "model_required",
-            "attachment_name_not_a_basename",
-            "invalid_action",
-            "submission_receipt_required",
-            "submission_conversation_mismatch",
-            "since_is_a_date_or_time",
-            "unknown_outcome",
-            "unknown_attachment",
-            "unknown_report",
-        ],
-    ),
-    (FailureKind::Ambiguous, &["ambiguous"]),
-    (FailureKind::StaleCursor, &["stale_cursor"]),
-    (
-        FailureKind::NotYetAvailable,
-        &[
-            "not_built",
-            "not_yet_available",
-            "index_building",
-            "primary_context_missing",
-            "primary_context_pending",
-            "primary_context_stale",
-        ],
-    ),
-    (
-        FailureKind::Refused,
-        &[
-            "refused",
-            "operator_required",
-            "embeddings_off",
-            "confirm",
-            "rejected",
-            "primary_context_refused",
-        ],
-    ),
-    (
-        FailureKind::NotFound,
-        &[
-            "not_found",
-            "unknown_chat_action",
-            "unknown_chat_action_attachment",
-            "attachment_missing",
-            "attachment_unavailable",
-            "unknown_backfill_job",
-        ],
-    ),
-    (
-        FailureKind::Conflict,
-        &[
-            "conflict",
-            "stale",
-            "scope_changed",
-            "resync_required",
-            "idempotency_key_reused",
-            "action_finished",
-            "not_the_claimant",
-            "stage_only_action_cannot_submit",
-            "not_awaiting_approval",
-            "job_ended",
-            "browser_actions_off",
-        ],
-    ),
-    (FailureKind::StoppedEarly, &["stopped_early"]),
-    (
-        FailureKind::NotRunning,
-        &[
-            "not_running",
-            "daemon_required",
-            "shutting_down",
-            "daemon_protocol_mismatch",
-        ],
-    ),
-    (FailureKind::Timeout, &["timeout", "deadline_exceeded"]),
-    (FailureKind::Cancelled, &["cancelled"]),
-    (
-        FailureKind::Io,
-        &[
-            "io",
-            "store",
-            "internal",
-            "import",
-            "embed",
-            "sinex_unavailable",
-            "primary_context_unavailable",
-            "primary_context_invalid",
-        ],
-    ),
-];
 
 #[cfg(feature = "sinex")]
 pub fn context_failure(problem: polylogue_sinex::ContextFailure) -> Failure {
     use polylogue_sinex::ContextFailureKind as Kind;
     let code = match problem.kind {
-        Kind::Missing => "primary_context_missing",
-        Kind::Pending => "primary_context_pending",
-        Kind::Unavailable => "primary_context_unavailable",
-        Kind::Refused => "primary_context_refused",
-        Kind::Stale => "primary_context_stale",
-        Kind::Invalid => "primary_context_invalid",
+        Kind::Missing => polylogue_model::Code::PrimaryContextMissing,
+        Kind::Pending => polylogue_model::Code::PrimaryContextPending,
+        Kind::Unavailable => polylogue_model::Code::PrimaryContextUnavailable,
+        Kind::Refused => polylogue_model::Code::PrimaryContextRefused,
+        Kind::Stale => polylogue_model::Code::PrimaryContextStale,
+        Kind::Invalid => polylogue_model::Code::PrimaryContextInvalid,
     };
     let mut failure = failure(code, problem.reason);
     failure.retryable = matches!(
@@ -153,18 +253,93 @@ pub fn context_failure(problem: polylogue_sinex::ContextFailure) -> Failure {
     failure
 }
 
-pub fn kind(code: &str) -> FailureKind {
-    FAILURE_CLASSES
-        .iter()
-        .find_map(|(kind, codes)| codes.contains(&code).then_some(*kind))
-        .unwrap_or(FailureKind::Io)
+pub fn kind(code: polylogue_model::Code) -> FailureKind {
+    use polylogue_model::Code;
+    match code {
+        Code::Query | Code::Sql | Code::InvalidQuery | Code::InvalidCursor => {
+            FailureKind::InvalidQuery
+        }
+        Code::UnknownField => FailureKind::UnknownField,
+        Code::BadValue => FailureKind::BadValue,
+        Code::NotAQuery => FailureKind::NotAQuery,
+        Code::BadRequest
+        | Code::Invalid
+        | Code::IncompleteParents
+        | Code::UnsupportedProvider
+        | Code::EmptyText
+        | Code::ModelRequired
+        | Code::AttachmentNameNotABasename
+        | Code::InvalidAction
+        | Code::SubmissionReceiptRequired
+        | Code::SubmissionConversationMismatch
+        | Code::SinceIsADateOrTime
+        | Code::UnknownOutcome
+        | Code::UnknownAttachment
+        | Code::UnknownReport => FailureKind::BadRequest,
+        Code::Ambiguous => FailureKind::Ambiguous,
+        Code::StaleCursor => FailureKind::StaleCursor,
+        Code::NotBuilt
+        | Code::NotYetAvailable
+        | Code::IndexBuilding
+        | Code::PrimaryContextMissing
+        | Code::PrimaryContextPending
+        | Code::PrimaryContextStale => FailureKind::NotYetAvailable,
+        Code::Refused
+        | Code::OperatorRequired
+        | Code::EmbeddingsOff
+        | Code::Confirm
+        | Code::Rejected
+        | Code::PrimaryContextRefused => FailureKind::Refused,
+        Code::NotFound
+        | Code::UnknownChatAction
+        | Code::UnknownChatActionAttachment
+        | Code::AttachmentMissing
+        | Code::AttachmentUnavailable
+        | Code::UnknownBackfillJob => FailureKind::NotFound,
+        Code::Conflict
+        | Code::Stale
+        | Code::ScopeChanged
+        | Code::ResyncRequired
+        | Code::IdempotencyKeyReused
+        | Code::ActionFinished
+        | Code::NotTheClaimant
+        | Code::StageOnlyActionCannotSubmit
+        | Code::NotAwaitingApproval
+        | Code::JobEnded
+        | Code::BrowserActionsOff => FailureKind::Conflict,
+        Code::StoppedEarly => FailureKind::StoppedEarly,
+        Code::NotRunning
+        | Code::DaemonRequired
+        | Code::ShuttingDown
+        | Code::DaemonProtocolMismatch => FailureKind::NotRunning,
+        Code::Timeout | Code::DeadlineExceeded => FailureKind::Timeout,
+        Code::Cancelled => FailureKind::Cancelled,
+        Code::Empty
+        | Code::ModelCallsOff
+        | Code::DaemonUnavailable
+        | Code::Degraded
+        | Code::Demo
+        | Code::AttachmentOutput
+        | Code::ReaderUnavailable
+        | Code::Schema
+        | Code::ReadOutput
+        | Code::ReadFailed
+        | Code::Io
+        | Code::Store
+        | Code::Internal
+        | Code::Import
+        | Code::Embed
+        | Code::SinexUnavailable
+        | Code::PrimaryContextUnavailable
+        | Code::PrimaryContextInvalid => FailureKind::Io,
+    }
 }
 
 /// An answer whose value does not decode as its operation's declared type:
 /// the daemon that answered was built from other sources.
 pub fn protocol_mismatch(operation: &str, error: impl std::fmt::Display) -> Failure {
     failure(
-        "daemon_protocol_mismatch",
+        polylogue_model::Code::DaemonProtocolMismatch,
         format!(
             "the daemon answered {operation} in a shape this build does not read ({error}); \
              it speaks another protocol version, so restart it with `polylogue daemon`"
@@ -173,9 +348,9 @@ pub fn protocol_mismatch(operation: &str, error: impl std::fmt::Display) -> Fail
 }
 
 /// A product failure code, classified once into the shared kind.
-pub fn failure(code: &str, message: impl Into<String>) -> Failure {
+pub fn failure(code: polylogue_model::Code, message: impl Into<String>) -> Failure {
     let mut failure = Failure::new(kind(code), message);
-    failure.code = Some(code.to_owned());
+    failure.code = Some(code.as_str().to_owned());
     failure
 }
 

@@ -9,6 +9,7 @@
 //! message's stored fields (position, role and parser output among them);
 //! the text that was embedded cannot be recovered from it.
 
+use crate::ResultExt as _;
 use crate::older_archive::{open_source, tables_of};
 use crate::{Result, StoreError};
 use rusqlite::Connection;
@@ -139,20 +140,14 @@ impl VectorStore {
             "SELECT embedding_input_hash, model, dimension, embedded_at_ms, NULL FROM message_embeddings_meta"
         })?;
         let rows = statement.query_map([], |r| {
-            Ok((
-                r.get::<_, Vec<u8>>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, Option<i64>>(3)?,
-                r.get::<_, Option<String>>(4)?,
-            ))
+            <(Vec<u8>, String, i64, Option<i64>, Option<String>)>::try_from(r)
         })?;
         let mut out = Vec::new();
         for row in rows {
             let (address, model, dims, embedded_at, request) = row?;
             let address: [u8; 32] = address
                 .try_into()
-                .map_err(|_| StoreError::Invalid("a vector address is not 32 bytes".into()))?;
+                .or_invalid("a vector address is not 32 bytes")?;
             let dims = usize::try_from(dims)
                 .ok()
                 .filter(|dims| *dims > 0)

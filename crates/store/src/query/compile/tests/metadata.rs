@@ -97,7 +97,11 @@ fn matches_declarations_follow_the_producer_columns() {
     }
     let text = "sessions where seq all(action:shell -> action:shell) | matches";
     let error = compile(text, &opts(&[])).unwrap_err();
-    assert_eq!(error.kind(), "not_built", "{text}: {error}");
+    assert_eq!(
+        error.kind(),
+        polylogue_model::Code::NotBuilt,
+        "{text}: {error}"
+    );
 
     use crate::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
     let directory = tempfile::tempdir().unwrap();
@@ -234,7 +238,7 @@ fn saved_scope_keeps_fields_and_refuses_forgery() {
     ] {
         assert_eq!(
             compile(text, &options).unwrap_err().kind(),
-            "unknown_field",
+            polylogue_model::Code::UnknownField,
             "{text}"
         );
     }
@@ -289,7 +293,7 @@ fn saved_scope_keeps_fields_and_refuses_forgery() {
         compile("query:artifact-alias | where session.repo:morrow", &options)
             .unwrap_err()
             .kind(),
-        "unknown_field"
+        polylogue_model::Code::UnknownField
     );
     let schema = options
         .output_schema("tool_calls | group by action | agg sum(exit_code)")

@@ -1,4 +1,6 @@
 //! A private derived SQLite file; readers never open the source archive.
+use crate::ConnExt as _;
+use crate::{OptionExt as _, ResultExt as _};
 use crate::{Result, StoreError};
 use polylogue_model::ChangePosition;
 use query_language::catalog::OutputSchema;
@@ -118,8 +120,7 @@ fn persist_wal(conn: &Connection) -> Result<()> {
     Ok(())
 }
 fn count(value: u64) -> Result<i64> {
-    i64::try_from(value)
-        .map_err(|_| StoreError::Invalid("completion count exceeds SQLite's integer range".into()))
+    crate::to_i64(value, "completion count exceeds SQLite's integer range")
 }
 fn text_key(value: &str) -> String {
     polylogue_model::text::key(value)
@@ -145,7 +146,7 @@ impl CatalogWriter {
     ) -> Result<Self> {
         let parent = path
             .parent()
-            .ok_or_else(|| StoreError::Invalid("completion catalog has no parent".into()))?;
+            .or_invalid("completion catalog has no parent")?;
         fs::create_dir_all(parent)?;
         let temporary = parent.join(format!(".catalog-{}", uuid::Uuid::now_v7()));
         let guard = Temporary(temporary.clone());
@@ -240,10 +241,9 @@ impl CatalogWriter {
     /// names: those fields' values become exactly the given ones. Values of
     /// other fields (the counted models and tools) stay as they are.
     pub fn put_session(&mut self, session: &Session) -> Result<()> {
-        let existed: bool = self.conn.query_row(
+        let existed: bool = self.conn.exists(
             "SELECT EXISTS(SELECT 1 FROM session WHERE id=?1)",
             [&session.id],
-            |row| row.get(0),
         )?;
         self.conn.execute("INSERT INTO session VALUES(?1,?2,'',?3,?4,?5,?6,?7,?8) ON CONFLICT(id) DO UPDATE SET native_id=excluded.native_id,title=excluded.title,title_key=excluded.title_key,origin=excluded.origin,repo=excluded.repo,last_activity=excluded.last_activity,first_prompt=excluded.first_prompt",
             params![session.id,session.native_id,session.title,text_key(&session.title),session.origin,session.repo,session.last_activity,session.first_prompt])?;
@@ -361,13 +361,7 @@ impl CatalogWriter {
         let old = self
             .conn
             .prepare("SELECT field,value,n FROM contribution WHERE session=?1")?
-            .query_map([id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            })?
+            .query_map([id], |row| <(String, String, i64)>::try_from(row))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for (field, value, n) in old {
             self.conn.execute(
@@ -389,11 +383,7 @@ impl CatalogWriter {
             "SELECT id FROM session WHERE id<?1 ORDER BY id DESC LIMIT 1",
             "SELECT id FROM session WHERE id>?1 ORDER BY id LIMIT 1",
         ] {
-            if let Some(value) = self
-                .conn
-                .query_row(sql, [id], |row| row.get(0))
-                .optional()?
-            {
+            if let Some(value) = self.conn.scalar_optional(sql, [id])? {
                 values.push(value);
             }
         }
@@ -512,11 +502,8 @@ impl CatalogReader {
         )?;
         configure(&conn)?;
         conn.execute_batch("PRAGMA query_only=ON; BEGIN")?;
-        let get = |key: &str| {
-            conn.query_row("SELECT value FROM metadata WHERE key=?1", [key], |row| {
-                row.get::<_, String>(0)
-            })
-        };
+        let get =
+            |key: &str| conn.scalar::<String>("SELECT value FROM metadata WHERE key=?1", [key]);
         if get("version")? != VERSION.to_string() || get("archive")? != archive {
             return Ok(None);
         }
@@ -525,7 +512,7 @@ impl CatalogReader {
             position: serde_json::from_str(&get("position")?)?,
             written_at: get("written_at")?
                 .parse()
-                .map_err(|_| StoreError::Invalid("invalid completion time".into()))?,
+                .or_invalid("invalid completion time")?,
         };
         let reader = Self {
             conn,
@@ -545,11 +532,9 @@ impl CatalogReader {
         Ok(())
     }
     pub fn catalog(&self) -> Result<query_language::catalog::Catalog> {
-        let value: String = self.conn.query_row(
-            "SELECT value FROM metadata WHERE key='catalog'",
-            [],
-            |row| row.get(0),
-        )?;
+        let value: String = self
+            .conn
+            .scalar("SELECT value FROM metadata WHERE key='catalog'", [])?;
         Ok(serde_json::from_str(&value)?)
     }
     pub fn values(&self, field: &str, prefix: &str) -> Result<Vec<ValueCount>> {
@@ -587,14 +572,10 @@ impl CatalogReader {
             .collect()
     }
     pub fn kept(&self, id: &str) -> Result<Option<Kept>> {
-        let payload = self
-            .conn
-            .query_row(
-                "SELECT payload FROM item WHERE kind='kept' AND id=?1",
-                [id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
+        let payload = self.conn.scalar_optional::<String>(
+            "SELECT payload FROM item WHERE kind='kept' AND id=?1",
+            [id],
+        )?;
         payload
             .map(|payload| Ok(serde_json::from_str(&payload)?))
             .transpose()
@@ -602,11 +583,9 @@ impl CatalogReader {
     pub fn session_details(&self, id: &str) -> Result<Option<Session>> {
         let mut value=self.conn.query_row("SELECT id,native_id,prefix,title,origin,repo,last_activity FROM session WHERE id=?1",[id],session).optional()?;
         if let Some(value) = value.as_mut() {
-            value.first_prompt = self.conn.query_row(
-                "SELECT first_prompt FROM session WHERE id=?1",
-                [id],
-                |row| row.get(0),
-            )?;
+            value.first_prompt = self
+                .conn
+                .scalar("SELECT first_prompt FROM session WHERE id=?1", [id])?;
         }
         Ok(value)
     }

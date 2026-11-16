@@ -14,7 +14,9 @@ pub mod signals;
 pub mod text_search;
 pub mod writer;
 
+use crate::ConnExt as _;
 use crate::archive::{Archive, ArchiveLock, open_write};
+use crate::{OptionExt as _, ResultExt as _};
 use crate::{ReadPool, Result};
 use rusqlite::{Connection, params};
 use std::path::Path;
@@ -244,10 +246,9 @@ impl Fixture {
     /// The sequence a fixture message's stored session order holds: the
     /// sixteen digits before its record position.
     pub fn message_order(&self, message_pk: i64) -> Result<i64> {
-        let order: String = self.index.query_row(
+        let order: String = self.index.scalar(
             "SELECT session_order FROM message WHERE pk=?1",
             [message_pk],
-            |row| row.get(0),
         )?;
         let seq = order
             .len()
@@ -398,10 +399,9 @@ impl Fixture {
 
     /// A tool call in its own message, with its result when it has one.
     pub fn tool_call(&mut self, session_pk: i64, message_pk: i64, t: CallFacts<'_>) -> Result<i64> {
-        let idx: i64 = self.index.query_row(
+        let idx: i64 = self.index.scalar(
             "SELECT COALESCE(max(idx), -1) + 1 FROM block WHERE message_pk = ?1",
             [message_pk],
-            |r| r.get(0),
         )?;
         let call = self.block(
             message_pk,
@@ -599,8 +599,7 @@ impl Fixture {
             at_precision: accuracy.precision,
             at_until: accuracy.until,
             session: Some(
-                polylogue_model::SessionId::parse(&session)
-                    .map_err(|error| crate::StoreError::Invalid(error.to_string()))?,
+                polylogue_model::SessionId::parse(&session).map_err(crate::StoreError::invalid)?,
             ),
             kind: kind.into(),
             at: source_at,
@@ -788,10 +787,8 @@ impl Fixture {
         };
         self.commit_seq += 1;
         let id = format!("n{}", self.commit_seq);
-        let kind = AssertionKind::from_name(kind)
-            .ok_or_else(|| crate::StoreError::Invalid("unknown fixture assertion kind".into()))?;
-        let target = Reference::parse(target)
-            .map_err(|_| crate::StoreError::Invalid("invalid fixture assertion target".into()))?;
+        let kind = AssertionKind::from_name(kind).or_invalid("unknown fixture assertion kind")?;
+        let target = Reference::parse(target).or_invalid("invalid fixture assertion target")?;
         let fact = AssertionFact {
             id: id.clone(),
             root: id.clone(),

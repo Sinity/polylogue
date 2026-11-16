@@ -572,7 +572,7 @@ fn answer_serialization_keeps_source_values_keys_and_empty_fields() {
 #[test]
 fn answer_errors_keep_credential_shaped_messages_and_hints() {
     let token = format!("ghp_{}", "q".repeat(36));
-    let mut failure = crate::protocol::failure("bad_request", token.clone());
+    let mut failure = crate::protocol::failure(polylogue_model::Code::BadRequest, token.clone());
     failure.hint = Some(token.clone());
     let response = command_surface::Answer::<Value>::error(failure);
     let encoded = serde_json::to_value(response).unwrap();

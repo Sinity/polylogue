@@ -49,7 +49,7 @@ impl Reader<'_> {
         let (version,body,source_input,source_chain):(Vec<u8>,Vec<u8>,String,i64)=conn.query_row(
             "SELECT (SELECT version_hash FROM message_version WHERE pk=ms.version_pk),b.body,i.id,ms.chain FROM message m JOIN message_source ms ON ms.message_pk=m.pk AND ms.input_pk=m.input_pk AND ms.chain=m.source_chain JOIN input_ref i ON i.pk=ms.input_pk JOIN block b ON b.message_pk=m.pk WHERE m.id=?1 AND coalesce(b.ordinal,CAST(b.idx AS TEXT))=?2",
             params![message.to_string(),block.to_string()],
-            |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?
+            |r| <(_, _, _, _)>::try_from(r)).optional()?
             .ok_or_else(||StoreError::NotFound(format!("attachment block {message}:{block}")))?;
         let source = match unpack_block(&body)? {
             Block::Image(a) | Block::File(a) if attachment_index == 0 => a,
@@ -176,11 +176,7 @@ pub(super) fn scope_matches(
         ORDER BY m.input,m.member,m.observation",
     )?;
     for row in stmt.query_map(params![scope, source_id], |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
-        ))
+        <(String, String, String)>::try_from(r)
     })? {
         let (input, member, observation) = row?;
         if !known.contains_key(&input) {
@@ -223,13 +219,13 @@ pub(super) fn scope_matches(
               AND EXISTS(SELECT 1 FROM source_revision r WHERE r.input=m.input)
             ORDER BY m.input,x.ordinal")?;
         for row in meta.query_map(params![scope, source_id], |r| {
-            Ok((
-                r.get::<_, Option<String>>(0)?,
-                r.get::<_, Option<String>>(1)?,
-                r.get::<_, Option<String>>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-            ))
+            <(
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                String,
+                String,
+            )>::try_from(r)
         })? {
             let (name, media, size, input, recorded) = row?;
             if !known.contains_key(&input) {
@@ -243,10 +239,11 @@ pub(super) fn scope_matches(
             asset.names.extend(name);
             asset.media_types.extend(media);
             if let Some(size) = size {
-                asset.declared_sizes.push(
-                    size.parse()
-                        .map_err(|_| StoreError::Invalid("invalid declared asset size".into()))?,
-                );
+                asset
+                    .declared_sizes
+                    .push(size.parse().map_err(|_| {
+                        crate::StoreError::stored(2, "invalid declared asset size")
+                    })?);
             }
         }
     }
@@ -281,7 +278,7 @@ impl Reader<'_> {
         let shown = shown
             .query_map(
                 params![message.to_string(), source_version.0.as_slice()],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+                |r| <(String, i64)>::try_from(r),
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut stated = Vec::new();

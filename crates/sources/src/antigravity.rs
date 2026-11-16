@@ -1,10 +1,11 @@
 //! Antigravity language-server Markdown exports. Activity markers are agent
 //! actions even when the exporter places them inside a User Input section.
-use crate::document::{Sink, message_id, session_id, str_of};
+use crate::document::{Sink, message_id, session_id};
 use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
 use crate::parse::{DocumentParser, MessageRow, Output, Parse};
 use crate::{RecordOutcome, Records};
+use polylogue_model::JsonExt;
 use polylogue_model::{
     BlobHash, Block, Event, Json, Message, PromptKind, Role, Session, SessionKind, TitleSource,
     ToolAction,
@@ -106,7 +107,11 @@ impl DocumentParser for Antigravity {
                     ],
                 ),
             );
-            let Some(id) = str_of(&value, "cascadeId").and_then(|id| session_id(ORIGIN, id)) else {
+            let Some(id) = value
+                .str("cascadeId")
+                .filter(|s| !s.is_empty())
+                .and_then(|id| session_id(ORIGIN, id))
+            else {
                 records.record(
                     "conversion",
                     &RecordOutcome::unreadable("invalid cascadeId"),
@@ -133,7 +138,9 @@ impl DocumentParser for Antigravity {
             return;
         }
         records.fields("export", &value, &FIELDS);
-        let Some((native, markdown)) = str_of(&value, "cascadeId")
+        let Some((native, markdown)) = value
+            .str("cascadeId")
+            .filter(|s| !s.is_empty())
             .zip(value["markdown"].as_str())
             .filter(|_| value["source"] == "antigravity_language_server")
         else {
@@ -148,7 +155,7 @@ impl DocumentParser for Antigravity {
             return;
         };
         let mut session = Session::new(id.clone(), SessionKind::Main);
-        if let Some(title) = str_of(&value, "title") {
+        if let Some(title) = value.str("title").filter(|s| !s.is_empty()) {
             session.offer_title(title, TitleSource::Generated);
         }
         out.sessions.push(session);

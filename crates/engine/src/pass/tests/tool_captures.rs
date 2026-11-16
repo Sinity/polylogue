@@ -1,4 +1,6 @@
 use super::*;
+use polylogue_testkit::claude_user as user;
+use std::fs;
 
 /// A database of `rows` rows where Codex keeps one.
 fn database(w: &ClaudeHome, rows: u32) -> std::path::PathBuf {
@@ -20,7 +22,7 @@ fn a_pass_captures_a_database_while_serving_files() {
     let w = ClaudeHome::new();
     database(&w, 3000);
     w.append("live.jsonl", &user("u1", "live", "beside the capture"));
-    let (mut engine, _lock) = w.engine(64 << 20);
+    let (mut engine, _lock) = crate::import::tests::engine(&w, 64 << 20);
     let first = engine.run_pass().unwrap();
     assert!(!first.capture_pending, "{first:?}");
     assert!(first.errors.is_empty(), "{:?}", first.errors);
@@ -46,14 +48,14 @@ fn open_descriptors(path: &std::path::Path) -> usize {
 fn inputs_are_serviced_while_a_database_is_read() {
     let w = ClaudeHome::new();
     w.append("live.jsonl", &user("u1", "live", "before capture"));
-    let (mut engine, _lock) = w.engine(64 << 20);
+    let (mut engine, _lock) = crate::import::tests::engine(&w, 64 << 20);
     assert!(engine.run_pass().unwrap().errors.is_empty());
     let db = database(&w, 3000);
     // The tool holds its database locked, so the read stays open, waiting,
     // until this test releases it.
     let tool = rusqlite::Connection::open(&db).unwrap();
     tool.execute_batch("BEGIN EXCLUSIVE").unwrap();
-    let first = engine.run_turn().unwrap();
+    let first = engine.one_pass(true, &Default::default()).unwrap().0;
     assert!(first.capture_pending);
     assert!(first.errors.is_empty(), "{:?}", first.errors);
     assert_eq!(w.texts("live"), ["before capture"]);
@@ -63,7 +65,7 @@ fn inputs_are_serviced_while_a_database_is_read() {
         std::thread::yield_now();
     }
     w.append("live.jsonl", &user("u2", "live", "during capture"));
-    let second = engine.run_turn().unwrap();
+    let second = engine.one_pass(true, &Default::default()).unwrap().0;
     assert!(second.capture_pending);
     assert!(
         second.errors.is_empty(),
@@ -96,13 +98,11 @@ fn inputs_are_serviced_while_a_database_is_read() {
 /// stopped after the first turn would leave the test waiting.
 #[test]
 fn daemon_continues_capture_without_a_watcher_event() {
-    use polylogue_engine::{LoopMsg, LoopStatus};
+    use crate::{LoopMsg, LoopStatus};
     use std::sync::{Arc, Mutex, mpsc::channel};
     use std::time::Duration;
     let w = ClaudeHome::new();
-    let (archive, lock) = Archive::open_or_create(&w.root).unwrap();
-    let config = w.config(64 << 20);
-    let mut engine = Engine::new(config, archive, polylogue_testkit::stopped_attempt()).unwrap();
+    let (mut engine, lock) = crate::import::tests::engine(&w, 64 << 20);
     // A first build captures whole; this one has nothing to capture.
     assert!(engine.run_pass().unwrap().errors.is_empty());
     database(&w, 4000);
@@ -117,7 +117,7 @@ fn daemon_continues_capture_without_a_watcher_event() {
             worker_tx,
             rx,
             &shared,
-            polylogue_engine::Lifetime::UntilStopped,
+            crate::Lifetime::UntilStopped,
             || ready.send(()).unwrap(),
         )
     });

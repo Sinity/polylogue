@@ -21,6 +21,7 @@
 //! SQL reads and quantization do not hold the vector cache mutex.
 
 use crate::embeddings::Provider;
+use polylogue_model::LockExt as _;
 use polylogue_store::Reader;
 use polylogue_store::vectors::{Loaded, Similarity};
 use std::collections::VecDeque;
@@ -148,6 +149,7 @@ struct Flight {
 }
 
 pub struct Warm {
+    clock: polylogue_model::WallClock,
     archive: polylogue_store::Archive,
     vectors: Arc<VectorShare>,
     worker: Mutex<Option<VectorWorker>>,
@@ -175,9 +177,10 @@ fn cache_lock<T>(lock: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, String
 }
 
 impl Warm {
-    pub fn new(archive: &polylogue_store::Archive) -> Self {
+    pub fn new(archive: &polylogue_store::Archive, clock: polylogue_model::WallClock) -> Self {
         Self {
             archive: archive.clone(),
+            clock,
             vectors: Arc::default(),
             worker: Mutex::default(),
             query_vectors: Mutex::new(Recent::new(QUERY_VECTORS)),
@@ -300,10 +303,10 @@ impl Warm {
             let share = Arc::clone(&self.vectors);
             let counts = Arc::clone(&self.counts);
             let archive = self.archive.clone();
-            let thread = std::thread::Builder::new()
-                .name("polylogue-vectors".into())
-                .spawn(move || run_worker(&archive, &share, &counts, &events))
-                .map_err(|e| e.to_string())?;
+            let thread = polylogue_model::spawn_named("polylogue-vectors", move || {
+                run_worker(&archive, &share, &counts, &events)
+            })
+            .map_err(|e| e.to_string())?;
             *worker = Some(VectorWorker { wake, thread });
         }
         if let Some(worker) = worker.as_ref() {
@@ -375,18 +378,10 @@ impl Warm {
         }
         impl Drop for Land<'_> {
             fn drop(&mut self) {
-                let mut result = self
-                    .flight
-                    .result
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut result = self.flight.result.locked();
                 result.get_or_insert_with(|| Err("the provider call did not finish".into()));
                 drop(result);
-                self.warm
-                    .in_flight
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .remove(self.key);
+                self.warm.in_flight.locked().remove(self.key);
                 self.flight.done.notify_all();
             }
         }
@@ -424,7 +419,12 @@ impl Warm {
         // asked for again only after the daemon restarts.
         if let Err(error) = polylogue_store::vectors::Vectors::writer(&self.archive, CACHE_KIB)
             .and_then(|store| {
-                store.put_query_vector(&provider.query_key(vector.len()), text, &vector)
+                store.put_query_vector(
+                    &provider.query_key(vector.len()),
+                    text,
+                    &vector,
+                    &self.clock,
+                )
             })
         {
             eprintln!("polylogue: storing a query vector: {error}");

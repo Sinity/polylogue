@@ -29,11 +29,8 @@ pub struct FragmentBodyOrigin {
 }
 impl FragmentOrigin {
     pub fn validate(&self, start: u64, end: u64) -> Result<(), ReadError> {
-        let invalid = || {
-            ReadError::InvalidPreparedData(
-                "fragment origin does not match the selected source recipe".into(),
-            )
-        };
+        let invalid =
+            || ReadError::invalid("fragment origin does not match the selected source recipe");
         if start > end {
             return Err(invalid());
         }
@@ -73,7 +70,7 @@ pub(crate) fn project_fragment(
     facts: &LayoutFacts,
 ) -> Result<(), ReadError> {
     row.validate()
-        .map_err(|error| ReadError::InvalidPreparedData(error.to_string()))?;
+        .map_err(|error| ReadError::invalid(error.to_string()))?;
     let unsupported = || ReadError::UnsupportedTarget {
         view: options.view,
         target: row.reference.clone(),
@@ -103,8 +100,8 @@ pub(crate) fn project_fragment(
         crate::Reference::Message(_) | crate::Reference::Block { .. }
     );
     if message_container != origin.message.is_some() {
-        return Err(ReadError::InvalidPreparedData(
-            "fragment origin disagrees with its container family".into(),
+        return Err(ReadError::invalid(
+            "fragment origin disagrees with its container family",
         ));
     }
     if options.view == View::Raw {

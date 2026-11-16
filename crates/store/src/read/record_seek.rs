@@ -1,6 +1,6 @@
 //! Record-family cardinalities in the same pinned physical session scope as
 //! the event and link ordinal visitors. Payloads are never selected.
-use crate::{Reader, Result, StoreError};
+use crate::{Reader, Result};
 use polylogue_model::SessionId;
 use rusqlite::OptionalExtension;
 
@@ -24,14 +24,14 @@ impl Reader<'_> {
                     (SELECT count(*) FROM session_link_identity l WHERE l.parent_id=s.id OR l.child_id=s.id)
              FROM session s WHERE s.id=?1",
                 [session.to_string()],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                |row| <(i64, i64)>::try_from(row),
             )
             .optional()?;
         counts
             .map(|(events, links)| {
                 let checked = |count| {
                     u64::try_from(count)
-                        .map_err(|_| StoreError::Invalid("negative physical record count".into()))
+                        .map_err(|_| crate::StoreError::stored(0, "negative physical record count"))
                 };
                 Ok(PhysicalRecordCounts {
                     events: checked(events)?,

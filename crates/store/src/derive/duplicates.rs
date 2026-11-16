@@ -56,7 +56,7 @@ fn compute(conn: &Connection, session_pk: i64) -> Result<Vec<(i64, Option<String
         .prepare_cached(
             "SELECT pk, duplicate_of FROM message WHERE session_pk = ?1 AND duplicate_of IS NOT NULL",
         )?
-        .query_map([session_pk], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .query_map([session_pk], |r| <(_, _)>::try_from(r))?
         .collect::<rusqlite::Result<_>>()?;
     let wanted = repeated(conn, session_pk)?;
     let mut changed: Vec<(i64, Option<String>)> = marked
@@ -115,13 +115,7 @@ fn repeated(conn: &Connection, session_pk: i64) -> Result<HashMap<i64, String>> 
     )?;
     let rows = statement
         .query_map(params![session_pk, CAPTURE], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, i64>(3)?,
-                r.get::<_, i64>(4)?,
-            ))
+            <(i64, String, String, i64, i64)>::try_from(r)
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut captured = Vec::new();

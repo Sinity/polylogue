@@ -166,7 +166,13 @@ fn a_malformed_success_response_never_stores_its_valid_prefix() {
     let body = answer(json!([{"index":0,"embedding":[1,0]},{"index":0,"embedding":[0,1]}]));
     let (provider, server) = provider(vec![(200, body)]);
     let reader = daemon.daemon.reads.reader().unwrap();
-    let result = build(&reader, &provider, None, None);
+    let result = build(
+        &polylogue_model::WallClock::new(jiff::Timestamp::now),
+        &reader,
+        &provider,
+        None,
+        None,
+    );
     let requests = server.join().unwrap();
     assert_eq!(requests[0]["input"].as_array().unwrap().len(), 2);
     assert!(matches!(result, Err(EmbedError::Transport(_))));
@@ -186,7 +192,13 @@ fn a_partial_purchase_resumes_only_the_missing_final_chunk() {
     let (provider, server) = provider(vec![(200, first), (503, "{}".into()), (200, last)]);
     let reader = daemon.daemon.reads.reader().unwrap();
     assert!(matches!(
-        build(&reader, &provider, None, None),
+        build(
+            &polylogue_model::WallClock::new(jiff::Timestamp::now),
+            &reader,
+            &provider,
+            None,
+            None
+        ),
         Err(EmbedError::Transport(_))
     ));
     drop(reader);
@@ -207,7 +219,14 @@ fn a_partial_purchase_resumes_only_the_missing_final_chunk() {
         (1, 1, 4, 1)
     );
     assert_eq!(remaining.already_embedded, 0);
-    let resumed = build(&reader, &provider, None, None).unwrap();
+    let resumed = build(
+        &polylogue_model::WallClock::new(jiff::Timestamp::now),
+        &reader,
+        &provider,
+        None,
+        None,
+    )
+    .unwrap();
     assert_eq!(resumed.vectors, 1);
     drop(reader);
     let requests = server.join().unwrap();
@@ -237,7 +256,13 @@ fn singleton_fallback_dimensions_are_checked_before_any_put() {
         (200, answer(json!([{"index":0,"embedding":[1,0,0]}]))),
     ]);
     let reader = daemon.daemon.reads.reader().unwrap();
-    let result = build(&reader, &provider, None, None);
+    let result = build(
+        &polylogue_model::WallClock::new(jiff::Timestamp::now),
+        &reader,
+        &provider,
+        None,
+        None,
+    );
     let requests = server.join().unwrap();
     assert_eq!(
         requests
@@ -277,11 +302,18 @@ fn resumed_provider_dimensions_cannot_relabel_purchased_chunks() {
                 chunk: 0,
                 values: vec![1.0, 0.0],
             }],
+            &polylogue_model::WallClock::new(jiff::Timestamp::now),
         )
         .unwrap();
     let revision = vectors.revision(&key).unwrap();
     drop(vectors);
-    let result = build(&reader, &provider, None, None);
+    let result = build(
+        &polylogue_model::WallClock::new(jiff::Timestamp::now),
+        &reader,
+        &provider,
+        None,
+        None,
+    );
     let requests = server.join().unwrap();
     assert_eq!(requests[0]["input"], json!(["xxxx"]));
     assert!(

@@ -130,8 +130,7 @@ impl WriterSender {
             input: input.clone(),
             chain,
             length,
-            reading_version: version
-                .ok_or_else(|| StoreError::Invalid("a replacement has no reading".into()))?,
+            reading_version: version.or_invalid("a replacement has no reading")?,
         };
         key.validate()?;
 
@@ -152,10 +151,9 @@ impl WriterSender {
         self.wait_primary_blobs(&blobs)?;
         let root = {
             let index = self.open_current(&token)?;
-            let known: bool = index.query_row(
+            let known: bool = index.exists(
                 "SELECT EXISTS(SELECT 1 FROM source_input WHERE id=?1 AND format=?2)",
                 params![input.id, input.format],
-                |row| row.get(0),
             )?;
             if !known {
                 return Err(StoreError::Invalid("reading input identity differs".into()));
@@ -245,10 +243,9 @@ impl WriterSender {
 
 fn confirmed_blobs(index: &Connection, bodies: &[(BlobHash, u64)]) -> Result<bool> {
     for (hash, size) in bodies {
-        if !index.query_row(
+        if !index.scalar::<bool>(
             "SELECT EXISTS(SELECT 1 FROM source_blob WHERE hash=?1 AND size=?2)",
             params![hash.0.as_slice(), size],
-            |row| row.get::<_, bool>(0),
         )? {
             return Ok(false);
         }
@@ -257,9 +254,7 @@ fn confirmed_blobs(index: &Connection, bodies: &[(BlobHash, u64)]) -> Result<boo
 }
 
 fn root_material(index: &Connection, input: &str, chain: i64) -> Result<String> {
-    Ok(index.query_row(
+    index.scalar(
         "SELECT id FROM source_material WHERE input=?1 AND chain=?2 AND offset=0 ORDER BY rowid LIMIT 1",
-        params![input, chain],
-        |row| row.get(0),
-    )?)
+        params![input, chain])
 }

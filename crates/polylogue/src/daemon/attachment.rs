@@ -67,7 +67,10 @@ pub(crate) fn read(range: Range, d: &Daemon) -> Answer<BytePage> {
         cursor,
     } = range;
     if length == 0 {
-        return error("bad_request", "attachment range length must be positive");
+        return error(
+            polylogue_model::Code::BadRequest,
+            "attachment range length must be positive",
+        );
     }
     let reader = match d.reads.reader() {
         Ok(reader) => reader,
@@ -90,11 +93,14 @@ pub(crate) fn read(range: Range, d: &Daemon) -> Answer<BytePage> {
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<Cursor>(&bytes).ok());
             let Some(decoded) = decoded.filter(|cursor| cursor.version == 1) else {
-                return error("bad_request", "invalid attachment cursor");
+                return error(
+                    polylogue_model::Code::BadRequest,
+                    "invalid attachment cursor",
+                );
             };
             if decoded.binding != resolution.binding || decoded.generation != generation {
                 return error(
-                    "stale_cursor",
+                    polylogue_model::Code::StaleCursor,
                     "the selected attachment changed; start again",
                 );
             }
@@ -113,16 +119,22 @@ pub(crate) fn read(range: Range, d: &Daemon) -> Answer<BytePage> {
                 || cursor.input.is_some()
                 || resolution.source.blob != Some(cursor.blob)
             {
-                return error("stale_cursor", "the inline attachment source changed");
+                return error(
+                    polylogue_model::Code::StaleCursor,
+                    "the inline attachment source changed",
+                );
             }
             if input.is_some() {
                 return error(
-                    "bad_request",
+                    polylogue_model::Code::BadRequest,
                     "an inline attachment cursor does not select an input",
                 );
             }
         } else if cursor.input.is_none() {
-            return error("bad_request", "attachment cursor has no source selection");
+            return error(
+                polylogue_model::Code::BadRequest,
+                "attachment cursor has no source selection",
+            );
         }
     }
     if input.is_none()
@@ -144,7 +156,7 @@ pub(crate) fn read(range: Range, d: &Daemon) -> Answer<BytePage> {
     };
     let Some(found) = found else {
         let failure = crate::protocol::failure(
-            "attachment_unavailable",
+            polylogue_model::Code::AttachmentUnavailable,
             "select one of the stored files with --input",
         )
         .with_candidates(
@@ -160,7 +172,10 @@ pub(crate) fn read(range: Range, d: &Daemon) -> Answer<BytePage> {
         .as_ref()
         .is_some_and(|cursor| cursor.input.as_deref() != Some(found.input.as_str()))
     {
-        return error("bad_request", "the cursor selects another input");
+        return error(
+            polylogue_model::Code::BadRequest,
+            "the cursor selects another input",
+        );
     }
     let offset = decoded.as_ref().map_or(0, |cursor| cursor.offset);
     let blob = match decoded.as_ref().map(|cursor| cursor.blob).or(found.blob) {
@@ -171,11 +186,14 @@ pub(crate) fn read(range: Range, d: &Daemon) -> Answer<BytePage> {
         },
     };
     if found.blob.is_some_and(|known| known != blob) {
-        return error("stale_cursor", "the selected attachment hash changed");
+        return error(
+            polylogue_model::Code::StaleCursor,
+            "the selected attachment hash changed",
+        );
     }
     if offset > found.size || offset == found.size && offset != 0 {
         return error(
-            "bad_request",
+            polylogue_model::Code::BadRequest,
             "attachment cursor is outside the stored bytes",
         );
     }
@@ -197,7 +215,7 @@ pub(crate) fn read(range: Range, d: &Daemon) -> Answer<BytePage> {
             blob,
         }) {
             Ok(bytes) => Some(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)),
-            Err(e) => return error("internal", e),
+            Err(e) => return error(polylogue_model::Code::Internal, e),
         }
     } else {
         None

@@ -53,11 +53,9 @@ fn transient_write_failures_retry_but_deterministic_refusals_stop() {
         name: "synthetic frame".into(),
         reason: "invalid content".into()
     }));
-    assert!(!retryable(&Error::Invalid(
-        "corrupt immutable frame".into()
-    )));
+    assert!(!retryable(&Error::invalid("corrupt immutable frame")));
     assert!(!retryable(&Error::Store(
-        polylogue_store::StoreError::Invalid("deterministic content failure".into())
+        polylogue_store::StoreError::invalid("deterministic content failure")
     )));
 }
 

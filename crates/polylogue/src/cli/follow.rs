@@ -4,8 +4,9 @@
 //! usual `read` operation and continues with each page's `follow` call.
 //! A query prints the rows that were not in its earlier answers. Nothing is
 //! recorded.
-use super::{Archive, fail};
+use super::{Archive, fail, fail_with};
 use crate::protocol::follow::{Line, Marks};
+use polylogue_model::JsonExt as _;
 use polylogue_model::read::{HeaderKind, ReadPage, ReadyCall};
 use std::collections::HashSet;
 use std::io::{self, Write};
@@ -22,17 +23,11 @@ pub fn run(
 ) -> ExitCode {
     let json = values.json;
     let output = startup.output;
-    let Some(target) = values
-        .request
-        .arguments
-        .get("target")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned)
-    else {
+    let Some(target) = values.request.arguments.str("target").map(str::to_owned) else {
         return fail(
             output,
             json,
-            "bad_request",
+            polylogue_model::Code::BadRequest,
             "follow needs a session or a query",
             2,
         );
@@ -73,7 +68,7 @@ pub fn run(
             return fail(
                 output,
                 json,
-                "bad_request",
+                polylogue_model::Code::BadRequest,
                 "--until-idle, --show and --hide apply to following a session",
                 2,
             );
@@ -134,7 +129,7 @@ fn follow_session(
     loop {
         let page: ReadPage = match answer(archive, &call) {
             Ok(page) => page,
-            Err((code, message)) => return fail(output, json, &code, &message, 1),
+            Err(error) => return fail_with(output, json, &error, &[]),
         };
         if session.is_none() {
             session = match &page.document.header.kind {
@@ -160,7 +155,15 @@ fn follow_session(
                 &mut out,
             ) {
                 Ok(started) => encoder = Some(started),
-                Err(error) => return fail(output, json, "internal", &error.to_string(), 1),
+                Err(error) => {
+                    return fail(
+                        output,
+                        json,
+                        polylogue_model::Code::Internal,
+                        &error.to_string(),
+                        1,
+                    );
+                }
             }
         }
         let started = encoder.as_mut().expect("started above");
@@ -186,7 +189,7 @@ fn follow_session(
                         return ExitCode::SUCCESS;
                     }
                     Ok(_) => {}
-                    Err((code, message)) => return fail(output, json, &code, &message, 1),
+                    Err(error) => return fail_with(output, json, &error, &[]),
                 }
             }
             std::thread::sleep(QUIET_WAIT);
@@ -198,11 +201,14 @@ fn follow_session(
 
 /// The session's live state (`working`, `waiting`, `idle`, `unknown`,
 /// `stale` or `ended`), from the query language's `live` field.
-fn live_state(archive: &Archive, session: Option<&str>) -> Result<String, (String, String)> {
+fn live_state(
+    archive: &Archive,
+    session: Option<&str>,
+) -> Result<String, command_surface::Failure> {
     let Some(session) = session else {
-        return Err((
-            "bad_request".into(),
-            "--until-idle needs a session reading".into(),
+        return Err(crate::protocol::failure(
+            polylogue_model::Code::BadRequest,
+            "--until-idle needs a session reading",
         ));
     };
     let call = command_surface::RunnableRequest {
@@ -243,7 +249,7 @@ fn follow_query(
     let mut position = serde_json::Value::Null;
     let stdout = io::stdout();
     loop {
-        let page = |cursor: Option<&str>| -> Result<serde_json::Value, (String, String)> {
+        let page = |cursor: Option<&str>| -> Result<serde_json::Value, command_surface::Failure> {
             answer(
                 archive,
                 &command_surface::RunnableRequest {
@@ -260,13 +266,13 @@ fn follow_query(
         };
         let mut data = match page(None) {
             Ok(data) => data,
-            Err((code, message)) => return fail(output, json, &code, &message, 1),
+            Err(error) => return fail_with(output, json, &error, &[]),
         };
         if data["outcome"] == "measure" {
             return fail(
                 output,
                 json,
-                "bad_request",
+                polylogue_model::Code::BadRequest,
                 "follow takes a query of rows, not a measure",
                 2,
             );
@@ -281,7 +287,7 @@ fn follow_query(
         while let Some(cursor) = next {
             let more = match page(Some(&cursor)) {
                 Ok(more) => more,
-                Err((code, message)) => return fail(output, json, &code, &message, 1),
+                Err(error) => return fail_with(output, json, &error, &[]),
             };
             rows.extend(more["rows"].as_array().cloned().unwrap_or_default());
             next = more["next"].as_str().map(str::to_owned);
@@ -316,14 +322,16 @@ fn row_identity(row: &serde_json::Value) -> String {
 fn answer<T: serde::de::DeserializeOwned>(
     archive: &Archive,
     call: &command_surface::RunnableRequest,
-) -> Result<T, (String, String)> {
-    let answer = crate::client::call_ready(archive, call)
-        .map_err(|error| ("daemon_unavailable".to_string(), error.to_string()))?;
+) -> Result<T, command_surface::Failure> {
+    let answer = crate::client::call_ready(archive, call).map_err(|error| {
+        crate::protocol::failure(polylogue_model::Code::DaemonUnavailable, error.to_string())
+    })?;
     match answer.value() {
-        Some(value) => serde_json::from_value(value.clone())
-            .map_err(|error| ("internal".to_string(), error.to_string())),
-        None => Err((
-            "read_failed".into(),
+        Some(value) => serde_json::from_value(value.clone()).map_err(|error| {
+            crate::protocol::failure(polylogue_model::Code::Internal, error.to_string())
+        }),
+        None => Err(crate::protocol::failure(
+            polylogue_model::Code::ReadFailed,
             match &answer.outcome {
                 command_surface::Outcome::Error(error) => error.message.clone(),
                 _ => "the read returned no value".into(),
@@ -390,13 +398,19 @@ fn live_query(
                 return fail(
                     startup.output,
                     true,
-                    "io",
+                    polylogue_model::Code::Io,
                     "the daemon ended the follow without its marks",
                     1,
                 );
             }
             (Err(error), _) => {
-                return fail(startup.output, true, "io", &error.to_string(), 1);
+                return fail(
+                    startup.output,
+                    true,
+                    polylogue_model::Code::Io,
+                    &error.to_string(),
+                    1,
+                );
             }
         }
     }

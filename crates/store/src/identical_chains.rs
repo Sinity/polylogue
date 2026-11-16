@@ -4,8 +4,10 @@
 //! appended to, or edited after its first part). Parsing those bytes again
 //! gives the reading the other chain had at that point, so the older chain's
 //! reading is recorded from the newer chain's rows instead of parsed.
+use crate::ConnExt as _;
 use crate::{Result, StoreError, source::Source};
-use rusqlite::{Connection, OptionalExtension, params};
+use polylogue_model::JsonExt;
+use rusqlite::{Connection, params};
 
 /// One chain of an input: its stored length, where its bytes come from and
 /// how far it is read.
@@ -231,17 +233,14 @@ pub(crate) fn copy_reading(tx: &Connection, copy: &ReadingCopy, counter: i64) ->
     if to >= from || upto > from_length || upto > to_length {
         return Ok(false);
     }
-    let Some(input_pk) = tx
-        .query_row("SELECT pk FROM input_ref WHERE id = ?1", [input], |row| {
-            row.get::<_, i64>(0)
-        })
-        .optional()?
+    let Some(input_pk) =
+        tx.scalar_optional::<i64>("SELECT pk FROM input_ref WHERE id = ?1", [input])?
     else {
         return Ok(false);
     };
     // Every source commit of the reading so far was taken through at most
     // `upto`, which `to` holds too, and is taken again for `to` below.
-    let ready: bool = tx.query_row(
+    let ready: bool = tx.exists(
         "SELECT EXISTS(SELECT 1 FROM parse_state WHERE input_pk = ?1 AND chain = ?2
              AND reading_version = ?3 AND status IN ('parsing','waiting','done')
              AND parsed_upto = ?6)
@@ -252,7 +251,6 @@ pub(crate) fn copy_reading(tx: &Connection, copy: &ReadingCopy, counter: i64) ->
          AND NOT EXISTS(SELECT 1 FROM prefix_member WHERE input_pk = ?1 AND chain = ?2
              AND source_input = ?5 AND source_chain = ?2)",
         params![input_pk, from, reading_version, to, input, upto_sql],
-        |row| row.get(0),
     )?;
     if !ready {
         return Ok(false);
@@ -325,7 +323,7 @@ pub(crate) fn copy_reading(tx: &Connection, copy: &ReadingCopy, counter: i64) ->
             .prepare(&format!(
                 "SELECT reading_version, {number}, {column} FROM {table} WHERE input_pk = ?1 AND chain = ?2"
             ))?
-            .query_map(params![input_pk, to], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .query_map(params![input_pk, to], |row| <(_, _, _)>::try_from(row))?
             .collect::<rusqlite::Result<_>>()?;
         for (version, number, text) in rows {
             let mut value: serde_json::Value = serde_json::from_str(&text)?;
@@ -415,10 +413,7 @@ fn retake_occurrences(
                 && object.contains_key("covered");
             if occurrence {
                 let covered = &object["covered"];
-                let (Some("bytes"), Some(end)) = (
-                    covered.get("kind").and_then(serde_json::Value::as_str),
-                    covered.get("end").and_then(serde_json::Value::as_u64),
-                ) else {
+                let (Some("bytes"), Some(end)) = (covered.str("kind"), covered.u64("end")) else {
                     return Ok(false);
                 };
                 let taken = match commits.get(&end) {

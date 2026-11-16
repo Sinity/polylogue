@@ -35,14 +35,6 @@ impl<'a> Sink<'a> {
     }
 }
 
-pub fn str_of<'a>(v: &'a Json, key: &str) -> Option<&'a str> {
-    v.get(key).and_then(Json::as_str).filter(|s| !s.is_empty())
-}
-
-pub fn string_of(v: &Json, key: &str) -> Option<String> {
-    str_of(v, key).map(str::to_owned)
-}
-
 pub fn session_id(origin: &str, native: &str) -> Option<SessionId> {
     Some(SessionId::new(
         Origin::new(origin).ok()?,

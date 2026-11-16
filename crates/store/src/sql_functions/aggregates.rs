@@ -6,14 +6,16 @@ use rusqlite::{
 };
 use std::collections::BTreeMap;
 
-fn invalid(message: &str) -> rusqlite::Error {
+fn function_error(message: &str) -> rusqlite::Error {
     rusqlite::Error::UserFunctionError(message.to_owned().into())
 }
 fn finite(value: f64) -> rusqlite::Result<f64> {
     if value.is_finite() {
         Ok(value)
     } else {
-        Err(invalid("numeric expression requires a finite result"))
+        Err(function_error(
+            "numeric expression requires a finite result",
+        ))
     }
 }
 
@@ -23,7 +25,7 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
             ValueRef::Null => Value::Null,
             ValueRef::Integer(value) => Value::Integer(value),
             ValueRef::Real(value) => Value::Real(finite(value)?),
-            _ => return Err(invalid("arithmetic requires numbers")),
+            _ => return Err(function_error("arithmetic requires numbers")),
         })
     })?;
     // SQLite's floating sum can return NULL for opposing infinities reached
@@ -32,10 +34,10 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
     conn.create_scalar_function("pl_finite_aggregate", 2, FLAGS, |ctx| {
         Ok(match ctx.get_raw(0) {
             ValueRef::Null if ctx.get::<i64>(1)? == 0 => Value::Null,
-            ValueRef::Null => return Err(invalid("numeric aggregate overflow")),
+            ValueRef::Null => return Err(function_error("numeric aggregate overflow")),
             ValueRef::Integer(value) => Value::Integer(value),
             ValueRef::Real(value) => Value::Real(finite(value)?),
-            _ => return Err(invalid("numeric aggregate requires numbers")),
+            _ => return Err(function_error("numeric aggregate requires numbers")),
         })
     })?;
     conn.create_scalar_function("pl_abs", 1, FLAGS, |ctx| {
@@ -45,7 +47,7 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
                 .checked_abs()
                 .map_or_else(|| Value::Real((value as f64).abs()), Value::Integer),
             ValueRef::Real(value) => Value::Real(finite(value)?.abs()),
-            _ => return Err(invalid("abs requires a number")),
+            _ => return Err(function_error("abs requires a number")),
         })
     })?;
     conn.create_scalar_function("pl_query_text", 2, FLAGS, |ctx| {
@@ -55,12 +57,12 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
         if !ctx.get::<bool>(1)? {
             return Ok(Some(text));
         }
-        let value: serde_json::Value =
-            serde_json::from_str(&text).map_err(|_| invalid("text requires valid stored JSON"))?;
+        let value: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|_| function_error("text requires valid stored JSON"))?;
         match value {
             serde_json::Value::String(text) => Ok(Some(text)),
             serde_json::Value::Null => Ok(None),
-            _ => Err(invalid("text takes a string value")),
+            _ => Err(function_error("text takes a string value")),
         }
     })?;
     conn.create_scalar_function("pl_query_word", 2, FLAGS, |ctx| {
@@ -98,11 +100,11 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
                 // i64::MIN and 2^63 are exact floats; the range is [-2^63, 2^63).
                 let limit = -(i64::MIN as f64);
                 if !(-limit..limit).contains(&rounded) {
-                    return Err(invalid("an amount is outside the nano-USD range"));
+                    return Err(function_error("an amount is outside the nano-USD range"));
                 }
                 Value::Integer(rounded as i64)
             }
-            _ => return Err(invalid("arithmetic requires numbers")),
+            _ => return Err(function_error("arithmetic requires numbers")),
         })
     })?;
     // A kept money value is stored as exact
@@ -113,7 +115,9 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
             None | Some("null") => Ok(None),
             Some(text) => polylogue_model::money::nusd_from_usd(text)
                 .map(Some)
-                .ok_or_else(|| invalid("a kept amount must be decimal dollars within range")),
+                .ok_or_else(|| {
+                    function_error("a kept amount must be decimal dollars within range")
+                }),
         }
     })?;
     // An integer average: `numerator / denominator` rounded half away from
@@ -132,16 +136,16 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
             ValueRef::Integer(value) => return Ok(Some(value)),
             ValueRef::Text(_) => ctx.get::<String>(0)?,
             _ => {
-                return Err(invalid(
+                return Err(function_error(
                     "a kept time must be a timestamp or integer milliseconds",
                 ));
             }
         };
         let timestamp = polylogue_model::Timestamp::parse_rfc3339(&value)
-            .ok_or_else(|| invalid("a kept time must be a valid timestamp"))?;
+            .ok_or_else(|| function_error("a kept time must be a valid timestamp"))?;
         let milliseconds = timestamp.unix_ms();
         if polylogue_model::Timestamp::from_unix_ms(milliseconds) != Some(timestamp) {
-            return Err(invalid(
+            return Err(function_error(
                 "this kept time has finer precision than scalar milliseconds",
             ));
         }
@@ -149,15 +153,18 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
     })?;
     conn.create_scalar_function("pl_kept_identity", 3, FLAGS, |ctx| {
         let keys: Option<String> = ctx.get(0)?;
-        let keys = keys.ok_or_else(|| invalid("the kept row has no captured row identity"))?;
+        let keys =
+            keys.ok_or_else(|| function_error("the kept row has no captured row identity"))?;
         let keys: Vec<serde_json::Value> = serde_json::from_str(&keys)
-            .map_err(|_| invalid("a kept row identity must be a scalar tuple"))?;
+            .map_err(|_| function_error("a kept row identity must be a scalar tuple"))?;
         let index = usize::try_from(ctx.get::<i64>(1)?)
-            .map_err(|_| invalid("a kept row identity index must be nonnegative"))?;
+            .map_err(|_| function_error("a kept row identity index must be nonnegative"))?;
         let count = usize::try_from(ctx.get::<i64>(2)?)
-            .map_err(|_| invalid("a kept row identity size must be nonnegative"))?;
+            .map_err(|_| function_error("a kept row identity size must be nonnegative"))?;
         if keys.len() != count {
-            return Err(invalid("the kept row identity has the wrong tuple size"));
+            return Err(function_error(
+                "the kept row identity has the wrong tuple size",
+            ));
         }
         match keys.get(index) {
             Some(serde_json::Value::String(value)) => Ok(Value::Text(value.clone())),
@@ -168,10 +175,12 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
                 } else if value.is_f64() {
                     Ok(Value::Real(finite(value.as_f64().expect("JSON float"))?))
                 } else {
-                    Err(invalid("the kept row identity integer is out of SQL range"))
+                    Err(function_error(
+                        "the kept row identity integer is out of SQL range",
+                    ))
                 }
             }
-            _ => Err(invalid(
+            _ => Err(function_error(
                 "a kept row identity must contain known scalar keys",
             )),
         }
@@ -191,11 +200,11 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
             return Ok(None);
         };
         let value: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|_| invalid("len requires a valid stored list or text"))?;
+            .map_err(|_| function_error("len requires a valid stored list or text"))?;
         Ok(Some(match value {
             serde_json::Value::Array(values) => values.len() as i64,
             serde_json::Value::String(value) => value.chars().count() as i64,
-            _ => return Err(invalid("len takes text or a list")),
+            _ => return Err(function_error("len takes text or a list")),
         }))
     })?;
     conn.create_aggregate_function("pl_covered", 2, FLAGS, Covered)?;
@@ -331,16 +340,16 @@ impl Aggregate<Bins, String> for Histogram {
         let value = match kind.as_str() {
             "text" => serde_json::Value::String(ctx.get(0)?),
             "json" => serde_json::from_str(&ctx.get::<String>(0)?)
-                .map_err(|_| invalid("histogram requires valid stored JSON"))?,
+                .map_err(|_| function_error("histogram requires valid stored JSON"))?,
             "bool" => serde_json::Value::Bool(ctx.get::<i64>(0)? != 0),
             "time" => serde_json::Value::String(
                 polylogue_model::Timestamp::from_unix_ms(ctx.get(0)?)
-                    .ok_or_else(|| invalid("histogram time is out of range"))?
+                    .ok_or_else(|| function_error("histogram time is out of range"))?
                     .to_string(),
             ),
             "money" => serde_json::Value::Number(polylogue_model::money::usd_number(
                 ctx.get::<i64>(0)
-                    .map_err(|_| invalid("histogram money must be integer nano-USD"))?,
+                    .map_err(|_| function_error("histogram money must be integer nano-USD"))?,
             )),
             "number" | "duration" | "duration_seconds" => {
                 let scale = match kind.as_str() {
@@ -350,10 +359,10 @@ impl Aggregate<Bins, String> for Histogram {
                 let value = finite(ctx.get::<f64>(0)?)? / scale;
                 serde_json::json!(if value == 0. { 0. } else { value })
             }
-            _ => return Err(invalid("histogram requires a known column kind")),
+            _ => return Err(function_error("histogram requires a known column kind")),
         };
         let key = serde_json::to_string(&value)
-            .map_err(|_| invalid("histogram value cannot be encoded"))?;
+            .map_err(|_| function_error("histogram value cannot be encoded"))?;
         bins.entry(key).or_insert((value, 0)).1 += 1;
         Ok(())
     }
@@ -371,6 +380,6 @@ impl Aggregate<Bins, String> for Histogram {
                 .map(|(value, count)| serde_json::json!({"value":value,"count":count}))
                 .collect::<Vec<_>>(),
         )
-        .map_err(|_| invalid("histogram cannot be encoded"))
+        .map_err(|_| function_error("histogram cannot be encoded"))
     }
 }

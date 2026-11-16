@@ -33,11 +33,10 @@ pub(super) fn reference(
         }) if matches!(reference, Reference::Assertion(_)) => {
             direct_assertion(reader, reference, visit)
         }
-        Some(AuthoredRead::Incomplete { issue }) => Err(Failure::new("not_yet_available", issue)),
-        None => Err(Failure::new(
-            "not_found",
-            format!("no authored record for {reference}"),
-        )),
+        Some(AuthoredRead::Incomplete { issue }) => Err(Failure::not_yet_available(issue)),
+        None => Err(Failure::not_found(format!(
+            "no authored record for {reference}"
+        ))),
     }
 }
 
@@ -51,7 +50,7 @@ fn direct_assertion(
     };
     let row = reader
         .assertion(revision)?
-        .ok_or_else(|| Failure::new("not_found", format!("no assertion {reference}")))?;
+        .ok_or_else(|| Failure::not_found(format!("no assertion {reference}")))?;
     let record = Record::Assertion(Box::new(polylogue_model::assertion::AssertionRecord {
         reference: format!("assertion:{}@{}", row.fact.root, row.fact.id),
         assertion: row.fact,

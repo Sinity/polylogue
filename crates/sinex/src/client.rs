@@ -4,6 +4,7 @@
 //! peers use hardlinks; remote peers receive encoded chunks before the logical
 //! frame. Sinex stores the bytes before it records that frame.
 use crate::{Authentication, Config, Error, Result};
+use polylogue_model::LockExt;
 pub(crate) mod confirmed;
 use sinex_protocol::{Acknowledgment, Ingress, ProducerHello, ProducerWelcome, Subjects};
 use sinex_transport::frame_bytes;
@@ -25,8 +26,7 @@ fn capture_backup(
     cancelled: &std::sync::atomic::AtomicBool,
 ) -> std::result::Result<sinex_transport::backup::Captured, String> {
     let pinned = spool
-        .lock()
-        .map_err(|_| "producer spool panicked".to_string())?
+        .locked()
         .pin_backup(cancelled)
         .map_err(|error| error.to_string())?;
     let pinned = pinned
@@ -79,16 +79,14 @@ impl Client {
                 )
                 .await?;
             let sinex_protocol::ReplayReply::Materials { page } = reply else {
-                return Err(Error::Invalid(
-                    "material replay returned another mode".into(),
-                ));
+                return Err(Error::invalid("material replay returned another mode"));
             };
             sequences.extend(page.sequences);
             match page.next {
                 Some(next) if query.after.is_none_or(|after| next > after) => {
                     query.after = Some(next)
                 }
-                Some(_) => return Err(Error::Invalid("replay scope page did not advance".into())),
+                Some(_) => return Err(Error::invalid("replay scope page did not advance")),
                 None => return Ok(sequences),
             }
         }
@@ -140,7 +138,8 @@ impl Client {
                 name: "connect".into(),
                 reason: "this identity has no configured Polylogue write family".into(),
             })?;
-        if let Ok(mut health) = health.lock() {
+        {
+            let mut health = health.locked();
             health.family = Some(family.clone());
         }
         let max_message = client.server_info().max_payload;
@@ -193,13 +192,13 @@ impl Client {
             let ack = connected.send(registration).await?;
             let sinex_protocol::FrameResult::KindsRegistered { kinds: registered } = ack.result
             else {
-                return Err(Error::Invalid(
-                    "Sinex answered the kind registration with another result".into(),
+                return Err(Error::invalid(
+                    "Sinex answered the kind registration with another result",
                 ));
             };
             if registered != hashes {
-                return Err(Error::Invalid(
-                    "Sinex acknowledged different kind definitions".into(),
+                return Err(Error::invalid(
+                    "Sinex acknowledged different kind definitions",
                 ));
             }
         }
@@ -208,11 +207,7 @@ impl Client {
     }
 
     async fn refresh_context(&self) {
-        let due = self
-            .health
-            .lock()
-            .map(|health| health.context.refresh_due())
-            .unwrap_or(false);
+        let due = self.health.locked().context.refresh_due();
         if !due {
             return;
         }
@@ -225,7 +220,8 @@ impl Client {
         )
         .await
         .map_err(|error| error.to_string());
-        if let Ok(mut health) = self.health.lock() {
+        {
+            let mut health = self.health.locked();
             health.context.record(result);
         }
     }
@@ -254,11 +250,7 @@ impl Client {
     /// one message travels indirectly. A frame Sinex recorded before is
     /// answered from its record.
     pub(crate) async fn send(&mut self, frame: Ingress) -> Result<Acknowledgment> {
-        let prepared = self
-            .spool
-            .lock()
-            .map_err(|_| Error::Invalid("producer spool panicked".into()))?
-            .prepare(frame)?;
+        let prepared = self.spool.locked().prepare(frame)?;
         self.send_prepared(prepared).await
     }
 
@@ -273,14 +265,10 @@ impl Client {
         let mut identities = Vec::new();
         let mut refused = None;
         loop {
-            let ready = self
-                .spool
-                .lock()
-                .map_err(|_| Error::Invalid("producer spool panicked".into()))?
-                .ready(
-                    &identities,
-                    (IN_FLIGHT - identities.len()).min(PER_TURN - selected),
-                )?;
+            let ready = self.spool.locked().ready(
+                &identities,
+                (IN_FLIGHT - identities.len()).min(PER_TURN - selected),
+            )?;
             selected += ready.len();
             for prepared in ready {
                 let sender = self.frame_sender();
@@ -336,7 +324,7 @@ async fn transport(
         ),
         Authentication::Anonymous => async_nats::ConnectOptions::new(),
         Authentication::Unavailable { reason } => {
-            return Err(Error::Invalid(format!(
+            return Err(Error::invalid(format!(
                 "producer authentication is unavailable: {reason}"
             )));
         }
@@ -344,7 +332,7 @@ async fn transport(
     let address: async_nats::ServerAddr = config
         .nats
         .parse()
-        .map_err(|error| Error::Invalid(format!("invalid NATS endpoint: {error}")))?;
+        .map_err(|error| Error::invalid(format!("invalid NATS endpoint: {error}")))?;
     let loopback = address.host().eq_ignore_ascii_case("localhost")
         || address
             .host()
@@ -412,8 +400,8 @@ pub(crate) fn verified_acknowledgment(
         length: prepared.frame.length,
     };
     if acknowledgment.frame != prepared.identity {
-        return Err(Error::Invalid(
-            "recorded acknowledgment changed its operation identity".into(),
+        return Err(Error::invalid(
+            "recorded acknowledgment changed its operation identity",
         ));
     }
     sinex_transport::producer::check_receipt(&frame, acknowledgment).map_err(submit_error)
@@ -449,7 +437,7 @@ fn frame_error(error: frame_bytes::Error) -> Error {
         frame_bytes::Error::Storage(error) => Error::Io(error),
         frame_bytes::Error::Invalid(reason)
         | frame_bytes::Error::Mismatch(reason)
-        | frame_bytes::Error::Permissions(reason) => Error::Invalid(reason),
+        | frame_bytes::Error::Permissions(reason) => Error::invalid(reason),
     }
 }
 
@@ -459,13 +447,10 @@ impl FrameSender {
         // unit. Capture may append new spool operations while this waits.
         let _publication = self.publication.enter().await;
         let (frame, body) = {
-            let spool = self
-                .spool
-                .lock()
-                .map_err(|_| Error::Invalid("producer spool panicked".into()))?;
+            let spool = self.spool.locked();
             let current = spool
                 .get(&prepared.identity)?
-                .ok_or_else(|| Error::Invalid("prepared operation disappeared".into()))?;
+                .ok_or_else(|| Error::invalid("prepared operation disappeared"))?;
             if let Some(acknowledgment) = spool.acknowledgment(&prepared.identity)? {
                 spool.acknowledge(acknowledgment.clone())?;
                 return checked(verified_acknowledgment(&prepared, acknowledgment)?);
@@ -537,8 +522,7 @@ impl FrameSender {
                 acknowledgment,
             }) => {
                 self.spool
-                    .lock()
-                    .map_err(|_| Error::Invalid("producer spool panicked".into()))?
+                    .locked()
                     .record_conflict(&frame, &offered_hash, &acknowledgment)?;
                 return Err(Error::Refused {
                     name: frame,
@@ -547,11 +531,9 @@ impl FrameSender {
             }
             Err(error) => return Err(error),
         };
-        self.spool
-            .lock()
-            .map_err(|_| Error::Invalid("producer spool panicked".into()))?
-            .acknowledge(acknowledgment.clone())?;
-        if let Ok(mut health) = self.health.lock() {
+        self.spool.locked().acknowledge(acknowledgment.clone())?;
+        {
+            let mut health = self.health.locked();
             health.last_ack = Some(std::time::Instant::now());
         }
         checked(acknowledgment)
@@ -573,9 +555,7 @@ impl FrameSender {
             .map_err(|error| Error::Unreachable(error.to_string()))?;
         let frame: Ingress = serde_json::from_slice(&body)?;
         if frame.frame() != name {
-            return Err(Error::Invalid(
-                "prepared transport changed frame identity".into(),
-            ));
+            return Err(Error::invalid("prepared transport changed frame identity"));
         }
         if self.remote_upload {
             sinex_transport::producer::transfer_frame(

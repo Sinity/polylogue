@@ -101,7 +101,7 @@ fn zero_transfer_size_is_a_typed_refusal() {
     options.page_size = Some(0);
     let program = crate::query::compile("messages", &options).unwrap();
     let error = reader.query_page(&program, None).err().unwrap();
-    assert_eq!(error.code(), "bad_request");
+    assert_eq!(error.code(), polylogue_model::Code::BadRequest);
 }
 
 #[test]
@@ -112,13 +112,13 @@ fn run_namespace_never_falls_back_to_an_origin() {
         crate::query::compile("run:not-a-run", &options)
             .unwrap_err()
             .kind(),
-        "invalid_query"
+        polylogue_model::Code::InvalidQuery
     );
     assert_eq!(
         crate::query::compile("run:019a2f20-1234-7000-8000-0123456789ab", &options)
             .unwrap_err()
             .kind(),
-        "not_built"
+        polylogue_model::Code::NotBuilt
     );
 }
 
@@ -415,6 +415,7 @@ fn cached_counts_follow_the_vector_snapshot() {
                 chunk: 0,
                 values: vec![1.0, 0.0],
             }],
+            &polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
         )
         .unwrap();
     let mut options = options();

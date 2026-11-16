@@ -5,11 +5,12 @@
 //! The export has no conversation ID. Its first message in declared order
 //! names the session. Matching message IDs unite repeated room exports.
 
+use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 1;
 
 use crate::chatgpt::first_byte;
-use crate::document::{Sink, first_key, message_id, session_id, str_of, string_of, time_of};
+use crate::document::{Sink, first_key, message_id, session_id, time_of};
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
 use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
@@ -178,7 +179,11 @@ impl ExportParser for OpenRouter {
         let Some(sid) = &self.session else {
             return Ok(());
         };
-        let kind = str_of(m, "type").unwrap_or("?").to_owned();
+        let kind = m
+            .str("type")
+            .filter(|s| !s.is_empty())
+            .unwrap_or("?")
+            .to_owned();
         sink.records.fields(&kind, m, &MESSAGE_FIELDS);
         match message(sid, m, &self.characters, sink) {
             Ok(message) => {
@@ -201,7 +206,7 @@ impl ExportParser for OpenRouter {
 impl OpenRouter {
     fn start(&mut self, doc: &Json, first: Option<&Json>, sink: &mut Sink<'_>) {
         sink.records.fields("room", doc, &DOCUMENT_FIELDS);
-        let Some(first_id) = first.and_then(|m| str_of(m, "id")) else {
+        let Some(first_id) = first.and_then(|m| m.str("id").filter(|s| !s.is_empty())) else {
             return sink
                 .records
                 .record("room", &RecordOutcome::skipped("a room with no messages"));
@@ -212,7 +217,7 @@ impl OpenRouter {
                 .record("room", &RecordOutcome::unreadable("unusable message ID"));
         };
         let mut session = Session::new(sid.clone(), SessionKind::Main);
-        if let Some(title) = str_of(doc, "title") {
+        if let Some(title) = doc.str("title").filter(|s| !s.is_empty()) {
             session.offer_title(title, TitleSource::Generated);
         }
         if let Some(at) = first.and_then(|m| m.get("createdAt")).and_then(time_of) {
@@ -326,17 +331,19 @@ fn message(
     characters: &Json,
     sink: &mut Sink<'_>,
 ) -> Result<Message, RecordOutcome> {
-    let role = match str_of(m, "type") {
+    let role = match m.str("type").filter(|s| !s.is_empty()) {
         Some("user") => Role::User,
         Some("assistant") => Role::Assistant,
         Some("system") => Role::System,
         Some(other) => return Err(RecordOutcome::unreadable(format!("unknown type {other}"))),
         None => return Err(RecordOutcome::unreadable("no type")),
     };
-    let id = str_of(m, "id")
+    let id = m
+        .str("id")
+        .filter(|s| !s.is_empty())
         .and_then(|id| message_id(ORIGIN, id))
         .ok_or_else(|| RecordOutcome::unreadable("no usable id"))?;
-    match str_of(m, "contentType") {
+    match m.str("contentType").filter(|s| !s.is_empty()) {
         None | Some("text") => {}
         Some(other) => {
             return Err(RecordOutcome::skipped(format!(
@@ -350,7 +357,7 @@ fn message(
         AttachmentDirection::Output
     };
     let mut blocks = Vec::new();
-    if let Some(text) = str_of(m, "content") {
+    if let Some(text) = m.str("content").filter(|s| !s.is_empty()) {
         blocks.push(Block::Text {
             text: text.to_owned(),
         });
@@ -366,22 +373,17 @@ fn message(
         );
     }
     // Pasted text the room holds beside the prompt: stored as bytes.
-    for a in m
-        .get("attachments")
-        .and_then(Json::as_array)
-        .into_iter()
-        .flatten()
-    {
+    for a in m.array("attachments").into_iter().flatten() {
         let mut attachment = Attachment {
-            name: string_of(a, "name"),
-            media_type: Some(match str_of(a, "type") {
+            name: a.str("name").filter(|s| !s.is_empty()).map(str::to_owned),
+            media_type: Some(match a.str("type").filter(|s| !s.is_empty()) {
                 Some("text") | None => "text/plain".into(),
                 Some(other) => other.to_owned(),
             }),
             direction,
             ..Attachment::default()
         };
-        if let Some(content) = str_of(a, "content") {
+        if let Some(content) = a.str("content").filter(|s| !s.is_empty()) {
             let bytes = content.as_bytes().to_vec();
             let hash = BlobHash::of(&bytes);
             attachment.size = Some(bytes.len() as u64);
@@ -394,17 +396,28 @@ fn message(
         }
         blocks.push(Block::File(attachment));
     }
-    for f in m
-        .get("files")
-        .and_then(Json::as_array)
-        .into_iter()
-        .flatten()
-    {
+    for f in m.array("files").into_iter().flatten() {
         blocks.push(Block::File(Attachment {
-            name: string_of(f, "name").or_else(|| string_of(f, "filename")),
-            media_type: string_of(f, "type").or_else(|| string_of(f, "mimeType")),
-            url: string_of(f, "url"),
-            source_id: string_of(f, "id"),
+            name: f
+                .str("name")
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .or_else(|| {
+                    f.str("filename")
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                }),
+            media_type: f
+                .str("type")
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .or_else(|| {
+                    f.str("mimeType")
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                }),
+            url: f.str("url").filter(|s| !s.is_empty()).map(str::to_owned),
+            source_id: f.str("id").filter(|s| !s.is_empty()).map(str::to_owned),
             direction,
             ..Attachment::default()
         }));
@@ -414,16 +427,16 @@ fn message(
     }
 
     let meta = m.get("metadata");
-    let model = str_of(m, "characterId")
+    let model = m
+        .str("characterId")
+        .filter(|s| !s.is_empty())
         .and_then(|c| characters.get(c))
-        .and_then(|c| string_of(c, "model"));
+        .and_then(|c| c.str("model").filter(|s| !s.is_empty()).map(str::to_owned));
     let mut production = polylogue_model::Production {
-        first_token_ms: meta
-            .and_then(|x| x.get("latencyDuration"))
-            .and_then(Json::as_u64),
+        first_token_ms: meta.and_then(|x| x.u64("latencyDuration")),
         ..Default::default()
     };
-    if let Some(variant) = meta.and_then(|x| str_of(x, "variantSlug"))
+    if let Some(variant) = meta.and_then(|x| x.str("variantSlug").filter(|s| !s.is_empty()))
         && model.as_deref() != Some(variant)
     {
         production.requested_model = Some(variant.to_owned());
@@ -434,9 +447,7 @@ fn message(
         _ => None,
     });
     let usage = Usage {
-        output: meta
-            .and_then(|x| x.get("tokensCount"))
-            .and_then(Json::as_u64),
+        output: meta.and_then(|x| x.u64("tokensCount")),
         ..Usage::default()
     };
     Ok({
@@ -444,7 +455,10 @@ fn message(
         Message {
             id,
             session: sid.clone(),
-            parent: str_of(m, "parentMessageId").and_then(|p| message_id(ORIGIN, p)),
+            parent: m
+                .str("parentMessageId")
+                .filter(|s| !s.is_empty())
+                .and_then(|p| message_id(ORIGIN, p)),
             role,
             at,
             at_quality: time_evidence.quality,
@@ -464,9 +478,7 @@ fn message(
             } else {
                 None
             },
-            duration_ms: meta
-                .and_then(|x| x.get("generateDuration"))
-                .and_then(Json::as_u64),
+            duration_ms: meta.and_then(|x| x.u64("generateDuration")),
             attrs: crate::fields::attributes(m, &MESSAGE_FIELDS),
             production,
         }

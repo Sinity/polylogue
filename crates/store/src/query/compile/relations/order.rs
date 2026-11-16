@@ -443,7 +443,7 @@ impl Compiler<'_> {
                 base_from(source.unit, &context.a),
                 column_sql(&source.key)
             ),
-            time.storage.code(),
+            time.storage.as_str(),
         )
     }
 

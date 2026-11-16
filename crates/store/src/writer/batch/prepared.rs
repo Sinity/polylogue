@@ -34,9 +34,7 @@ impl PreparedRows {
                     "an imported input event cannot follow a message".into(),
                 ));
             }
-            identity
-                .validate()
-                .map_err(|error| StoreError::Invalid(error.to_string()))?;
+            identity.validate().map_err(crate::StoreError::invalid)?;
         }
         for (&index, id) in &output.event_ids {
             if index >= output.events.len()

@@ -8,6 +8,7 @@ mod tests;
 
 use crate::source::Source;
 use crate::{NewBlob, Result, StoreError};
+use crate::{OptionExt as _, ResultExt as _};
 use polylogue_model::authored::{AuthoredEffect, PendingAuthored, PreparedRequest};
 use polylogue_model::user::{UserOutcome, UserRequest};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -37,14 +38,7 @@ pub fn stored_request(conn: &Connection, id: &str) -> Result<Option<PreparedRequ
         .query_row(
             &source.sql("SELECT content_hash,request,outcome,effect FROM @source.client_request WHERE id=?1"),
             [id],
-            |row| {
-                Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, Option<Vec<u8>>>(2)?,
-                    row.get::<_, Option<Vec<u8>>>(3)?,
-                ))
-            },
+            |row| <(Vec<u8>, Vec<u8>, Option<Vec<u8>>, Option<Vec<u8>>)>::try_from(row),
         )
         .optional()?;
     let Some((hash, body, outcome, effect)) = stored else {
@@ -191,9 +185,7 @@ pub fn prepare(
                 )?
                 .exists(params![
                     &attachment.blob.0[..],
-                    i64::try_from(attachment.size).map_err(|_| StoreError::Invalid(
-                        "attachment size is out of range".into()
-                    ))?
+                    crate::to_i64(attachment.size, "attachment size is out of range")?
                 ])?)
         };
         crate::user_writes::apply_using(
@@ -204,8 +196,7 @@ pub fn prepare(
             &available,
             crate::user_writes::Preparation::plain(preparation, pending),
         )?;
-        known_request(tx, request)?
-            .ok_or_else(|| StoreError::Invalid("prepared request was not recorded".into()))
+        known_request(tx, request)?.or_invalid("prepared request was not recorded")
     })
 }
 
@@ -270,8 +261,7 @@ pub fn validate(prepared: &PreparedRequest) -> Result<()> {
     }
     crate::signals::validate(prepared)?;
     for fact in &prepared.effect.assertions {
-        fact.validate()
-            .map_err(|error| StoreError::Invalid(error.to_string()))?;
+        fact.validate().map_err(crate::StoreError::invalid)?;
     }
     fn events<T: PartialEq>(
         all: &[T],
@@ -481,7 +471,7 @@ pub(crate) fn signal_outbox(
     let record = records::delivery_from(conn, Source::Cache, id)?;
     let metadata = record
         .signal
-        .ok_or_else(|| StoreError::Invalid("delivery has no signal metadata".into()))?;
+        .or_invalid("delivery has no signal metadata")?;
     Ok(polylogue_model::signal::StoredOutbox {
         id: record.id,
         at: record.at,

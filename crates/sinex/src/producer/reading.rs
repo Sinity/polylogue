@@ -36,7 +36,7 @@ impl Sinex {
             }
             let root_id = MaterialId(
                 root.parse()
-                    .map_err(|error| Error::Invalid(format!("reading root: {error}")))?,
+                    .map_err(|error| Error::invalid(format!("reading root: {error}")))?,
             );
             let event_types = Some(
                 crate::kinds::declarations("polylogue")
@@ -71,20 +71,20 @@ impl Sinex {
             let (selection, declarations, source) = self.client_operation(async |client| {
                 let mut selections = client.replay_scope(&query).await?;
                 if selections.len() != 1 || selections[0].root != root_id {
-                    return Err(Error::Invalid(
-                        "replacement scope does not identify one complete chain".into(),
+                    return Err(Error::invalid(
+                        "replacement scope does not identify one complete chain",
                     ));
                 }
                 let selection = selections.remove(0);
                 let source = crate::source_reference();
                 if selection.materials.is_empty() {
-                    return Err(Error::Invalid("reading names no source material".into()));
+                    return Err(Error::invalid("reading names no source material"));
                 }
                 for material in &selection.materials {
                     let original = client.fetch_material(material.id).await?.source;
                     if original.name != source.name {
-                        return Err(Error::Invalid(
-                            "an interpretation cannot relabel its original material source".into(),
+                        return Err(Error::invalid(
+                            "an interpretation cannot relabel its original material source",
                         ));
                     }
                 }
@@ -105,8 +105,8 @@ impl Sinex {
             visit(&mut |write| {
                 crate::products::require_reading(&write.product, key)?;
                 if write.location.is_none() {
-                    return Err(polylogue_store::StoreError::Invalid(
-                        "a parsed event needs its original record offset".into(),
+                    return Err(polylogue_store::StoreError::invalid(
+                        "a parsed event needs its original record offset",
                     ));
                 }
                 serde_json::to_writer(
@@ -133,12 +133,10 @@ impl Sinex {
                 Ok(())
             })?;
             if !group.is_empty() {
-                return Err(Error::Invalid(
-                    "reading ends before its parser progress".into(),
-                ));
+                return Err(Error::invalid("reading ends before its parser progress"));
             }
             if !interpreted {
-                return Err(Error::Invalid("replacement has no interpretation".into()));
+                return Err(Error::invalid("replacement has no interpretation"));
             }
             let desired = format!(
                 "{prefix}{}:",

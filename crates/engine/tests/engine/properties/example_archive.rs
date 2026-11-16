@@ -106,10 +106,11 @@ fn ids_and_documents_survive_unrelated_changes() {
             continue;
         };
         let msgs = |d: &serde_json::Value| -> BTreeMap<String, serde_json::Value> {
-            d["messages"]
-                .as_array()
+            d.as_array()
                 .unwrap()
                 .iter()
+                .filter(|record| record["record"] == "message")
+                .map(|record| &record["data"]["message"])
                 .map(|m| (m["id"].as_str().unwrap().to_owned(), m.clone()))
                 .collect()
         };

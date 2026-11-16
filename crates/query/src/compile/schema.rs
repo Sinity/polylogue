@@ -1,21 +1,15 @@
 //! Output columns are a property of bound syntax, independent of a clock or SQL.
 use super::*;
 use query_language::catalog::{Catalog, Field, FieldKind, OutputSchema};
-fn error(message: impl Into<String>) -> QueryError {
-    QueryError::Invalid {
-        message: message.into(),
-        position: 0,
-    }
-}
 fn unit_schema(unit: &str, catalog: &Catalog) -> Result<OutputSchema, QueryError> {
     let unit = catalog
         .unit(unit)
-        .ok_or_else(|| error(format!("unknown output unit {unit:?}")))?;
+        .ok_or_else(|| QueryError::invalid(format!("unknown output unit {unit:?}")))?;
     let product = crate::units::Unit::from_name(&unit.name).ok_or_else(|| {
         if crate::units::DesignedUnit::named(&unit.name).is_some() {
             not_built(&format!("unit {}", unit.name))
         } else {
-            error(format!("unknown built-in output unit {:?}", unit.name))
+            QueryError::invalid(format!("unknown built-in output unit {:?}", unit.name))
         }
     })?;
     let spec = crate::units::spec(product);
@@ -71,7 +65,7 @@ pub(crate) fn bound_output_metadata(
         Source::Saved { .. } | Source::Result { .. } => catalog
             .source_output(&query.source)
             .cloned()
-            .ok_or_else(|| error("output source is not bound"))?,
+            .ok_or_else(|| QueryError::invalid("output source is not bound"))?,
     };
     let typing = bound
         .typing()
@@ -129,7 +123,11 @@ pub(crate) fn bound_output_metadata(
                             after
                                 .field(name)
                                 .map(|info| info.field.clone())
-                                .ok_or_else(|| error(format!("bound output has no field {name:?}")))
+                                .ok_or_else(|| {
+                                    QueryError::invalid(format!(
+                                        "bound output has no field {name:?}"
+                                    ))
+                                })
                         })
                         .collect::<Result<_, _>>()?
                 } else {
@@ -176,10 +174,10 @@ pub(crate) fn bound_output_metadata(
                     .as_deref()
                     .unwrap_or_default();
                 let [unit] = units else {
-                    return Err(error("matches has no unique step unit"));
+                    return Err(QueryError::invalid("matches has no unique step unit"));
                 };
                 let step_unit = crate::units::Unit::from_name(unit)
-                    .ok_or_else(|| error("unknown matched unit"))?;
+                    .ok_or_else(|| QueryError::invalid("unknown matched unit"))?;
                 let names = ["parent", "match", "position", "step", "step.position"]
                     .into_iter()
                     .map(str::to_owned)
@@ -206,7 +204,7 @@ pub(crate) fn bound_output_metadata(
             }
             TransformKind::Combine { query, .. } => {
                 if infer(query, catalog)?.unit != schema.unit {
-                    return Err(error("combined outputs have different units"));
+                    return Err(QueryError::invalid("combined outputs have different units"));
                 }
             }
             TransformKind::Join { query, .. } => {
@@ -260,7 +258,7 @@ pub(crate) fn relation_scope(
     let typing = bound
         .typing()
         .query(&query_language::scope::NodePath::default())
-        .ok_or_else(|| error("binding has no root relation scope"))?;
+        .ok_or_else(|| QueryError::invalid("binding has no root relation scope"))?;
     let scope = typing
         .transforms
         .last()

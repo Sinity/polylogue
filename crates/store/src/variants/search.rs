@@ -24,9 +24,7 @@ pub fn project(conn: &Connection) -> Result<()> {
                 "INSERT INTO variant_text(variant,n,body) VALUES(?1,?2,?3)",
                 params![
                     id,
-                    i64::try_from(part.n).map_err(|_| StoreError::Invalid(
-                        "variant part number is out of range".into()
-                    ))?,
+                    crate::to_i64(part.n, "variant part number is out of range")?,
                     part.body
                 ],
             )?;
@@ -53,16 +51,16 @@ impl Reader<'_> {
             let id: String = row.get(0)?;
             let n: i64 = row.get(1)?;
             let variant = super::rows::get(conn, &id)?.ok_or_else(|| {
-                StoreError::Invalid("variant search refers to an absent rendition".into())
+                StoreError::stored(0, "variant search refers to an absent rendition")
             })?;
             if !heads(conn, &variant.root)?.iter().any(|v| v.id == id) {
                 continue;
             }
-            let n = u64::try_from(n)
-                .map_err(|_| StoreError::Invalid("negative indexed variant part number".into()))?;
-            let part = super::rows::get_part(conn, &id, n)?.ok_or_else(|| {
-                StoreError::Invalid("variant search refers to an absent part".into())
+            let n = u64::try_from(n).map_err(|_| {
+                crate::StoreError::stored(0, "negative indexed variant part number")
             })?;
+            let part = super::rows::get_part(conn, &id, n)?
+                .ok_or_else(|| StoreError::stored(1, "variant search refers to an absent part"))?;
             visit(VariantMatch { variant, part })?;
         }
         Ok(())

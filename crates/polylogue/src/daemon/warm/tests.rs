@@ -143,6 +143,7 @@ fn put_vector(daemon: &crate::test_daemon::TestDaemon, key: &str, hash: u8, valu
                 chunk: 0,
                 values: values.to_vec(),
             }],
+            &polylogue_model::WallClock::new(jiff::Timestamp::now),
         )
         .unwrap();
 }
@@ -150,7 +151,7 @@ fn put_vector(daemon: &crate::test_daemon::TestDaemon, key: &str, hash: u8, valu
 #[test]
 fn vector_loading_leaves_the_cache_unlocked_and_clear_prevents_publication() {
     let daemon = crate::test_daemon::start("vector cache ownership");
-    let warm = Warm::new(&daemon.daemon.archive);
+    let warm = Warm::new(&daemon.daemon.archive, daemon.daemon.clock.clone());
     let (started, entered) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel();
     std::thread::scope(|scope| {
@@ -182,7 +183,7 @@ fn vector_loading_leaves_the_cache_unlocked_and_clear_prevents_publication() {
 #[test]
 fn older_vector_snapshot_does_not_replace_newer_cached_values() {
     let daemon = crate::test_daemon::start("vector snapshot ordering");
-    let warm = Warm::new(&daemon.daemon.archive);
+    let warm = Warm::new(&daemon.daemon.archive, daemon.daemon.clock.clone());
     let key = "synthetic/model/2/document/unit";
     put_vector(&daemon, key, 1, [1., 0.]);
     // A read whose snapshot predates the next write.
@@ -205,7 +206,7 @@ fn older_vector_snapshot_does_not_replace_newer_cached_values() {
 #[test]
 fn a_read_after_a_revision_commit_never_extends_inline() {
     let daemon = crate::test_daemon::start("vectors worker");
-    let warm = Warm::new(&daemon.daemon.archive);
+    let warm = Warm::new(&daemon.daemon.archive, daemon.daemon.clock.clone());
     let key = "synthetic/model/2/document/unit";
     put_vector(&daemon, key, 1, [1., 0.]);
     let read = || {
@@ -277,7 +278,7 @@ fn a_read_after_a_revision_commit_never_extends_inline() {
 fn vector_write_appends_without_reload() {
     use polylogue_store::vectors::Vector;
     let daemon = crate::test_daemon::start("vector appends");
-    let warm = Warm::new(&daemon.daemon.archive);
+    let warm = Warm::new(&daemon.daemon.archive, daemon.daemon.clock.clone());
     let key = "synthetic/model/2/document/unit";
     let put = |hash: u8, values: [f32; 2]| {
         let reader = daemon.daemon.reads.reader().unwrap();
@@ -291,6 +292,7 @@ fn vector_write_appends_without_reload() {
                     chunk: 0,
                     values: values.to_vec(),
                 }],
+                &polylogue_model::WallClock::new(jiff::Timestamp::now),
             )
             .unwrap();
     };
@@ -336,6 +338,7 @@ fn vector_write_appends_without_reload() {
                     chunk: 1,
                     values: vec![0., 1.],
                 }],
+                &polylogue_model::WallClock::new(jiff::Timestamp::now),
             )
             .unwrap();
     }
@@ -357,7 +360,7 @@ fn vector_write_appends_without_reload() {
 #[test]
 fn summary_does_not_wait_for_a_load() {
     let daemon = crate::test_daemon::start("status during a vector load");
-    let warm = Warm::new(&daemon.daemon.archive);
+    let warm = Warm::new(&daemon.daemon.archive, daemon.daemon.clock.clone());
     let before = serde_json::to_value(warm.summary()).unwrap();
     let (started, entered) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel();
@@ -658,7 +661,10 @@ fn restored_vector(
 fn restore_without_vector_demand_never_starts_a_model_reload_per_commit() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = polylogue_store::Archive::open_or_create(dir.path()).unwrap();
-    let warm = Warm::new(&archive);
+    let warm = Warm::new(
+        &archive,
+        polylogue_model::WallClock::new(jiff::Timestamp::now),
+    );
     let mut store = polylogue_store::vectors::Vectors::writer(&archive, 256).unwrap();
     // Provider-off startup never asks Warm for a model. Six hundred mixed
     // restore transactions therefore do not subscribe a vectors worker.
@@ -708,7 +714,7 @@ fn a_warmed_model_refreshes_mixed_restore_and_preserves_old_reader_values() {
             restored_vector(2, 10, [0., 1.]),
         ])
         .unwrap();
-    let warm = Warm::new(&daemon.daemon.archive);
+    let warm = Warm::new(&daemon.daemon.archive, daemon.daemon.clock.clone());
     let old_reader = daemon.daemon.reads.reader().unwrap();
     let old = warm.vectors_of(&old_reader, key).unwrap();
     store

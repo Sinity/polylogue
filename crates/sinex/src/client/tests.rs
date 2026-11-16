@@ -1,4 +1,5 @@
 use crate::{Authentication, Config, Error, Mode, Sinex};
+use polylogue_model::LockExt;
 use sinex_protocol::{ProducerWelcome, Subjects};
 use std::{path::Path, time::Duration};
 const PASSWORD: &str = "synthetic-password";
@@ -143,7 +144,7 @@ fn registration_acknowledgment_establishes_family() {
                 },
             };
             {
-                let spool = client.spool.lock().unwrap();
+                let spool = client.spool.locked();
                 let prepared = spool.prepare(frame.clone()).unwrap();
                 let mut mismatch = acknowledgment.clone();
                 mismatch.content_hash = Some("different payload".into());
@@ -170,7 +171,7 @@ fn registration_acknowledgment_establishes_family() {
                 ..crate::tests::no_event_acknowledgment(&conflict)
             };
             {
-                let spool = client.spool.lock().unwrap();
+                let spool = client.spool.locked();
                 spool.prepare(conflict.clone()).unwrap();
                 spool
                     .record_conflict(conflict.frame(), &offered_hash, &acknowledgment)
@@ -212,7 +213,7 @@ fn registration_acknowledgment_establishes_family() {
                 let acknowledgment = client.send(frame.clone()).await?;
                 assert_eq!(acknowledgment.commit_seq(), None);
                 assert_eq!(
-                    client.spool.lock().unwrap().acknowledgment(frame.frame())?,
+                    client.spool.locked().acknowledgment(frame.frame())?,
                     Some(acknowledgment)
                 );
             }
@@ -381,8 +382,8 @@ fn unreadable_event_refused_but_lost_connection_stops() {
         "event-x",
         "polylogue.future@7".into(),
         None,
-        Err(Error::Invalid(
-            "unsupported Polylogue kind polylogue.future@7".into(),
+        Err(Error::invalid(
+            "unsupported Polylogue kind polylogue.future@7",
         )),
     )
     .unwrap();
@@ -417,7 +418,7 @@ fn unreadable_event_refused_but_lost_connection_stops() {
             "unreadable-fact",
             kind.into(),
             definition,
-            Err(Error::Invalid("synthetic unreadable payload".into())),
+            Err(Error::invalid("synthetic unreadable payload")),
         )
         .unwrap();
         assert!(
@@ -432,7 +433,7 @@ fn unreadable_event_refused_but_lost_connection_stops() {
         "unknown-definition",
         current_session,
         Some("unrecognized definition"),
-        Err(Error::Invalid("synthetic unreadable payload".into())),
+        Err(Error::invalid("synthetic unreadable payload")),
     )
     .unwrap();
     assert!(matches!(
@@ -513,7 +514,7 @@ fn duplicate_acknowledgments_keep_frames_independent() {
         });
         let spool = Arc::new(Mutex::new(crate::spool::Spool::open(root.path(), "polylogue").unwrap()));
         for number in 0..5 {
-            spool.lock().unwrap().prepare(sinex_protocol::Ingress::Events { frame: format!("concurrent-{number}"), source: None, events: vec![], failures: vec![] }).unwrap();
+            spool.locked().prepare(sinex_protocol::Ingress::Events { frame: format!("concurrent-{number}"), source: None, events: vec![], failures: vec![] }).unwrap();
         }
         let mut client = super::Client::connect_shared(&config, &Authentication::Password(PASSWORD.into()), spool.clone(), Default::default(), Default::default(), false).await.unwrap();
         let result = tokio::time::timeout(Duration::from_secs(10), client.retry_prepared()).await.expect("all independent frames complete without waiting for an earlier refusal");
@@ -521,7 +522,7 @@ fn duplicate_acknowledgments_keep_frames_independent() {
         let acknowledgments = fake_sinex.await.unwrap();
         assert_eq!(acknowledgments.len(), 5);
         for acknowledgment in acknowledgments {
-            assert_eq!(spool.lock().unwrap().acknowledgment(&acknowledgment.frame).unwrap(), Some(acknowledgment));
+            assert_eq!(spool.locked().acknowledgment(&acknowledgment.frame).unwrap(), Some(acknowledgment));
         }
         client.retry_prepared().await.unwrap();
     });
@@ -924,7 +925,7 @@ fn refused_attachment_keeps_request_as_others_complete() {
         ))
         .unwrap();
     sinex.runtime.block_on(welcome).unwrap();
-    *sinex.client.lock().unwrap() = Some(client);
+    *sinex.client.locked() = Some(client);
     let bytes = b"synthetic refused attachment";
     let hash = BlobHash::of(bytes);
     let blob = sinex
