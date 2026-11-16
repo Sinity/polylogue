@@ -18,8 +18,8 @@ pub(crate) struct Source<'a> {
     pub counter: i64,
     pub packed: &'a crate::text_rows::PreparedTexts,
     pub texts: &'a crate::text_rows::TextIds,
-    /// Set during a first build ([`crate::first_build`]).
-    pub first_build: Option<&'a crate::first_build::FirstBuild>,
+    /// Set during a first build ([`crate::key_maps`]).
+    pub first_build: Option<&'a crate::key_maps::KeyMaps>,
     pub keys: &'a crate::writer::resolve::ResolvedKeys,
 }
 
@@ -75,7 +75,7 @@ pub(crate) fn apply_choice(
     pk: i64,
     choice: Option<&crate::writer::resolve::membership::DocumentChoice>,
     counter: i64,
-    first_build: Option<&crate::first_build::FirstBuild>,
+    first_build: Option<&crate::key_maps::KeyMaps>,
     texts: &crate::text_rows::TextIds,
     keys: &crate::writer::resolve::ResolvedKeys,
 ) -> Result<()> {

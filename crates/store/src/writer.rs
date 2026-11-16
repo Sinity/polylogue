@@ -384,7 +384,7 @@ const READ_ONLY_INDEXES: &[&str] = &[
 
 /// Unique indexes on natural keys, which the writer's statements use: a first
 /// build drops them too, finds rows by key in memory meanwhile
-/// ([`crate::first_build`]), and builds them first when it ends.
+/// ([`crate::key_maps`]), and builds them first when it ends.
 const KEY_INDEXES: &[&str] = &["message_id", "event_id", "text_hash"];
 
 /// Groups waiting for the writer before senders block. A batch's bytes stay
@@ -519,7 +519,7 @@ impl Writer {
         crate::chain_progress::open(&index, !archive.is_primary())?;
         record_build_progress(archive, &index)?;
         let first_build = building
-            .then(|| crate::first_build::FirstBuild::load(&index).map(Arc::new))
+            .then(|| crate::key_maps::KeyMaps::load(&index).map(Arc::new))
             .transpose()?;
         let texts = crate::text_rows::TextIds::new(&index, building)?;
         let segment = if sinex.is_none() {
@@ -879,7 +879,7 @@ struct Inner {
     report: WriteReport,
     /// Set while the index is being built from nothing, without syncs
     /// ([`Writer::start`]).
-    first_build: Option<Arc<crate::first_build::FirstBuild>>,
+    first_build: Option<Arc<crate::key_maps::KeyMaps>>,
     texts: crate::text_rows::TextIds,
     /// Secondary indexes dropped for a first build, recreated when it ends.
     deferred_indexes: Vec<String>,

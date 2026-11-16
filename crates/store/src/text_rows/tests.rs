@@ -104,7 +104,7 @@ fn pending_byte_limit_commits_complete_entries_and_retry_keeps_the_rest() {
 #[test]
 fn a_later_decode_failure_rolls_back_earlier_search_entries_in_its_transaction() {
     for bulk in [false, true] {
-        let first_build = bulk.then(crate::first_build::FirstBuild::default);
+        let first_build = bulk.then(crate::key_maps::KeyMaps::default);
         let dir = tempfile::tempdir().unwrap();
         let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
         let conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
@@ -124,7 +124,7 @@ fn a_later_decode_failure_rolls_back_earlier_search_entries_in_its_transaction()
 #[test]
 fn bulk_and_pending_searches_keep_ascii_unicode_and_search_kinds() {
     for bulk in [false, true] {
-        let first_build = bulk.then(crate::first_build::FirstBuild::default);
+        let first_build = bulk.then(crate::key_maps::KeyMaps::default);
         let dir = tempfile::tempdir().unwrap();
         let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
         let mut conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();

@@ -38,7 +38,7 @@ fn write_test_rows(
     step: &ParseStep,
     chain: i64,
     counter: i64,
-    first: Option<&crate::first_build::FirstBuild>,
+    first: Option<&crate::key_maps::KeyMaps>,
 ) -> Result<u64> {
     let mut batch = batch.clone();
     batch.parse = vec![step.clone()];

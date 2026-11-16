@@ -12,7 +12,7 @@ fn session_kind_reads(supplied: bool) -> u64 {
     crate::schema::create_index(&conn).unwrap();
     // Count executions rather than cached statement preparations.
     conn.set_prepared_statement_cache_capacity(0);
-    let first_build = crate::first_build::FirstBuild::default();
+    let first_build = crate::key_maps::KeyMaps::default();
     let tx = conn.transaction().unwrap();
     let mut seed = batch("input1", Route::Live, 0, vec![], &["main", "child"]);
     seed.parse[0].output.sessions[1] = Session::new(sid("child"), SessionKind::Subagent);
@@ -84,7 +84,7 @@ fn new_messages_do_not_read_a_previous_source() {
     let dir = tempfile::tempdir().unwrap();
     let mut conn = open_write(&dir.path().join("index.db"), 1).unwrap();
     crate::schema::create_index(&conn).unwrap();
-    let first_build = crate::first_build::FirstBuild::default();
+    let first_build = crate::key_maps::KeyMaps::default();
     // With caching disabled, authorization sees every statement execution.
     conn.set_prepared_statement_cache_capacity(0);
     let tx = conn.transaction().unwrap();
@@ -416,7 +416,7 @@ fn new_versions_do_not_resolve_hashes_again_for_each_child() {
             BEGIN INSERT INTO registration_effect(pk) VALUES(NULL); END;",
         )
         .unwrap();
-        let first = crate::first_build::FirstBuild::default();
+        let first = crate::key_maps::KeyMaps::default();
         let tx = conn.transaction().unwrap();
         let prefix = batch("input1", Route::Live, 0, vec![], &[]);
         write_test_rows(&tx, &prefix, &prefix.parse[0], 1, 0, Some(&first)).unwrap();

@@ -15,7 +15,7 @@ fn removal_steps(unrelated: usize, indexed: bool) -> u64 {
         "the supported first-build writer keeps this foreign-key lookup"
     );
     let tx = conn.transaction().unwrap();
-    let first = crate::first_build::FirstBuild::load(&tx).unwrap();
+    let first = crate::key_maps::KeyMaps::load(&tx).unwrap();
     let target = batch(
         "target",
         Route::Live,
@@ -181,7 +181,7 @@ fn session_removal_steps(unrelated: usize, indexed: bool) -> u64 {
         "the first-build writer keeps its session foreign-key lookup"
     );
     let tx = conn.transaction().unwrap();
-    let first = crate::first_build::FirstBuild::load(&tx).unwrap();
+    let first = crate::key_maps::KeyMaps::load(&tx).unwrap();
     let mut input = batch("sessions", Route::Live, 0, vec![], &["target", "other"]);
     for n in 0..unrelated {
         input.parse[0].output.links.push(polylogue_model::Link {

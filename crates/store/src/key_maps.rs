@@ -19,7 +19,7 @@ use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::RwLock;
 
 #[derive(Default)]
-pub(crate) struct FirstBuild {
+pub(crate) struct KeyMaps {
     messages: RwLock<Rows>,
     events: RwLock<Rows>,
 }
@@ -98,7 +98,7 @@ impl Rows {
     }
 }
 
-impl FirstBuild {
+impl KeyMaps {
     pub(crate) fn load(index: &Connection) -> Result<Self> {
         let keys = Self::default();
         for (table, key, pk, rows) in [

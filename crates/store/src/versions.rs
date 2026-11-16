@@ -1,6 +1,6 @@
 //! Packed readings and their shared text. Source rows choose what is shown.
 use crate::ResultExt as _;
-use crate::{Result, encoding, first_build::FirstBuild};
+use crate::{Result, encoding, key_maps::KeyMaps};
 use polylogue_model::{BlobHash, Block, Message, bundle::MessageProjection};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::de::DeserializeOwned;
@@ -504,7 +504,7 @@ pub(crate) fn track_unreferenced(conn: &Connection) -> Result<()> {
 /// when it ends, so a removed text has no search entry to remove.
 pub(crate) fn remove_unreferenced(
     conn: &Connection,
-    first_build: Option<&FirstBuild>,
+    first_build: Option<&KeyMaps>,
     texts: &crate::text_rows::TextIds,
 ) -> Result<()> {
     for kind in VersionKind::ALL {

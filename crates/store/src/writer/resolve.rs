@@ -5,6 +5,34 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Condvar;
 pub(crate) mod membership;
 
+/// How the database the writer writes keeps its indexes.
+#[derive(Clone)]
+pub(crate) enum IndexUpkeep {
+    PerTransaction,
+    AtBuildEnd(Arc<crate::key_maps::KeyMaps>),
+}
+impl IndexUpkeep {
+    pub(crate) fn at_build_end(&self) -> bool {
+        matches!(self, Self::AtBuildEnd(_))
+    }
+    pub(crate) fn key_maps(&self) -> Option<&crate::key_maps::KeyMaps> {
+        match self {
+            Self::PerTransaction => None,
+            Self::AtBuildEnd(keys) => Some(keys),
+        }
+    }
+    pub(crate) fn remember_message(&self, id: &str, pk: i64) {
+        if let Some(keys) = self.key_maps() {
+            keys.add_message(id, pk);
+        }
+    }
+    pub(crate) fn remember_event(&self, id: &str, pk: i64) {
+        if let Some(keys) = self.key_maps() {
+            keys.add_event(id, pk);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Kind {
     Input,
@@ -139,7 +167,7 @@ pub(crate) struct Resolver {
     archive: Archive,
     active: Mutex<Active>,
     available: Condvar,
-    first: Option<Arc<crate::first_build::FirstBuild>>,
+    first: Option<Arc<crate::key_maps::KeyMaps>>,
     #[cfg(test)]
     waiting: Mutex<Option<std::sync::mpsc::Sender<()>>>,
 }
@@ -182,7 +210,7 @@ impl Resolver {
     pub(crate) fn new(
         archive: &Archive,
         index: &Connection,
-        first: Option<Arc<crate::first_build::FirstBuild>>,
+        first: Option<Arc<crate::key_maps::KeyMaps>>,
     ) -> Result<Arc<Self>> {
         let mut next = BTreeMap::new();
         for kind in [
@@ -764,7 +792,7 @@ pub(super) fn prepare_index(
     first: bool,
 ) -> Result<()> {
     let first = first
-        .then(|| crate::first_build::FirstBuild::load(index).map(Arc::new))
+        .then(|| crate::key_maps::KeyMaps::load(index).map(Arc::new))
         .transpose()?;
     let resolver = Resolver::new(
         &Archive::at(std::path::Path::new("unused-test-location")),

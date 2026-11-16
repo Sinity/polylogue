@@ -7,7 +7,7 @@ use crate::Result;
 mod groups;
 mod identities;
 #[cfg(any(test, feature = "fixture"))]
-use crate::first_build::FirstBuild;
+use crate::key_maps::KeyMaps;
 pub(crate) use groups::{PreparedTexts, StoredGroups, column, joined, read, slice};
 pub(crate) use identities::TextIds;
 #[cfg(any(test, feature = "fixture"))]
@@ -23,7 +23,7 @@ pub(crate) fn intern(
     body: &str,
     bit: i64,
     prepared: Option<&PreparedTexts>,
-    first_build: Option<&FirstBuild>,
+    first_build: Option<&KeyMaps>,
 ) -> Result<i64> {
     let hash = blake3::hash(body.as_bytes());
     let id = conn

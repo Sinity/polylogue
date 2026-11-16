@@ -10,7 +10,7 @@ fn preparations(messages: usize, tools: bool) -> u64 {
     let dir = tempfile::tempdir().unwrap();
     let mut conn = open_write(&dir.path().join("index.db"), 1).unwrap();
     crate::schema::create_index(&conn).unwrap();
-    let first_build = crate::first_build::FirstBuild::default();
+    let first_build = crate::key_maps::KeyMaps::default();
     let tx = conn.transaction().unwrap();
     let observed = Arc::new(AtomicU64::new(0));
     let count = observed.clone();

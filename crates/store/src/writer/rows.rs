@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::change_summary::ChangeSummary;
-use crate::first_build::FirstBuild;
+use crate::key_maps::KeyMaps;
 use polylogue_model::{Completion, Route};
 use std::{cell::Cell, collections::BTreeMap};
 
@@ -52,7 +52,7 @@ pub(super) struct ReadingWrite<'a> {
     pub(super) texts: &'a crate::text_rows::TextIds,
     pub(super) resolution: &'a resolve::Resolution,
     pub(super) counter: i64,
-    pub(super) first_build: Option<&'a FirstBuild>,
+    pub(super) first_build: Option<&'a KeyMaps>,
     pub(super) retraction: bool,
     pub(super) replacement: bool,
     pub(super) source_commit: Option<&'a crate::wire_shapes::ReadingCommit>,
@@ -561,7 +561,7 @@ fn apply_rows(
 pub(crate) fn finish(
     tx: &Transaction<'_>,
     changes: &ChangeSummary,
-    first_build: Option<&FirstBuild>,
+    first_build: Option<&KeyMaps>,
     texts: &crate::text_rows::TextIds,
     counter: i64,
 ) -> Result<u64> {
@@ -637,8 +637,8 @@ pub(super) struct RowWriter<'a, 't> {
     /// Set during a first build ([`Writer::start`]): search entries,
     /// trigram entries and secondary indexes are built once, in bulk, when
     /// it ends ([`Inner::build_deferred`]), and rows are found by natural
-    /// key through it ([`FirstBuild`]).
-    first_build: Option<&'a FirstBuild>,
+    /// key through it ([`KeyMaps`]).
+    first_build: Option<&'a KeyMaps>,
     keys: &'a resolve::ResolvedKeys,
     choices: &'a resolve::membership::Choices,
     changes: &'a ChangeSummary,

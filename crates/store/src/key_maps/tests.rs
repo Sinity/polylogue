@@ -23,7 +23,7 @@ fn insert_event(conn: &Connection, id: &str) -> i64 {
 #[test]
 fn a_key_finds_the_row_written_under_it() {
     let conn = index();
-    let keys = FirstBuild::default();
+    let keys = KeyMaps::default();
     assert_eq!(keys.event(&conn, "first").unwrap(), None);
     let pk = insert_event(&conn, "first");
     keys.add_event("first", pk);
@@ -34,7 +34,7 @@ fn a_key_finds_the_row_written_under_it() {
 #[test]
 fn a_row_rolled_back_or_replaced_under_its_key_is_not_found() {
     let mut conn = index();
-    let keys = FirstBuild::default();
+    let keys = KeyMaps::default();
     let tx = conn.transaction().unwrap();
     let pk = insert_event(&tx, "gone");
     keys.add_event("gone", pk);
@@ -68,7 +68,7 @@ fn keys_sharing_a_hash_each_find_their_own_row() {
 #[test]
 fn texts_and_messages_are_found_by_their_keys() {
     let conn = index();
-    let keys = FirstBuild::default();
+    let keys = KeyMaps::default();
     let hash = *blake3::hash(b"walrus").as_bytes();
     let id = crate::text_rows::insert_alone(&conn, None, &hash, &hash, "walrus", 0);
     let texts = crate::text_rows::TextIds::new(&conn, true).unwrap();
@@ -100,7 +100,7 @@ fn loading_committed_rows_restores_every_key_map() {
     let hash = *blake3::hash(b"kept text").as_bytes();
     crate::text_rows::insert_alone(&conn, None, &hash, &hash, "kept text", 0);
     conn.execute("INSERT INTO message(id,session_pk,session_order,role,written_by,input_pk) VALUES ('claude-code:message',1,'0','user','human',1)", []).unwrap();
-    let keys = FirstBuild::load(&conn).unwrap();
+    let keys = KeyMaps::load(&conn).unwrap();
     let texts = crate::text_rows::TextIds::new(&conn, true).unwrap();
     assert!(
         keys.message(&conn, "claude-code:message")
@@ -132,7 +132,7 @@ fn startup_key_snapshot_never_reads_payload_columns() {
         _ => Authorization::Allow,
     }))
     .unwrap();
-    let keys = FirstBuild::load(&conn).unwrap();
+    let keys = KeyMaps::load(&conn).unwrap();
     let texts = crate::text_rows::TextIds::new(&conn, true).unwrap();
     assert_eq!(keys.event(&conn, "kept").unwrap(), Some(pk));
     assert!(texts.text(&conn, &hash).unwrap().is_some());

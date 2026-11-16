@@ -27,12 +27,57 @@ pub(crate) fn bump_counter(tx: &Transaction<'_>) -> Result<i64> {
     Ok(next)
 }
 
+/// One process allowance, split between the index pipeline's resident caches and work.
+#[derive(Debug, Clone, Copy)]
+pub struct MemoryBudget {
+    total: u64,
+}
+impl Default for MemoryBudget {
+    fn default() -> Self {
+        Self::from_allowance(4 << 30)
+    }
+}
+impl MemoryBudget {
+    pub fn from_allowance(bytes: u64) -> Self {
+        Self {
+            total: bytes.saturating_mul(3).saturating_div(4).min(3 << 30),
+        }
+    }
+    pub fn total(self) -> u64 {
+        self.total
+    }
+    pub fn writer_cache_mib(self) -> i64 {
+        ((self.total / 8) >> 20).max(1) as i64
+    }
+    pub fn archive_cache_mib(self) -> i64 {
+        ((self.total / 32) >> 20).max(1) as i64
+    }
+    pub fn search_cache_mib(self) -> i64 {
+        ((self.total / 64) >> 20).max(1) as i64
+    }
+    pub fn readers(self) -> u64 {
+        self.total / 16
+    }
+    pub fn in_flight(self) -> u64 {
+        self.total / 16
+    }
+    pub fn keys(self) -> u64 {
+        self.total / 16
+    }
+    pub fn worker_count(self, cpus: usize, requested: usize) -> usize {
+        cpus.min(requested)
+            .min((self.total / 3 / (128 << 20)) as usize)
+            .max(1)
+    }
+}
+
 /// An opened archive directory (`$XDG_DATA_HOME/polylogue`). The directory
 /// has copy-on-write turned off on btrfs; Polylogue checks its own data
 /// with BLAKE3 for blobs. SQLite's checksum VFS is not wired in yet: it
 /// needs the `cksumvfs` extension, which the bundled build does not ship.
 #[derive(Debug, Clone)]
 pub struct Archive {
+    memory: MemoryBudget,
     pub root: PathBuf,
     /// In primary mode, Sinex's store root: its content store holds the
     /// inputs' bytes, and the register is a cache of what Sinex holds.
@@ -54,6 +99,14 @@ pub struct ArchiveLock {
 }
 
 impl Archive {
+    pub fn memory_budget(&self) -> MemoryBudget {
+        self.memory
+    }
+    pub fn with_memory_budget(mut self, budget: MemoryBudget) -> Self {
+        self.memory = budget;
+        self
+    }
+
     /// The stop request of the process using this archive: cancelling it
     /// ends every read, wait and reconstructible write made through it with
     /// [`StoreError::Stopped`](crate::StoreError::Stopped). Requests derive
@@ -161,6 +214,7 @@ impl Archive {
     /// The archive at `root` without opening it, for clients and readers.
     pub fn at(root: &Path) -> Self {
         Self {
+            memory: MemoryBudget::default(),
             root: root.to_path_buf(),
             sinex_store: None,
             primary: false,
@@ -174,6 +228,7 @@ impl Archive {
     /// without opening it.
     pub fn on_sinex(root: &Path, store: &Path) -> Self {
         Self {
+            memory: MemoryBudget::default(),
             root: root.to_path_buf(),
             sinex_store: Some(store.to_path_buf()),
             primary: true,
@@ -261,6 +316,7 @@ impl Archive {
 
     fn primary_cache(root: &Path) -> Self {
         Self {
+            memory: MemoryBudget::default(),
             root: root.to_path_buf(),
             sinex_store: None,
             primary: true,
