@@ -34,7 +34,12 @@ fn snapshot_pages_resume_hidden_and_install_with_their_completion() {
     let path = dir.path().join("index.db");
     let mut index = cache(&path);
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     crate::primary::scope::reset(&mut index, &archive, &resolver, "scope", false).unwrap();
     apply(
         &crate::text_rows::TextIds::new(
@@ -211,7 +216,12 @@ fn a_staged_delivery_survives_reopen_without_advancing_the_applied_position() {
     let path = dir.path().join("index.db");
     let mut index = cache(&path);
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     apply(
         &crate::text_rows::TextIds::new(
             &index,
@@ -259,7 +269,12 @@ fn a_restarted_consumer_redelivers_applied_positions_without_changing_them() {
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     apply(
         &crate::text_rows::TextIds::new(
             &index,
@@ -303,7 +318,12 @@ fn an_event_erased_before_this_index_read_it_is_recorded_as_tombstoned() {
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     apply(
         &crate::text_rows::TextIds::new(
             &index,
@@ -366,7 +386,12 @@ fn scope_reset_cannot_share_a_page_with_events() {
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     assert!(
         apply(
             &crate::text_rows::TextIds::new(
@@ -394,7 +419,12 @@ fn an_unreadable_event_in_the_middle_of_a_page_is_refused_and_later_events_apply
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     apply(
         &crate::text_rows::TextIds::new(
             &index,
@@ -457,7 +487,12 @@ fn source_boundary_needs_complete_scope_and_survives_commits() {
         crate::Archive::open_primary(directory.path(), &directory.path().join("bytes")).unwrap();
     let mut index =
         crate::archive::open_write(&archive.index_db(), crate::archive::cache::SETUP).unwrap();
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     crate::primary::scope::reset(&mut index, &archive, &resolver, "scope-a", false).unwrap();
     let boundary =
         |index: &Connection| crate::primary::SourceBoundary::read(index, index, &archive).unwrap();
@@ -591,7 +626,12 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
         crate::Archive::open_primary(directory.path(), &directory.path().join("bytes")).unwrap();
     let mut index =
         crate::archive::open_write(&archive.index_db(), crate::archive::cache::SETUP).unwrap();
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     crate::primary::scope::reset(&mut index, &archive, &resolver, "scope", false).unwrap();
     let boundary =
         |index: &Connection| crate::primary::SourceBoundary::read(index, index, &archive).unwrap();
@@ -772,7 +812,12 @@ fn completion_marker_survives_pages_and_rolls_back() {
     let path = dir.path().join("index.db");
     let mut index = cache(&path);
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     apply(
         &crate::text_rows::TextIds::new(
             &index,
@@ -870,7 +915,12 @@ fn a_new_completion_after_higher_pending_data_cannot_become_a_restart_boundary()
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     apply(
         &crate::text_rows::TextIds::new(
             &index,
@@ -925,7 +975,12 @@ fn malformed_completion_markers_refuse_visible_progress() {
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     apply(
         &crate::text_rows::TextIds::new(
             &index,

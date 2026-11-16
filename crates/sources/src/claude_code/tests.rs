@@ -503,6 +503,9 @@ fn child_of_an_evicted_alias_keeps_its_resolved_parent() {
 fn context_backend_error_rejects_the_whole_parse() {
     struct Unavailable;
     impl polylogue_model::parser_context::Context for Unavailable {
+        fn clear_state(&mut self, _: &str) -> Result<(), polylogue_model::parser_context::Error> {
+            Err("unavailable selected context".into())
+        }
         fn get(
             &mut self,
             _: &polylogue_model::parser_context::Key,

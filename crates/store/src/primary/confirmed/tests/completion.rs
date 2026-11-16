@@ -31,7 +31,12 @@ fn authored_recovery_uses_completed_sinex_positions() {
         .execute_batch("DROP INDEX confirmed_event_changed")
         .unwrap();
     crate::schema::ensure_primary_index(&index).unwrap();
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     crate::primary::scope::reset(&mut index, &archive, &resolver, "scope-a", false).unwrap();
     let a = setting(&index, "request-a", "drive.ai-studio");
     apply(

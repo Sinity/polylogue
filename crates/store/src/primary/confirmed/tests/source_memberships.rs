@@ -42,7 +42,12 @@ fn complete_positions_rebuild_container_memberships_with_their_original_observat
     let mut index = cache(&dir.path().join("index.db"));
     index.pragma_update(None, "foreign_keys", true).unwrap();
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     apply(
         &crate::text_rows::TextIds::new(
             &index,

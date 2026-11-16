@@ -102,6 +102,7 @@ fn reading(input: &str, messages: Vec<Message>, entries: Vec<Entry>) -> Batch {
         "synthetic=1".into(),
         100,
         Some(serde_json::json!({"_polylogue_context": Delta {
+        cleared_states: Vec::new(),
             version: 1, base: 0, through: 100, entries,
         }})),
     ));

@@ -197,7 +197,12 @@ fn chunked_materials_catalog_each_chunk_and_their_chains_read_back() {
     let root = tempfile::tempdir().unwrap();
     let mut index = cache(&root.path().join("index.db"));
     let archive = crate::Archive::on_sinex(root.path(), &root.path().join("bytes"));
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let mut writer = hashed_blobs::SegmentWriter::open(
         root.path().join("bytes"),
         "segments/chunks.hb",

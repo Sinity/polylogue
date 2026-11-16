@@ -203,7 +203,7 @@ impl KeyRows {
         let mut latest: Option<Record> = None;
         if self.possible(key) {
             for run in self.runs.iter().flatten() {
-                run.visit(key, &mut |record| {
+                let _ = run.visit(key, &mut |record| {
                     if latest.is_none_or(|prior| record.sequence > prior.sequence) {
                         latest = Some(record);
                     }

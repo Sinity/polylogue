@@ -46,7 +46,12 @@ fn scope_change_waits_for_a_new_completion_marker() {
     let root = tempfile::tempdir().unwrap();
     let archive = Archive::on_sinex(root.path(), &root.path().join("sinex"));
     let mut index = cache(&archive);
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     std::fs::write(
         root.path().join("embeddings.db"),
         b"paid content hash vectors",
@@ -181,7 +186,12 @@ fn a_failed_scope_transaction_keeps_readers_blocked_until_retry_commits() {
     let root = tempfile::tempdir().unwrap();
     let archive = Archive::on_sinex(root.path(), &root.path().join("sinex"));
     let mut index = cache(&archive);
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     confirmed::apply(
         &crate::text_rows::TextIds::new(
             &index,
@@ -226,7 +236,12 @@ fn unsaved_sinex_control_blocks_current_reads() {
     let root = tempfile::tempdir().unwrap();
     let archive = Archive::on_sinex(root.path(), &root.path().join("sinex"));
     let mut index = cache(&archive);
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     confirmed::apply(
         &crate::text_rows::TextIds::new(
             &index,
@@ -262,7 +277,12 @@ fn cache_clear_cannot_commit_until_registered_outputs_are_invalidated() {
     let root = tempfile::tempdir().unwrap();
     let archive = Archive::on_sinex(root.path(), &root.path().join("sinex"));
     let mut index = cache(&archive);
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     confirmed::apply(
         &crate::text_rows::TextIds::new(
             &index,

@@ -45,7 +45,12 @@ fn completion_marker_commits_staged_pages_atomically() {
     let path = dir.path().join("index.db");
     let mut index = cache(&path);
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     assert_eq!(
         apply(
             &crate::text_rows::TextIds::new(
@@ -157,7 +162,12 @@ fn an_empty_confirmed_database_is_known_and_zero_data_is_refused() {
     let mut index = cache(&dir.path().join("index.db"));
     assert_eq!(checkpoint(&index).unwrap(), None);
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     apply(
         &crate::text_rows::TextIds::new(
             &index,
@@ -194,7 +204,12 @@ fn source_lifecycle_keeps_recorded_authored_effects() {
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let request = UserRequest {
         authorship: polylogue_model::authorship::Authorship {
             author: polylogue_model::Author::Operator,
@@ -348,7 +363,12 @@ fn new_requests_apply_after_the_applied_ones_and_a_lifecycle_change_rebuilds_aut
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let live = |position, event: &str, product| Confirmed {
         sinex_context: None,
         position,
@@ -436,7 +456,12 @@ fn confirmed_slices_keep_full_material_descriptors_without_opening_source_bytes(
     let mut index = cache(&dir.path().join("index.db"));
     let bytes_root = dir.path().join("unavailable-bytes");
     let archive = crate::Archive::on_sinex(dir.path(), &bytes_root);
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let hash = polylogue_model::BlobHash::of(b"abcd");
     let extent = hashed_blobs::Extent {
         segment: "segments/confirmed.hb".into(),
@@ -538,7 +563,12 @@ fn has_confirmed_event_follows_positions_and_early_erasures() {
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let erased = Confirmed {
         sinex_context: None,
         position: 3,
@@ -583,7 +613,12 @@ fn prepared_position_cannot_skip_new_sinex_events() {
     let directory = tempfile::tempdir().unwrap();
     let mut index = cache(&directory.path().join("index.db"));
     let archive = crate::Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let Step::Prepare(prepared) =
         stage_next(&mut index, &[input(2, "first"), complete_at(5)]).unwrap()
     else {
@@ -640,7 +675,12 @@ fn prepared_application_respects_a_failed_scope_reset_fence() {
     let directory = tempfile::tempdir().unwrap();
     let mut index = cache(&directory.path().join("index.db"));
     let archive = crate::Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let Step::Prepare(prepared) =
         stage_next(&mut index, &[input(2, "first"), complete_at(2)]).unwrap()
     else {

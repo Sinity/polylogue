@@ -7,7 +7,7 @@
 //! an earlier build gains the tables added since ([`ensure_embeddings`]).
 
 use crate::{Result, StoreError};
-use rusqlite::Connection;
+use rusqlite::{Connection, fallible_iterator::FallibleIterator as _};
 use std::collections::HashSet;
 
 pub const ARCHIVE: &str = concat!(

@@ -78,6 +78,8 @@ fn main() -> ExitCode {
         );
         // C codecs and SQLite use libc rather than Rust's global allocator.
         #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        #[allow(unsafe_code)]
+        // SAFETY: libc synchronizes its own allocator statistics and takes no pointers.
         unsafe {
             libc::malloc_stats();
         }

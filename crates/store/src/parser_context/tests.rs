@@ -133,3 +133,96 @@ fn fresh_context_leaves_checkpoint_free_while_resumed_context_keeps_its_snapshot
     };
     assert_eq!(target.to_string(), "claude-code:later");
 }
+
+#[test]
+fn cleared_parser_state_stays_cleared_after_checkpoint_and_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
+    crate::Writer::start(&archive).unwrap().derive().unwrap();
+    let mut writer = open_write(&archive.index_db(), cache::SETUP).unwrap();
+    writer.execute_batch("INSERT INTO input_ref(pk,id,format) VALUES(1,'state-clear','codex');
+        INSERT INTO parse_state(input_pk,chain,status,parsed_upto,reading_version) VALUES(1,1,'parsing',0,'synthetic=1');").unwrap();
+    let key = |namespace: &str, key: &str| Key::State {
+        namespace: namespace.into(),
+        key: key.into(),
+    };
+    let put = |context: &mut Overlay, namespace: &str, key_name: &str, value: u64| {
+        context
+            .put(
+                key(namespace, key_name),
+                Value::State {
+                    value: value.into(),
+                },
+            )
+            .unwrap();
+    };
+    let commit = |writer: &mut Connection, delta: Delta| {
+        let mut step = crate::ParseStep::new(
+            Default::default(),
+            Default::default(),
+            delta.base..delta.through,
+            false,
+        );
+        step.reading_version = "synthetic=1".into();
+        step.checkpoint = Some(polylogue_model::batch::ParserCheckpoint::new(
+            "synthetic=1".into(),
+            delta.through,
+            Some(serde_json::json!({"_polylogue_context":delta})),
+        ));
+        let tx = writer.transaction().unwrap();
+        apply(&tx, 1, 1, &step, &Default::default()).unwrap();
+        tx.execute(
+            "UPDATE parse_state SET parsed_upto=?1 WHERE input_pk=1 AND chain=1",
+            [step.parsed_upto],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    };
+    let mut context = Overlay::open(&archive, "state-clear", Some(1), "synthetic=1", 0).unwrap();
+    put(&mut context, "calls", "old", 1);
+    put(&mut context, "names", "keep", 2);
+    commit(&mut writer, context.checkpoint_delta(1).unwrap());
+    drop(context);
+    let mut context = Overlay::open(&archive, "state-clear", Some(1), "synthetic=1", 1).unwrap();
+    context.clear_state("calls").unwrap();
+    assert!(context.get(&key("calls", "old")).unwrap().is_none());
+    put(&mut context, "calls", "new", 3);
+    commit(&mut writer, context.checkpoint_delta(2).unwrap());
+    // A private multi-range reading keeps the clear mask after sealing a slice.
+    assert!(context.get(&key("calls", "old")).unwrap().is_none());
+    assert!(
+        context
+            .checkpoint_delta(3)
+            .unwrap()
+            .cleared_states
+            .is_empty()
+    );
+    drop(context);
+    let mut context = Overlay::open(&archive, "state-clear", Some(1), "synthetic=1", 2).unwrap();
+    assert!(context.get(&key("calls", "old")).unwrap().is_none());
+    assert!(
+        matches!(context.get(&key("calls","new")).unwrap(),Some(Value::State { value }) if value==3)
+    );
+    assert!(
+        matches!(context.get(&key("names","keep")).unwrap(),Some(Value::State { value }) if value==2)
+    );
+    context
+        .put(
+            key("calls", "new"),
+            Value::State {
+                value: serde_json::Value::Null,
+            },
+        )
+        .unwrap();
+    assert!(context.get(&key("calls", "new")).unwrap().is_none());
+    commit(&mut writer, context.checkpoint_delta(3).unwrap());
+    drop(context);
+    let mut context = Overlay::open(&archive, "state-clear", Some(1), "synthetic=1", 3).unwrap();
+    assert!(context.get(&key("calls", "new")).unwrap().is_none());
+    let count: i64 = writer
+        .query_row("SELECT count(*) FROM parser_context_value", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 1, "only the uncleared names namespace remains");
+}

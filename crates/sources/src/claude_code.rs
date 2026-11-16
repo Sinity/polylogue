@@ -927,10 +927,10 @@ impl ClaudeCode {
                 "workflow journal",
             );
             if let Some(label) = v.str("label").filter(|s| !s.is_empty()) {
+                parser_state.touched_sessions.insert(agent.clone());
                 parser_state
                     .sessions
-                    .entry(agent)
-                    .or_insert_with(|| Session::new(child, SessionKind::Subagent))
+                    .get_or_insert(agent, || Session::new(child, SessionKind::Subagent))
                     .offer_title(label, TitleSource::AgentName);
             }
         }

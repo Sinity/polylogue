@@ -60,7 +60,12 @@ fn confirmed_event_is_not_sent_again_in_any_state() {
     let directory = tempfile::tempdir().unwrap();
     let mut index = cache(&directory.path().join("index.db"));
     let archive = crate::Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let first = message("first-source", 10);
     let independent = message("second-source", 10);
     assert!(unsent(&index, first.reading().unwrap(), &first));
@@ -113,7 +118,12 @@ fn covered_absent_event_is_not_sent_but_unread_tail_is() {
     let directory = tempfile::tempdir().unwrap();
     let mut index = cache(&directory.path().join("index.db"));
     let archive = crate::Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let original = message("source", 10);
     let mut reading = original.reading().unwrap().clone();
     reading.parsed_upto = 30;

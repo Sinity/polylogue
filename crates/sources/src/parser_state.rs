@@ -11,20 +11,15 @@ pub(crate) struct Map<T> {
     context: Handle,
     #[serde(skip)]
     namespace: String,
-    #[serde(default, skip_serializing_if = "is_zero")]
-    revision: u64,
     #[serde(skip)]
     value: PhantomData<T>,
 }
-fn is_zero(value: &u64) -> bool {
-    *value == 0
-}
+
 impl<T> Default for Map<T> {
     fn default() -> Self {
         Self {
             context: Default::default(),
             namespace: String::new(),
-            revision: 0,
             value: PhantomData,
         }
     }
@@ -34,7 +29,6 @@ impl<T> Clone for Map<T> {
         Self {
             context: self.context.clone(),
             namespace: self.namespace.clone(),
-            revision: self.revision,
             value: PhantomData,
         }
     }
@@ -49,12 +43,12 @@ impl<T> Map<T> {
     }
     fn key(&self, key: &str) -> Key {
         Key::State {
-            namespace: format!("{}/{}", self.namespace, self.revision),
+            namespace: self.namespace.clone(),
             key: key.into(),
         }
     }
     pub(crate) fn clear(&mut self) {
-        self.revision = self.revision.checked_add(1).expect("parser map revision");
+        self.context.clear_state(&self.namespace);
     }
 }
 impl<T: Serialize + DeserializeOwned> Map<T> {

@@ -1214,7 +1214,7 @@ pub(crate) fn run(
                                                 return vec![failed_step(&job,error.to_string(),prepare)];
                                             }
                                         }
-                                    } else if !delta.entries.is_empty() {
+                                    } else if !delta.entries.is_empty() || !delta.cleared_states.is_empty() {
                                         let error="keyed parser continuation has no object state";
                                         out.error=Some(error.into());out.failure_recorded=true;
                                         return vec![failed_step(&job,error.into(),prepare)];
