@@ -147,11 +147,13 @@ fn pending_batch(conn: &Connection, byte_limit: usize) -> Result<u64> {
     // Immediate: a deferred reader cannot wait to upgrade its writer lock.
     let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
     let before = tx.total_changes();
-    // Finish the queue cursor before removing its entries. Bodies are fetched
-    // individually, so the row-count limit does not multiply the text held.
+    // Read the ordered queue first; a join can instead scan all historical
+    // texts and sort on every batch. Finish the cursor before removal. Bodies
+    // are fetched individually, so the row limit does not multiply text held.
     let ids: Vec<(i64, i64)> = tx
         .prepare_cached(
-            "SELECT p.text_id, p.fts_table FROM search_pending p JOIN text t ON t.id = p.text_id
+            "SELECT p.text_id, p.fts_table FROM search_pending p
+             WHERE EXISTS(SELECT 1 FROM text t WHERE t.id = p.text_id)
              ORDER BY p.text_id, p.fts_table LIMIT ?1",
         )?
         .query_map([SEARCH_ROWS], |r| <(_, _)>::try_from(r))?
