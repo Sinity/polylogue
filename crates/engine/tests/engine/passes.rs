@@ -780,3 +780,183 @@ mod empty_inputs;
 mod hermes_state;
 
 mod antigravity;
+
+#[test]
+fn copied_tool_history_keeps_items_after_restart() {
+    use serde_json::json;
+    const PARENT: &str = "019a0000-0000-7000-8000-000000000001";
+    const FIRST: &str = "019a0000-0000-7000-8000-000000000002";
+    const SECOND: &str = "019a0000-0000-7000-8000-000000000003";
+    let home = ClaudeHome::new();
+    let rollouts = home.home.join(".codex/sessions/2026/03/01");
+    fs::create_dir_all(&rollouts).unwrap();
+    let record = |n: u64, kind: &str, payload: serde_json::Value| {
+        json!({"timestamp":format!("2026-03-01T10:00:{n:02}Z"),
+               "ordinal":n,"type":kind,"payload":payload})
+        .to_string()
+            + "\n"
+    };
+    let message = |id: &str, role: &str, text: &str| {
+        json!({"type":"message","id":id,"role":role,
+            "content":[{"type":if role == "user" {"input_text"} else {"output_text"},"text":text}]})
+    };
+    let parent_header = json!({"id":PARENT,"session_id":PARENT,"source":"exec",
+        "timestamp":"2026-03-01T10:00:00Z","cwd":"/work/synthetic"});
+    let prefix = record(2, "session_meta", parent_header.clone())
+        + &record(
+            3,
+            "response_item",
+            message("parent-user", "user", "parent prompt"),
+        )
+        + &record(
+            4,
+            "response_item",
+            message("parent-answer", "assistant", "parent answer"),
+        )
+        + &record(
+            5,
+            "response_item",
+            json!({"type":"function_call","id":"parent-call",
+            "call_id":"parent-tool","name":"exec_command","arguments":"{\"cmd\":\"printf synthetic\"}"}),
+        )
+        + &record(
+            6,
+            "response_item",
+            json!({"type":"function_call_output", "id":"parent-result", "call_id":"parent-tool",
+            "output":"parent synthetic result"}),
+        );
+    let child = |id: &str, suffix: &str| {
+        record(
+            1,
+            "session_meta",
+            json!({"id":id,"session_id":PARENT,
+            "parent_thread_id":PARENT,"forked_from_id":PARENT,"thread_source":"subagent",
+            "subagent_history_start_ordinal":7,"source":{"subagent":{"thread_spawn":{
+                "parent_thread_id":PARENT,"depth":1}}}}),
+        ) + &prefix
+            + &record(
+                7,
+                "response_item",
+                message(
+                    &format!("user-{suffix}"),
+                    "user",
+                    &format!("child {suffix} prompt"),
+                ),
+            )
+            + &record(
+                8,
+                "response_item",
+                json!({"type":"function_call","id":format!("call-{suffix}"),
+            "call_id":format!("tool-{suffix}"),"name":"exec_command","arguments":"{\"cmd\":\"printf synthetic\"}"}),
+            )
+            + &record(
+                9,
+                "response_item",
+                json!({"type":"function_call_output","call_id":format!("tool-{suffix}"),"output":"synthetic result"}),
+            )
+            + &record(
+                10,
+                "response_item",
+                message(
+                    &format!("answer-{suffix}"),
+                    "assistant",
+                    &format!("child {suffix} answer"),
+                ),
+            )
+    };
+    let path = |id| rollouts.join(format!("rollout-2026-03-01T10-00-00-{id}.jsonl"));
+    // The parent captured the call before it learned the earlier answer or
+    // the result. The child's copied history fills those holes after reopen.
+    let parent = record(1, "session_meta", parent_header)
+        + &record(
+            3,
+            "response_item",
+            message("parent-user", "user", "parent prompt"),
+        )
+        + &record(
+            5,
+            "response_item",
+            json!({"type":"function_call","id":"parent-call",
+            "call_id":"parent-tool","name":"exec_command","arguments":"{\"cmd\":\"printf synthetic\"}"}),
+        );
+    fs::write(path(PARENT), &parent).unwrap();
+    {
+        let (mut engine, _lock) = home.engine(4 << 20);
+        let pass = engine.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "{pass:?}");
+    }
+    let first = child(FIRST, "first");
+    fs::write(path(FIRST), &first).unwrap();
+    {
+        let (mut engine, _lock) = home.engine(4 << 20);
+        let pass = engine.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "{pass:?}");
+    }
+    let second = child(SECOND, "second");
+    fs::write(path(SECOND), &second).unwrap();
+    {
+        let (mut engine, _lock) = home.engine(4 << 20);
+        let pass = engine.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "{pass:?}");
+    }
+    fs::write(path(PARENT), &parent).unwrap();
+    let (mut engine, _lock) = home.engine(4 << 20);
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    let reads = home.reads();
+    let reader = reads.reader().unwrap();
+    let states = reader
+        .query(
+            "SELECT status,parsed_upto FROM parse_state ORDER BY parsed_upto",
+            &[],
+        )
+        .unwrap();
+    let mut lengths = [first.len(), second.len(), parent.len()];
+    lengths.sort();
+    assert_eq!(
+        states,
+        lengths.map(|n| json!({"status":"done","parsed_upto":n}))
+    );
+    assert_eq!(
+        reader
+            .query("SELECT count(*) AS n FROM message", &[])
+            .unwrap(),
+        [json!({"n":12})]
+    );
+    assert_eq!(
+        reader
+            .query("SELECT count(*) AS n FROM tool_call", &[])
+            .unwrap(),
+        [json!({"n":3})]
+    );
+    assert_eq!(
+        reader
+            .query(
+                "SELECT count(*) AS n FROM session_item WHERE message_pk IS NOT NULL",
+                &[]
+            )
+            .unwrap(),
+        [json!({"n":12})]
+    );
+    let sessions: Vec<_> = [PARENT, FIRST, SECOND]
+        .map(|id| format!("codex:{id}"))
+        .into();
+    let mut texts: Vec<_> = reader
+        .prose_texts(0, 100, Some(&sessions))
+        .unwrap()
+        .into_iter()
+        .map(|p| p.text)
+        .collect();
+    texts.sort();
+    assert_eq!(
+        texts,
+        [
+            "child first answer",
+            "child first prompt",
+            "child second answer",
+            "child second prompt",
+            "parent answer",
+            "parent prompt"
+        ]
+    );
+}
