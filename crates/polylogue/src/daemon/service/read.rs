@@ -74,7 +74,6 @@ pub(crate) fn arguments_of(
         format,
         budget,
         with_blobs,
-        cursor: _,
         ..
     } = request;
     let (show, hide) = options.show_hide_words();
