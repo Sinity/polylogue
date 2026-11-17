@@ -269,12 +269,38 @@ pub fn stage_products(connection: &rusqlite::Transaction<'_>, writes: &[Value]) 
                 match product {
                     crate::primary::Product::Request(prepared)
                     | crate::primary::Product::RestoredRequest { prepared } => {
-                        crate::primary::authored::restore(connection, &prepared, 0)?;
+                        let counter = if crate::primary::authored::stored_request(
+                            connection,
+                            &prepared.request.id,
+                        )?
+                        .is_some()
+                        {
+                            0
+                        } else {
+                            crate::archive::bump_counter(connection)?
+                        };
+                        crate::primary::authored::restore(connection, &prepared, counter)?;
                     }
                     crate::primary::Product::RestoredAssertion { fact, import } => {
-                        crate::assertions::apply(connection, std::slice::from_ref(&fact), 0)?;
+                        let new_fact = crate::assertions::get(connection, &fact.id)?.is_none();
+                        let new_import = import
+                            .as_ref()
+                            .map(|import| {
+                                crate::assertions::imports::contains(connection, &fact.id, import)
+                                    .map(|known| !known)
+                            })
+                            .transpose()?
+                            .unwrap_or(false);
+                        let counter = if new_fact || new_import {
+                            crate::archive::bump_counter(connection)?
+                        } else {
+                            0
+                        };
+                        crate::assertions::apply(connection, std::slice::from_ref(&fact), counter)?;
                         if let Some(import) = import {
-                            crate::assertions::imports::record(connection, &fact.id, &import, 0)?;
+                            crate::assertions::imports::record(
+                                connection, &fact.id, &import, counter,
+                            )?;
                         }
                     }
                     _ => unreachable!(),
@@ -282,7 +308,10 @@ pub fn stage_products(connection: &rusqlite::Transaction<'_>, writes: &[Value]) 
             }
             Some("query") => {
                 let object: QueryObject = serde_json::from_value(product["object"].clone())?;
-                super::apply_object(connection, &object, 0)?;
+                if !super::known_object(connection, &object)? {
+                    let counter = crate::archive::bump_counter(connection)?;
+                    super::apply_object(connection, &object, counter)?;
+                }
             }
             Some("query_run") => {
                 let body = &product["run"];
@@ -291,7 +320,7 @@ pub fn stage_products(connection: &rusqlite::Transaction<'_>, writes: &[Value]) 
                 let hashes: Option<(String, String)> = connection
                     .query_row(
                         &sql(
-                            &connection,
+                            connection,
                             "SELECT binding_hash,run_hash FROM @source.query_run WHERE id=?1",
                         )?,
                         [id],
