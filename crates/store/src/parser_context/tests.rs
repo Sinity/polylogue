@@ -179,11 +179,19 @@ fn cleared_parser_state_stays_cleared_after_checkpoint_and_restart() {
         tx.commit().unwrap();
     };
     let mut context = Overlay::open(&archive, "state-clear", Some(1), "synthetic=1", 0).unwrap();
+    assert!(context.get(&key("calls", "old")).unwrap().is_none());
     put(&mut context, "calls", "old", 1);
+    assert!(
+        matches!(context.get(&key("calls", "old")).unwrap(), Some(Value::State { value }) if value == 1)
+    );
     put(&mut context, "names", "keep", 2);
     commit(&mut writer, context.checkpoint_delta(1).unwrap());
     drop(context);
     let mut context = Overlay::open(&archive, "state-clear", Some(1), "synthetic=1", 1).unwrap();
+    assert!(context.get(&key("missing", "key")).unwrap().is_none());
+    assert!(
+        matches!(context.get(&key("calls", "old")).unwrap(), Some(Value::State { value }) if value == 1)
+    );
     context.clear_state("calls").unwrap();
     assert!(context.get(&key("calls", "old")).unwrap().is_none());
     put(&mut context, "calls", "new", 3);

@@ -284,7 +284,7 @@ impl Overlay {
         }
         if let Key::State { namespace, .. } = key
             && attempt.scratch.exists(
-                "SELECT 1 FROM cleared_state WHERE namespace=?1",
+                "SELECT EXISTS(SELECT 1 FROM cleared_state WHERE namespace=?1)",
                 [namespace],
             )?
         {

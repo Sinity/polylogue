@@ -51,7 +51,10 @@ impl ChainLayouts {
         }
         drop(rows);
         drop(statement);
-        let unread = conn.exists("SELECT 1 FROM layout WHERE version IS NULL", [])?;
+        let unread = conn.exists(
+            "SELECT EXISTS(SELECT 1 FROM layout WHERE version IS NULL)",
+            [],
+        )?;
         if count > 1 && unread {
             let mut statement = source.prepare(&schema.sql(
                 "SELECT chain,offset,length,blob,blob_offset FROM @source.extent WHERE input=?1 ORDER BY chain,offset",
@@ -114,7 +117,7 @@ impl ChainLayouts {
     }
     pub fn unread_before(&self, n: usize) -> Result<bool> {
         self.conn.exists(
-            "SELECT 1 FROM layout WHERE ordinal<?1 AND version IS NULL",
+            "SELECT EXISTS(SELECT 1 FROM layout WHERE ordinal<?1 AND version IS NULL)",
             [n as u64],
         )
     }
