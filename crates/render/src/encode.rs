@@ -286,10 +286,7 @@ impl<'a> Encoder<'a> {
                 }
                 self.line(&item.source.reference)?;
                 for assertion in &header.assertions {
-                    self.line(&format!(
-                        "◆ {}: {} ({})",
-                        assertion.kind, assertion.value, assertion.author
-                    ))?;
+                    self.line(&annotation_text(assertion, self.format))?;
                 }
             }
             ItemKind::Text { text } => {
@@ -504,6 +501,7 @@ impl<'a> Encoder<'a> {
                 session,
                 open,
                 lineage_complete,
+                assertions,
             } => {
                 if lineage_complete == &ValueState::known(false) {
                     self.line("Parents incomplete")?;
@@ -519,6 +517,9 @@ impl<'a> Encoder<'a> {
                 ))?;
                 for line in session_lines(session, &self.zone) {
                     self.line(&line)?;
+                }
+                for assertion in assertions {
+                    self.line(&annotation_text(assertion, self.format))?;
                 }
                 if let Some(open) = open {
                     self.line(&self.call_text(open)?)?;
@@ -865,5 +866,22 @@ pub(crate) fn lineage_text(lineage: &polylogue_model::read::SessionLineage) -> S
                 None => state.into(),
             }
         }
+    }
+}
+
+pub(crate) fn annotation_text(assertion: &Annotation, format: Format) -> String {
+    let key = assertion
+        .key
+        .as_ref()
+        .map(|key| format!(" {key}"))
+        .unwrap_or_default();
+    let value = if assertion.value.is_null() {
+        String::new()
+    } else {
+        format!(": {}", assertion.value)
+    };
+    match format {
+        Format::Html => format!("◆ {}{key}{value} · {}", assertion.kind, assertion.author),
+        _ => format!("◆ {}{key}{value} ({})", assertion.kind, assertion.author),
     }
 }

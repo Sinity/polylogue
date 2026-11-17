@@ -238,3 +238,73 @@ fn http_html_renders_listing_brief_and_partial_steps() {
         }
     });
 }
+
+#[test]
+fn http_line_streams_reads_in_order_and_finishes_at_answer() {
+    let daemon = crate::test_daemon::start("HTTP ordered stream");
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let body = json!({"operation":"rows", "request_id":"http-ordered", "deadline":null,
+            "arguments":{"references":["session:claude-code:s1"], "steps":[
+                {"verb":"note","text":"http-first"}, {"verb":"read","delivery":"stream"},
+                {"verb":"tag","name":"http-later"}, {"verb":"read","delivery":"stream"}]}});
+        let response = super::super::super::router(web(&daemon))
+            .oneshot(
+                axum::http::Request::post("/api/v1/rows")
+                    .header(header::HOST, "127.0.0.1:8765")
+                    .header(header::AUTHORIZATION, "Bearer synthetic")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let frames = command_surface::SseDecoder::new().push(&bytes).unwrap();
+        assert_eq!(
+            frames.iter().filter(|frame| frame.event == "begin").count(),
+            2
+        );
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|frame| frame.event == "complete")
+                .count(),
+            2
+        );
+        assert_eq!(frames.last().unwrap().event, "answer");
+        let reports: Vec<Value> = frames
+            .iter()
+            .filter(|frame| frame.event == "steps" || frame.event == "answer")
+            .flat_map(|frame| {
+                let answer: command_surface::Answer<Value> =
+                    serde_json::from_str(&frame.data).unwrap();
+                answer.value().unwrap()["reply"]["steps"]
+                    .as_array()
+                    .unwrap()
+                    .clone()
+            })
+            .collect();
+        assert_eq!(
+            reports
+                .iter()
+                .map(|report| report["request_id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "http-ordered-1",
+                "http-ordered-2",
+                "http-ordered-3",
+                "http-ordered-4"
+            ]
+        );
+        assert_eq!(
+            reports
+                .iter()
+                .map(|report| report["verb"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["note", "read", "tag", "read"]
+        );
+    });
+}

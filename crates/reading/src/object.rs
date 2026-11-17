@@ -202,7 +202,7 @@ pub(super) fn stream(
     request: &ReadRequest,
     operation: &Arc<Context>,
     output: &mut dyn Write,
-) -> Option<Result<(), Error>> {
+) -> Option<Result<ReadComplete, Error>> {
     let reference = match target(request)? {
         Ok(reference) => reference,
         Err(error) => return Some(Err(error)),

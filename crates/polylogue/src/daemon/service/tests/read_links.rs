@@ -46,6 +46,7 @@ fn read_target(
             test_daemon::Call::from_request(&resume)
         }
         None => test_daemon::read(polylogue_reading::ReadRequest {
+            references: None,
             target: target.into(),
             options: ReadOptions {
                 view: View::Links,

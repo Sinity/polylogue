@@ -74,6 +74,27 @@ pub fn known_request(conn: &Connection, request: &UserRequest) -> Result<Option<
     }
 }
 
+/// The first accepted body, including requests awaiting confirmation. The
+/// request journal owns resolution as well as the immutable authored effect.
+pub fn pending_request(
+    sinex: &dyn crate::primary::Sinex,
+    request: &UserRequest,
+) -> Result<Option<UserRequest>> {
+    let mut original = None;
+    sinex.visit_pending_requests(&mut |pending| {
+        if let Some(prepared) = pending.prepared()
+            && prepared.request.id == request.id
+        {
+            if request_hash(&prepared.request)? != request_hash(request)? {
+                return Err(StoreError::Conflict(request.id.clone()));
+            }
+            original = Some(prepared.request.clone());
+        }
+        Ok(())
+    })?;
+    Ok(original)
+}
+
 /// Pending requests keep their complete first committed body. A
 /// transport retry never rebuilds that effect against newer definitions.
 pub(crate) fn pending_outcome(

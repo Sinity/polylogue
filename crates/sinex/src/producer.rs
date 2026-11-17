@@ -469,6 +469,8 @@ impl Sinex {
         identity: &str,
         writes: &[ProductWrite],
     ) -> Result<PreparedWrite> {
+        let frame = crate::products::named_frame(identity);
+        let identity = frame.as_str();
         for write in writes {
             if write.product.reading().is_some() {
                 return Err(Error::invalid(
@@ -486,7 +488,7 @@ impl Sinex {
             };
             if source.as_ref().is_none_or(|source| {
                 source.name != "polylogue"
-                    || !matches!(source.version, 5 | 6 | 7 | crate::SOURCE_VERSION)
+                    || !matches!(source.version, 5 | 6 | 7 | 8 | crate::SOURCE_VERSION)
             }) {
                 return Err(Error::invalid(
                     "named product intent has an unsupported source",
@@ -538,7 +540,10 @@ impl Sinex {
                     return Err(Error::invalid("observation has no material"));
                 };
                 if material.source.name != "polylogue"
-                    || !matches!(material.source.version, 5 | 6 | 7 | crate::SOURCE_VERSION)
+                    || !matches!(
+                        material.source.version,
+                        5 | 6 | 7 | 8 | crate::SOURCE_VERSION
+                    )
                 {
                     return Err(Error::invalid("observation has an unsupported source"));
                 }
@@ -716,7 +721,10 @@ impl Sinex {
                 return Err(Error::invalid("authored intent has no material"));
             };
             if material.source.name != "polylogue"
-                || !matches!(material.source.version, 5 | 6 | 7 | crate::SOURCE_VERSION)
+                || !matches!(
+                    material.source.version,
+                    5 | 6 | 7 | 8 | crate::SOURCE_VERSION
+                )
             {
                 return Err(Error::invalid(
                     "authored intent belongs to an unsupported adapter source",
@@ -779,10 +787,10 @@ impl Sinex {
         let mut names = std::collections::BTreeSet::new();
         match selector {
             NamedProductSelector::Exact(name) => {
-                names.insert(name.clone());
+                names.insert(crate::products::named_frame(name));
             }
             NamedProductSelector::Prefix(prefix) => {
-                queue.visit_names(prefix, &mut |identity| {
+                queue.visit_names(&crate::products::named_frame(prefix), &mut |identity| {
                     let entry = queue.get(identity)?.ok_or_else(|| {
                         Error::invalid("named operation disappeared while locked")
                     })?;
@@ -883,7 +891,10 @@ impl Sinex {
                 return Err(Error::invalid("authored intent has no material"));
             };
             if material.source.name != "polylogue"
-                || !matches!(material.source.version, 5 | 6 | 7 | crate::SOURCE_VERSION)
+                || !matches!(
+                    material.source.version,
+                    5 | 6 | 7 | 8 | crate::SOURCE_VERSION
+                )
             {
                 return Err(Error::invalid(
                     "authored intent belongs to an unsupported adapter source",

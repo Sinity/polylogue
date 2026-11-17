@@ -3003,6 +3003,7 @@ fn times_render_local_with_quality() {
         source: Source::record("session:test:time-session"),
         kind: ItemKind::Card {
             card: Box::new(Card::Session {
+                assertions: Vec::new(),
                 session: Box::new(session),
                 open: None,
                 lineage_complete: ValueState::NotApplicable,
@@ -3043,6 +3044,7 @@ fn every_kind_document() -> ReadDocument {
     ]
     .into_iter()
     .map(|author| Annotation {
+        key: None,
         reference: "assertion:a1@a1".into(),
         author,
         kind: "note".into(),

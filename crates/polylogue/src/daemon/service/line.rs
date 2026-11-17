@@ -4,7 +4,7 @@
 //! once). A failing step stops the line; earlier steps keep their effects.
 //! A selection with no steps is the listing; a line ending in a streamed
 //! read streams.
-use super::{Failure, handlers, query_targets};
+use super::{Failure, answers, handlers, query_targets};
 use crate::commands::{Caller, Command, Surface, ToolAccess};
 use crate::daemon::handler::{Call, Handler, Streams};
 use crate::daemon::verbs::{
@@ -14,8 +14,9 @@ use crate::protocol::line::{
     LineAnswer, LineExplanation, Resolved, Rows, SelectionForm, Step, StepExplanation, StepOutcome,
     StepReport, StepsAnswer,
 };
-use command_surface::{Access, Answer, Envelope, TextStyle};
+use command_surface::{Access, Answer, Envelope, Outcome, TextStyle};
 use polylogue_model::read::ReadDelivery;
+use polylogue_model::user::UserWrite;
 use polylogue_model::{Code, Reference};
 use polylogue_reading::operation::Context;
 use polylogue_store::read::limit::ReadLimit;
@@ -76,6 +77,7 @@ impl Handler for Line {
         if rows.steps.is_empty() {
             return listing(rows, given, call);
         }
+        let limit = ReadLimit::current();
         let selection = prepare(&rows, given, call)?;
         let resolved = summary(&selection);
         if rows.dry_run {
@@ -108,10 +110,8 @@ impl Handler for Line {
                 steps,
             })));
         }
-        let (steps, envelope, _) = run_steps(rows.steps, &selection, call);
-        let mut answer = Answer::ok(LineAnswer::Steps(StepsAnswer { resolved, steps }));
-        answer.envelope = envelope;
-        Ok(answer)
+        execute_steps(rows.steps, &selection, call, limit.as_ref(), None)
+            .map(|answer| answer.map(LineAnswer::Steps))
     }
 }
 
@@ -120,7 +120,7 @@ impl Streams for Line {
         streams(rows)
     }
     fn produce(
-        mut rows: Rows,
+        rows: Rows,
         call: &Call<'_>,
         context: &Arc<Context>,
         output: &mut dyn Write,
@@ -139,52 +139,28 @@ impl Streams for Line {
         }
         let given = given(&rows)?;
         check(&rows, &given)?;
+        let limit = ReadLimit::current();
         let selection = prepare(&rows, given, &call)?;
-        let Some(Step::Read(last)) = rows.steps.pop() else {
-            return Err(Failure::bad_request("only a line ending in read streams"));
-        };
-        if let (_, _, Some(failure)) = run_steps(rows.steps, &selection, &call) {
-            return Err(failure);
-        }
-        let target = verbs::read::target(&selection)?;
-        if last.follow {
-            if last.until_idle {
-                return Err(verbs::not_built("read", "until-idle"));
-            }
-            return <super::follow::Follow as crate::daemon::handler::Feed>::produce(
-                super::follow::Arguments {
-                    target,
-                    marks: None,
-                },
-                call.daemon,
-                context,
-                output,
-            );
-        }
-        let call = Call {
-            cursor: last.cursor.as_deref(),
-            ..call.copy()
-        };
-        super::read::stream(
-            verbs::read::arguments(&last, target)?,
+        let answer = execute_steps(
+            rows.steps,
+            &selection,
             &call,
-            context,
-            output,
-            &LineReads {
-                daemon: call.daemon,
-            },
-        )
+            limit.as_ref(),
+            Some(Stream { context, output }),
+        )?;
+        crate::protocol::stream::event(output, "answer", &answer.map(LineAnswer::Steps))
+            .map_err(Failure::io)
     }
 }
 
-/// A line streams when it ends in `read --follow` or a streamed read.
+/// One streamed read makes the line an ordered stream; a follow remains last.
 fn streams(rows: &Rows) -> bool {
     !rows.explain
         && !rows.dry_run
-        && matches!(
-            rows.steps.last(),
-            Some(Step::Read(read)) if read.follow || read.delivery == ReadDelivery::Stream
-        )
+        && rows.steps.iter().any(|step| {
+            matches!(step,
+        Step::Read(read) if read.follow || read.delivery == ReadDelivery::Stream)
+        })
 }
 
 /// The selection, when it is a query rather than a reference.
@@ -355,7 +331,28 @@ fn check(rows: &Rows, given: &Given) -> Result<(), Failure> {
 /// The selection resolved once, refused when a write or act would reach
 /// several rows of a query without `all`.
 fn prepare(rows: &Rows, given: Given, call: &Call<'_>) -> Result<Selection, Failure> {
-    let selection = resolve(given, &rows.steps, call)?;
+    let durable = !rows.dry_run && rows.access() > ToolAccess::Read;
+    let intended = UserWrite::ResolveLine {
+        request: serde_json::to_value(repeated(rows, call)?).map_err(Failure::internal)?,
+        resolved: None,
+    };
+    let original = if durable {
+        accepted_line(&intended, call)?
+    } else {
+        None
+    };
+    let selection = match original {
+        Some(UserWrite::ResolveLine { resolved, .. }) => Selection {
+            question: match &given {
+                Given::Query(text) => Some(text.clone()),
+                _ => None,
+            },
+            given,
+            resolved,
+        },
+        Some(_) => return Err(Failure::internal("accepted line has another request kind")),
+        None => resolve(given, &rows.steps, call)?,
+    };
     if let (Given::Query(_), Some(resolved)) = (&selection.given, &selection.resolved)
         && resolved.len() > 1
         && !rows.all
@@ -371,7 +368,56 @@ fn prepare(rows: &Rows, given: Given, call: &Call<'_>) -> Result<Selection, Fail
         .with_candidates(resolved.iter().take(5).map(ToString::to_string).collect())
         .into());
     }
+    if durable {
+        let UserWrite::ResolveLine { request, .. } = intended else {
+            unreachable!()
+        };
+        let accepted = answers::write(
+            call.daemon,
+            call.invocation,
+            call.request_id.into(),
+            UserWrite::ResolveLine {
+                request,
+                resolved: selection.resolved.clone(),
+            },
+        );
+        if let Outcome::Error(error) = accepted.outcome {
+            return Err(error.into());
+        }
+        // A concurrent equal request may have accepted another snapshot first.
+        // Read back the journal's body rather than keeping our speculative rows.
+        if let Some(UserWrite::ResolveLine { resolved, .. }) = accepted_line(
+            &UserWrite::ResolveLine {
+                request: serde_json::to_value(repeated(rows, call)?).map_err(Failure::internal)?,
+                resolved: None,
+            },
+            call,
+        )? {
+            return Ok(Selection {
+                resolved,
+                ..selection
+            });
+        }
+        return Err(Failure::internal(
+            "accepted line is missing from the request journal",
+        ));
+    }
     Ok(selection)
+}
+
+fn accepted_line(intended: &UserWrite, call: &Call<'_>) -> Result<Option<UserWrite>, Failure> {
+    let request = call
+        .invocation
+        .request(call.request_id.into(), intended.clone());
+    #[cfg(feature = "sinex")]
+    if let super::state::ModeState::Primary { connection } = &call.daemon.mode
+        && let Some(original) =
+            polylogue_store::primary::authored::pending_request(connection.as_ref(), &request)?
+    {
+        return Ok(Some(original.write));
+    }
+    let reader = call.reader()?;
+    answers::repeated_request(&reader, &request.id, intended, call.invocation)
 }
 
 /// Resolves the rows when the line has two or more steps, a step that
@@ -387,10 +433,10 @@ fn resolve(given: Given, steps: &[Step], call: &Call<'_>) -> Result<Selection, F
             .iter()
             .any(|step| step.access() > ToolAccess::Read || rows_rule(step) == RowRule::One);
     let resolved = match &given {
-        _ if !needed => None,
         Given::None => None,
         Given::Reference(reference) => Some(vec![reference.clone()]),
         Given::References(references) => Some(references.clone()),
+        Given::Query(_) if !needed => None,
         Given::Query(text) => {
             let reader = call.reader()?;
             if selects_rows(call, &reader, text)? {
@@ -449,19 +495,83 @@ fn step_request(line: &str, index: usize) -> String {
     format!("{line}-{}", index + 1)
 }
 
-/// Runs the steps in order until one fails: each step's report, the line's
-/// notes and next calls, and the failure that stopped it.
-fn run_steps(
+/// The stream carries each batch of reports once, before its next read.
+struct Stream<'a> {
+    context: &'a Arc<Context>,
+    output: &'a mut dyn Write,
+}
+impl Stream<'_> {
+    fn reports(
+        &mut self,
+        selection: &Selection,
+        reports: &mut Vec<StepReport>,
+        envelope: &mut Envelope,
+    ) -> Result<(), Failure> {
+        if reports.is_empty() {
+            return Ok(());
+        }
+        let answer = Answer {
+            outcome: Outcome::Ok(LineAnswer::Steps(StepsAnswer {
+                resolved: summary(selection),
+                steps: std::mem::take(reports),
+            })),
+            envelope: std::mem::take(envelope),
+        };
+        crate::protocol::stream::event(self.output, "steps", &answer).map_err(Failure::io)
+    }
+    fn read(
+        &mut self,
+        read: &crate::protocol::steps::ReadStep,
+        selection: &Selection,
+        call: &StepCall<'_>,
+    ) -> Result<verbs::StepDone, Failure> {
+        let target = verbs::read::target(selection)?;
+        if read.follow {
+            if read.until_idle {
+                return Err(verbs::not_built("read", "until-idle"));
+            }
+            let marks =
+                super::follow::run(call.call.daemon, self.context, &target, None, self.output)?;
+            return verbs::delegated(Answer::ok(marks), |marks| {
+                crate::protocol::line::StepAnswer::Followed(Box::new(marks))
+            });
+        }
+        let call = Call {
+            cursor: read.cursor.as_deref(),
+            ..call.call.copy()
+        };
+        let answer = super::read::stream(
+            verbs::read::arguments(read, target)?,
+            &call,
+            self.context,
+            self.output,
+            &LineReads {
+                daemon: call.daemon,
+            },
+            selection.resolved.as_deref(),
+        )?;
+        verbs::delegated(answer, |complete| {
+            crate::protocol::line::StepAnswer::Streamed(Box::new(complete))
+        })
+    }
+}
+
+/// Selection, step identities, failures and outcomes have one executor in
+/// finite and streamed delivery. A stream only changes where read records go.
+fn execute_steps(
     steps: Vec<Step>,
     selection: &Selection,
     call: &Call<'_>,
-) -> (Vec<StepReport>, Envelope, Option<Failure>) {
+    limit: Option<&ReadLimit>,
+    mut stream: Option<Stream<'_>>,
+) -> Result<Answer<StepsAnswer>, Failure> {
     let mut reports = Vec::with_capacity(steps.len());
     let mut envelope = Envelope::default();
-    let mut failed = None;
+    let mut outcome = Outcome::Empty(());
+    let mut failed = false;
     for (index, step) in steps.into_iter().enumerate() {
         let verb = step.verb();
-        if failed.is_some() {
+        if failed {
             reports.push(StepReport {
                 verb: verb.into(),
                 request_id: None,
@@ -471,8 +581,29 @@ fn run_steps(
         }
         let request_id = step_request(call.request_id, index);
         let step_call = StepCall::new(call, &request_id);
-        let outcome = match verbs::run_step(step, selection, &step_call) {
+        let work = || {
+            if let Some(limit) = limit {
+                limit.check()?;
+            }
+            match (&mut stream, &step) {
+                (Some(stream), Step::Read(read))
+                    if read.follow || read.delivery == ReadDelivery::Stream =>
+                {
+                    stream.reports(selection, &mut reports, &mut envelope)?;
+                    stream.read(read, selection, &step_call)
+                }
+                _ => verbs::run_step(step, selection, &step_call),
+            }
+        };
+        // Each step inherits the original line deadline. A preceding writer
+        // handoff must not remove that bound from later required reads.
+        let result = match limit {
+            Some(limit) => limit.scope(work),
+            None => work(),
+        };
+        let reported = match result {
             Ok(done) => {
+                verbs::merge_outcome(&mut outcome, done.outcome);
                 envelope.notes.extend(done.envelope.notes);
                 if !done.envelope.next.is_empty() {
                     envelope.next = done.envelope.next;
@@ -483,23 +614,31 @@ fn run_steps(
                 }
             }
             Err(failure) => {
-                envelope.notes.push(format!(
-                    "step {} ({verb}) failed: {}",
-                    index + 1,
-                    failure.message
-                ));
-                let error = failure.error.clone();
-                failed = Some(failure);
-                StepOutcome::Failed { error }
+                failed = true;
+                if matches!(outcome, Outcome::Empty(())) {
+                    outcome = Outcome::Ok(());
+                }
+                StepOutcome::Failed {
+                    error: failure.error,
+                }
             }
         };
         reports.push(StepReport {
             verb: verb.into(),
             request_id: Some(request_id),
-            outcome,
+            outcome: reported,
         });
+        if let Some(stream) = &mut stream {
+            stream.reports(selection, &mut reports, &mut envelope)?;
+        }
     }
-    (reports, envelope, failed)
+    Ok(Answer {
+        outcome: outcome.map(|()| StepsAnswer {
+            resolved: summary(selection),
+            steps: reports,
+        }),
+        envelope,
+    })
 }
 
 /// The selection alone: its rows, a page at a time.

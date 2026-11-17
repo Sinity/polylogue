@@ -86,13 +86,17 @@ pub(crate) fn kind(product: &Product) -> &'static str {
         Product::Background { .. } => "polylogue.background",
         Product::Repository { .. } => "polylogue.repository",
         Product::ParseProgress { .. } => "polylogue.parse_progress",
-        Product::RestoredRequest { .. } => "polylogue.request_restore",
+        Product::RestoredRequest { prepared } => match &prepared.request.write {
+            UserWrite::ResolveLine { .. } => "polylogue.line_resolution_restore",
+            _ => "polylogue.request_restore",
+        },
         Product::RestoredAssertion { .. } => "polylogue.assertion_restore",
         Product::Query { .. } => "polylogue.query",
         Product::QueryRun { .. } => "polylogue.query_run",
         Product::QueryRunOutcome { .. } => "polylogue.query_run_outcome",
         Product::Coverage(_) => "polylogue.coverage",
         Product::Request(request) => match &request.request.write {
+            UserWrite::ResolveLine { .. } => "polylogue.line_resolution",
             UserWrite::Assert { .. }
             | UserWrite::AssertQuery { .. }
             | UserWrite::ReviseAssertions { .. }
@@ -501,6 +505,8 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
         ("polylogue.delivery_outcome", "request"),
         ("polylogue.request", "request"),
         ("polylogue.request_restore", "restored_request"),
+        ("polylogue.line_resolution", "request"),
+        ("polylogue.line_resolution_restore", "restored_request"),
         ("polylogue.assertion_restore", "restored_assertion"),
         ("polylogue.query", "query"),
         ("polylogue.query_run", "query_run"),
@@ -555,6 +561,22 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                 })
             };
             let mut definitions = definitions.as_object().expect("schema definitions").clone();
+            if matches!(*product, "request" | "restored_request") {
+                // Line resolution journals have their own declared kind. Adding
+                // their body does not reinterpret existing authored records.
+                let resolution = matches!(
+                    *name,
+                    "polylogue.line_resolution" | "polylogue.line_resolution_restore"
+                );
+                definitions
+                    .get_mut("UserWrite")
+                    .expect("authored write schema")["oneOf"]
+                    .as_array_mut()
+                    .expect("tagged write variants")
+                    .retain(|variant| {
+                        (variant["properties"]["write"]["const"] == "resolve_line") == resolution
+                    });
+            }
             if let Some(domain) = schema
                 .as_object_mut()
                 .expect("domain schema object")
@@ -684,7 +706,12 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
             KindDeclaration {
                 kind: KindRef {
                     name: (*name).into(),
-                    version: if *name == "polylogue.assertion" {
+                    version: if matches!(
+                        *name,
+                        "polylogue.line_resolution" | "polylogue.line_resolution_restore"
+                    ) {
+                        1
+                    } else if *name == "polylogue.assertion" {
                         3
                     } else {
                         match *product {
@@ -696,10 +723,11 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                             // Input rows refuse fields outside their declared source shape.
                             "input" => 6,
                             "fragment" => 4,
-                            "query_run" => 4,
+                            "query_run" => 5,
                             "restored_assertion" => 2,
                             "tool_call" | "prefix_copy" | "prefix_member" => 2,
-                            "restored_history" | "attachment_binding" | "query_run_outcome" => 1,
+                            "query_run_outcome" => 2,
+                            "restored_history" | "attachment_binding" => 1,
                             "query" => 2,
                             _ => 3,
                         }
@@ -879,3 +907,16 @@ pub(crate) fn events(
 
 #[cfg(test)]
 mod tests;
+
+/// Query product logical names survive format changes. Their immutable frames
+/// belong to the current declared source, including completions of old runs.
+pub(crate) fn named_frame(name: &str) -> String {
+    if ["query:", "query-run:", "query-run-outcome:"]
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+    {
+        format!("polylogue-source-{}:{name}", crate::SOURCE_VERSION)
+    } else {
+        name.to_owned()
+    }
+}

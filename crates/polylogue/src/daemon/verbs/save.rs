@@ -26,6 +26,7 @@ impl Verb for Save {
             .ok_or_else(|| Failure::bad_request("save needs rows"))?;
         let question = selection.question.clone().unwrap_or_else(|| rows.clone());
         let mut envelope = Envelope::default();
+        let mut state = Outcome::Empty(());
         let mut undo = Vec::new();
         let id = |part: &str| format!("{}-{part}", call.call.request_id);
         let saved = step
@@ -46,6 +47,7 @@ impl Verb for Save {
                         },
                     )?,
                     &mut envelope,
+                    &mut state,
                 )?;
                 undo.extend(undo_line(&request_id, &written(&outcome.id, 1)));
                 Ok::<_, Failure>(outcome)
@@ -64,6 +66,7 @@ impl Verb for Save {
                 },
             )?,
             &mut envelope,
+            &mut state,
         )?;
         let watch = match (&step.name, step.watch) {
             (Some(name), true) => {
@@ -82,6 +85,7 @@ impl Verb for Save {
                         },
                     )?,
                     &mut envelope,
+                    &mut state,
                 )?;
                 undo.extend(undo_line(&request_id, &written(&outcome.id, 1)));
                 Some(outcome)
@@ -92,6 +96,7 @@ impl Verb for Save {
             reply: StepAnswer::Saved(SaveReport { saved, kept, watch }),
             undo,
             envelope,
+            outcome: state,
         })
     }
     fn would(step: &SaveStep, selection: &Selection, _: &StepCall<'_>) -> Result<String, Failure> {
@@ -139,23 +144,17 @@ fn check(step: &SaveStep) -> Result<(), Failure> {
 }
 
 /// One write's outcome, its notes added to the step's.
-fn take(answer: Answer<UserOutcome>, envelope: &mut Envelope) -> Result<UserOutcome, Failure> {
-    let Answer {
-        outcome,
-        envelope: written,
-    } = answer;
-    envelope.notes.extend(written.notes);
-    envelope.next.extend(written.next);
-    match outcome {
-        Outcome::Ok(value) | Outcome::Empty(value) => Ok(value),
-        Outcome::Degraded { value, missing } => {
-            envelope.notes.extend(
-                missing
-                    .into_iter()
-                    .map(|missing| format!("missing: {missing}")),
-            );
-            Ok(value)
-        }
-        Outcome::Error(error) => Err(Failure::from(error)),
-    }
+fn take(
+    answer: Answer<UserOutcome>,
+    envelope: &mut Envelope,
+    state: &mut Outcome<()>,
+) -> Result<UserOutcome, Failure> {
+    let done = super::delegated(answer, StepAnswer::Wrote)?;
+    super::merge_outcome(state, done.outcome);
+    envelope.notes.extend(done.envelope.notes);
+    envelope.next.extend(done.envelope.next);
+    let StepAnswer::Wrote(value) = done.reply else {
+        unreachable!("the delegated write keeps its reply type")
+    };
+    Ok(value)
 }

@@ -40,17 +40,17 @@ impl crate::daemon::handler::Feed for Follow {
         operation: &Arc<polylogue_reading::operation::Context>,
         output: &mut dyn std::io::Write,
     ) -> Result<(), Failure> {
-        run(d, operation, &arguments.target, arguments.marks, output)
+        run(d, operation, &arguments.target, arguments.marks, output).map(|_| ())
     }
 }
 
-fn run(
+pub(crate) fn run(
     d: &Daemon,
     operation: &Arc<polylogue_reading::operation::Context>,
     query: &str,
     marks: Option<Marks>,
     output: &mut dyn std::io::Write,
-) -> Result<(), Failure> {
+) -> Result<Marks, Failure> {
     let commits = d.writes.as_ref().map(|w| w.completion_commits());
     let limit = polylogue_store::read::limit::ReadLimit::current();
     // A cancelled follow (its client gone, or the daemon stopping) stops
@@ -104,8 +104,15 @@ fn run(
             .and_then(polylogue_store::read::limit::ReadLimit::remaining)
             .map(|left| left.saturating_sub(REPLY_MARGIN));
         if left.is_some_and(|left| left.is_zero()) {
-            return crate::protocol::stream::event(output, "record", &Line::Marks { marks })
-                .map_err(Failure::io);
+            crate::protocol::stream::event(
+                output,
+                "record",
+                &Line::Marks {
+                    marks: marks.clone(),
+                },
+            )
+            .map_err(Failure::io)?;
+            return Ok(marks);
         }
         // Waiting for the next commit is not work: the executor place goes
         // to other requests meanwhile.
@@ -122,7 +129,7 @@ fn run(
             (None, None) => {}
         });
         if commits.is_none() && left.is_none() {
-            return Ok(());
+            return Ok(marks);
         }
     }
 }

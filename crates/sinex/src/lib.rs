@@ -13,6 +13,8 @@ pub use context::{ContextFailure, ContextFailureKind, ResolvedContext};
 pub use sinex_protocol::PublicInterruptBudget;
 pub(crate) mod attribution;
 pub mod kinds;
+#[cfg(feature = "fixture")]
+pub mod line_population;
 mod material;
 mod producer;
 mod products;
@@ -54,7 +56,7 @@ impl Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub(crate) const SOURCE_VERSION: u32 = 8;
+pub(crate) const SOURCE_VERSION: u32 = 9;
 
 /// This adapter declaration is installed by the operator, never self-registered
 /// from a producer's requested permissions.

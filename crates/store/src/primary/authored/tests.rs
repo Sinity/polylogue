@@ -1319,3 +1319,43 @@ fn literal_deliveries_refuse_existing_identity_in_cache_or_pending_snapshots() {
         assert!(known_request(&cached, &request).unwrap().is_none());
     }
 }
+
+#[test]
+fn accepted_line_keeps_original_population_without_annotation_effects() {
+    let conn = cache();
+    let body = serde_json::json!({"operation":"rows", "arguments":{
+        "selection":"sessions where NOT tag:done", "steps":[{"verb":"tag","name":"done"}]}});
+    let original = request(
+        "line",
+        10,
+        UserWrite::ResolveLine {
+            request: body.clone(),
+            resolved: Some(vec![Reference::parse("session:codex:first").unwrap()]),
+        },
+    );
+    let first = prepare_with(&conn, &original, &[], &[]).unwrap();
+    assert_eq!(first.request, original);
+    assert_eq!(first.effect, AuthoredEffect::default());
+    let retry = request(
+        "line",
+        20,
+        UserWrite::ResolveLine {
+            request: body,
+            resolved: Some(vec![Reference::parse("session:codex:later").unwrap()]),
+        },
+    );
+    let repeated = prepare_with(&conn, &retry, std::slice::from_ref(&first), &[]).unwrap();
+    assert_eq!(repeated.request, original);
+    assert_eq!(repeated.effect, AuthoredEffect::default());
+    let changed = request(
+        "line",
+        30,
+        UserWrite::ResolveLine {
+            request: serde_json::json!({"operation":"rows", "arguments":{"selection":"sessions"}}),
+            resolved: None,
+        },
+    );
+    assert!(
+        matches!(prepare_with(&conn, &changed, &[first], &[]), Err(StoreError::Conflict(id)) if id == "line")
+    );
+}

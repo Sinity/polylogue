@@ -1,5 +1,8 @@
 //! Questions and their executions, shared by the writer and the confirmed stream.
 
+#[cfg(any(test, feature = "fixture"))]
+pub mod line_population;
+
 use crate::ConnExt as _;
 use crate::{Reader, Result, StoreError, primary::Product, source::Source};
 use polylogue_model::query_objects::{

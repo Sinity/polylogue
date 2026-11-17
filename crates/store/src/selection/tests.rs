@@ -1167,3 +1167,100 @@ fn session_field_and_reference_return_same_rows() {
     assert_eq!(by_field.len(), 2);
     assert_eq!(by_field, rows("test:one | tool_calls"));
 }
+
+#[test]
+fn fixed_populations_keep_zero_one_many_grains_and_cursor_order() {
+    use crate::read::VisitFrom;
+    use polylogue_model::query_objects::{ExecutionPresentation, QueryExecutionOptions};
+    let (_dir, fixture) = fixture();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    for references in [
+        vec![],
+        vec!["session:test:two"],
+        vec![
+            "message:test:three:m",
+            "session:test:one",
+            "message:test:two:m",
+        ],
+    ] {
+        let references: Vec<Reference> = references
+            .into_iter()
+            .map(|reference| Reference::parse(reference).unwrap())
+            .collect();
+        let selected = reader
+            .prepare_fixed_selection("sessions", &references, &options())
+            .unwrap();
+        let mut rows = Vec::new();
+        reader
+            .visit_selection::<SelectionError>(&selected, VisitFrom::First, None, |row| {
+                rows.push(row);
+                Ok(ControlFlow::Continue(()))
+            })
+            .unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.target.as_ref().unwrap().reference())
+                .collect::<Vec<_>>(),
+            references
+        );
+        if let Some(first) = rows.first() {
+            let mut later = Vec::new();
+            reader
+                .visit_selection::<SelectionError>(
+                    &selected,
+                    VisitFrom::After(&first.position),
+                    None,
+                    |row| {
+                        later.push(row.target.unwrap().reference());
+                        Ok(ControlFlow::Continue(()))
+                    },
+                )
+                .unwrap();
+            assert_eq!(later, references[1..]);
+        }
+        if let Some(last) = rows.last() {
+            let mut earlier = Vec::new();
+            reader
+                .visit_selection::<SelectionError>(
+                    &selected,
+                    VisitFrom::Before(&last.position),
+                    None,
+                    |row| {
+                        earlier.push(row.target.unwrap().reference());
+                        Ok(ControlFlow::Continue(()))
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                earlier,
+                references[..references.len() - 1]
+                    .iter()
+                    .rev()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            );
+        }
+        let binding = selected
+            .execution_binding(
+                QueryExecutionOptions {
+                    references: None,
+                    fields: vec![],
+                    self_session: None,
+                    embeddings: false,
+                    why: false,
+                    ranking_identity: None,
+                },
+                ExecutionPresentation::Read {
+                    options: Default::default(),
+                    delivery: Default::default(),
+                    format: polylogue_model::read::Format::Json,
+                    page_budget: Some(Default::default()),
+                    direct_source: None,
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(binding.query_options.references, Some(references));
+    }
+}

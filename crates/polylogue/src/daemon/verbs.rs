@@ -54,6 +54,7 @@ pub(crate) struct StepDone {
     pub reply: StepAnswer,
     pub undo: Vec<String>,
     pub envelope: Envelope,
+    pub outcome: Outcome<()>,
 }
 
 /// What a step receives: the line's call with the step's own request ID.
@@ -291,26 +292,18 @@ pub(crate) fn delegated<T>(
     answer: Answer<T>,
     reply: impl FnOnce(T) -> StepAnswer,
 ) -> Result<StepDone, Failure> {
-    let Answer {
-        outcome,
-        mut envelope,
-    } = answer;
-    let value = match outcome {
-        Outcome::Ok(value) | Outcome::Empty(value) => value,
-        Outcome::Degraded { value, missing } => {
-            envelope.notes.extend(
-                missing
-                    .into_iter()
-                    .map(|missing| format!("missing: {missing}")),
-            );
-            value
-        }
+    let Answer { outcome, envelope } = answer;
+    let (value, outcome) = match outcome {
+        Outcome::Ok(value) => (value, Outcome::Ok(())),
+        Outcome::Empty(value) => (value, Outcome::Empty(())),
+        Outcome::Degraded { value, missing } => (value, Outcome::Degraded { value: (), missing }),
         Outcome::Error(error) => return Err(Failure::from(error)),
     };
     Ok(StepDone {
         reply: reply(value),
         undo: Vec::new(),
         envelope,
+        outcome,
     })
 }
 
@@ -348,4 +341,20 @@ impl Verb for Pick {
 
 pub(crate) fn refused_pick() -> Failure {
     Failure::bad_request("pick runs on the command line; send the chosen references")
+}
+
+/// A line is empty only when all its completed steps are empty; missing
+/// parts survive a later successful step.
+pub(crate) fn merge_outcome(current: &mut Outcome<()>, next: Outcome<()>) {
+    match next {
+        Outcome::Degraded { missing, .. } => match current {
+            Outcome::Degraded {
+                missing: previous, ..
+            } => previous.extend(missing),
+            _ => *current = Outcome::Degraded { value: (), missing },
+        },
+        Outcome::Ok(()) if matches!(current, Outcome::Empty(())) => *current = Outcome::Ok(()),
+        Outcome::Error(error) => *current = Outcome::Error(error),
+        _ => {}
+    }
 }

@@ -37,7 +37,12 @@ impl Verb for Read {
             daemon: call.daemon,
         };
         delegated(
-            crate::daemon::service::read::page(arguments, &call, &reads)?,
+            crate::daemon::service::read::page(
+                arguments,
+                &call,
+                &reads,
+                selection.resolved.as_deref(),
+            )?,
             |page| StepAnswer::Read(Box::new(page)),
         )
     }
@@ -53,6 +58,13 @@ impl Verb for Read {
 
 /// The text a read selects.
 pub(crate) fn target(selection: &Selection) -> Result<String, Failure> {
+    // The fixed empty population supplies membership; its question still
+    // supplies the reading's unit and recorded query identity.
+    if selection.resolved.as_ref().is_some_and(Vec::is_empty)
+        && let Some(question) = &selection.question
+    {
+        return Ok(question.clone());
+    }
     selection
         .query_text()
         .ok_or_else(|| Failure::bad_request("read needs rows: name a selection"))
@@ -220,7 +232,12 @@ impl ReadServices for LineReads<'_> {
         let arguments =
             crate::daemon::service::read::arguments_of(request).map_err(Error::Internal)?;
         let rows = Rows {
-            selection: Some(request.target.clone()),
+            selection: request.references.is_none().then(|| request.target.clone()),
+            references: request
+                .references
+                .as_ref()
+                .map(|references| references.iter().map(ToString::to_string).collect())
+                .unwrap_or_default(),
             steps: vec![Step::Read(Box::new(step_of(arguments, cursor)))],
             ..Rows::default()
         };

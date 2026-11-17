@@ -29,6 +29,7 @@ mod session;
 #[derive(Debug, Clone)]
 pub struct ReadRequest {
     pub target: String,
+    pub references: Option<Vec<polylogue_model::Reference>>,
     pub options: ReadOptions,
     pub delivery: ReadDelivery,
     pub format: String,
@@ -132,6 +133,7 @@ struct Reading {
     format: Format,
     budget: Option<PageBudget>,
     target: String,
+    references: Option<Vec<polylogue_model::Reference>>,
     digest: String,
 }
 
@@ -164,7 +166,8 @@ fn reading(request: &ReadRequest) -> Result<(Reading, Option<&str>), Error> {
     }
     Ok((
         Reading {
-            digest: options_digest(&(options, format)),
+            digest: options_digest(&(options, format, &request.references)),
+            references: request.references.clone(),
             options: options.clone(),
             format,
             budget,
@@ -196,7 +199,12 @@ fn prepared<T>(
         seed(&reading.target),
         |compile| {
             polylogue_store::read::limit::ReadLimit::set_stage("read preparation");
-            let selection = reader.prepare_selection(&reading.target, &compile.options)?;
+            let selection = match &reading.references {
+                Some(references) => {
+                    reader.prepare_fixed_selection(&reading.target, references, &compile.options)?
+                }
+                None => reader.prepare_selection(&reading.target, &compile.options)?,
+            };
             let snapshot = ReadSnapshot {
                 query: format!("query:{}", selection.question_id()),
                 query_text: reading.target.clone(),
@@ -290,6 +298,7 @@ fn selected_source(
 }
 
 struct Rendering<'a> {
+    at: polylogue_model::Timestamp,
     target: &'a str,
     options: &'a ReadOptions,
     near: Option<&'a polylogue_store::selection::NearFn<'a>>,
@@ -581,6 +590,7 @@ fn rows_page(
         attachment_call(d, message, block, index, input)
     };
     let rendering = Rendering {
+        at: operation.ran_at,
         target: &reading.target,
         options: &reading.options,
         near,
@@ -712,7 +722,7 @@ pub fn stream(
     request: &ReadRequest,
     operation: &Arc<Context>,
     output: &mut dyn Write,
-) -> Result<(), Error> {
+) -> Result<ReadComplete, Error> {
     if request.delivery != ReadDelivery::Stream {
         return Err(Error::bad_request(
             "streaming reads require stream delivery",
@@ -758,11 +768,12 @@ fn rows_stream(
     object_facts: Option<&LayoutFacts>,
     mut footer: ReadFooter,
     output: &mut dyn Write,
-) -> Result<(), Error> {
+) -> Result<ReadComplete, Error> {
     let ready_attachment = |message: &MessageId, block, index, input: Option<&str>| {
         attachment_call(d, message, block, index, input)
     };
     let rendering = Rendering {
+        at: snapshot.ran_at,
         target: &reading.target,
         options: &reading.options,
         near,

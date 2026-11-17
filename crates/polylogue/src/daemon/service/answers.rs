@@ -659,12 +659,6 @@ pub(crate) fn query_targets_in(
                             "the supplied message is missing or ambiguous; capture the conversation and retry",
                         ));
                     }
-                    if targets.is_empty() {
-                        return Err(Failure::new(
-                            polylogue_model::Code::Empty,
-                            "the query returns no rows; no assertion was written",
-                        ));
-                    }
                     let count = u64::try_from(targets.len())
                         .map_err(|_| Failure::internal("selected row count exceeds u64"))?;
                     Ok(polylogue_reading::execution::Completed {

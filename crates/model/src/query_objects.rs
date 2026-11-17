@@ -71,8 +71,9 @@ pub struct FrozenDefinition {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct QueryExecutionOptions {
-    /// Actual accepted direct presentation, independent of semantic query identity.
-    pub direct_reference: Option<crate::Reference>,
+    /// Accepted fixed read population, in order and at its original reference grain.
+    /// Absent for a query population; an empty vector selects no records.
+    pub references: Option<Vec<crate::Reference>>,
     pub fields: Vec<String>,
     pub self_session: Option<crate::SessionId>,
     pub embeddings: bool,
@@ -371,7 +372,13 @@ impl ExecutionBinding {
     pub fn validate_presentation(&self) -> Result<(), ExecutionBindingError> {
         validate_presentation(
             &self.presentation,
-            self.query_options.direct_reference.as_ref(),
+            self.query_options
+                .references
+                .as_deref()
+                .and_then(|references| match references {
+                    [reference] => Some(reference),
+                    _ => None,
+                }),
         )
     }
     /// Stable identity across JSON map insertion orders and feature unions.

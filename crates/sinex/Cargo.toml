@@ -7,7 +7,7 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-fixture = []
+fixture = ["polylogue-store/fixture"]
 
 [dependencies]
 schemars.workspace = true
@@ -50,3 +50,8 @@ required-features = ["fixture"]
 
 [lints]
 workspace = true
+
+[[example]]
+name = "preserved-line-executions"
+path = "examples/preserved_line_executions.rs"
+required-features = ["fixture"]

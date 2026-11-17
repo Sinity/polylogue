@@ -17,6 +17,7 @@ fn request(
         return crate::test_daemon::Call::from_request(&resume);
     }
     crate::test_daemon::read(polylogue_reading::ReadRequest {
+        references: None,
         target: target.into(),
         options: ReadOptions {
             view,

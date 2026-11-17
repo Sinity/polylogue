@@ -50,6 +50,7 @@ pub(crate) fn request_of(
         .map_err(|error| error.to_string())?;
     options.validate().map_err(|error| error.to_string())?;
     Ok(ReadRequest {
+        references: None,
         target,
         options,
         delivery,
@@ -73,7 +74,7 @@ pub(crate) fn arguments_of(
         format,
         budget,
         with_blobs,
-        cursor: _,
+        ..
     } = request;
     let (show, hide) = options.show_hide_words();
     Ok(crate::protocol::read::Arguments {
@@ -119,7 +120,7 @@ impl crate::daemon::handler::Handler for Read {
         arguments: Self::Arguments,
         call: &crate::daemon::handler::Call<'_>,
     ) -> Result<Answer<Self::Answer>, Failure> {
-        page(arguments, call, call.daemon)
+        page(arguments, call, call.daemon, None)
     }
 }
 
@@ -128,9 +129,11 @@ pub(crate) fn page(
     arguments: crate::protocol::read::Arguments,
     call: &crate::daemon::handler::Call<'_>,
     services: &impl ReadServices,
+    references: Option<&[polylogue_model::Reference]>,
 ) -> Result<Answer<ReadPage>, Failure> {
-    let request =
+    let mut request =
         request_of(arguments, call.cursor.map(str::to_owned)).map_err(Failure::bad_request)?;
+    request.references = references.map(<[_]>::to_vec);
     let history = if request.cursor.is_none() && !polylogue_reading::is_object_read(&request) {
         call.daemon
             .writes
@@ -159,7 +162,7 @@ impl crate::daemon::handler::Streams for Read {
         context: &Arc<Context>,
         output: &mut dyn Write,
     ) -> Result<(), Failure> {
-        stream(arguments, call, context, output, call.daemon)
+        stream(arguments, call, context, output, call.daemon, None).map(|_| ())
     }
 }
 
@@ -170,14 +173,26 @@ pub(crate) fn stream(
     context: &Arc<Context>,
     output: &mut dyn Write,
     services: &impl ReadServices,
-) -> Result<(), Failure> {
-    let request = request_of(arguments, None).map_err(Failure::bad_request)?;
+    references: Option<&[polylogue_model::Reference]>,
+) -> Result<Answer<ReadComplete>, Failure> {
+    let mut request =
+        request_of(arguments, call.cursor.map(str::to_owned)).map_err(Failure::bad_request)?;
+    request.references = references.map(<[_]>::to_vec);
     super::accepting(call.daemon)?;
     let reader = call.reader()?;
     let request = polylogue_reading::with_variants(&reader, services, request.clone())
         .map_err(|error| failure(error, &request))?;
-    polylogue_reading::stream(&reader, services, &request, context, output)
-        .map_err(|error| failure(error, &request))
+    let freshness = services.freshness(&reader)?;
+    let complete = polylogue_reading::stream(&reader, services, &request, context, output)
+        .map_err(|error| failure(error, &request))?;
+    if complete.counts == polylogue_model::bundle::Counts::default()
+        && complete.footer.coverage.is_empty()
+        && freshness.up_to_date()
+    {
+        Ok(Answer::empty(complete))
+    } else {
+        Ok(crate::protocol::read(complete, &freshness))
+    }
 }
 
 impl ReadServices for Daemon {

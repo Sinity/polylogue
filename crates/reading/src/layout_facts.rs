@@ -5,6 +5,58 @@ use polylogue_model::{MessageId, PromptKind, Role, read::*};
 use polylogue_store::Reader;
 use std::ops::ControlFlow;
 
+/// Current notes and marks are prepared from the same reader as their target.
+pub(super) fn annotations(
+    reader: &Reader<'_>,
+    reference: &polylogue_model::Reference,
+    at: polylogue_model::Timestamp,
+) -> Result<Vec<Annotation>, Error> {
+    let mut annotations = Vec::new();
+    let _ = reader.visit_assertion_references_linked(
+        reference,
+        &[polylogue_model::assertion::LinkRole::About],
+        |revision| {
+            if reader.assertion_is_unexpired(&revision, at)?
+                && reader
+                    .assertion_revision_state(&revision)?
+                    .is_some_and(|state| !state.withdrawn)
+                && let Some(assertion) = reader.assertion(&revision)?
+            {
+                let fact = assertion.fact;
+                annotations.push(Annotation {
+                    reference: polylogue_model::Reference::Assertion(revision).to_string(),
+                    key: fact.key,
+                    author: fact.author,
+                    kind: fact.kind.as_str().into(),
+                    value: fact.value.unwrap_or(serde_json::Value::Null),
+                    open: None,
+                });
+            }
+            Ok(ControlFlow::Continue(()))
+        },
+    )?;
+    Ok(annotations)
+}
+
+pub(super) fn annotate(
+    reader: &Reader<'_>,
+    record: &polylogue_model::bundle::Record,
+    facts: &mut LayoutFacts,
+    at: polylogue_model::Timestamp,
+) -> Result<(), Error> {
+    if matches!(
+        record,
+        polylogue_model::bundle::Record::Session(_) | polylogue_model::bundle::Record::Message(_)
+    ) {
+        let reference = polylogue_model::Reference::parse(
+            record.reference().expect("selected record has a reference"),
+        )
+        .map_err(Error::internal)?;
+        facts.assertions = annotations(reader, &reference, at)?;
+    }
+    Ok(())
+}
+
 pub(super) struct Layout<'a> {
     pub options: &'a ReadOptions,
     pub facts: &'a LayoutFacts,

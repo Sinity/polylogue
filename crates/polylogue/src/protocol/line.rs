@@ -178,6 +178,10 @@ pub enum StepOutcome {
 #[serde(tag = "kind", content = "reply", rename_all = "snake_case")]
 pub enum StepAnswer {
     Read(Box<polylogue_model::read::ReadPage>),
+    /// The read's records were delivered before the next step began.
+    Streamed(Box<polylogue_model::read::ReadComplete>),
+    /// The follow's events were delivered through these final marks.
+    Followed(Box<super::follow::Marks>),
     Picked(Vec<String>),
     Brief(Box<super::context::Answer>),
     Wrote(UserOutcome),

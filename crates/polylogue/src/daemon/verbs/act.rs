@@ -35,6 +35,7 @@ impl Verb for Send {
             skipped: Vec::new(),
         };
         let mut envelope = Envelope::default();
+        let mut outcome = command_surface::Outcome::Empty(());
         for (n, target) in targets.into_iter().enumerate() {
             if several {
                 let running = call
@@ -76,6 +77,7 @@ impl Verb for Send {
                     })
                 },
             )?;
+            super::merge_outcome(&mut outcome, done.outcome);
             envelope.notes.extend(done.envelope.notes);
             envelope.next.extend(done.envelope.next);
             if let StepAnswer::Sent(sent) = done.reply {
@@ -86,6 +88,7 @@ impl Verb for Send {
             reply: StepAnswer::Sent(report),
             undo: Vec::new(),
             envelope,
+            outcome,
         })
     }
     fn would(
@@ -278,6 +281,7 @@ fn each_session(
 ) -> Result<StepDone, Failure> {
     let mut acted = Vec::new();
     let mut envelope = Envelope::default();
+    let mut outcome = command_surface::Outcome::Empty(());
     for (n, session) in sessions("this act", selection)?.into_iter().enumerate() {
         let request_id = format!("{}-{}", call.call.request_id, n + 1);
         let done = delegated(
@@ -290,6 +294,7 @@ fn each_session(
             )?,
             |value| StepAnswer::Acted(vec![value]),
         )?;
+        super::merge_outcome(&mut outcome, done.outcome);
         envelope.notes.extend(done.envelope.notes);
         envelope.next.extend(done.envelope.next);
         if let StepAnswer::Acted(values) = done.reply {
@@ -300,5 +305,6 @@ fn each_session(
         reply: StepAnswer::Acted(acted),
         undo: Vec::new(),
         envelope,
+        outcome,
     })
 }

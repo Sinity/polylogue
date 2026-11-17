@@ -249,6 +249,11 @@ impl Walk<'_, '_, '_, '_> {
                     selection.cursor_context().clock.now.as_millisecond(),
                 )?);
             }
+            if options.assertions
+                && let records::SelectedRecord::Original(original) = &record
+            {
+                layout_facts::annotate(reader, original, &mut facts, rendering.at)?;
+            }
             polylogue_store::read::limit::ReadLimit::set_stage("read layout");
             let Some(record) = output::project(record, options, &facts, mixed, footer)? else {
                 if place.is_some_and(|place| place.selection.record == position) {

@@ -371,3 +371,437 @@ fn listing_wait_answers_before_request_deadline() {
         json!({"selection": "sessions where tag:later", "wait": "1h"})
     );
 }
+
+fn socket_events(d: &TestDaemon, id: &str, arguments: Value) -> Vec<(String, Value)> {
+    let request = crate::client::request("rows", arguments, id.into());
+    let mut events = Vec::new();
+    crate::client::stream::run_call(
+        &d.daemon.archive,
+        &request,
+        Some(std::time::Duration::from_secs(10)),
+        |frame| {
+            let done = frame.event == "answer";
+            events.push((frame.event, serde_json::from_str(&frame.data).unwrap()));
+            Ok(done)
+        },
+    )
+    .unwrap();
+    events
+}
+
+#[test]
+fn socket_chain_streams_each_read_at_its_step_and_retries_writes_once() {
+    let d = test_daemon::start("ordered stream prompt");
+    let arguments = json!({
+        "selection": "sessions where NOT tag:done",
+        "steps": [
+            {"verb":"tag", "name":"done"},
+            {"verb":"read", "view":"transcript", "delivery":"stream"},
+            {"verb":"note", "text":"after-note"},
+            {"verb":"read", "view":"transcript", "delivery":"stream"}
+        ]
+    });
+    for retry in [false, true] {
+        let events = socket_events(&d, "ordered", arguments.clone());
+        let names: Vec<_> = events.iter().map(|(event, _)| event.as_str()).collect();
+        assert_eq!(
+            names.iter().filter(|event| **event == "begin").count(),
+            2,
+            "{events:?}"
+        );
+        assert_eq!(
+            names.iter().filter(|event| **event == "complete").count(),
+            2
+        );
+        assert_eq!(names.last(), Some(&"answer"));
+        let reports: Vec<_> = events
+            .iter()
+            .filter(|(name, _)| name == "steps" || name == "answer")
+            .flat_map(|(_, answer)| answer["value"]["reply"]["steps"].as_array().unwrap().iter())
+            .collect();
+        assert_eq!(
+            reports
+                .iter()
+                .map(|report| report["verb"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["tag", "read", "note", "read"]
+        );
+        for index in [0, 2] {
+            assert_eq!(reports[index]["outcome"]["reply"]["reply"]["repeat"], retry);
+        }
+        let completions: Vec<_> = events
+            .iter()
+            .filter(|(event, _)| event == "complete")
+            .map(|(_, value)| value)
+            .collect();
+        for (report, complete) in [reports[1], reports[3]].into_iter().zip(completions) {
+            assert_eq!(report["outcome"]["reply"]["kind"], "streamed");
+            assert_eq!(&report["outcome"]["reply"]["reply"], complete);
+        }
+        let mut reads = vec![String::new(), String::new()];
+        let mut index = 0;
+        for (name, value) in &events {
+            if name == "record" {
+                reads[index].push_str(&value.to_string());
+            }
+            if name == "complete" {
+                index += 1;
+            }
+        }
+        assert!(
+            reads
+                .iter()
+                .all(|read| read.contains("ordered stream prompt")),
+            "{reads:?}"
+        );
+        assert!(
+            reads.iter().all(|read| read.contains("\"key\":\"done\"")),
+            "{reads:?}"
+        );
+        if !retry {
+            assert!(!reads[0].contains("after-note"), "{reads:?}");
+            assert!(reads[1].contains("after-note"), "{reads:?}");
+        }
+        assert_eq!(count(&d, "assertions where kind:tag OR kind:note"), 2);
+    }
+    let changed = json!({"selection":"sessions", "steps":[{"verb":"note", "text":"another"}]});
+    assert_eq!(
+        refusal(line(&d, "ordered", changed)).kind,
+        command_surface::FailureKind::Conflict
+    );
+}
+
+#[test]
+fn stream_prefix_failure_keeps_undo_and_does_not_start_a_read() {
+    let d = test_daemon::start("prefix failure prompt");
+    for retry in [false, true] {
+        let events = socket_events(
+            &d,
+            "prefix",
+            json!({
+                "references":["session:claude-code:s1"],
+                "steps":[{"verb":"note","text":"kept-note"},{"verb":"edit","text":"cannot-edit-session"},
+                    {"verb":"read","delivery":"stream"}]
+            }),
+        );
+        assert!(
+            events
+                .iter()
+                .all(|(name, _)| name == "steps" || name == "answer"),
+            "{events:?}"
+        );
+        let reports: Vec<_> = events
+            .iter()
+            .flat_map(|(_, answer)| answer["value"]["reply"]["steps"].as_array().unwrap().iter())
+            .collect();
+        assert_eq!(
+            reports
+                .iter()
+                .map(|step| step["outcome"]["status"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["done", "failed", "not_run"]
+        );
+        assert_eq!(
+            reports[0]["outcome"]["undo"],
+            json!(["polylogue assertion:prefix-1 withdraw"])
+        );
+        assert_eq!(reports[0]["outcome"]["reply"]["reply"]["repeat"], retry);
+        assert_eq!(count(&d, "assertions where kind:note"), 1);
+    }
+}
+
+#[test]
+fn empty_fixed_selection_streams_no_records_and_keeps_empty_outcome() {
+    let d = test_daemon::start("not selected");
+    let events = socket_events(
+        &d,
+        "empty",
+        json!({
+            "selection":"sessions where 0 = 1", "steps":[
+                {"verb":"tag","name":"no-target"}, {"verb":"read","delivery":"stream"}]
+        }),
+    );
+    assert!(
+        events.iter().all(|(name, _)| name != "record"),
+        "{events:?}"
+    );
+    assert_eq!(events.last().unwrap().1["outcome"], "empty", "{events:?}");
+    assert_eq!(count(&d, "assertions"), 0);
+}
+
+#[test]
+fn streamed_read_keeps_the_fixed_query_order() {
+    let d = two_sessions();
+    let events = socket_events(
+        &d,
+        "ordered-population",
+        json!({
+            "selection":"sessions | sort by id desc", "all":true,
+            "steps":[{"verb":"tag","name":"ordered"},{"verb":"read","delivery":"stream","view":"transcript"}]
+        }),
+    );
+    let sessions: Vec<String> = events
+        .iter()
+        .filter(|(event, _)| event == "record")
+        .filter_map(|(_, value)| {
+            let record: polylogue_model::read::ReadRecord =
+                serde_json::from_value(value.clone()).unwrap();
+            match record.record() {
+                Some(polylogue_model::bundle::Record::Session(session)) => {
+                    Some(session.reference.clone())
+                }
+                _ => None,
+            }
+        })
+        .collect();
+    assert_eq!(
+        sessions,
+        ["session:claude-code:s2", "session:claude-code:s1"]
+    );
+}
+
+#[test]
+fn streamed_read_keeps_message_grain_in_a_fixed_reference_population() {
+    let d = two_sessions();
+    let events = socket_events(
+        &d,
+        "message-population",
+        json!({
+            "references":["message:claude-code:u2","message:claude-code:u1"],
+            "steps":[{"verb":"tag","name":"message-only"},{"verb":"read","delivery":"stream","view":"transcript"}]
+        }),
+    );
+    let mut messages = Vec::new();
+    for (_, value) in events.iter().filter(|(event, _)| event == "record") {
+        let record: polylogue_model::read::ReadRecord =
+            serde_json::from_value(value.clone()).unwrap();
+        match record.record() {
+            Some(polylogue_model::bundle::Record::Session(_)) => {
+                panic!("message selection became session grain")
+            }
+            Some(polylogue_model::bundle::Record::Message(message)) => {
+                messages.push(message.reference.clone())
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        messages,
+        ["message:claude-code:u2", "message:claude-code:u1"]
+    );
+}
+
+#[test]
+fn session_notes_are_visible_in_pages_and_hide_or_withdraw_removes_them() {
+    use polylogue_model::read::{Card, ItemKind, ReadPage};
+    let daemon = test_daemon::start("session note visibility");
+    let written = steps(
+        &daemon,
+        "page-note",
+        json!({"selection":"session:claude-code:s1",
+        "steps":[{"verb":"note","text":"current session note"},{"verb":"read"}]}),
+    );
+    let page: ReadPage =
+        serde_json::from_value(written[1]["outcome"]["reply"]["reply"].clone()).unwrap();
+    let notes = |page: &ReadPage| {
+        page.document
+            .items
+            .iter()
+            .flat_map(|item| match &item.kind {
+                ItemKind::Card { card } => match card.as_ref() {
+                    Card::Session { assertions, .. } => assertions.clone(),
+                    _ => vec![],
+                },
+                _ => vec![],
+            })
+            .collect::<Vec<_>>()
+    };
+    let shown = notes(&page);
+    assert_eq!(shown.len(), 1);
+    assert_eq!(shown[0].value, json!("current session note"));
+    let hidden = steps(
+        &daemon,
+        "hide-note",
+        json!({"selection":"session:claude-code:s1",
+        "steps":[{"verb":"read","hide":["assertions"]}]}),
+    );
+    let hidden: ReadPage =
+        serde_json::from_value(hidden[0]["outcome"]["reply"]["reply"].clone()).unwrap();
+    assert!(notes(&hidden).is_empty());
+    let withdrawn = steps(
+        &daemon,
+        "withdraw-note",
+        json!({"selection":"assertion:page-note-1",
+        "steps":[{"verb":"withdraw"}]}),
+    );
+    assert_eq!(withdrawn[0]["outcome"]["status"], "done");
+    let read = steps(
+        &daemon,
+        "read-after-withdraw",
+        json!({"selection":"session:claude-code:s1",
+        "steps":[{"verb":"read"}]}),
+    );
+    let read: ReadPage =
+        serde_json::from_value(read[0]["outcome"]["reply"]["reply"].clone()).unwrap();
+    assert!(notes(&read).is_empty());
+}
+
+#[test]
+fn line_deadline_still_applies_after_resolution_journal_handoff() {
+    use polylogue_store::read::limit::ReadLimit;
+    use std::time::{Duration, Instant};
+    let d = test_daemon::start("whole line deadline");
+    let blocker = std::fs::File::open(d.daemon.archive.archive_db()).unwrap();
+    blocker.lock_shared().unwrap();
+    let limit = ReadLimit::new(Duration::from_secs(2), Default::default());
+    let request = Call::new(
+        "rows",
+        json!({
+            "selection":"session:claude-code:s1", "steps":[
+                {"verb":"note","text":"must not be written after the deadline"},
+                {"verb":"read"}
+            ]
+        }),
+    )
+    .id("line-deadline");
+    let (answer, handed_off) = std::thread::scope(|scope| {
+        let worker = scope.spawn(|| request.limit(limit.clone()).answer(&d.daemon));
+        let until = Instant::now() + Duration::from_secs(5);
+        while limit.stage() != Some("write") && !worker.is_finished() && Instant::now() < until {
+            std::thread::yield_now();
+        }
+        let handed_off = limit.stage() == Some("write");
+        if handed_off {
+            while limit.check().is_ok() {
+                std::thread::yield_now();
+            }
+        }
+        drop(blocker);
+        (worker.join().unwrap(), handed_off)
+    });
+    assert!(
+        handed_off,
+        "line did not hand off its resolution journal: {answer:?}"
+    );
+    let answer = crate::test_answers::ok(answer);
+    let reports = answer["reply"]["steps"].as_array().unwrap();
+    assert_eq!(reports[0]["outcome"]["status"], "failed");
+    assert_eq!(reports[0]["outcome"]["error"]["kind"], "timeout");
+    assert_eq!(reports[1]["outcome"]["status"], "not_run");
+    let reader = d.daemon.reads.reader().unwrap();
+    assert!(reader.user_request("line-deadline").unwrap().is_some());
+    assert!(reader.user_request("line-deadline-1").unwrap().is_none());
+    drop(reader);
+    assert_eq!(count(&d, "assertions"), 0);
+}
+
+#[test]
+fn ordered_read_stream_preserves_degraded_read_outcome() {
+    let d = test_daemon::start("readable session beside an incomplete source");
+    let bytes = polylogue_testkit::claude_user("u-pending", "s-pending", "not parsed yet");
+    let mut batch = polylogue_store::fixture::writer::step(
+        "pending-completeness",
+        "synthetic-unregistered",
+        "/home/op/pending.jsonl",
+        Default::default(),
+        0,
+        0,
+    );
+    batch.length = bytes.len() as u64;
+    batch.parse.clear();
+    let prepared = d.daemon.archive.prepare_bytes(bytes.as_bytes()).unwrap();
+    d.daemon
+        .writes
+        .as_ref()
+        .unwrap()
+        .store_bytes(prepared, batch)
+        .unwrap();
+    let completeness = d
+        .daemon
+        .reads
+        .reader()
+        .unwrap()
+        .completeness(&polylogue_engine::reading_contracts())
+        .unwrap();
+    assert!(
+        !completeness.caught_up(),
+        "captured source has no declared reading"
+    );
+    let finite = line(
+        &d,
+        "finite-degraded",
+        json!({
+            "selection":"session:claude-code:s1", "steps":[{"verb":"read"}]
+        }),
+    );
+    let (_, notes) = crate::test_answers::degraded(finite);
+    assert!(!notes.is_empty());
+    let events = socket_events(
+        &d,
+        "stream-degraded",
+        json!({
+            "selection":"session:claude-code:s1", "steps":[
+                {"verb":"read","delivery":"stream"},
+                {"verb":"read","delivery":"stream"}
+            ]
+        }),
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(event, _)| event == "complete")
+            .count(),
+        2
+    );
+    let (event, final_answer) = events.last().unwrap();
+    assert_eq!(event, "answer");
+    let final_answer: command_surface::Answer<Value> =
+        serde_json::from_value(final_answer.clone()).unwrap();
+    let (_, streamed_notes) = crate::test_answers::degraded(final_answer);
+    for note in notes {
+        assert!(streamed_notes.contains(&note), "{streamed_notes:?}");
+    }
+}
+
+#[test]
+fn empty_save_keeps_the_delegated_query_contract() {
+    let d = test_daemon::start("empty save does not select its new name");
+    let baseline = Call::new("keep", json!({"query":""}))
+        .id("empty-keep")
+        .answer(&d.daemon);
+    let observed = steps(
+        &d,
+        "empty-save",
+        json!({
+            "selection":"assertions", "steps":[{"verb":"save","name":"empty-population"}]
+        }),
+    );
+    assert_eq!(observed.len(), 1);
+    match baseline.outcome {
+        command_surface::Outcome::Error(expected) => {
+            assert_eq!(observed[0]["outcome"]["status"], "failed");
+            let actual: command_surface::Failure =
+                serde_json::from_value(observed[0]["outcome"]["error"].clone()).unwrap();
+            assert_eq!(actual.kind, expected.kind);
+            assert_eq!(actual.message, expected.message);
+        }
+        outcome => {
+            let baseline = outcome.value().unwrap();
+            assert_eq!(observed[0]["outcome"]["status"], "done");
+            let kept = &observed[0]["outcome"]["reply"]["reply"]["kept"]["id"];
+            let result = |id: &str| {
+                let answer =
+                    Call::new("query", json!({"query":format!("result:{id}")})).answer(&d.daemon);
+                answer
+                    .value()
+                    .unwrap_or_else(|| panic!("{answer:?}"))
+                    .clone()
+            };
+            let original = result(baseline["id"].as_str().unwrap());
+            let saved = result(kept.as_str().unwrap());
+            for field in ["unit", "columns", "rows", "count"] {
+                assert_eq!(saved[field], original[field], "{field}: {saved}");
+            }
+        }
+    }
+}
