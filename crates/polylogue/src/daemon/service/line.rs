@@ -205,6 +205,9 @@ fn named(text: &str) -> Option<Reference> {
 fn given(rows: &Rows) -> Result<Given, Failure> {
     for text in rows.selection.iter().chain(&rows.references) {
         let text = text.trim();
+        if text.is_empty() {
+            return Err(Failure::bad_request("selection must not be empty"));
+        }
         if matches!(text, "@all" | "@last")
             || text
                 .strip_prefix('@')
@@ -877,6 +880,12 @@ fn explain(rows: &Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnsw
     };
     let plan = match &given {
         Given::Query(text) => Some(plan(call, text)?),
+        Given::Reference(reference)
+            if polylogue_query::catalog::reference_unit(reference).is_some()
+                || matches!(reference, Reference::Result { .. }) =>
+        {
+            Some(plan(call, &reference.to_string())?)
+        }
         _ => None,
     };
     let selection = Selection {

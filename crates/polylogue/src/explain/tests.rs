@@ -3,7 +3,7 @@ use super::*;
 fn explain(expression: Option<&str>) -> crate::test_daemon::Call {
     crate::test_daemon::Call::new(
         "rows",
-        serde_json::json!({"selection":expression.map(|text| format!("({text})")),"explain":true}),
+        serde_json::json!({"selection":expression,"explain":true}),
     )
 }
 
@@ -126,7 +126,9 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
         "query:mine".into(),
         format!("result:{}", kept.kept.id.as_str()),
     ] {
-        let result = crate::test_answers::ok((explain(Some(&expression))).answer(&w.daemon));
+        let result = crate::test_answers::ok(
+            (explain(Some(&expression))).answer_with(&w.daemon, &invocation),
+        );
         let explanation = &result["reply"]["plan"]["explanation"];
         let program = &explanation["program"];
         // A unit's rows are read key first; a derived relation whole.

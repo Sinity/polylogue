@@ -244,13 +244,14 @@ pub(super) fn query_rows(out: &Output) -> serde_json::Value {
             ..
         } => {
             assert!(out.status.success(), "{out:?}");
-            value
+            listing(value)
         }
         command_surface::Answer {
             outcome: command_surface::Outcome::Empty(value),
             ..
         } => {
             assert_eq!(out.status.code(), Some(1), "{out:?}");
+            let value = listing(value);
             assert_eq!(value["count"], 0, "{value}");
             assert_eq!(value["rows"], serde_json::json!([]), "{value}");
             value
@@ -925,6 +926,81 @@ fn failed_step_exits_with_its_code_and_prints_undo() {
     );
 }
 
+fn two_session_cli() -> (tempfile::TempDir, crate::Fixture, Daemon) {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let project = home.join(".claude/projects/-line");
+    std::fs::create_dir_all(&project).unwrap();
+    for id in ["s1", "s2"] {
+        std::fs::write(
+            project.join(format!("{id}.jsonl")),
+            line(id, id, "Synthetic line candidate"),
+        )
+        .unwrap();
+    }
+    let env = crate::Fixture::new(
+        &dir.path().join("archive"),
+        &home,
+        &dir.path().join("config"),
+    );
+    let daemon = start_daemon(&env);
+    wait_status(&env, |status| status["store"]["messages"] == 2);
+    (dir, env, daemon)
+}
+
+#[test]
+fn verb_alone_refused_off_terminal_with_lines() {
+    let (_dir, env, _daemon) = two_session_cli();
+    let output = cli(&env, &["--json", "read"]);
+    let answer: command_surface::Answer<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).unwrap();
+    let failure = answer
+        .failure()
+        .expect("a verb without a choice is refused off terminal");
+    assert_eq!(output.status.code(), Some(i32::from(answer.exit_code())));
+    assert_eq!(failure.code.as_deref(), Some("ambiguous"));
+    let hint = failure.hint.as_deref().unwrap();
+    assert!(
+        hint.lines().any(|line| line == "polylogue latest read"),
+        "{hint}"
+    );
+    assert!(
+        hint.lines().any(|line| line == "polylogue SESSION read"),
+        "{hint}"
+    );
+    let output = cli(&env, &["--json", "sessions | sort by id", "pick", "read"]);
+    let answer: command_surface::Answer<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).unwrap();
+    let failure = answer.failure().expect("a picker needs a terminal");
+    assert_eq!(failure.code.as_deref(), Some("ambiguous"));
+    assert_eq!(
+        failure.hint.as_deref().unwrap().trim(),
+        "polylogue session:claude-code:s1 read\npolylogue session:claude-code:s2 read"
+    );
+}
+
+#[test]
+fn explain_option_runs_nothing() {
+    let (_dir, env, _daemon) = two_session_cli();
+    let output = cli(
+        &env,
+        &[
+            "--json",
+            "--explain",
+            "sessions",
+            "tag",
+            "not-written",
+            "--all",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(json(&output)["kind"], "explained");
+    assert_eq!(
+        listing(json(&cli(&env, &["--json", "assertions where kind:tag"])))["count"],
+        0
+    );
+}
+
 #[test]
 fn ordered_read_destinations_receive_their_own_steps() {
     let dir = tempfile::tempdir().unwrap();
@@ -983,7 +1059,17 @@ fn ordered_read_destinations_receive_their_own_steps() {
     );
     assert!(stdout.contains("delivery-after-first-read"), "{stdout}");
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert_eq!(stderr.matches("undo: polylogue").count(), 1, "{stderr}");
+    let undo = stderr
+        .lines()
+        .filter_map(|line| line.strip_prefix("undo: "))
+        .collect::<Vec<_>>();
+    assert_eq!(undo.len(), 1, "{stderr}");
+    let withdrawn = printed_cli(&env, undo[0]);
+    assert!(withdrawn.status.success(), "{withdrawn:?}");
+    assert_eq!(
+        listing(json(&cli(&env, &["--json", "assertions where kind:tag"])))["count"],
+        0
+    );
 }
 /// Drive the real binary through a PTY, waiting for a seeded candidate before
 /// choosing. A failed assertion still kills and reaps the owned client.

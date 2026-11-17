@@ -367,7 +367,11 @@ pub(crate) fn run(
                 .map(|row| {
                     shell_line(&[
                         row.reference.clone(),
-                        parsed.steps.first().map_or("read", |s| s.verb).into(),
+                        parsed
+                            .steps
+                            .get(split + usize::from(pick.is_some()))
+                            .map_or("read", |s| s.verb)
+                            .into(),
                     ])
                 })
                 .collect();

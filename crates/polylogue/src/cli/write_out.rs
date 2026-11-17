@@ -150,6 +150,29 @@ pub(crate) fn line_stream(
             )
         {
             wire["delivery"] = serde_json::json!("stream");
+            // Bundles preserve inherited prefixes unless explicitly hidden.
+            let directory = match &step.to {
+                Some(super::line::Destination::Dir(_)) => true,
+                Some(super::line::Destination::File(path)) => path.is_dir(),
+                _ => false,
+            };
+            if directory {
+                let hidden = wire["hide"]
+                    .as_array()
+                    .is_some_and(|words| words.iter().any(|word| word == "inherited"));
+                if !hidden {
+                    let show = wire
+                        .as_object_mut()
+                        .expect("read step")
+                        .entry("show")
+                        .or_insert_with(|| serde_json::json!([]))
+                        .as_array_mut()
+                        .expect("typed read show words");
+                    if !show.iter().any(|word| word == "inherited") {
+                        show.push(serde_json::json!("inherited"));
+                    }
+                }
+            }
             if wire["format"].is_null() {
                 wire["format"] = serde_json::json!("markdown");
             }

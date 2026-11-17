@@ -24,10 +24,10 @@ const ASKED: &[(&str, &[&str])] = &[
     ("rows", &["session:claude-code:missing", "read"]),
     ("attachment", &["claude-code:missing", "0"]),
     ("rows", &["assertion:missing", "read"]),
-    ("rows", &["claude-code:s1", "resume"]),
+    ("rows", &["session:claude-code:s1", "resume"]),
     ("rows", &["brief", "--cwd", "/synthetic"]),
-    ("rows", &["claude-code:s1", "brief"]),
-    ("rows", &["claude-code:missing", "brief"]),
+    ("rows", &["session:claude-code:s1", "brief"]),
+    ("rows", &["session:claude-code:missing", "brief"]),
     ("rows", &["parser", "brief", "--cwd", "/synthetic"]),
     ("chat list", &[]),
     ("backfill list", &[]),
@@ -163,22 +163,36 @@ fn http_answer(
         .filter(|(name, _)| names.contains(&name.as_str()))
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
+    let arguments = Value::Object(arguments);
+    let access = c
+        .registration()
+        .unwrap()
+        .tool_access(&arguments, c)
+        .unwrap();
     let pairs = [
         format!("operation={}", encoded(c.name)),
-        format!(
-            "arguments={}",
-            encoded(&Value::Object(arguments).to_string())
-        ),
+        format!("arguments={}", encoded(&arguments.to_string())),
         format!("request_id={}", encoded(request_id)),
     ];
     let uri = format!("/api/v1{}?{}", c.http_path(), pairs.join("&"));
-    let request = axum::http::Request::get(uri)
+    let (request, body) = if access > crate::commands::ToolAccess::Read {
+        let body =
+            serde_json::json!({"operation":c.name,"arguments":arguments,"request_id":request_id});
+        (
+            axum::http::Request::post(format!("/api/v1{}", c.http_path())),
+            Body::from(body.to_string()),
+        )
+    } else {
+        (axum::http::Request::get(uri), Body::empty())
+    };
+    let request = request
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
         .header(axum::http::header::HOST, format!("127.0.0.1:{}", web.port))
         .header(
             axum::http::header::COOKIE,
             format!("polylogue_{}={}", web.key, web.token),
         )
-        .body(Body::empty())
+        .body(body)
         .unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

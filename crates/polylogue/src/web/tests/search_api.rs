@@ -81,7 +81,7 @@ fn search_writes_are_available_through_the_command_table() {
             .len(),
         1
     );
-    let kept = crate::mcp::tests::call_as(
+    let kept = crate::mcp::tests::structured_call_as(
         &polylogue_store::Archive::at(&r.web.daemon.archive.root),
         "rows",
         json!({"selection":"sessions where parser","steps":[{"verb":"save"}]})
@@ -89,13 +89,11 @@ fn search_writes_are_available_through_the_command_table() {
             .unwrap()
             .clone(),
         "mcp-kept",
-    )
-    .unwrap();
-    let outcome: Value = serde_json::from_str(&kept).unwrap();
-    assert_eq!(
-        outcome["reply"]["steps"][0]["outcome"]["reply"]["reply"]["kept"]["id"],
-        "mcp-kept-1-keep"
     );
+    let crate::protocol::line::StepAnswer::Saved(kept) = crate::test_answers::step(kept) else {
+        panic!("expected saved selection")
+    };
+    assert_eq!(kept.kept.id.as_str(), "mcp-kept-1-keep");
 }
 
 #[test]

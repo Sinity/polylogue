@@ -64,7 +64,7 @@ and CLI over a temporary archive are compared with the Python client.
 
 `client.stream(*arguments)` yields the CLI's finite line events as objects with
 `event` and `data` fields. Each requested read has its own `begin`, `record` and
-`complete`; `steps` carries typed step reports and undo lines once, and `answer`
+`complete`; a file or directory delivery also emits a `written` receipt after its validated completion. `steps` carries typed step reports and undo lines once, and `answer`
 ends the whole line. A failed step raises `Refused` after the preceding events
 have been delivered. Its `answer` retains the complete failed-step report.
 Closing the iterator terminates and reaps the CLI process.

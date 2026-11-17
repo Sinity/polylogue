@@ -49,6 +49,37 @@ fn hermes_query_read_export_keep_compression_parents() {
     assert!(child.starts_with("hermes:child@profile-"));
     let child_messages = messages(&env, child);
     assert_eq!(child_messages.len(), 3);
+    let without_prefix = dir.path().join("without-prefix");
+    std::fs::create_dir(&without_prefix).unwrap();
+    let hidden = cli(
+        &env,
+        &[
+            &format!("session:{child}"),
+            "read",
+            "--format",
+            "jsonl",
+            "--hide",
+            "inherited",
+            "--to",
+            without_prefix.to_str().unwrap(),
+        ],
+    );
+    assert!(hidden.status.success(), "{hidden:?}");
+    let hidden_messages: Vec<_> = std::fs::read_to_string(without_prefix.join("records.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Record>(line).unwrap())
+        .filter_map(|record| match record {
+            Record::Message(record) => Some(record.message),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(hidden_messages.len(), 2);
+    assert!(
+        hidden_messages
+            .iter()
+            .all(|message| message.session.as_str() == child)
+    );
     assert!(
         child_messages
             .iter()
