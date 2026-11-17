@@ -1121,10 +1121,7 @@ fn picker_prefix_suffix_retry_cancellation_and_complete_undo_set() {
     assert!(simple.status.success(), "{simple:?}");
     let picked = json(&cli(
         &env,
-        &[
-            "--json",
-            "assertions where request:simple-picker-pick-suffix-1",
-        ],
+        &["--json", "assertions where id:simple-picker-pick-suffix-1"],
     ));
     assert_eq!(picked["reply"]["count"], 1, "{picked}");
     for (id, count) in [("s1", 1), ("s2", 0)] {

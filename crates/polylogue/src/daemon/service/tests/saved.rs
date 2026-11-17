@@ -125,7 +125,7 @@ fn a_save_that_query_names_could_not_say_is_refused() {
         assert_eq!(
             failure.kind,
             if name == "broken" {
-                command_surface::FailureKind::BadRequest
+                command_surface::FailureKind::InvalidQuery
             } else {
                 command_surface::FailureKind::BadValue
             },
@@ -152,16 +152,18 @@ fn a_watch_is_a_signal_rule_delivering_notices() {
     assert_eq!(value["query"], "sessions where live:waiting");
     assert_eq!(value["for"], "20m");
     assert_eq!(value["interrupt"], false);
-    for request in [
-        watch("w2", "sessions where nonsense_field:1", None),
-        watch("w3", "kind:*", Some("soon")),
+    for (request, kind) in [
+        (
+            watch("w2", "sessions where nonsense_field:1", None),
+            command_surface::FailureKind::UnknownField,
+        ),
+        (
+            watch("w3", "kind:*", Some("soon")),
+            command_surface::FailureKind::BadRequest,
+        ),
     ] {
         let failure = crate::test_answers::refusal(request.answer(&d.daemon));
-        assert_eq!(
-            failure.kind,
-            command_surface::FailureKind::BadRequest,
-            "{failure:?}"
-        );
+        assert_eq!(failure.kind, kind, "{failure:?}");
     }
 }
 
