@@ -609,7 +609,15 @@ fn an_omitted_read_deadline_stays_default_in_the_next_call() {
         .parse_mcp_call(call["name"].as_str().unwrap(), envelope.clone())
         .unwrap();
     assert_eq!(child.deadline, command_surface::Deadline::Default);
-    assert!(child.cursor.is_some());
+    assert!(
+        child.cursor.is_none(),
+        "the read step owns its continuation"
+    );
+    let rows: crate::protocol::line::Rows = serde_json::from_value(child.arguments).unwrap();
+    let [crate::protocol::line::Step::Read(read)] = rows.steps.as_slice() else {
+        panic!("one continued read")
+    };
+    assert!(read.cursor.is_some());
     let continued = execute_ready(&archive, &next).unwrap();
     assert_eq!(continued.snapshot.query, page.snapshot.query);
 }

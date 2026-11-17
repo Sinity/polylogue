@@ -91,11 +91,12 @@ fn rows_declares_closed_authored_steps_and_uses_the_write_tool() {
         json!({"selection":"session:claude-code:s1","steps":[{"verb":"note","text":"hello"}]}),
         "authored".into(),
     );
+    let call = crate::mcp::tests::tool_call("rows", request.arguments.clone(), &request.request_id);
+    assert_eq!(call["name"], "polylogue_write");
+    // The shared schema is declared at the row's home; the product's access
+    // owner selects the tool that executes these particular arguments.
     let parsed = declarations()
-        .parse_mcp_call(
-            "polylogue_write",
-            json!({"arguments":request.arguments,"request_id":request.request_id}),
-        )
+        .parse_mcp_call(row.tool.unwrap().name(), call["arguments"].clone())
         .unwrap();
     assert_eq!(parsed.arguments, request.arguments);
     assert_eq!(parsed.request_id, "authored");

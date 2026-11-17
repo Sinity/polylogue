@@ -58,7 +58,12 @@ fn mcp_reads_input_events_through_the_same_typed_reader_and_budget_cursor() {
         .next
         .clone()
         .expect("structured event is paged");
-    let token = next.request.cursor.as_deref().unwrap();
+    let rows: crate::protocol::line::Rows =
+        serde_json::from_value(next.request.arguments.clone()).unwrap();
+    let [crate::protocol::line::Step::Read(read)] = rows.steps.as_slice() else {
+        panic!("one continued event read")
+    };
+    let token = read.cursor.as_deref().unwrap();
     assert!(!token.contains("synthetic-later-value"));
     let mut wrong = next.clone();
     wrong.request.arguments["steps"][0]["view"] = json!("dialogue");

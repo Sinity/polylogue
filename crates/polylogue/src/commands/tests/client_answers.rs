@@ -146,7 +146,6 @@ fn http_answer(
     values: &command_surface::ParsedCommand,
     request_id: &str,
 ) -> (Answer, Exit) {
-    let mut pairs: Vec<String> = Vec::new();
     let names: Vec<&str> = crate::commands::declarations()
         .spec_named(c.name)
         .expect("declared row")
@@ -155,28 +154,6 @@ fn http_answer(
         .filter(|a| !a.calling_process)
         .map(|a| a.name.as_str())
         .collect();
-    for (name, value) in values
-        .request
-        .arguments
-        .as_object()
-        .unwrap()
-        .iter()
-        .filter(|(name, _)| names.contains(&name.as_str()))
-    {
-        let texts = match value {
-            Value::Array(items) => items
-                .iter()
-                .map(|item| {
-                    item.as_str()
-                        .map_or_else(|| item.to_string(), str::to_owned)
-                })
-                .collect(),
-            Value::String(text) => vec![text.clone()],
-            Value::Bool(false) | Value::Null => Vec::new(),
-            other => vec![other.to_string()],
-        };
-        pairs.extend(texts.iter().map(|t| format!("{name}={}", encoded(t))));
-    }
     let arguments: serde_json::Map<String, Value> = values
         .request
         .arguments
@@ -186,7 +163,7 @@ fn http_answer(
         .filter(|(name, _)| names.contains(&name.as_str()))
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
-    pairs = vec![
+    let pairs = [
         format!("operation={}", encoded(c.name)),
         format!(
             "arguments={}",
@@ -291,9 +268,7 @@ fn read_position(w: &test_daemon::TestDaemon) -> polylogue_model::ChangePosition
 
 fn assert_read_page(answer: &Answer, position: &polylogue_model::ChangePosition) {
     let value = answer.as_ref().expect("session read succeeds");
-    let page: polylogue_model::read::ReadPage =
-        serde_json::from_value(value["reply"]["steps"][0]["outcome"]["reply"]["reply"].clone())
-            .unwrap();
+    let page = crate::test_answers::read(command_surface::Answer::ok(value.clone()));
     assert_eq!(
         &page.snapshot.read_at, position,
         "the page must report the independently observed position"
