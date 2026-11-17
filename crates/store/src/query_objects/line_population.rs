@@ -360,7 +360,11 @@ pub fn stage_products(connection: &rusqlite::Transaction<'_>, writes: &[Value]) 
                 connection.execute(&sql(connection, "INSERT INTO @source.query_run(id,binding_hash,run_hash,completion) VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET completion=coalesce(completion,excluded.completion)")?,
                     params![id,completion.binding_hash.to_string(),completion.run_hash.to_string(),super::pack(&completion)?])?;
             }
-            Some(_) => {}
+            Some(_) => {
+                return Err(StoreError::invalid(
+                    "preserved execution input contains a non-query product",
+                ));
+            }
             None => {
                 return Err(StoreError::invalid(
                     "preserved product has no declared variant",

@@ -469,7 +469,7 @@ fn unchanged_source8_restoration_retries_keep_original_named_frames() {
         } else {
             name.clone()
         };
-        let bytes = serde_json::to_vec(&[write.clone()]).unwrap();
+        let bytes = serde_json::to_vec(std::slice::from_ref(&write)).unwrap();
         let original = if material {
             let source = tempfile::tempdir().unwrap();
             let previous = client(source.path());
