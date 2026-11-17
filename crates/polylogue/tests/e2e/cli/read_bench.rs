@@ -1,7 +1,7 @@
 //! The opt-in benchmark runs in this CLI and daemon test binary.
 use super::read_current::Items;
 use super::*;
-use polylogue_model::read::ReadItem;
+use polylogue_model::read::{ItemKind, ReadItem};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 
@@ -324,9 +324,13 @@ fn check_cancelled_client(env: &crate::Fixture, daemon: &Daemon, expected: &[Str
             &PAGE_BUDGET.to_string(),
         ],
     );
-    let mut items = Items::default();
-    items.push(&read_page(after));
-    assert!(items.text().starts_with(&expected[0]));
+    let page = read_page(after);
+    assert!(
+        page.document
+            .items
+            .iter()
+            .any(|item| { matches!(&item.kind, ItemKind::Text { text } if text == &expected[0]) })
+    );
     eprintln!("read bench: recovery read verified");
     memory(daemon.0.id())
 }
