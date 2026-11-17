@@ -691,6 +691,7 @@ fn line_deadline_still_applies_after_resolution_journal_handoff() {
     let reader = d.daemon.reads.reader().unwrap();
     assert!(reader.user_request("line-deadline").unwrap().is_some());
     assert!(reader.user_request("line-deadline-1").unwrap().is_none());
+    drop(reader);
     assert_eq!(count(&d, "assertions"), 0);
 }
 
