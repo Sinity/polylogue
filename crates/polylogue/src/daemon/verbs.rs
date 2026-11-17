@@ -118,11 +118,7 @@ impl Selection {
     /// references, or the query, as one query (references joined with OR).
     pub fn query_text(&self) -> Option<String> {
         if let Some(resolved) = &self.resolved {
-            return if resolved.is_empty() {
-                self.question.clone()
-            } else {
-                Some(joined(resolved))
-            };
+            return Some(joined(resolved));
         }
         match &self.given {
             Given::None => None,

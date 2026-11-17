@@ -762,3 +762,46 @@ fn ordered_read_stream_preserves_degraded_read_outcome() {
         assert!(streamed_notes.contains(&note), "{streamed_notes:?}");
     }
 }
+
+#[test]
+fn empty_save_keeps_the_delegated_query_contract() {
+    let d = test_daemon::start("empty save does not select its new name");
+    let baseline = Call::new("keep", json!({"query":""}))
+        .id("empty-keep")
+        .answer(&d.daemon);
+    let observed = steps(
+        &d,
+        "empty-save",
+        json!({
+            "selection":"assertions", "steps":[{"verb":"save","name":"empty-population"}]
+        }),
+    );
+    assert_eq!(observed.len(), 1);
+    match baseline.outcome {
+        command_surface::Outcome::Error(expected) => {
+            assert_eq!(observed[0]["outcome"]["status"], "failed");
+            let actual: command_surface::Failure =
+                serde_json::from_value(observed[0]["outcome"]["error"].clone()).unwrap();
+            assert_eq!(actual.kind, expected.kind);
+            assert_eq!(actual.message, expected.message);
+        }
+        outcome => {
+            let baseline = outcome.value().unwrap();
+            assert_eq!(observed[0]["outcome"]["status"], "done");
+            let kept = &observed[0]["outcome"]["reply"]["reply"]["kept"]["id"];
+            let result = |id: &str| {
+                let answer =
+                    Call::new("query", json!({"query":format!("result:{id}")})).answer(&d.daemon);
+                answer
+                    .value()
+                    .unwrap_or_else(|| panic!("{answer:?}"))
+                    .clone()
+            };
+            let original = result(baseline["id"].as_str().unwrap());
+            let saved = result(kept.as_str().unwrap());
+            for field in ["unit", "columns", "rows", "count"] {
+                assert_eq!(saved[field], original[field], "{field}: {saved}");
+            }
+        }
+    }
+}
