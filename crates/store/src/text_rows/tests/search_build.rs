@@ -82,11 +82,91 @@ fn built_search_vocabulary_matches_incremental_writes() {
         index_pending(conn, || ()).unwrap();
         crate::text_rows::remove(conn, 2, 2).unwrap();
     }
-    for table in ["fts_vocab_text", "fts_vocab_output"] {
-        assert_eq!(
-            vocabulary(&built, table),
-            vocabulary(&incremental, table),
-            "after continuing: {table}"
-        );
+    let reopened = crate::archive::open_read(&dir.path().join("built.db")).unwrap();
+    for reader in [&built, &reopened] {
+        for table in ["fts_vocab_text", "fts_vocab_output"] {
+            assert_eq!(
+                vocabulary(reader, table),
+                vocabulary(&incremental, table),
+                "after continuing: {table}"
+            );
+        }
+        for (table, expected) in [("text_fts", vec![1, 3]), ("output_fts", vec![3, 100])] {
+            let ids = reader
+                .prepare(&format!(
+                    "SELECT rowid FROM {table} WHERE {table} MATCH 'amber' ORDER BY rowid"
+                ))
+                .unwrap()
+                .query_map([], |row| row.get::<_, i64>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            assert_eq!(ids, expected);
+        }
+    }
+}
+
+#[test]
+fn failed_search_copy_preserves_both_tables_before_a_successful_retry() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("search.db");
+    let conn = open_write(&path, cache::SETUP).unwrap();
+    crate::schema::create_index(&conn).unwrap();
+    for (id, text) in [(1, "amber cedar"), (2, "maple birch")] {
+        let hash = blake3::hash(text.as_bytes());
+        let normalized = crate::encoding::normalized_text_hash(text);
+        insert_alone(&conn, Some(id), hash.as_bytes(), &normalized, text, 3);
+        if id == 1 {
+            for bit in [1, 2] {
+                conn.execute(
+                    "INSERT INTO search_pending(text_id,fts_table) VALUES (?1,?2)",
+                    [id, bit],
+                )
+                .unwrap();
+            }
+            index_pending(&conn, || ()).unwrap();
+        }
+    }
+    let before = [
+        vocabulary(&conn, "fts_vocab_text"),
+        vocabulary(&conn, "fts_vocab_output"),
+    ];
+    crate::fault::arm(
+        "search.copied_table",
+        conn.path().unwrap(),
+        crate::fault::Action::Fail,
+        0,
+        1,
+    );
+    let result = build_search_indexes(&conn, |_| Ok(()));
+    crate::fault::clear();
+    assert!(result.is_err());
+    let reopened = crate::archive::open_read(&path).unwrap();
+    for reader in [&conn, &reopened] {
+        assert_eq!(vocabulary(reader, "fts_vocab_text"), before[0]);
+        assert_eq!(vocabulary(reader, "fts_vocab_output"), before[1]);
+    }
+    build_search_indexes(&conn, |_| Ok(())).unwrap();
+    let expected = vec![
+        ("amber".into(), 1, 1),
+        ("birch".into(), 1, 1),
+        ("cedar".into(), 1, 1),
+        ("maple".into(), 1, 1),
+    ];
+    for reader in [&conn, &reopened] {
+        for (table, words) in [
+            ("text_fts", "fts_vocab_text"),
+            ("output_fts", "fts_vocab_output"),
+        ] {
+            assert_eq!(vocabulary(reader, words), expected);
+            let id: i64 = reader
+                .query_row(
+                    &format!("SELECT rowid FROM {table} WHERE {table} MATCH 'maple'"),
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(id, 2);
+        }
     }
 }

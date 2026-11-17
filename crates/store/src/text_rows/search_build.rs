@@ -4,7 +4,7 @@
 use super::{insert_entry, joined};
 use crate::{ConnExt as _, InFlight, Result, StoreError};
 use polylogue_model::LockExt;
-use rusqlite::{Connection, TransactionBehavior};
+use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 use std::path::Path;
 use std::sync::{
     Arc, Condvar, Mutex,
@@ -226,6 +226,47 @@ pub(crate) fn build_search_indexes(
 }
 
 fn install(conn: &Connection, sides: &[SearchDatabase], written: bool) -> Result<()> {
+    if !conn.is_autocommit() {
+        return Err(StoreError::Invalid(
+            "search installation requires the writer outside a transaction".into(),
+        ));
+    }
+    let path = conn
+        .path()
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| StoreError::Invalid("search installation requires the index file".into()))?;
+    // FTS5 caches its segment structure by SQLite's data_version. Shadow writes
+    // on the same connection do not change that version. A separate commit lets
+    // the existing writer and readers discard their cached structures normally.
+    let copy = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    let journal: String = conn.scalar("PRAGMA main.journal_mode", [])?;
+    copy.pragma_update(Some("main"), "journal_mode", journal)?;
+    for pragma in ["synchronous", "busy_timeout", "wal_autocheckpoint"] {
+        let value: i64 = conn.scalar(&format!("PRAGMA {pragma}"), [])?;
+        copy.pragma_update(None, pragma, value)?;
+    }
+    // Both side writers have closed. Reuse one of their page-cache shares for
+    // the final copy, without retaining another full writer-sized cache.
+    let cache: i64 = conn.scalar("PRAGMA main.cache_size", [])?;
+    let cache = if cache < 0 {
+        -(-cache / 8).max(1)
+    } else {
+        (cache / 8).max(1)
+    };
+    copy.pragma_update(None, "cache_size", cache)?;
+    copy.execute_batch("PRAGMA mmap_size=0; PRAGMA temp_store=FILE;")?;
+    copy.set_db_config(
+        rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+        true,
+    )?;
+    if let Some(stop) = crate::cancellation::thread_stop() {
+        crate::cancellation::interrupt_on(&copy, move || stop.check())?;
+    }
+    crate::read::limit::ReadLimit::observe_current(&copy)?;
+    let conn = &copy;
     let mut attached = Vec::new();
     let result = (|| {
         for side in sides {
@@ -259,12 +300,7 @@ fn install(conn: &Connection, sides: &[SearchDatabase], written: bool) -> Result
         }
         for (side, alias) in sides.iter().zip(&attached) {
             let table = side.table;
-            tx.execute(
-                &format!("INSERT INTO main.{table}({table}) VALUES ('delete-all')"),
-                [],
-            )?;
             for suffix in ["data", "idx", "docsize"] {
-                // `delete-all` recreates the empty structure and totals records.
                 tx.execute(&format!("DELETE FROM main.{table}_{suffix}"), [])?;
                 tx.execute(
                     &format!(
@@ -273,6 +309,7 @@ fn install(conn: &Connection, sides: &[SearchDatabase], written: bool) -> Result
                     [],
                 )?;
             }
+            crate::fault::check("search.copied_table", conn.path().unwrap_or_default())?;
         }
         crate::fault::check("search.indexed", conn.path().unwrap_or_default())?;
         crate::cancellation::check_current()?;

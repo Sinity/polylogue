@@ -260,7 +260,10 @@ Building the archive overlaps every stage:
   schema's own statements. Meanwhile the writer builds the trigram and
   deferred secondary indexes and samples their planner statistics. Once both
   search files are finished, their configuration is checked and both tables
-  are copied into the main file in one transaction. A stop or error leaves the
+  are copied into the main file in one transaction on a short-lived connection.
+  That commit invalidates the existing writer's and readers' cached full-text
+  structures through SQLite's normal data-version change. The copy reuses one
+  closed side writer's page-cache share. A stop or error leaves the
   previous search tables intact. The build file is then installed as
   `index.db` ([durability](#durability));
 - live inputs ahead of bulk work.
