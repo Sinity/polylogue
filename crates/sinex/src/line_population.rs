@@ -144,6 +144,9 @@ pub fn prepare_current(register: &Path, sinex: &crate::Sinex) -> Result<u64> {
 /// handling. Confirmation and cache reconstruction remain the normal consumer.
 pub fn restore_current(register: &Path, sinex: &crate::Sinex) -> Result<u64> {
     let count = prepare_current(register, sinex)?;
+    // The normal producer first admits observation material, then the events
+    // bound to that material. Drive both stages before reporting submission.
+    sinex.drain_pending()?;
     sinex.drain_pending()?;
     Ok(count)
 }

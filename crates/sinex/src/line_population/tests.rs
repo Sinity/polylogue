@@ -61,3 +61,11 @@ fn preserved_spool_export_uses_checked_files_without_mutation() {
     assert_eq!(repeat, first);
     assert_eq!(bytes(root.path()), original);
 }
+
+#[test]
+fn missing_preserved_spool_lock_creates_no_entries() {
+    let root = tempfile::tempdir().unwrap();
+    let original = bytes(root.path());
+    assert!(extract(root.path(), "absent-producer", &mut Vec::new()).is_err());
+    assert_eq!(bytes(root.path()), original);
+}

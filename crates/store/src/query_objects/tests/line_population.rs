@@ -515,6 +515,15 @@ fn preserved_authored_requests_keep_ids_slots_and_repeat_without_effects() {
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
+    let original_connection = Connection::open(origin.archive.archive_db()).unwrap();
+    let original_slots: Vec<(Vec<u8>, String)> = original_connection
+        .prepare("SELECT slot,id FROM assertion_slot ORDER BY slot,id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(slots, original_slots);
     let mut restored = vec![];
     crate::query_objects::line_population::visit_current_products(&current, |product| {
         if let crate::primary::Product::RestoredRequest { prepared } = product {
