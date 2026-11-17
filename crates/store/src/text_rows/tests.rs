@@ -433,3 +433,70 @@ fn new_text_membership_follows_unindexing_and_rollback_within_the_writer() {
 }
 
 mod search_build;
+
+#[test]
+fn search_work_follows_the_queue_instead_of_text_history() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+    const HISTORY: u64 = 8192;
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let mut conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
+    let tx = conn.transaction().unwrap();
+    for number in 0..HISTORY {
+        intern(
+            &tx,
+            &format!("historical text {number}"),
+            0,
+            None,
+            &IndexUpkeep::PerTransaction,
+        )
+        .unwrap();
+    }
+    tx.commit().unwrap();
+    // A completed bulk build has history and an empty queue when analyzed.
+    conn.execute_batch("ANALYZE").unwrap();
+    let id = intern(&conn, "walrus", 1, None, &IndexUpkeep::PerTransaction).unwrap();
+    assert_eq!(
+        intern(&conn, "walrus", 2, None, &IndexUpkeep::PerTransaction).unwrap(),
+        id
+    );
+    // A text removed before indexing must not strand the queue or enter FTS.
+    conn.execute(
+        "INSERT INTO search_pending(text_id,fts_table) VALUES (?1,1)",
+        [i64::MAX],
+    )
+    .unwrap();
+    let work = Arc::new(AtomicU64::new(0));
+    let seen = Arc::clone(&work);
+    conn.progress_handler(
+        100,
+        Some(move || {
+            seen.fetch_add(100, Ordering::Relaxed);
+            false
+        }),
+    )
+    .unwrap();
+    assert_eq!(index_pending(&conn, || ()).unwrap(), 2);
+    conn.progress_handler(0, None::<fn() -> bool>).unwrap();
+    // Even one VM instruction per unrelated historical text exceeds the
+    // complete budget for two queued entries and the orphan's removal.
+    assert!(
+        work.load(Ordering::Relaxed) < HISTORY,
+        "search drain visited history: {} VM instructions",
+        work.load(Ordering::Relaxed)
+    );
+    assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 0);
+    for table in ["text_fts", "output_fts"] {
+        assert_eq!(
+            count(
+                &conn,
+                &format!("SELECT rowid FROM {table} WHERE {table} MATCH 'walrus'")
+            ),
+            id
+        );
+    }
+    assert_eq!(index_pending(&conn, || ()).unwrap(), 0);
+}
