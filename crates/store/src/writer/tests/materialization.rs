@@ -115,11 +115,19 @@ fn apply(conn: &mut Connection, mut b: Batch) -> (Result<u64>, Work) {
 }
 
 fn apply_prepared(conn: &mut Connection, b: Batch) -> (Result<u64>, Work) {
+    apply_with_upkeep(conn, b, &resolve::IndexUpkeep::PerTransaction)
+}
+
+fn apply_with_upkeep(
+    conn: &mut Connection,
+    b: Batch,
+    upkeep: &resolve::IndexUpkeep,
+) -> (Result<u64>, Work) {
     let tx = conn.transaction().unwrap();
     let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
     let texts = crate::text_rows::TextIds::new(
         &tx,
-        false,
+        upkeep.at_build_end(),
         crate::archive::MemoryBudget::default().keys() / 3,
     )
     .unwrap();
@@ -137,7 +145,7 @@ fn apply_prepared(conn: &mut Connection, b: Batch) -> (Result<u64>, Work) {
             texts: &texts,
             resolution: p.resolution.as_ref().unwrap(),
             counter: 1,
-            upkeep: &resolve::IndexUpkeep::PerTransaction,
+            upkeep,
             source_commit: Some(&fixture_commit()),
             changes: &changes,
             retraction: false,
@@ -201,7 +209,7 @@ fn registered_responses_and_selected_blocks_consume_the_written_keys() {
         ),
         (16, 16, 32)
     );
-    assert!(duplicate.version_key_queries >= 16);
+    assert_eq!(duplicate.version_key_queries, 0);
     assert!(duplicate.vm_steps > fresh.vm_steps);
     for message in &messages {
         let (stored, _) = crate::versions::read_message(&conn, &message.content_hash().unwrap().0)
@@ -516,4 +524,128 @@ fn replace_every_text(conn: &rusqlite::Connection, text: &str) -> usize {
         crate::text_rows::replace_text(conn, id, text);
     }
     ids.len()
+}
+
+#[test]
+fn reused_response_validation_uses_known_rows_during_a_build() {
+    const HISTORY: u64 = 4096;
+    let mut conn = database();
+    let seed = text_message(
+        "seed",
+        "s",
+        Role::Assistant,
+        "shared checked text",
+        Some("end_turn"),
+    );
+    apply(
+        &mut conn,
+        reading(
+            "seed-input",
+            vec![seed.clone()],
+            vec![reference(&seed, "seed")],
+        ),
+    )
+    .0
+    .unwrap();
+    // Unrelated historical versions have complete canonical metadata bodies;
+    // the selected response must never scan them to rediscover its row key.
+    for number in 0..HISTORY {
+        let mut old = text_message(
+            &format!("history-{number}"),
+            "s",
+            Role::Assistant,
+            "",
+            Some("end_turn"),
+        );
+        old.blocks.clear();
+        let hash = old.content_hash().unwrap();
+        let body = crate::encoding::pack_json(&serde_json::to_value(&old).unwrap()).unwrap();
+        conn.execute(
+            "INSERT INTO message_version(version_hash) VALUES (?1)",
+            [hash.0.as_slice()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message_version_body(version_pk,body) VALUES (?1,?2)",
+            params![conn.last_insert_rowid(), body],
+        )
+        .unwrap();
+    }
+    let upkeep =
+        resolve::IndexUpkeep::AtBuildEnd(Arc::new(crate::key_maps::KeyMaps::load(&conn).unwrap()));
+    conn.execute_batch("DROP INDEX message_version_hash")
+        .unwrap();
+    let target = text_message(
+        "later",
+        "s",
+        Role::Assistant,
+        "shared checked text",
+        Some("end_turn"),
+    );
+    let mut batch = reading(
+        "later-input",
+        vec![target.clone()],
+        vec![reference(&target, "later")],
+    );
+    resolve::prepare_index(&conn, &mut batch, 2, &upkeep).unwrap();
+    let (result, work) = apply_with_upkeep(&mut conn, batch, &upkeep);
+    assert_eq!(result.unwrap(), 1);
+    assert_eq!(
+        (work.message_reads, work.text_queries, work.text_rows),
+        (1, 1, 1),
+        "reused text still needs canonical validation"
+    );
+    assert_eq!(work.version_key_queries, 0);
+    assert!(
+        work.vm_steps < HISTORY,
+        "validation scanned unrelated versions: {work:?}"
+    );
+    let pk = conn
+        .query_row(
+            "SELECT version_pk FROM parser_context_response WHERE key='later'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap();
+    assert_eq!(
+        crate::versions::read_message_by_key(&conn, pk, &target.content_hash().unwrap().0)
+            .unwrap()
+            .unwrap()
+            .0,
+        target
+    );
+
+    // A changed context key may reference a version absent from this batch.
+    // Its existing bounded build map, not a deferred SQL index, resolves it.
+    let mut batch = reading(
+        "old-only-input",
+        Vec::new(),
+        vec![reference(&seed, "older")],
+    );
+    resolve::prepare_index(&conn, &mut batch, 3, &upkeep).unwrap();
+    let (result, work) = apply_with_upkeep(&mut conn, batch, &upkeep);
+    result.unwrap();
+    assert_eq!(work.message_reads, 1);
+    assert_eq!(work.version_key_queries, 0);
+    assert!(
+        work.vm_steps < HISTORY,
+        "older context scanned history: {work:?}"
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM parser_context_response WHERE key IN ('seed','later','older')",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        3
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
 }

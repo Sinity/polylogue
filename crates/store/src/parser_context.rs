@@ -332,10 +332,10 @@ impl Overlay {
                 key,
             } => {
                 let row = index
-                    .prepare_cached("SELECT v.version_hash,r.source_start,r.source_end FROM parser_context_response r JOIN message_version v ON v.pk=r.version_pk WHERE r.input_pk=?1 AND r.chain=?2 AND r.namespace=?3 AND r.session=?4 AND r.key=?5")?
-                    .query_row(params![input, chain, namespace, session, key], |r| <(Vec<u8>, i64, i64)>::try_from(r))
+                    .prepare_cached("SELECT r.version_pk,v.version_hash,r.source_start,r.source_end FROM parser_context_response r JOIN message_version v ON v.pk=r.version_pk WHERE r.input_pk=?1 AND r.chain=?2 AND r.namespace=?3 AND r.session=?4 AND r.key=?5")?
+                    .query_row(params![input, chain, namespace, session, key], |r| <(i64, Vec<u8>, i64, i64)>::try_from(r))
                     .optional()?;
-                let Some((hash, offset, end)) = row else {
+                let Some((pk, hash, offset, end)) = row else {
                     return Ok(None);
                 };
                 let (offset, end) = (stored_cursor(offset)?, stored_cursor(end)?);
@@ -344,8 +344,8 @@ impl Overlay {
                         "response context range exceeds its recorded cursor".into(),
                     ));
                 }
-                let (message, _) =
-                    crate::versions::read_message(index, &hash)?.ok_or_else(|| {
+                let (message, _) = crate::versions::read_message_by_key(index, pk, &hash)?
+                    .ok_or_else(|| {
                         StoreError::Invalid("response context message version is absent".into())
                     })?;
                 if message.session.to_string() != *session {
@@ -374,6 +374,7 @@ pub(crate) fn apply(
     chain: i64,
     step: &crate::ParseStep,
     registered: &std::collections::HashMap<[u8; 32], crate::versions::RegisteredMessage<'_>>,
+    upkeep: &crate::writer::resolve::IndexUpkeep,
 ) -> Result<bool> {
     let Some(state) = step
         .checkpoint
@@ -414,6 +415,20 @@ pub(crate) fn apply(
         registered
             .get(&version.0)?
             .response_key(&version.0, message, session)
+    };
+    // A known key does not imply fresh content: reused payloads still pass
+    // the canonical stored-message checks, addressed by their existing row.
+    let version_key = |hash: &[u8; 32]| -> Result<Option<i64>> {
+        if let Some(value) = registered.get(hash) {
+            return Ok(Some(value.pk()));
+        }
+        if let Some(keys) = upkeep.key_maps() {
+            return Ok(Some(
+                keys.message_version(tx, hash)?
+                    .or_invalid("response context has no archived message version")?,
+            ));
+        }
+        Ok(None)
     };
     let mut cleared = std::collections::BTreeSet::new();
     for namespace in &delta.cleared_states {
@@ -458,7 +473,11 @@ pub(crate) fn apply(
             if response_key(entry).is_some() {
                 continue;
             }
-            let Some((body, _)) = crate::versions::read_message(tx, &version.0)? else {
+            let stored = match version_key(&version.0)? {
+                Some(pk) => crate::versions::read_message_by_key(tx, pk, &version.0)?,
+                None => crate::versions::read_message(tx, &version.0)?,
+            };
+            let Some((body, _)) = stored else {
                 return Err(StoreError::Invalid(
                     "response context has no archived message version".into(),
                 ));
@@ -511,7 +530,7 @@ pub(crate) fn apply(
                     ..
                 },
             ) => {
-                let version_pk = match response_key(entry) {
+                let version_pk = match version_key(&version.0)? {
                     Some(pk) => pk,
                     None => crate::versions::message_key(tx, &version.0)?,
                 };

@@ -378,6 +378,35 @@ pub(crate) fn read_message(
             |row| <(Option<Vec<u8>>, Option<Vec<u8>>, i64)>::try_from(row),
         )
         .optional()?;
+    decode_message(conn, hash, stored)
+}
+
+/// Validate stored content using an already resolved row key. A build keeps
+/// the natural-key index deferred, so its writer must not resolve the hash again.
+pub(crate) fn read_message_by_key(
+    conn: &Connection,
+    pk: i64,
+    hash: &[u8],
+) -> Result<Option<(Message, MessageProjection)>> {
+    let stored = conn
+        .prepare_cached(
+            "SELECT b.body,p.layout,v.pk FROM message_version v
+         LEFT JOIN message_version_body b ON b.version_pk=v.pk
+         LEFT JOIN message_block_selection p ON p.version_pk=v.pk
+         WHERE v.pk=?1 AND v.version_hash=?2",
+        )?
+        .query_row(params![pk, hash], |row| {
+            <(Option<Vec<u8>>, Option<Vec<u8>>, i64)>::try_from(row)
+        })
+        .optional()?;
+    decode_message(conn, hash, stored)
+}
+
+fn decode_message(
+    conn: &Connection,
+    hash: &[u8],
+    stored: Option<(Option<Vec<u8>>, Option<Vec<u8>>, i64)>,
+) -> Result<Option<(Message, MessageProjection)>> {
     let Some((body, layout, pk)) = stored else {
         return Ok(None);
     };

@@ -510,7 +510,7 @@ fn apply_rows(
         },
         p,
     )?;
-    if !crate::parser_context::apply(tx, input_pk, chain, p, &rows.versions)? {
+    if !crate::parser_context::apply(tx, input_pk, chain, p, &rows.versions, upkeep)? {
         rows.checkpoint.forget_context();
     }
     rows.write_parse_state(b, p)?;
