@@ -10,7 +10,7 @@ use crate::source::Source;
 use crate::{NewBlob, Result, StoreError};
 use crate::{OptionExt as _, ResultExt as _};
 use polylogue_model::authored::{AuthoredEffect, PendingAuthored, PreparedRequest};
-use polylogue_model::user::{UserOutcome, UserRequest};
+use polylogue_model::user::{UserOutcome, UserRequest, UserWrite};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::HashMap;
 
