@@ -645,3 +645,51 @@ fn session_notes_are_visible_in_pages_and_hide_or_withdraw_removes_them() {
         serde_json::from_value(read[0]["outcome"]["reply"]["reply"].clone()).unwrap();
     assert!(notes(&read).is_empty());
 }
+
+#[test]
+fn line_deadline_still_applies_after_resolution_journal_handoff() {
+    use polylogue_store::read::limit::ReadLimit;
+    use std::time::{Duration, Instant};
+    let d = test_daemon::start("whole line deadline");
+    let blocker = std::fs::File::open(d.daemon.archive.archive_db()).unwrap();
+    blocker.lock_shared().unwrap();
+    let limit = ReadLimit::new(Duration::from_secs(2), Default::default());
+    let request = Call::new(
+        "rows",
+        json!({
+            "selection":"session:claude-code:s1", "steps":[
+                {"verb":"note","text":"must not be written after the deadline"},
+                {"verb":"read"}
+            ]
+        }),
+    )
+    .id("line-deadline");
+    let (answer, handed_off) = std::thread::scope(|scope| {
+        let worker = scope.spawn(|| request.limit(limit.clone()).answer(&d.daemon));
+        let until = Instant::now() + Duration::from_secs(5);
+        while limit.stage() != Some("write") && !worker.is_finished() && Instant::now() < until {
+            std::thread::yield_now();
+        }
+        let handed_off = limit.stage() == Some("write");
+        if handed_off {
+            while limit.check().is_ok() {
+                std::thread::yield_now();
+            }
+        }
+        drop(blocker);
+        (worker.join().unwrap(), handed_off)
+    });
+    assert!(
+        handed_off,
+        "line did not hand off its resolution journal: {answer:?}"
+    );
+    let answer = crate::test_answers::ok(answer);
+    let reports = answer["reply"]["steps"].as_array().unwrap();
+    assert_eq!(reports[0]["outcome"]["status"], "failed");
+    assert_eq!(reports[0]["outcome"]["error"]["kind"], "timeout");
+    assert_eq!(reports[1]["outcome"]["status"], "not_run");
+    let reader = d.daemon.reads.reader().unwrap();
+    assert!(reader.user_request("line-deadline").unwrap().is_some());
+    assert!(reader.user_request("line-deadline-1").unwrap().is_none());
+    assert_eq!(count(&d, "assertions"), 0);
+}
