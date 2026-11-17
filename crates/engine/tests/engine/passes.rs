@@ -755,7 +755,8 @@ fn rebuilding_multiple_inputs_without_provider_files_preserves_order_and_title()
     };
     {
         let (mut engine, _lock) = w.engine(64);
-        assert!(engine.run_pass().unwrap().errors.is_empty());
+        let captured = engine.run_pass().unwrap();
+        assert!(captured.errors.is_empty(), "{:?}", captured.errors);
     }
     let before = view();
     fs::remove_file(w.file("a.jsonl")).unwrap();
