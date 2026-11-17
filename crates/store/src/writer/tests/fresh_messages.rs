@@ -91,7 +91,7 @@ fn fresh_messages_install_without_replacing_old_blocks() {
         &["s"],
     );
     b.parse[0].repeats_whole_conversations = true;
-    resolve::prepare_index(&tx, &mut b, 1, false).unwrap();
+    resolve::prepare_index(&tx, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
     assert_eq!(
         b.parse[0]
             .resolution
@@ -177,7 +177,7 @@ fn reserved_message_keys_are_not_creation_results_across_steps() {
     b.parse[1].repeats_whole_conversations = true;
     b.length = 200;
     // Both steps reserve the key against the same pre-write snapshot.
-    resolve::prepare_index(&tx, &mut b, 1, false).unwrap();
+    resolve::prepare_index(&tx, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
     for step in &b.parse {
         assert!(
             !step
@@ -281,7 +281,7 @@ fn fresh_tool_pairs_and_earlier_event_placements_keep_order() {
             records.reverse();
         }
         let mut b = batch("input", Route::Live, 0, records, &["s"]);
-        resolve::prepare_index(&tx, &mut b, 1, false).unwrap();
+        resolve::prepare_index(&tx, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
         let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
         tx.authorizer(Some(deny_old_block_selection)).unwrap();
         assert_eq!(apply(&tx, &b, 0, &changes), 2);
@@ -345,7 +345,7 @@ fn prepared_message_transaction_work() {
     let mut b = batch("input", Route::Live, 0, rows, &["s"]);
     b.length = 512;
     b.parse[0].parsed_upto = 512;
-    resolve::prepare_index(&conn, &mut b, 1, false).unwrap();
+    resolve::prepare_index(&conn, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
     let steps = Arc::new(AtomicU64::new(0));
     let count = steps.clone();
     conn.progress_handler(

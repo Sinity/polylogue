@@ -60,7 +60,10 @@ pub(crate) fn intern(
                 hash.as_bytes(),
                 prepared,
                 marked,
-            )?;
+            )?
+            .ok_or_else(|| {
+                StoreError::Invalid("a new text conflicts with a stored identity".into())
+            })?;
             (id, marked)
         }
     };

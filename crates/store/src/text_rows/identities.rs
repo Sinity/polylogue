@@ -69,8 +69,8 @@ impl TextIds {
 
     /// Resolves a complete text hash. An empty build has no earlier text to
     /// probe: its dictionary already includes every row written in the build.
-    /// After opening an installed index without preloading, a new dictionary
-    /// key first checks the installed hash index.
+    /// In an installed index, a prepared body first tries the unique insert;
+    /// only a conflicting or bodyless lookup reads the stored hash index.
     pub(crate) fn resolve(
         &self,
         conn: &Connection,
@@ -84,6 +84,27 @@ impl TextIds {
             return Ok(ResolvedText { id, written: false });
         }
         let allocated = known.map(i64::abs);
+        if let Some(body) = body {
+            let id = allocated.unwrap_or(self.next.get());
+            let after = next(id)?;
+            let bits = membership
+                .and_then(|membership| membership.bits.get(hash))
+                .copied()
+                .unwrap_or(0);
+            if super::groups::insert(conn, &self.groups, Some(id), hash, body, bits)?.is_some() {
+                if bits != 0 {
+                    if !membership.is_some_and(|membership| membership.at_build_end) {
+                        for bit in [1, 2].into_iter().filter(|bit| bits & bit != 0) {
+                            super::queue_entry(conn, id, bit)?;
+                        }
+                    }
+                    self.mark(id, bits);
+                }
+                self.next.set(self.next.get().max(after));
+                self.known.borrow_mut().set(*hash, id)?;
+                return Ok(ResolvedText { id, written: true });
+            }
+        }
         if !self.complete.get() {
             let stored = conn
                 .prepare_cached("SELECT id FROM text WHERE hash=?1")?
@@ -100,26 +121,14 @@ impl TextIds {
                 return Ok(ResolvedText { id, written: false });
             }
         }
-        let body =
-            body.ok_or_else(|| StoreError::Invalid("a new text has no prepared bytes".into()))?;
-        let id = allocated.unwrap_or(self.next.get());
-        let after = next(id)?;
-        let bits = membership
-            .and_then(|membership| membership.bits.get(hash))
-            .copied()
-            .unwrap_or(0);
-        super::groups::insert(conn, &self.groups, Some(id), hash, body, bits)?;
-        if bits != 0 {
-            if !membership.is_some_and(|membership| membership.at_build_end) {
-                for bit in [1, 2].into_iter().filter(|bit| bits & bit != 0) {
-                    super::queue_entry(conn, id, bit)?;
-                }
+        Err(StoreError::Invalid(
+            if body.is_some() {
+                "allocated text identity conflicts with stored rows"
+            } else {
+                "a new text has no prepared bytes"
             }
-            self.mark(id, bits);
-        }
-        self.next.set(self.next.get().max(after));
-        self.known.borrow_mut().set(*hash, id)?;
-        Ok(ResolvedText { id, written: true })
+            .into(),
+        ))
     }
 
     #[cfg(test)]

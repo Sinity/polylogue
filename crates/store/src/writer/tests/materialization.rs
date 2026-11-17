@@ -110,7 +110,7 @@ fn reading(input: &str, messages: Vec<Message>, entries: Vec<Entry>) -> Batch {
 }
 
 fn apply(conn: &mut Connection, mut b: Batch) -> (Result<u64>, Work) {
-    resolve::prepare_index(conn, &mut b, 1, false).unwrap();
+    resolve::prepare_index(conn, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
     apply_prepared(conn, b)
 }
 

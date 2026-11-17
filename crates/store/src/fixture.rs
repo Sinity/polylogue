@@ -99,8 +99,8 @@ pub struct CallFacts<'a> {
 impl Fixture {
     pub fn new(root: &Path) -> Result<Self> {
         let (archive, lock) = Archive::open_or_create(root)?;
-        // Fixture rows are written directly into an installed index.
-        crate::archive::index_build::finish(&archive)?;
+        // Fixture rows are written directly into a fully installed index.
+        crate::Writer::start(&archive)?.derive()?;
         let index = open_write(&archive.index_db(), crate::archive::cache::SETUP)?;
         let notes = open_write(&archive.archive_db(), crate::archive::cache::SETUP)?;
         index.execute(

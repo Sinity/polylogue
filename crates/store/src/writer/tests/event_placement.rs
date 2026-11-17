@@ -51,7 +51,7 @@ fn connection() -> Connection {
 }
 
 fn apply(tx: &Transaction<'_>, mut input: Batch, counter: i64) -> Work {
-    resolve::prepare_index(tx, &mut input, 1, false).unwrap();
+    resolve::prepare_index(tx, &mut input, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
     let changes = crate::change_summary::ChangeSummary::start(tx).unwrap();
     let texts = crate::text_rows::TextIds::new(
         tx,

@@ -84,7 +84,7 @@ fn a_deliberately_replaced_index_establishes_its_boot_before_restart() {
     .unwrap();
     let (archive, lock) = crate::Archive::open_or_create(dir.path()).unwrap();
     // An installed index, which is then removed by hand.
-    crate::archive::index_build::finish(&archive).unwrap();
+    crate::Writer::start(&archive).unwrap().derive().unwrap();
     let publisher = archive.scope_token().unwrap();
     publisher
         .with_current(|| {

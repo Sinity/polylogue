@@ -43,7 +43,7 @@ fn write_test_rows(
 ) -> Result<u64> {
     let mut batch = batch.clone();
     batch.parse = vec![step.clone()];
-    resolve::prepare_index(tx, &mut batch, chain, upkeep.at_build_end())?;
+    resolve::prepare_index(tx, &mut batch, chain, upkeep)?;
     let changes = crate::change_summary::ChangeSummary::start(tx)?;
     let written = write_rows(
         tx,

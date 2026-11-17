@@ -194,8 +194,8 @@ impl StoredGroups {
     }
 }
 
-/// Inserts the row for a text new to the index. The caller has checked
-/// that no row has its hash.
+/// Tries to insert a prepared text, returning no row when its identity or
+/// hash is already stored. A group used only by that skipped insert is removed.
 pub(crate) fn insert(
     conn: &Connection,
     groups: &StoredGroups,
@@ -203,11 +203,11 @@ pub(crate) fn insert(
     hash: &[u8; 32],
     prepared: Prepared<'_>,
     indexed: i64,
-) -> Result<i64> {
-    let (group, _) = groups.row(conn, prepared)?;
-    let id = conn
+) -> Result<Option<i64>> {
+    let (group, inserted) = groups.row(conn, prepared)?;
+    let row = conn
         .prepare_cached(
-            "INSERT INTO text(id,hash,normalized_hash,indexed,group_id,start,length)
+            "INSERT OR IGNORE INTO text(id,hash,normalized_hash,indexed,group_id,start,length)
              VALUES (?1,?2,?3,?4,?5,?6,?7) RETURNING id",
         )?
         .query_row(
@@ -222,7 +222,17 @@ pub(crate) fn insert(
             ],
             |r| r.get::<_, i64>(0),
         );
-    Ok(id?)
+    match row {
+        Ok(id) => Ok(Some(id)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            if inserted {
+                remove_empty_group(conn, group)?;
+                groups.clear();
+            }
+            Ok(None)
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Removes a text row, and its group once no text is left in it.

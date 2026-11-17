@@ -920,14 +920,21 @@ impl RowWriter<'_, '_> {
         };
         let id_kind = row.id_kind.as_str();
         let (route, completion) = (route.as_str(), completion.as_str());
-        self.tx.prepare_cached(
+        let sql = if new {
+            "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_pk,session_pk,main,route,seq,record_position,order_time,at)
+                 VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12,?14,?15)"
+        } else {
             "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_pk,session_pk,main,route,seq,record_position,order_time,at)
              VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12,?14,?15)
              ON CONFLICT(message_pk,input_pk,chain) DO UPDATE SET source_start=excluded.source_start,
              source_end=excluded.source_end,id_kind=excluded.id_kind,completion=excluded.completion,version_pk=excluded.version_pk,
              session_pk=excluded.session_pk,main=excluded.main,route=excluded.route,
              seq=excluded.seq,record_position=excluded.record_position,order_time=excluded.order_time,at=excluded.at"
-        )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,completion,version_pk,session_pk,main,route,position.0,position.1,id_kind,order_time,at])?;
+        };
+        self.tx.prepare_cached(sql)?.execute(params![
+            pk, v.input_pk, v.chain, v.start, v.end, completion, version_pk, session_pk, main,
+            route, position.0, position.1, id_kind, order_time, at
+        ])?;
         Ok(new)
     }
 

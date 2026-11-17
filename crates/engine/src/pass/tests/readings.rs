@@ -568,6 +568,7 @@ fn live_append_commits_while_an_oversized_chain_waits_for_its_reply() {
     let mut live = live.pop().unwrap();
     let id = live.input.id.clone();
     let length = live.size;
+    assert!(engine.load_stored(&mut live).unwrap());
     let job = live.next_job(&engine.stopped_attempt);
     assert!(job.end - job.start <= budget);
     let room = pool.has_room(job.end - job.start);

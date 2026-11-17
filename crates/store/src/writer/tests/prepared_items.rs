@@ -26,7 +26,7 @@ fn item_commit_uses_prepared_content_without_reading_payloads() {
         run_by_script: false,
     });
     let mut b = batch("input", Route::Live, 0, vec![row(0, message)], &["session"]);
-    resolve::prepare_index(&tx, &mut b, 1, false).unwrap();
+    resolve::prepare_index(&tx, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
     let texts = crate::text_rows::TextIds::new(
         &tx,
         false,

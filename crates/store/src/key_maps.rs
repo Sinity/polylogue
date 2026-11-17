@@ -31,9 +31,9 @@ impl Rows {
         hash: [u8; 32],
         key: &[u8],
     ) -> Result<Option<i64>> {
-        let mut statement = conn.prepare_cached(check)?;
         let mut found = None;
         self.0.visit(&hash, |pk| {
+            let mut statement = conn.prepare_cached(check)?;
             let same = statement
                 .query_row([pk], |r| {
                     Ok(match r.get_ref(0)? {

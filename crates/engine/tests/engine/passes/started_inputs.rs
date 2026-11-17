@@ -9,8 +9,8 @@ use super::*;
 fn a_pass_finishes_started_inputs_before_starting_more() {
     let w = ClaudeHome::new();
     let filler = "quokka ".repeat(100);
-    // Three sessions of different sizes, so the pass orders them largest
-    // first; each spans several ranges.
+    // Each input spans several ranges, so interleaving becomes visible in
+    // its message row keys regardless of which input starts first.
     let sessions = [("large", 1_200), ("middle", 1_000), ("small", 800)];
     for (session, pairs) in sessions {
         let mut lines = String::new();
@@ -51,17 +51,18 @@ fn a_pass_finishes_started_inputs_before_starting_more() {
             )
         })
         .collect();
-    let order: Vec<_> = read.iter().map(|(s, ..)| s.as_str()).collect();
+    let counts: std::collections::BTreeMap<_, _> = read
+        .iter()
+        .map(|(session, .., count)| (session.as_str(), *count))
+        .collect();
     assert_eq!(
-        order,
-        [
-            "claude-code:large",
-            "claude-code:middle",
-            "claude-code:small"
-        ]
+        counts,
+        std::collections::BTreeMap::from([
+            ("claude-code:large", 2_400),
+            ("claude-code:middle", 2_000),
+            ("claude-code:small", 1_600),
+        ])
     );
-    let counts: Vec<_> = read.iter().map(|(.., n)| *n).collect();
-    assert_eq!(counts, [2_400, 2_000, 1_600]);
     for pair in read.windows(2) {
         assert!(
             pair[0].2 < pair[1].1,

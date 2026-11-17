@@ -11,7 +11,7 @@ fn connection() -> Connection {
     c
 }
 fn apply(tx: &Transaction<'_>, mut b: Batch) {
-    resolve::prepare_index(tx, &mut b, 1, false).unwrap();
+    resolve::prepare_index(tx, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
     let changes = crate::change_summary::ChangeSummary::start(tx).unwrap();
     write_rows(
         tx,
@@ -124,7 +124,7 @@ fn fresh_message_counts_update_each_session_once_per_transaction() {
         .unwrap();
         let tx = c.transaction().unwrap();
         let mut b = fresh(count, "fresh", "s");
-        resolve::prepare_index(&tx, &mut b, 1, false).unwrap();
+        resolve::prepare_index(&tx, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
         let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
         write_rows(
             &tx,
@@ -345,7 +345,7 @@ fn fresh_installed_counts_are_invalidated_by_same_transaction_visibility_or_sess
         let mut message = text_message("fresh", "s", Role::Assistant, "", None);
         message.blocks.clear();
         let mut b = batch("fresh", Route::Live, 0, vec![row(0, message)], &["s", "to"]);
-        resolve::prepare_index(&tx, &mut b, 1, false).unwrap();
+        resolve::prepare_index(&tx, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
         let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
         write_rows(
             &tx,

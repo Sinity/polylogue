@@ -940,17 +940,12 @@ pub(super) fn prepare_index(
     index: &Connection,
     batch: &mut Batch,
     chain: i64,
-    first: bool,
+    upkeep: &IndexUpkeep,
 ) -> Result<()> {
-    let upkeep = if first {
-        IndexUpkeep::AtBuildEnd(Arc::new(crate::key_maps::KeyMaps::load(index)?))
-    } else {
-        IndexUpkeep::PerTransaction
-    };
     let resolver = Resolver::new(
         &Archive::at(std::path::Path::new("unused-test-location")),
         index,
-        upkeep,
+        upkeep.clone(),
     )?;
     let change = std::mem::replace(&mut batch.change, Change::Reparse { chain });
     let (keys, chains) = resolver.gather(&mut [batch], index, index)?;

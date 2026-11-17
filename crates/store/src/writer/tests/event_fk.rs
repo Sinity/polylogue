@@ -75,7 +75,13 @@ fn removal_steps(unrelated: usize, indexed: bool) -> u64 {
     removed.parse[0].reading_version = "synthetic=2".into();
     // Production prepares keys/choices before entering the writer transaction.
     // The fixture resolver reloads its first-build map; exclude that test-only work.
-    resolve::prepare_index(&tx, &mut removed, 1, true).unwrap();
+    resolve::prepare_index(
+        &tx,
+        &mut removed,
+        1,
+        &resolve::IndexUpkeep::AtBuildEnd(Arc::new(crate::key_maps::KeyMaps::load(&tx).unwrap())),
+    )
+    .unwrap();
     let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
     let commit = fixture_commit();
     use std::sync::{
