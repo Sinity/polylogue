@@ -3,7 +3,7 @@ use polylogue_model::batch::StepProgress;
 use polylogue_store::primary::{Product, Reading};
 use serde_json::{Value, json};
 use sinex_model::{Class, EventId, RunId, Timestamp, Validation};
-use sinex_protocol::{ConfirmedEvent, ProjectionIdentity};
+use sinex_protocol::{ConfirmedEvent, PayloadIdentity};
 
 fn reading(progress: StepProgress) -> Reading {
     Reading {
@@ -93,7 +93,7 @@ fn event(name: &str, version: u64, hash: String, payload: Value) -> ConfirmedEve
         run: RunId(uuid::Uuid::from_bytes([2; 16])),
         location: Some(sinex_model::RecordLocation {
             material: sinex_model::MaterialId(uuid::Uuid::from_bytes([3; 16])),
-            anchor: 9,
+            record_offset: 9,
         }),
         output_index: 2,
         parents: vec![],
@@ -106,7 +106,7 @@ fn event(name: &str, version: u64, hash: String, payload: Value) -> ConfirmedEve
         equivalence_key: None,
         reading_order: 17,
         record_hash: "5".repeat(64),
-        projection: ProjectionIdentity::for_payload(&payload),
+        payload_identity: PayloadIdentity::for_payload(&payload),
         payload,
     }
 }
@@ -151,13 +151,13 @@ fn current_readings_keep_progress_and_sinex_context() {
         assert_eq!(context.kind_definition_hash, event.kind_definition_hash);
         assert_eq!(
             context.payload_identity.payload_hash,
-            event.projection.payload_hash
+            event.payload_identity.payload_hash
         );
         assert_eq!(context.origin.producer_identity, event.producer_identity);
         assert_eq!(context.origin.source_fingerprint, event.source_fingerprint);
         assert_eq!(
             serde_json::to_value(context.payload_identity).unwrap(),
-            json!({"payload_hash": event.projection.payload_hash})
+            json!({"payload_hash": event.payload_identity.payload_hash})
         );
     }
 }

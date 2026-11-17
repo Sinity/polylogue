@@ -878,7 +878,7 @@ pub(crate) fn events(
                         material: MaterialId(source.material.parse().map_err(|error| {
                             Error::invalid(format!("source material: {error}"))
                         })?),
-                        anchor: source.anchor,
+                        record_offset: source.anchor,
                     })
                 })
                 .transpose()?;

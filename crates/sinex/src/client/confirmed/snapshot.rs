@@ -118,7 +118,7 @@ impl Client {
             };
             if event.id != id
                 || event.commit_seq != commit_seq
-                || !event.projection.verifies(&event.payload)
+                || !event.payload_identity.verifies(&event.payload)
             {
                 return Err(Error::invalid(
                     "a snapshot reading differs from its position or payload hash",

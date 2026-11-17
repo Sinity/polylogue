@@ -79,14 +79,14 @@ fn registration_acknowledgment_establishes_family() {
             let hashes:Vec<_>=declarations.iter().map(|declaration|(declaration.kind.clone(),declaration.definition_hash())).collect();
             let mut acknowledgment=crate::tests::no_event_acknowledgment(&sinex_protocol::Ingress::RegisterKinds{frame:frame.clone(),declarations:declarations.clone()});
             acknowledgment.result=sinex_protocol::FrameResult::KindsRegistered{kinds:hashes};
-            client.publish("auth.ack.polylogue",serde_json::to_vec(&sinex_protocol::ReceiptHint{number:1,frame_hash:blake3::hash(frame.as_bytes()).to_hex().to_string()}).unwrap().into()).await.unwrap();
+            client.publish("auth.ack.polylogue",serde_json::to_vec(&sinex_protocol::AckHint{number:1,frame_hash:blake3::hash(frame.as_bytes()).to_hex().to_string()}).unwrap().into()).await.unwrap();
             let request=recorded.next().await.unwrap();
             let query:sinex_protocol::RecordedQuery=serde_json::from_slice(&request.payload).unwrap();assert_eq!(query.numbers,[1]);
             sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),sinex_protocol::RecordedPage{acknowledgments:vec![acknowledgment],next:None,..Default::default()},Duration::from_secs(5)).await.unwrap();
             let request=contexts.next().await.unwrap();
             let _query:sinex_protocol::PublicContextRequest=serde_json::from_slice(&request.payload).unwrap();
             assert!(request.reply.as_ref().unwrap().starts_with("_INBOX.polylogue."));
-            let context:sinex_protocol::PublicContext=serde_json::from_value(serde_json::json!({"state":"available","settings_identity":"sinex-settings","owner_revision":7,"day":{"zone":"Europe/Warsaw","start":"04:00:00"},"quiet_hours":{"from":1320,"to":420},"interrupt_budget":{"per_hour":3,"used":1,"remaining":2,"window_ms":3600000},"observed_at":"2026-01-01T00:00:00Z"})).unwrap();
+            let context:sinex_protocol::PublicContext=serde_json::from_value(serde_json::json!({"state":"available","settings_identity":"sinex-settings","settings_revision":7,"day":{"zone":"Europe/Warsaw","start":"04:00:00"},"quiet_hours":{"from":1320,"to":420},"interrupt_budget":{"per_hour":3,"used":1,"remaining":2,"window_ms":3600000},"observed_at":"2026-01-01T00:00:00Z"})).unwrap();
             sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),context,Duration::from_secs(5)).await.unwrap();
             // Exercise real transmission/recorded-acknowledgment lookup for two
             // accepted frames which have no admitted-event position.
@@ -101,7 +101,7 @@ fn registration_acknowledgment_establishes_family() {
                 }
                 let mut acknowledgment=crate::tests::no_event_acknowledgment(&frame);
                 acknowledgment.number=number;
-                client.publish("auth.ack.polylogue",serde_json::to_vec(&sinex_protocol::ReceiptHint{number,frame_hash:blake3::hash(expected.as_bytes()).to_hex().to_string()}).unwrap().into()).await.unwrap();
+                client.publish("auth.ack.polylogue",serde_json::to_vec(&sinex_protocol::AckHint{number,frame_hash:blake3::hash(expected.as_bytes()).to_hex().to_string()}).unwrap().into()).await.unwrap();
                 let request=recorded.next().await.unwrap();
                 let query:sinex_protocol::RecordedQuery=serde_json::from_slice(&request.payload).unwrap();
                 assert_eq!(query.numbers,[number]);
@@ -497,7 +497,7 @@ fn duplicate_acknowledgments_keep_frames_independent() {
                 // All four frames must reach ingress before any acknowledgment. Plain
                 // subscriptions each see these reordered, duplicated hints.
                 for acknowledgment in batch.iter().rev() {
-                    let hint = sinex_protocol::ReceiptHint { number: acknowledgment.number, frame_hash: blake3::hash(acknowledgment.frame.as_bytes()).to_hex().to_string() };
+                    let hint = sinex_protocol::AckHint { number: acknowledgment.number, frame_hash: blake3::hash(acknowledgment.frame.as_bytes()).to_hex().to_string() };
                     for _ in 0..2 {
                         daemon.publish("auth.ack.polylogue", serde_json::to_vec(&hint).unwrap().into()).await.unwrap();
                     }
@@ -591,7 +591,7 @@ fn dropped_waiting_sender_keeps_the_original_frame() {
             client
                 .publish(
                     "auth.ack.polylogue",
-                    serde_json::to_vec(&sinex_protocol::ReceiptHint {
+                    serde_json::to_vec(&sinex_protocol::AckHint {
                         number: acknowledgment.number,
                         frame_hash: blake3::hash(frame.frame().as_bytes()).to_hex().to_string(),
                     })
@@ -724,7 +724,7 @@ impl FakeSinex {
         self.client
             .publish(
                 "auth.ack.polylogue",
-                serde_json::to_vec(&sinex_protocol::ReceiptHint {
+                serde_json::to_vec(&sinex_protocol::AckHint {
                     number: acknowledgment.number,
                     frame_hash: blake3::hash(acknowledgment.frame.as_bytes())
                         .to_hex()

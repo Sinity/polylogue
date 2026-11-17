@@ -122,7 +122,7 @@ impl Cache {
                 }
                 PublicContext::Available {
                     settings_identity,
-                    owner_revision: settings_revision,
+                    settings_revision,
                     day,
                     quiet_hours,
                     interrupt_budget,

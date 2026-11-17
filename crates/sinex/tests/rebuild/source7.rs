@@ -240,7 +240,7 @@ fn admit_originals(
             let event = |kind: &str, record: Product, output_index| ProducerEvent {
                 kind:declaration.kinds.iter().find(|decl| decl.kind.name==kind).unwrap().kind.clone(),
                 payload:source7_payload(kind,&record),
-                location:Some(sinex_model::RecordLocation {material,anchor:0}),output_index,parents:vec![],reading_order:None,class:sinex_model::Class::Guarded,
+                location:Some(sinex_model::RecordLocation {material,record_offset:0}),output_index,parents:vec![],reading_order:None,class:sinex_model::Class::Guarded,
             };
             let mut events = vec![event("polylogue.input_observation",product,0)];
             if let Some(message) = message {

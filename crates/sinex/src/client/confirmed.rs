@@ -99,11 +99,11 @@ fn sinex_context(event: &sinex_protocol::ConfirmedEvent) -> local::SinexEventCon
         location: event.location.as_ref().map(|location| {
             polylogue_model::sinex_event::SinexLocation {
                 material: location.material.to_string(),
-                anchor: location.anchor,
+                anchor: location.record_offset,
             }
         }),
         payload_identity: local::PayloadIdentity {
-            payload_hash: event.projection.payload_hash.clone(),
+            payload_hash: event.payload_identity.payload_hash.clone(),
         },
         origin: local::ConfirmedOrigin {
             source: event.source_ref.as_ref().map(|source| local::SinexSource {
@@ -232,7 +232,7 @@ impl Client {
             }
             FetchEventReply::Event(event) => *event,
         };
-        if event.id != id || !event.projection.verifies(&event.payload) {
+        if event.id != id || !event.payload_identity.verifies(&event.payload) {
             return Err(Error::invalid(
                 "event fetch changed identity or projected payload hash",
             ));
@@ -442,7 +442,7 @@ impl Client {
         let item = match change {
             sinex_protocol::Confirmed::Event(event) if event.commit_seq > after => {
                 let event = *event;
-                if !event.projection.verifies(&event.payload) {
+                if !event.payload_identity.verifies(&event.payload) {
                     return Err(Error::invalid(
                         "a confirmed event's payload differs from its hash",
                     ));

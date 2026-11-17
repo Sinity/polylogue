@@ -3,7 +3,7 @@ use super::*;
 fn available() -> PublicContext {
     PublicContext::Available {
         settings_identity: "settings-1".into(),
-        owner_revision: 7,
+        settings_revision: 7,
         day: query_language::time::DaySettingWire {
             zone: "Europe/Warsaw".into(),
             start: "04:00".parse().unwrap(),

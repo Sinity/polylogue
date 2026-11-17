@@ -10,7 +10,7 @@ fn declaration(name: &str) -> sinex_model::KindDeclaration {
 #[test]
 fn sinex_ai_fields_bind_without_reading_the_product() {
     let declaration = declaration("polylogue.message");
-    let catalog = sinex_model::query::catalog::QueryCatalog::new([declaration.clone()]);
+    let catalog = sinex_query::QueryCatalog::new([declaration.clone()]);
     for path in [
         vec!["message"],
         vec!["session"],
@@ -250,7 +250,7 @@ fn tool_facts_keep_original_coordinates_and_only_their_sessions_observed_context
         .collect::<Vec<_>>();
     assert_eq!(calls.len(), 1);
     let call = calls[0];
-    assert_eq!(call.location.as_ref().unwrap().anchor, 50);
+    assert_eq!(call.location.as_ref().unwrap().record_offset, 50);
     assert_eq!(call.payload["message"], "codex:action");
     assert_eq!(call.payload["call_id"], "call-1");
     assert_eq!(call.payload["action"], "file_write");
@@ -272,7 +272,7 @@ fn tool_facts_keep_original_coordinates_and_only_their_sessions_observed_context
         .unwrap()
         .validate(&call.payload)
         .unwrap();
-    let catalog = sinex_model::query::catalog::QueryCatalog::new([declaration.clone()]);
+    let catalog = sinex_query::QueryCatalog::new([declaration.clone()]);
     for path in [
         vec!["action"],
         vec!["path"],
