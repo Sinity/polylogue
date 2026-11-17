@@ -928,7 +928,7 @@ fn prepared_item_private_input_probe() {
     fs::create_dir_all(&dir).unwrap();
     let source = std::path::Path::new(&source);
     fs::copy(source, dir.join(source.file_name().unwrap())).unwrap();
-    let (mut engine, _lock) = home.engine(512);
+    let (mut engine, _lock) = home.engine(4 << 20);
     let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
 }
