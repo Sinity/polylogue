@@ -137,7 +137,7 @@ fn tools_answer_with_the_daemon_and_refuse_bad_calls() {
     else {
         panic!("finished read")
     };
-    assert!(read_pages::body(&read).contains("walrus"));
+    assert!(read_pages::body(read).contains("walrus"));
 
     let text = call(&archive, "rows", args(json!({"selection": "walrus"}))).unwrap();
     assert!(text.contains("claude-code:s1"), "{text}");

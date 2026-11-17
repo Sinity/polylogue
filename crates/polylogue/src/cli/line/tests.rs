@@ -264,7 +264,6 @@ fn generated_cli_next_and_previous_requests_reach_the_real_reader() {
     let first = parsed(&[
         "--budget",
         "333",
-        "--fresh",
         "--all",
         "session:claude-code:s1",
         "read",
@@ -275,6 +274,13 @@ fn generated_cli_next_and_previous_requests_reach_the_real_reader() {
         "--json",
     ]);
     let request = super::super::run_line::request(&first).unwrap();
+    let mut unsupported = request.clone();
+    unsupported.fresh = true;
+    let refused = crate::client::call_ready(&daemon.daemon.archive, &unsupported).unwrap();
+    assert_eq!(refused.exit_code(), 2);
+    assert!(
+        matches!(refused.outcome, command_surface::Outcome::Error(ref error) if error.message == "polylogue does not take fresh")
+    );
     let read = |request: &command_surface::RunnableRequest| {
         let request = formatted(request);
         let answer = crate::client::call_ready(&daemon.daemon.archive, &request).unwrap();
@@ -306,7 +312,7 @@ fn generated_cli_next_and_previous_requests_reach_the_real_reader() {
     );
     assert_eq!(next.request.deadline, command_surface::Deadline::None);
     assert_eq!(next.request.format, command_surface::Format::Json);
-    assert!(next.request.fresh);
+    assert_eq!(next.request.fresh, request.fresh);
     assert_eq!(next.request.arguments["all"], true);
     let second = read(&next.request);
     let previous = second
@@ -321,7 +327,7 @@ fn generated_cli_next_and_previous_requests_reach_the_real_reader() {
     );
     assert_eq!(previous.request.deadline, command_surface::Deadline::None);
     assert_eq!(previous.request.format, command_surface::Format::Json);
-    assert!(previous.request.fresh);
+    assert_eq!(previous.request.fresh, request.fresh);
     assert_eq!(previous.request.arguments["all"], true);
     let restored = read(&previous.request);
     assert_eq!(restored.document.items, first.document.items);

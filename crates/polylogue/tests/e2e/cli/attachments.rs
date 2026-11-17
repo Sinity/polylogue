@@ -363,7 +363,7 @@ fn unicode_attachment_pages_check_the_descriptor_and_refuse_a_changed_file() {
     assert_available(&fixture.env(), expected, &descriptor);
     assert_eq!(descriptor["matches"][0]["names"], json!([label]));
     let mut reconstructed = Items::default();
-    let args = vec![
+    let args = [
         "--json".to_owned(),
         SESSION.into(),
         "read".into(),

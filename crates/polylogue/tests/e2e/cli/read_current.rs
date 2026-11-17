@@ -123,7 +123,7 @@ fn typed_read_pages_unicode_once_and_writes_a_bundle() {
         serde_json::from_slice(&output.stdout).unwrap();
     for page_number in 0..1000 {
         assert!(
-            serde_json::to_vec(&answer).unwrap().len() + 1 <= 25_000,
+            serde_json::to_vec(&answer).unwrap().len() < 25_000,
             "page exceeds the transfer bound"
         );
         assert_eq!(answer.exit_code(), 0, "{answer:?}");

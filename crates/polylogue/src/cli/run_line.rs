@@ -154,17 +154,33 @@ fn call(
     archive: &Archive,
     request: &RunnableRequest,
 ) -> Result<Answer<Value>, command_surface::Failure> {
-    crate::client::call_ready(archive, request).map_err(|error| {
-        crate::protocol::failure(
-            if super::is_down(&error) {
-                Code::DaemonRequired
-            } else {
-                Code::Io
-            },
-            error.to_string(),
-        )
-    })
+    crate::client::call_ready(archive, request).map_err(client_failure)
 }
+fn client_failure(error: io::Error) -> command_surface::Failure {
+    crate::protocol::failure(
+        if super::is_down(&error) {
+            Code::DaemonRequired
+        } else {
+            Code::Io
+        },
+        error.to_string(),
+    )
+}
+async fn picker_call(
+    archive: &Archive,
+    request: &RunnableRequest,
+) -> picker::Result<Answer<Value>> {
+    crate::client::call_ready_as(
+        archive,
+        request,
+        &tokio_util::sync::CancellationToken::new(),
+        crate::client::this_process(),
+    )
+    .await
+    .map_err(client_failure)
+    .map_err(crate::daemon::Failure::from)
+}
+
 fn decoded(answer: &Answer<Value>) -> Result<LineAnswer, command_surface::Failure> {
     if let Outcome::Error(error) = &answer.outcome {
         return Err(error.clone());
@@ -541,12 +557,12 @@ fn output(
                                 startup,
                             ),
                             StepAnswer::Resume(resume) => {
-                                if terminal() && !parsed.line.dry_run {
-                                    if let crate::protocol::resume::Answer::Plan(plan) =
+                                if terminal()
+                                    && !parsed.line.dry_run
+                                    && let crate::protocol::resume::Answer::Plan(plan) =
                                         resume.as_ref()
-                                    {
-                                        resume_plans.push(plan);
-                                    }
+                                {
+                                    resume_plans.push(plan);
                                 }
                                 print!(
                                     "{}",
@@ -665,23 +681,22 @@ fn candidates(answer: &Answer<Value>) -> Result<picker::Page, command_surface::F
                     reply: StepAnswer::Resume(resume),
                     ..
                 } = report.outcome
+                    && let crate::protocol::resume::Answer::Sessions(sessions) = *resume
                 {
-                    if let crate::protocol::resume::Answer::Sessions(sessions) = *resume {
-                        return Ok(picker::Page {
-                            count: Some(sessions.len() as u64),
-                            next: None,
-                            rows: sessions
-                                .iter()
-                                .map(|value| picker::Candidate {
-                                    reference: format!("session:{}", value.session.id),
-                                    title: value.session.title.clone().unwrap_or_default(),
-                                    first_prompt: String::new(),
-                                    repository: String::new(),
-                                    description: value.follow_ups.join("; "),
-                                })
-                                .collect(),
-                        });
-                    }
+                    return Ok(picker::Page {
+                        count: Some(sessions.len() as u64),
+                        next: None,
+                        rows: sessions
+                            .iter()
+                            .map(|value| picker::Candidate {
+                                reference: format!("session:{}", value.session.id),
+                                title: value.session.title.clone().unwrap_or_default(),
+                                first_prompt: String::new(),
+                                repository: String::new(),
+                                description: value.follow_ups.join("; "),
+                            })
+                            .collect(),
+                    });
                 }
             }
             Err(crate::protocol::failure(
@@ -768,45 +783,22 @@ impl picker::Source for Source {
             call.arguments["references"] = json!([]);
         }
         let archive = Archive::at(&self.archive);
-        let page = |call: &RunnableRequest| {
-            self::call(&archive, call)
-                .and_then(|answer| candidates(&answer))
-                .map_err(crate::daemon::Failure::from)
-        };
         if request.fuzzy.is_none() {
             call.cursor = request.cursor;
-            return page(&call);
+            let answer = picker_call(&archive, &call).await?;
+            return candidates(&answer).map_err(crate::daemon::Failure::from);
         }
-        let mut rows = std::collections::VecDeque::new();
-        let mut finished = false;
-        let mut failure = None;
-        let candidates = std::iter::from_fn(|| {
-            loop {
-                if let Some(row) = rows.pop_front() {
-                    return Some(row);
-                }
-                if finished {
-                    return None;
-                }
-                match page(&call) {
-                    Ok(page) => {
-                        call.cursor = page.next;
-                        finished = call.cursor.is_none();
-                        rows.extend(page.rows);
-                    }
-                    Err(error) => {
-                        failure = Some(error);
-                        finished = true;
-                        return None;
-                    }
-                }
+        let mut matched = picker::FuzzyRows::new(&request, 50)?;
+        loop {
+            let answer = picker_call(&archive, &call).await?;
+            let page = candidates(&answer).map_err(crate::daemon::Failure::from)?;
+            matched.extend(page.rows);
+            call.cursor = page.next;
+            if call.cursor.is_none() {
+                break;
             }
-        });
-        let selected = picker::fuzzy_page(candidates, &request, 50)?;
-        if let Some(error) = failure {
-            return Err(error);
         }
-        Ok(selected)
+        matched.finish()
     }
     async fn preview(&self, request: picker::PreviewRequest) -> picker::Result<String> {
         let mut call = crate::client::request(
@@ -817,8 +809,7 @@ impl picker::Source for Source {
         call.deadline = command_surface::Deadline::Milliseconds(
             u64::try_from(request.deadline.as_millis()).unwrap_or(u64::MAX),
         );
-        let answer =
-            self::call(&Archive::at(&self.archive), &call).map_err(crate::daemon::Failure::from)?;
+        let answer = picker_call(&Archive::at(&self.archive), &call).await?;
         match decoded(&answer).map_err(crate::daemon::Failure::from)? {
             LineAnswer::Steps(steps) => Ok(super::print::line(
                 &LineAnswer::Steps(steps),

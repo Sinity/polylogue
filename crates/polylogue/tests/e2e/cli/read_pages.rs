@@ -31,7 +31,7 @@ fn cli_read_pages_cover_utf8_once_and_refuse_malformed_and_revoked_cursors() {
     assert!(whole.status.success(), "{whole:?}");
     let whole: ReadPage = read_page(json(&whole));
     let finite_source = serde_json::to_vec(&whole.document.items).unwrap().len();
-    let args = vec![
+    let args = [
         "--deadline".into(),
         "none".into(),
         "--json".into(),

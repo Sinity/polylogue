@@ -122,15 +122,20 @@ fn a_save_that_query_names_could_not_say_is_refused() {
         let failure = crate::test_answers::refusal(
             save(&format!("bad-{index}"), Some(name), text).answer(&d.daemon),
         );
-        assert!(
-            matches!(failure.kind, command_surface::FailureKind::BadRequest),
+        assert_eq!(
+            failure.kind,
+            if name == "broken" {
+                command_surface::FailureKind::BadRequest
+            } else {
+                command_surface::FailureKind::BadValue
+            },
             "{failure:?}"
         );
     }
 }
 
 fn watch(id: &str, selection: &str, hold: Option<&str>) -> crate::test_daemon::Call {
-    crate::test_daemon::Call::new("rows",json!({"selection":selection,"steps":[{"verb":"save","name":"my-watch","watch":true,"for":hold}]})).id(id)
+    crate::test_daemon::Call::new("rows",json!({"selection":selection,"steps":[{"verb":"save","name":"my-watch","watch":true,"hold":hold}]})).id(id)
 }
 
 #[test]

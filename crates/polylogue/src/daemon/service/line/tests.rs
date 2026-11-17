@@ -1023,7 +1023,7 @@ fn newly_saved_names_cannot_be_captured_by_commands_or_verbs() {
 #[test]
 fn a_save_retry_retains_actual_reused_revisions_and_original_undo() {
     let d = test_daemon::start("Save receipt identities");
-    let save = |query: &str| json!({"selection":query,"steps":[{"verb":"save","name":"receipt-name","watch":true,"for":"20m"}]});
+    let save = |query: &str| json!({"selection":query,"steps":[{"verb":"save","name":"receipt-name","watch":true,"hold":"20m"}]});
     let first = steps(&d, "first-receipt", save("sessions"));
     let reused = steps(&d, "second-receipt", save("sessions"));
     let part = |report: &Value| report["outcome"]["reply"]["reply"].clone();
@@ -1066,7 +1066,7 @@ fn an_owned_save_finishes_atomically_after_deadline_then_stops_later_steps() {
     let request = Call::new(
         "rows",
         json!({"selection":"sessions","steps":[
-            {"verb":"save","name":"owned-question","watch":true,"for":"20m"},
+            {"verb":"save","name":"owned-question","watch":true,"hold":"20m"},
             {"verb":"read"},{"verb":"tag","name":"not-after-deadline"}
         ]}),
     )

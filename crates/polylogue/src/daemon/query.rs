@@ -171,7 +171,18 @@ pub(crate) fn keep_captured(
     rows: Vec<Value>,
     identities: Option<Vec<Vec<Value>>>,
 ) -> Result<Value, Failure> {
-    keep_with_rows(reader, ask, retained, None, Some((rows, identities)))
+    keep_with_rows(
+        reader,
+        ask,
+        retained,
+        None,
+        Some(CapturedRows { rows, identities }),
+    )
+}
+
+struct CapturedRows {
+    rows: Vec<Value>,
+    identities: Option<Vec<Vec<Value>>>,
 }
 
 fn keep_with_rows(
@@ -179,7 +190,7 @@ fn keep_with_rows(
     ask: Ask<'_>,
     retained: &polylogue_model::user::LineSelection,
     references: Option<&[polylogue_model::Reference]>,
-    captured: Option<(Vec<Value>, Option<Vec<Vec<Value>>>)>,
+    captured: Option<CapturedRows>,
 ) -> Result<Value, Failure> {
     if reader.query_scope_fingerprint()? != retained.binding.replay.scope_fingerprint {
         return Err(Failure::new(
@@ -220,7 +231,7 @@ fn keep_with_rows(
     validate(reader, &program)?;
     let captured_values = captured.is_some();
     let (mut rows, identities) = match captured {
-        Some(values) => values,
+        Some(CapturedRows { rows, identities }) => (rows, identities),
         None => {
             let rows = with_similarity(reader, &program, ask.near, || {
                 Ok(match references {

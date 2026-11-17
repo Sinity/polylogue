@@ -1028,11 +1028,18 @@ fn choose(env: &crate::Fixture, args: &[&str], keys: &[u8]) -> Output {
         let left = deadline
             .checked_duration_since(Instant::now())
             .expect("picker did not show its accepted candidates");
-        shown.extend(
-            receive
-                .recv_timeout(left)
-                .expect("picker output ended before its candidates"),
-        );
+        match receive.recv_timeout(left) {
+            Ok(bytes) => shown.extend(bytes),
+            Err(error) => {
+                let mut child = client.0.take().unwrap();
+                let _ = child.kill();
+                let output = child.wait_with_output().unwrap();
+                panic!(
+                    "picker ended before its candidates: {error}; shown={}; child={output:?}",
+                    String::from_utf8_lossy(&shown)
+                );
+            }
+        }
     }
     master.write_all(keys).unwrap();
     while client.0.as_mut().unwrap().try_wait().unwrap().is_none() {
@@ -1241,7 +1248,6 @@ fn printed_cli_continuation_and_previous_keep_the_accepted_options() {
             "none",
             "--request-id",
             "cli-page-grants",
-            "--fresh",
             "--all",
             "session:claude-code:s1",
             "read",
@@ -1260,7 +1266,7 @@ fn printed_cli_continuation_and_previous_keep_the_accepted_options() {
             command_surface::TokenBudget::Tokens(333)
         );
         assert_eq!(call.request.deadline, command_surface::Deadline::None);
-        assert!(call.request.fresh);
+        assert!(!call.request.fresh);
         assert_eq!(call.request.format, command_surface::Format::Text);
         assert_eq!(call.request.arguments["all"], true);
         assert_eq!(call.request.arguments["steps"][0]["budget"], 1);
@@ -1308,7 +1314,6 @@ fn printed_cli_continuation_and_previous_keep_the_accepted_options() {
             "none",
             "--request-id",
             &previous.request.request_id,
-            "--fresh",
             "--all",
             "session:claude-code:s1",
             "read",
