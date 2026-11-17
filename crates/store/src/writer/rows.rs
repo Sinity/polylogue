@@ -3,7 +3,6 @@
 
 use super::*;
 use crate::change_summary::ChangeSummary;
-use crate::first_build::FirstBuild;
 use polylogue_model::{Completion, Route};
 use std::{cell::Cell, collections::BTreeMap};
 
@@ -52,7 +51,7 @@ pub(super) struct ReadingWrite<'a> {
     pub(super) texts: &'a crate::text_rows::TextIds,
     pub(super) resolution: &'a resolve::Resolution,
     pub(super) counter: i64,
-    pub(super) first_build: Option<&'a FirstBuild>,
+    pub(super) upkeep: &'a resolve::IndexUpkeep,
     pub(super) retraction: bool,
     pub(super) replacement: bool,
     pub(super) source_commit: Option<&'a crate::wire_shapes::ReadingCommit>,
@@ -69,7 +68,7 @@ fn apply_rows(
         resolution,
         texts,
         counter,
-        first_build,
+        upkeep,
         retraction,
         replacement,
         source_commit,
@@ -117,7 +116,7 @@ fn apply_rows(
         chain,
         route: b.input.route,
         counter,
-        first_build,
+        upkeep,
         keys,
         choices,
         changes,
@@ -158,7 +157,7 @@ fn apply_rows(
     };
     let membership = crate::text_rows::NewMembership {
         bits: &rows.current_texts(),
-        bulk: first_build.is_some(),
+        at_build_end: upkeep.at_build_end(),
     };
     for version in choices.message_versions.values() {
         let registered = crate::versions::store_message(
@@ -169,6 +168,7 @@ fn apply_rows(
                 packed: &p.prepared.texts,
                 texts,
                 membership: Some(&membership),
+                upkeep,
             },
             version.replace,
             source_sequence,
@@ -187,7 +187,7 @@ fn apply_rows(
         route: b.input.route,
         counter,
         packed: &p.prepared.texts,
-        first_build,
+        upkeep,
         texts,
         keys,
     };
@@ -354,23 +354,7 @@ fn apply_rows(
                 .execute(params![source, target])?;
         }
         for (source, target, id) in &choices.moved_events {
-            // The session's own reading of the event may come in a later
-            // step; the copy's readings make its row now.
-            if !tx
-                .prepare_cached("SELECT EXISTS(SELECT 1 FROM event WHERE pk=?1)")?
-                .query_row([target], |r| r.get::<_, bool>(0))?
-            {
-                changes.event(tx, *target)?;
-                tx.prepare_cached(
-                    "INSERT INTO event(pk,id,session_pk,seq,after_message_id,seq_from_message,after_message_pk,kind,at,input_pk,source_chain,source_start,source_end,fields,data)
-                     SELECT ?2,?3,session_pk,seq,after_message_id,seq_from_message,after_message_pk,kind,at,input_pk,source_chain,source_start,source_end,fields,data
-                     FROM event WHERE pk=?1",
-                )?
-                .execute(params![source, target, id])?;
-                if let Some(first) = first_build {
-                    first.add_event(id, *target);
-                }
-            }
+            rows.copy_event(*source, *target, id, None)?;
             tx.prepare_cached("UPDATE event_source SET event_pk=?2 WHERE event_pk=?1")?
                 .execute(params![source, target])?;
         }
@@ -398,21 +382,7 @@ fn apply_rows(
                 }
             }
             for (source, target, id) in &choices.released_events {
-                if !tx
-                    .prepare_cached("SELECT EXISTS(SELECT 1 FROM event WHERE pk=?1)")?
-                    .query_row([target], |r| r.get::<_, bool>(0))?
-                {
-                    changes.event(tx, *target)?;
-                    tx.prepare_cached(
-                        "INSERT INTO event(pk,id,session_pk,seq,after_message_id,seq_from_message,after_message_pk,kind,at,input_pk,source_chain,source_start,source_end,fields,data)
-                         SELECT ?2,?3,?4,seq,after_message_id,seq_from_message,after_message_pk,kind,at,input_pk,source_chain,source_start,source_end,fields,data
-                         FROM event WHERE pk=?1",
-                    )?
-                    .execute(params![source, target, id, to])?;
-                    if let Some(first) = first_build {
-                        first.add_event(id, *target);
-                    }
-                }
+                rows.copy_event(*source, *target, id, Some(*to))?;
                 for (input, chain) in chains {
                     tx.prepare_cached(
                         "UPDATE event_source SET event_pk=?2, session_pk=?5
@@ -433,15 +403,7 @@ fn apply_rows(
         }
         rows.refresh_event_placement()?;
         for (pk, choice) in &choices.documents {
-            crate::documents::apply_choice(
-                tx,
-                *pk,
-                choice.as_ref(),
-                counter,
-                first_build,
-                texts,
-                keys,
-            )?;
+            crate::documents::apply_choice(tx, *pk, choice.as_ref(), counter, upkeep, texts, keys)?;
         }
         for pk in choices.events.keys() {
             rows.refresh_event(*pk)?;
@@ -561,7 +523,7 @@ fn apply_rows(
 pub(crate) fn finish(
     tx: &Transaction<'_>,
     changes: &ChangeSummary,
-    first_build: Option<&FirstBuild>,
+    upkeep: &crate::writer::resolve::IndexUpkeep,
     texts: &crate::text_rows::TextIds,
     counter: i64,
 ) -> Result<u64> {
@@ -570,12 +532,12 @@ pub(crate) fn finish(
     let read = crate::items::refresh(tx, changes)?;
     crate::session_values::refresh(tx, changes)?;
     // A first build derives every session once, when it ends.
-    if first_build.is_none() {
+    if !upkeep.at_build_end() {
         let sessions = changes.sessions(tx)?;
         crate::derive::links::add_finished_links(tx, &sessions)?;
         crate::measure::time::forget_settled(tx, changes, &sessions)?;
     }
-    crate::versions::remove_unreferenced(tx, first_build, texts)?;
+    crate::versions::remove_unreferenced(tx, upkeep, texts)?;
     Ok(read)
 }
 
@@ -634,11 +596,8 @@ pub(super) struct RowWriter<'a, 't> {
     /// The input's route; a message row read from page text has its own.
     route: Route,
     counter: i64,
-    /// Set during a first build ([`Writer::start`]): search entries,
-    /// trigram entries and secondary indexes are built once, in bulk, when
-    /// it ends ([`Inner::build_deferred`]), and rows are found by natural
-    /// key through it ([`FirstBuild`]).
-    first_build: Option<&'a FirstBuild>,
+    /// The writer's index upkeep, chosen when its database opens.
+    upkeep: &'a resolve::IndexUpkeep,
     keys: &'a resolve::ResolvedKeys,
     choices: &'a resolve::membership::Choices,
     changes: &'a ChangeSummary,
@@ -954,30 +913,29 @@ impl RowWriter<'_, '_> {
                     );
                     self.insert_message(m, session_pk, &v, &order)?
                 };
-                if let Some(first) = self.first_build {
-                    first.add_message(&self.keys.identities.shown_message(&id), pk);
-                }
+                self.upkeep
+                    .remember_message(&self.keys.identities.shown_message(&id), pk)?;
                 pk
             }
         };
         let id_kind = row.id_kind.as_str();
         let (route, completion) = (route.as_str(), completion.as_str());
-        if new {
-            self.tx.prepare_cached(
-                "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_pk,session_pk,main,route,seq,record_position,order_time,at)
+        let sql = if new {
+            "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_pk,session_pk,main,route,seq,record_position,order_time,at)
                  VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12,?14,?15)"
-            )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,completion,version_pk,session_pk,main,route,position.0,position.1,id_kind,order_time,at])?;
-            return Ok(true);
-        }
-        self.tx.prepare_cached(
+        } else {
             "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_pk,session_pk,main,route,seq,record_position,order_time,at)
              VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12,?14,?15)
              ON CONFLICT(message_pk,input_pk,chain) DO UPDATE SET source_start=excluded.source_start,
              source_end=excluded.source_end,id_kind=excluded.id_kind,completion=excluded.completion,version_pk=excluded.version_pk,
              session_pk=excluded.session_pk,main=excluded.main,route=excluded.route,
              seq=excluded.seq,record_position=excluded.record_position,order_time=excluded.order_time,at=excluded.at"
-        )?.execute(params![pk,v.input_pk,v.chain,v.start,v.end,completion,version_pk,session_pk,main,route,position.0,position.1,id_kind,order_time,at])?;
-        Ok(false)
+        };
+        self.tx.prepare_cached(sql)?.execute(params![
+            pk, v.input_pk, v.chain, v.start, v.end, completion, version_pk, session_pk, main,
+            route, position.0, position.1, id_kind, order_time, at
+        ])?;
+        Ok(new)
     }
 
     fn refresh_message(&self, pk: i64) -> Result<bool> {
@@ -1328,7 +1286,7 @@ impl RowWriter<'_, '_> {
             .query_map([message_pk], |r| <(_, _, _)>::try_from(r))?
             .collect::<rusqlite::Result<_>>()?;
         for (pk, command, path) in old_calls {
-            if self.first_build.is_none() {
+            if !self.upkeep.at_build_end() {
                 self.tx
                     .prepare_cached(
                         "INSERT INTO tool_call_trigram(tool_call_trigram, rowid, command, path)
@@ -1355,7 +1313,7 @@ impl RowWriter<'_, '_> {
                 self.tx,
                 self.texts,
                 text,
-                self.first_build.is_some(),
+                self.upkeep.at_build_end(),
             )?;
         }
         Ok(())
@@ -1462,7 +1420,7 @@ impl RowWriter<'_, '_> {
         let (idx, ordinal) = position;
         let bit = search_bit(block);
         if let Some(id) = text_id {
-            crate::text_rows::activate(self.tx, self.texts, id, bit, self.first_build.is_some())?;
+            crate::text_rows::activate(self.tx, self.texts, id, bit, self.upkeep.at_build_end())?;
         }
         let (kind, call_id, attachment) = match block {
             Block::Text { .. } => ("text", None, None),
@@ -1599,7 +1557,7 @@ impl RowWriter<'_, '_> {
                     .flatten()
             ])?;
         let pk = self.tx.last_insert_rowid();
-        if self.first_build.is_none() {
+        if !self.upkeep.at_build_end() {
             self.tx
                 .prepare_cached(
                     "INSERT INTO tool_call_trigram(rowid, command, path) VALUES (?1, ?2, ?3)",
@@ -1658,9 +1616,7 @@ impl RowWriter<'_, '_> {
         self.tx.prepare_cached("INSERT OR IGNORE INTO event(pk,id,session_pk,seq,kind,at,input_pk,source_chain,source_start,source_end,fields,data)
             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)")?
             .execute(params![pk,id,source.session,source.seq.unwrap_or(0),source.kind,source.at,self.input_pk,self.chain,source.start,source.end,source.fields,source.body])?;
-        if let Some(first) = self.first_build {
-            first.add_event(id, *pk);
-        }
+        self.upkeep.remember_event(id, *pk)?;
         self.store_event_value(index)
     }
 

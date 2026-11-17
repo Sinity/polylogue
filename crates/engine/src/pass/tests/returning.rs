@@ -62,7 +62,6 @@ fn a_file_rejoining_another_chain_takes_that_chains_parser_position() {
     let st = engine.inputs.get_mut(&path).unwrap();
     st.chain = Some(99);
     st.parsed_upto = 1;
-    st.parser_state = Some(serde_json::json!("a state of chain 99"));
     let plan = engine.plan(&path, facts(&path)).unwrap().unwrap();
     assert_eq!(
         plan.change,
@@ -72,9 +71,5 @@ fn a_file_rejoining_another_chain_takes_that_chains_parser_position() {
     );
     let st = &engine.inputs[&path];
     assert_eq!(st.chain, Some(1));
-    assert_ne!(
-        plan.parser_state,
-        Some(serde_json::json!("a state of chain 99"))
-    );
     assert_eq!(plan.parse_pos, stored.len() as u64);
 }

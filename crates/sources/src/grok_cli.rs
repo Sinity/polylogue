@@ -10,7 +10,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 use crate::document::{first_key, session_id};
 use crate::fields::ExpectedType as T;
@@ -169,7 +169,17 @@ fn text_of(content: Option<&Json>) -> Option<String> {
 }
 
 impl Parser for GrokCli {
+    fn uses_context(&self) -> bool {
+        true
+    }
     type ParserState = ParserState;
+    fn bind_context(
+        &self,
+        state: &mut ParserState,
+        context: polylogue_model::parser_context::Handle,
+    ) {
+        state.ids.bind_context(context, "grok-cli".into());
+    }
 
     fn kind(&self, value: &Json) -> String {
         value

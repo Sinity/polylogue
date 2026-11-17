@@ -1,10 +1,10 @@
 {
   "ai-studio": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::ai_studio::VERSION=4,crate::chatgpt::VERSION=2,crate::export::VERSION=2",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::ai_studio::VERSION=5,crate::chatgpt::VERSION=2,crate::export::VERSION=2",
     "5cc1d8795cc234f2c565c3dd344e45dce90bf0a1daba7cb05b0672e992e29680"
   ],
   "aider": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::export::VERSION=2,crate::aider::VERSION=2",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::export::VERSION=2,crate::aider::VERSION=3",
     "d45d8b9e745b127f491ccc90d1ab03c74be904ed7a96684cf16436958c2f6bc7"
   ],
   "antigravity": [
@@ -28,15 +28,15 @@
     "15182f36ad3905e77a58aad4d2ce00830a736ecfcced7aef8f8a4008b878d4c9"
   ],
   "claude-code": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::claude_code::VERSION=8",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::claude_code::VERSION=9",
     "3b95e6fd2f7f8c4888cc3947441002aa3eea3a2faf926e75d2814509dfc02cfe"
   ],
   "claude-code-history": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::claude_code::VERSION=8,crate::claude_code::side::VERSION=2",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::claude_code::VERSION=9,crate::claude_code::side::VERSION=2",
     "92acebf5b2e325829b05a23fbae4b3dcbfdb4f354196541a71ca2f8c418e12f2"
   ],
   "claude-code-side": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::claude_code::VERSION=8,crate::claude_code::side::VERSION=2",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::claude_code::VERSION=9,crate::claude_code::side::VERSION=2",
     "27ae0456023092a3d499b9990d3a91a86704b81e3cd6d9ba14a3a572bb2167a8"
   ],
   "claude-design": [
@@ -44,7 +44,7 @@
     "3c18cef36ae3a1a6771c81f25aac746115b8bddcc624a57e937cf92e767eb8ba"
   ],
   "codex": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::codex::VERSION=6",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::codex::VERSION=7",
     "cb85675c9c3723ef42f7b218ce10277a2a2c2a700abc0228701617ac57d64bc0"
   ],
   "codex-cloud": [
@@ -52,11 +52,11 @@
     "767cb3a07f133a813a21bff568ccf4bb6b0c6d2d4ca0be0dffe8e5ad85c016fd"
   ],
   "codex-database": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::codex::VERSION=6,crate::codex::database::VERSION=2",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::codex::VERSION=7,crate::codex::database::VERSION=2",
     "5b981ebacae6be17a31dc47b1500a135a1b4697a53f03aa6b06c9ff9fe027f90"
   ],
   "gemini-app": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::export::VERSION=2,crate::gemini_app::VERSION=2",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::export::VERSION=2,crate::gemini_app::VERSION=3",
     "97b60bc1b86d341a821a4131b4c7704655ccc404e465cbca4ffd9d4b150c68bb"
   ],
   "gemini-cli": [
@@ -68,7 +68,7 @@
     "9ba0a160492e0e98758a0fe848bce9558c789798c2e4adb1a4f2edc85b75c764"
   ],
   "grok-cli": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::grok_cli::VERSION=2",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::grok_cli::VERSION=3",
     "679fad14f87adbdff886a69f44db5ca48940b1b52f5eb8dc2f9da8bbb1efd947"
   ],
   "hermes": [

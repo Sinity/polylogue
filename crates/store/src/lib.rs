@@ -31,13 +31,13 @@ mod encoding;
 mod events;
 pub mod export_items;
 pub mod fault;
-pub(crate) mod first_build;
 #[cfg(any(test, feature = "fixture"))]
 pub mod fixture;
 mod fragment;
 pub mod input_rows;
 pub mod items;
 mod kept;
+pub(crate) mod key_maps;
 pub mod lineage;
 mod live;
 pub mod python_archive;
@@ -56,7 +56,9 @@ pub mod query_objects;
 pub mod read;
 pub mod reference;
 mod repo_lookup;
-pub use identical_chains::{ChainLayout, ChainReading, ReadingCopy, StoredExtent};
+pub use identical_chains::{
+    ChainLayout, ChainLayouts, ChainReading, PrefixCopies, PrefixCopy, ReadingCopy, SharedPrefixes,
+};
 pub mod schema;
 pub mod schema_inputs;
 pub mod scope_index;

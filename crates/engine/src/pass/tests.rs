@@ -12,6 +12,8 @@ use std::io::Read;
 use std::os::unix::fs::{FileExt, MetadataExt};
 
 #[cfg(feature = "faults")]
+mod build_memory;
+#[cfg(feature = "faults")]
 mod identical_chains;
 #[cfg(feature = "faults")]
 mod live_queue;
@@ -264,18 +266,11 @@ fn confirmed_capture_resumes_without_rereading_provider_bytes() {
                 "confirmed once"
             }
         );
-        let state = engine.inputs.get_mut(&path).unwrap();
-        state.parser_state = Some(serde_json::json!({"continuation":"unchanged"}));
         engine.refresh_confirmed_input(&path).unwrap();
-        assert_eq!(
-            engine.inputs[&path].parser_state,
-            Some(serde_json::json!({"continuation":"unchanged"}))
-        );
         assert!(engine.stored_plan(&path).unwrap().is_none());
         let facts = engine.inputs[&path].facts;
         let stored = engine.inputs[&path].stored;
         let state = engine.inputs.get_mut(&path).unwrap();
-        state.tail = Some(b"confirmed tail".to_vec());
         state.unread = facts;
         state.working = Some(crate::plan::WorkingState {
             capture: "later-capture".into(),
@@ -285,8 +280,6 @@ fn confirmed_capture_resumes_without_rereading_provider_bytes() {
         });
         engine.refresh_confirmed_input(&path).unwrap();
         let state = &engine.inputs[&path];
-        assert!(state.parser_state.is_some());
-        assert_eq!(state.tail.as_deref(), Some(b"confirmed tail".as_slice()));
         assert_eq!(state.unread, facts);
         assert!(
             state.working.is_some(),
@@ -305,7 +298,6 @@ fn confirmed_capture_resumes_without_rereading_provider_bytes() {
         // Each stale component is compared with the real committed cursor.
         for stale in 0..5 {
             let state = engine.inputs.get_mut(&path).unwrap();
-            state.parser_state = Some(serde_json::json!({"continuation":"stale"}));
             match stale {
                 0 => state.parsed_upto = 0,
                 1 => state.chain = None,
@@ -314,14 +306,13 @@ fn confirmed_capture_resumes_without_rereading_provider_bytes() {
                 _ => state.input_id = "another-input".into(),
             }
             engine.refresh_confirmed_input(&path).unwrap();
-            assert!(engine.inputs[&path].parser_state.is_none());
             assert_eq!(engine.inputs[&path].parsed_upto, bytes.len() as u64);
             assert_eq!(engine.inputs[&path].input_id, original_id);
         }
         assert_eq!(
             captured_source(&engine),
             complete_capture,
-            "stored parsing and cache refresh cannot read another revision or extent"
+            "stored parsing and cursor refresh cannot read another revision or extent"
         );
     }
 }
@@ -464,33 +455,21 @@ fn open_engine_ahead(
 }
 
 #[test]
-fn only_recently_changed_inputs_keep_their_tail_and_others_reload_it_on_append() {
-    let home = ClaudeHome::new();
-    home.append("quiet.jsonl", &claude_user("one", "quiet", "first"));
-    let path = home.file("quiet.jsonl");
-
-    let (mut engine, lock) = open_engine_ahead(&home, jiff::SignedDuration::from_hours(24));
-    let pass = engine.run_pass().unwrap();
-    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-    assert!(
-        engine.inputs[&path].tail.is_none(),
-        "an input unchanged for a day holds no tail in memory"
-    );
-    home.append("quiet.jsonl", &claude_user("two", "quiet", "second"));
-    let pass = engine.run_pass().unwrap();
-    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-    assert_eq!(home.texts("quiet"), ["first", "second"]);
-    drop(engine);
-    drop(lock);
-
-    let live = ClaudeHome::new();
-    live.append("live.jsonl", &claude_user("one", "live", "first"));
-    let (mut engine, _lock) = open_engine_ahead(&live, jiff::SignedDuration::from_mins(1));
-    engine.run_pass().unwrap();
-    assert!(
-        engine.inputs[&live.file("live.jsonl")].tail.is_some(),
-        "an input changed a minute ago keeps its tail for the next append"
-    );
+fn finished_inputs_restore_their_continuation_when_they_grow() {
+    for ahead in [
+        jiff::SignedDuration::from_hours(24),
+        jiff::SignedDuration::from_mins(1),
+    ] {
+        let home = ClaudeHome::new();
+        home.append("growing.jsonl", &claude_user("one", "growing", "first"));
+        let (mut engine, _lock) = open_engine_ahead(&home, ahead);
+        let pass = engine.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+        home.append("growing.jsonl", &claude_user("two", "growing", "second"));
+        let pass = engine.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+        assert_eq!(home.texts("growing"), ["first", "second"]);
+    }
 }
 
 #[test]

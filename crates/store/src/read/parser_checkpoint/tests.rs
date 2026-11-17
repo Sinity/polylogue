@@ -191,7 +191,7 @@ fn rejected_context_and_stopped_attempt_roll_back_with_the_reading_cursor() {
     };
     batch.observation = None;
     let cursor = batch.length;
-    let continuation = serde_json::json!({"_polylogue_context":{"version":1,"base":0,"through":cursor,"entries":[{"key":{"kind":"alias","namespace":"","uuid":"event"},"value":{"kind":"alias","target":null}}]}});
+    let continuation = serde_json::json!({"_polylogue_context":{"version":1,"base":0,"through":cursor,"cleared_states":[],"entries":[{"key":{"kind":"alias","namespace":"","uuid":"event"},"value":{"kind":"alias","target":null}}]}});
     batch.parse[0].checkpoint = Some(ParserCheckpoint::new(
         "synthetic=1".into(),
         cursor,
@@ -393,6 +393,7 @@ fn keyed_context_reuses_a_stored_message_version() {
     };
     batch.observation = None;
     let delta = Delta {
+        cleared_states: Vec::new(),
         version: 1,
         base: 0,
         through: batch.length,

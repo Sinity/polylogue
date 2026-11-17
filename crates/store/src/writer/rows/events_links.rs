@@ -2,6 +2,28 @@
 use super::*;
 
 impl RowWriter<'_, '_> {
+    pub(super) fn copy_event(
+        &self,
+        source: i64,
+        target: i64,
+        id: &str,
+        session: Option<i64>,
+    ) -> Result<()> {
+        if self
+            .tx
+            .exists("SELECT EXISTS(SELECT 1 FROM event WHERE pk=?1)", [target])?
+        {
+            return Ok(());
+        }
+        self.changes.event(self.tx, target)?;
+        self.tx.prepare_cached(
+            "INSERT INTO event(pk,id,session_pk,seq,after_message_id,seq_from_message,after_message_pk,kind,at,input_pk,source_chain,source_start,source_end,fields,data)
+             SELECT ?2,?3,coalesce(?4,session_pk),seq,after_message_id,seq_from_message,after_message_pk,kind,at,input_pk,source_chain,source_start,source_end,fields,data
+             FROM event WHERE pk=?1",
+        )?.execute(params![source,target,id,session])?;
+        self.upkeep.remember_event(id, target)
+    }
+
     pub(super) fn refresh_event(&self, pk: i64) -> Result<()> {
         let choice = self
             .choices

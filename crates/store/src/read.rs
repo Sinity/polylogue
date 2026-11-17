@@ -3,8 +3,8 @@
 //! attached.
 
 use crate::ConnExt as _;
+use crate::archive::Archive;
 use crate::archive::index_build::Reads;
-use crate::archive::{Archive, open_read};
 use crate::blobs::FileFacts;
 use crate::encoding::{Columns, restore_text, unpack_block};
 use crate::{Result, StoreError};
@@ -376,7 +376,7 @@ impl ReadPool {
     }
 
     fn connect(&self, path: &Path) -> Result<Connection> {
-        let conn = open_read(path)?;
+        let conn = self.archive.open_index_connection(path, self.reads)?;
         if self.archive.is_primary() {
             crate::primary::scope::require_readable(&conn)?;
         }

@@ -2,12 +2,13 @@
 //! in their own transaction; indexing consumes committed queue entries.
 
 use crate::ConnExt as _;
-use crate::OptionExt as _;
 use crate::Result;
 mod groups;
+mod search_build;
+pub(crate) use search_build::build_search_indexes;
 mod identities;
 #[cfg(any(test, feature = "fixture"))]
-use crate::first_build::FirstBuild;
+use crate::writer::resolve::IndexUpkeep;
 pub(crate) use groups::{PreparedTexts, StoredGroups, column, joined, read, slice};
 pub(crate) use identities::TextIds;
 #[cfg(any(test, feature = "fixture"))]
@@ -16,21 +17,21 @@ use rusqlite::{Connection, TransactionBehavior, params};
 
 /// The text row for `body`, stored once per distinct content, and its
 /// entry in the search index `bit` names (1 prose, 2 tool output). During a
-/// first build the text is found through `first_build`, not its hash index.
+/// build, its search membership is marked for the final scan.
 #[cfg(any(test, feature = "fixture"))]
 pub(crate) fn intern(
     conn: &Connection,
     body: &str,
     bit: i64,
     prepared: Option<&PreparedTexts>,
-    first_build: Option<&FirstBuild>,
+    upkeep: &IndexUpkeep,
 ) -> Result<i64> {
     let hash = blake3::hash(body.as_bytes());
     let id = conn
         .prepare_cached("SELECT id FROM text WHERE hash=?1")?
         .query_row([hash.as_bytes().as_slice()], |r| r.get::<_, i64>(0))
         .optional()?;
-    let bulk = first_build.is_some();
+    let at_build_end = upkeep.at_build_end();
     let (id, indexed) = match id {
         Some(id) => (
             id,
@@ -51,7 +52,7 @@ pub(crate) fn intern(
                 .expect("the text was just prepared");
             // A first build marks the text for its search index now and
             // writes the entry when the build ends.
-            let marked = if bulk { bit } else { 0 };
+            let marked = if at_build_end { bit } else { 0 };
             let id = groups::insert(
                 conn,
                 &StoredGroups::default(),
@@ -60,26 +61,28 @@ pub(crate) fn intern(
                 prepared,
                 marked,
             )?
-            .or_invalid("the text row already exists")?;
+            .ok_or_else(|| {
+                crate::StoreError::Invalid("a new text conflicts with a stored identity".into())
+            })?;
             (id, marked)
         }
     };
     // `indexed` marks a text for its search index; the entry itself is
     // written after this transaction commits: by the search thread, or by
-    // a first build in bulk when it ends.
+    // the final build scan.
     if bit != 0 && indexed & bit == 0 {
-        join_index(conn, id, bit, bulk)?;
+        join_index(conn, id, bit, at_build_end)?;
     }
     Ok(id)
 }
 
 /// The search indexes new text rows join when they are written: those the
 /// blocks a step makes current name, by text hash (bit 1 prose, 2 tool
-/// output). A first build (`bulk`) writes the entries when it ends; otherwise
+/// output). A first build (`at_build_end`) writes the entries when it ends; otherwise
 /// they are queued for the search thread.
 pub(crate) struct NewMembership<'a> {
     pub bits: &'a std::collections::HashMap<[u8; 32], i64>,
-    pub bulk: bool,
+    pub at_build_end: bool,
 }
 
 /// Marks an already stored text for current-block search membership.
@@ -88,24 +91,24 @@ pub(crate) fn activate(
     texts: &TextIds,
     id: i64,
     bit: i64,
-    bulk: bool,
+    at_build_end: bool,
 ) -> Result<()> {
     // A text marked in this transaction needs no statement per block.
     if texts.is_marked(id, bit) {
         return Ok(());
     }
-    join_index(conn, id, bit, bulk)?;
+    join_index(conn, id, bit, at_build_end)?;
     texts.mark(id, bit);
     Ok(())
 }
 
-fn join_index(conn: &Connection, id: i64, bit: i64, bulk: bool) -> Result<()> {
+fn join_index(conn: &Connection, id: i64, bit: i64, at_build_end: bool) -> Result<()> {
     let changed = conn
         .prepare_cached(
             "UPDATE text SET indexed = indexed | ?2 WHERE id = ?1 AND indexed & ?2 = 0",
         )?
         .execute(params![id, bit])?;
-    if changed != 0 && !bulk {
+    if changed != 0 && !at_build_end {
         queue_entry(conn, id, bit)?;
     }
     Ok(())
@@ -124,47 +127,6 @@ fn queue_entry(conn: &Connection, id: i64, bit: i64) -> Result<()> {
 // transaction.
 const SEARCH_ROWS: i64 = 2_000;
 const SEARCH_BYTES: usize = 16 * 1024 * 1024;
-
-/// Writes the first build's marked texts in ID order, both search indexes
-/// from one scan of `text`, in one transaction. The full-text index then
-/// writes each segment once: committing every few megabytes of text flushed
-/// a small segment per commit and merged them again, which wrote twice what
-/// the index keeps without a journal and four times with one (2026-11-15
-/// measurement). Prior postings and statistics are replaced in the same
-/// transaction; inserting the same contentless row IDs again would count
-/// words twice. A failure or a stop leaves the search indexes as they were.
-pub(crate) fn index_marked(conn: &Connection) -> Result<()> {
-    let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    tx.execute("INSERT INTO text_fts(text_fts) VALUES ('delete-all')", [])?;
-    tx.execute(
-        "INSERT INTO output_fts(output_fts) VALUES ('delete-all')",
-        [],
-    )?;
-    let mut written = false;
-    {
-        let mut select = tx.prepare(
-            "SELECT t.id, t.indexed, g.body, t.start, t.length FROM text t
-             JOIN text_group g ON g.id = t.group_id WHERE t.indexed <> 0 ORDER BY t.id",
-        )?;
-        let mut rows = select.query([])?;
-        while let Some(row) = rows.next()? {
-            let id: i64 = row.get(0)?;
-            let indexed: i64 = row.get(1)?;
-            let (folded, _) = folded_text(joined(row, 2)?)?;
-            for bit in [1, 2].into_iter().filter(|bit| indexed & bit != 0) {
-                insert_entry(&tx, id, bit, &folded)?;
-            }
-            written = true;
-            #[cfg(feature = "faults")]
-            crate::fault::check("search.indexed", conn.path().unwrap_or_default())?;
-        }
-    }
-    if written {
-        crate::archive::bump_counter(&tx)?;
-    }
-    tx.commit()?;
-    Ok(())
-}
 
 /// Drains committed search work in bounded transactions, each inside what
 /// `turn` returns (the search thread's turn at writing the index).
@@ -247,14 +209,19 @@ fn insert_entry(conn: &Connection, id: i64, bit: i64, folded: &str) -> Result<()
 
 /// Historical versions keep their text row, but only current blocks contribute
 /// documents to full-text ranking or embedding.
-pub(crate) fn unindex_unused(i: &Connection, texts: &TextIds, id: i64, bulk: bool) -> Result<()> {
+pub(crate) fn unindex_unused(
+    i: &Connection,
+    texts: &TextIds,
+    id: i64,
+    at_build_end: bool,
+) -> Result<()> {
     for (bit, kind, table) in [
         (1, "b.kind NOT IN ('tool_result','tool_call')", "text_fts"),
         (2, "b.kind IN ('tool_result','tool_call')", "output_fts"),
     ] {
         let used:bool=i.exists(&format!("SELECT EXISTS(SELECT 1 FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.text_id=?1 AND {kind}) OR (?2=1 AND EXISTS(SELECT 1 FROM document_block b JOIN document d ON d.pk=b.document_pk WHERE b.text_id=?1))"), params![id,bit])?;
         if !used {
-            if !bulk {
+            if !at_build_end {
                 i.execute(&format!("DELETE FROM {table} WHERE rowid=?1"), [id])?;
             }
             i.execute(

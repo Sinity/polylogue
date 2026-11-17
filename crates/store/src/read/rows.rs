@@ -8,6 +8,7 @@ impl Reader<'_> {
         crate::fault::check("read.query", sql)?;
         let conn = self.conn()?;
         let mut stmt = conn.prepare_cached(sql)?;
+        require_readonly(&stmt)?;
         for (i, p) in params.iter().take(stmt.parameter_count()).enumerate() {
             stmt.raw_bind_parameter(i + 1, p)?;
         }
@@ -47,6 +48,7 @@ impl Reader<'_> {
         crate::fault::check("read.query", sql).map_err(E::from)?;
         let conn = self.conn().map_err(E::from)?;
         let mut stmt = conn.prepare_cached(sql).map_err(StoreError::from)?;
+        require_readonly(&stmt)?;
         visit_rows(&mut stmt, params, |row| {
             visit(serde_json::Value::Object(row))
         })
@@ -81,6 +83,13 @@ impl Reader<'_> {
         })?;
         Ok(out)
     }
+}
+
+fn require_readonly(stmt: &rusqlite::Statement<'_>) -> Result<()> {
+    if !stmt.readonly() {
+        return Err(StoreError::Invalid("reader queries may only read".into()));
+    }
+    Ok(())
 }
 
 /// Decode a prepared statement's rows as JSON objects keyed by column name.

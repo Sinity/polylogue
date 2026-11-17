@@ -1,6 +1,6 @@
 //! Packed readings and their shared text. Source rows choose what is shown.
 use crate::ResultExt as _;
-use crate::{Result, encoding, first_build::FirstBuild};
+use crate::{Result, encoding};
 use polylogue_model::{BlobHash, Block, Message, bundle::MessageProjection};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::de::DeserializeOwned;
@@ -48,6 +48,7 @@ pub(crate) struct TextRows<'a> {
     pub packed: &'a crate::text_rows::PreparedTexts,
     pub texts: &'a crate::text_rows::TextIds,
     pub membership: Option<&'a crate::text_rows::NewMembership<'a>>,
+    pub upkeep: &'a crate::writer::resolve::IndexUpkeep,
 }
 
 pub(crate) fn store_document(
@@ -146,18 +147,30 @@ fn store_value(
         packed,
         texts: identities,
         membership,
+        upkeep,
     } = text_rows;
     let name = kind.name();
     let (inserted, key, column) = if matches!(kind, VersionKind::Message) {
-        let inserted = conn
-            .prepare_cached("INSERT OR IGNORE INTO message_version(version_hash) VALUES(?1)")?
-            .execute([hash])?;
-        // execute reports this statement's changes, excluding trigger writes.
-        // This connection has one writer; capture its row ID before another statement.
-        let pk = if inserted == 1 {
-            conn.last_insert_rowid()
+        let pk = if let Some(keys) = upkeep.key_maps() {
+            match keys.message_version(conn, hash)? {
+                Some(pk) => pk,
+                None => {
+                    conn.prepare_cached("INSERT INTO message_version(version_hash) VALUES(?1)")?
+                        .execute([hash])?;
+                    let pk = conn.last_insert_rowid();
+                    keys.add_message_version(hash, pk)?;
+                    pk
+                }
+            }
         } else {
-            message_key(conn, hash)?
+            let inserted = conn
+                .prepare_cached("INSERT OR IGNORE INTO message_version(version_hash) VALUES(?1)")?
+                .execute([hash])?;
+            if inserted == 1 {
+                conn.last_insert_rowid()
+            } else {
+                message_key(conn, hash)?
+            }
         };
         let sql = if replace {
             "INSERT INTO message_version_body(version_pk,body) VALUES(?1,?2)
@@ -504,7 +517,7 @@ pub(crate) fn track_unreferenced(conn: &Connection) -> Result<()> {
 /// when it ends, so a removed text has no search entry to remove.
 pub(crate) fn remove_unreferenced(
     conn: &Connection,
-    first_build: Option<&FirstBuild>,
+    upkeep: &crate::writer::resolve::IndexUpkeep,
     texts: &crate::text_rows::TextIds,
 ) -> Result<()> {
     for kind in VersionKind::ALL {
@@ -564,12 +577,12 @@ pub(crate) fn remove_unreferenced(
         .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, crate::encoding::Columns::hash(r, 2)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for (id, indexed, hash) in unused_texts {
-        if first_build.is_some() {
+        if upkeep.at_build_end() {
             crate::text_rows::remove_unindexed(conn, id)?;
         } else {
             crate::text_rows::remove(conn, id, indexed)?;
         }
-        texts.removed(&hash, id);
+        texts.removed(&hash, id)?;
     }
     conn.prepare_cached("DELETE FROM temp.unreferenced_text")?
         .execute([])?;

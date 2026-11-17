@@ -159,7 +159,7 @@ fn a_large_scope_uses_index_hits_and_preserves_unicode_prefixes_and_nested_index
             write.execute_batch("ANALYZE").unwrap();
         }
         if deferred {
-            for index in crate::writer::deferred_index_names() {
+            for &index in crate::schema::BUILT_AT_END {
                 write
                     .execute_batch(&format!("DROP INDEX IF EXISTS {index}"))
                     .unwrap();

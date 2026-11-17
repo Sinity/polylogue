@@ -7,8 +7,8 @@ use polylogue_sources::OriginSpec;
 use polylogue_store::{Change, FileFacts, InputKey, Observation, read::ChainProgress};
 use std::path::{Path, PathBuf};
 
-/// What the loop knows about one input between passes. Its parser state
-/// (`parser_state`) is restored lazily from the committed cursor after a restart.
+/// File facts and cursors between passes. Active plans restore parser state
+/// from the committed checkpoint when they start.
 pub(crate) struct InputState {
     pub(crate) input_id: String,
     pub(crate) origin: &'static OriginSpec,
@@ -20,8 +20,6 @@ pub(crate) struct InputState {
     /// Current progress waits at this length: an incomplete record at source
     /// EOF, or a recorded stop. The stored-chain planner selects stop retries.
     pub(crate) waiting: bool,
-    pub(crate) parser_state: Option<Json>,
-    pub(crate) tail: Option<Vec<u8>>,
     /// The revision chain whose bytes are stored, from confirmed metadata
     /// or a writer acknowledgment. Unknown until one supplies it.
     pub(crate) chain: Option<i64>,
@@ -44,8 +42,6 @@ impl InputState {
             parsed_upto: 0,
             parsed: false,
             waiting: false,
-            parser_state: None,
-            tail: None,
             chain: None,
             unread: None,
             working: None,
@@ -53,7 +49,6 @@ impl InputState {
     }
 
     /// Adopt committed logical progress. Bytes held in the spool never supply a cursor.
-    /// Cached continuation is useful only at the same reading checkpoint.
     pub(crate) fn adopt_confirmed(
         &mut self,
         input_id: &str,
@@ -72,12 +67,6 @@ impl InputState {
             && self.parsed_upto == parsed_upto
             && self.parsed == parsed
             && self.waiting == waiting;
-        if !same_cursor {
-            self.parser_state = None;
-        }
-        if !same_input || self.chain != chain || self.stored != stored {
-            self.tail = None;
-        }
         if self.facts != facts || !same_cursor {
             self.unread = None;
         }
@@ -167,7 +156,7 @@ pub(crate) struct Plan {
     /// Older chains of the input recorded from this chain's reading as the
     /// parse passes the end of the bytes they share with it, by stop
     /// ([`crate::prefix_copies`]). No range reads past the first stop.
-    pub(crate) prefix_copies: Vec<crate::prefix_copies::PrefixCopy>,
+    pub(crate) prefix_copies: Option<polylogue_store::PrefixCopies>,
     /// The end of the last range parsed: once it reaches a copy's stop, the
     /// parse has read every complete record the shared bytes hold.
     pub(crate) read_to: u64,
@@ -226,7 +215,7 @@ impl Plan {
             waiting: false,
             input_finished: false,
             source,
-            prefix_copies: Vec::new(),
+            prefix_copies: None,
             read_to: parse_pos,
         }
     }
@@ -261,7 +250,11 @@ impl Plan {
             self.parse_pos
         };
         let end = self.size.min(start.saturating_add(self.span));
-        match self.prefix_copies.first() {
+        match self
+            .prefix_copies
+            .as_ref()
+            .and_then(|copies| copies.first())
+        {
             Some(copy) if copy.stop > start => (start, end.min(copy.stop)),
             _ => (start, end),
         }
@@ -362,7 +355,8 @@ impl Plan {
         // A range that ends at a copy's stop is cut short only for the copy.
         let at_stop = self
             .prefix_copies
-            .first()
+            .as_ref()
+            .and_then(|copies| copies.first())
             .is_some_and(|copy| copy.stop == d.end);
         if parsed {
             self.read_to = d.end;

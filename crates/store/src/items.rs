@@ -558,22 +558,37 @@ pub(crate) fn refresh_stale(conn: &Connection) -> Result<()> {
         )?
         .query_map([], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
-    let counter = crate::session_values::write_counter(conn)?;
-    for pk in sessions {
-        crate::session_values::rebuild(conn, pk, counter)?;
-        conn.execute_batch("SAVEPOINT fixture_items")?;
-        let result = rebuild(conn, pk, None, &BTreeSet::new(), MessageEntries::Fixture);
-        match result {
-            Ok(_) => conn.execute_batch("RELEASE fixture_items")?,
-            Err(error) => {
-                conn.execute_batch("ROLLBACK TO fixture_items; RELEASE fixture_items")?;
-                if !matches!(
-                    error,
-                    StoreError::Invalid(_) | StoreError::StoredValue { .. } | StoreError::Json(_)
-                ) {
-                    return Err(error);
+    // Match the writer's transaction boundary. Opening fixture reads must not
+    // commit each session's item and value rows as independent transactions.
+    conn.execute_batch("SAVEPOINT fixture_refresh")?;
+    let result = (|| {
+        let counter = crate::session_values::write_counter(conn)?;
+        for pk in sessions {
+            crate::session_values::rebuild(conn, pk, counter)?;
+            conn.execute_batch("SAVEPOINT fixture_items")?;
+            let result = rebuild(conn, pk, None, &BTreeSet::new(), MessageEntries::Fixture);
+            match result {
+                Ok(_) => conn.execute_batch("RELEASE fixture_items")?,
+                Err(error) => {
+                    conn.execute_batch("ROLLBACK TO fixture_items; RELEASE fixture_items")?;
+                    if !matches!(
+                        error,
+                        StoreError::Invalid(_)
+                            | StoreError::StoredValue { .. }
+                            | StoreError::Json(_)
+                    ) {
+                        return Err(error);
+                    }
                 }
             }
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => conn.execute_batch("RELEASE fixture_refresh")?,
+        Err(error) => {
+            conn.execute_batch("ROLLBACK TO fixture_refresh; RELEASE fixture_refresh")?;
+            return Err(error);
         }
     }
     Ok(())

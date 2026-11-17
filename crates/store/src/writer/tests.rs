@@ -7,6 +7,7 @@ use polylogue_model::{
 
 mod append_cost;
 mod assertions;
+mod build_upkeep;
 mod empty_source;
 mod event_fk;
 mod event_placement;
@@ -38,21 +39,26 @@ fn write_test_rows(
     step: &ParseStep,
     chain: i64,
     counter: i64,
-    first: Option<&crate::first_build::FirstBuild>,
+    upkeep: &resolve::IndexUpkeep,
 ) -> Result<u64> {
     let mut batch = batch.clone();
     batch.parse = vec![step.clone()];
-    resolve::prepare_index(tx, &mut batch, chain, first.is_some())?;
+    resolve::prepare_index(tx, &mut batch, chain, upkeep)?;
     let changes = crate::change_summary::ChangeSummary::start(tx)?;
     let written = write_rows(
         tx,
         &batch,
         &batch.parse[0],
         rows::ReadingWrite {
-            texts: &crate::text_rows::TextIds::new(tx, false).unwrap(),
+            texts: &crate::text_rows::TextIds::new(
+                tx,
+                false,
+                crate::archive::MemoryBudget::default().keys() / 3,
+            )
+            .unwrap(),
             resolution: batch.parse[0].resolution.as_ref().unwrap(),
             counter,
-            first_build: first,
+            upkeep,
             source_commit: Some(&fixture_commit()),
             changes: &changes,
             retraction: false,
@@ -434,7 +440,7 @@ fn a_tool_result_pairs_with_its_call_in_either_order() {
 }
 
 #[test]
-fn prose_and_tool_output_are_searchable_once_a_first_build_ends() {
+fn prose_and_tool_output_are_searchable_once_a_build_ends() {
     let w = test_archive();
     let mut m = text_message("a", "s", Role::User, "find the walrus", None);
     m.blocks.push(Block::ToolResult {
@@ -1265,7 +1271,7 @@ mod reparse;
 
 mod segments;
 #[test]
-fn parse_positions_and_rows_commit_atomically_during_first_build() {
+fn parse_positions_and_rows_commit_atomically_during_build() {
     let w = test_archive();
     let index =
         crate::archive::open_write(&w.archive.index_db(), crate::archive::cache::SETUP).unwrap();
@@ -1389,7 +1395,7 @@ fn interrupted_secondary_index_finish_retries_build() {
 }
 
 #[test]
-fn a_completed_empty_index_does_not_begin_another_first_build() {
+fn a_completed_empty_index_does_not_begin_another_build() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = crate::Archive::open_or_create(dir.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();

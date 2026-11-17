@@ -64,6 +64,25 @@ fn chain_with_member(
     assert!(w.writer.flush().unwrap().errors.is_empty());
 }
 
+#[test]
+fn chain_layouts_report_missing_and_present_unread_readings() {
+    for parsed in [false, true] {
+        let w = test_archive();
+        chain(&w, 1, b'a', parsed);
+        chain(&w, 2, b'b', parsed);
+        let pool = ReadPool::open(&w.archive).unwrap();
+        let reader = pool.reader().unwrap();
+        let layouts = reader.chain_layouts("doc").unwrap().unwrap();
+        assert_eq!(layouts.len(), 2);
+        assert!(!layouts.unread_before(0).unwrap());
+        assert_eq!(layouts.unread_before(1).unwrap(), !parsed);
+        assert_eq!(layouts.unread_before(2).unwrap(), !parsed);
+        for n in 0..2 {
+            assert_eq!(layouts.get(n).unwrap().reading.is_some(), parsed);
+        }
+    }
+}
+
 /// Every row of the index, apart from write-counter values.
 fn dump(w: &TestArchive) -> BTreeMap<String, Vec<String>> {
     index_rows(w, false)

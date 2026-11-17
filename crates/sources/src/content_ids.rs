@@ -15,18 +15,24 @@
 
 use polylogue_model::{MessageId, Role, SessionId};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
-/// Counts the messages named so far, per session, role and content. A parser
-/// keeps one in its carried state, so a resumed parse continues the counts.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Occurrences are keyed context values, shared across ranges and restored checkpoints.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ContentIds {
-    /// Earlier messages, by session and content hash.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    seen: BTreeMap<String, u32>,
+    #[serde(flatten)]
+    counts: crate::parser_state::Map<u64>,
 }
 
 impl ContentIds {
+    pub(crate) fn bind_context(
+        &mut self,
+        context: polylogue_model::parser_context::Handle,
+        namespace: String,
+    ) {
+        self.counts
+            .bind(context, format!("{namespace}/content-counts"));
+    }
+
     /// Normalized indexing text repeats the original tool arguments and does not change message identity.
     pub fn next_blocks(
         &mut self,
@@ -64,13 +70,14 @@ impl ContentIds {
             .ok()?
             .to_hex();
         let hash = &hash.as_str()[..16];
-        let occurrence = self.seen.entry(format!("{session}\0{hash}")).or_insert(0);
+        let key = format!("{session}\0{hash}");
+        let occurrence = self.counts.get(&key).unwrap_or(0);
         let native = format!(
             "{}~{}-{hash}-{occurrence}",
             session.native().as_str(),
             role.as_str()
         );
-        *occurrence += 1;
+        self.counts.insert(key, occurrence.checked_add(1)?);
         crate::document::message_id(session.origin().as_str(), &native)
     }
 }

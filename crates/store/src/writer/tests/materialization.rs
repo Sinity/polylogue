@@ -102,6 +102,7 @@ fn reading(input: &str, messages: Vec<Message>, entries: Vec<Entry>) -> Batch {
         "synthetic=1".into(),
         100,
         Some(serde_json::json!({"_polylogue_context": Delta {
+        cleared_states: Vec::new(),
             version: 1, base: 0, through: 100, entries,
         }})),
     ));
@@ -109,14 +110,19 @@ fn reading(input: &str, messages: Vec<Message>, entries: Vec<Entry>) -> Batch {
 }
 
 fn apply(conn: &mut Connection, mut b: Batch) -> (Result<u64>, Work) {
-    resolve::prepare_index(conn, &mut b, 1, false).unwrap();
+    resolve::prepare_index(conn, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
     apply_prepared(conn, b)
 }
 
 fn apply_prepared(conn: &mut Connection, b: Batch) -> (Result<u64>, Work) {
     let tx = conn.transaction().unwrap();
     let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
-    let texts = crate::text_rows::TextIds::new(&tx, false).unwrap();
+    let texts = crate::text_rows::TextIds::new(
+        &tx,
+        false,
+        crate::archive::MemoryBudget::default().keys() / 3,
+    )
+    .unwrap();
     WORK.with(|w| w.set(Work::default()));
     tx.trace_v2(
         TraceEventCodes::SQLITE_TRACE_PROFILE | TraceEventCodes::SQLITE_TRACE_ROW,
@@ -131,7 +137,7 @@ fn apply_prepared(conn: &mut Connection, b: Batch) -> (Result<u64>, Work) {
             texts: &texts,
             resolution: p.resolution.as_ref().unwrap(),
             counter: 1,
-            first_build: None,
+            upkeep: &resolve::IndexUpkeep::PerTransaction,
             source_commit: Some(&fixture_commit()),
             changes: &changes,
             retraction: false,

@@ -26,8 +26,13 @@ fn item_commit_uses_prepared_content_without_reading_payloads() {
         run_by_script: false,
     });
     let mut b = batch("input", Route::Live, 0, vec![row(0, message)], &["session"]);
-    resolve::prepare_index(&tx, &mut b, 1, false).unwrap();
-    let texts = crate::text_rows::TextIds::new(&tx, false).unwrap();
+    resolve::prepare_index(&tx, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
+    let texts = crate::text_rows::TextIds::new(
+        &tx,
+        false,
+        crate::archive::MemoryBudget::default().keys() / 3,
+    )
+    .unwrap();
     let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
     write_rows(
         &tx,
@@ -37,7 +42,7 @@ fn item_commit_uses_prepared_content_without_reading_payloads() {
             texts: &texts,
             resolution: b.parse[0].resolution.as_ref().unwrap(),
             counter: 1,
-            first_build: None,
+            upkeep: &resolve::IndexUpkeep::PerTransaction,
             source_commit: Some(&fixture_commit()),
             changes: &changes,
             retraction: false,

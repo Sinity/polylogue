@@ -88,6 +88,7 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
         home,
         tool_dirs: Default::default(),
         workers: 2,
+        memory_budget: Default::default(),
         reader_memory_bytes: 64 << 20,
         bytes_in_flight: 64 << 20,
         machine: startup.engine.machine.clone(),

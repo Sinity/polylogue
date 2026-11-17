@@ -65,7 +65,7 @@ fn completed_build_measurement_pays_its_wal_and_refuses_a_live_reader() {
         1
     );
     writer.execute("UPDATE measured SET value=2", []).unwrap();
-    assert!(checkpoint_first_build(&archive).is_err());
+    assert!(checkpoint_build(&archive).is_err());
     assert_eq!(
         reader
             .query_row("SELECT value FROM measured", [], |r| r.get::<_, i64>(0))
@@ -73,7 +73,7 @@ fn completed_build_measurement_pays_its_wal_and_refuses_a_live_reader() {
         1
     );
     reader.execute_batch("ROLLBACK").unwrap();
-    let databases = checkpoint_first_build(&archive).unwrap();
+    let databases = checkpoint_build(&archive).unwrap();
     let index = databases
         .iter()
         .find(|database| database.name == "index")

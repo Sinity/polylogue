@@ -8,9 +8,9 @@
 //! exist. There is no to-do list and no repair path; `status` calls the
 //! same comparison.
 //!
-//! Parser state lives in memory. After a restart it is rebuilt lazily: an
-//! input's state is rebuilt by parsing its bytes again only when that input
-//! next changes, never all at start-up.
+//! Parser working state lives with active input ranges. Continuation is restored
+//! from stored checkpoints when changed input starts; history-sized lookups use
+//! the disk-backed parser context.
 
 pub mod collect;
 mod compressed;
@@ -116,7 +116,9 @@ pub struct Config {
     /// as the running user set them. An origin whose root names one of
     /// these reads from it instead of its default under `home`.
     pub tool_dirs: BTreeMap<String, PathBuf>,
-    /// Parse workers; defaults to the number of cores.
+    /// The process allowance shared by caches, queued work and parse workers.
+    pub memory_budget: polylogue_store::archive::MemoryBudget,
+    /// Parse workers, bounded by CPU and memory allowances.
     pub workers: usize,
     /// Combined SQLite page-cache target for client and loop readers.
     /// Mapped reader pages are disabled. This is not a total RSS limit.
@@ -127,7 +129,7 @@ pub struct Config {
     /// `/etc/machine-id`: paths from two machines never collide.
     pub machine: String,
     pub host: String,
-    /// The range one job reads at most (default 64 MiB), so a large file
+    /// The range one job reads at most (default 16 MiB), so a large file
     /// is stored and parsed in steps; an export's items commit in batches
     /// of about this many of its bytes. Not a limit: a record longer than
     /// this doubles the range for its input until it fits.
@@ -143,6 +145,18 @@ pub struct Config {
 }
 
 impl Config {
+    /// Apply one process budget while preserving smaller explicit working budgets.
+    pub fn with_memory_budget(mut self, budget: polylogue_store::archive::MemoryBudget) -> Self {
+        self.memory_budget = budget;
+        self.workers = self
+            .workers
+            .min(budget.worker_count(self.workers, self.workers));
+        self.reader_memory_bytes = self.reader_memory_bytes.min(budget.readers());
+        self.bytes_in_flight = self.bytes_in_flight.min(budget.in_flight());
+        self.chunk = self.chunk.min(16 << 20);
+        self
+    }
+
     /// One reader slot is kept for the loop; client reads have `workers`
     /// slots. All slots share one page-cache target, split again between index,
     /// archive and optional embeddings by the store. Integer division leaves unused bytes.
@@ -224,6 +238,7 @@ impl Config {
             home,
             tool_dirs,
             workers,
+            memory_budget: Default::default(),
             reader_memory_bytes: 128 << 20,
             bytes_in_flight: 512 << 20,
             machine,
@@ -231,7 +246,8 @@ impl Config {
             chunk: 64 << 20,
             live_every: Duration::from_secs(2),
             reads_sources: true,
-        })
+        }
+        .with_memory_budget(Default::default()))
     }
 }
 
@@ -494,6 +510,9 @@ impl Engine {
         archive: Archive,
         stopped_attempt: StoppedAttempt,
     ) -> Result<Self, EngineError> {
+        let budget = config.memory_budget;
+        let config = config.with_memory_budget(budget);
+        let archive = archive.with_memory_budget(config.memory_budget);
         let writer = Writer::start(&archive)?;
         Self::with_writer(config, archive, writer, stopped_attempt)
     }
@@ -506,6 +525,9 @@ impl Engine {
         sinex: Arc<dyn polylogue_store::primary::Sinex>,
         stopped_attempt: StoppedAttempt,
     ) -> Result<Self, EngineError> {
+        let budget = config.memory_budget;
+        let config = config.with_memory_budget(budget);
+        let archive = archive.with_memory_budget(config.memory_budget);
         let writer = Writer::start_on_sinex(&archive, sinex)?;
         Self::with_writer(config, archive, writer, stopped_attempt)
     }

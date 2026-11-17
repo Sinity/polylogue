@@ -31,11 +31,21 @@ fn authored_recovery_uses_completed_sinex_positions() {
         .execute_batch("DROP INDEX confirmed_event_changed")
         .unwrap();
     crate::schema::ensure_primary_index(&index).unwrap();
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     crate::primary::scope::reset(&mut index, &archive, &resolver, "scope-a", false).unwrap();
     let a = setting(&index, "request-a", "drive.ai-studio");
     apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[live(10, "request-a", a), complete_at(20)],
@@ -50,7 +60,12 @@ fn authored_recovery_uses_completed_sinex_positions() {
     );
     let b = setting(&index, "request-b", "browser.actions");
     apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[live(21, "request-b", b), complete_at(21)],
@@ -73,7 +88,12 @@ fn authored_recovery_uses_completed_sinex_positions() {
     );
     let before = reads.reader().unwrap().change_position().unwrap();
     apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[lifecycle(30, "request-a", ConfirmedChange::Archived)],
@@ -88,7 +108,12 @@ fn authored_recovery_uses_completed_sinex_positions() {
         "staging does not make changes visible"
     );
     apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[complete_at(30)],
@@ -111,7 +136,12 @@ fn authored_recovery_uses_completed_sinex_positions() {
     );
     let before = reads.reader().unwrap().change_position().unwrap();
     apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[
@@ -137,7 +167,12 @@ fn authored_recovery_uses_completed_sinex_positions() {
     );
     let before = reads.reader().unwrap().change_position().unwrap();
     apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[
@@ -172,7 +207,12 @@ fn authored_recovery_uses_completed_sinex_positions() {
     let id = object.id.to_string();
     let before = reads.reader().unwrap().change_position().unwrap();
     apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[
@@ -208,7 +248,12 @@ fn authored_recovery_uses_completed_sinex_positions() {
     let before = reads.reader().unwrap().change_position().unwrap();
     assert_eq!(before.archive, 60);
     apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[
@@ -227,7 +272,12 @@ fn authored_recovery_uses_completed_sinex_positions() {
     );
     let before = reads.reader().unwrap().change_position().unwrap();
     apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[

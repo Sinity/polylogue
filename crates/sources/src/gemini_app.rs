@@ -10,7 +10,7 @@
 //! own. Responses are HTML in the export and are kept as text.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 use crate::RecordOutcome;
 use crate::document::{Sink, session_id};
@@ -58,6 +58,9 @@ struct Entry {
 mod stream;
 
 impl ExportParser for GeminiApp {
+    fn bind_context(&mut self, context: polylogue_model::parser_context::Handle) {
+        self.ids.bind_context(context, "gemini-app".into());
+    }
     fn scan(
         &mut self,
         _input: &str,

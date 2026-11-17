@@ -12,7 +12,7 @@ fn fresh_message_selection_shares_one_value_through_preparation_and_spill() {
         vec![message.clone()],
         vec![reference(&message, "large")],
     );
-    resolve::prepare_index(&conn, &mut b, 1, false).unwrap();
+    resolve::prepare_index(&conn, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
     let choices = &b.parse[0].resolution.as_ref().unwrap().choices;
     let choice = choices.messages.values().next().unwrap().as_ref().unwrap();
     let value = choices.selected_message(choice).unwrap().unwrap();
@@ -109,7 +109,7 @@ fn selected_version_references_refuse_missing_mismatched_or_sparse_values_atomic
             )
         });
         let mut b = reading("reference-source", messages.to_vec(), Vec::new());
-        resolve::prepare_index(&conn, &mut b, 1, false).unwrap();
+        resolve::prepare_index(&conn, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
         let retry = b.clone();
         let choices = &mut b.parse[0].resolution.as_mut().unwrap().choices;
         let pk = *choices.messages.iter().find(|(_, c)| c.as_ref().is_some_and(|c|
@@ -175,7 +175,7 @@ fn composed_and_sparse_selections_keep_their_owned_metadata_and_values() {
     richer.model = Some("synthetic-model".into());
     let mut b = reading("export", vec![richer], Vec::new());
     b.input.route = Route::Export;
-    resolve::prepare_index(&conn, &mut b, 1, false).unwrap();
+    resolve::prepare_index(&conn, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
     let choices = &b.parse[0].resolution.as_ref().unwrap().choices;
     let choice = choices.messages.values().flatten().next().unwrap();
     assert!(matches!(choice.value, Some(SelectedMessage::Value(_))));
@@ -206,7 +206,7 @@ fn composed_and_sparse_selections_keep_their_owned_metadata_and_values() {
             block_ordinals: vec![1],
         },
     );
-    resolve::prepare_index(&conn, &mut b, 1, false).unwrap();
+    resolve::prepare_index(&conn, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
     let choice = b.parse[0]
         .resolution
         .as_ref()
@@ -281,7 +281,7 @@ fn referenced_complete_values_preserve_unknown_time_and_prepared_headers() {
             vec![message.clone()],
             vec![reference(&message, "clock")],
         );
-        resolve::prepare_index(&conn, &mut b, 1, false).unwrap();
+        resolve::prepare_index(&conn, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
         let choices = &b.parse[0].resolution.as_ref().unwrap().choices;
         let choice = choices.messages.values().flatten().next().unwrap();
         assert!(matches!(

@@ -966,7 +966,13 @@ pub(crate) fn apply_prepared(
     for session in touched {
         changes.whole_session(session);
     }
-    crate::writer::finish_rows(&tx, &changes, None, texts, counter)?;
+    crate::writer::finish_rows(
+        &tx,
+        &changes,
+        &crate::writer::resolve::IndexUpkeep::PerTransaction,
+        texts,
+        counter,
+    )?;
     crate::fault::check("primary.before_commit", "")?;
     tx.commit()?;
     text_transaction.commit();

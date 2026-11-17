@@ -15,9 +15,9 @@ fn call(text: Option<&str>) -> Block {
 
 #[test]
 fn written_tool_text_searches_output_and_snippets_and_retracts_without_losing_input() {
-    for first_build in [true, false] {
+    for build in [true, false] {
         let w = test_archive();
-        if !first_build {
+        if !build {
             w.writer.derive().unwrap();
         }
         let message = |text| {

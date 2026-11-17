@@ -20,14 +20,14 @@ pub(super) struct Search {
 }
 
 impl Search {
-    pub(super) fn start(index_db: std::path::PathBuf, ready: bool) -> Result<Self> {
+    pub(super) fn start(index_db: std::path::PathBuf, ready: bool, cache_mib: i64) -> Result<Self> {
         let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(ready));
         let (wake, rx) = sync_channel::<()>(1);
         let seen = flag.clone();
         let turn = Arc::new(Mutex::new(()));
         let thread_turn = Arc::clone(&turn);
         let handle = polylogue_model::spawn_named("polylogue-search", move || {
-            search_thread(&index_db, &seen, &rx, &thread_turn)
+            search_thread(&index_db, &seen, &rx, &thread_turn, cache_mib)
         })?;
         Ok(Self {
             wake: Some(wake),
@@ -60,13 +60,14 @@ impl Drop for Search {
 }
 
 /// Writes waiting search entries whenever woken, and once a second. The
-/// connection opens only after a first build, whose index is not in WAL
-/// mode and has one connection.
+/// connection opens on the installed WAL index. A private build completes
+/// its own search installation before publishing that file.
 pub(super) fn search_thread(
     index_db: &std::path::Path,
     ready: &std::sync::atomic::AtomicBool,
     wake: &Receiver<()>,
     turn: &Mutex<()>,
+    cache_mib: i64,
 ) {
     let mut conn: Option<Connection> = None;
     loop {
@@ -78,7 +79,7 @@ pub(super) fn search_thread(
             continue;
         }
         if conn.is_none() {
-            match open_runtime_writer(index_db, crate::archive::cache::SEARCH) {
+            match open_runtime_writer(index_db, cache_mib) {
                 Ok(c) => conn = Some(c),
                 Err(e) => {
                     eprintln!("polylogue: search thread: open the index: {e}");

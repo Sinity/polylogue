@@ -287,7 +287,8 @@ fn edits_continue_after_the_last_row_and_rebuilds_retire_the_cursor() {
             drop(lock);
             polylogue_testkit::delete_index(&home.root);
             let (mut reopened, _lock) = home.engine(64 << 20);
-            assert!(reopened.run_pass().unwrap().errors.is_empty());
+            let rebuilt = reopened.run_pass().unwrap();
+            assert!(rebuilt.errors.is_empty(), "{:?}", rebuilt.errors);
             // A cursor from an earlier index generation is `stale_cursor`
             // (docs/query.md, Paging, Refusals).
             assert_eq!(

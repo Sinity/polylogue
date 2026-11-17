@@ -835,8 +835,9 @@ END;
 -- Referenced metadata stays narrow; payload pages are read only for content.
 CREATE TABLE message_version (
   pk INTEGER PRIMARY KEY,
-  version_hash BLOB NOT NULL UNIQUE
+  version_hash BLOB NOT NULL
 ) STRICT;
+CREATE UNIQUE INDEX message_version_hash ON message_version(version_hash);
 CREATE TABLE message_version_body (
   version_pk INTEGER PRIMARY KEY REFERENCES message_version(pk) ON DELETE CASCADE,
   body BLOB NOT NULL
@@ -869,9 +870,10 @@ CREATE INDEX document_version_text_id ON document_version_text(text_id);
 -- Membership rows use small value keys, independently of assertion payload size.
 CREATE TABLE event_value (
   pk INTEGER PRIMARY KEY,
-  hash BLOB NOT NULL UNIQUE,
+  hash BLOB NOT NULL,
   body BLOB NOT NULL
 ) STRICT;
+CREATE UNIQUE INDEX event_value_hash ON event_value(hash);
 CREATE TABLE event_source (
   event_pk INTEGER NOT NULL REFERENCES event(pk) ON DELETE CASCADE,
   input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
@@ -892,9 +894,10 @@ CREATE TABLE event_source (
 CREATE INDEX event_source_input ON event_source(input_pk, chain);
 CREATE TABLE link_value (
   pk INTEGER PRIMARY KEY,
-  hash BLOB NOT NULL UNIQUE,
+  hash BLOB NOT NULL,
   body BLOB NOT NULL
 ) STRICT;
+CREATE UNIQUE INDEX link_value_hash ON link_value(hash);
 CREATE TABLE link_source (
   link_pk INTEGER NOT NULL REFERENCES link(pk) ON DELETE CASCADE,
   input_pk INTEGER NOT NULL REFERENCES input_ref(pk),

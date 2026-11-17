@@ -197,7 +197,12 @@ fn chunked_materials_catalog_each_chunk_and_their_chains_read_back() {
     let root = tempfile::tempdir().unwrap();
     let mut index = cache(&root.path().join("index.db"));
     let archive = crate::Archive::on_sinex(root.path(), &root.path().join("bytes"));
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let mut writer = hashed_blobs::SegmentWriter::open(
         root.path().join("bytes"),
         "segments/chunks.hb",
@@ -224,7 +229,12 @@ fn chunked_materials_catalog_each_chunk_and_their_chains_read_back() {
         length: length.len() as i64,
     };
     apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &step(1, revision(1, "first", 1, &first), 0, &first, &one),
@@ -232,7 +242,12 @@ fn chunked_materials_catalog_each_chunk_and_their_chains_read_back() {
     .unwrap();
     let two = store(&mut writer, &mut held, &scratch, &second);
     apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &step(2, revision(2, "rewritten", 2, &second), 0, &second, &two),
@@ -242,7 +257,12 @@ fn chunked_materials_catalog_each_chunk_and_their_chains_read_back() {
     // bytes past the confirmed second revision.
     let three = store(&mut writer, &mut held, &scratch, &third);
     apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &step(

@@ -1,7 +1,7 @@
 use super::*;
 use crate::parse::run;
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 fn main_file(stem: &str) -> ClaudeCode {
     ClaudeCode {
@@ -114,9 +114,11 @@ fn parsing_in_appended_bytes_equals_parsing_at_once() {
         let parser = main_file("s1");
         let mut parser_state = ParserState::default();
         let first = run(&parser, &mut parser_state, &bytes[..cut], 0).unwrap();
-        // The parser state travels as JSON between steps, as it does in the engine.
+        // JSON carries the active state; the context carries the keyed history.
+        let context = parser_state.context.clone();
         let mut parser_state: ParserState =
             serde_json::from_value(serde_json::to_value(&parser_state).unwrap()).unwrap();
+        parser_state.bind(context, String::new());
         let used = first.consumed as usize;
         let second = run(&parser, &mut parser_state, &bytes[used..], used as u64).unwrap();
         assert_eq!(final_messages(&[first, second]), whole, "cut at {cut}");
@@ -501,6 +503,9 @@ fn child_of_an_evicted_alias_keeps_its_resolved_parent() {
 fn context_backend_error_rejects_the_whole_parse() {
     struct Unavailable;
     impl polylogue_model::parser_context::Context for Unavailable {
+        fn clear_state(&mut self, _: &str) -> Result<(), polylogue_model::parser_context::Error> {
+            Err("unavailable selected context".into())
+        }
         fn get(
             &mut self,
             _: &polylogue_model::parser_context::Key,

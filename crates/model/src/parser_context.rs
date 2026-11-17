@@ -18,13 +18,25 @@ pub enum Key {
         namespace: String,
         uuid: String,
     },
+    State {
+        namespace: String,
+        key: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Value {
-    Response { row: Box<MessageRow> },
-    Alias { target: Option<MessageId> },
+    Response {
+        row: Box<MessageRow>,
+    },
+    Alias {
+        target: Option<MessageId>,
+    },
+    /// A null value removes this state key.
+    State {
+        value: Json,
+    },
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -50,6 +62,9 @@ impl From<&str> for Error {
 pub trait Context: Send {
     fn get(&mut self, key: &Key) -> Result<Option<Value>, Error>;
     fn put(&mut self, key: Key, value: Value) -> Result<(), Error>;
+    fn clear_state(&mut self, _: &str) -> Result<(), Error> {
+        Err(Error::Failed("parser context cannot clear state".into()))
+    }
 }
 
 #[derive(Clone)]
@@ -86,6 +101,19 @@ impl Handle {
             access.error.get_or_insert(error);
         }
     }
+    pub fn clear_state(&self, namespace: &str) {
+        let mut access = self.0.lock().expect("parser context lock");
+        if let Err(error) = access.backend.clear_state(namespace) {
+            access.error.get_or_insert(error);
+        }
+    }
+    pub fn fail(&self, error: impl Into<Error>) {
+        self.0
+            .lock()
+            .expect("parser context lock")
+            .error
+            .get_or_insert(error.into());
+    }
     pub fn is_cancelled(&self) -> bool {
         matches!(
             self.0.lock().expect("parser context lock").error.as_ref(),
@@ -106,11 +134,22 @@ impl Handle {
 #[derive(Default)]
 pub struct Memory(BTreeMap<Key, Value>);
 impl Context for Memory {
+    fn clear_state(&mut self, namespace: &str) -> Result<(), Error> {
+        self.0.retain(
+            |key, _| !matches!(key, Key::State { namespace: found, .. } if found == namespace),
+        );
+        Ok(())
+    }
     fn get(&mut self, key: &Key) -> Result<Option<Value>, Error> {
         Ok(self.0.get(key).cloned())
     }
     fn put(&mut self, key: Key, value: Value) -> Result<(), Error> {
-        self.0.insert(key, value);
+        if matches!((&key, &value), (Key::State { .. }, Value::State { value }) if value.is_null())
+        {
+            self.0.remove(&key);
+        } else {
+            self.0.insert(key, value);
+        }
         Ok(())
     }
 }
@@ -127,6 +166,7 @@ pub struct Delta {
     pub version: u32,
     pub base: u64,
     pub through: u64,
+    pub cleared_states: Vec<String>,
     pub entries: Vec<Entry>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,6 +185,10 @@ pub enum Reference {
     },
     Alias {
         target: Option<MessageId>,
+    },
+    /// A null value removes this state key.
+    State {
+        value: Json,
     },
 }
 pub const FIELD: &str = "_polylogue_context";

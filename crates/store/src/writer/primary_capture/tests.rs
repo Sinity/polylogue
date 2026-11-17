@@ -1391,9 +1391,19 @@ fn lifecycle_wait_lets_a_key_lock_holder_finish() {
     };
     {
         let mut index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
-        let resolver = resolve::Resolver::new(&archive, &index, None).unwrap();
+        let resolver = resolve::Resolver::new(
+            &archive,
+            &index,
+            crate::writer::resolve::IndexUpkeep::PerTransaction,
+        )
+        .unwrap();
         crate::primary::confirmed::apply(
-            &crate::text_rows::TextIds::new(&index, false).unwrap(),
+            &crate::text_rows::TextIds::new(
+                &index,
+                false,
+                crate::archive::MemoryBudget::default().keys() / 3,
+            )
+            .unwrap(),
             &mut index,
             &resolver,
             &[

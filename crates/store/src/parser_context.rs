@@ -15,12 +15,14 @@ use std::sync::{Arc, Mutex};
 // replaced is never read again.
 pub(crate) const SCHEMA: &str = "CREATE TABLE parser_context_state(input_pk INTEGER NOT NULL REFERENCES input_ref(pk),chain INTEGER NOT NULL,reading_version TEXT NOT NULL,through INTEGER NOT NULL,PRIMARY KEY(input_pk,chain)) STRICT, WITHOUT ROWID;
 CREATE TABLE parser_context_response(input_pk INTEGER NOT NULL REFERENCES input_ref(pk),chain INTEGER NOT NULL,namespace TEXT NOT NULL,session TEXT NOT NULL,key TEXT NOT NULL,version_pk INTEGER NOT NULL REFERENCES message_version(pk),source_start INTEGER NOT NULL,source_end INTEGER NOT NULL,PRIMARY KEY(input_pk,chain,namespace,session,key)) STRICT, WITHOUT ROWID;
-CREATE TABLE parser_context_alias(input_pk INTEGER NOT NULL REFERENCES input_ref(pk),chain INTEGER NOT NULL,namespace TEXT NOT NULL,uuid TEXT NOT NULL,target TEXT,PRIMARY KEY(input_pk,chain,namespace,uuid)) STRICT, WITHOUT ROWID;";
+CREATE TABLE parser_context_alias(input_pk INTEGER NOT NULL REFERENCES input_ref(pk),chain INTEGER NOT NULL,namespace TEXT NOT NULL,uuid TEXT NOT NULL,target TEXT,PRIMARY KEY(input_pk,chain,namespace,uuid)) STRICT, WITHOUT ROWID;
+CREATE TABLE parser_context_value(input_pk INTEGER NOT NULL REFERENCES input_ref(pk),chain INTEGER NOT NULL,namespace TEXT NOT NULL,key TEXT NOT NULL,value BLOB NOT NULL,PRIMARY KEY(input_pk,chain,namespace,key)) STRICT, WITHOUT ROWID;";
 
-// Collection and foreign-key checks follow this reference during first build,
-// so its reverse index must remain present while query-only indexes are deferred.
-pub(crate) const VERSION_INDEX: &str =
-    "CREATE INDEX IF NOT EXISTS parser_context_version ON parser_context_response(version_pk);";
+fn scratch_values() -> Result<Connection> {
+    let scratch = Connection::open("")?;
+    scratch.execute_batch("PRAGMA cache_size=-256; PRAGMA mmap_size=0; PRAGMA temp_store=FILE; PRAGMA journal_mode=OFF; PRAGMA cache_spill=ON; CREATE TABLE entry(key TEXT PRIMARY KEY,value BLOB NOT NULL,dirty INTEGER NOT NULL,state_namespace TEXT) WITHOUT ROWID; CREATE INDEX entry_dirty ON entry(key) WHERE dirty=1; CREATE INDEX entry_state_namespace ON entry(state_namespace) WHERE state_namespace IS NOT NULL; CREATE TABLE cleared_state(namespace TEXT PRIMARY KEY,dirty INTEGER NOT NULL) WITHOUT ROWID; BEGIN;")?;
+    Ok(scratch)
+}
 
 #[derive(Clone)]
 pub struct Overlay(Arc<Mutex<Attempt>>);
@@ -57,7 +59,7 @@ impl Overlay {
         let index = if base == 0 {
             None
         } else {
-            let index = crate::archive::open_read(&archive.index_db())?;
+            let index = archive.open_index_read()?;
             crate::read::limit::ReadLimit::observe_current(&index)?;
             // A build file has a rollback journal, where a read held across
             // the parse would block every writer commit
@@ -94,8 +96,7 @@ impl Overlay {
                 })?);
             }
         }
-        let scratch = Connection::open("")?;
-        scratch.execute_batch("PRAGMA cache_size=-256; PRAGMA mmap_size=0; PRAGMA temp_store=FILE; PRAGMA journal_mode=OFF; CREATE TABLE entry(key TEXT PRIMARY KEY,value BLOB NOT NULL,dirty INTEGER NOT NULL) WITHOUT ROWID; CREATE INDEX entry_dirty ON entry(key) WHERE dirty=1;")?;
+        let scratch = scratch_values()?;
         Ok(Self(Arc::new(Mutex::new(Attempt {
             scratch,
             index,
@@ -111,6 +112,21 @@ impl Overlay {
             lookup_through: base,
             base: if replay_chain.is_some() { 0 } else { base },
             replay_chain,
+        }))))
+    }
+    /// Export items reconstruct their cross-item state by replaying from byte zero.
+    pub fn temporary() -> Result<Self> {
+        Ok(Self(Arc::new(Mutex::new(Attempt {
+            scratch: scratch_values()?,
+            index: None,
+            input: None,
+            chain: None,
+            source: String::new(),
+            source_chain: None,
+            version: String::new(),
+            lookup_through: 0,
+            base: 0,
+            replay_chain: None,
         }))))
     }
     pub fn replay_chain(&self) -> Option<i64> {
@@ -136,7 +152,7 @@ impl Overlay {
         }
         Ok(())
     }
-    /// Seal this slice's changes while keeping earlier private values for lookup.
+    /// Save this slice's changes while keeping earlier private values for lookup.
     /// Advancing this scratch view never advances the committed checkpoint.
     pub fn checkpoint_delta(&self, through: u64) -> Result<Delta> {
         let mut attempt = self.0.lock().or_invalid("parser context lock poisoned")?;
@@ -162,50 +178,91 @@ impl Overlay {
                     end: row.end,
                 },
                 Value::Alias { target } => Reference::Alias { target },
+                Value::State { value } => Reference::State { value },
             };
             entries.push(Entry { key, value });
         }
         drop(rows);
         drop(statement);
+        let cleared_states = {
+            let mut statement = attempt
+                .scratch
+                .prepare("SELECT namespace FROM cleared_state WHERE dirty=1 ORDER BY namespace")?;
+            statement
+                .query_map([], |row| row.get(0))?
+                .collect::<std::result::Result<Vec<String>, _>>()?
+        };
         let base = attempt.base;
         attempt
             .scratch
             .execute("UPDATE entry SET dirty=0 WHERE dirty=1", [])?;
+        attempt
+            .scratch
+            .execute("UPDATE cleared_state SET dirty=0 WHERE dirty=1", [])?;
+        attempt.scratch.execute_batch("COMMIT; BEGIN")?;
         attempt.base = through;
         attempt.replay_chain = None;
         Ok(Delta {
             version: 1,
             base,
             through,
+            cleared_states,
             entries,
         })
     }
 }
+fn context_error(error: StoreError) -> polylogue_model::parser_context::Error {
+    match error {
+        StoreError::ReadCancelled | StoreError::Stopped => {
+            polylogue_model::parser_context::Error::Cancelled
+        }
+        other => polylogue_model::parser_context::Error::Failed(other.to_string()),
+    }
+}
 impl Context for Overlay {
+    fn clear_state(
+        &mut self,
+        namespace: &str,
+    ) -> std::result::Result<(), polylogue_model::parser_context::Error> {
+        let clear = || -> Result<()> {
+            if let Some(limit) = crate::read::limit::ReadLimit::current() {
+                limit.check()?;
+            }
+            let attempt = self.0.lock().or_invalid("parser context lock poisoned")?;
+            attempt
+                .scratch
+                .execute("DELETE FROM entry WHERE state_namespace=?1", [namespace])?;
+            attempt.scratch.execute("INSERT INTO cleared_state VALUES(?1,1) ON CONFLICT(namespace) DO UPDATE SET dirty=1", [namespace])?;
+            Ok(())
+        };
+        clear().map_err(context_error)
+    }
     fn get(
         &mut self,
         key: &Key,
     ) -> std::result::Result<Option<Value>, polylogue_model::parser_context::Error> {
-        self.lookup(key).map_err(|e| match e {
-            StoreError::ReadCancelled | StoreError::Stopped => {
-                polylogue_model::parser_context::Error::Cancelled
-            }
-            other => polylogue_model::parser_context::Error::Failed(other.to_string()),
-        })
+        self.lookup(key).map_err(context_error)
     }
     fn put(
         &mut self,
         key: Key,
         value: Value,
     ) -> std::result::Result<(), polylogue_model::parser_context::Error> {
-        let attempt = self
-            .0
-            .lock()
-            .map_err(|_| "parser context lock poisoned".to_owned())?;
-        let key = serde_json::to_string(&key).map_err(|e| e.to_string())?;
-        let bytes = crate::encoding::pack_json(&value).map_err(|e| e.to_string())?;
-        attempt.scratch.execute("INSERT INTO entry VALUES(?1,?2,1) ON CONFLICT(key) DO UPDATE SET value=excluded.value,dirty=1",params![key,bytes]).map_err(|e|e.to_string())?;
-        Ok(())
+        let put = || -> Result<()> {
+            if let Some(limit) = crate::read::limit::ReadLimit::current() {
+                limit.check()?;
+            }
+            let attempt = self.0.lock().or_invalid("parser context lock poisoned")?;
+            let namespace = match &key {
+                Key::State { namespace, .. } => Some(namespace.clone()),
+                _ => None,
+            };
+            let key = serde_json::to_string(&key)?;
+            let bytes = crate::encoding::pack_json(&value)?;
+            attempt.scratch.execute("INSERT INTO entry VALUES(?1,?2,1,?3) ON CONFLICT(key) DO UPDATE SET value=excluded.value,dirty=1,state_namespace=excluded.state_namespace",params![key,bytes,namespace])?;
+            Ok(())
+        };
+        put().map_err(context_error)
     }
 }
 impl Overlay {
@@ -219,7 +276,19 @@ impl Overlay {
             [serde_json::to_string(key)?],
         )?;
         if let Some(bytes) = changed {
-            return Ok(Some(crate::encoding::unpack_json(&bytes)?));
+            let value = crate::encoding::unpack_json(&bytes)?;
+            return Ok(match value {
+                Value::State { value } if value.is_null() => None,
+                value => Some(value),
+            });
+        }
+        if let Key::State { namespace, .. } = key
+            && attempt.scratch.exists(
+                "SELECT EXISTS(SELECT 1 FROM cleared_state WHERE namespace=?1)",
+                [namespace],
+            )?
+        {
+            return Ok(None);
         }
         let (Some(input), Some(chain)) = (attempt.input, attempt.chain) else {
             return Ok(None);
@@ -228,6 +297,19 @@ impl Overlay {
             StoreError::Invalid("committed parser context has no read snapshot".into())
         })?;
         match key {
+            Key::State { namespace, key } => {
+                let value: Option<Vec<u8>> = index.scalar_optional(
+                    "SELECT value FROM parser_context_value WHERE input_pk=?1 AND chain=?2 AND namespace=?3 AND key=?4",
+                    params![input,chain,namespace,key],
+                )?;
+                value
+                    .map(|value| {
+                        Ok(Value::State {
+                            value: crate::encoding::unpack_json(&value)?,
+                        })
+                    })
+                    .transpose()
+            }
             Key::Alias { namespace, uuid } => {
                 let row = index
                     .prepare_cached("SELECT target FROM parser_context_alias WHERE input_pk=?1 AND chain=?2 AND namespace=?3 AND uuid=?4")?
@@ -333,6 +415,14 @@ pub(crate) fn apply(
             .get(&version.0)?
             .response_key(&version.0, message, session)
     };
+    let mut cleared = std::collections::BTreeSet::new();
+    for namespace in &delta.cleared_states {
+        if !cleared.insert(namespace) {
+            return Err(StoreError::Invalid(
+                "parser context repeats a cleared state namespace".into(),
+            ));
+        }
+    }
     let mut seen = std::collections::BTreeSet::new();
     for entry in &delta.entries {
         if !seen.insert(entry.key.clone()) {
@@ -344,6 +434,7 @@ pub(crate) fn apply(
             (&entry.key, &entry.value),
             (Key::Response { .. }, Reference::Response { .. })
                 | (Key::Alias { .. }, Reference::Alias { .. })
+                | (Key::State { .. }, Reference::State { .. })
         ) {
             return Err(StoreError::Invalid(
                 "parser context key and value have different kinds".into(),
@@ -387,12 +478,22 @@ pub(crate) fn apply(
         }
     }
     if delta.base == 0 {
-        for table in ["parser_context_response", "parser_context_alias"] {
+        for table in [
+            "parser_context_response",
+            "parser_context_alias",
+            "parser_context_value",
+        ] {
             tx.prepare_cached(&format!(
                 "DELETE FROM {table} WHERE input_pk=?1 AND chain=?2"
             ))?
             .execute(params![input, chain])?;
         }
+    }
+    for namespace in &delta.cleared_states {
+        tx.prepare_cached(
+            "DELETE FROM parser_context_value WHERE input_pk=?1 AND chain=?2 AND namespace=?3",
+        )?
+        .execute(params![input, chain, namespace])?;
     }
     // A key changed at this checkpoint replaces its earlier value in place.
     for entry in &delta.entries {
@@ -420,6 +521,15 @@ pub(crate) fn apply(
             (Key::Alias { namespace, uuid }, Reference::Alias { target }) => {
                 tx.prepare_cached("INSERT INTO parser_context_alias VALUES(?1,?2,?3,?4,?5) ON CONFLICT(input_pk,chain,namespace,uuid) DO UPDATE SET target=excluded.target")?
                     .execute(params![input, chain, namespace, uuid, target.as_ref().map(ToString::to_string)])?;
+            }
+            (Key::State { namespace, key }, Reference::State { value }) => {
+                if value.is_null() {
+                    tx.prepare_cached("DELETE FROM parser_context_value WHERE input_pk=?1 AND chain=?2 AND namespace=?3 AND key=?4")?
+                        .execute(params![input,chain,namespace,key])?;
+                } else {
+                    tx.prepare_cached("INSERT INTO parser_context_value VALUES(?1,?2,?3,?4,?5) ON CONFLICT(input_pk,chain,namespace,key) DO UPDATE SET value=excluded.value")?
+                        .execute(params![input,chain,namespace,key,crate::encoding::pack_json(value)?])?;
+                }
             }
             _ => unreachable!("key and value kinds were checked above"),
         }

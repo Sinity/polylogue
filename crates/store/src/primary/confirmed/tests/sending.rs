@@ -60,12 +60,22 @@ fn confirmed_event_is_not_sent_again_in_any_state() {
     let directory = tempfile::tempdir().unwrap();
     let mut index = cache(&directory.path().join("index.db"));
     let archive = crate::Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let first = message("first-source", 10);
     let independent = message("second-source", 10);
     assert!(unsent(&index, first.reading().unwrap(), &first));
     apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[live(1, "first", first.clone()), complete_at(1)],
@@ -79,7 +89,12 @@ fn confirmed_event_is_not_sent_again_in_any_state() {
         (4, ConfirmedChange::Tombstoned),
     ] {
         apply(
-            &crate::text_rows::TextIds::new(&index, false).unwrap(),
+            &crate::text_rows::TextIds::new(
+                &index,
+                false,
+                crate::archive::MemoryBudget::default().keys() / 3,
+            )
+            .unwrap(),
             &mut index,
             &resolver,
             &[
@@ -103,7 +118,12 @@ fn covered_absent_event_is_not_sent_but_unread_tail_is() {
     let directory = tempfile::tempdir().unwrap();
     let mut index = cache(&directory.path().join("index.db"));
     let archive = crate::Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
-    let resolver = crate::writer::resolve::Resolver::new(&archive, &index, None).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let original = message("source", 10);
     let mut reading = original.reading().unwrap().clone();
     reading.parsed_upto = 30;
@@ -114,7 +134,12 @@ fn covered_absent_event_is_not_sent_but_unread_tail_is() {
         stopped_attempt: None,
     };
     apply(
-        &crate::text_rows::TextIds::new(&index, false).unwrap(),
+        &crate::text_rows::TextIds::new(
+            &index,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap(),
         &mut index,
         &resolver,
         &[live(1, "covered", progress), complete_at(1)],

@@ -56,6 +56,7 @@ impl RowWriter<'_, '_> {
             "parser_context_response",
             "parser_context_alias",
             "parser_context_state",
+            "parser_context_value",
             "unused",
             "message_injection_field",
             "export_reading",

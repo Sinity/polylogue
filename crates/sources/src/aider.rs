@@ -10,7 +10,7 @@ use polylogue_model::{
 };
 use std::path::Path;
 
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 pub const ORIGIN: &str = "aider";
 pub const HISTORY: &str = ".aider.llm.history";
 pub const COMPANION: &str = ".aider.chat.history.md";
@@ -42,6 +42,9 @@ pub struct History {
 }
 
 impl ExportParser for History {
+    fn bind_context(&mut self, context: polylogue_model::parser_context::Handle) {
+        self.ids.bind_context(context, "aider".into());
+    }
     fn scan(
         &mut self,
         _input: &str,

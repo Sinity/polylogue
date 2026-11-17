@@ -104,7 +104,7 @@ fn held_pass(
 /// Once released, the pass reads the older chain, and the index holds what
 /// capture wrote, which read the older chain first.
 #[test]
-fn a_first_build_ends_once_every_newest_chain_is_read() {
+fn a_build_ends_once_every_newest_chain_is_read() {
     fault::clear();
     let w = ClaudeHome::new();
     let draft = user("u1", "edited", "first draft")
@@ -242,7 +242,7 @@ fn a_rebuild_stopped_mid_chain_finishes_that_chain_first_on_restart() {
 /// and the parse-state counts report; the first build still ends, and the
 /// next pass does not read the refused range again.
 #[test]
-fn a_range_the_writer_refuses_fails_its_chain_and_the_first_build_ends() {
+fn a_range_the_writer_refuses_fails_its_chain_and_the_build_ends() {
     fault::clear();
     const CHUNK: u64 = 4 << 10;
     let w = ClaudeHome::new();

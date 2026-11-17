@@ -13,7 +13,7 @@ use std::collections::HashMap;
 /// than this is a group of its own.
 const GROUP_BYTES: usize = 64 * 1024;
 /// Workers compress; the writer and readers only copy and decode.
-const LEVEL: i32 = 9;
+const LEVEL: i32 = 3;
 /// The decoded group a thread last read is kept for the next read when it is
 /// no larger than this, so a group holding one very large text is not held.
 const KEPT_GROUP_BYTES: usize = 4 * GROUP_BYTES;
@@ -154,30 +154,48 @@ impl<'de> serde::Deserialize<'de> for PreparedTexts {
 /// The group rows the writer stored in its current transaction, by the hash
 /// that names each prepared group. A step is written in one transaction, so
 /// the map ends with it.
-#[derive(Default)]
-pub(crate) struct StoredGroups(RefCell<HashMap<[u8; 32], i64>>);
+pub(crate) struct StoredGroups {
+    rows: RefCell<HashMap<[u8; 32], i64>>,
+    entries: usize,
+}
+
+impl Default for StoredGroups {
+    fn default() -> Self {
+        Self::new(1 << 20)
+    }
+}
 
 impl StoredGroups {
+    pub(crate) fn new(bytes: u64) -> Self {
+        Self {
+            rows: RefCell::new(HashMap::new()),
+            entries: (bytes / 128).max(1) as usize,
+        }
+    }
     /// Stores `text`'s group unless this transaction already did, and returns
     /// its row and whether this call inserted it.
     pub(crate) fn row(&self, conn: &Connection, prepared: Prepared<'_>) -> Result<(i64, bool)> {
-        if let Some(&id) = self.0.borrow().get(&prepared.group.hash) {
+        if let Some(&id) = self.rows.borrow().get(&prepared.group.hash) {
             return Ok((id, false));
         }
         conn.prepare_cached("INSERT INTO text_group(body) VALUES (?1)")?
             .execute([&prepared.group.body])?;
         let id = conn.last_insert_rowid();
-        self.0.borrow_mut().insert(prepared.group.hash, id);
+        let mut rows = self.rows.borrow_mut();
+        if rows.len() >= self.entries {
+            rows.clear();
+        }
+        rows.insert(prepared.group.hash, id);
         Ok((id, true))
     }
 
     pub(crate) fn clear(&self) {
-        self.0.borrow_mut().clear();
+        self.rows.borrow_mut().clear();
     }
 }
 
-/// Inserts the row for a text new to the index. The caller has checked
-/// that no row has its hash.
+/// Tries to insert a prepared text, returning no row when its identity or
+/// hash is already stored. A group used only by that skipped insert is removed.
 pub(crate) fn insert(
     conn: &Connection,
     groups: &StoredGroups,
@@ -208,7 +226,6 @@ pub(crate) fn insert(
         Ok(id) => Ok(Some(id)),
         Err(rusqlite::Error::QueryReturnedNoRows) => {
             if inserted {
-                // A group stored only for this text holds nothing.
                 remove_empty_group(conn, group)?;
                 groups.clear();
             }

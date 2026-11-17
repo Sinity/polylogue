@@ -36,11 +36,7 @@ fn restart_resumes_response_assembly_without_rereading_provider_prefix() {
             .unwrap();
         let checkpoint = stored.checkpoint.unwrap();
         assert_eq!(checkpoint.parsed_upto, prefix);
-        assert!(
-            checkpoint.parser_state.unwrap()["sessions"]
-                .get("continuation")
-                .is_some()
-        );
+        assert!(checkpoint.matches(&state.origin.reading_version(), prefix));
     }
     home.append("continuation.jsonl", &fragment("last", "Final fragment."));
     let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);

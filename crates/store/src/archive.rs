@@ -27,12 +27,57 @@ pub(crate) fn bump_counter(tx: &Transaction<'_>) -> Result<i64> {
     Ok(next)
 }
 
+/// One process allowance, split between the index pipeline's resident caches and work.
+#[derive(Debug, Clone, Copy)]
+pub struct MemoryBudget {
+    total: u64,
+}
+impl Default for MemoryBudget {
+    fn default() -> Self {
+        Self::from_allowance(4 << 30)
+    }
+}
+impl MemoryBudget {
+    pub fn from_allowance(bytes: u64) -> Self {
+        Self {
+            total: bytes.saturating_mul(3).saturating_div(4).min(3 << 30),
+        }
+    }
+    pub fn total(self) -> u64 {
+        self.total
+    }
+    pub fn writer_cache_mib(self) -> i64 {
+        ((self.total / 8) >> 20).max(1) as i64
+    }
+    pub fn archive_cache_mib(self) -> i64 {
+        ((self.total / 32) >> 20).max(1) as i64
+    }
+    pub fn search_cache_mib(self) -> i64 {
+        ((self.total / 64) >> 20).max(1) as i64
+    }
+    pub fn readers(self) -> u64 {
+        self.total / 16
+    }
+    pub fn in_flight(self) -> u64 {
+        self.total / 16
+    }
+    pub fn keys(self) -> u64 {
+        self.total / 16
+    }
+    pub fn worker_count(self, cpus: usize, requested: usize) -> usize {
+        cpus.min(requested)
+            .min((self.total / 3 / (128 << 20)) as usize)
+            .max(1)
+    }
+}
+
 /// An opened archive directory (`$XDG_DATA_HOME/polylogue`). The directory
 /// has copy-on-write turned off on btrfs; Polylogue checks its own data
 /// with BLAKE3 for blobs. SQLite's checksum VFS is not wired in yet: it
 /// needs the `cksumvfs` extension, which the bundled build does not ship.
 #[derive(Debug, Clone)]
 pub struct Archive {
+    memory: MemoryBudget,
     pub root: PathBuf,
     /// In primary mode, Sinex's store root: its content store holds the
     /// inputs' bytes, and the register is a cache of what Sinex holds.
@@ -54,6 +99,14 @@ pub struct ArchiveLock {
 }
 
 impl Archive {
+    pub fn memory_budget(&self) -> MemoryBudget {
+        self.memory
+    }
+    pub fn with_memory_budget(mut self, budget: MemoryBudget) -> Self {
+        self.memory = budget;
+        self
+    }
+
     /// The stop request of the process using this archive: cancelling it
     /// ends every read, wait and reconstructible write made through it with
     /// [`StoreError::Stopped`](crate::StoreError::Stopped). Requests derive
@@ -161,6 +214,7 @@ impl Archive {
     /// The archive at `root` without opening it, for clients and readers.
     pub fn at(root: &Path) -> Self {
         Self {
+            memory: MemoryBudget::default(),
             root: root.to_path_buf(),
             sinex_store: None,
             primary: false,
@@ -174,6 +228,7 @@ impl Archive {
     /// without opening it.
     pub fn on_sinex(root: &Path, store: &Path) -> Self {
         Self {
+            memory: MemoryBudget::default(),
             root: root.to_path_buf(),
             sinex_store: Some(store.to_path_buf()),
             primary: true,
@@ -261,6 +316,7 @@ impl Archive {
 
     fn primary_cache(root: &Path) -> Self {
         Self {
+            memory: MemoryBudget::default(),
             root: root.to_path_buf(),
             sinex_store: None,
             primary: true,
@@ -458,7 +514,7 @@ pub(crate) const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 fn tune(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "wal")?;
     conn.pragma_update(None, "synchronous", "normal")?;
-    conn.pragma_update(None, "temp_store", "memory")?;
+    conn.pragma_update(None, "temp_store", "file")?;
     conn.busy_timeout(BUSY_TIMEOUT)?;
     Ok(())
 }
@@ -466,18 +522,9 @@ fn tune(conn: &Connection) -> Result<()> {
 /// Page-cache targets of write connections, in MiB. Process memory also includes
 /// parsed values, queued batches, SQLite temporary work and allocator overhead.
 pub mod cache {
-    /// The writer's `index.db` connection. It holds the indexes probed on
-    /// every insert (text hashes, message IDs) and the search segments it
-    /// merges; at 256 MB a first build read back from disk more than twice
-    /// its input.
-    pub const INDEX_WRITER: i64 = 768;
-    /// The search thread's `index.db` connection (writer.rs, `Search`).
-    pub const SEARCH: i64 = 64;
-    /// The derive thread's `index.db` connection (writer.rs, `DeriveThread`):
-    /// it reads one session at a time.
-    pub const DERIVE: i64 = 64;
-    /// The writer's `archive.db` connection: inputs, revisions, extents.
-    pub const ARCHIVE_WRITER: i64 = 256;
+    /// Default for callers without an archive allowance. Pipeline writers
+    /// take their cache from the process's memory budget.
+    pub const INDEX_WRITER: i64 = 384;
     /// Schema setup and one-off maintenance.
     pub const SETUP: i64 = 16;
 }
@@ -571,7 +618,10 @@ pub(crate) fn open_runtime_writer(path: &Path, cache_mib: i64) -> Result<Connect
 /// [`crate::write_lock::commit`], which syncs the log after the commit is
 /// visible, outside the readers' lock.
 pub(crate) fn open_archive_writer(archive: &Archive) -> Result<Connection> {
-    let conn = open_runtime_writer(&archive.archive_db(), cache::ARCHIVE_WRITER)?;
+    let conn = open_runtime_writer(
+        &archive.archive_db(),
+        archive.memory_budget().archive_cache_mib(),
+    )?;
     conn.pragma_update(None, "temp_store", "file")?;
     conn.pragma_update(Some("temp"), "cache_size", -1024)?;
     Ok(conn)
@@ -579,11 +629,20 @@ pub(crate) fn open_archive_writer(archive: &Archive) -> Result<Connection> {
 
 /// A read-only connection.
 pub fn open_read(path: &Path) -> Result<Connection> {
+    open_read_connection(path, false)
+}
+
+/// Private build readers may perform SQLite's journal recovery. Application
+/// writes remain disabled by their caller; preserved databases use open_read.
+fn open_read_connection(path: &Path, recover: bool) -> Result<Connection> {
+    let access = if recover {
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+    } else {
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+    };
     let conn = Connection::open_with_flags(
         path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_URI,
+        access | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI,
     )?;
     conn.set_db_config(
         rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
@@ -597,6 +656,8 @@ pub fn open_read(path: &Path) -> Result<Connection> {
     // from their aggregate budget after attaching archive.db.
     conn.pragma_update(None, "cache_size", -(cache::SETUP * 1024))?;
     conn.pragma_update(None, "mmap_size", 0)?;
+    conn.pragma_update(None, "temp_store", "file")?;
+    conn.pragma_update(Some("temp"), "cache_size", -1024)?;
     crate::sql_functions::register(&conn)?;
     Ok(conn)
 }

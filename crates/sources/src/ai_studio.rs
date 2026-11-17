@@ -13,7 +13,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 use crate::chatgpt::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, time_of};
@@ -276,6 +276,9 @@ static CHUNK_FIELDS: Fields = Fields::new(
 );
 
 impl ExportParser for AiStudio {
+    fn bind_context(&mut self, context: polylogue_model::parser_context::Handle) {
+        self.state.ids.bind_context(context, "ai-studio".into());
+    }
     fn message_range(&self, message: &Message) -> Option<std::ops::Range<u64>> {
         (message.role == Role::System).then_some(0..self.state.length)
     }

@@ -15,7 +15,8 @@ fn removal_steps(unrelated: usize, indexed: bool) -> u64 {
         "the supported first-build writer keeps this foreign-key lookup"
     );
     let tx = conn.transaction().unwrap();
-    let first = crate::first_build::FirstBuild::load(&tx).unwrap();
+    let first =
+        resolve::IndexUpkeep::AtBuildEnd(Arc::new(crate::key_maps::KeyMaps::load(&tx).unwrap()));
     let target = batch(
         "target",
         Route::Live,
@@ -26,7 +27,7 @@ fn removal_steps(unrelated: usize, indexed: bool) -> u64 {
         )],
         &["target"],
     );
-    write_test_rows(&tx, &target, &target.parse[0], 1, 1, Some(&first)).unwrap();
+    write_test_rows(&tx, &target, &target.parse[0], 1, 1, &first).unwrap();
     let mut other = batch(
         "other",
         Route::Live,
@@ -54,13 +55,13 @@ fn removal_steps(unrelated: usize, indexed: bool) -> u64 {
             .events
             .push(event("other", "anchor", n));
     }
-    write_test_rows(&tx, &other, &other.parse[0], 1, 2, Some(&first)).unwrap();
+    write_test_rows(&tx, &other, &other.parse[0], 1, 2, &first).unwrap();
     let mut attached = batch("attached", Route::Live, 0, vec![], &[]);
     attached.parse[0]
         .output
         .events
         .push(event("target", "gone", unrelated));
-    write_test_rows(&tx, &attached, &attached.parse[0], 1, 3, Some(&first)).unwrap();
+    write_test_rows(&tx, &attached, &attached.parse[0], 1, 3, &first).unwrap();
     if !indexed {
         tx.execute_batch("DROP INDEX event_after").unwrap();
     }
@@ -74,7 +75,13 @@ fn removal_steps(unrelated: usize, indexed: bool) -> u64 {
     removed.parse[0].reading_version = "synthetic=2".into();
     // Production prepares keys/choices before entering the writer transaction.
     // The fixture resolver reloads its first-build map; exclude that test-only work.
-    resolve::prepare_index(&tx, &mut removed, 1, true).unwrap();
+    resolve::prepare_index(
+        &tx,
+        &mut removed,
+        1,
+        &resolve::IndexUpkeep::AtBuildEnd(Arc::new(crate::key_maps::KeyMaps::load(&tx).unwrap())),
+    )
+    .unwrap();
     let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
     let commit = fixture_commit();
     use std::sync::{
@@ -96,10 +103,15 @@ fn removal_steps(unrelated: usize, indexed: bool) -> u64 {
         &removed,
         &removed.parse[0],
         rows::ReadingWrite {
-            texts: &crate::text_rows::TextIds::new(&tx, false).unwrap(),
+            texts: &crate::text_rows::TextIds::new(
+                &tx,
+                false,
+                crate::archive::MemoryBudget::default().keys() / 3,
+            )
+            .unwrap(),
             resolution: removed.parse[0].resolution.as_ref().unwrap(),
             counter: 4,
-            first_build: Some(&first),
+            upkeep: &first,
             source_commit: Some(&commit),
             changes: &changes,
             retraction: false,
@@ -148,7 +160,7 @@ fn removal_steps(unrelated: usize, indexed: bool) -> u64 {
 }
 
 #[test]
-fn first_build_message_removal_uses_keyed_event_foreign_keys() {
+fn build_message_removal_uses_keyed_event_foreign_keys() {
     let small = removal_steps(0, false);
     let large = removal_steps(8192, false);
     let indexed_small = removal_steps(0, true);
@@ -181,7 +193,8 @@ fn session_removal_steps(unrelated: usize, indexed: bool) -> u64 {
         "the first-build writer keeps its session foreign-key lookup"
     );
     let tx = conn.transaction().unwrap();
-    let first = crate::first_build::FirstBuild::load(&tx).unwrap();
+    let first =
+        resolve::IndexUpkeep::AtBuildEnd(Arc::new(crate::key_maps::KeyMaps::load(&tx).unwrap()));
     let mut input = batch("sessions", Route::Live, 0, vec![], &["target", "other"]);
     for n in 0..unrelated {
         input.parse[0].output.links.push(polylogue_model::Link {
@@ -195,7 +208,7 @@ fn session_removal_steps(unrelated: usize, indexed: bool) -> u64 {
             evidence: "synthetic".into(),
         });
     }
-    write_test_rows(&tx, &input, &input.parse[0], 1, 1, Some(&first)).unwrap();
+    write_test_rows(&tx, &input, &input.parse[0], 1, 1, &first).unwrap();
     let target: i64 = tx
         .query_row(
             "SELECT pk FROM session WHERE id='claude-code:target'",
@@ -267,7 +280,7 @@ fn session_removal_steps(unrelated: usize, indexed: bool) -> u64 {
 }
 
 #[test]
-fn first_build_session_removal_keeps_its_link_foreign_key_lookup() {
+fn build_session_removal_keeps_its_link_foreign_key_lookup() {
     let small = session_removal_steps(0, false);
     let large = session_removal_steps(8192, false);
     let indexed_small = session_removal_steps(0, true);

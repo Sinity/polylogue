@@ -25,3 +25,5 @@ CREATE INDEX IF NOT EXISTS block_original_ordinal ON block(message_pk,coalesce(o
 
 -- Restored requests select all raw spellings of one NFC request text.
 CREATE INDEX IF NOT EXISTS text_normalized ON text(normalized_hash,id);
+
+CREATE INDEX IF NOT EXISTS parser_context_version ON parser_context_response(version_pk);

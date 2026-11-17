@@ -97,7 +97,6 @@ pub fn time<T>(stage: Stage, f: impl FnOnce() -> T) -> T {
 }
 
 /// Seconds per stage since the process started (or the last [`reset`]).
-#[cfg(any(test, feature = "fixture"))]
 pub fn stage_seconds() -> Vec<(Stage, f64)> {
     STAGES
         .iter()
@@ -229,7 +228,22 @@ impl Drop for WorkerTimeGuard {
         }
     }
 }
-#[cfg(any(test, feature = "fixture"))]
 pub fn workers() -> Vec<WorkerTime> {
     WORKER_TIMES.lock().map(|v| v.clone()).unwrap_or_default()
+}
+
+/// SQLite's own peak allocation counter, including its page caches and sort buffers.
+#[allow(unsafe_code)]
+pub fn sqlite_memory_peak() -> Option<u64> {
+    let (mut current, mut peak) = (0, 0);
+    // SAFETY: SQLite writes two live i64 outputs; the status code is a defined constant.
+    let status = unsafe {
+        rusqlite::ffi::sqlite3_status64(
+            rusqlite::ffi::SQLITE_STATUS_MEMORY_USED,
+            &mut current,
+            &mut peak,
+            0,
+        )
+    };
+    (status == rusqlite::ffi::SQLITE_OK).then_some(peak as u64)
 }

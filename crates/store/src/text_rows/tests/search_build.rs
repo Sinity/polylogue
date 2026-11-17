@@ -1,0 +1,172 @@
+//! The final search copy keeps the same term frequencies as incremental writes.
+use crate::archive::{cache, open_write};
+use crate::text_rows::{build_search_indexes, index_pending, insert_alone};
+use rusqlite::Connection;
+
+fn vocabulary(conn: &Connection, table: &str) -> Vec<(String, i64, i64)> {
+    conn.prepare(&format!("SELECT term,doc,cnt FROM {table} ORDER BY term"))
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+}
+
+#[test]
+fn built_search_vocabulary_matches_incremental_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let built = open_write(&dir.path().join("built.db"), cache::SETUP).unwrap();
+    let incremental = open_write(&dir.path().join("incremental.db"), cache::SETUP).unwrap();
+    crate::schema::create_index(&built).unwrap();
+    crate::schema::create_index(&incremental).unwrap();
+    for (n, (text, bits)) in [
+        ("amber cedar amber", 1),
+        ("Łódź Straße Øresund", 2),
+        ("cedar amber birch", 3),
+        ("only unindexed words", 0),
+        ("", 3),
+        ("shrub's limbs: 𝔘𝔫𝔦𝔠𝔬𝔡𝔢", 1),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let id = n as i64 + 1;
+        let hash = blake3::hash(text.as_bytes());
+        let normalized = crate::encoding::normalized_text_hash(text);
+        for conn in [&built, &incremental] {
+            assert_eq!(
+                insert_alone(conn, Some(id), hash.as_bytes(), &normalized, text, bits),
+                id
+            );
+        }
+        for bit in [1, 2].into_iter().filter(|bit| bits & bit != 0) {
+            incremental
+                .execute(
+                    "INSERT INTO search_pending(text_id,fts_table) VALUES (?1,?2)",
+                    [id, bit],
+                )
+                .unwrap();
+        }
+    }
+    index_pending(&incremental, || ()).unwrap();
+    assert!(vocabulary(&built, "fts_vocab_output").is_empty());
+    build_search_indexes(&built, |_| Ok(())).unwrap();
+    for table in ["fts_vocab_text", "fts_vocab_output"] {
+        assert_eq!(
+            vocabulary(&built, table),
+            vocabulary(&incremental, table),
+            "{table}"
+        );
+    }
+    // Reading the copied tables on this same connection also exercises the
+    // virtual tables' transaction state, before a reopen can discard it.
+    assert_eq!(
+        vocabulary(&built, "fts_vocab_output")
+            .iter()
+            .find(|row| row.0 == "lodz"),
+        Some(&("lodz".into(), 1, 1))
+    );
+
+    // The writer continues on its connection after installation. Later inserts
+    // and removals must use the copied postings, not an earlier cached structure.
+    for conn in [&built, &incremental] {
+        let text = "maple amber maple";
+        let hash = blake3::hash(text.as_bytes());
+        let normalized = crate::encoding::normalized_text_hash(text);
+        insert_alone(conn, Some(100), hash.as_bytes(), &normalized, text, 2);
+        conn.execute(
+            "INSERT INTO search_pending(text_id,fts_table) VALUES (100,2)",
+            [],
+        )
+        .unwrap();
+        index_pending(conn, || ()).unwrap();
+        crate::text_rows::remove(conn, 2, 2).unwrap();
+    }
+    let reopened = crate::archive::open_read(&dir.path().join("built.db")).unwrap();
+    for reader in [&built, &reopened] {
+        for table in ["fts_vocab_text", "fts_vocab_output"] {
+            assert_eq!(
+                vocabulary(reader, table),
+                vocabulary(&incremental, table),
+                "after continuing: {table}"
+            );
+        }
+        for (table, expected) in [("text_fts", vec![1, 3]), ("output_fts", vec![3, 100])] {
+            let ids = reader
+                .prepare(&format!(
+                    "SELECT rowid FROM {table} WHERE {table} MATCH 'amber' ORDER BY rowid"
+                ))
+                .unwrap()
+                .query_map([], |row| row.get::<_, i64>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            assert_eq!(ids, expected);
+        }
+    }
+}
+
+#[test]
+fn failed_search_copy_preserves_both_tables_before_a_successful_retry() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("search.db");
+    let conn = open_write(&path, cache::SETUP).unwrap();
+    crate::schema::create_index(&conn).unwrap();
+    for (id, text) in [(1, "amber cedar"), (2, "maple birch")] {
+        let hash = blake3::hash(text.as_bytes());
+        let normalized = crate::encoding::normalized_text_hash(text);
+        insert_alone(&conn, Some(id), hash.as_bytes(), &normalized, text, 3);
+        if id == 1 {
+            for bit in [1, 2] {
+                conn.execute(
+                    "INSERT INTO search_pending(text_id,fts_table) VALUES (?1,?2)",
+                    [id, bit],
+                )
+                .unwrap();
+            }
+            index_pending(&conn, || ()).unwrap();
+        }
+    }
+    let before = [
+        vocabulary(&conn, "fts_vocab_text"),
+        vocabulary(&conn, "fts_vocab_output"),
+    ];
+    crate::fault::arm(
+        "search.copied_table",
+        conn.path().unwrap(),
+        crate::fault::Action::Fail,
+        0,
+        1,
+    );
+    let result = build_search_indexes(&conn, |_| Ok(()));
+    crate::fault::clear();
+    assert!(result.is_err());
+    let reopened = crate::archive::open_read(&path).unwrap();
+    for reader in [&conn, &reopened] {
+        assert_eq!(vocabulary(reader, "fts_vocab_text"), before[0]);
+        assert_eq!(vocabulary(reader, "fts_vocab_output"), before[1]);
+    }
+    build_search_indexes(&conn, |_| Ok(())).unwrap();
+    let expected = vec![
+        ("amber".into(), 1, 1),
+        ("birch".into(), 1, 1),
+        ("cedar".into(), 1, 1),
+        ("maple".into(), 1, 1),
+    ];
+    for reader in [&conn, &reopened] {
+        for (table, words) in [
+            ("text_fts", "fts_vocab_text"),
+            ("output_fts", "fts_vocab_output"),
+        ] {
+            assert_eq!(vocabulary(reader, words), expected);
+            let id: i64 = reader
+                .query_row(
+                    &format!("SELECT rowid FROM {table} WHERE {table} MATCH 'maple'"),
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(id, 2);
+        }
+    }
+}

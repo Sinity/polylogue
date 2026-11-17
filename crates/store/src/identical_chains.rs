@@ -8,26 +8,16 @@ use crate::ConnExt as _;
 use crate::{Result, StoreError, source::Source};
 use polylogue_model::JsonExt;
 use rusqlite::{Connection, params};
+mod planning;
+pub use planning::{ChainLayouts, PrefixCopies, PrefixCopy, SharedPrefixes};
 
-/// One chain of an input: its stored length, where its bytes come from and
-/// how far it is read.
+/// One chain's stored length and how far its reading has parsed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChainLayout {
     pub chain: i64,
     pub length: u64,
-    /// The chain's extents, by offset; left empty when every chain of the
-    /// input is read.
-    pub extents: Vec<StoredExtent>,
     /// The chain's reading, when it has one.
     pub reading: Option<ChainReading>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct StoredExtent {
-    pub offset: u64,
-    pub length: u64,
-    pub blob: Vec<u8>,
-    pub blob_offset: u64,
 }
 
 /// How far a chain's reading has read, under which reading version.
@@ -56,97 +46,9 @@ impl ChainReading {
     }
 }
 
-impl ChainLayout {
-    /// How many bytes from the start this chain and `other` take from the
-    /// same bytes of the same blobs, which makes them alike without reading
-    /// them. Bytes alike in different blobs are found by reading
-    /// ([`crate::blobs::StoredChain::shared_prefix`]).
-    pub fn shared_extents(&self, other: &ChainLayout) -> u64 {
-        let (mut i, mut j, mut at) = (0, 0, 0u64);
-        while let (Some(a), Some(b)) = (self.extents.get(i), other.extents.get(j)) {
-            let inside = |e: &StoredExtent| e.offset <= at && at < e.offset + e.length;
-            if !inside(a)
-                || !inside(b)
-                || a.blob != b.blob
-                || a.blob_offset + (at - a.offset) != b.blob_offset + (at - b.offset)
-            {
-                break;
-            }
-            at = (a.offset + a.length).min(b.offset + b.length);
-            if at == a.offset + a.length {
-                i += 1;
-            }
-            if at == b.offset + b.length {
-                j += 1;
-            }
-        }
-        at.min(self.length).min(other.length)
-    }
-}
-
-/// Every chain of `input` with its reading, by chain, and its extents when
-/// some chain of the input is not read yet.
-pub(crate) fn chain_layouts(conn: &Connection, input: &str) -> Result<Vec<ChainLayout>> {
-    let source = Source::of(conn)?;
-    let mut chains: Vec<ChainLayout> = conn
-        .prepare_cached(&source.sql(
-            "SELECT chain, max(length) FROM @source.revision WHERE input = ?1
-             GROUP BY chain ORDER BY chain",
-        ))?
-        .query_map([input], |row| {
-            Ok(ChainLayout {
-                chain: row.get(0)?,
-                length: row.get(1)?,
-                extents: Vec::new(),
-                reading: None,
-            })
-        })?
-        .collect::<rusqlite::Result<_>>()?;
-    if chains.len() < 2 {
-        return Ok(chains);
-    }
-    let at = |chains: &[ChainLayout], chain: i64| chains.binary_search_by_key(&chain, |c| c.chain);
-    let mut statement = conn.prepare_cached(
-        "SELECT p.chain, p.reading_version, p.status, p.parsed_upto, p.at_length FROM parse_state p
-         JOIN input_ref r ON r.pk = p.input_pk WHERE r.id = ?1",
-    )?;
-    let mut rows = statement.query([input])?;
-    while let Some(row) = rows.next()? {
-        if let Ok(n) = at(&chains, row.get(0)?) {
-            chains[n].reading = Some(ChainReading {
-                reading_version: row.get(1)?,
-                status: row.get(2)?,
-                parsed_upto: row.get(3)?,
-                at_length: row.get(4)?,
-            });
-        }
-    }
-    // Extents decide which chains' bytes begin alike, which matters only
-    // while some chain is not read yet.
-    if chains.iter().all(|chain| chain.reading.is_some()) {
-        return Ok(chains);
-    }
-    let mut statement = conn.prepare_cached(&source.sql(
-        "SELECT chain, offset, length, blob, blob_offset FROM @source.extent
-         WHERE input = ?1 ORDER BY chain, offset",
-    ))?;
-    let mut rows = statement.query([input])?;
-    while let Some(row) = rows.next()? {
-        if let Ok(n) = at(&chains, row.get(0)?) {
-            chains[n].extents.push(StoredExtent {
-                offset: row.get(1)?,
-                length: row.get(2)?,
-                blob: row.get(3)?,
-                blob_offset: row.get(4)?,
-            });
-        }
-    }
-    Ok(chains)
-}
-
 /// The index tables that hold one chain's reading, keyed by `input_pk` and
 /// `chain`. Copying a reading copies each table's rows of the other chain.
-const READING_TABLES: [&str; 22] = [
+const READING_TABLES: [&str; 23] = [
     "parse_state",
     "parsed",
     "session_record",
@@ -160,6 +62,7 @@ const READING_TABLES: [&str; 22] = [
     "unused",
     "parser_context_response",
     "parser_context_alias",
+    "parser_context_value",
     "parser_context_state",
     "wire_reading",
     "wire_occurrence",

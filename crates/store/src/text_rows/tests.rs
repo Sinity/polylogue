@@ -16,9 +16,15 @@ fn repeated_text_is_stored_once_and_indexed_in_both_searches() {
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let mut conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
     let tx = conn.transaction().unwrap();
-    let id = intern(&tx, "walrus", 1, None, None).unwrap();
-    assert_eq!(intern(&tx, "walrus", 1, None, None).unwrap(), id);
-    assert_eq!(intern(&tx, "walrus", 2, None, None).unwrap(), id);
+    let id = intern(&tx, "walrus", 1, None, &IndexUpkeep::PerTransaction).unwrap();
+    assert_eq!(
+        intern(&tx, "walrus", 1, None, &IndexUpkeep::PerTransaction).unwrap(),
+        id
+    );
+    assert_eq!(
+        intern(&tx, "walrus", 2, None, &IndexUpkeep::PerTransaction).unwrap(),
+        id
+    );
     tx.commit().unwrap();
     assert_eq!(count(&conn, "SELECT count(*) FROM text"), 1);
     assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 2);
@@ -37,7 +43,10 @@ fn repeated_text_is_stored_once_and_indexed_in_both_searches() {
         ),
         1
     );
-    assert_eq!(intern(&conn, "walrus", 1, None, None).unwrap(), id);
+    assert_eq!(
+        intern(&conn, "walrus", 1, None, &IndexUpkeep::PerTransaction).unwrap(),
+        id
+    );
     assert_eq!(index_pending(&conn, || ()).unwrap(), 0);
 }
 
@@ -48,12 +57,12 @@ fn removal_and_rollback_do_not_leave_search_work() {
     let mut conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
     {
         let tx = conn.transaction().unwrap();
-        intern(&tx, "rolled back", 1, None, None).unwrap();
+        intern(&tx, "rolled back", 1, None, &IndexUpkeep::PerTransaction).unwrap();
     }
     assert_eq!(count(&conn, "SELECT count(*) FROM text"), 0);
     assert_eq!(index_pending(&conn, || ()).unwrap(), 0);
     let tx = conn.transaction().unwrap();
-    let id = intern(&tx, "removed", 1, None, None).unwrap();
+    let id = intern(&tx, "removed", 1, None, &IndexUpkeep::PerTransaction).unwrap();
     remove(&tx, id, 1).unwrap();
     tx.commit().unwrap();
     assert_eq!(index_pending(&conn, || ()).unwrap(), 0);
@@ -66,7 +75,7 @@ fn a_failed_decode_keeps_the_pending_entry() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
-    let id = intern(&conn, "walrus", 1, None, None).unwrap();
+    let id = intern(&conn, "walrus", 1, None, &IndexUpkeep::PerTransaction).unwrap();
     replace_group_body(&conn, id, b"damaged");
     assert!(index_pending(&conn, || ()).is_err());
     assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 1);
@@ -78,9 +87,9 @@ fn pending_byte_limit_commits_complete_entries_and_retry_keeps_the_rest() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
-    let first = intern(&conn, "walrus", 1, None, None).unwrap();
-    let second = intern(&conn, "narwhal", 2, None, None).unwrap();
-    intern(&conn, "dolphin", 1, None, None).unwrap();
+    let first = intern(&conn, "walrus", 1, None, &IndexUpkeep::PerTransaction).unwrap();
+    let second = intern(&conn, "narwhal", 2, None, &IndexUpkeep::PerTransaction).unwrap();
+    intern(&conn, "dolphin", 1, None, &IndexUpkeep::PerTransaction).unwrap();
     replace_group_body(&conn, second, b"\0");
     assert_eq!(pending_batch(&conn, 1).unwrap(), 1);
     assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 2);
@@ -103,16 +112,20 @@ fn pending_byte_limit_commits_complete_entries_and_retry_keeps_the_rest() {
 
 #[test]
 fn a_later_decode_failure_rolls_back_earlier_search_entries_in_its_transaction() {
-    for bulk in [false, true] {
-        let first_build = bulk.then(crate::first_build::FirstBuild::default);
+    for at_build_end in [false, true] {
+        let upkeep = if at_build_end {
+            IndexUpkeep::AtBuildEnd(std::sync::Arc::new(crate::key_maps::KeyMaps::default()))
+        } else {
+            IndexUpkeep::PerTransaction
+        };
         let dir = tempfile::tempdir().unwrap();
         let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
         let conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
-        intern(&conn, "walrus", 1, None, first_build.as_ref()).unwrap();
-        let second = intern(&conn, "narwhal", 1, None, first_build.as_ref()).unwrap();
+        intern(&conn, "walrus", 1, None, &upkeep).unwrap();
+        let second = intern(&conn, "narwhal", 1, None, &upkeep).unwrap();
         replace_group_body(&conn, second, b"\0");
-        if bulk {
-            assert!(index_marked(&conn).is_err());
+        if at_build_end {
+            assert!(build_search_indexes(&conn, |_| Ok(())).is_err());
         } else {
             assert!(index_pending(&conn, || ()).is_err());
             assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 2);
@@ -122,26 +135,27 @@ fn a_later_decode_failure_rolls_back_earlier_search_entries_in_its_transaction()
 }
 
 #[test]
-fn bulk_and_pending_searches_keep_ascii_unicode_and_search_kinds() {
-    for bulk in [false, true] {
-        let first_build = bulk.then(crate::first_build::FirstBuild::default);
+fn build_and_pending_searches_keep_ascii_unicode_and_search_kinds() {
+    for at_build_end in [false, true] {
+        let upkeep = if at_build_end {
+            IndexUpkeep::AtBuildEnd(std::sync::Arc::new(crate::key_maps::KeyMaps::default()))
+        } else {
+            IndexUpkeep::PerTransaction
+        };
         let dir = tempfile::tempdir().unwrap();
         let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
         let mut conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
         let tx = conn.transaction().unwrap();
         for n in 0..SEARCH_ROWS + 3 {
-            intern(&tx, &format!("walrus{n}"), 1, None, first_build.as_ref()).unwrap();
+            intern(&tx, &format!("walrus{n}"), 1, None, &upkeep).unwrap();
         }
         let shared = "Łódź Straße Øresund";
-        let id = intern(&tx, shared, 1, None, first_build.as_ref()).unwrap();
-        assert_eq!(
-            intern(&tx, shared, 2, None, first_build.as_ref()).unwrap(),
-            id
-        );
-        intern(&tx, "notindexed", 0, None, first_build.as_ref()).unwrap();
+        let id = intern(&tx, shared, 1, None, &upkeep).unwrap();
+        assert_eq!(intern(&tx, shared, 2, None, &upkeep).unwrap(), id);
+        intern(&tx, "notindexed", 0, None, &upkeep).unwrap();
         tx.commit().unwrap();
-        if bulk {
-            index_marked(&conn).unwrap();
+        if at_build_end {
+            build_search_indexes(&conn, |_| Ok(())).unwrap();
         } else {
             assert_eq!(
                 index_pending(&conn, || ()).unwrap(),
@@ -186,11 +200,16 @@ fn bulk_and_pending_searches_keep_ascii_unicode_and_search_kinds() {
 }
 
 #[test]
-fn first_build_texts_share_rows_without_sql_readback_or_prefix_aliasing() {
+fn build_texts_share_rows_without_sql_readback_or_prefix_aliasing() {
     use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
     let conn = Connection::open_in_memory().unwrap();
     crate::schema::create_index(&conn).unwrap();
-    let first = TextIds::new(&conn, true).unwrap();
+    let first = TextIds::new(
+        &conn,
+        true,
+        crate::archive::MemoryBudget::default().keys() / 3,
+    )
+    .unwrap();
     let one = [7; 32];
     let mut two = one;
     two[31] = 8;
@@ -241,7 +260,12 @@ fn first_build_texts_share_rows_without_sql_readback_or_prefix_aliasing() {
 fn failed_text_transaction_reloads_presence_without_reassigning_known_ids() {
     let mut conn = Connection::open_in_memory().unwrap();
     crate::schema::create_index(&conn).unwrap();
-    let first = TextIds::new(&conn, true).unwrap();
+    let first = TextIds::new(
+        &conn,
+        true,
+        crate::archive::MemoryBudget::default().keys() / 3,
+    )
+    .unwrap();
     let gone = [1; 32];
     let kept = [2; 32];
     let old;
@@ -314,7 +338,12 @@ fn failed_text_transaction_reloads_presence_without_reassigning_known_ids() {
 fn cached_text_identity_records_no_payload_write() {
     let mut conn = Connection::open_in_memory().unwrap();
     crate::schema::create_index(&conn).unwrap();
-    let identities = TextIds::new(&conn, true).unwrap();
+    let identities = TextIds::new(
+        &conn,
+        true,
+        crate::archive::MemoryBudget::default().keys() / 3,
+    )
+    .unwrap();
     let text = "shared synthetic text";
     let hash = *blake3::hash(text.as_bytes()).as_bytes();
     let prepared = PreparedTexts::pack([text]).unwrap();
@@ -329,10 +358,14 @@ fn cached_text_identity_records_no_payload_write() {
     let cached = identities.resolve(&conn, &hash, prepared, None).unwrap();
     assert_eq!(cached.id, written.id);
     assert!(!cached.written);
-    let preloaded = TextIds::new(&conn, true)
-        .unwrap()
-        .resolve(&conn, &hash, None, None)
-        .unwrap();
+    let preloaded = TextIds::new(
+        &conn,
+        true,
+        crate::archive::MemoryBudget::default().keys() / 3,
+    )
+    .unwrap()
+    .resolve(&conn, &hash, None, None)
+    .unwrap();
     assert_eq!(preloaded.id, written.id);
     assert!(!preloaded.written);
 }
@@ -341,14 +374,19 @@ fn cached_text_identity_records_no_payload_write() {
 fn new_text_membership_follows_unindexing_and_rollback_within_the_writer() {
     let mut conn = Connection::open_in_memory().unwrap();
     crate::schema::create_index(&conn).unwrap();
-    let identities = TextIds::new(&conn, true).unwrap();
+    let identities = TextIds::new(
+        &conn,
+        true,
+        crate::archive::MemoryBudget::default().keys() / 3,
+    )
+    .unwrap();
     let text = "synthetic tool output";
     let hash = *blake3::hash(text.as_bytes()).as_bytes();
     let prepared = PreparedTexts::pack([text]).unwrap();
     let bits = std::collections::HashMap::from([(hash, 2)]);
     let membership = NewMembership {
         bits: &bits,
-        bulk: false,
+        at_build_end: false,
     };
     let state = |conn: &Connection, id: i64| {
         (
@@ -393,3 +431,5 @@ fn new_text_membership_follows_unindexing_and_rollback_within_the_writer() {
     tx.commit().unwrap();
     assert_eq!(state(&conn, id), (1, 1));
 }
+
+mod search_build;

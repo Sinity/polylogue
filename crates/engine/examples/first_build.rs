@@ -279,6 +279,10 @@ fn main() {
             .and_then(|i| args.get(i + 1))
             .cloned()
     };
+    if let Some(index) = arg("--compression-sizes") {
+        println!("{}", compression_sizes(Path::new(&index)).unwrap());
+        return;
+    }
     let dir = PathBuf::from(arg("--dir").expect("--dir <scratch directory>"));
     let home = match arg("--home") {
         Some(h) => PathBuf::from(h),
@@ -293,6 +297,13 @@ fn main() {
             home
         }
     };
+    if args.iter().any(|arg| arg == "--generate-only") {
+        return;
+    }
+    if args.iter().any(|arg| arg == "--capture-only") {
+        capture_only(&home, &dir.join("archive")).unwrap();
+        return;
+    }
     let io_before = fs::read_to_string("/proc/self/io").ok();
     let cpu_before = fs::read_to_string("/proc/self/stat").ok();
     let started = Instant::now();
@@ -330,7 +341,7 @@ fn main() {
     let ingest_seconds = ingest_started.elapsed().as_secs_f64();
     let engine_seconds = started.elapsed().as_secs_f64();
     let checkpoint_started = Instant::now();
-    let databases = checkpoint_first_build(&archive).unwrap();
+    let databases = checkpoint_build(&archive).unwrap();
     let checkpoint_seconds = checkpoint_started.elapsed().as_secs_f64();
     let secs = started.elapsed().as_secs_f64();
     // Both arms include the same final WAL checkpoint into the database file. This explicit
@@ -392,6 +403,7 @@ fn main() {
             "written_mb": wchar.map(|n|n as f64 / 1e6),
             "written_over_input": wchar.map(|n|n as f64 / input.max(1) as f64),
             "peak_rss_mb": peak_rss_mb,
+            "sqlite_memory_peak_bytes": polylogue_store::timing::sqlite_memory_peak(),
             // Seconds per stage; pool stages are thread-seconds.
             "stages": polylogue_store::timing::stage_seconds()
                 .into_iter()
@@ -418,6 +430,83 @@ fn main() {
             "peak resident memory {peak_rss_mb} MB exceeds {max} MB"
         );
     }
+}
+
+/// Prepare a stored corpus without paying for an initial parse before measuring a rebuild.
+fn capture_only(home: &Path, root: &Path) -> polylogue_store::Result<()> {
+    use polylogue_store::{Batch, Change, InputKey, Observation, Writer};
+    use std::os::unix::ffi::OsStrExt as _;
+    let (archive, _lock) = Archive::open_or_create(root)?;
+    let mut writer = Writer::start(&archive)?;
+    let (mut inputs, mut bytes) = (0_u64, 0_u64);
+    for entry in fs::read_dir(home.join(".claude/projects/-generated"))? {
+        let path = entry?.path();
+        if path
+            .extension()
+            .is_none_or(|extension| extension != "jsonl")
+        {
+            continue;
+        }
+        let prepared = archive.prepare_bytes(fs::File::open(&path)?)?;
+        let length = prepared.len();
+        let name = path.file_name().unwrap().to_string_lossy();
+        let batch = Batch {
+            input: InputKey {
+                id: format!("generated:{name}"),
+                format: "claude-code".into(),
+                route: polylogue_model::Route::Live,
+            },
+            change: Change::First,
+            observation: Some(Observation {
+                machine: "measurement-machine".into(),
+                host: "measurement-host".into(),
+                path: path.to_string_lossy().into_owned(),
+                path_bytes: path.as_os_str().as_bytes().to_vec(),
+                facts: Some(polylogue_store::FileFacts::of(&fs::metadata(&path)?)),
+                seen_at_ms: 1_788_256_800_000,
+                import: None,
+                container: None,
+                database: None,
+            }),
+            continues: false,
+            new_blob: None,
+            blobs: Vec::new(),
+            length,
+            parse: Vec::new(),
+            release: Default::default(),
+            acquisition: None,
+            basis: None,
+            required_outcome: None,
+        };
+        writer.store_bytes(prepared, batch)?;
+        inputs += 1;
+        bytes += length;
+    }
+    writer.stop();
+    println!(
+        "{}",
+        serde_json::json!({"stored_inputs":inputs, "stored_bytes":bytes})
+    );
+    Ok(())
+}
+
+/// Compare levels on exactly the same groups, independently of parsing/chunk sizes.
+fn compression_sizes(index: &Path) -> polylogue_store::Result<serde_json::Value> {
+    let conn = polylogue_store::archive::open_read(index)?;
+    let mut statement = conn.prepare("SELECT body FROM text_group ORDER BY id")?;
+    let mut rows = statement.query([])?;
+    let (mut groups, mut raw, mut three, mut nine) = (0_u64, 0_u64, 0_u64, 0_u64);
+    while let Some(row) = rows.next()? {
+        let body: Vec<u8> = row.get(0)?;
+        let decoded = zstd::stream::decode_all(body.as_slice())?;
+        raw += decoded.len() as u64;
+        three += zstd::bulk::compress(&decoded, 3)?.len() as u64;
+        nine += zstd::bulk::compress(&decoded, 9)?.len() as u64;
+        groups += 1;
+    }
+    Ok(
+        serde_json::json!({"groups":groups,"raw_bytes":raw,"level3_bytes":three,"level9_bytes":nine,"level3_over9":three as f64/nine.max(1) as f64}),
+    )
 }
 
 fn io_count(contents: Option<&str>, field: &str) -> Option<u64> {
@@ -487,7 +576,7 @@ struct BuildDatabase {
 /// The build's private file is installed as `index.db`, in WAL, when the
 /// pass ends its first build; a pass that left it unfinished is no
 /// measurement of a first build.
-fn checkpoint_first_build(archive: &Archive) -> polylogue_store::Result<Vec<BuildDatabase>> {
+fn checkpoint_build(archive: &Archive) -> polylogue_store::Result<Vec<BuildDatabase>> {
     if let Some(build) = archive.index_build() {
         return Err(polylogue_store::StoreError::invalid(format!(
             "the pass ended before installing the built index: {build}"

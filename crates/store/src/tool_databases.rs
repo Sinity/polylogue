@@ -230,7 +230,10 @@ fn recorded(
     input: &InputKey,
     observation: &Observation,
 ) -> crate::Result<Option<DbFacts>> {
-    let conn = crate::archive::open_read(&archive.index_db())?;
+    let conn = archive.open_index_connection(
+        &archive.index_db(),
+        crate::archive::index_build::Reads::Pipeline,
+    )?;
     if !archive.is_primary() {
         let uri = format!("file:{}?mode=ro", archive.archive_db().display());
         conn.execute("ATTACH DATABASE ?1 AS a", [uri])?;
@@ -411,7 +414,7 @@ fn header_current(db: &Path, archive: &Archive, input: &InputKey) -> Result<bool
         .map_err(sql_err)?;
     source.execute_batch("BEGIN").map_err(sql_err)?;
     let tables = tables(&source).map_err(sql_err)?;
-    let index = crate::archive::open_read(&archive.index_db())?;
+    let index = archive.open_index_read()?;
     let schema = catalog::recorded_schema(&index, &input.id)?;
     Ok(schema.as_ref() == Some(&signature(&tables)))
 }

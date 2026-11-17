@@ -19,6 +19,9 @@ pub trait Parser {
     /// most a few hundred KB on the real archive).
     type ParserState: Default + Clone + Serialize + DeserializeOwned;
 
+    fn uses_context(&self) -> bool {
+        false
+    }
     fn bind_context(&self, _: &mut Self::ParserState, _: polylogue_model::parser_context::Handle) {}
     fn check_context(&self, _: &Self::ParserState) -> Result<(), ParseError> {
         Ok(())
@@ -134,6 +137,7 @@ pub fn run_to<P: Parser>(
 /// origin without knowing its parser state type.
 /// `finished` says the bytes reach the end of an input that will not grow.
 pub trait StepParser: Send {
+    fn uses_context(&self) -> bool;
     fn step(
         &self,
         parser_state: Option<&Json>,
@@ -145,6 +149,9 @@ pub trait StepParser: Send {
 }
 
 impl<P: Parser + Send> StepParser for P {
+    fn uses_context(&self) -> bool {
+        Parser::uses_context(self)
+    }
     fn step(
         &self,
         parser_state: Option<&Json>,
@@ -222,6 +229,9 @@ pub enum Parse {
 }
 
 impl Parse {
+    pub fn uses_context(&self) -> bool {
+        matches!(self,Self::Lines(parser) if parser.uses_context())
+    }
     pub fn is_capture_log(&self) -> bool {
         matches!(self, Parse::CaptureLog(_))
     }

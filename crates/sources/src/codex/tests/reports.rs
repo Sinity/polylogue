@@ -204,8 +204,10 @@ fn observation_state_survives_every_eof_restart_without_holding_item_bodies() {
         let mut parser_state = ParserState::default();
         let first = run(&rollout(), &mut parser_state, &trace[..cut], 0).unwrap();
         let used = first.consumed;
+        let context = parser_state.context.clone();
         let mut parser_state: ParserState =
             serde_json::from_value(serde_json::to_value(parser_state).unwrap()).unwrap();
+        parser_state.bind(context);
         let second = run(
             &rollout(),
             &mut parser_state,

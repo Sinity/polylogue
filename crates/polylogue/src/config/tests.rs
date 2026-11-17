@@ -15,6 +15,7 @@ fn process(root: &Path) -> ProcessInputs {
             machine: "synthetic-machine".into(),
             host: "synthetic-host".into(),
         }),
+        memory_bytes: Some(4 << 30),
         workers: Some(2),
         cwd: Some(root.into()),
     }
@@ -460,4 +461,23 @@ fn archive_override_selects_its_own_mode_configuration() {
         load(second).mode,
         crate::daemon::service::ArchiveMode::Standalone
     ));
+}
+
+#[test]
+fn startup_sizes_the_pipeline_within_the_process_allowance() {
+    let root = tempfile::tempdir().unwrap();
+    for (cpus, bytes, workers, readers, queued) in [
+        (24, 4u64 << 30, 8, 128 << 20, 192 << 20),
+        (16, 1 << 30, 2, 48 << 20, 48 << 20),
+        (2, 4 << 30, 2, 128 << 20, 192 << 20),
+    ] {
+        let mut inputs = process(root.path());
+        inputs.workers = Some(cpus);
+        inputs.memory_bytes = Some(bytes);
+        let startup = Startup::load(&inputs, Overrides::default()).unwrap();
+        assert_eq!(startup.engine.workers, workers);
+        assert_eq!(startup.engine.reader_memory_bytes, readers);
+        assert_eq!(startup.engine.bytes_in_flight, queued);
+        assert_eq!(startup.engine.chunk, 16 << 20);
+    }
 }
