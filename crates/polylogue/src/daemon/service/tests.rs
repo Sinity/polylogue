@@ -305,6 +305,32 @@ fn stopping_releases_requests_waiting_for_a_full_pool_before_workers_or_running_
     let daemon = Arc::clone(&runtime.daemon);
     let reader = daemon.reads.reader().unwrap();
     assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
+    // Status can use every ordinary place plus the reserved interactive one.
+    // Confirm all remaining places are held before any request can start.
+    let (held, acquired) = std::sync::mpsc::channel();
+    let mut holders = Vec::new();
+    for _ in 0..daemon.reads.max_readers() {
+        let daemon = Arc::clone(&daemon);
+        let held = held.clone();
+        let (release, released) = sync_channel(0);
+        let holder = std::thread::spawn(move || {
+            polylogue_store::reserved_reads(|| {
+                let reader = daemon.reads.reader().unwrap();
+                assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
+                held.send(()).unwrap();
+                released.recv().unwrap();
+                assert!(matches!(
+                    reader.query("SELECT 42 AS n", &[]),
+                    Err(StoreError::Stopped)
+                ));
+            });
+        });
+        holders.push((release, holder));
+    }
+    for _ in 0..daemon.reads.max_readers() {
+        acquired.recv().unwrap();
+    }
+    assert_eq!(daemon.reads.checked_out(), daemon.reads.max_readers() + 1);
     let mut requests = Vec::new();
     let entered = Arc::new(std::sync::Barrier::new(9));
     for _ in 0..8 {
@@ -318,9 +344,15 @@ fn stopping_releases_requests_waiting_for_a_full_pool_before_workers_or_running_
     entered.wait();
     runtime.stop_accepting();
     for request in requests {
+        let answer = request.join().unwrap();
         assert!(
-            matches!(request.join().unwrap(), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("shutting_down"))
+            matches!(&answer, command_surface::Answer { outcome: command_surface::Outcome::Error(error), .. } if error.code.as_deref() == Some("shutting_down")),
+            "{answer:?}"
         );
+    }
+    for (release, holder) in holders {
+        release.send(()).unwrap();
+        holder.join().unwrap();
     }
     runtime.shutdown().unwrap();
     // A reader held across the stop ends with it.
