@@ -429,6 +429,15 @@ fn socket_chain_streams_each_read_at_its_step_and_retries_writes_once() {
         for index in [0, 2] {
             assert_eq!(reports[index]["outcome"]["reply"]["reply"]["repeat"], retry);
         }
+        let completions: Vec<_> = events
+            .iter()
+            .filter(|(event, _)| event == "complete")
+            .map(|(_, value)| value)
+            .collect();
+        for (report, complete) in [reports[1], reports[3]].into_iter().zip(completions) {
+            assert_eq!(report["outcome"]["reply"]["kind"], "streamed");
+            assert_eq!(&report["outcome"]["reply"]["reply"], complete);
+        }
         let mut reads = vec![String::new(), String::new()];
         let mut index = 0;
         for (name, value) in &events {
@@ -461,37 +470,40 @@ fn socket_chain_streams_each_read_at_its_step_and_retries_writes_once() {
 #[test]
 fn stream_prefix_failure_keeps_undo_and_does_not_start_a_read() {
     let d = test_daemon::start("prefix failure prompt");
-    let events = socket_events(
-        &d,
-        "prefix",
-        json!({
-            "references":["session:claude-code:s1"],
-            "steps":[{"verb":"note","text":"kept-note"},{"verb":"edit","text":"cannot-edit-session"},
-                {"verb":"read","delivery":"stream"}]
-        }),
-    );
-    assert!(
-        events
+    for retry in [false, true] {
+        let events = socket_events(
+            &d,
+            "prefix",
+            json!({
+                "references":["session:claude-code:s1"],
+                "steps":[{"verb":"note","text":"kept-note"},{"verb":"edit","text":"cannot-edit-session"},
+                    {"verb":"read","delivery":"stream"}]
+            }),
+        );
+        assert!(
+            events
+                .iter()
+                .all(|(name, _)| name == "steps" || name == "answer"),
+            "{events:?}"
+        );
+        let reports: Vec<_> = events
             .iter()
-            .all(|(name, _)| name == "steps" || name == "answer"),
-        "{events:?}"
-    );
-    let reports: Vec<_> = events
-        .iter()
-        .flat_map(|(_, answer)| answer["value"]["reply"]["steps"].as_array().unwrap().iter())
-        .collect();
-    assert_eq!(
-        reports
-            .iter()
-            .map(|step| step["outcome"]["status"].as_str().unwrap())
-            .collect::<Vec<_>>(),
-        ["done", "failed", "not_run"]
-    );
-    assert_eq!(
-        reports[0]["outcome"]["undo"],
-        json!(["polylogue assertion:prefix-1 withdraw"])
-    );
-    assert_eq!(count(&d, "assertions where kind:note"), 1);
+            .flat_map(|(_, answer)| answer["value"]["reply"]["steps"].as_array().unwrap().iter())
+            .collect();
+        assert_eq!(
+            reports
+                .iter()
+                .map(|step| step["outcome"]["status"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["done", "failed", "not_run"]
+        );
+        assert_eq!(
+            reports[0]["outcome"]["undo"],
+            json!(["polylogue assertion:prefix-1 withdraw"])
+        );
+        assert_eq!(reports[0]["outcome"]["reply"]["reply"]["repeat"], retry);
+        assert_eq!(count(&d, "assertions where kind:note"), 1);
+    }
 }
 
 #[test]
