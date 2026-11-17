@@ -209,7 +209,9 @@ fn registered_responses_and_selected_blocks_consume_the_written_keys() {
         ),
         (16, 16, 32)
     );
-    assert_eq!(duplicate.version_key_queries, 0);
+    // Installed-mode registration resolves each existing version once.
+    // Parser context consumes those rows without another hash-key query.
+    assert_eq!(duplicate.version_key_queries, 16);
     assert!(duplicate.vm_steps > fresh.vm_steps);
     for message in &messages {
         let (stored, _) = crate::versions::read_message(&conn, &message.content_hash().unwrap().0)
