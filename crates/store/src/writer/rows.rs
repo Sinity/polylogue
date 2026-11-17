@@ -945,6 +945,11 @@ impl RowWriter<'_, '_> {
             .or_invalid("unresolved message version")?;
         let choice = write.choice;
         let value = write.value;
+        eprintln!(
+            "prepared-item-probe: refresh pk={pk} changed={:?} value={}",
+            choice.map(|c| c.changed),
+            value.is_some()
+        );
         let created = write.created.take();
         let winner = choice.map(|choice| (selected_version(choice, value), choice.session));
         let Some((v, session_pk)) = winner else {

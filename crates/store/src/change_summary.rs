@@ -91,6 +91,7 @@ pub(crate) struct SessionChange {
 
 impl ChangeSummary {
     pub(crate) fn prepare_items(&self, pk: i64, entries: Vec<polylogue_model::read::IndexEntry>) {
+        eprintln!("prepared-item-probe: prepare pk={pk}");
         self.changed
             .borrow_mut()
             .items
@@ -129,6 +130,7 @@ impl ChangeSummary {
 
     /// Records a message before its row changes or is inserted.
     pub(crate) fn message(&self, conn: &Connection, pk: i64) -> Result<()> {
+        eprintln!("prepared-item-probe: change pk={pk}");
         self.record_message(conn, pk)?;
         self.changed.borrow_mut().items.remove(&pk);
         Ok(())
@@ -136,6 +138,7 @@ impl ChangeSummary {
 
     /// Placement and visibility change without changing the selected content.
     pub(crate) fn message_metadata(&self, conn: &Connection, pk: i64) -> Result<()> {
+        eprintln!("prepared-item-probe: metadata pk={pk}");
         self.record_message(conn, pk)?;
         self.replaced_message(pk)?;
         self.changed
@@ -189,6 +192,7 @@ impl ChangeSummary {
     }
 
     pub(crate) fn new_message(&self, pk: i64) {
+        eprintln!("prepared-item-probe: new pk={pk}");
         self.changed
             .borrow_mut()
             .messages
