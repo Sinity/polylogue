@@ -78,7 +78,7 @@ fn hermes_query_read_export_keep_compression_parents() {
     assert!(
         hidden_messages
             .iter()
-            .all(|message| message.session.as_str() == child)
+            .all(|message| message.session.to_string() == child)
     );
     assert!(
         child_messages
