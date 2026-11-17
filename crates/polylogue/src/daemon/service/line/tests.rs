@@ -700,7 +700,7 @@ fn ordered_read_stream_preserves_degraded_read_outcome() {
     let bytes = polylogue_testkit::claude_user("u-pending", "s-pending", "not parsed yet");
     let mut batch = polylogue_store::fixture::writer::step(
         "pending-completeness",
-        "claude-code",
+        "synthetic-unregistered",
         "/home/op/pending.jsonl",
         Default::default(),
         0,
@@ -724,7 +724,7 @@ fn ordered_read_stream_preserves_degraded_read_outcome() {
         .unwrap();
     assert!(
         !completeness.caught_up(),
-        "captured bytes must await their parsed checkpoint"
+        "captured source has no declared reading"
     );
     let finite = line(
         &d,
