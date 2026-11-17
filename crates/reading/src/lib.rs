@@ -298,6 +298,7 @@ fn selected_source(
 }
 
 struct Rendering<'a> {
+    at: polylogue_model::Timestamp,
     target: &'a str,
     options: &'a ReadOptions,
     near: Option<&'a polylogue_store::selection::NearFn<'a>>,
@@ -589,6 +590,7 @@ fn rows_page(
         attachment_call(d, message, block, index, input)
     };
     let rendering = Rendering {
+        at: operation.ran_at,
         target: &reading.target,
         options: &reading.options,
         near,
@@ -771,6 +773,7 @@ fn rows_stream(
         attachment_call(d, message, block, index, input)
     };
     let rendering = Rendering {
+        at: operation.ran_at,
         target: &reading.target,
         options: &reading.options,
         near,

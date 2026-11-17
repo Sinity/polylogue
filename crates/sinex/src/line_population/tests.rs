@@ -2,17 +2,27 @@ use super::*;
 use serde_json::json;
 use std::collections::BTreeMap;
 
-fn bytes(root: &Path) -> BTreeMap<std::path::PathBuf, Vec<u8>> {
-    fn visit(root: &Path, path: &Path, files: &mut BTreeMap<std::path::PathBuf, Vec<u8>>) {
-        for entry in std::fs::read_dir(path).unwrap() {
-            let entry = entry.unwrap();
-            if entry.file_type().unwrap().is_dir() {
-                visit(root, &entry.path(), files);
-            } else {
-                files.insert(
-                    entry.path().strip_prefix(root).unwrap().to_owned(),
-                    std::fs::read(entry.path()).unwrap(),
-                );
+fn bytes(
+    root: &Path,
+) -> BTreeMap<std::path::PathBuf, (Option<blake3::Hash>, std::time::SystemTime)> {
+    fn visit(
+        root: &Path,
+        path: &Path,
+        files: &mut BTreeMap<std::path::PathBuf, (Option<blake3::Hash>, std::time::SystemTime)>,
+    ) {
+        let metadata = std::fs::metadata(path).unwrap();
+        let digest = if metadata.is_file() {
+            Some(blake3::hash(&std::fs::read(path).unwrap()))
+        } else {
+            None
+        };
+        files.insert(
+            path.strip_prefix(root).unwrap().to_owned(),
+            (digest, metadata.modified().unwrap()),
+        );
+        if metadata.is_dir() {
+            for entry in std::fs::read_dir(path).unwrap() {
+                visit(root, &entry.unwrap().path(), files);
             }
         }
     }

@@ -119,7 +119,39 @@ pub fn convert_register(
         }
         Ok(hash.finalize())
     }
-    let original = Connection::open_with_flags(source, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let source_parent = source
+        .parent()
+        .ok_or_else(|| StoreError::invalid("source needs its preserved archive directory"))?;
+    let source_root = source_parent.canonicalize()?;
+    let destination_parent = destination
+        .parent()
+        .ok_or_else(|| StoreError::invalid("destination needs a parent"))?
+        .canonicalize()?;
+    if destination_parent.starts_with(&source_root) {
+        return Err(StoreError::invalid(
+            "the converted register must be outside the preserved input directory",
+        ));
+    }
+    let custody = std::fs::File::open(source_parent.join("lock"))?;
+    custody.try_lock_shared().map_err(|error| {
+        StoreError::invalid(format!("preserved archive is still open: {error}"))
+    })?;
+    // The existing archive lock fixes the complete DB/WAL set. SQLite reads
+    // a private copy so acquiring its WAL reader cannot alter preserved files.
+    let input = tempfile::tempdir_in(
+        destination
+            .parent()
+            .ok_or_else(|| StoreError::invalid("destination needs a parent"))?,
+    )?;
+    let snapshot = input.path().join("source.db");
+    std::fs::copy(source, &snapshot)?;
+    for suffix in ["-wal", "-shm"] {
+        let member = std::path::PathBuf::from(format!("{}{suffix}", source.display()));
+        if member.exists() {
+            std::fs::copy(&member, input.path().join(format!("source.db{suffix}")))?;
+        }
+    }
+    let original = Connection::open_with_flags(snapshot, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let identity: i32 = original.pragma_query_value(None, "application_id", |row| row.get(0))?;
     if identity != crate::schema::FORMAT_ID {
         return Err(StoreError::invalid(
@@ -262,16 +294,15 @@ pub fn stage_products(connection: &Connection, writes: &[Value]) -> Result<()> {
                         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                     )
                     .optional()?;
-                if let Some((binding, intent, body)) = known {
-                    if binding != completion.binding_hash.to_string()
+                if let Some((binding, intent, body)) = known
+                    && (binding != completion.binding_hash.to_string()
                         || intent != completion.run_hash.to_string()
                         || body
                             .map(|body| crate::encoding::unpack_json::<QueryRunOutcome>(&body))
                             .transpose()?
-                            .is_some_and(|prior| prior != completion)
-                    {
-                        return Err(StoreError::Conflict(id.into()));
-                    }
+                            .is_some_and(|prior| prior != completion))
+                {
+                    return Err(StoreError::Conflict(id.into()));
                 }
                 connection.execute("INSERT INTO query_run(id,binding_hash,run_hash,completion) VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET completion=coalesce(completion,excluded.completion)",
                     params![id,completion.binding_hash.to_string(),completion.run_hash.to_string(),super::pack(&completion)?])?;

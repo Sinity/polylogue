@@ -173,6 +173,8 @@ pub enum HeaderKind {
 #[serde(deny_unknown_fields)]
 pub struct Annotation {
     pub reference: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
     pub author: Author,
     pub kind: String,
     pub value: serde_json::Value,
@@ -415,6 +417,8 @@ pub enum Card {
     },
     Session {
         session: Box<Session>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        assertions: Vec<Annotation>,
         #[serde(default)]
         lineage_complete: ValueState<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -3,6 +3,36 @@ use crate::query_objects::line_population::{convert_register, convert_run};
 use polylogue_model::{BlobHash, Reference};
 use serde_json::Value;
 
+fn preserved_tree(
+    root: &std::path::Path,
+) -> std::collections::BTreeMap<std::path::PathBuf, (Option<blake3::Hash>, std::time::SystemTime)> {
+    fn visit(
+        root: &std::path::Path,
+        path: &std::path::Path,
+        files: &mut std::collections::BTreeMap<
+            std::path::PathBuf,
+            (Option<blake3::Hash>, std::time::SystemTime),
+        >,
+    ) {
+        let metadata = std::fs::metadata(path).unwrap();
+        let digest = metadata
+            .is_file()
+            .then(|| blake3::hash(&std::fs::read(path).unwrap()));
+        files.insert(
+            path.strip_prefix(root).unwrap().to_owned(),
+            (digest, metadata.modified().unwrap()),
+        );
+        if metadata.is_dir() {
+            for entry in std::fs::read_dir(path).unwrap() {
+                visit(root, &entry.unwrap().path(), files);
+            }
+        }
+    }
+    let mut files = std::collections::BTreeMap::new();
+    visit(root, root, &mut files);
+    files
+}
+
 fn read_presentation() -> ExecutionPresentation {
     ExecutionPresentation::Read {
         options: Default::default(),
@@ -142,6 +172,7 @@ fn current_zero_and_ordered_populations_and_object_runs_stay_intact() {
 }
 
 fn preserved_register(path: &std::path::Path, corrupt: bool) -> (Value, QueryRunOutcome) {
+    std::fs::write(path.parent().unwrap().join("lock"), b"").unwrap();
     let connection = rusqlite::Connection::open(path).unwrap();
     crate::schema::ensure_archive(&connection).unwrap();
     let (body, completion) = old_body(Some(Reference::parse("session:codex:preserved").unwrap()));
@@ -154,7 +185,7 @@ fn preserved_register(path: &std::path::Path, corrupt: bool) -> (Value, QueryRun
     connection.execute("INSERT INTO query_run(id,binding_hash,run_hash,query,run,completion) VALUES(?1,?2,?3,?4,?5,?6)",
         params![completion.run.as_str(),completion.binding_hash.to_string(),
             if corrupt {BlobHash::of(b"wrong").to_string()} else {completion.run_hash.to_string()},
-            body["question"].as_str().unwrap(),super::super::pack(&body).unwrap(),super::super::pack(&completion).unwrap()]).unwrap();
+            question("sessions").id.to_string(),super::super::pack(&body).unwrap(),super::super::pack(&completion).unwrap()]).unwrap();
     connection.pragma_update(None, "user_version", 3).unwrap();
     (body, completion)
 }
@@ -163,7 +194,8 @@ fn preserved_register(path: &std::path::Path, corrupt: bool) -> (Value, QueryRun
 fn preserved_register_conversion_keeps_source_bytes_and_publishes_once() {
     let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("preserved.db");
-    let target = directory.path().join("current.db");
+    let output = tempfile::tempdir().unwrap();
+    let target = output.path().join("current.db");
     let vectors = directory.path().join("embeddings.db");
     std::fs::write(&vectors, b"synthetic paid output bytes").unwrap();
     let (_, completion) = preserved_register(&source, false);
@@ -214,7 +246,8 @@ fn preserved_register_conversion_keeps_source_bytes_and_publishes_once() {
 fn invalid_preserved_hash_publishes_nothing_and_keeps_the_source() {
     let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("invalid.db");
-    let target = directory.path().join("unpublished.db");
+    let output = tempfile::tempdir().unwrap();
+    let target = output.path().join("unpublished.db");
     preserved_register(&source, true);
     let original = std::fs::read(&source).unwrap();
     assert!(matches!(
@@ -229,7 +262,9 @@ fn invalid_preserved_hash_publishes_nothing_and_keeps_the_source() {
 fn pending_begin_and_completion_join_the_preserved_population_once() {
     let directory = tempfile::tempdir().unwrap();
     let source = directory.path().join("preserved.db");
-    let target = directory.path().join("current.db");
+    let output = tempfile::tempdir().unwrap();
+    let target = output.path().join("current.db");
+    std::fs::write(directory.path().join("lock"), b"").unwrap();
     let connection = Connection::open(&source).unwrap();
     crate::schema::ensure_archive(&connection).unwrap();
     connection.pragma_update(None, "user_version", 3).unwrap();
@@ -260,4 +295,99 @@ fn pending_begin_and_completion_join_the_preserved_population_once() {
     let current: QueryRunOutcome = crate::encoding::unpack_json(&packed).unwrap();
     assert_eq!(current.count, completion.count);
     assert_eq!(current.run, completion.run);
+}
+
+#[test]
+fn wal_child() {
+    let Some(path) = std::env::var_os("POLYLOGUE_EXECUTION_CONVERSION_CHILD") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(path);
+    std::fs::write(path.parent().unwrap().join("lock"), b"").unwrap();
+    let connection = Connection::open(path).unwrap();
+    crate::schema::ensure_archive(&connection).unwrap();
+    connection
+        .pragma_update(None, "journal_mode", "WAL")
+        .unwrap();
+    connection
+        .pragma_update(None, "wal_autocheckpoint", 0)
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO meta(key,value) VALUES('committed-in-wal','present')",
+            [],
+        )
+        .unwrap();
+    connection.pragma_update(None, "user_version", 3).unwrap();
+    // A stopped process may leave committed WAL frames. Conversion must read
+    // their stable copied set without opening or checkpointing the originals.
+    std::process::exit(0);
+}
+
+#[test]
+fn preserved_wal_commits_survive_without_altering_original_files() {
+    let source = tempfile::tempdir().unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let register = source.path().join("archive.db");
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "query_objects::tests::line_population::wal_child",
+            "--nocapture",
+        ])
+        .env("POLYLOGUE_EXECUTION_CONVERSION_CHILD", &register)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(
+        source
+            .path()
+            .join("archive.db-wal")
+            .metadata()
+            .unwrap()
+            .len()
+            > 0
+    );
+    let original = preserved_tree(source.path());
+    let current = destination.path().join("current.db");
+    assert_eq!(
+        convert_register(&register, &current, |_| Ok(())).unwrap(),
+        0
+    );
+    let converted = Connection::open(current).unwrap();
+    assert_eq!(
+        converted
+            .query_row(
+                "SELECT value FROM meta WHERE key='committed-in-wal'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+        "present"
+    );
+    let after = preserved_tree(source.path());
+    assert_eq!(after, original);
+}
+
+#[test]
+fn active_archive_or_missing_custody_lock_changes_no_preserved_entries() {
+    let source = tempfile::tempdir().unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let register = source.path().join("archive.db");
+    preserved_register(&register, false);
+    let original = preserved_tree(source.path());
+    let lock = std::fs::File::open(source.path().join("lock")).unwrap();
+    lock.lock().unwrap();
+    let target = destination.path().join("current.db");
+    assert!(convert_register(&register, &target, |_| Ok(())).is_err());
+    assert!(!target.exists());
+    assert_eq!(preserved_tree(source.path()), original);
+    drop(lock);
+    std::fs::remove_file(source.path().join("lock")).unwrap();
+    let before = preserved_tree(source.path());
+    assert!(convert_register(&register, &target, |_| Ok(())).is_err());
+    assert_eq!(preserved_tree(source.path()), before);
+    assert!(!source.path().join("lock").exists());
+    assert!(!target.exists());
+    assert_eq!(preserved_tree(source.path()), before);
 }

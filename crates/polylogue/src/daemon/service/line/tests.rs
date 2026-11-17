@@ -454,6 +454,10 @@ fn socket_chain_streams_each_read_at_its_step_and_retries_writes_once() {
                 .all(|read| read.contains("ordered stream prompt")),
             "{reads:?}"
         );
+        assert!(
+            reads.iter().all(|read| read.contains("\"key\":\"done\"")),
+            "{reads:?}"
+        );
         if !retry {
             assert!(!reads[0].contains("after-note"), "{reads:?}");
             assert!(reads[1].contains("after-note"), "{reads:?}");
@@ -585,4 +589,59 @@ fn streamed_read_keeps_message_grain_in_a_fixed_reference_population() {
         messages,
         ["message:claude-code:u2", "message:claude-code:u1"]
     );
+}
+
+#[test]
+fn session_notes_are_visible_in_pages_and_hide_or_withdraw_removes_them() {
+    use polylogue_model::read::{Card, ItemKind, ReadPage};
+    let daemon = test_daemon::start("session note visibility");
+    let written = steps(
+        &daemon,
+        "page-note",
+        json!({"selection":"session:claude-code:s1",
+        "steps":[{"verb":"note","text":"current session note"},{"verb":"read"}]}),
+    );
+    let page: ReadPage =
+        serde_json::from_value(written[1]["outcome"]["reply"]["reply"].clone()).unwrap();
+    let notes = |page: &ReadPage| {
+        page.document
+            .items
+            .iter()
+            .flat_map(|item| match &item.kind {
+                ItemKind::Card { card } => match card.as_ref() {
+                    Card::Session { assertions, .. } => assertions.clone(),
+                    _ => vec![],
+                },
+                _ => vec![],
+            })
+            .collect::<Vec<_>>()
+    };
+    let shown = notes(&page);
+    assert_eq!(shown.len(), 1);
+    assert_eq!(shown[0].value, json!("current session note"));
+    let hidden = steps(
+        &daemon,
+        "hide-note",
+        json!({"selection":"session:claude-code:s1",
+        "steps":[{"verb":"read","hide":["assertions"]}]}),
+    );
+    let hidden: ReadPage =
+        serde_json::from_value(hidden[0]["outcome"]["reply"]["reply"].clone()).unwrap();
+    assert!(notes(&hidden).is_empty());
+    let withdrawn = steps(
+        &daemon,
+        "withdraw-note",
+        json!({"selection":"assertion:page-note-1",
+        "steps":[{"verb":"withdraw"}]}),
+    );
+    assert_eq!(withdrawn[0]["outcome"]["status"], "done");
+    let read = steps(
+        &daemon,
+        "read-after-withdraw",
+        json!({"selection":"session:claude-code:s1",
+        "steps":[{"verb":"read"}]}),
+    );
+    let read: ReadPage =
+        serde_json::from_value(read[0]["outcome"]["reply"]["reply"].clone()).unwrap();
+    assert!(notes(&read).is_empty());
 }

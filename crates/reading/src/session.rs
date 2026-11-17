@@ -758,6 +758,7 @@ fn card(
     } else {
         match reader.session(child)? {
             Some(session) => Card::Session {
+                assertions: Vec::new(),
                 session: Box::new(session),
                 lineage_complete: ValueState::NotApplicable,
                 open: Some(Box::new(open)),
@@ -1006,6 +1007,15 @@ pub(super) fn page(
         target,
         &read_session,
         inherited_messages,
+        if options.assertions {
+            layout_facts::annotations(
+                reader,
+                &polylogue_model::Reference::Session(read_session.id.clone()),
+                operation.ran_at,
+            )?
+        } else {
+            vec![]
+        },
     );
     let tokens = limits.tokens.get();
     let items = limits.items.get();
@@ -1088,7 +1098,15 @@ pub(super) fn page(
     if start == 0 && !continues_forward {
         items_out.extend(lead);
     }
-    let mut laid = lay_out(reader, d, &composed, &runs, &page_entries, options)?;
+    let mut laid = lay_out(
+        reader,
+        d,
+        &composed,
+        &runs,
+        &page_entries,
+        options,
+        operation.ran_at,
+    )?;
     still_wanted()?;
     decorate(reader, &composed, &shown, &page_entries, &mut laid, options)?;
     still_wanted()?;
@@ -1288,6 +1306,7 @@ fn lead_items(
     target: &str,
     session: &polylogue_model::Session,
     inherited: u64,
+    assertions: Vec<Annotation>,
 ) -> Vec<ReadItem> {
     // The read session's card opens the reading, with whether its lineage
     // composed without a problem.
@@ -1295,6 +1314,7 @@ fn lead_items(
         source: Source::record(format!("session:{}", session.id)),
         kind: ItemKind::Card {
             card: Box::new(Card::Session {
+                assertions,
                 session: Box::new(session.clone()),
                 // Whether the parents composed, when the reading shows them,
                 // as the stream's session record says.
@@ -1515,6 +1535,7 @@ fn lay_out(
     reading: &Runs,
     page: &[PageEntry],
     options: &ReadOptions,
+    at: polylogue_model::Timestamp,
 ) -> Result<Vec<Vec<ReadItem>>, Error> {
     // A raw reading is the stored records, which `decorate` adds.
     if options.view == View::Raw {
@@ -1593,6 +1614,7 @@ fn lay_out(
                         Record::Event(record),
                         LayoutFacts::default(),
                         options,
+                        at,
                         &selected,
                         &ready_attachment,
                         &mut footer,
@@ -1646,6 +1668,7 @@ fn lay_out(
                             record,
                             facts,
                             options,
+                            at,
                             &selected,
                             &ready_attachment,
                             &mut footer,
@@ -1965,6 +1988,7 @@ fn emit(
     record: Record,
     facts: LayoutFacts,
     options: &ReadOptions,
+    at: polylogue_model::Timestamp,
     selected: &dyn Fn(&Source) -> Result<bool, Error>,
     ready_attachment: &super::attachment_facts::ReadyAttachment<'_>,
     footer: &mut ReadFooter,
@@ -1974,6 +1998,9 @@ fn emit(
     // each one laid out is selected; what it leaves out is said once, in
     // the reading's first lines.
     let mut facts = facts;
+    if options.assertions {
+        layout_facts::annotate(reader, &record, &mut facts, at)?;
+    }
     if options.view == View::Context {
         facts.context = Some(ContextState {
             selected: true,

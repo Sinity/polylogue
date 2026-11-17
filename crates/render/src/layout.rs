@@ -178,6 +178,7 @@ pub fn visit_record(
                     source,
                     kind: ItemKind::Card {
                         card: Box::new(Card::Session {
+                            assertions: facts.assertions.clone(),
                             session: Box::new(row.session.clone()),
                             lineage_complete: facts.lineage_complete.clone(),
                             open: None,
@@ -450,6 +451,7 @@ pub fn visit_record(
                 source: source.clone(),
                 kind: ItemKind::Card {
                     card: Box::new(Card::Session {
+                        assertions: facts.assertions.clone(),
                         session: Box::new(row.session.clone()),
                         lineage_complete: facts.lineage_complete.clone(),
                         open: None,

@@ -158,6 +158,8 @@ pub struct Queue {
     path: PathBuf,
     connection: Connection,
     newest_next: std::cell::Cell<bool>,
+    #[cfg(feature = "fixture")]
+    _preserved: Option<tempfile::TempDir>,
 }
 
 /// A read transaction fixes the database at the producer backup position. Copying
@@ -340,7 +342,16 @@ impl Queue {
     /// Read-only access for the finite preserved-execution conversion.
     #[cfg(feature = "fixture")]
     pub fn preserved(path: &Path) -> Result<Self> {
-        let connection = archive::open_read(path)?;
+        let copy = tempfile::tempdir()?;
+        let snapshot = copy.path().join("queue.db");
+        std::fs::copy(path, &snapshot)?;
+        for suffix in ["-wal", "-shm"] {
+            let source = std::path::PathBuf::from(format!("{}{suffix}", path.display()));
+            if source.exists() {
+                std::fs::copy(&source, copy.path().join(format!("queue.db{suffix}")))?;
+            }
+        }
+        let connection = archive::open_read(&snapshot)?;
         let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         let identity: u32 =
             connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
@@ -350,9 +361,10 @@ impl Queue {
             ));
         }
         Ok(Self {
-            path: path.into(),
+            path: snapshot,
             connection,
             newest_next: std::cell::Cell::new(true),
+            _preserved: Some(copy),
         })
     }
 
@@ -388,6 +400,8 @@ impl Queue {
             path: path.into(),
             connection,
             newest_next: std::cell::Cell::new(true),
+            #[cfg(feature = "fixture")]
+            _preserved: None,
         })
     }
 
