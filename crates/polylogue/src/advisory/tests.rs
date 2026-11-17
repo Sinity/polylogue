@@ -19,9 +19,12 @@ fn authored(
         author,
         via: Channel::Cli,
     });
-    serde_json::to_value(
-        crate::daemon::service::acts::author(&w.daemon, &invocation, id.into(), write).unwrap(),
-    )
+    serde_json::to_value(crate::test_answers::ok(crate::daemon::service::write(
+        &w.daemon,
+        &invocation,
+        id.into(),
+        write,
+    )))
     .unwrap()
 }
 pub(crate) fn operator(w: &TestDaemon, id: &str, write: polylogue_model::user::UserWrite) -> Value {

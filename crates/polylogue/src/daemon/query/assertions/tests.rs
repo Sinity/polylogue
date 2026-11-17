@@ -13,15 +13,14 @@ fn add(w: &test_daemon::TestDaemon, id: &str, authored: (Author, NewAssertion)) 
             author: authored.0,
             via: polylogue_model::authorship::Channel::Cli,
         });
-    crate::daemon::service::acts::author(
+    crate::test_answers::ok(crate::daemon::service::write(
         &w.daemon,
         &invocation,
         id.into(),
         polylogue_model::user::UserWrite::Assert {
             assertions: vec![authored.1],
         },
-    )
-    .unwrap();
+    ));
 }
 
 fn operator(w: &test_daemon::TestDaemon, id: &str, write: polylogue_model::user::UserWrite) {
@@ -31,7 +30,12 @@ fn operator(w: &test_daemon::TestDaemon, id: &str, write: polylogue_model::user:
             author: Author::Operator,
             via: polylogue_model::authorship::Channel::Cli,
         });
-    crate::daemon::service::acts::author(&w.daemon, &invocation, id.into(), write).unwrap();
+    crate::test_answers::ok(crate::daemon::service::write(
+        &w.daemon,
+        &invocation,
+        id.into(),
+        write,
+    ));
 }
 
 fn note(author: Author, target: &str, value: &str) -> (Author, NewAssertion) {

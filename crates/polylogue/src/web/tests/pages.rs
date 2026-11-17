@@ -274,17 +274,16 @@ fn exact_reference_routes_do_not_substitute_prefixes_or_current_note_revisions()
             author: polylogue_model::Author::Operator,
             via: polylogue_model::authorship::Channel::Cli,
         });
-    let old = crate::daemon::service::acts::author(
+    let old = crate::test_answers::ok(crate::daemon::service::write(
         &r.web.daemon,
         &invocation,
         "exact-note".into(),
         polylogue_model::user::UserWrite::Assert {
             assertions: vec![note],
         },
-    )
-    .unwrap()
+    ))
     .id;
-    crate::daemon::service::acts::author(
+    crate::test_answers::ok(crate::daemon::service::write(
         &r.web.daemon,
         &invocation,
         "exact-note-new".into(),
@@ -298,8 +297,7 @@ fn exact_reference_routes_do_not_substitute_prefixes_or_current_note_revisions()
                 ..Default::default()
             },
         },
-    )
-    .unwrap();
+    ));
     let exact = Reference::Assertion(polylogue_model::RevisionReference::exact(
         old.clone(),
         old.clone(),

@@ -106,7 +106,7 @@ fn links_follow_references_in_unit_and_grouped_rows() {
             author: polylogue_model::Author::Operator,
             via: polylogue_model::authorship::Channel::Cli,
         });
-    crate::daemon::service::acts::author(
+    crate::test_answers::ok(crate::daemon::service::write(
         &r.web.daemon,
         &invocation,
         "claude-code:s1".into(),
@@ -122,8 +122,7 @@ fn links_follow_references_in_unit_and_grouped_rows() {
                 valid_until: None,
             }],
         },
-    )
-    .unwrap();
+    ));
     let kept = crate::test_daemon::Call::new(
         "rows",
         serde_json::json!({"selection":"sessions | group by id","steps":[{"verb":"save"}]}),

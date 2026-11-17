@@ -87,7 +87,7 @@ fn archive_with_notes() -> Morrow {
                 author: polylogue_model::Author::Operator,
                 via: polylogue_model::authorship::Channel::Cli,
             });
-        crate::daemon::service::acts::author(
+        crate::test_answers::ok(crate::daemon::service::write(
             &runtime.daemon,
             &invocation,
             id.into(),
@@ -106,8 +106,7 @@ fn archive_with_notes() -> Morrow {
                     valid_until: None,
                 }],
             },
-        )
-        .unwrap();
+        ));
     }
     runtime.shutdown().unwrap();
     archive
