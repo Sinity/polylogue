@@ -42,9 +42,53 @@ pub struct LineSelection {
     pub matches: Option<serde_json::Value>,
 }
 
+/// One Save step's accepted rows and optional named question and watch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SaveSelection {
+    pub name: Option<String>,
+    pub query: String,
+    pub denominator: Option<String>,
+    pub rows_json: String,
+    pub read_at: String,
+    pub watch: Option<SavedWatch>,
+    pub outcomes: Option<SaveReport>,
+}
+/// The exact objects the accepting Save wrote or reused.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SaveReport {
+    pub saved: Option<UserOutcome>,
+    pub kept: UserOutcome,
+    pub watch: Option<UserOutcome>,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SavedWatch {
+    pub hold: Option<String>,
+    pub notify: bool,
+}
+/// Object identities remain the same when the complete Save is retried.
+pub struct SaveIdentities {
+    pub saved: Option<String>,
+    pub kept: String,
+    pub watch: Option<String>,
+}
+impl SaveSelection {
+    pub fn identities(&self, request: &str) -> SaveIdentities {
+        SaveIdentities {
+            saved: self.name.as_ref().map(|_| format!("{request}-save")),
+            kept: format!("{request}-keep"),
+            watch: self.watch.as_ref().map(|_| format!("{request}-watch")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "write", rename_all = "snake_case", deny_unknown_fields)]
 pub enum UserWrite {
+    /// Names and keeps one accepted selection in one transaction.
+    SaveSelection(Box<SaveSelection>),
     /// A line's accepted intent and fixed population, shared by every step and retry.
     ResolveLine {
         request: serde_json::Value,
@@ -182,6 +226,15 @@ impl UserWrite {
     /// The caller's content, without data resolved when the write runs.
     pub fn intent(&self) -> Self {
         let mut intent = match self {
+            Self::SaveSelection(save) => Self::SaveSelection(Box::new(SaveSelection {
+                name: save.name.clone(),
+                query: save.query.clone(),
+                denominator: save.denominator.clone(),
+                rows_json: String::new(),
+                read_at: String::new(),
+                watch: save.watch.clone(),
+                outcomes: None,
+            })),
             Self::KeepResult { name, query, .. } => Self::KeepResult {
                 name: name.clone(),
                 query: query.clone(),

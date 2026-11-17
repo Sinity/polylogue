@@ -857,129 +857,67 @@ impl Handler for Judge {
     }
 }
 
-/// Saves a query under a name, to run as `query:NAME`; saving a name again
-/// revises its definition.
-pub(crate) struct Save;
-impl Handler for Save {
-    type Arguments = protocol::saved::Save;
-    type Answer = polylogue_model::user::UserOutcome;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
-        let reader = call.reader()?;
-        let intended = UserWrite::SaveQuery {
-            name: arguments.name,
-            text: arguments.query,
-            denominator: arguments.denominator,
-        };
-        let resolved = match repeated_request(&reader, call.request_id, &intended, call.invocation)
-        {
-            Ok(Some(previous)) => previous,
-            Ok(None) => intended,
-            Err(failure) => return Err(failure),
-        };
-        drop(reader);
-        Ok(write(
-            call.daemon,
-            call.invocation,
-            call.request_id.into(),
-            resolved,
-        ))
-    }
-}
-
-/// Watches a query: each row that starts matching becomes a notice (a
-/// signal rule delivering notices).
-pub(crate) struct Watch;
-impl Handler for Watch {
-    type Arguments = protocol::saved::Watch;
-    type Answer = polylogue_model::user::UserOutcome;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
-        let protocol::saved::Watch {
-            name,
-            hold,
-            notify,
-            query,
-        } = arguments;
-        let reader = call.reader()?;
-        let context = call.context()?;
-        let selected_scope = reader.scope_token();
-        if let Some(hold) = &hold
-            && crate::signals::duration(hold).is_none()
-        {
-            return Ok(error(
-                polylogue_model::Code::Invalid,
-                format!("--for {hold:?} is not a duration such as 20m"),
-            ));
-        }
-        // A watch whose query cannot run would only be refused later.
-        let ask = super::super::query::Ask {
-            text: &query,
-            cursor: None,
-            page_size: Some(1),
-            why: false,
-            session: None,
-            context,
-            embeddings: false,
-            ranking_identity: None,
-            near: None,
-            fields: &[],
-        };
-        super::super::query::run(&reader, ask)?;
-        drop(reader);
-        let mut rule = serde_json::json!({
-            "name": name.clone().unwrap_or_else(|| query.clone()),
-            "query": query,
-            "fires": "on_new",
-            "deliver": "notice",
-            "interrupt": notify,
-        });
-        if let Some(hold) = hold {
-            rule["for"] = serde_json::json!(hold);
-        }
-        let assertion = polylogue_model::assertion::NewAssertion {
-            kind: polylogue_model::assertion::AssertionKind::Signal,
-            key: rule["name"].as_str().map(str::to_owned),
-            value: Some(rule),
-            links: vec![],
-            valid_until: None,
-        };
-        Ok(write_from_read(
-            call.daemon,
-            call.invocation,
-            call.request_id.into(),
-            UserWrite::Assert {
-                assertions: vec![assertion],
-            },
-            selected_scope,
-        ))
-    }
-}
-
-/// Keep the line's accepted selection through the existing authored-result write.
-pub(crate) fn keep(
-    name: Option<String>,
+/// Submit the complete Save as one authored write and one retry receipt.
+pub(crate) fn save_selection(
+    step: protocol::steps::SaveStep,
     query: String,
     selection: &crate::daemon::verbs::Selection,
     call: &Call<'_>,
-) -> Result<Answer<polylogue_model::user::UserOutcome>, Failure> {
+) -> Result<Answer<(protocol::line::SaveReport, Vec<String>)>, Failure> {
     let (d, invocation) = (call.daemon, call.invocation);
     let request_id: String = call.request_id.into();
     let reader = call.reader()?;
     let selected_scope = reader.scope_token();
-    let intended = UserWrite::KeepResult {
-        name: name.clone(),
-        query: query.clone(),
+    let mut save = polylogue_model::user::SaveSelection {
+        name: step.name,
+        query,
+        denominator: step.denominator,
         rows_json: String::new(),
         read_at: String::new(),
+        outcomes: None,
+        watch: step.watch.then_some(polylogue_model::user::SavedWatch {
+            hold: step.hold,
+            notify: step.notify,
+        }),
+    };
+    let intended = UserWrite::SaveSelection(Box::new(save.clone()));
+    let present = |receipt: polylogue_store::user_writes::UserReceipt| {
+        let mut report = receipt
+            .save
+            .expect("Save transaction returns its resolved outcomes");
+        let mut undo = Vec::new();
+        for outcome in report
+            .saved
+            .iter()
+            .chain(report.watch.iter())
+            .filter(|outcome| !outcome.repeat)
+        {
+            undo.extend(crate::daemon::verbs::undo_line(
+                &outcome.id,
+                &crate::daemon::verbs::written(&outcome.id, 1),
+            ));
+        }
+        for outcome in report
+            .saved
+            .iter_mut()
+            .chain(std::iter::once(&mut report.kept))
+            .chain(report.watch.iter_mut())
+        {
+            outcome.pending = receipt.outcome.pending;
+            outcome.repeat |= receipt.outcome.repeat;
+        }
+        (report, undo)
     };
     match repeated_request(&reader, &request_id, &intended, invocation) {
         Ok(Some(previous)) => {
             drop(reader);
-            return Ok(write_from_read(
+            return Ok(super::answers::submit_receipt(
                 d,
                 invocation,
                 request_id,
                 previous,
-                selected_scope,
+                Some(selected_scope),
+                present,
             ));
         }
         Err(failure) => return Err(failure),
@@ -992,7 +930,7 @@ pub(crate) fn keep(
         &d.config,
         |embeddings, ranking_identity, near| {
             let ask = super::super::query::Ask {
-                text: &query,
+                text: &save.query,
                 cursor: None,
                 page_size: None,
                 why: false,
@@ -1017,17 +955,15 @@ pub(crate) fn keep(
     let kept = kept?;
     drop(reader);
     let read_at = serde_json::json!({ "now": kept["now"], "position":kept["read_at"] }).to_string();
-    Ok(write_from_read(
+    save.rows_json = kept.to_string();
+    save.read_at = read_at;
+    Ok(super::answers::submit_receipt(
         d,
         invocation,
         request_id,
-        UserWrite::KeepResult {
-            name,
-            query,
-            rows_json: kept.to_string(),
-            read_at,
-        },
-        selected_scope,
+        UserWrite::SaveSelection(Box::new(save)),
+        Some(selected_scope),
+        present,
     ))
 }
 

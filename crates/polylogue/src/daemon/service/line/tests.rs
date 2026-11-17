@@ -1019,3 +1019,96 @@ fn newly_saved_names_cannot_be_captured_by_commands_or_verbs() {
     );
     assert_eq!(count(&d, "query:grammar-control"), 1);
 }
+
+#[test]
+fn a_save_retry_retains_actual_reused_revisions_and_original_undo() {
+    let d = test_daemon::start("Save receipt identities");
+    let save = |query: &str| json!({"selection":query,"steps":[{"verb":"save","name":"receipt-name","watch":true,"for":"20m"}]});
+    let first = steps(&d, "first-receipt", save("sessions"));
+    let reused = steps(&d, "second-receipt", save("sessions"));
+    let part = |report: &Value| report["outcome"]["reply"]["reply"].clone();
+    let original = part(&first[0]);
+    let reused_value = part(&reused[0]);
+    for field in ["saved", "watch"] {
+        assert_eq!(
+            reused_value[field]["id"], original[field]["id"],
+            "{reused_value}"
+        );
+        assert_eq!(reused_value[field]["repeat"], true, "{reused_value}");
+    }
+    assert!(reused[0]["outcome"].get("undo").is_none(), "{reused:?}");
+    assert_eq!(reused_value["kept"]["id"], "second-receipt-1-keep");
+    steps(&d, "changed-definition", save("messages"));
+    let retry = steps(&d, "second-receipt", save("sessions"));
+    assert_eq!(part(&retry[0])["saved"]["id"], original["saved"]["id"]);
+    assert_eq!(part(&retry[0])["watch"]["id"], original["watch"]["id"]);
+    assert!(retry[0]["outcome"].get("undo").is_none(), "{retry:?}");
+    let first_retry = steps(&d, "first-receipt", save("sessions"));
+    assert_eq!(
+        first_retry[0]["outcome"]["undo"],
+        first[0]["outcome"]["undo"]
+    );
+    assert_eq!(first[0]["outcome"]["undo"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn an_owned_save_finishes_atomically_after_deadline_then_stops_later_steps() {
+    use polylogue_store::{read::limit::ReadLimit, writer::DispatchPhase};
+    use std::time::Duration;
+    let d = test_daemon::start("atomic Save ownership");
+    let pause = d
+        .daemon
+        .writes
+        .as_ref()
+        .unwrap()
+        .pause_user_dispatch_for_test("owned-save-1", DispatchPhase::Owned);
+    let limit = ReadLimit::new(Duration::from_secs(2), Default::default());
+    let request = Call::new(
+        "rows",
+        json!({"selection":"sessions","steps":[
+            {"verb":"save","name":"owned-question","watch":true,"for":"20m"},
+            {"verb":"read"},{"verb":"tag","name":"not-after-deadline"}
+        ]}),
+    )
+    .id("owned-save");
+    let answer = std::thread::scope(|scope| {
+        let worker = scope.spawn(|| request.limit(limit.clone()).answer(&d.daemon));
+        pause.wait().expect("Save must reach writer ownership");
+        while limit.check().is_ok() {
+            std::thread::yield_now();
+        }
+        pause.release();
+        worker.join().unwrap()
+    });
+    let value = crate::test_answers::ok(answer);
+    let reports = value["reply"]["steps"].as_array().unwrap();
+    assert_eq!(reports[0]["outcome"]["status"], "done", "{value}");
+    assert_eq!(
+        reports[0]["outcome"]["undo"].as_array().unwrap().len(),
+        2,
+        "{value}"
+    );
+    assert_eq!(reports[1]["outcome"]["error"]["kind"], "timeout", "{value}");
+    assert_eq!(reports[2]["outcome"]["status"], "not_run", "{value}");
+    let reader = d.daemon.reads.reader().unwrap();
+    let accepted = reader.user_request("owned-save-1").unwrap().unwrap();
+    let polylogue_model::user::UserWrite::SaveSelection(save) = accepted.write else {
+        panic!("one atomic Save request")
+    };
+    assert_eq!(save.outcomes.as_ref().unwrap().kept.id, "owned-save-1-keep");
+    for child in [
+        "owned-save-1-save",
+        "owned-save-1-keep",
+        "owned-save-1-watch",
+    ] {
+        assert!(
+            reader.user_request(child).unwrap().is_none(),
+            "one parent receipt: {child}"
+        );
+    }
+    drop(reader);
+    assert_eq!(count(&d, "assertions where kind:saved_query"), 1);
+    assert_eq!(count(&d, "assertions where kind:signal"), 1);
+    assert_eq!(count(&d, "assertions where kind:tag"), 0);
+    assert_eq!(count(&d, "results"), 1);
+}

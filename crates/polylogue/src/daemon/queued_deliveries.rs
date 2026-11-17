@@ -8,14 +8,14 @@
 
 use crate::briefing::LastBrief;
 use polylogue_model::LockExt as _;
-use polylogue_model::user::{UserOutcome, UserRequest};
+use polylogue_model::user::UserRequest;
 use polylogue_store::writer::Queued;
 use polylogue_store::{ReadScopeToken, StoreError, WriterSender};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
-type Committed = Receiver<Result<UserOutcome, StoreError>>;
+type Committed = Receiver<Result<polylogue_store::user_writes::UserReceipt, StoreError>>;
 
 /// A request the writer's queue had no room for.
 struct Waiting {
@@ -248,7 +248,9 @@ fn prune(state: &mut State) {
         None => true,
         // A failed acknowledgment cannot establish stored history. Keep
         // that uncertain pair; it is never permission to prepare it again.
-        Some(committed) => !matches!(committed.try_recv(), Ok(Ok(outcome)) if !outcome.pending),
+        Some(committed) => {
+            !matches!(committed.try_recv(), Ok(Ok(outcome)) if !outcome.outcome.pending)
+        }
     });
     state.latest.retain(|_, latest| match &latest.committed {
         None => true,

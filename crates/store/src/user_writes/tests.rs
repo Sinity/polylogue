@@ -314,3 +314,80 @@ fn assertion_retry_ignores_object_key_order_and_preserves_array_and_value_identi
         .fact;
     assert_eq!(fact.value, Some(original));
 }
+
+#[test]
+fn save_selection_rolls_back_every_effect_when_the_kept_insert_fails() {
+    let w = crate::fixture::writer::WriterArchive::new();
+    let conn = crate::archive::open_archive_writer(&w.archive).unwrap();
+    conn.execute_batch("CREATE TRIGGER reject_kept BEFORE INSERT ON kept_result BEGIN SELECT RAISE(ABORT,'synthetic kept insert failure'); END;").unwrap();
+    let request = crate::fixture::authored::operator_request(
+        "atomic-save".into(),
+        UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+            outcomes: Some(polylogue_model::user::SaveReport {
+                saved: None,
+                kept: UserOutcome {
+                    id: "caller-cannot-choose-this".into(),
+                    repeat: true,
+                    pending: true,
+                },
+                watch: None,
+            }),
+            name: Some("atomic-example".into()),
+            query: "sessions".into(),
+            denominator: None,
+            rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
+            read_at: r#"{"now":1}"#.into(),
+            watch: Some(polylogue_model::user::SavedWatch {
+                hold: Some("20m".into()),
+                notify: false,
+            }),
+        })),
+    );
+    let submitted = || {
+        w.writer.user_receipt(crate::writer::UserSubmission {
+            request: request.clone(),
+            scope: None,
+            preparation: Some(PreparationContext::new(vec!["codex".into()])),
+            parent: None,
+        })
+    };
+    let error = submitted().unwrap_err();
+    assert!(
+        error.to_string().contains("synthetic kept insert failure"),
+        "{error:?}"
+    );
+    for table in ["assertion", "kept_result", "client_request"] {
+        let count: i64 = conn
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "{table}");
+    }
+    conn.execute_batch("DROP TRIGGER reject_kept").unwrap();
+    let first = submitted().unwrap();
+    assert!(!first.outcome.repeat);
+    let repeated = submitted().unwrap();
+    assert!(repeated.outcome.repeat);
+    assert_eq!(first.save, repeated.save);
+    assert_eq!(first.save.as_ref().unwrap().kept.id, "atomic-save-keep");
+    assert_eq!(
+        first.save.as_ref().unwrap().saved.as_ref().unwrap().id,
+        "atomic-save-save"
+    );
+    assert_eq!(first.outcome.id, "atomic-save");
+    let ids: Vec<String> = conn
+        .prepare("SELECT id FROM assertion ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(ids, ["atomic-save-save", "atomic-save-watch"]);
+    let kept: String = conn
+        .query_row("SELECT id FROM kept_result", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(kept, "atomic-save-keep");
+    let journal: i64 = conn
+        .query_row("SELECT count(*) FROM client_request", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(journal, 1, "one Save step has one receipt");
+}

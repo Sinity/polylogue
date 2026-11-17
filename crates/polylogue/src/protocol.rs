@@ -184,7 +184,6 @@ pub mod resume {
     }
 }
 
-pub mod saved;
 pub mod schema {
     //! Schema operations validate the declaration's accepted selection arguments.
     use schemars::JsonSchema;

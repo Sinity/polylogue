@@ -150,17 +150,22 @@ impl Inner {
         request: &polylogue_model::user::UserRequest,
         scope: Option<&crate::ReadScopeToken>,
         preparation: Option<&crate::user_writes::PreparationContext>,
-    ) -> Result<polylogue_model::user::UserOutcome> {
+    ) -> Result<crate::user_writes::UserReceipt> {
         scoped::require_current(&self.location, scope)?;
         self.primary_cache_ready()?;
         let sinex = Arc::clone(self.sinex.as_ref().expect("primary writer"));
         if let Some(known) = crate::primary::authored::known_request(&self.index, request)? {
-            let mut outcome = known.outcome;
+            let mut outcome = known.outcome.clone();
             outcome.repeat = true;
-            return Ok(outcome);
+            return crate::user_writes::UserReceipt::recorded(&known, outcome);
         }
-        if let Some(outcome) = crate::primary::authored::pending_outcome(sinex.as_ref(), request)? {
-            return Ok(outcome);
+        if let Some(known) = crate::primary::authored::pending_prepared(sinex.as_ref(), request)? {
+            let outcome = polylogue_model::user::UserOutcome {
+                repeat: true,
+                pending: true,
+                ..known.outcome.clone()
+            };
+            return crate::user_writes::UserReceipt::recorded(&known, outcome);
         }
         // The local overlay stays available while the stream is behind or offline.
         let prepared: PreparedRequest = crate::primary::authored::prepare(
@@ -174,7 +179,8 @@ impl Inner {
         // Scope controls use this same serialized writer. Check after effect
         // preparation, immediately before the request is handed to the spool.
         scoped::require_current(&self.location, scope)?;
-        sinex.prepare_request(&prepared)
+        let outcome = sinex.prepare_request(&prepared)?;
+        crate::user_writes::UserReceipt::recorded(&prepared, outcome)
     }
 
     pub(super) fn primary_blob(

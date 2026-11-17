@@ -33,6 +33,8 @@ Composition edges are recorded at compile time in `query_edge(query, uses, how)`
 
 `save [NAME]` acts on the question as well as the rows: it names the selection's question and stores the rows this line resolved as a kept result, in one act.
 
+One Save step has one request and transaction. Its definition, kept result and optional watch commit together; a failure leaves none of those effects. A retry returns the original kept result and the actual definition and watch revisions accepted by that request, including revisions reused from earlier Saves. Undo names only revisions that the Save created.
+
 **What `save NAME` writes**, on any selection (a reference or row numbers become their references' query text, `session:a OR session:b`):
 
 1. the saved query `NAME`, pointing at the selection's question (an annotation of kind `saved_query`; a new revision when `NAME` exists and the question differs);

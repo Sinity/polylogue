@@ -199,14 +199,7 @@ pub enum StepAnswer {
     Resume(Box<super::resume::Answer>),
 }
 
-/// What `save` wrote: the named question, the kept rows and the watch.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct SaveReport {
-    pub saved: Option<UserOutcome>,
-    pub kept: UserOutcome,
-    pub watch: Option<UserOutcome>,
-}
+pub use polylogue_model::user::SaveReport;
 
 /// Whom `send` reached, and the sessions it skipped with the line that sends to each alone.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
