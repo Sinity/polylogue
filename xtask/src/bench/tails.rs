@@ -90,7 +90,11 @@ impl Reader {
                 String::from_utf8_lossy(&out.stderr)
             ));
         }
-        let answer = serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?;
+        let envelope: Value = serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?;
+        let answer = envelope
+            .get("value")
+            .cloned()
+            .ok_or_else(|| format!("CLI returned no value: {envelope}"))?;
         Ok((answer, took))
     }
 
@@ -100,11 +104,16 @@ impl Reader {
         budget: &str,
         cursor: Option<&str>,
     ) -> Result<(Value, f64), String> {
-        let mut args = vec!["read", session, "--budget", budget];
+        let mut args = vec![session, "read", "--budget", budget];
         if let Some(cursor) = cursor {
             args.extend(["--cursor", cursor]);
         }
-        self.request(&args)
+        let (answer, took) = self.request(&args)?;
+        let page = answer
+            .pointer("/reply/steps/0/outcome/reply/reply")
+            .cloned()
+            .ok_or_else(|| format!("read returned no page: {answer}"))?;
+        Ok((page, took))
     }
 
     fn idle(&self) -> Result<f64, String> {
@@ -118,14 +127,27 @@ impl Reader {
     }
 }
 
-/// The rows of a `sql` answer.
-fn rows(answer: &Value) -> Vec<Value> {
+/// The rows of a query listing.
+fn rows(answer: &Value) -> Result<&[Value], String> {
     answer
         .get("rows")
-        .unwrap_or(answer)
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .ok_or_else(|| format!("query returned no rows: {answer}"))
+}
+
+fn next_cursor(page: &Value) -> Result<Option<String>, String> {
+    let footer = page
+        .pointer("/document/footer")
+        .ok_or("read page has no footer")?;
+    if footer["next"].is_null() {
+        return Ok(None);
+    }
+    footer
+        .pointer("/next/request/arguments/steps/0/cursor")
+        .and_then(Value::as_str)
+        .map(|cursor| Some(cursor.to_owned()))
+        .ok_or_else(|| format!("read continuation has no cursor: {footer}"))
 }
 
 /// The cursors of a session's last two small pages: from the start of its
@@ -138,7 +160,7 @@ fn tail_cursors(reader: &Reader, session: &str) -> Result<(Vec<Option<String>>, 
         let (page, _) = reader.page(session, WALK, cursor.as_deref())?;
         pages += 1;
         last_large = cursor.clone();
-        cursor = page["next"].as_str().map(str::to_owned);
+        cursor = next_cursor(&page)?;
         if cursor.is_none() {
             break;
         }
@@ -148,7 +170,7 @@ fn tail_cursors(reader: &Reader, session: &str) -> Result<(Vec<Option<String>>, 
     loop {
         let (page, _) = reader.page(session, PAGE, cursor.as_deref())?;
         small.push(cursor.clone());
-        cursor = page["next"].as_str().map(str::to_owned);
+        cursor = next_cursor(&page)?;
         if cursor.is_none() {
             break;
         }
@@ -197,16 +219,12 @@ pub(super) fn run(
     let load = LoadMonitor::start()?;
     let daemon = reader.start()?;
     let status_seconds = reader.idle()?;
-    let (answer, _) = reader.request(&[
-        "sql",
-        &format!(
-            "SELECT s.id AS id, count(*) AS messages FROM message m JOIN session s ON s.pk = m.session_pk
-             WHERE m.duplicate_of IS NULL GROUP BY s.pk ORDER BY messages DESC LIMIT {largest}"
-        ),
-    ])?;
-    let mut sessions: Vec<String> = rows(&answer)
+    let (answer, _) = reader.request(&[&format!(
+        "sessions | sort by messages desc | limit {largest}"
+    )])?;
+    let mut sessions: Vec<String> = rows(&answer["reply"])?
         .iter()
-        .filter_map(|row| row["id"].as_str().map(str::to_owned))
+        .filter_map(|row| row["id"].as_str().map(|id| format!("session:{id}")))
         .collect();
     sessions.extend(named.iter().cloned());
     let mut tails = Vec::new();
