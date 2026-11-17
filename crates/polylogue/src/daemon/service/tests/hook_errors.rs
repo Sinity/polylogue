@@ -109,6 +109,7 @@ fn hook_failures_reach_mcp_reads_and_budgeted_pages() {
         Some(polylogue_model::PromptKind::Harness)
     );
     let ordinary = (crate::test_daemon::read(polylogue_reading::ReadRequest {
+        references: None,
         target: "session:claude-code:s1".into(),
         options: ReadOptions {
             view: View::Transcript,

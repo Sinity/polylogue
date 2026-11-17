@@ -524,3 +524,65 @@ fn empty_fixed_selection_streams_no_records_and_keeps_empty_outcome() {
     assert_eq!(events.last().unwrap().1["outcome"], "empty", "{events:?}");
     assert_eq!(count(&d, "assertions"), 0);
 }
+
+#[test]
+fn streamed_read_keeps_the_fixed_query_order() {
+    let d = two_sessions();
+    let events = socket_events(
+        &d,
+        "ordered-population",
+        json!({
+            "selection":"sessions | sort by id desc", "all":true,
+            "steps":[{"verb":"tag","name":"ordered"},{"verb":"read","delivery":"stream","view":"raw"}]
+        }),
+    );
+    let sessions: Vec<String> = events
+        .iter()
+        .filter(|(event, _)| event == "record")
+        .filter_map(|(_, value)| {
+            let record: polylogue_model::read::ReadRecord =
+                serde_json::from_value(value.clone()).unwrap();
+            match record.record() {
+                Some(polylogue_model::bundle::Record::Session(session)) => {
+                    Some(session.reference.clone())
+                }
+                _ => None,
+            }
+        })
+        .collect();
+    assert_eq!(
+        sessions,
+        ["session:claude-code:s2", "session:claude-code:s1"]
+    );
+}
+
+#[test]
+fn streamed_read_keeps_message_grain_in_a_fixed_reference_population() {
+    let d = two_sessions();
+    let events = socket_events(
+        &d,
+        "message-population",
+        json!({
+            "references":["message:claude-code:u2","message:claude-code:u1"],
+            "steps":[{"verb":"tag","name":"message-only"},{"verb":"read","delivery":"stream","view":"raw"}]
+        }),
+    );
+    let mut messages = Vec::new();
+    for (_, value) in events.iter().filter(|(event, _)| event == "record") {
+        let record: polylogue_model::read::ReadRecord =
+            serde_json::from_value(value.clone()).unwrap();
+        match record.record() {
+            Some(polylogue_model::bundle::Record::Session(_)) => {
+                panic!("message selection became session grain")
+            }
+            Some(polylogue_model::bundle::Record::Message(message)) => {
+                messages.push(message.reference.clone())
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        messages,
+        ["message:claude-code:u2", "message:claude-code:u1"]
+    );
+}

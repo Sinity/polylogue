@@ -685,18 +685,18 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                 kind: KindRef {
                     name: (*name).into(),
                     version: if *name == "polylogue.assertion" {
-                        3
+                        4
                     } else {
                         match *product {
                             "message" => 8,
-                            "request" | "restored_request" => 7,
+                            "request" | "restored_request" => 8,
                             "session" => 7,
                             "document" | "event" | "link" | "background" | "repository" => 6,
                             "parse_progress" => 7,
                             // Input rows refuse fields outside their declared source shape.
                             "input" => 6,
                             "fragment" => 4,
-                            "query_run" => 4,
+                            "query_run" => 5,
                             "restored_assertion" => 2,
                             "tool_call" | "prefix_copy" | "prefix_member" => 2,
                             "restored_history" | "attachment_binding" | "query_run_outcome" => 1,

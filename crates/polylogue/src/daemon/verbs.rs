@@ -118,7 +118,11 @@ impl Selection {
     /// references, or the query, as one query (references joined with OR).
     pub fn query_text(&self) -> Option<String> {
         if let Some(resolved) = &self.resolved {
-            return Some(joined(resolved));
+            return if resolved.is_empty() {
+                self.question.clone()
+            } else {
+                Some(joined(resolved))
+            };
         }
         match &self.given {
             Given::None => None,
@@ -166,10 +170,6 @@ impl Selection {
 }
 
 fn joined(references: &[Reference]) -> String {
-    // An empty disjunction denotes no rows. Empty text would run the default query.
-    if references.is_empty() {
-        return "sessions where 0 = 1".into();
-    }
     references
         .iter()
         .map(ToString::to_string)

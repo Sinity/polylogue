@@ -61,7 +61,7 @@ pub(super) fn run(object: &QueryObject, id: &str, at: i64, position: ChangePosit
         binding: RunBinding::Original {
             execution: Box::new(ExecutionBinding {
                 query_options: QueryExecutionOptions {
-                    direct_reference: None,
+                    references: None,
                     fields: vec![],
                     self_session: None,
                     embeddings: false,
@@ -512,7 +512,7 @@ fn writer_keeps_normalized_span_metadata_bound_to_the_accepted_direct_target() {
         .original_mut()
         .unwrap()
         .query_options
-        .direct_reference = Some(original);
+        .references = Some(vec![original]);
     execution.binding.original_mut().unwrap().presentation = ExecutionPresentation::Read {
         options: Default::default(),
         delivery: Default::default(),
@@ -554,7 +554,7 @@ fn writer_keeps_normalized_span_metadata_bound_to_the_accepted_direct_target() {
         .original_mut()
         .unwrap()
         .query_options
-        .direct_reference = None;
+        .references = None;
     assert!(
         archive
             .writer

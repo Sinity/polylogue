@@ -860,7 +860,7 @@ pub fn options_snapshot(
         embeddings: options.embeddings,
         why,
         ranking_identity,
-        direct_reference: None,
+        references: None,
     })
 }
 

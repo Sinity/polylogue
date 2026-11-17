@@ -91,6 +91,7 @@ pub struct PreparedSelection<'read> {
     scope: ReadScopeToken,
     context: CursorContext,
     direct: Option<ReadTarget>,
+    fixed: Option<Vec<ReadTarget>>,
     execution_options: polylogue_model::query_objects::QueryExecutionOptions,
 }
 impl PreparedSelection<'_> {
@@ -298,6 +299,27 @@ impl Reader<'_> {
         self.finish_selection(plan, program, direct, &options)
     }
 
+    /// A line's already accepted population, in its original order and grain.
+    pub fn prepare_fixed_selection<'read>(
+        &'read self,
+        text: &str,
+        references: &[Reference],
+        options: &Options,
+    ) -> Result<PreparedSelection<'read>, SelectionError> {
+        let mut selected = match references {
+            [reference] => self.prepare_selection(&reference.to_string(), options)?,
+            _ => self.prepare_query_selection(text, options)?,
+        };
+        selected.fixed = Some(
+            references
+                .iter()
+                .cloned()
+                .map(|reference| self.bind_direct_reference(reference))
+                .collect::<Result<_, _>>()?,
+        );
+        Ok(selected)
+    }
+
     /// The one point where a selected reference becomes a read target: an
     /// assertion family binds its current revision, other kinds are refused.
     fn bind_direct_reference(&self, reference: Reference) -> Result<ReadTarget, SelectionError> {
@@ -373,6 +395,7 @@ impl Reader<'_> {
             scope,
             context,
             direct,
+            fixed: None,
             execution_options: crate::query::execute::options_snapshot(options, false, None)?,
         })
     }
@@ -389,6 +412,83 @@ impl Reader<'_> {
     where
         E: From<SelectionError>,
     {
+        if let Some(fixed) = &selection.fixed {
+            selection
+                .scope
+                .check()
+                .map_err(SelectionError::from)
+                .map_err(E::from)?;
+            if selection.reader != std::ptr::from_ref(self).cast::<()>() as usize {
+                return Err(E::from(SelectionError::invalid(
+                    polylogue_model::Code::ScopeChanged,
+                    "selection belongs to another reader",
+                )));
+            }
+            use crate::read::VisitFrom;
+            let position = match &from {
+                VisitFrom::At(at) | VisitFrom::After(at) | VisitFrom::Before(at) => {
+                    let index = at
+                        .values
+                        .first()
+                        .and_then(Value::as_u64)
+                        .and_then(|index| usize::try_from(index).ok())
+                        .ok_or_else(|| {
+                            E::from(SelectionError::invalid(
+                                polylogue_model::Code::InvalidCursor,
+                                "fixed population cursor has no row position",
+                            ))
+                        })?;
+                    if fixed
+                        .get(index)
+                        .is_none_or(|target| target.to_string() != at.row_identity)
+                    {
+                        return Err(E::from(SelectionError::invalid(
+                            polylogue_model::Code::StaleCursor,
+                            "fixed population cursor no longer names its row",
+                        )));
+                    }
+                    Some(index)
+                }
+                _ => None,
+            };
+            let reverse = matches!(&from, VisitFrom::Before(_) | VisitFrom::Last);
+            let rows = fixed.iter().enumerate().filter(|(index, _)| match &from {
+                VisitFrom::At(_) => *index >= position.unwrap(),
+                VisitFrom::After(_) => *index > position.unwrap(),
+                VisitFrom::Before(_) => *index < position.unwrap(),
+                _ => true,
+            });
+            let mut rows: Box<dyn Iterator<Item = (usize, &ReadTarget)> + '_> = if reverse {
+                Box::new(rows.rev())
+            } else {
+                Box::new(rows)
+            };
+            for (index, target) in &mut rows {
+                self.check()
+                    .map_err(SelectionError::from)
+                    .map_err(E::from)?;
+                selection
+                    .scope
+                    .check()
+                    .map_err(SelectionError::from)
+                    .map_err(E::from)?;
+                if visit(SelectionRow {
+                    target: Some(target.clone()),
+                    values: Value::Null,
+                    identity: None,
+                    aggregates: BTreeMap::new(),
+                    position: OrderPosition {
+                        values: vec![serde_json::json!(index)],
+                        row_identity: target.to_string(),
+                    },
+                })?
+                .is_break()
+                {
+                    break;
+                }
+            }
+            return Ok(());
+        }
         self.in_selection_context(selection, near, || {
             use crate::read::VisitFrom;
             let (after, reverse) = match from {
@@ -565,7 +665,7 @@ impl Reader<'_> {
         reference: &Reference,
         near: Option<&NearFn<'_>>,
     ) -> Result<bool, SelectionError> {
-        if selection.visiting.get() {
+        if selection.visiting.get() || selection.fixed.is_some() {
             return self.selection_contains_scoped(selection, reference);
         }
         self.in_selection_context(selection, near, || {
@@ -587,6 +687,15 @@ impl Reader<'_> {
                 polylogue_model::Code::ScopeChanged,
                 "selection belongs to another reader",
             ));
+        }
+        if let Some(fixed) = &selection.fixed {
+            for target in fixed {
+                let outer = target.reference();
+                if &outer == reference || self.selection_reference_contains(&outer, reference)? {
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
         }
         if selection.program.near.is_some() && !selection.visiting.get() {
             return Err(SelectionError::invalid(

@@ -37,7 +37,12 @@ impl Verb for Read {
             daemon: call.daemon,
         };
         delegated(
-            crate::daemon::service::read::page(arguments, &call, &reads)?,
+            crate::daemon::service::read::page(
+                arguments,
+                &call,
+                &reads,
+                selection.resolved.as_deref(),
+            )?,
             |page| StepAnswer::Read(Box::new(page)),
         )
     }
@@ -220,7 +225,12 @@ impl ReadServices for LineReads<'_> {
         let arguments =
             crate::daemon::service::read::arguments_of(request).map_err(Error::Internal)?;
         let rows = Rows {
-            selection: Some(request.target.clone()),
+            selection: request.references.is_none().then(|| request.target.clone()),
+            references: request
+                .references
+                .as_ref()
+                .map(|references| references.iter().map(ToString::to_string).collect())
+                .unwrap_or_default(),
             steps: vec![Step::Read(Box::new(step_of(arguments, cursor)))],
             ..Rows::default()
         };

@@ -67,7 +67,7 @@ pub(crate) fn phases() -> Vec<(String, Product)> {
                     original_text: "sessions".into(),
                 },
                 query_options: QueryExecutionOptions {
-                    direct_reference: None,
+                    references: None,
                     fields: vec![],
                     self_session: None,
                     embeddings: false,
@@ -150,7 +150,7 @@ fn named_query_phases_survive_restart_until_applied() {
             .unwrap();
         let version = match kind {
             "polylogue.query" => 2,
-            "polylogue.query_run" => 4,
+            "polylogue.query_run" => 5,
             "polylogue.query_run_outcome" => 1,
             other => panic!("unexpected named query phase kind: {other}"),
         };

@@ -433,10 +433,10 @@ fn resolve(given: Given, steps: &[Step], call: &Call<'_>) -> Result<Selection, F
             .iter()
             .any(|step| step.access() > ToolAccess::Read || rows_rule(step) == RowRule::One);
     let resolved = match &given {
-        _ if !needed => None,
         Given::None => None,
         Given::Reference(reference) => Some(vec![reference.clone()]),
         Given::References(references) => Some(references.clone()),
+        Given::Query(_) if !needed => None,
         Given::Query(text) => {
             let reader = call.reader()?;
             if selects_rows(call, &reader, text)? {
@@ -548,6 +548,7 @@ impl Stream<'_> {
             &LineReads {
                 daemon: call.daemon,
             },
+            selection.resolved.as_deref(),
         )?;
         verbs::delegated(answer, |complete| {
             crate::protocol::line::StepAnswer::Streamed(Box::new(complete))

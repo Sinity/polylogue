@@ -24,13 +24,20 @@ impl PreparedSelection<'_> {
             ));
         }
         let direct = self.direct.as_ref().map(ReadTarget::reference);
-        if query_options.direct_reference.is_some() && query_options.direct_reference != direct {
+        let references = self
+            .fixed
+            .as_ref()
+            .map(|fixed| fixed.iter().map(ReadTarget::reference).collect())
+            .or_else(|| direct.clone().map(|reference| vec![reference]));
+        if query_options.references.is_some() && query_options.references != references {
             return Err(SelectionError::invalid(
                 polylogue_model::Code::Conflict,
                 "direct presentation differs from the accepted selection",
             ));
         }
-        if self.direct.is_some() && matches!(presentation, ExecutionPresentation::Query) {
+        if (self.direct.is_some() || self.fixed.is_some())
+            && matches!(presentation, ExecutionPresentation::Query)
+        {
             return Err(SelectionError::invalid(
                 polylogue_model::Code::Conflict,
                 "query execution requires query rows, not direct read presentation",
@@ -51,7 +58,7 @@ impl PreparedSelection<'_> {
                 ));
             }
         }
-        query_options.direct_reference = direct;
+        query_options.references = references;
         let object = self.query_object()?;
         let definitions = self
             .definitions()

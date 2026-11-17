@@ -158,7 +158,7 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
                 | "polylogue.delivery"
                 | "polylogue.delivery_outcome"
                 | "polylogue.request"
-                | "polylogue.request_restore" => 7,
+                | "polylogue.request_restore" => 8,
                 "polylogue.session" => 7,
                 "polylogue.document"
                 | "polylogue.event"
@@ -168,10 +168,10 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
                 "polylogue.assertion_restore" => 2,
                 "polylogue.parse_progress" => 7,
                 "polylogue.input_observation" => 6,
-                "polylogue.query_run" => 4,
+                "polylogue.query_run" => 5,
                 "polylogue.blob" | "polylogue.coverage" => 3,
                 "polylogue.fragment" => 4,
-                "polylogue.assertion" => 3,
+                "polylogue.assertion" => 4,
                 "polylogue.query" => 2,
                 "polylogue.tool_call" | "polylogue.prefix_copy" | "polylogue.prefix_member" => 2,
                 "polylogue.historical_restore"

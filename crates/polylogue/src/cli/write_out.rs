@@ -426,6 +426,7 @@ enum Sink {
     },
 }
 
+#[allow(clippy::too_many_arguments)]
 fn consume(
     destination: Option<&Path>,
     directory: bool,

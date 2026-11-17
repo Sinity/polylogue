@@ -30,6 +30,7 @@ fn read(
         crate::test_daemon::Call::from_request(&resume)
     } else {
         crate::test_daemon::read(polylogue_reading::ReadRequest {
+            references: None,
             target: "session:claude-code:s1".into(),
             options: polylogue_model::read::ReadOptions {
                 view,
@@ -148,6 +149,7 @@ fn reading_variants_setting_is_the_default_and_is_bound_in_the_cursor() {
     // `none` asks for the originals whatever the setting holds.
     set(r#"["translation:pl"]"#);
     let originals = crate::test_daemon::read(polylogue_reading::ReadRequest {
+        references: None,
         target: "session:claude-code:s1".into(),
         options: polylogue_model::read::ReadOptions {
             variants: vec!["none".into()],

@@ -722,6 +722,7 @@ fn card(
     let reference = format!("session:{child}");
     let open = d.continuation(
         &ReadRequest {
+            references: None,
             target: reference.clone(),
             options: ReadOptions {
                 view,

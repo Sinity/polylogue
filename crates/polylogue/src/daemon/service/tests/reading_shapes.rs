@@ -151,6 +151,7 @@ fn family(d: &test_daemon::TestDaemon) {
 
 fn read(d: &test_daemon::TestDaemon, target: &str, options: ReadOptions) -> ReadPage {
     let response = (crate::test_daemon::read(polylogue_reading::ReadRequest {
+        references: None,
         target: target.into(),
         options,
         delivery: polylogue_model::read::ReadDelivery::Page,
