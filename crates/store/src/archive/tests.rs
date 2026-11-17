@@ -621,3 +621,124 @@ fn runtime_connections_leave_committed_wal_for_reopen_while_setup_finishes_it() 
         );
     }
 }
+
+/// A real unclosed transaction leaves a hot journal. Native recovery may
+/// restore the owned private index, while application readers stay read-only.
+#[test]
+fn private_index_readers_recover_journals_without_accepting_writes() {
+    const CHILD: &str = "POLYLOGUE_TEST_HOT_JOURNAL";
+    if let Some(path) = std::env::var_os(CHILD) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "PRAGMA journal_mode=PERSIST; PRAGMA synchronous=FULL;
+            PRAGMA cache_size=5; BEGIN IMMEDIATE;
+            UPDATE recovery_probe SET value=1, payload=zeroblob(8192)",
+        )
+        .unwrap();
+        // Deliberately skip SQLite's destructor and rollback in this subprocess.
+        std::process::exit(0);
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(&dir.path().join("archive")).unwrap();
+    let path = archive.index_db();
+    {
+        let conn = index_build::open_writer(&archive).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE recovery_probe(value INTEGER, payload BLOB);
+            WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<100)
+            INSERT INTO recovery_probe SELECT 0,zeroblob(8192) FROM n",
+        )
+        .unwrap();
+    }
+    for pooled in [false, true] {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "archive::tests::private_index_readers_recover_journals_without_accepting_writes",
+                "--nocapture",
+            ])
+            .env(CHILD, &path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let original = open_read(&path).unwrap();
+        let error = original
+            .query_row("SELECT sum(value) FROM recovery_probe", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap_err();
+        assert_eq!(error.sqlite_error().unwrap().extended_code, 776);
+        drop(original);
+        if pooled {
+            let pool = crate::ReadPool::open(&archive).unwrap();
+            let reader = pool.reader().unwrap();
+            assert_eq!(
+                reader
+                    .query("SELECT sum(value) AS value FROM recovery_probe", &[])
+                    .unwrap()[0]["value"],
+                0
+            );
+            assert!(
+                reader
+                    .query("UPDATE recovery_probe SET value=2 RETURNING value", &[])
+                    .is_err()
+            );
+            assert!(
+                reader
+                    .query_each(
+                        "UPDATE recovery_probe SET value=2 RETURNING value",
+                        &[],
+                        |_| Ok::<_, StoreError>(())
+                    )
+                    .is_err()
+            );
+            assert!(
+                reader
+                    .query_counts(
+                        "UPDATE recovery_probe SET value=2 RETURNING value,value",
+                        &[]
+                    )
+                    .is_err()
+            );
+            assert_eq!(
+                reader
+                    .query("SELECT sum(value) AS value FROM recovery_probe", &[])
+                    .unwrap()[0]["value"],
+                0
+            );
+        } else {
+            let reader = archive.open_index_read().unwrap();
+            assert_eq!(
+                reader
+                    .query_row("SELECT sum(value) FROM recovery_probe", [], |row| row
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+            assert!(
+                reader
+                    .execute("UPDATE recovery_probe SET value=2", [])
+                    .is_err()
+            );
+        }
+    }
+    crate::Writer::start(&archive).unwrap().derive().unwrap();
+    assert!(archive.index_build().is_none());
+    assert!(
+        archive
+            .open_index_read()
+            .unwrap()
+            .is_readonly(rusqlite::MAIN_DB)
+            .unwrap()
+    );
+    assert!(
+        crate::ReadPool::serving(&archive, 1, 8 << 20)
+            .unwrap()
+            .reader()
+            .unwrap()
+            .conn()
+            .unwrap()
+            .is_readonly(rusqlite::MAIN_DB)
+            .unwrap()
+    );
+}

@@ -737,7 +737,7 @@ impl Resolver {
             return Ok(());
         }
         loop {
-            let index = crate::archive::open_read(&self.archive.index_db())?;
+            let index = self.archive.open_index_read()?;
             let (keys, _) = self.gather(batches, &index, archive)?;
             drop(index);
             let named = sessions_only_named(batches);
@@ -747,7 +747,7 @@ impl Resolver {
                 .cloned()
                 .collect();
             let key_lock = self.lock_keys(locked);
-            let index = crate::archive::open_read(&self.archive.index_db())?;
+            let index = self.archive.open_index_read()?;
             let snapshot = index.unchecked_transaction()?;
             let (fresh, chains) = self.gather(batches, &snapshot, archive)?;
             if fresh != keys {

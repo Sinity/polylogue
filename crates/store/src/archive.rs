@@ -629,11 +629,20 @@ pub(crate) fn open_archive_writer(archive: &Archive) -> Result<Connection> {
 
 /// A read-only connection.
 pub fn open_read(path: &Path) -> Result<Connection> {
+    open_read_connection(path, false)
+}
+
+/// Private build readers may perform SQLite's journal recovery. Application
+/// writes remain disabled by their caller; preserved databases use open_read.
+fn open_read_connection(path: &Path, recover: bool) -> Result<Connection> {
+    let access = if recover {
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+    } else {
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+    };
     let conn = Connection::open_with_flags(
         path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_URI,
+        access | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI,
     )?;
     conn.set_db_config(
         rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,

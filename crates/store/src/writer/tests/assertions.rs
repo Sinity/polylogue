@@ -273,3 +273,30 @@ fn unknown_authored_time_keeps_current_revision_queries() {
         dated
     );
 }
+
+#[test]
+fn private_readers_hydrate_authored_membership_in_temp_tables() {
+    let archive = test_archive();
+    restore(&archive, fact("kept", "kept", AssertionKind::Note, &[]));
+    assert!(archive.archive.index_build().is_some());
+    let pool = ReadPool::open(&archive.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let reference = Reference::Assertion(polylogue_model::RevisionReference::exact(
+        "kept".into(),
+        "kept".into(),
+    ));
+    // Imported legacy facts have no immutable request association, but their
+    // normal authored read must still hydrate membership before reporting it.
+    assert!(matches!(
+        reader.authored_record(&reference).unwrap(),
+        Some(crate::read::authored_read::AuthoredRead::Incomplete {
+            issue: crate::read::authored_read::AuthoredReadIssue::MissingAssociation
+        })
+    ));
+    assert_eq!(
+        reader
+            .query("SELECT singleton FROM temp.authored_membership_ready", &[])
+            .unwrap()[0]["singleton"],
+        1
+    );
+}

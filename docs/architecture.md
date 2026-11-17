@@ -185,7 +185,10 @@ fails. A reader opened before a rename is refused as replaced before its
 first database read; an already-started read keeps its open snapshot.
 Only the build pipeline opens the private file: the
 writer, its resolver and parser-context reads, the engine's planning reads
-and tool-database catalog reads. Serving readers, the search thread and the
+and tool-database catalog reads. Readers of that owned private file permit
+SQLite's native rollback-journal recovery while refusing application writes.
+The pool retains temporary tables for read hydration; serving and preserved
+source databases stay genuinely read-only. Serving readers, the search thread and the
 derive thread open `index.db` once it is installed, so no reader can hold up
 the switch to WAL or a stop. With a rollback journal a held read blocks
 the writer, so the pipeline's reads of the build file are short: a resumed

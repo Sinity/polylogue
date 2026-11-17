@@ -59,7 +59,7 @@ impl Overlay {
         let index = if base == 0 {
             None
         } else {
-            let index = crate::archive::open_read(&archive.index_db())?;
+            let index = archive.open_index_read()?;
             crate::read::limit::ReadLimit::observe_current(&index)?;
             // A build file has a rollback journal, where a read held across
             // the parse would block every writer commit

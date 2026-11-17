@@ -243,6 +243,28 @@ impl Archive {
             .to_path_buf()
     }
 
+    /// Read the pipeline index, permitting native journal recovery only for
+    /// the private file this archive is currently building. query_only still
+    /// rejects application writes and leaves SQLite free to recover its journal.
+    pub(crate) fn open_index_read(&self) -> Result<Connection> {
+        let conn = self.open_pool_read(&self.index_db(), Reads::Pipeline)?;
+        conn.pragma_update(None, "query_only", true)?;
+        Ok(conn)
+    }
+
+    pub(crate) fn open_pool_read(&self, path: &Path, reads: Reads) -> Result<Connection> {
+        let recover = {
+            let paths = Paths::of(&self.root);
+            let inner = self.index_build.inner();
+            reads == Reads::Pipeline
+                && inner.file.is_some()
+                && !self.is_primary()
+                && path == inner.pipeline_index(&paths, false)
+        };
+        // No build-state lock is held while SQLite waits for the writer.
+        super::open_read_connection(path, recover)
+    }
+
     /// Resolve and inspect a read path while installation cannot rename it.
     pub(crate) fn with_index_path<T>(
         &self,
