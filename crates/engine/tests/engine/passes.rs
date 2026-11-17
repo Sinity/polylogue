@@ -865,17 +865,20 @@ fn copied_tool_history_keeps_items_after_restart() {
             )
     };
     let path = |id| rollouts.join(format!("rollout-2026-03-01T10-00-00-{id}.jsonl"));
-    let parent_prefix: String = prefix
-        .lines()
-        .filter(|line| {
-            !matches!(
-                serde_json::from_str::<serde_json::Value>(line).unwrap()["ordinal"].as_u64(),
-                Some(4 | 6)
-            )
-        })
-        .map(|line| format!("{line}\n"))
-        .collect();
-    let parent = record(1, "session_meta", parent_header) + &parent_prefix;
+    // The parent captured the call before it learned the earlier answer or
+    // the result. The child's copied history fills those holes after reopen.
+    let parent = record(1, "session_meta", parent_header)
+        + &record(
+            3,
+            "response_item",
+            message("parent-user", "user", "parent prompt"),
+        )
+        + &record(
+            5,
+            "response_item",
+            json!({"type":"function_call","id":"parent-call",
+            "call_id":"parent-tool","name":"exec_command","arguments":"{\"cmd\":\"printf synthetic\"}"}),
+        );
     fs::write(path(PARENT), &parent).unwrap();
     {
         let (mut engine, _lock) = home.engine(4 << 20);
@@ -913,6 +916,27 @@ fn copied_tool_history_keeps_items_after_restart() {
     assert_eq!(
         states,
         lengths.map(|n| json!({"status":"done","parsed_upto":n}))
+    );
+    assert_eq!(
+        reader
+            .query("SELECT count(*) AS n FROM message", &[])
+            .unwrap(),
+        [json!({"n":12})]
+    );
+    assert_eq!(
+        reader
+            .query("SELECT count(*) AS n FROM tool_call", &[])
+            .unwrap(),
+        [json!({"n":3})]
+    );
+    assert_eq!(
+        reader
+            .query(
+                "SELECT count(*) AS n FROM session_item WHERE message_pk IS NOT NULL",
+                &[]
+            )
+            .unwrap(),
+        [json!({"n":12})]
     );
     let sessions: Vec<_> = [PARENT, FIRST, SECOND]
         .map(|id| format!("codex:{id}"))

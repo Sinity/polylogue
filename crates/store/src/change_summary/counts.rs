@@ -99,7 +99,7 @@ impl ChangeSummary {
             .query_map(params, |row| row.get::<_, i64>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for message in messages {
-            self.record_message(conn, message)?;
+            self.message_metadata(conn, message)?;
         }
         Ok(())
     }

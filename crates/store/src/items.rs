@@ -1022,7 +1022,6 @@ fn unit_entries(
                     Some(entries) => entries,
                     None if changes.reuses_items(*pk) => stored_message_entries(conn, *pk)?,
                     None => {
-                        eprintln!("prepared-item-probe: missing prepared pk={pk}");
                         return Err(StoreError::Invalid(
                             "changed message items were not prepared".into(),
                         ));
@@ -1035,7 +1034,6 @@ fn unit_entries(
                 }
             };
             if entries.is_empty() {
-                eprintln!("prepared-item-probe: empty entries pk={pk}");
                 return Err(StoreError::Invalid(
                     "changed message items were not prepared".into(),
                 ));
