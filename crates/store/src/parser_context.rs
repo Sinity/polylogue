@@ -1,6 +1,7 @@
 //! Reconstructible keyed continuation. Speculative values live in one owned
 //! scratch database; committed mappings share the parser checkpoint transaction.
 use crate::ConnExt as _;
+use crate::OptionExt as _;
 use crate::ResultExt as _;
 use crate::{Archive, Result, StoreError};
 use polylogue_model::parser_context::{Context, Delta, Entry, Key, Reference, Value};
