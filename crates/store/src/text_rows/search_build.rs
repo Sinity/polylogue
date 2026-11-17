@@ -262,9 +262,6 @@ fn install(conn: &Connection, sides: &[SearchDatabase], written: bool) -> Result
         rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
         true,
     )?;
-    if let Some(stop) = crate::cancellation::thread_stop() {
-        crate::cancellation::interrupt_on(&copy, move || stop.check())?;
-    }
     crate::read::limit::ReadLimit::observe_current(&copy)?;
     let conn = &copy;
     let mut attached = Vec::new();

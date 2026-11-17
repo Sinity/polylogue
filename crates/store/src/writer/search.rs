@@ -60,8 +60,8 @@ impl Drop for Search {
 }
 
 /// Writes waiting search entries whenever woken, and once a second. The
-/// connection opens only after a first build, whose index is not in WAL
-/// mode and has one connection.
+/// connection opens on the installed WAL index. A private build completes
+/// its own search installation before publishing that file.
 pub(super) fn search_thread(
     index_db: &std::path::Path,
     ready: &std::sync::atomic::AtomicBool,
