@@ -12,16 +12,28 @@ impl<'a> Compiler<'a> {
         span: Span,
     ) -> Result<String, QueryError> {
         let (from, rows, child) = self.related_rows(unit, cond, scope, span)?;
+        let top = cond.map(top_level).unwrap_or_default();
         let Some(cond) = cond else {
-            return Ok(format!("EXISTS (SELECT 1 FROM {from} WHERE {rows})"));
+            let mut predicates = vec![rows];
+            self.fold_bound_sessions(&child, &top, &mut predicates)?;
+            return Ok(format!(
+                "EXISTS (SELECT 1 FROM {from} WHERE {})",
+                and_all(&predicates)
+            ));
         };
         let inner = self.cond(cond, &child, false)?;
+        let mut matching = vec![rows.clone(), inner.clone()];
+        self.fold_bound_sessions(&child, &top, &mut matching)?;
+        let mut unknown = vec![rows, format!("({inner}) IS NULL")];
+        self.fold_bound_sessions(&child, &top, &mut unknown)?;
+        let matching = and_all(&matching);
+        let unknown = and_all(&unknown);
         // True when some child satisfies the condition, false when every
         // child fails it, unknown otherwise, so `NOT exists` leaves out a
         // row whose children are all unknown for it.
         Ok(format!(
-            "(CASE WHEN EXISTS (SELECT 1 FROM {from} WHERE {rows} AND {inner}) THEN 1 \
-             WHEN EXISTS (SELECT 1 FROM {from} WHERE {rows} AND ({inner}) IS NULL) THEN NULL \
+            "(CASE WHEN EXISTS (SELECT 1 FROM {from} WHERE {matching}) THEN 1 \
+             WHEN EXISTS (SELECT 1 FROM {from} WHERE {unknown}) THEN NULL \
              ELSE 0 END)"
         ))
     }
@@ -41,6 +53,13 @@ impl<'a> Compiler<'a> {
         if let Some(cond) = cond {
             rows = format!("{rows} AND {}", self.cond(cond, &child, false)?);
         }
+        let mut predicates = vec![rows];
+        self.fold_bound_sessions(
+            &child,
+            &cond.map(top_level).unwrap_or_default(),
+            &mut predicates,
+        )?;
+        let rows = and_all(&predicates);
         let n = i64::try_from(n).unwrap_or(i64::MAX);
         Ok(format!(
             "(SELECT count(*) FROM {from} WHERE {rows}) {} {n}",
@@ -167,6 +186,7 @@ impl<'a> Compiler<'a> {
         if let Some(cond) = cond {
             w.push(self.cond(cond, &child, false)?);
         }
+        self.fold_bound_sessions(&child, &cond.map(top_level).unwrap_or_default(), &mut w)?;
         w.push(format!("({parent_rows})"));
         let parent_pk = parent.a.expand(units::spec(parent.unit).key);
         let (child_pk, child_cols) =

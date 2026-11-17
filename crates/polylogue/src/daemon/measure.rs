@@ -23,7 +23,7 @@ pub struct Measure {
     pub whole_archive: bool,
     /// Counts messages: a selection bounded by `since:`/`until:` counts only
     /// the messages inside the bounds, and a session's figures include the
-    /// subagent sessions it spawned.
+    /// whole logical session.
     pub messages: bool,
     pub paging: Option<Paging>,
     /// Optional colon-separated arguments, also exposed as --option.
@@ -32,7 +32,7 @@ pub struct Measure {
     pub metrics: &'static [&'static str],
     pub run: fn(&Reader<'_>, &Run<'_>) -> polylogue_store::Result<Value>,
     /// The answer as text for a person.
-    pub text: fn(&Value) -> String,
+    pub text: fn(&Value, &jiff::tz::TimeZone) -> String,
 }
 
 /// What a measurement runs over.
@@ -62,7 +62,7 @@ pub static MEASURES: &[Measure] = &[
                 "facets requires query paging".into(),
             ))
         },
-        text: text::json,
+        text: |data, _| text::json(data),
     },
     Measure {
         name: "outlook",
@@ -73,7 +73,7 @@ pub static MEASURES: &[Measure] = &[
         argument: Some("provider:method"),
         metrics: &[],
         run: |r, x| json(measure::outlook::outlook(r, &x.selection, x.now, x.metric)),
-        text: text::outlook,
+        text: |data, _| text::outlook(data),
     },
     Measure {
         name: "time",
@@ -84,7 +84,7 @@ pub static MEASURES: &[Measure] = &[
         argument: None,
         metrics: &[],
         run: |r, x| json(measure::time::times(r, &x.selection)),
-        text: text::json,
+        text: |data, _| text::json(data),
     },
     Measure {
         name: "compare",
@@ -95,7 +95,7 @@ pub static MEASURES: &[Measure] = &[
         argument: Some("fields"),
         metrics: &[],
         run: |r, x| json(measure::comparison::compare(r, &x.selection, x.metric)),
-        text: text::json,
+        text: |data, _| text::json(data),
     },
     Measure {
         name: "usage",
@@ -106,7 +106,7 @@ pub static MEASURES: &[Measure] = &[
         argument: None,
         metrics: &[],
         run: |r, x| json(measure::usage(r, &x.selection)),
-        text: text::usage,
+        text: |data, _| text::usage(data),
     },
     Measure {
         name: "sessions",
@@ -117,7 +117,7 @@ pub static MEASURES: &[Measure] = &[
         argument: None,
         metrics: &[],
         run: |r, x| json(measure::sessions(r, &x.selection)),
-        text: text::json,
+        text: |data, _| text::json(data),
     },
     Measure {
         name: "quota",
@@ -134,7 +134,7 @@ pub static MEASURES: &[Measure] = &[
                 .collect();
             json(quota::quota(r, x.now, &known))
         },
-        text: text::quota,
+        text: |data, _| text::quota(data),
     },
     Measure {
         name: "outcomes",
@@ -145,7 +145,7 @@ pub static MEASURES: &[Measure] = &[
         argument: None,
         metrics: &[],
         run: |r, x| json(tool_calls::outcomes(r, &x.selection)),
-        text: text::json,
+        text: |data, _| text::json(data),
     },
     Measure {
         name: "failing",
@@ -167,7 +167,7 @@ pub static MEASURES: &[Measure] = &[
         argument: None,
         metrics: &[],
         run: |r, _| json(drift::drift(r)),
-        text: text::drift,
+        text: |data, _| text::drift(data),
     },
     Measure {
         name: "unanswered",
@@ -178,7 +178,7 @@ pub static MEASURES: &[Measure] = &[
         argument: None,
         metrics: &[],
         run: |r, x| json(survival::unanswered_end(r, &x.selection, x.now)),
-        text: text::json,
+        text: |data, _| text::json(data),
     },
     Measure {
         name: "survival",
@@ -189,7 +189,7 @@ pub static MEASURES: &[Measure] = &[
         argument: None,
         metrics: &[],
         run: |r, x| json(survival::first_failure(r, &x.selection, false)),
-        text: text::json,
+        text: |data, _| text::json(data),
     },
     Measure {
         name: "survival-turns",
@@ -200,7 +200,7 @@ pub static MEASURES: &[Measure] = &[
         argument: None,
         metrics: &[],
         run: |r, x| json(survival::first_failure(r, &x.selection, true)),
-        text: text::json,
+        text: |data, _| text::json(data),
     },
     Measure {
         name: "daily",
@@ -211,7 +211,7 @@ pub static MEASURES: &[Measure] = &[
         argument: None,
         metrics: daily::DAILY_METRICS,
         run: |r, x| json(daily::daily(r, &x.selection, x.metric, x.day)),
-        text: text::json,
+        text: |data, _| text::json(data),
     },
     Measure {
         name: "process",
@@ -222,7 +222,7 @@ pub static MEASURES: &[Measure] = &[
         argument: None,
         metrics: &[],
         run: |r, x| json(tool_calls::process(r, &x.selection, 20)),
-        text: text::json,
+        text: |data, _| text::json(data),
     },
     Measure {
         name: "rhythm",
@@ -233,7 +233,7 @@ pub static MEASURES: &[Measure] = &[
         argument: None,
         metrics: &[],
         run: |r, x| json(daily::rhythm(r, &x.selection, x.day)),
-        text: text::json,
+        text: |data, _| text::json(data),
     },
 ];
 
@@ -282,7 +282,7 @@ pub fn run(
                 population,
                 since: window.0,
                 until: window.1,
-                subagents: true,
+                logical: true,
                 ..Selection::default()
             }
         } else {
@@ -296,7 +296,13 @@ pub fn run(
         day,
         metric,
     };
-    Ok((m.run)(reader, &run)?)
+    let mut answer = (m.run)(reader, &run)?;
+    if let Some(object) = answer.as_object_mut() {
+        object
+            .entry("zone")
+            .or_insert_with(|| Value::from(day.zone().iana_name().unwrap_or("UTC")));
+    }
+    Ok(answer)
 }
 
 fn bad_request(message: String) -> Failure {

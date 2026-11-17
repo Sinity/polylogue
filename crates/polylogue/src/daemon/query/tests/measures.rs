@@ -516,3 +516,21 @@ fn measured_population_same_with_and_without_conditions() {
         assert_eq!(after["data"][field], before["data"][field], "{field}");
     }
 }
+
+#[test]
+fn usage_includes_continuation_once() {
+    let w = logical_work();
+    let usage = q(&w, "sessions where cwd:/w/c | measure usage");
+    assert_eq!(usage["data"]["known_response_messages"], 5);
+    // Explicitly selecting both a root and its child still counts own responses once.
+    let explicit = q(
+        &w,
+        "sessions where physical:true (cwd:/w/a OR cwd:/w/c) | measure usage",
+    );
+    assert_eq!(explicit["data"]["known_response_messages"], 5);
+    let day = q(
+        &w,
+        "sessions where cwd:/w/c since:2026-10-03 until:2026-10-03 | measure usage",
+    );
+    assert_eq!(day["data"]["known_response_messages"], 1);
+}

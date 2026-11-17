@@ -6,8 +6,8 @@ use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DefaultId {
-    /// Sessions another session spawned stay out of a sessions list.
-    MainSessions,
+    /// Continuations, subagents and forks fold into their logical session.
+    LogicalSessions,
     /// Stub sessions stay out.
     NotStub,
     /// Hidden sessions stay out of a sessions list.
@@ -35,7 +35,16 @@ impl DefaultId {
     /// The top-level fields that lift this default.
     pub fn lifted_by(self) -> &'static [&'static str] {
         match self {
-            Self::MainSessions => &["kind", "parent", "root", "depth", "connected", "link", "id"],
+            Self::LogicalSessions => &[
+                "physical",
+                "kind",
+                "parent",
+                "root",
+                "depth",
+                "connected",
+                "link",
+                "id",
+            ],
             Self::NotStub => &["source"],
             Self::SessionsVisible => &["hidden", "id"],
             Self::NotDuplicate => &["duplicate"],
@@ -60,7 +69,7 @@ impl DefaultId {
     pub fn lifted_by_reference(self) -> bool {
         matches!(
             self,
-            Self::MainSessions
+            Self::LogicalSessions
                 | Self::SessionsVisible
                 | Self::NotDuplicate
                 | Self::OnActivePath
@@ -77,6 +86,9 @@ impl DefaultId {
     /// What the default keeps out and what brings those rows back, for
     /// `--why`.
     pub fn describe(self) -> String {
+        if self == Self::LogicalSessions {
+            return "default: continuations, subagents and forks fold into their logical session (a top-level physical:, kind:, id:, parent:, root:, depth:, connected:, link: or a reference lifts it)".into();
+        }
         let mut back: Vec<String> = self.lifted_by().iter().map(|f| format!("{f}:")).collect();
         if self.lifted_by_reference() {
             back.push("a reference".to_owned());
@@ -93,7 +105,7 @@ impl DefaultId {
 pub fn declared(unit: Unit) -> &'static [DefaultId] {
     use DefaultId::*;
     match unit {
-        Unit::Sessions => &[MainSessions, NotStub, SessionsVisible],
+        Unit::Sessions => &[LogicalSessions, NotStub, SessionsVisible],
         Unit::Messages | Unit::Blocks => &[NotDuplicate, OnActivePath, Visible],
         Unit::ToolCalls => &[NotDuplicate, OnActivePath, CountedCalls, Visible],
         Unit::Files | Unit::Events | Unit::Turns | Unit::LiveIntervals | Unit::Processes => {

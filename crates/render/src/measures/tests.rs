@@ -40,3 +40,26 @@ fn outlook_escapes_controls_in_plan_names_units_and_reasons() {
     assert!(missing.contains("--option provider:method"));
     assert!(outlook(&json!({"reason":"no_cycle_anchor"})).contains("cycle_anchor_day"));
 }
+
+#[test]
+fn measure_times_print_in_answer_zone() {
+    let mut answer = json!({
+        "zone": "Europe/Warsaw",
+        "tools": [{"tool": "sample", "windows": [{"resets_at": 0}]}]
+    });
+    assert!(quota(&answer).contains("1970-01-01 01:00 +01:00"));
+    answer.as_object_mut().unwrap().remove("zone");
+    assert!(quota(&answer).contains("1970-01-01 00:00 +00:00"));
+    answer["zone"] = json!("not/a/timezone");
+    assert!(quota(&answer).contains("1970-01-01 00:00 +00:00"));
+    assert!(time(&Value::Null, &answer_zone(&answer)).contains("unknown"));
+}
+
+#[test]
+fn failing_times_use_resolved_context_without_changing_array_data() {
+    let data = json!([{"repo":"sample","command":"cargo test","at":0,"last_ok_at":0}]);
+    let warsaw = jiff::tz::TimeZone::get("Europe/Warsaw").unwrap();
+    let output = failing(&data, &warsaw);
+    assert_eq!(output.matches("1970-01-01 01:00 +01:00").count(), 2);
+    assert!(data.is_array());
+}

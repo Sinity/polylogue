@@ -18,10 +18,17 @@ fn usage_text(data: &Value) -> String {
     usage_at(data, "")
 }
 
-fn time(ms: &Value) -> String {
+fn answer_zone(data: &Value) -> jiff::tz::TimeZone {
+    data["zone"]
+        .as_str()
+        .and_then(|name| jiff::tz::TimeZone::get(name).ok())
+        .unwrap_or(jiff::tz::TimeZone::UTC)
+}
+
+fn time(ms: &Value, zone: &jiff::tz::TimeZone) -> String {
     ms.as_i64()
-        .and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok())
-        .map(|t| t.to_string())
+        .and_then(polylogue_model::Timestamp::from_unix_ms)
+        .map(|t| polylogue_model::local_minute(t, zone))
         .unwrap_or_else(|| "unknown".into())
 }
 
@@ -150,6 +157,7 @@ pub fn quota(o: &Value) -> String {
 }
 
 fn quota_text(o: &Value) -> String {
+    let zone = answer_zone(o);
     let mut out = String::new();
     for t in o["tools"].as_array().into_iter().flatten() {
         out.push_str(t["tool"].as_str().unwrap_or(""));
@@ -160,7 +168,7 @@ fn quota_text(o: &Value) -> String {
             out.push_str(&format!(
                 " · credits {} (as of {})",
                 c["balance"].as_str().unwrap_or("?"),
-                time(&c["measured_at"])
+                time(&c["measured_at"], &zone)
             ));
         }
         out.push('\n');
@@ -189,7 +197,7 @@ fn quota_text(o: &Value) -> String {
                 "  {name} {} ({}): {used} · resets {}",
                 w["limit"].as_str().unwrap_or(""),
                 w["source"].as_str().unwrap_or(""),
-                time(&w["resets_at"]),
+                time(&w["resets_at"], &zone),
             ));
             if let Some(s) = w["status"].as_str() {
                 out.push_str(&format!(" · {s}"));
@@ -198,7 +206,7 @@ fn quota_text(o: &Value) -> String {
                 out.push_str(&format!(" · burn {b:.1}%/h"));
             }
             if !w["exhausted_at"].is_null() {
-                out.push_str(&format!(" · used up {}", time(&w["exhausted_at"])));
+                out.push_str(&format!(" · used up {}", time(&w["exhausted_at"], &zone)));
             } else if w["lasts_to_reset"].as_bool() == Some(true) {
                 out.push_str(" · lasts to reset");
             }
@@ -227,11 +235,11 @@ fn quota_text(o: &Value) -> String {
 }
 
 /// FailingCommand commands grouped by repository, most recent failure first.
-pub fn failing(data: &Value) -> String {
-    crate::terminal::escape(&failing_text(data))
+pub fn failing(data: &Value, zone: &jiff::tz::TimeZone) -> String {
+    crate::terminal::escape(&failing_text(data, zone))
 }
 
-fn failing_text(data: &Value) -> String {
+fn failing_text(data: &Value, zone: &jiff::tz::TimeZone) -> String {
     let items = data.as_array().map_or(&[][..], Vec::as_slice);
     if items.is_empty() {
         return "no command's latest run failed\n".into();
@@ -248,12 +256,12 @@ fn failing_text(data: &Value) -> String {
             .map_or(String::new(), |c| format!(" (exit {c})"));
         let since = match u["last_ok_at"] {
             Value::Null => "never succeeded".to_owned(),
-            ref at => format!("last ok {}", time(at)),
+            ref at => format!("last ok {}", time(at, zone)),
         };
         let line = format!(
             "  {}  failed {}{exit} in {} · {} failure(s) since ok · {since}\n",
             u["command"].as_str().unwrap_or("?"),
-            time(&u["at"]),
+            time(&u["at"], zone),
             u["session"].as_str().unwrap_or("?"),
             u["failures_since_ok"],
         );

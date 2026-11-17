@@ -89,6 +89,18 @@ impl Call<'_, '_> {
     }
 }
 
+/// `physical:true` lifts logical-session folding; false is the default form.
+pub(crate) fn physical(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    match x.test {
+        Test::Bool(true) => Ok("1".into()),
+        Test::Bool(false) => Err(x.bad(
+            "false".into(),
+            "physical:false is the default listing; leave the condition out".into(),
+        )),
+        _ => Err(x.need_value()),
+    }
+}
+
 /// `(… OR …)` of the parts, refusing an empty list.
 fn any_of(x: &Call<'_, '_>, parts: Vec<String>) -> Result<String, QueryError> {
     if parts.is_empty() {
@@ -141,14 +153,14 @@ impl Compiler<'_> {
         };
         let rank = match scope.unit {
             Unit::Sessions => {
-                // Each selected session's best message, its subagents' included.
+                // Each selected session's best message across its logical session.
                 let sessions = format!("n{}", self.ctes.len() + 1);
                 self.ctes.push(format!(
                     "{sessions} AS MATERIALIZED (SELECT xs.pk AS p, {} AS s \
                      FROM (SELECT DISTINCT {}.pk AS pk FROM {selected}) xs)",
                     best(&format!(
                         "IN (SELECT xm.pk FROM message xm WHERE xm.session_pk IN ({}))",
-                        fields::subtree("xs")
+                        fields::descendants("xs")
                     )),
                     a.s
                 ));

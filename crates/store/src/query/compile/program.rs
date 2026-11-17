@@ -7,7 +7,7 @@ use super::*;
 struct SelectionSql {
     scope: RowContext,
     top: Vec<Condition>,
-    applied: Vec<(String, String)>,
+    applied: Vec<(units::DefaultId, String)>,
     defaults_only: Vec<String>,
     where_sql: Vec<String>,
     why: Vec<(String, String)>,
@@ -54,6 +54,10 @@ impl<'a> Compiler<'a> {
         preset: Option<MatchRel>,
     ) -> Result<Program, QueryError> {
         let mut parts = self.selection_sql(selection, preset)?;
+        let defaults: Vec<_> = parts.applied.iter().map(|(id, _)| *id).collect();
+        if defaults.contains(&units::DefaultId::LogicalSessions) {
+            self.fold_into_logical_sessions(&parts.scope, &defaults, &mut parts.where_sql)?;
+        }
         self.apply_stages(selection, stages, &mut parts)?;
         let count_relation = self.finish_conditions(selection, &mut parts)?;
         let recursive = parts.matched.as_ref().is_some_and(|m| m.recursive);
@@ -108,10 +112,10 @@ impl<'a> Compiler<'a> {
             ));
         }
         let top = selection.top_level();
-        let applied: Vec<(String, String)> = selection
+        let applied: Vec<(units::DefaultId, String)> = selection
             .defaults
             .iter()
-            .map(|&id| (id.describe(), units::default_sql(id, &scope.a)))
+            .map(|&id| (id, units::default_sql(id, &scope.a)))
             .collect();
         let mut where_sql: Vec<String> = applied.iter().map(|(_, sql)| sql.clone()).collect();
         let defaults_only = where_sql.clone();
@@ -268,6 +272,7 @@ impl<'a> Compiler<'a> {
             w.push(self.lower(&filter, &next, true)?);
             self.snippet_terms.extend(search.terms);
         }
+        self.fold_bound_sessions(&next, &ntop, &mut w)?;
         *scope = next;
         *top = ntop;
         *where_sql = w;
@@ -641,6 +646,7 @@ impl<'a> Compiler<'a> {
             .iter()
             .cloned()
             .map(|(clause, cond)| WhyClause {
+                matches_sql: None,
                 sql: format!(
                     "{ctes}SELECT count(*) FROM {from} WHERE {}",
                     and_all(&[defaults_only.clone(), vec![cond]].concat())
@@ -663,7 +669,15 @@ impl<'a> Compiler<'a> {
                     .map(|(_, sql)| sql.clone())
                     .collect();
                 WhyClause {
-                    clause: describe.clone(),
+                    matches_sql: (*describe == units::DefaultId::LogicalSessions).then(|| {
+                        let ids: Vec<_> = applied.iter().map(|(id, _)| *id).collect();
+                        let folded = folded_sessions(&parts.scope, from, defaults_only, &ids);
+                        format!(
+                            "{ctes}SELECT count(*) FROM {from} WHERE {}",
+                            and_all(&folded)
+                        )
+                    }),
+                    clause: describe.describe(),
                     sql: format!(
                         "{ctes}SELECT count(*) FROM {from} WHERE {}",
                         and_all(&others)
@@ -748,10 +762,21 @@ impl<'a> Compiler<'a> {
         if let Some(measure) = &mut parts.measure {
             (measure.since, measure.until) = self.session_window;
             measure.selection_sql = rows.sql.clone();
+            let defaults: Vec<_> = parts.applied.iter().map(|(id, _)| *id).collect();
+            let population = if defaults.contains(&units::DefaultId::LogicalSessions) {
+                folded_sessions(
+                    &parts.scope,
+                    &base_from(parts.scope.unit, &parts.scope.a),
+                    &parts.defaults_only,
+                    &defaults,
+                )
+            } else {
+                parts.defaults_only.clone()
+            };
             measure.population_sql = format!(
                 "SELECT {s}.pk AS _pk FROM session {s} WHERE {defaults}{parameters}",
                 s = parts.scope.a.s,
-                defaults = and_all(&parts.defaults_only),
+                defaults = and_all(&population),
                 parameters = if self.params.is_empty() {
                     String::new()
                 } else {
@@ -861,6 +886,32 @@ impl<'a> Compiler<'a> {
         from
     }
 
+    /// Match physical sessions first, then select each known logical root once.
+    fn fold_into_logical_sessions(
+        &self,
+        scope: &RowContext,
+        defaults: &[units::DefaultId],
+        conditions: &mut Vec<String>,
+    ) -> Result<(), QueryError> {
+        *conditions = folded_sessions(scope, &self.from(scope)?, conditions, defaults);
+        Ok(())
+    }
+
+    /// Nested sources bind their own defaults, just like the outer selection.
+    pub(super) fn fold_bound_sessions(
+        &self,
+        scope: &RowContext,
+        top: &[Condition],
+        conditions: &mut Vec<String>,
+    ) -> Result<(), QueryError> {
+        let defaults =
+            polylogue_query::defaults::bind(scope.unit, top, &self.opts.origins, self.measuring);
+        if defaults.contains(&units::DefaultId::LogicalSessions) {
+            self.fold_into_logical_sessions(scope, &defaults, conditions)?;
+        }
+        Ok(())
+    }
+
     /// The default filters a unit binds, dropped by a top-level condition
     /// naming their field.
     pub(super) fn defaults(
@@ -928,4 +979,31 @@ impl<'a> Compiler<'a> {
         );
         o
     }
+}
+
+/// The inner row is a physical match; outer visibility also applies to its root.
+fn folded_sessions(
+    scope: &RowContext,
+    from: &str,
+    conditions: &[String],
+    defaults: &[units::DefaultId],
+) -> Vec<String> {
+    let mut folded = vec![format!(
+        "{}.pk IN (SELECT {} FROM {from} WHERE {})",
+        scope.a.s,
+        fields::logical_root(&scope.a.s),
+        and_all(conditions)
+    )];
+    folded.extend(
+        defaults
+            .iter()
+            .filter(|id| {
+                matches!(
+                    id,
+                    units::DefaultId::NotStub | units::DefaultId::SessionsVisible
+                )
+            })
+            .map(|&id| units::default_sql(id, &scope.a)),
+    );
+    folded
 }

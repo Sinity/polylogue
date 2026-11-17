@@ -1,6 +1,7 @@
 //! A scope-driven alternative to the selected full-text leg.
 //! The bound filter keeps every other predicate and its original defaults.
 use super::*;
+use crate::query::fields::STRUCTURAL_KINDS;
 use polylogue_query::filter::Filter;
 
 /// A direct sort on a stored time keeps key-first selection. Other relation sorts
@@ -133,7 +134,7 @@ impl Compiler<'_> {
                  SELECT pk FROM {scope_rows} WHERE {mode}<>0 UNION \
                  SELECT min(pk) FROM {scope_rows} WHERE {mode}=0 UNION \
                  SELECT l.child_pk FROM tree t CROSS JOIN session p ON p.pk=t.pk \
-                 CROSS JOIN session_link l ON l.parent_id=p.id AND l.kind='spawn' \
+                 CROSS JOIN session_link l ON l.parent_id=p.id AND l.kind IN ({STRUCTURAL_KINDS}) \
                  WHERE l.child_pk IS NOT NULL UNION \
                  SELECT (SELECT min(pk) FROM {scope_rows} WHERE pk>t.pk) \
                  FROM tree t WHERE {mode}=0 AND t.pk IS NOT NULL) \

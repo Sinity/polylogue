@@ -16,7 +16,7 @@ const DOWNWARD: &str = "WITH hits AS MATERIALIZED (
         AND m.session_pk IN (WITH RECURSIVE tree(pk) AS (
           SELECT s.pk UNION SELECT l.child_pk FROM link l
           JOIN session parent ON parent.id=l.parent_id JOIN tree ON tree.pk=parent.pk
-          WHERE l.kind='spawn' AND l.child_pk IS NOT NULL
+          WHERE l.kind IN ('spawn','fork','continuation','resume') AND l.child_pk IS NOT NULL
         ) SELECT pk FROM tree)) AS rank
     FROM session s WHERE s.origin='test' AND s.kind='main'
 ) WHERE rank IS NOT NULL ORDER BY rank,last_activity_at DESC,id";

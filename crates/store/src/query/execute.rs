@@ -803,7 +803,12 @@ pub fn why(
         let defaults = program.why_defaults.iter().map(|w| {
             Ok(Explanation {
                 clause: w.clause.clone(),
-                matches: of,
+                matches: w
+                    .matches_sql
+                    .as_deref()
+                    .map(&count)
+                    .transpose()?
+                    .unwrap_or(of),
                 of: count(&w.sql)?,
             })
         });
