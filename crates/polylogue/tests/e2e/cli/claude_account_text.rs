@@ -182,7 +182,7 @@ fn account_and_project_text_import_without_turns_or_invented_document_authorship
     );
     assert!(documents.status.success(), "{documents:?}");
     assert_eq!(
-        json(&documents)["count"],
+        listing(json(&documents))["count"],
         1,
         "project text must be queryable without pretending it is a human prompt"
     );
@@ -203,7 +203,7 @@ fn account_and_project_text_import_without_turns_or_invented_document_authorship
     else {
         panic!("expected typed empty query: {answer:?}");
     };
-    assert_eq!(value["count"], 0);
+    assert_eq!(listing(value)["count"], 0);
     let reference = "document:claude-ai:project:project-a:doc:doc-a";
     let read = cli(&env, &["--json", reference, "read"]);
     assert!(read.status.success(), "{read:?}");

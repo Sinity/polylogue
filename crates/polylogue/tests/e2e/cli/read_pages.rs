@@ -126,15 +126,12 @@ const SMALL_PAGE: &[&str] = &[
 ];
 
 /// The continue command a piped read printed on standard error.
-fn continue_command(out: &std::process::Output) -> Option<Vec<String>> {
+fn continue_command(out: &std::process::Output) -> Option<String> {
     let stderr = String::from_utf8(out.stderr.clone()).unwrap();
     let command = stderr
         .lines()
         .find_map(|line| line.strip_prefix("continue: "))?;
-    let stages = polylogue_model::command::effective_stages(command);
-    assert_eq!(stages.len(), 1, "{command}");
-    assert_eq!(stages[0].program, "polylogue");
-    Some(stages[0].args.clone())
+    Some(command.to_owned())
 }
 
 #[test]
@@ -148,7 +145,9 @@ fn read_without_json_on_pipe_prints_continue_command_on_stderr() {
     assert!(!stdout.contains("third marker gamma"), "{stdout}");
     assert!(!stdout.contains("--cursor"), "the page alone is on stdout");
     let next = continue_command(&out).expect("a continue command on stderr");
-    assert!(next.iter().any(|word| word == "--cursor"), "{next:?}");
+    assert!(next.contains("--cursor"), "{next}");
+    let continued = printed_cli(&env, &next);
+    assert!(continued.status.success(), "{continued:?}");
 }
 
 #[test]
@@ -159,8 +158,8 @@ fn read_pages_tile_with_no_gap_or_overlap() {
     args.extend(["--format".to_owned(), "json".to_owned()]);
     let mut joined = Items::default();
     let mut pages = 0;
+    let mut out = cli(&env, &args.iter().map(String::as_str).collect::<Vec<_>>());
     loop {
-        let out = cli(&env, &args.iter().map(String::as_str).collect::<Vec<_>>());
         assert!(out.status.success(), "{out:?}");
         let document: polylogue_model::read::ReadDocument =
             serde_json::from_slice(&out.stdout).unwrap();
@@ -169,7 +168,7 @@ fn read_pages_tile_with_no_gap_or_overlap() {
         pages += 1;
         assert!(pages <= 20, "the reading did not end");
         match continue_command(&out) {
-            Some(next) => args = next,
+            Some(next) => out = printed_cli(&env, &next),
             None => break,
         }
     }

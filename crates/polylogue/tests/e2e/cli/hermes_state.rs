@@ -36,7 +36,7 @@ fn hermes_query_read_export_keep_compression_parents() {
         &["--json", "sessions where origin:hermes | sort by id"],
     );
     assert!(query.status.success(), "{query:?}");
-    let query = json(&query);
+    let query = listing(json(&query));
     assert_eq!(query["count"], 2);
     let child = query["rows"]
         .as_array()
@@ -174,7 +174,7 @@ fn empty_active_path_differs_from_missing_flags() {
     wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(7));
     let listed = cli(&env, &["--json", "sessions where origin:hermes"]);
     assert!(listed.status.success(), "{listed:?}");
-    let listed = json(&listed);
+    let listed = listing(json(&listed));
     let mut states = Vec::new();
     for (title, stored, active) in [
         ("All inactive", 2, 0),
@@ -200,7 +200,7 @@ fn empty_active_path_differs_from_missing_flags() {
         let all = format!("messages where session:{sid} active:*");
         let all = cli(&env, &["--json", &all]);
         assert!(all.status.success(), "{all:?}");
-        assert_eq!(json(&all)["count"], stored);
+        assert_eq!(listing(json(&all))["count"], stored);
         let markers = cli(
             &env,
             &[
@@ -246,7 +246,7 @@ fn empty_active_path_differs_from_missing_flags() {
                 .unwrap();
             assert!(marker.after.is_none());
         }
-        states.push((sid.to_owned(), json(&all), active));
+        states.push((sid.to_owned(), listing(json(&all)), active));
     }
     let unknown = states
         .iter()
@@ -293,7 +293,7 @@ fn empty_active_path_differs_from_missing_flags() {
         let query = format!("messages where session:{sid} active:*");
         let out = cli(&env, &["--json", &query]);
         assert!(out.status.success(), "{out:?}");
-        let out = json(&out);
+        let out = listing(json(&out));
         assert_eq!(out["rows"], expected["rows"]);
         assert_eq!(out["columns"], expected["columns"]);
         assert_eq!(out["count"], expected["count"]);

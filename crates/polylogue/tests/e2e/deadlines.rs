@@ -45,6 +45,12 @@ fn answer(
         assert!(!caller.controlling_terminal);
         let request: command_surface::RunnableRequest = serde_json::from_value(envelope).unwrap();
         assert_eq!(request.deadline, expected_deadline);
+        if request.operation == "rows" {
+            assert_eq!(request.arguments["selection"], "session:claude-code:s1");
+            assert_eq!(request.arguments["steps"][0]["verb"], "read");
+            assert_eq!(request.arguments["steps"][0]["delivery"], "stream");
+            assert_eq!(request.arguments["steps"][0]["format"], "json");
+        }
         std::thread::sleep(delay);
         stream.write_all(response.as_ref()).unwrap();
     });
@@ -168,8 +174,22 @@ fn read_stream() -> (Vec<u8>, polylogue_model::read::ReadDocument) {
     for (name, value) in [
         ("begin", serde_json::to_value(begin).unwrap()),
         ("record", serde_json::to_value(record).unwrap()),
-        ("complete", serde_json::to_value(complete).unwrap()),
+        ("complete", serde_json::to_value(&complete).unwrap()),
     ] {
+        wire.extend_from_slice(format!("event: {name}\ndata: {value}\n\n").as_bytes());
+    }
+    let steps = command_surface::Answer::ok(serde_json::json!({
+        "kind":"steps", "reply":{"resolved":null,"steps":[{
+            "verb":"read", "request_id":"synthetic-read", "outcome":{
+                "status":"done", "reply":{"kind":"streamed","reply":complete}
+            }
+        }]}
+    }));
+    let answer = command_surface::Answer::ok(serde_json::json!({
+        "kind":"steps", "reply":{"resolved":null,"steps":[]}
+    }));
+    for (name, reply) in [("steps", steps), ("answer", answer)] {
+        let value = serde_json::to_string(&reply).unwrap();
         wire.extend_from_slice(format!("event: {name}\ndata: {value}\n\n").as_bytes());
     }
     let document = ReadDocument {
@@ -183,14 +203,16 @@ fn read_stream() -> (Vec<u8>, polylogue_model::read::ReadDocument) {
 #[test]
 fn explicit_unbounded_read_stream_waits_beyond_the_read_default_and_finishes() {
     let (wire, expected) = read_stream();
+    let directory = tempfile::tempdir().unwrap();
+    let destination = directory.path().join("read.json");
     let output = answer(
         &[
             "--deadline",
             "none",
-            "read",
             "session:claude-code:s1",
-            "--delivery",
-            "stream",
+            "read",
+            "--to",
+            destination.to_str().unwrap(),
             "--format",
             "json",
         ],
@@ -200,7 +222,7 @@ fn explicit_unbounded_read_stream_waits_beyond_the_read_default_and_finishes() {
     );
     assert!(output.status.success(), "{output:?}");
     let actual: polylogue_model::read::ReadDocument =
-        serde_json::from_slice(&output.stdout).unwrap();
+        serde_json::from_slice(&std::fs::read(&destination).unwrap()).unwrap();
     assert_eq!(actual, expected);
 }
 
@@ -209,12 +231,14 @@ fn explicit_unbounded_read_stream_waits_beyond_the_read_default_and_finishes() {
 #[test]
 fn a_read_stream_without_a_deadline_waits_for_the_daemon() {
     let (wire, expected) = read_stream();
+    let directory = tempfile::tempdir().unwrap();
+    let destination = directory.path().join("read.json");
     let output = answer(
         &[
-            "read",
             "session:claude-code:s1",
-            "--delivery",
-            "stream",
+            "read",
+            "--to",
+            destination.to_str().unwrap(),
             "--format",
             "json",
         ],
@@ -224,7 +248,7 @@ fn a_read_stream_without_a_deadline_waits_for_the_daemon() {
     );
     assert!(output.status.success(), "{output:?}");
     let actual: polylogue_model::read::ReadDocument =
-        serde_json::from_slice(&output.stdout).unwrap();
+        serde_json::from_slice(&std::fs::read(&destination).unwrap()).unwrap();
     assert_eq!(actual, expected);
 }
 

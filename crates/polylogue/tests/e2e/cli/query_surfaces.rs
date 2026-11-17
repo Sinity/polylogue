@@ -392,7 +392,7 @@ fn a_degraded_answer_keeps_its_outcome_and_notes_on_every_surface() {
             panic!("{surface}: {answer:?}");
         };
         assert_eq!(answer.exit_code(), 5, "{surface}");
-        assert_eq!(value["count"], 1, "{surface}: {value}");
+        assert_eq!(listing(value.clone())["count"], 1, "{surface}: {value}");
         assert!(
             notes
                 .iter()

@@ -35,7 +35,7 @@ fn hermes_observer_keeps_events_and_rebuilds_without_conversations() {
             ],
         );
         assert!(out.status.success(), "{out:?}");
-        let first = json(&out);
+        let first = listing(json(&out));
         assert_eq!(first["count"], 1);
         let row = &first["rows"][0];
         assert!(row["session"].is_null());
@@ -51,7 +51,7 @@ fn hermes_observer_keeps_events_and_rebuilds_without_conversations() {
         let exact = format!("events where id:{}", row["id"].as_str().unwrap());
         let lookup = cli(&env, &["--json", &exact]);
         assert!(lookup.status.success(), "{lookup:?}");
-        assert_eq!(json(&lookup)["count"], 1);
+        assert_eq!(listing(json(&lookup))["count"], 1);
         let reference = format!("event:{}", row["id"].as_str().unwrap());
         let page = reading(&env, &reference, &[]);
         assert!(!page.document.items.is_empty());
@@ -116,7 +116,7 @@ fn hermes_observer_keeps_events_and_rebuilds_without_conversations() {
                 ],
             );
             assert!(imported.status.success(), "{imported:?}");
-            let imported = json(&imported);
+            let imported = listing(json(&imported));
             assert_eq!(imported["count"], 1);
             assert_ne!(imported["rows"][0]["input"], row["input"]);
             assert_eq!(imported["rows"][0]["source"], "polylogue-bundle");
@@ -234,7 +234,7 @@ fn hermes_observer_keeps_events_and_rebuilds_without_conversations() {
         ],
     );
     assert!(out.status.success(), "{out:?}");
-    assert_eq!(json(&out)["rows"], first["rows"]);
+    assert_eq!(listing(json(&out))["rows"], first["rows"]);
 }
 
 fn hermes_event_rows(env: &crate::Fixture) -> serde_json::Value {
@@ -373,7 +373,7 @@ fn hermes_atif_documents_preserve_roles_unknown_media_and_ordered_parts() {
         &["--json", "documents where origin:hermes | sort by id"],
     );
     assert!(listed.status.success(), "{listed:?}");
-    let listed = json(&listed);
+    let listed = listing(json(&listed));
     assert_eq!(listed["count"], 2);
     for row in listed["rows"].as_array().unwrap() {
         let reference = format!("document:{}", row["id"].as_str().unwrap());

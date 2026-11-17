@@ -29,7 +29,7 @@ fn grok_account_import_reads_turns_without_path_or_export_order_identity() {
     let _ = import_report(&import);
     let query = cli(&env, &["--json", "origin:grok | sort by id"]);
     assert!(query.status.success(), "{query:?}");
-    let rows = json(&query)["rows"].as_array().unwrap().clone();
+    let rows = listing(json(&query))["rows"].as_array().unwrap().clone();
     assert_eq!(
         rows.len(),
         2,
@@ -82,7 +82,7 @@ fn grok_account_import_reads_turns_without_path_or_export_order_identity() {
     let import = cli(&env, &["--json", "import", renamed.to_str().unwrap()]);
     let _ = import_report(&import);
     let query = cli(&env, &["--json", "origin:grok | sort by id"]);
-    let rows = json(&query)["rows"].as_array().unwrap().clone();
+    let rows = listing(json(&query))["rows"].as_array().unwrap().clone();
     assert_eq!(
         rows.iter()
             .map(|row| row["id"].as_str().unwrap().to_owned())
@@ -91,7 +91,7 @@ fn grok_account_import_reads_turns_without_path_or_export_order_identity() {
     );
     let messages = cli(&env, &["--json", "messages where origin:grok"]);
     assert!(messages.status.success(), "{messages:?}");
-    let messages = json(&messages);
+    let messages = listing(json(&messages));
     assert_eq!(messages["count"], 5);
     assert_eq!(
         messages["rows"]
@@ -120,7 +120,7 @@ fn grok_account_import_reads_turns_without_path_or_export_order_identity() {
     let _ = import_report(&imported);
     let query = cli(&env, &["--json", "origin:grok"]);
     assert_eq!(
-        json(&query)["count"],
+        listing(json(&query))["count"],
         3,
         "ID-less append continuity is not guessed"
     );

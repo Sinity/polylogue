@@ -76,7 +76,7 @@ fn codex_counts_usage_and_keeps_recorded_text() {
     wait_status(&env, |s| s["store"]["search_pending"] == 0);
     let query = cli(&env, &["--json", "messages where publicneedle"]);
     assert!(query.status.success(), "{query:?}");
-    let query = json(&query);
+    let query = listing(json(&query));
     assert_eq!(query["count"], 1);
     assert_eq!(query["rows"][0]["id"], "codex:c1");
     let id = format!("codex:{THREAD}");
