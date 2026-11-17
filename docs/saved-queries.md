@@ -52,7 +52,8 @@ $ polylogue 'tool_calls where outcome:error command~"cargo test" since:7d' save 
 saved   query:failing (revision 1): runs again each time you use it
 kept    result:01JD7Q4M (34 rows, 16 Nov 14:02), now result:failing
 watch   notices when a row starts matching query:failing
-undo    polylogue 'annotations where request:01JD7Q4M' withdraw --all
+undo    polylogue assertion:01JD7Q4M-save@01JD7Q4M-save withdraw
+undo    polylogue assertion:01JD7Q4M-watch@01JD7Q4M-watch withdraw
 ```
 
 Over MCP the same step is `polylogue_write {"arguments": {"selection": "tool_calls where outcome:error since:7d", "steps": [{"verb": "save", "name": "failing", "watch": true}]}}`.
