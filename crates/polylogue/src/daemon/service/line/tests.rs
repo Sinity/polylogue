@@ -693,3 +693,53 @@ fn line_deadline_still_applies_after_resolution_journal_handoff() {
     assert!(reader.user_request("line-deadline-1").unwrap().is_none());
     assert_eq!(count(&d, "assertions"), 0);
 }
+
+#[test]
+fn ordered_read_stream_preserves_degraded_read_outcome() {
+    let d = test_daemon::start_with_sources_and_workers(
+        "readable session beside an incomplete source",
+        &|home| {
+            std::fs::write(
+                home.join(".claude/projects/-p/incomplete.jsonl"),
+                b"{unfinished source record\n",
+            )
+            .unwrap();
+        },
+        0,
+        2,
+    );
+    let finite = line(
+        &d,
+        "finite-degraded",
+        json!({
+            "selection":"session:claude-code:s1", "steps":[{"verb":"read"}]
+        }),
+    );
+    let (_, notes) = crate::test_answers::degraded(finite);
+    assert!(!notes.is_empty());
+    let events = socket_events(
+        &d,
+        "stream-degraded",
+        json!({
+            "selection":"session:claude-code:s1", "steps":[
+                {"verb":"read","delivery":"stream"},
+                {"verb":"read","delivery":"stream"}
+            ]
+        }),
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(event, _)| event == "complete")
+            .count(),
+        2
+    );
+    let (event, final_answer) = events.last().unwrap();
+    assert_eq!(event, "answer");
+    let final_answer: command_surface::Answer<Value> =
+        serde_json::from_value(final_answer.clone()).unwrap();
+    let (_, streamed_notes) = crate::test_answers::degraded(final_answer);
+    for note in notes {
+        assert!(streamed_notes.contains(&note), "{streamed_notes:?}");
+    }
+}
