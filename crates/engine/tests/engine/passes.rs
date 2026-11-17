@@ -918,3 +918,17 @@ fn copied_codex_history_keeps_items_through_restart_and_parent_arrival() {
         ]
     );
 }
+
+#[test]
+#[ignore = "temporary private-input diagnosis"]
+fn prepared_item_private_input_probe() {
+    let source = std::env::var_os("PREPARED_ITEM_PROBE_SOURCE").expect("probe source");
+    let home = ClaudeHome::new();
+    let dir = home.home.join(".codex/sessions/2026/03/01");
+    fs::create_dir_all(&dir).unwrap();
+    let source = std::path::Path::new(&source);
+    fs::copy(source, dir.join(source.file_name().unwrap())).unwrap();
+    let (mut engine, _lock) = home.engine(512);
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+}
