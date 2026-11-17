@@ -486,7 +486,19 @@ fn preserved_authored_requests_keep_ids_slots_and_repeat_without_effects() {
     let current = destination.path().join("current.db");
     preserved_register(&original, false);
     let before = preserved_tree(source.path());
-    let products: Vec<_> = authored.iter().map(|prepared| serde_json::json!({"product":{"product":"restored_request","prepared":prepared}})).collect();
+    let mut products: Vec<_> = authored.iter().map(|prepared| serde_json::json!({"product":{"product":"restored_request","prepared":prepared}})).collect();
+    let import = polylogue_model::authored::ImportAttribution {
+        machine: "receiving-machine".into(),
+        input: "preserved-import".into(),
+        chain: 1,
+        actor: polylogue_model::Author::Operator,
+        at: Timestamp::from_unix_ms(1000).unwrap(),
+    };
+    let imported = crate::primary::Product::RestoredAssertion {
+        fact: authored[0].effect.assertions[0].clone(),
+        import: Some(import),
+    };
+    products.push(serde_json::json!({"product":imported}));
     convert_register(&original, &current, |tx| {
         crate::query_objects::line_population::stage_products(tx, &products)?;
         crate::query_objects::line_population::stage_products(tx, &products)
@@ -525,13 +537,17 @@ fn preserved_authored_requests_keep_ids_slots_and_repeat_without_effects() {
         .unwrap();
     assert_eq!(slots, original_slots);
     let mut restored = vec![];
+    let mut assertions = vec![];
     crate::query_objects::line_population::visit_current_products(&current, |product| {
-        if let crate::primary::Product::RestoredRequest { prepared } = product {
-            restored.push(prepared);
+        match product {
+            crate::primary::Product::RestoredRequest { prepared } => restored.push(prepared),
+            crate::primary::Product::RestoredAssertion { .. } => assertions.push(product),
+            _ => {}
         }
         Ok(())
     })
     .unwrap();
+    assert_eq!(assertions, vec![imported]);
     assert_eq!(restored, authored);
     drop(connection);
     assert_eq!(
