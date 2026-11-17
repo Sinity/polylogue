@@ -713,6 +713,7 @@ fn schema_only_import_keeps_unknown_times_and_both_files() {
         .into_iter()
         .collect()
     );
+    let mut references = vec![reference];
     for i in 0..5 {
         let key = if i == 0 {
             "seed.example".to_owned()
@@ -720,12 +721,11 @@ fn schema_only_import_keeps_unknown_times_and_both_files() {
             format!("synthetic.schema-{i}")
         };
         let id = format!("predecessor-schema:{key}@2");
-        let assertion = reader
-            .assertion(&RevisionReference::exact(id.clone(), id))
-            .unwrap()
-            .unwrap();
+        let reference = RevisionReference::exact(id.clone(), id);
+        let assertion = reader.assertion(&reference).unwrap().unwrap();
         assert_eq!(assertion.fact.created_at, None);
         assert_eq!(assertion.fact.key.as_deref(), Some(key.as_str()));
+        references.push(reference);
     }
     let archive = read_only(&engine.archive.archive_db());
     assert_eq!(
@@ -739,6 +739,46 @@ fn schema_only_import_keeps_unknown_times_and_both_files() {
         strings(&archive, "SELECT count(*) FROM assertion_import"),
         [["7"]]
     );
+    assert_eq!(std::fs::read(&first).unwrap(), originals[0]);
+    assert_eq!(std::fs::read(&second).unwrap(), originals[1]);
+    let expected: Vec<_> = references
+        .iter()
+        .map(|reference| {
+            (
+                serde_json::to_value(reader.assertion(reference).unwrap()).unwrap(),
+                serde_json::to_value(reader.assertion_imports(reference).unwrap()).unwrap(),
+            )
+        })
+        .collect();
+    drop(archive);
+    drop(reader);
+    drop(engine);
+    drop(_lock);
+
+    polylogue_testkit::delete_index(&w.root);
+    let (mut rebuilt, _rebuilt_lock) = crate::import::tests::engine(&w, 64);
+    let pass = rebuilt.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    for retry in [false, true] {
+        if retry {
+            let report = rebuilt
+                .import_with_options(std::slice::from_ref(&second), &options(USER_DB))
+                .unwrap()
+                .python_import
+                .unwrap();
+            assert_eq!(report.classes["annotation_schemas"].stored, 0);
+            assert_eq!(report.classes["annotation_schemas"].present, 6);
+            assert_eq!(report.classes["annotation_schemas"].refused, 0);
+        }
+        let reader = rebuilt.reads.reader().unwrap();
+        for (reference, expected) in references.iter().zip(&expected) {
+            let actual = (
+                serde_json::to_value(reader.assertion(reference).unwrap()).unwrap(),
+                serde_json::to_value(reader.assertion_imports(reference).unwrap()).unwrap(),
+            );
+            assert_eq!(&actual, expected, "{reference:?}, retry={retry}");
+        }
+    }
     assert_eq!(std::fs::read(&first).unwrap(), originals[0]);
     assert_eq!(std::fs::read(&second).unwrap(), originals[1]);
 }
