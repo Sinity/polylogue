@@ -13,6 +13,7 @@ fn request(
 ) -> crate::test_daemon::Call {
     if let Some(resume) = cursor {
         let mut resume = resume.clone();
+        resume.request_id = polylogue_store::user_writes::new_request_id();
         resume.arguments["steps"][0]["budget"] = serde_json::json!(budget);
         return crate::test_daemon::Call::from_request(&resume);
     }
@@ -275,8 +276,10 @@ fn read_pages_refuse_malformed_cross_view_and_tampered_positions() {
         // A cursor is bound to its reading: other arguments are refused
         // when the page is read (docs/reading.md, Budgets).
         let mut changed = token.clone();
+        changed.request_id = polylogue_store::user_writes::new_request_id();
         if field == "target" {
             changed.arguments["selection"] = value;
+            changed.arguments["references"] = serde_json::json!([]);
         } else {
             changed.arguments["steps"][0][field] = value;
         }
@@ -340,9 +343,9 @@ fn read_pages_survive_unrelated_writes_and_refuse_changed_earlier_content() {
         Some(&token),
     ))
     .answer(&d.daemon);
-    assert!(
-        matches!(&response, command_surface::Answer { outcome: command_surface::Outcome::Error(error), .. } if error.code.as_deref() == Some("stale_cursor")),
-        "{response:?}"
+    assert_eq!(
+        crate::test_answers::refusal(response).code.as_deref(),
+        Some("stale_cursor")
     );
 }
 
@@ -437,20 +440,18 @@ fn direct_references_keep_their_text_and_refuse_missing_sources() {
         all(&d.daemon, "block:claude-code:u2#0", false, View::Transcript),
         source
     );
-    assert!(matches!(
-        (request(
-            "message:claude-code:missing",
-            false,
-            View::Transcript,
-            10,
-            None
-        ))
-        .answer(&d.daemon),
-        command_surface::Answer {
-            outcome: command_surface::Outcome::Error(_),
-            ..
-        }
-    ));
+    let missing = request(
+        "message:claude-code:missing",
+        false,
+        View::Transcript,
+        10,
+        None,
+    )
+    .answer(&d.daemon);
+    assert_eq!(
+        crate::test_answers::refusal(missing).code.as_deref(),
+        Some("not_found")
+    );
 }
 
 /// Pages and direct jumps over a session of many one-token pages. Paging

@@ -101,8 +101,15 @@ fn time_comparison_and_facets_page_with_the_query_cursor() {
                     assert!(
                         crate::commands::declarations()
                             .render_text(
-                                "query",
-                                &command_surface::Answer::ok(document),
+                                "rows",
+                                &command_surface::Answer::ok(
+                                    serde_json::to_value(
+                                        crate::protocol::line::LineAnswer::Listing(Box::new(
+                                            serde_json::from_value(document).unwrap()
+                                        ))
+                                    )
+                                    .unwrap()
+                                ),
                                 command_surface::TextStyle::Plain
                             )
                             .unwrap()

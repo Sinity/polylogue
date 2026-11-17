@@ -29,6 +29,11 @@ fn follow(
     serde_json::from_str(&line).unwrap()
 }
 
+pub(super) fn listing(value: serde_json::Value) -> serde_json::Value {
+    assert_eq!(value["kind"], "listing", "{value}");
+    value["reply"].clone()
+}
+
 fn read_page(value: serde_json::Value) -> polylogue_model::read::ReadPage {
     assert_eq!(value["kind"], "steps", "{value}");
     let steps = value["reply"]["steps"].as_array().unwrap();
@@ -863,13 +868,21 @@ fn failed_step_exits_with_its_code_and_prints_undo() {
         "tag",
         "not-run",
     ];
+    let mut undo = None;
     for _ in 0..2 {
         let output = cli(&env, &words);
         assert_eq!(output.status.code(), Some(2), "{output:?}");
         let text = String::from_utf8(output.stderr).unwrap();
         assert!(text.contains("view raw does not accept tools"), "{text}");
         assert!(text.contains("tag not run"), "{text}");
-        assert!(text.contains("undo: polylogue"), "{text}");
+        let command = text
+            .lines()
+            .find_map(|line| line.strip_prefix("undo: "))
+            .expect("the committed prefix supplies undo");
+        if let Some(previous) = &undo {
+            assert_eq!(command, previous);
+        }
+        undo = Some(command.to_owned());
         let listed = cli(
             &env,
             &["--json", "assertions where kind:tag", "--fields", "key"],
@@ -882,6 +895,10 @@ fn failed_step_exits_with_its_code_and_prints_undo() {
             serde_json::json!([{"key":"prefix-done"}])
         );
     }
+    let withdrawn = printed_cli(&env, undo.as_deref().unwrap());
+    assert!(withdrawn.status.success(), "{withdrawn:?}");
+    let remaining = listing(json(&cli(&env, &["--json", "assertions where kind:tag"])));
+    assert_eq!(remaining["count"], 0);
     let mut json_words = vec!["--json", "--request-id", "line-prefix-json"];
     json_words.extend_from_slice(&words[2..]);
     let tag = json_words
@@ -1055,7 +1072,7 @@ fn choose(env: &crate::Fixture, args: &[&str], keys: &[u8]) -> Output {
     output
 }
 
-fn printed_cli(env: &crate::Fixture, command: &str) -> Output {
+pub(super) fn printed_cli(env: &crate::Fixture, command: &str) -> Output {
     let mut shell = Command::new("sh");
     env.environment(&mut shell);
     let script = format!("polylogue() {{ \"$POLYLOGUE_TEST_BINARY\" \"$@\"; }}\n{command}");

@@ -55,7 +55,11 @@ impl Handler for Line {
         query_selection(rows)
     }
     fn ranking_query(rows: &Rows, _: &Command) -> Option<String> {
-        query_selection(rows).map(str::to_owned)
+        if rows.explain {
+            None
+        } else {
+            query_selection(rows).map(str::to_owned)
+        }
     }
     fn run(rows: Rows, call: &Call<'_>) -> Result<Answer<LineAnswer>, Failure> {
         if let Some(failure) = refused_surface(&rows, call)? {
@@ -186,6 +190,9 @@ fn named(text: &str) -> Option<Reference> {
             || matches!(
                 reference,
                 Reference::Result { .. }
+                    | Reference::Cwd(_)
+                    | Reference::Repo(_)
+                    | Reference::File { .. }
                     | Reference::Page(_)
                     | Reference::Role(_)
                     | Reference::Variant { .. }
@@ -448,7 +455,9 @@ fn resolve(
         Given::Query(text) => Some(text.clone()),
         _ => None,
     };
-    if return_selection || steps.iter().any(|step| matches!(step, Step::Save(_))) {
+    let result_rows = matches!(&given, Given::Reference(Reference::Result { .. }))
+        && (steps.len() > 1 || steps.iter().any(|step| step.access() > ToolAccess::Read));
+    if return_selection || result_rows || steps.iter().any(|step| matches!(step, Step::Save(_))) {
         let text = match &given {
             Given::Query(text) => Some(text.clone()),
             Given::Reference(reference) => Some(reference.to_string()),
@@ -477,6 +486,7 @@ fn resolve(
                 )));
             }
             let resolved = match &given {
+                Given::Reference(Reference::Result { .. }) => query_rows,
                 Given::Reference(reference) => Some(vec![reference.clone()]),
                 Given::References(references) => Some(references.clone()),
                 _ => query_rows,

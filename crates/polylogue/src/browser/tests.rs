@@ -550,13 +550,13 @@ fn grok_file_blobs(
 ) -> Vec<Option<polylogue_model::BlobHash>> {
     let session = polylogue_model::SessionId::parse("grok:grok-raw").unwrap();
     until(
-        || match host.ask(
-            "read",
-            serde_json::json!({"target": format!("session:{session}"), "format": "markdown"}),
+        || {
+            match host.ask(
+            "rows",
+            serde_json::json!({"selection": format!("session:{session}"), "steps":[{"verb":"read", "format":"markdown"}]}),
         ) {
-            Some(answer) if answer.value().is_some() => {
-                let data = crate::protocol::into_value(answer).unwrap();
-                let page: polylogue_model::read::ReadPage = serde_json::from_value(data).unwrap();
+            Some(answer) if answer.value().is_some_and(|value| value["reply"]["steps"][0]["outcome"]["status"] == "done") => {
+                let page = crate::test_answers::read(answer);
                 let mut output = Vec::new();
                 polylogue_render::encode_document(
                     &page.document,
@@ -571,6 +571,7 @@ fn grok_file_blobs(
                 Value::String(String::from_utf8(output).unwrap())
             }
             _ => Value::Null,
+        }
         },
         |content| content.as_str().is_some_and(|t| t.contains(text)),
     );

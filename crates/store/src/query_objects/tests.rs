@@ -179,8 +179,11 @@ fn run_begin_is_visible_before_completion_and_both_facts_are_immutable() {
     assert_eq!(pool.reader().unwrap().change_position().unwrap(), position);
     let mut reordered = expected.binding.original().unwrap().clone();
     let mut envelope = serde_json::Map::new();
-    envelope.insert("operation".into(), serde_json::json!("query"));
-    envelope.insert("arguments".into(), serde_json::json!({"target":"sessions"}));
+    envelope.insert("operation".into(), serde_json::json!("rows"));
+    envelope.insert(
+        "arguments".into(),
+        serde_json::json!({"selection":"sessions"}),
+    );
     envelope.insert("id".into(), serde_json::json!("accepted-request-id"));
     reordered.accepted_request = Some(serde_json::Value::Object(envelope));
     assert_eq!(reordered.hash().unwrap(), expected.binding_hash().unwrap());

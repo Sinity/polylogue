@@ -84,7 +84,17 @@ fn stale_cursor_failures_suggest_rerun() {
             panic!("{case}: {failure:?}")
         };
         assert_eq!(repeated.operation, cursor.operation, "{case}");
-        assert_eq!(repeated.arguments, cursor.arguments, "{case}");
+        let mut expected: crate::protocol::line::Rows =
+            serde_json::from_value(cursor.arguments.clone()).unwrap();
+        expected.references.clear();
+        expected.selection = Some(target.into());
+        let crate::protocol::line::Step::Read(step) = &mut expected.steps[0] else {
+            panic!("one read")
+        };
+        step.cursor = None;
+        let actual: crate::protocol::line::Rows =
+            serde_json::from_value(repeated.arguments.clone()).unwrap();
+        assert_eq!(actual, expected, "{case}");
         assert_eq!(repeated.cursor, None, "{case}");
         let restarted = test_daemon::Call::from_request(repeated).answer(&daemon.daemon);
         assert!(restarted.value().is_some(), "{case}: {restarted:?}");

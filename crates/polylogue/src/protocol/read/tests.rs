@@ -23,20 +23,29 @@ fn a_read_keeps_the_request_cursor_beside_its_reading_options() {
     assert_eq!(request.cursor.as_deref(), Some("sealed"));
     let round = crate::daemon::service::read::arguments_of(&request).unwrap();
     assert!(serde_json::to_value(round).unwrap().get("cursor").is_none());
-    // The command line sends the cursor beside the arguments too.
-    let (_, values, arguments) = crate::cli::request_arguments(
-        &[
-            "polylogue",
-            "read",
-            "session:test:one",
-            "--view",
-            "dialogue",
-            "--cursor",
-            "sealed",
-        ],
-        std::path::Path::new("/"),
+    // The line owns its read cursor in the typed read step.
+    let words = [
+        "session:test:one",
+        "read",
+        "--view",
+        "dialogue",
+        "--cursor",
+        "sealed",
+    ]
+    .map(str::to_owned);
+    let parsed = crate::cli::line::parse(
+        &words,
+        &crate::cli::line::FirstWordCatalog::default(),
+        false,
     )
     .unwrap();
-    assert!(arguments.get("cursor").is_none());
-    assert_eq!(values.request.cursor.as_deref(), Some("sealed"));
+    let call = crate::cli::run_line::request(&parsed).unwrap();
+    assert_eq!(call.operation, "rows");
+    assert!(call.cursor.is_none());
+    let rows: crate::protocol::line::Rows = serde_json::from_value(call.arguments).unwrap();
+    let [crate::protocol::line::Step::Read(step)] = rows.steps.as_slice() else {
+        panic!("one read")
+    };
+    assert_eq!(step.view, polylogue_model::read::View::Dialogue);
+    assert_eq!(step.cursor.as_deref(), Some("sealed"));
 }

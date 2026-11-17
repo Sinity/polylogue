@@ -485,12 +485,17 @@ fn named_context_budget_and_identity_survive_the_socket() {
         if let Some(option) = option {
             words.extend(["--budget", option]);
         }
-        words.extend(["brief", "--cwd", "/synthetic", "--source", "resume"]);
+        words.extend(["brief", "--cwd", "/synthetic"]);
         let words = words.into_iter().map(str::to_owned).collect::<Vec<_>>();
         let parsed =
             crate::cli::line::parse(&words, &crate::cli::line::FirstWordCatalog::default(), true)
                 .unwrap();
         let actual = crate::cli::run_line::request(&parsed).unwrap();
+        // Hook source is accepted over the typed protocol, not exposed as a CLI option.
+        selected.arguments["steps"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("source");
         assert_eq!(
             serde_json::from_value::<crate::protocol::line::Rows>(actual.arguments).unwrap(),
             serde_json::from_value::<crate::protocol::line::Rows>(selected.arguments).unwrap()

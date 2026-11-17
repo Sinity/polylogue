@@ -392,7 +392,10 @@ fn consume(
             writeln!(
                 io::stdout().lock(),
                 "{}",
-                serde_json::json!({"event":frame.event,"data":data})
+                polylogue_render::terminal::json(
+                    &serde_json::json!({"event":frame.event,"data":data}),
+                    false
+                )
             )?;
         }
         if matches!(frame.event.as_str(), "steps" | "answer") {
@@ -735,8 +738,12 @@ fn written(value: serde_json::Value, code: u8) -> io::Result<()> {
     } else {
         command_surface::Answer::ok(value)
     };
-    serde_json::to_writer(io::stdout().lock(), &answer)?;
-    writeln!(io::stdout().lock())
+    let event = serde_json::json!({"event":"written", "data":answer});
+    writeln!(
+        io::stdout().lock(),
+        "{}",
+        polylogue_render::terminal::json(&event, false)
+    )
 }
 
 fn encode(

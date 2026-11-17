@@ -5,14 +5,15 @@ use crate::daemon::{server, service};
 fn notes(host: &BrowserHost) -> Vec<Value> {
     let Some(Ok(data)) = host
         .ask(
-            "query",
-            serde_json::json!({"query": "assertions where kind:note"}),
+            "rows",
+            serde_json::json!({"selection": "assertions where kind:note"}),
         )
         .map(crate::protocol::into_value)
     else {
         panic!("notes unavailable")
     };
-    data["rows"].as_array().unwrap().clone()
+    assert_eq!(data["kind"], "listing");
+    data["reply"]["rows"].as_array().unwrap().clone()
 }
 
 fn selection() -> Value {

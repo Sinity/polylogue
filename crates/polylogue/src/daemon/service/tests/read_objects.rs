@@ -219,7 +219,15 @@ fn object_stream_stops_on_scope_reset_and_cancellation_before_record_body() {
                 &reader,
                 d.daemon.as_ref(),
                 &crate::daemon::service::read::request_of(
-                    serde_json::from_value(read("interrupted-object").arguments.clone()).unwrap(),
+                    crate::daemon::verbs::read::arguments(
+                        &crate::protocol::steps::ReadStep {
+                            delivery: ReadDelivery::Stream,
+                            format: Some("jsonl".into()),
+                            ..Default::default()
+                        },
+                        "request:interrupted-object".into(),
+                    )
+                    .unwrap(),
                     None,
                 )
                 .unwrap(),

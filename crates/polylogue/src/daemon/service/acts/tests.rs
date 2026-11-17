@@ -290,7 +290,7 @@ fn role_addresses_and_role_starts() {
                 false,
                 None,
             )
-            .unwrap(),
+            .unwrap_or_else(|failure| failure.answer()),
         )
         .unwrap()
     };

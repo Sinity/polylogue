@@ -99,7 +99,11 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
         )),
         via: polylogue_model::authorship::Channel::Mcp,
     };
-    crate::test_answers::ok(save.authorship(caller.clone()).answer(&w.daemon));
+    let invocation = w
+        .daemon
+        .invocation(&caller)
+        .with_calling_session(Some("claude-code:s1".into()));
+    crate::test_answers::ok(save.answer_with(&w.daemon, &invocation));
     let kept = crate::test_answers::step(
         crate::test_daemon::Call::new(
             "rows",

@@ -456,7 +456,10 @@ pub(crate) fn run(
     if json {
         println!(
             "{}",
-            serde_json::to_string(&answer).expect("answer serializes")
+            polylogue_render::terminal::json(
+                &serde_json::to_value(&answer).expect("answer serializes"),
+                false
+            )
         );
         return ExitCode::from(failed_code(&answer).unwrap_or_else(|| answer.exit_code()));
     }
@@ -961,7 +964,13 @@ pub(crate) fn stream_steps(
     }
     let code = failed_code(&answer).unwrap_or_else(|| answer.exit_code());
     if parsed.line.json {
-        println!("{}", serde_json::to_string(&answer)?);
+        println!(
+            "{}",
+            polylogue_render::terminal::json(
+                &serde_json::to_value(&answer).map_err(io::Error::other)?,
+                false
+            )
+        );
     } else {
         let _ = output(parsed, &line, &answer, startup, state);
     }

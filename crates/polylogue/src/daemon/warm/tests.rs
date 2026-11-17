@@ -458,8 +458,8 @@ fn slow_provider_calls_cannot_fill_the_read_pool() {
                 scope.spawn(move || {
                     crate::test_daemon::call(
                         d,
-                        "query",
-                        serde_json::json!({"query": format!("messages where similar:\"slow {n}\"")}),
+                        "rows",
+                        serde_json::json!({"selection": format!("messages where similar:\"slow {n}\"")}),
                     )
                 })
             })
@@ -585,7 +585,13 @@ fn ranking_with_model_calls_off_uses_stored_vectors() {
     let calls = AtomicUsize::new(0);
     let stop = AtomicBool::new(false);
     let d = &daemon.daemon;
-    let query = |text: &str| crate::test_daemon::call(d, "query", json!({ "query": text }));
+    let query = |text: &str| {
+        crate::test_answers::listing(crate::test_daemon::call(
+            d,
+            "rows",
+            json!({ "selection": text }),
+        ))
+    };
     std::thread::scope(|scope| {
         // A provider that counts the calls it answers.
         scope.spawn(|| {
