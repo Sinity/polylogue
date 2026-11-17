@@ -316,7 +316,7 @@ async fn answer_as(
         }
     };
     let registration = match c.run {
-        Run::Daemon(registration) | Run::Delivered { registration, .. } => registration,
+        Run::Daemon(registration) => registration,
         Run::Feed { registration, .. } => {
             if let Err(failure) = registration.admit(&request) {
                 return json_answer(web, failure.answer::<serde_json::Value>());
@@ -472,32 +472,25 @@ async fn answer_as(
             &scopes,
         );
     }
-    if matches!(c.name, "read" | "rows")
+    if c.name == "rows"
         && wants_html
         && let Some(value) = answer.value()
     {
-        let page = if c.name == "rows" {
-            serde_json::from_value::<crate::protocol::line::LineAnswer>(value.clone()).and_then(
-                |line| match line {
-                    crate::protocol::line::LineAnswer::Steps(mut steps)
-                        if steps.steps.len() == 1 =>
-                    {
-                        match steps.steps.remove(0).outcome {
-                            crate::protocol::line::StepOutcome::Done {
-                                reply: crate::protocol::line::StepAnswer::Read(page),
-                                ..
-                            } => Ok(*page),
-                            _ => Err(serde::de::Error::custom(
-                                "the line did not return a read page",
-                            )),
-                        }
+        let page = serde_json::from_value::<crate::protocol::line::LineAnswer>(value.clone())
+            .and_then(|line| match line {
+                crate::protocol::line::LineAnswer::Steps(mut steps) if steps.steps.len() == 1 => {
+                    match steps.steps.remove(0).outcome {
+                        crate::protocol::line::StepOutcome::Done {
+                            reply: crate::protocol::line::StepAnswer::Read(page),
+                            ..
+                        } => Ok(*page),
+                        _ => Err(serde::de::Error::custom(
+                            "the line did not return a read page",
+                        )),
                     }
-                    _ => Err(serde::de::Error::custom("HTML requires one read step")),
-                },
-            )
-        } else {
-            serde_json::from_value::<polylogue_model::read::ReadPage>(value.clone())
-        };
+                }
+                _ => Err(serde::de::Error::custom("HTML requires one read step")),
+            });
         match page
             .map_err(|error| {
                 command_surface::Failure::new(command_surface::FailureKind::Io, error.to_string())

@@ -112,8 +112,8 @@ fn tools_answer_with_the_daemon_and_refuse_bad_calls() {
     // Every option of `read` reaches the daemon.
     let text = call(
         &archive,
-        "read",
-        args(json!({"target": "session:claude-code:s1", "format": "markdown"})),
+        "rows",
+        args(json!({"selection": "session:claude-code:s1", "steps":[{"verb":"read", "format":"markdown"}]})),
     )
     .unwrap();
     assert!(text.starts_with(polylogue_render::ARCHIVE_NOTICE), "{text}");
@@ -121,21 +121,31 @@ fn tools_answer_with_the_daemon_and_refuse_bad_calls() {
     assert!(text.contains("Times "), "{text}");
     let structured = structured_call_as(
         &archive,
-        "read",
-        args(json!({"target": "session:claude-code:s1"})),
+        "rows",
+        args(json!({"selection": "session:claude-code:s1", "steps":[{"verb":"read"}]})),
         &uuid::Uuid::now_v7().to_string(),
     );
-    let read: polylogue_model::read::ReadPage =
+    let line: crate::protocol::line::LineAnswer =
         serde_json::from_value(structured.value().unwrap().clone()).unwrap();
+    let crate::protocol::line::LineAnswer::Steps(steps) = line else {
+        panic!("read steps")
+    };
+    let crate::protocol::line::StepOutcome::Done {
+        reply: crate::protocol::line::StepAnswer::Read(read),
+        ..
+    } = &steps.steps[0].outcome
+    else {
+        panic!("finished read")
+    };
     assert!(read_pages::body(&read).contains("walrus"));
 
-    let text = call(&archive, "query", args(json!({"query": "walrus"}))).unwrap();
+    let text = call(&archive, "rows", args(json!({"selection": "walrus"}))).unwrap();
     assert!(text.contains("claude-code:s1"), "{text}");
 
     let e = call(
         &archive,
-        "read",
-        args(json!({"target": "session:claude-code:s1", "pages": 1})),
+        "rows",
+        args(json!({"selection": "session:claude-code:s1", "steps":[{"verb":"read", "pages":1}]})),
     )
     .unwrap_err();
     assert!(e.starts_with("error (bad_request)"), "{e}");
@@ -148,8 +158,8 @@ fn tools_answer_with_the_daemon_and_refuse_bad_calls() {
     assert!(e.contains("unknown MCP tool excise"), "{e}");
     let e = call(
         &archive,
-        "read",
-        args(json!({"target": "session:claude-code:nope"})),
+        "rows",
+        args(json!({"selection": "session:claude-code:nope", "steps":[{"verb":"read"}]})),
     )
     .unwrap_err();
     assert!(e.starts_with("error (not_found)"), "{e}");
@@ -320,8 +330,8 @@ fn manual_query_examples_compile_through_the_public_command() {
     {
         call(
             &archive,
-            "explain",
-            args(json!({"subject":"query", "expression":query})),
+            "rows",
+            args(json!({"selection":query, "explain":true})),
         )
         .unwrap_or_else(|e| panic!("{query}: {e}"));
     }
@@ -479,32 +489,38 @@ fn a_tool_call_names_one_of_its_operations() {
     );
     let inside = run(
         "polylogue_write",
-        json!({"operation": "save", "arguments": {"name": "x", "query": "sessions", "request_id": "inner"}, "request_id": "outer"}),
+        json!({"operation": "rows", "arguments": {"selection": "sessions", "steps":[{"verb":"save", "name":"x"}], "request_id": "inner"}, "request_id": "outer"}),
     );
     assert!(inside.contains("beside arguments"), "{inside}");
     let unknown = run(
-        "polylogue_context",
-        json!({"operation": "brief", "arguments": {"cwd": "/synthetic", "detail": "full"}, "request_id": "unknown-argument"}),
+        "polylogue_read",
+        json!({"operation": "rows", "arguments": {"steps":[{"verb":"brief", "cwd": "/synthetic", "detail": "full"}]}, "request_id": "unknown-argument"}),
     );
     assert!(unknown.contains("unknown field `detail`"), "{unknown}");
     let live = crate::test_daemon::start("finite context deadline");
-    let rows = call(&live.daemon.archive, "list", args(json!({}))).unwrap();
-    let rows: Value = serde_json::from_str(&rows).unwrap();
-    assert_eq!(rows["count"], 1, "{rows}");
+    let rows = structured_call_as(
+        &live.daemon.archive,
+        "rows",
+        args(json!({"selection":"sessions"})),
+        "finite-context-listing",
+    );
+    assert_eq!(rows.value().unwrap()["reply"]["count"], 1, "{rows:?}");
     let (_, answer, failed) = call_with_limit(
-        &live.daemon.archive, "polylogue_context",
-        json!({"operation":"brief", "arguments":{"cwd":"/synthetic"}, "request_id":"finite", "deadline":1000}).as_object().unwrap().clone(),
+        &live.daemon.archive, "polylogue_read",
+        json!({"operation":"rows", "arguments":{"steps":[{"verb":"brief","cwd":"/synthetic"}]}, "request_id":"finite", "deadline":1000}).as_object().unwrap().clone(),
         None, &tokio_util::sync::CancellationToken::new(), None,
     ).unwrap();
     assert!(!failed, "{answer}");
     let (_, lifted, failed) = call_with_limit(
-        &live.daemon.archive, "polylogue_context",
-        json!({"operation":"brief", "arguments":{"cwd":"/synthetic"}, "request_id":"lifted", "deadline":null, "budget_tokens":300}).as_object().unwrap().clone(),
+        &live.daemon.archive, "polylogue_read",
+        json!({"operation":"rows", "arguments":{"steps":[{"verb":"brief","cwd":"/synthetic"}]}, "request_id":"lifted", "deadline":null, "budget_tokens":300}).as_object().unwrap().clone(),
         None, &tokio_util::sync::CancellationToken::new(), None,
     ).unwrap();
     assert!(!failed, "{lifted}");
     let value = &lifted["value"];
-    let text = value["prepared"]["text"].as_str().unwrap();
+    let text = value["reply"]["steps"][0]["outcome"]["reply"]["reply"]["prepared"]["text"]
+        .as_str()
+        .unwrap();
     let manual = format!("\nAgent manual:\n{}\n", crate::manual::text());
     assert!(text.contains(&manual));
     assert!(text.replacen(&manual, "", 1).len() <= 1200);
@@ -557,8 +573,8 @@ fn generated_ready_mcp_call_executes_its_typed_envelope() {
     let ready = daemon
         .daemon
         .ready_call(&command_surface::Request {
-            operation: "query".into(),
-            arguments: json!({"query":"sessions"}),
+            operation: "rows".into(),
+            arguments: json!({"selection":"sessions"}),
             request_id: "mcp-ready-id".into(),
             deadline: command_surface::Deadline::None,
             budget_tokens: Default::default(),
@@ -577,7 +593,7 @@ fn generated_ready_mcp_call_executes_its_typed_envelope() {
         .unwrap();
     assert_eq!(reply["result"]["isError"], false, "{reply}");
     assert_eq!(
-        reply["result"]["structuredContent"]["value"]["count"], 1,
+        reply["result"]["structuredContent"]["value"]["reply"]["count"], 1,
         "{reply}"
     );
     assert_eq!(
@@ -590,7 +606,7 @@ fn generated_ready_mcp_call_executes_its_typed_envelope() {
         crate::commands::declarations()
             .mcp_call(&ready.request)
             .unwrap()["arguments"]["operation"],
-        "query"
+        "rows"
     );
     // Preserve shared metadata through the transport, then let the product's
     // declarations reject options it does not offer, as every other surface does.
@@ -656,7 +672,7 @@ fn generated_ready_mcp_call_executes_its_typed_envelope() {
     let outside_arguments = call_with_limit(
         &daemon.daemon.archive,
         "polylogue_read",
-        args(json!({"operation":"query","query":"sessions","request_id":"outside"})),
+        args(json!({"operation":"rows","selection":"sessions","request_id":"outside"})),
         None,
         &Default::default(),
         None,
@@ -681,8 +697,8 @@ fn typed_acceptance_failure_answers_without_a_daemon() {
         &archive,
         "polylogue_read",
         args(json!({
-            "operation":"read",
-            "arguments":{"target":"session:claude-code:synthetic", "author":"invented"},
+            "operation":"rows",
+            "arguments":{"selection":"session:claude-code:synthetic", "steps":[{"verb":"read", "author":"invented"}]},
             "request_id":"invalid-request-example"
         })),
         None,
@@ -758,8 +774,8 @@ fn generated_mcp_follow_up_preserves_the_accepted_request() {
         fresh: true,
         format: command_surface::Format::Json,
         ..command_surface::RunnableRequest::new(
-            "read",
-            json!({"target":"session:claude-code:synthetic"}),
+            "rows",
+            json!({"selection":"session:claude-code:synthetic", "steps":[{"verb":"read"}]}),
             "accepted-child",
         )
     };

@@ -4,7 +4,7 @@ The workbench is where reading and citing happen together: a page is built while
 
 Every action on a page is a line: the view posts it, shows the committed records and the undo line from the reply, and the footer shows the CLI line and the MCP call of what is on screen:
 
-```
+```text
 polylogue page:flaky-ci read --view contents
 polylogue_read {"arguments": {"selection": "page:flaky-ci", "steps": [{"verb": "read", "view": "contents"}]}}
 ```

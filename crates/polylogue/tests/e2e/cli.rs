@@ -8,37 +8,55 @@ use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-// Exercise the real CLI with the shared request envelope. Transport rendering itself
-// is covered by the command-declaration tests in the binary.
-fn continuation_arguments(call: &polylogue_model::read::ReadyCall) -> Vec<String> {
-    use command_surface::{Deadline, TokenBudget};
-    let request = &call.request;
-    assert!(matches!(request.operation.as_str(), "read" | "attachment"));
-    let mut arguments = vec![
-        "--json".into(),
-        request.operation.clone(),
-        "--request".into(),
-        serde_json::to_string(&request.arguments).unwrap(),
-        "--request-id".into(),
-        request.request_id.clone(),
-    ];
-    match request.deadline {
-        Deadline::Default => {}
-        Deadline::None => arguments.extend(["--deadline".into(), "none".into()]),
-        Deadline::Milliseconds(ms) => arguments.extend(["--deadline".into(), ms.to_string()]),
+/// Execute the typed continuation as supplied by the daemon. CLI formatting
+/// and execution are tested in the binary through its actual declarations.
+fn follow(
+    env: &crate::Fixture,
+    call: &polylogue_model::read::ReadyCall,
+) -> command_surface::Answer<serde_json::Value> {
+    use std::io::Write as _;
+    use std::os::unix::net::UnixStream;
+    assert!(matches!(
+        call.request.operation.as_str(),
+        "rows" | "attachment"
+    ));
+    let mut socket = UnixStream::connect(env.archive().join("daemon.sock")).unwrap();
+    socket.set_read_timeout(Some(READY_DEADLINE)).unwrap();
+    serde_json::to_writer(&mut socket, &call.request).unwrap();
+    socket.write_all(b"\n").unwrap();
+    let mut line = String::new();
+    assert!(BufReader::new(socket).read_line(&mut line).unwrap() > 0);
+    serde_json::from_str(&line).unwrap()
+}
+
+fn read_page(value: serde_json::Value) -> polylogue_model::read::ReadPage {
+    assert_eq!(value["kind"], "steps", "{value}");
+    let steps = value["reply"]["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 1, "{value}");
+    let outcome = &steps[0]["outcome"];
+    assert_eq!(outcome["status"], "done", "{value}");
+    assert_eq!(outcome["reply"]["kind"], "read", "{value}");
+    serde_json::from_value(outcome["reply"]["reply"].clone()).unwrap()
+}
+
+fn read_failure(answer: command_surface::Answer<serde_json::Value>) -> command_surface::Failure {
+    if let command_surface::Outcome::Error(error) = &answer.outcome {
+        return error.clone();
     }
-    match request.budget_tokens {
-        TokenBudget::Default => {}
-        TokenBudget::Unlimited => arguments.extend(["--budget".into(), "none".into()]),
-        TokenBudget::Tokens(n) => arguments.extend(["--budget".into(), n.to_string()]),
-    }
-    if let Some(cursor) = &request.cursor {
-        arguments.extend(["--cursor".into(), cursor.clone()]);
-    }
-    if request.fresh {
-        arguments.push("--fresh".into());
-    }
-    arguments
+    let value = answer.value().unwrap();
+    let steps = value["reply"]["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 1, "{answer:?}");
+    assert_eq!(steps[0]["outcome"]["status"], "failed", "{answer:?}");
+    serde_json::from_value(steps[0]["outcome"]["error"].clone()).unwrap()
+}
+
+fn followed_page(
+    env: &crate::Fixture,
+    call: &polylogue_model::read::ReadyCall,
+) -> polylogue_model::read::ReadPage {
+    let answer = follow(env, call);
+    assert_eq!(answer.exit_code(), 0, "{answer:?}");
+    read_page(answer.value().unwrap().clone())
 }
 
 const READY_DEADLINE: Duration = Duration::from_secs(60);
@@ -499,8 +517,8 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
     assert!(ids.contains(&"claude-code:live".to_owned()), "{ids:?}");
     assert!(ids.contains(&"claude-code:exported".to_owned()), "{ids:?}");
 
-    let out = cli(&env, &["--json", "read", "session:claude-code:exported"]);
-    let read: polylogue_model::read::ReadPage = serde_json::from_value(json(&out)).unwrap();
+    let out = cli(&env, &["--json", "session:claude-code:exported", "read"]);
+    let read: polylogue_model::read::ReadPage = read_page(json(&out));
     let mut imported_items = read_current::Items::default();
     imported_items.push(&read);
     assert!(
@@ -509,7 +527,7 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
     );
     assert_eq!(imported_items.text(), "from an import");
 
-    let out = cli(&env, &["read", "session:claude-code:live"]);
+    let out = cli(&env, &["session:claude-code:live", "read"]);
     assert!(String::from_utf8_lossy(&out.stdout).contains("from a live file"));
 
     drop(daemon);
@@ -520,27 +538,27 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
 
 #[test]
 fn ai_studio_drive_prompt_and_title_read_identically_after_a_rebuild_from_stored_bytes() {
-    use polylogue_model::read::{ItemKind, ReadHeader, ReadItem, ReadPage, ValueState};
+    use polylogue_model::read::{ItemKind, ReadHeader, ReadItem, ValueState};
 
     fn reading(env: &crate::Fixture) -> (ReadHeader, Vec<ReadItem>) {
         // The system instruction is a harness message, which a default read
         // collapses to an indicator (docs/reading.md, harness messages).
-        let mut out = cli(
+        let out = cli(
             env,
             &[
                 "--json",
-                "read",
                 "session:ai-studio:drive-id",
+                "read",
                 "--show",
                 "harness:full",
             ],
         );
+        assert!(out.status.success(), "{out:?}");
+        let mut page = read_page(json(&out));
         let mut items = read_current::Items::default();
         let mut header = None;
         let mut continuations = std::collections::BTreeSet::new();
         loop {
-            assert!(out.status.success(), "{out:?}");
-            let page: ReadPage = serde_json::from_value(json(&out)).unwrap();
             if let Some(expected) = &header {
                 assert_eq!(&page.document.header, expected);
             } else {
@@ -554,9 +572,7 @@ fn ai_studio_drive_prompt_and_title_read_identically_after_a_rebuild_from_stored
                 continuations.insert(serde_json::to_string(&next.request).unwrap()),
                 "repeated continuation"
             );
-            let continuation = continuation_arguments(&next);
-            let args = continuation.iter().map(String::as_str).collect::<Vec<_>>();
-            out = cli(env, &args);
+            page = followed_page(env, &next);
         }
         (header.unwrap(), items.into_values())
     }
@@ -567,8 +583,8 @@ fn ai_studio_drive_prompt_and_title_read_identically_after_a_rebuild_from_stored
             env,
             &[
                 "--json",
-                "read",
                 "session:ai-studio:drive-id",
+                "read",
                 "--format",
                 "jsonl",
                 "--to",
@@ -801,4 +817,139 @@ fn continue_exec_without_recorded_directory_is_refused() {
         stderr.contains("polylogue takeover claude-code:s1"),
         "{stderr}"
     );
+}
+
+#[test]
+fn failed_step_exits_with_its_code_and_prints_undo() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let archive = dir.path().join("archive");
+    let project = home.join(".claude/projects/-line-prefix");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("s1.jsonl"),
+        line("u1", "s1", "Synthetic failed-prefix control"),
+    )
+    .unwrap();
+    let env = crate::Fixture::new(&archive, &home, &dir.path().join("config"));
+    let _daemon = start_daemon(&env);
+    wait_status(&env, |status| status["store"]["messages"] == 1);
+    let words = [
+        "--request-id",
+        "line-prefix",
+        "session:claude-code:s1",
+        "tag",
+        "prefix-done",
+        "read",
+        "--view",
+        "raw",
+        "--show",
+        "tools:full",
+        "tag",
+        "not-run",
+    ];
+    for _ in 0..2 {
+        let output = cli(&env, &words);
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        let text = String::from_utf8(output.stderr).unwrap();
+        assert!(text.contains("view raw does not accept tools"), "{text}");
+        assert!(text.contains("tag not run"), "{text}");
+        assert!(text.contains("undo: polylogue"), "{text}");
+        let listed = cli(
+            &env,
+            &["--json", "assertions where kind:tag", "--fields", "key"],
+        );
+        assert!(listed.status.success(), "{listed:?}");
+        let listing = json(&listed);
+        assert_eq!(listing["kind"], "listing");
+        assert_eq!(
+            listing["reply"]["rows"],
+            serde_json::json!([{"key":"prefix-done"}])
+        );
+    }
+    let mut json_words = vec!["--json", "--request-id", "line-prefix-json"];
+    json_words.extend_from_slice(&words[2..]);
+    let tag = json_words
+        .iter()
+        .position(|word| *word == "prefix-done")
+        .unwrap();
+    json_words[tag] = "json-prefix-done";
+    let output = cli(&env, &json_words);
+    let answer: command_surface::Answer<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).unwrap();
+    let reports = answer.value().unwrap()["reply"]["steps"]
+        .as_array()
+        .unwrap();
+    assert_eq!(reports.len(), 3);
+    assert_eq!(reports[0]["outcome"]["status"], "done");
+    assert_eq!(reports[1]["outcome"]["status"], "failed");
+    assert_eq!(reports[2]["outcome"]["status"], "not_run");
+    assert_eq!(reports[0]["outcome"]["undo"].as_array().unwrap().len(), 1);
+    let failure: command_surface::Failure =
+        serde_json::from_value(reports[1]["outcome"]["error"].clone()).unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(i32::from(failure.kind.exit_code()))
+    );
+}
+
+#[test]
+fn ordered_read_destinations_receive_their_own_steps() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let archive = dir.path().join("archive");
+    let project = home.join(".claude/projects/-line-delivery");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("s1.jsonl"),
+        line("u1", "s1", "Synthetic ordered delivery body"),
+    )
+    .unwrap();
+    let env = crate::Fixture::new(&archive, &home, &dir.path().join("config"));
+    let _daemon = start_daemon(&env);
+    wait_status(&env, |status| status["store"]["messages"] == 1);
+    let before = dir.path().join("before.md");
+    let after = dir.path().join("after.md");
+    let output = cli(
+        &env,
+        &[
+            "--deadline",
+            "none",
+            "--request-id",
+            "ordered-destinations",
+            "session:claude-code:s1",
+            "read",
+            "--show",
+            "annotations",
+            "--to",
+            before.to_str().unwrap(),
+            "tag",
+            "delivery-after-first-read",
+            "read",
+            "--show",
+            "annotations",
+            "--to",
+            after.to_str().unwrap(),
+            "read",
+            "--show",
+            "annotations",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let before = std::fs::read_to_string(before).unwrap();
+    let after = std::fs::read_to_string(after).unwrap();
+    assert!(
+        before.contains("Synthetic ordered delivery body"),
+        "{before}"
+    );
+    assert!(!before.contains("delivery-after-first-read"), "{before}");
+    assert!(after.contains("delivery-after-first-read"), "{after}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("Synthetic ordered delivery body"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("delivery-after-first-read"), "{stdout}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(stderr.matches("undo: polylogue").count(), 1, "{stderr}");
 }

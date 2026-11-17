@@ -25,12 +25,11 @@ fn item(reader: &Reader<'_>, message: &MessageId) -> ReadItem {
 }
 fn prepared(daemon: &test_daemon::TestDaemon, message: &MessageId) -> ReadItem {
     let response = test_daemon::Call::new(
-        "read",
-        serde_json::json!({"target": format!("message:{message}")}),
+        "rows",
+        serde_json::json!({"selection": format!("message:{message}"), "steps":[{"verb":"read"}]}),
     )
     .answer(&daemon.daemon);
-    let page: ReadPage =
-        serde_json::from_value(response.value().expect("metadata page").clone()).unwrap();
+    let page = crate::test_answers::read(response);
     page.document
         .items
         .into_iter()
@@ -110,8 +109,8 @@ fn page_read_never_touches_blob_bodies() {
     file.write_all(&[byte[0] ^ 1]).unwrap();
     file.sync_all().unwrap();
     let response = test_daemon::Call::new(
-        "read",
-        serde_json::json!({"target": format!("message:{message}")}),
+        "rows",
+        serde_json::json!({"selection": format!("message:{message}"), "steps":[{"verb":"read"}]}),
     )
     .answer(&daemon.daemon);
     let refused = crate::daemon::attachment::read(
@@ -128,8 +127,7 @@ fn page_read_never_touches_blob_bodies() {
     file.seek(SeekFrom::Start(offset)).unwrap();
     file.write_all(&byte).unwrap();
     file.sync_all().unwrap();
-    let page: ReadPage =
-        serde_json::from_value(response.value().expect("metadata page").clone()).unwrap();
+    let page = crate::test_answers::read(response);
     let attachment = page
         .document
         .items

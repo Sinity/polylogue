@@ -131,14 +131,14 @@ fn archived_controls_are_data_in_pipes_and_terminals() {
     });
     assert_eq!(status["signals"]["rules"][0]["name"], HOSTILE);
     for args in [
-        vec!["read", "session:claude-code:hostile"],
+        vec!["session:claude-code:hostile", "read"],
         vec![
-            "read",
             "session:claude-code:hostile",
+            "read",
             "--format",
             "markdown",
         ],
-        vec!["read", "session:claude-code:hostile", "--page-tokens", "10"],
+        vec!["session:claude-code:hostile", "read", "--budget", "10"],
         vec!["sessions where kind:*"],
         vec!["\"title\""],
         vec!["status"],
@@ -152,7 +152,7 @@ fn archived_controls_are_data_in_pipes_and_terminals() {
         }
         safe(&terminal(&env, &args, true));
     }
-    let colored = terminal(&env, &["read", "session:claude-code:hostile"], false);
+    let colored = terminal(&env, &["session:claude-code:hostile", "read"], false);
     assert!(colored.contains("\x1b[1m"), "{colored:?}");
     safe(&colored.replace("\x1b[1m", "").replace("\x1b[0m", ""));
     assert!(colored.contains("\\x1b]52;c;YQ==\\x07"));
@@ -163,26 +163,25 @@ fn archived_controls_are_data_in_pipes_and_terminals() {
         &env,
         &[
             "--json",
-            "read",
             "session:claude-code:hostile",
+            "read",
             "--format",
             "json",
         ],
         false,
     );
     safe(&text);
-    let answer: command_surface::Answer<polylogue_model::read::ReadPage> =
-        serde_json::from_str(&text).unwrap();
-    let page = answer.value().expect("typed read answer");
+    let answer: command_surface::Answer<serde_json::Value> = serde_json::from_str(&text).unwrap();
+    let page = read_page(answer.value().expect("typed line answer").clone());
     let mut items = super::read_current::Items::default();
-    items.push(page);
+    items.push(&page);
     assert!(
         page.document.footer.next.is_none(),
         "short source must fit this root"
     );
     assert_eq!(items.text(), HOSTILE);
     assert_eq!(std::fs::read(&source).unwrap(), original);
-    let error = cli(&env, &["read", HOSTILE]);
+    let error = cli(&env, &[HOSTILE, "read"]);
     assert!(!error.status.success());
     safe(std::str::from_utf8(&error.stderr).unwrap());
 }

@@ -112,30 +112,29 @@ fn read(
     format: &str,
     budget: &str,
 ) -> Reading {
-    use polylogue_model::read::ReadPage;
     let target = format!("session:{session}");
     let mut args = vec![
         "--deadline".into(),
         "none".into(),
         "--json".into(),
-        "read".into(),
         target,
+        "read".into(),
         "--format".into(),
         format.into(),
-        "--page-tokens".into(),
+        "--budget".into(),
         budget.into(),
     ];
     if inherited {
         args.push("--show".into());
         args.push("inherited".into());
     }
+    let out = cli(env, &args.iter().map(String::as_str).collect::<Vec<_>>());
+    assert!(matches!(out.status.code(), Some(0 | 5)), "{out:?}");
+    let mut page = read_page(json(&out));
     let mut items = super::read_current::Items::default();
     let mut seen = std::collections::BTreeSet::new();
     let mut pages = 0;
     loop {
-        let out = cli(env, &args.iter().map(String::as_str).collect::<Vec<_>>());
-        assert!(matches!(out.status.code(), Some(0 | 5)), "{out:?}");
-        let page: ReadPage = serde_json::from_value(json(&out)).unwrap();
         assert!(!page.document.items.is_empty(), "empty continuation");
         items.push(&page);
         pages += 1;
@@ -146,7 +145,7 @@ fn read(
             seen.insert(serde_json::to_string(&next.request).unwrap()),
             "repeated continuation"
         );
-        args = continuation_arguments(&next);
+        page = followed_page(env, &next);
     }
     Reading {
         items: items.into_values(),

@@ -68,7 +68,7 @@ pub enum Line {
         call_id: Option<String>,
         tool: String,
     },
-    /// The last line of a request: send these marks with the next one.
+    /// A complete observed batch; the last snapshot also continues a request.
     Marks { marks: Marks },
 }
 

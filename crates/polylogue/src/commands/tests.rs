@@ -4,9 +4,7 @@ use serde_json::json;
 /// A command line naming `c` with every required argument.
 fn argv(c: &Command) -> Vec<&'static str> {
     let mut argv = vec!["polylogue"];
-    if c.cli != Cli::NoSubcommand {
-        argv.extend(c.name.split(' '));
-    }
+    argv.extend(c.name.split(' '));
     for a in crate::cli::arguments_of(c)
         .into_iter()
         .filter(|argument| argument.required)
@@ -76,7 +74,7 @@ fn cli(
 
 #[test]
 fn every_declared_cli_command_is_reachable() {
-    for c in COMMANDS.iter() {
+    for c in COMMANDS.iter().filter(|c| c.cli != Cli::Line) {
         let argv = argv(c);
         let (found, _) = crate::cli::parse(&argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
         assert_eq!(found.name, c.name, "{argv:?}");
@@ -181,103 +179,6 @@ fn cli_help_lists_every_command() {
 }
 
 #[test]
-fn one_operation_makes_one_request_on_every_surface() {
-    let (_, _, from_cli) = cli(&[
-        "polylogue",
-        "read",
-        "claude-code:s1",
-        "--view",
-        "dialogue",
-        "--page-tokens",
-        "100",
-        "--show",
-        "inherited",
-    ]);
-    let from_mcp = json!({"target": "claude-code:s1", "view": "dialogue", "page_tokens": 100, "show": ["inherited"]});
-    let from_http = declarations()
-        .parse_http_query(
-            "read",
-            &[
-                ("target".into(), "claude-code:s1".into()),
-                ("view".into(), "dialogue".into()),
-                ("page_tokens".into(), "100".into()),
-                ("show".into(), "inherited".into()),
-            ],
-            "read-http",
-        )
-        .unwrap()
-        .arguments;
-    let resolved = |arguments: serde_json::Value| {
-        let arguments: crate::protocol::read::Arguments =
-            serde_json::from_value(arguments).unwrap();
-        crate::daemon::service::read::request_of(arguments, None).unwrap()
-    };
-    let a = resolved(from_cli);
-    for other in [resolved(from_mcp), resolved(from_http)] {
-        assert_eq!(format!("{other:?}"), format!("{a:?}"));
-    }
-    assert_eq!(a.options.view, polylogue_model::read::View::Dialogue);
-    assert_eq!(a.budget, Some(100));
-}
-
-#[test]
-fn query_commands_carry_every_option() {
-    let (c, _, arguments) = cli(&[
-        "polylogue",
-        "measure",
-        "survival-turns",
-        "--why",
-        "repo:x",
-        "--fields",
-        "id,cost",
-    ]);
-    let measure: crate::protocol::query_aliases::Measure =
-        serde_json::from_value(arguments).unwrap();
-    assert_eq!(
-        crate::daemon::service::handlers::measure_query(c.name, &measure),
-        "repo:x | measure \"survival-turns\""
-    );
-    assert!(measure.why);
-    assert_eq!(measure.fields, ["id", "cost"]);
-
-    let (c, _, arguments) = cli(&["polylogue", "repo:x", "since:7d"]);
-    assert_eq!(c.name, "query");
-    assert_eq!(arguments["query"], "repo:x since:7d");
-}
-
-#[test]
-fn typed_read_validation_owns_defaults_and_conditional_requirements() {
-    let decode = |arguments: serde_json::Value| {
-        serde_json::from_value::<crate::protocol::read::Arguments>(arguments)
-            .map_err(|e| e.to_string())
-            .and_then(|arguments| crate::daemon::service::read::request_of(arguments, None))
-    };
-    for invalid in [
-        json!({"target":"claude-code:s1","pages":2}),
-        json!({"target":"claude-code:s1","page_tokens":"many"}),
-        json!({"target":"claude-code:s1","page_tokens":0}),
-        json!({"target":"claude-code:s1","view":"sideways"}),
-        json!({}),
-        json!({"target":"claude-code:s1","to":"synthetic-output"}),
-    ] {
-        assert!(decode(invalid.clone()).is_err(), "{invalid}");
-    }
-    let request = decode(json!({"target":"claude-code:s1"})).unwrap();
-    assert_eq!(
-        request.options.view,
-        polylogue_model::read::View::Transcript
-    );
-    assert_eq!(request.options.output_lines, 100);
-    // A read without `page_tokens` is a page under the default budget, with
-    // a continuation, never the whole session in one answer.
-    assert_eq!(request.delivery, polylogue_model::read::ReadDelivery::Page);
-    assert_eq!(
-        request.budget, None,
-        "the daemon applies its default page budget"
-    );
-}
-
-#[test]
 fn mcp_schemas_follow_the_arguments() {
     let tools = crate::mcp::tools();
     for command in COMMANDS.iter().filter(|command| command.tool.is_some()) {
@@ -310,10 +211,6 @@ fn mcp_schemas_follow_the_arguments() {
             .input_schema
             .clone()
     };
-    // A continuation is the same arguments with a cursor; there is no
-    // second argument form.
-    let text = serde_json::to_string(&input("read")).unwrap();
-    assert!(!text.contains("root_run") && !text.contains("ResumeArguments"));
     // A write's retry identity travels beside its arguments.
     for command in COMMANDS
         .iter()
@@ -338,7 +235,6 @@ fn list_without_a_query_names_no_query() {
 
 #[test]
 fn every_measurement_is_a_command_and_named_in_the_query_help() {
-    let query = command("query").unwrap();
     for m in MEASURES {
         let c = command(&format!("measure {}", m.name)).unwrap();
         assert_eq!(c.help, m.help);
@@ -346,10 +242,6 @@ fn every_measurement_is_a_command_and_named_in_the_query_help() {
             request_arguments_of(c).iter().any(|a| a.name == "query"),
             !m.whole_archive
         );
-        assert!(query.help.contains(m.name), "{}", m.name);
-    }
-    for u in polylogue_query::ast::Unit::all() {
-        assert!(query.help.contains(u.name()), "{}", u.name());
     }
 }
 
@@ -408,16 +300,26 @@ mod client_answers;
 
 #[test]
 fn request_id_travels_beside_the_arguments_on_every_surface() {
-    let (_, _, arguments) = cli(&[
-        "polylogue",
-        "assert",
-        r#"[{"kind":"note","value":"b","links":[{"role":"about","reference":"repo:x"}]}]"#,
+    let words = [
+        "session:claude-code:s1",
+        "note",
+        "b",
         "--request-id",
         "retry-one",
-    ]);
-    let assert: crate::protocol::assertion::Assert = serde_json::from_value(arguments).unwrap();
-    assert_eq!(assert.assertions.len(), 1);
-    assert_eq!(assert.assertions[0].value, Some(json!("b")));
+    ]
+    .map(str::to_owned);
+    let parsed = crate::cli::line::parse(
+        &words,
+        &crate::cli::line::FirstWordCatalog::default(),
+        false,
+    )
+    .unwrap();
+    let request = crate::cli::run_line::request(&parsed).unwrap();
+    assert_eq!(request.request_id, "retry-one");
+    assert_eq!(
+        request.arguments["steps"],
+        json!([{"verb":"note","text":"b"}])
+    );
     let root = crate::cli::command();
     assert!(
         root.get_arguments()

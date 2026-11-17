@@ -110,8 +110,11 @@ impl Handler for Line {
                 steps,
             })));
         }
-        execute_steps(rows.steps, &selection, call, limit.as_ref(), None)
-            .map(|answer| answer.map(LineAnswer::Steps))
+        let mut answer = execute_steps(rows.steps, &selection, call, limit.as_ref(), None)?;
+        if rows.return_selection {
+            attach_population(&mut answer, &selection, call);
+        }
+        Ok(answer.map(LineAnswer::Steps))
     }
 }
 
@@ -141,13 +144,16 @@ impl Streams for Line {
         check(&rows, &given)?;
         let limit = ReadLimit::current();
         let selection = prepare(&rows, given, &call)?;
-        let answer = execute_steps(
+        let mut answer = execute_steps(
             rows.steps,
             &selection,
             &call,
             limit.as_ref(),
             Some(Stream { context, output }),
         )?;
+        if rows.return_selection {
+            attach_population(&mut answer, &selection, &call);
+        }
         crate::protocol::stream::event(output, "answer", &answer.map(LineAnswer::Steps))
             .map_err(Failure::io)
     }
@@ -335,6 +341,7 @@ fn prepare(rows: &Rows, given: Given, call: &Call<'_>) -> Result<Selection, Fail
     let intended = UserWrite::ResolveLine {
         request: serde_json::to_value(repeated(rows, call)?).map_err(Failure::internal)?,
         resolved: None,
+        retained: None,
     };
     let original = if durable {
         accepted_line(&intended, call)?
@@ -342,16 +349,19 @@ fn prepare(rows: &Rows, given: Given, call: &Call<'_>) -> Result<Selection, Fail
         None
     };
     let selection = match original {
-        Some(UserWrite::ResolveLine { resolved, .. }) => Selection {
+        Some(UserWrite::ResolveLine {
+            resolved, retained, ..
+        }) => Selection {
             question: match &given {
                 Given::Query(text) => Some(text.clone()),
                 _ => None,
             },
             given,
             resolved,
+            retained,
         },
         Some(_) => return Err(Failure::internal("accepted line has another request kind")),
-        None => resolve(given, &rows.steps, call)?,
+        None => resolve(given, &rows.steps, rows.return_selection, call)?,
     };
     if let (Given::Query(_), Some(resolved)) = (&selection.given, &selection.resolved)
         && resolved.len() > 1
@@ -379,6 +389,7 @@ fn prepare(rows: &Rows, given: Given, call: &Call<'_>) -> Result<Selection, Fail
             UserWrite::ResolveLine {
                 request,
                 resolved: selection.resolved.clone(),
+                retained: selection.retained.clone(),
             },
         );
         if let Outcome::Error(error) = accepted.outcome {
@@ -386,15 +397,19 @@ fn prepare(rows: &Rows, given: Given, call: &Call<'_>) -> Result<Selection, Fail
         }
         // A concurrent equal request may have accepted another snapshot first.
         // Read back the journal's body rather than keeping our speculative rows.
-        if let Some(UserWrite::ResolveLine { resolved, .. }) = accepted_line(
+        if let Some(UserWrite::ResolveLine {
+            resolved, retained, ..
+        }) = accepted_line(
             &UserWrite::ResolveLine {
                 request: serde_json::to_value(repeated(rows, call)?).map_err(Failure::internal)?,
                 resolved: None,
+                retained: None,
             },
             call,
         )? {
             return Ok(Selection {
                 resolved,
+                retained,
                 ..selection
             });
         }
@@ -423,11 +438,57 @@ fn accepted_line(intended: &UserWrite, call: &Call<'_>) -> Result<Option<UserWri
 /// Resolves the rows when the line has two or more steps, a step that
 /// writes or acts, or a one-row step. A single read-only step is not
 /// resolved: it reads the selection as it streams.
-fn resolve(given: Given, steps: &[Step], call: &Call<'_>) -> Result<Selection, Failure> {
+fn resolve(
+    given: Given,
+    steps: &[Step],
+    return_selection: bool,
+    call: &Call<'_>,
+) -> Result<Selection, Failure> {
     let question = match &given {
         Given::Query(text) => Some(text.clone()),
         _ => None,
     };
+    if return_selection || steps.iter().any(|step| matches!(step, Step::Save(_))) {
+        let text = match &given {
+            Given::Query(text) => Some(text.clone()),
+            Given::Reference(reference) => Some(reference.to_string()),
+            Given::References(references) => Some(
+                references
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" OR "),
+            ),
+            Given::None => None,
+        };
+        if let Some(text) = text {
+            let (retained, query_rows) = retain_selection(&text, call)?;
+            if return_selection && query_rows.is_none() {
+                return Err(Failure::bad_request(
+                    "pick needs archive rows with native identities",
+                ));
+            }
+            if query_rows.is_none()
+                && let Some(step) = steps.iter().find(|step| rows_rule(step) != RowRule::Any)
+            {
+                return Err(Failure::bad_request(format!(
+                    "{} needs archive rows; the selection is grouped or measured",
+                    step.verb()
+                )));
+            }
+            let resolved = match &given {
+                Given::Reference(reference) => Some(vec![reference.clone()]),
+                Given::References(references) => Some(references.clone()),
+                _ => query_rows,
+            };
+            return Ok(Selection {
+                given,
+                question,
+                resolved,
+                retained: Some(Box::new(retained)),
+            });
+        }
+    }
     let needed = steps.len() > 1
         || steps
             .iter()
@@ -455,7 +516,111 @@ fn resolve(given: Given, steps: &[Step], call: &Call<'_>) -> Result<Selection, F
         given,
         resolved,
         question,
+        retained: None,
     })
+}
+
+/// Capture Save's inputs during the same resolution that establishes the
+/// line population. Only derived relation values remain in the journal.
+fn retain_selection(
+    text: &str,
+    call: &Call<'_>,
+) -> Result<(polylogue_model::user::LineSelection, Option<Vec<Reference>>), Failure> {
+    use polylogue_model::query_objects::ExecutionPresentation;
+    use polylogue_store::query::{RowKind, Shape, Statements};
+    let reader = call.reader()?;
+    let daemon = call.daemon;
+    crate::daemon::query::with_ranking(
+        &reader,
+        &daemon.warm,
+        &daemon.config,
+        |embeddings, ranking_identity, near| {
+            let ask = || {
+                Ok::<_, Failure>(crate::daemon::query::Ask {
+                    text,
+                    cursor: None,
+                    page_size: None,
+                    why: false,
+                    session: None,
+                    context: call.context()?,
+                    embeddings,
+                    ranking_identity: ranking_identity.clone(),
+                    near: Some(near),
+                    fields: &[],
+                })
+            };
+            let mut options = crate::daemon::query::options(
+                &reader,
+                &ask()?,
+                uuid::Uuid::now_v7().as_u128() as u64,
+            )?;
+            options.page_size = None;
+            let prepared = reader.prepare_query_selection(text, &options)?;
+            let native =
+                prepared.program().shape == Shape::Rows && prepared.program().measure.is_none();
+            let measure = prepared.program().measure.is_some();
+            let derived =
+                measure || matches!(prepared.program().statements, Statements::Derived(_));
+            let mut references = Vec::new();
+            let mut rows = Vec::new();
+            let mut identities =
+                matches!(prepared.program().row_kind, RowKind::UnitRows { .. }).then(Vec::new);
+            if !measure {
+                reader.visit_selection(
+                    &prepared,
+                    polylogue_store::read::VisitFrom::First,
+                    Some(near),
+                    |row| {
+                        if native {
+                            let target = row.target.ok_or_else(|| {
+                                Failure::internal("a native row has no reference")
+                            })?;
+                            references.push(target.reference());
+                        }
+                        if derived {
+                            if let Some(identities) = &mut identities {
+                                let Some(polylogue_store::selection::RowIdentity::Entity {
+                                    key,
+                                    ..
+                                }) = row.identity
+                                else {
+                                    return Err(Failure::internal(
+                                        "a native result has no identity",
+                                    ));
+                                };
+                                identities.push(key);
+                            }
+                            rows.push(row.values);
+                        }
+                        Ok::<_, Failure>(std::ops::ControlFlow::Continue(()))
+                    },
+                )?;
+            }
+            let mut retained = polylogue_model::user::LineSelection {
+                binding: prepared.execution_binding(
+                    polylogue_store::query::execute::options_snapshot(
+                        &options,
+                        false,
+                        ranking_identity.clone(),
+                    )?,
+                    ExecutionPresentation::Query,
+                    None,
+                )?,
+                relation: None,
+                matches: None,
+            };
+            let value =
+                crate::daemon::query::keep_captured(&reader, ask()?, &retained, rows, identities)?;
+            if derived {
+                retained.relation = Some(value);
+            } else if value.get("matches").is_some() {
+                retained.matches = Some(
+                    serde_json::json!({"rows":value["matches"], "columns":value["match_columns"], "schema":value["output_metadata"]["matches"]}),
+                );
+            }
+            Ok((retained, native.then_some(references)))
+        },
+    )
 }
 
 /// Whether a query's rows are archive rows rather than groups, a summary
@@ -488,7 +653,53 @@ fn summary(selection: &Selection) -> Option<Resolved> {
         count: resolved.len() as u64,
         named: !matches!(selection.given, Given::Query(_)),
         first: resolved.iter().take(20).map(ToString::to_string).collect(),
+        population: None,
     })
+}
+
+/// A requested full population is auxiliary data on the same line response.
+/// Its failure preserves all committed step reports and their undo lines.
+fn attach_population(answer: &mut Answer<StepsAnswer>, selection: &Selection, call: &Call<'_>) {
+    let population = (|| {
+        let reader = call.reader()?;
+        let text = selection
+            .question
+            .clone()
+            .or_else(|| selection.query_text())
+            .ok_or_else(|| Failure::bad_request("pick needs a selection"))?;
+        let daemon = call.daemon;
+        crate::daemon::query::with_ranking(
+            &reader,
+            &daemon.warm,
+            &daemon.config,
+            |embeddings, ranking_identity, near| {
+                crate::daemon::query::accepted_population(
+                    &reader,
+                    crate::daemon::query::Ask {
+                        text: &text,
+                        cursor: None,
+                        page_size: None,
+                        why: false,
+                        session: None,
+                        context: call.context()?,
+                        embeddings,
+                        ranking_identity,
+                        near: Some(near),
+                        fields: &[],
+                    },
+                    selection,
+                )
+            },
+        )
+    })()
+    .unwrap_or_else(|error: Failure| error.answer());
+    let steps = match &mut answer.outcome {
+        Outcome::Ok(value) | Outcome::Empty(value) | Outcome::Degraded { value, .. } => value,
+        Outcome::Error(_) => return,
+    };
+    if let Some(resolved) = &mut steps.resolved {
+        resolved.population = Some(Box::new(population));
+    }
 }
 
 fn step_request(line: &str, index: usize) -> String {
@@ -647,6 +858,7 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
         given,
         resolved: None,
         question: None,
+        retained: None,
     }
     .query_text()
     .ok_or_else(|| Failure::bad_request("a listing needs a selection"))?;
@@ -734,6 +946,7 @@ fn explain(rows: &Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnsw
         },
         given,
         resolved: None,
+        retained: None,
     };
     let steps = rows
         .steps

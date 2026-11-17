@@ -39,6 +39,8 @@ Composition edges are recorded at compile time in `query_edge(query, uses, how)`
 2. a kept result of the rows this line resolved (the same rows every other step of the line sees), labelled `NAME`, recording the question, the read position and the time;
 3. with `--watch`, a watch on `query:NAME` ([Watches](#watches)), with this kept result as its baseline. `--hold D` and `--notify` refine it.
 
+The statement that produced the selection determines what is retained. A keyed unit selection keeps its fixed row identities and hydrates their current columns when the Save step runs, so an earlier tag or note in the line is visible in the kept result. Its original predicate is not evaluated again. An empty keyed selection keeps its original unit and columns and stays empty across later Saves in the line. A derived relation retains the values resolved before the first step, including aggregates and projections that still carry native row keys. For example, a projection of annotation counts stays fixed even if a preceding Save creates another annotation. A later `read` still hydrates the line's fixed entity references at that read step. A named measurement is retained as one summary row with its actual `measure` text and `data` value. A paged measurement follows its normal authenticated cursor to completion under the original binding and request deadline; the retained data contains every page, with each global summary recorded once.
+
 `--denominator 'QUERY'` makes the saved query a [figure](#figures).
 
 It prints every part, with the line that undoes it:

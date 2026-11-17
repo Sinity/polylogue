@@ -175,10 +175,8 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
                 "polylogue.assertion" => 3,
                 "polylogue.query" => 2,
                 "polylogue.tool_call" | "polylogue.prefix_copy" | "polylogue.prefix_member" => 2,
-                "polylogue.historical_restore"
-                | "polylogue.attachment_binding"
-                | "polylogue.line_resolution"
-                | "polylogue.line_resolution_restore" => 1,
+                "polylogue.line_resolution" | "polylogue.line_resolution_restore" => 2,
+                "polylogue.historical_restore" | "polylogue.attachment_binding" => 1,
                 other => panic!("undeclared successor kind/version expectation: {other}"),
             }
         );

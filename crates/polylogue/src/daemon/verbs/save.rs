@@ -24,7 +24,21 @@ impl Verb for Save {
         let rows = selection
             .query_text()
             .ok_or_else(|| Failure::bad_request("save needs rows"))?;
-        let question = selection.question.clone().unwrap_or_else(|| rows.clone());
+        let mut question = selection.question.clone().unwrap_or_else(|| rows.clone());
+        if let (Some(name), Some(retained), super::Given::Query(selected)) =
+            (&step.name, selection.retained.as_deref(), &selection.given)
+            && (selected == name || selected.strip_prefix("query:") == Some(name.as_str()))
+            && let Some(definition) = retained
+                .binding
+                .replay
+                .definitions
+                .iter()
+                .find(|definition| definition.name == *name)
+        {
+            let plan = polylogue_query::plan::replay_binding(&retained.binding.replay)?;
+            question = query_language::format::format_query(&definition.ast, plan.catalog())
+                .map_err(Failure::bad_value)?;
+        }
         let mut envelope = Envelope::default();
         let mut state = Outcome::Empty(());
         let mut undo = Vec::new();
@@ -55,11 +69,10 @@ impl Verb for Save {
             .transpose()?;
         let request_id = id("keep");
         let kept = take(
-            handlers::Keep::run(
-                saved::Keep {
-                    name: step.name.clone(),
-                    query: rows,
-                },
+            handlers::keep(
+                step.name.clone(),
+                question.clone(),
+                selection,
                 &Call {
                     request_id: &request_id,
                     ..call.call.copy()

@@ -355,7 +355,7 @@ fn adoption(partial: bool) {
         ),
         1
     );
-    assert_eq!(running.real_sinex.sql("SELECT count(*) FROM core.events e WHERE event_type='polylogue.message' AND kind_version=8 AND source_version=9 AND NOT EXISTS(SELECT 1 FROM audit.archived a WHERE a.event_id=e.id)").trim(),"1");
+    assert_eq!(running.real_sinex.sql("SELECT count(*) FROM core.events e WHERE event_type='polylogue.message' AND kind_version=8 AND source_version=10 AND NOT EXISTS(SELECT 1 FROM audit.archived a WHERE a.event_id=e.id)").trim(),"1");
     assert_eq!(running.real_sinex.sql("SELECT count(*) FROM core.events e WHERE event_type='polylogue.message' AND kind_version=6 AND NOT EXISTS(SELECT 1 FROM audit.archived a WHERE a.event_id=e.id)").trim(),"0");
     assert_eq!(running.real_sinex.sql("SELECT id::text||':'||record_hash FROM core.events WHERE event_type='polylogue.message' AND kind_version=6 ORDER BY id"),old_identity);
     assert_eq!(running.real_sinex.sql("SELECT e.id::text||':'||e.record_hash FROM core.events e JOIN audit.archived a ON a.event_id=e.id WHERE e.event_type='polylogue.message' AND e.kind_version=6 ORDER BY e.id"),old_identity);

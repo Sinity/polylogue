@@ -48,8 +48,8 @@ fn repeat_write_with_no_effect(d: &Daemon, id: &str) {
 }
 fn read(id: &str) -> crate::test_daemon::Call {
     crate::test_daemon::Call::new(
-        "read",
-        serde_json::json!({"target": format!("request:{id}"), "delivery": "stream", "format": "jsonl"}),
+        "rows",
+        serde_json::json!({"selection": format!("request:{id}"), "steps":[{"verb":"read", "delivery": "stream", "format": "jsonl"}]}),
     )
 }
 fn frames(bytes: &[u8]) -> Vec<(String, serde_json::Value)> {
@@ -81,8 +81,13 @@ fn streamed_request(
     d: &Daemon,
     request: &crate::test_daemon::Call,
 ) -> (ReadBegin, ReadRecord, ReadComplete) {
+    let rows: crate::protocol::line::Rows =
+        serde_json::from_value(request.arguments.clone()).unwrap();
+    let [crate::protocol::line::Step::Read(read)] = rows.steps.as_slice() else {
+        panic!("one read")
+    };
     let request = &crate::daemon::service::read::request_of(
-        serde_json::from_value(request.arguments.clone()).unwrap(),
+        crate::daemon::verbs::read::arguments(read, rows.selection.unwrap()).unwrap(),
         None,
     )
     .unwrap();
@@ -309,8 +314,8 @@ fn object_read_pages_past_its_budget() {
         }
     };
     let mut call = test_daemon::Call::new(
-        "read",
-        serde_json::json!({"target":"request:large-object", "page_tokens":64}),
+        "rows",
+        serde_json::json!({"selection":"request:large-object", "steps":[{"verb":"read", "budget":64}]}),
     );
     let mut pending = String::new();
     let mut items = Vec::new();
@@ -318,8 +323,7 @@ fn object_read_pages_past_its_budget() {
     let mut pages = 0;
     loop {
         let answer = call.answer(&daemon.daemon);
-        let page: ReadPage =
-            serde_json::from_value(answer.value().expect("object page").clone()).unwrap();
+        let page = crate::test_answers::read(answer);
         assert_object_page_run(&daemon.daemon, &page);
         if pages == 1 {
             let previous = page
@@ -329,9 +333,7 @@ fn object_read_pages_past_its_budget() {
                 .as_ref()
                 .expect("previous object page");
             let answer = test_daemon::Call::from_request(&previous.request).answer(&daemon.daemon);
-            let before: ReadPage =
-                serde_json::from_value(answer.value().expect("backward object page").clone())
-                    .unwrap();
+            let before = crate::test_answers::read(answer);
             assert_object_page_run(&daemon.daemon, &before);
             let mut expected = first.clone().unwrap();
             for item in &mut expected {

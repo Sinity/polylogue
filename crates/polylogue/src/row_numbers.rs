@@ -4,7 +4,6 @@
 //! the ID before the command runs. Output for programs (`--json`) is never remembered.
 
 use std::fs;
-use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
@@ -30,132 +29,104 @@ fn rows_file(paths: &crate::config::Paths, root: &Path) -> Option<PathBuf> {
     Some(paths.runtime_dir(root).join(format!("rows-{tty}")))
 }
 
-/// Keeps the IDs of a list just printed in this terminal. Failing to
-/// write only means `@N` will not resolve, so errors are ignored.
-pub fn remember(paths: &crate::config::Paths, root: &Path, ids: &[String]) {
+/// The references and search hits shown in one terminal row.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Row {
+    pub reference: String,
+    #[serde(default)]
+    pub hits: Vec<String>,
+}
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ShownRows {
+    pub question: String,
+    pub shown_at: i64,
+    pub rows: Vec<Row>,
+}
+/// Row selections are rewritten only in the selection position.
+pub(crate) fn is_selection(word: &str) -> bool {
+    word == "@all"
+        || word.strip_prefix('@').is_some_and(|tail| {
+            !tail.is_empty()
+                && tail.starts_with(|c: char| c.is_ascii_digit())
+                && tail
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || ",.-".contains(c))
+        })
+}
+pub(crate) fn select(word: &str, shown: &ShownRows) -> Result<Vec<String>, String> {
+    if word == "@all" {
+        return Ok(shown.rows.iter().map(|row| row.reference.clone()).collect());
+    }
+    let row = |number: &str| -> Result<&Row, String> {
+        number
+            .parse::<usize>()
+            .ok()
+            .and_then(|n| n.checked_sub(1))
+            .and_then(|n| shown.rows.get(n))
+            .ok_or_else(|| format!("@{number}: the last list has {} rows", shown.rows.len()))
+    };
+    let mut references = Vec::new();
+    for part in word
+        .strip_prefix('@')
+        .ok_or("row number starts with @")?
+        .split(',')
+    {
+        if let Some((number, hit)) = part.split_once('.') {
+            let selected = row(number)?;
+            let reference = hit
+                .parse::<usize>()
+                .ok()
+                .and_then(|n| n.checked_sub(1))
+                .and_then(|n| selected.hits.get(n))
+                .ok_or_else(|| format!("row @{number} has no hit {hit}; use @{number}"))?;
+            references.push(reference.clone());
+        } else if let Some((first, last)) = part.split_once('-') {
+            let first: usize = first.parse().map_err(|_| "invalid row range")?;
+            let last: usize = last.parse().map_err(|_| "invalid row range")?;
+            if first == 0 || last < first || last > shown.rows.len() {
+                return Err("row range is outside the last list".into());
+            }
+            references.extend(
+                shown.rows[first - 1..last]
+                    .iter()
+                    .map(|row| row.reference.clone()),
+            );
+        } else {
+            references.push(row(part)?.reference.clone());
+        }
+    }
+    Ok(references)
+}
+pub(crate) fn remember_listing(paths: &crate::config::Paths, root: &Path, shown: &ShownRows) {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return;
+    }
     let Some(path) = rows_file(paths, root) else {
         return;
     };
-    if let Some(dir) = path.parent() {
-        let _ = fs::create_dir_all(dir);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
     }
-    let tmp = path.with_extension("tmp");
-    let written = fs::OpenOptions::new()
+    let temporary = path.with_extension("tmp");
+    let result = fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o600)
-        .open(&tmp)
-        .and_then(|mut f| f.write_all(ids.join("\n").as_bytes()));
-    if written.is_ok() {
-        let _ = fs::rename(&tmp, &path);
+        .open(&temporary)
+        .and_then(|mut file| {
+            serde_json::to_writer(&mut file, shown).map_err(std::io::Error::other)
+        });
+    if result.is_ok() {
+        let _ = fs::rename(temporary, path);
     }
 }
-
-/// Replaces each `@N` word in `text` by row N's ID. A word is `@` and
-/// digits, standing alone, inside parentheses or as a field's value
-/// (`parent:@1`); `@` inside a word
-/// (`note:a@b`, `file:x@HEAD`) is left alone.
-pub fn resolve(
-    text: &str,
-    rows: &dyn Fn() -> Result<Vec<String>, String>,
-) -> Result<String, String> {
-    let mut out = String::with_capacity(text.len());
-    let mut loaded: Option<Vec<String>> = None;
-    let chars: Vec<char> = text.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        let boundary = i == 0 || chars[i - 1].is_whitespace() || matches!(chars[i - 1], '(' | ':');
-        if chars[i] == '@' && boundary {
-            let mut j = i + 1;
-            while j < chars.len() && chars[j].is_ascii_digit() {
-                j += 1;
-            }
-            let digits: String = chars[i + 1..j].iter().collect();
-            let mut k = j;
-            if k < chars.len() && chars[k] == '.' {
-                k += 1;
-                while k < chars.len() && chars[k].is_ascii_digit() {
-                    k += 1;
-                }
-            }
-            let ends = k == chars.len() || chars[k].is_whitespace() || chars[k] == ')';
-            if !digits.is_empty() && ends {
-                if k > j {
-                    return Err(format!(
-                        "`{}` names a hit within a row, which is not kept yet; use `@{digits}`",
-                        chars[i..k].iter().collect::<String>()
-                    ));
-                }
-                let n: usize = digits
-                    .parse()
-                    .map_err(|_| format!("`@{digits}` is too large"))?;
-                if loaded.is_none() {
-                    loaded = Some(rows()?);
-                }
-                let ids = loaded.as_ref().expect("loaded above");
-                let id = n.checked_sub(1).and_then(|i| ids.get(i)).ok_or_else(|| {
-                    format!(
-                        "`@{n}`: the last list printed in this terminal has {} rows",
-                        ids.len()
-                    )
-                })?;
-                out.push_str(id);
-                i = j;
-                continue;
-            }
-        }
-        out.push(chars[i]);
-        i += 1;
-    }
-    Ok(out)
-}
-
-/// The IDs of the last list printed in this terminal.
-pub fn last_rows(paths: &crate::config::Paths, root: &Path) -> Result<Vec<String>, String> {
+pub(crate) fn last_listing(paths: &crate::config::Paths, root: &Path) -> Result<ShownRows, String> {
     let path = rows_file(paths, root)
-        .ok_or("`@N` refers to a list printed in a terminal, and this is not one")?;
-    let text = fs::read_to_string(&path)
-        .map_err(|_| "no list has been printed in this terminal yet".to_owned())?;
-    Ok(text.lines().map(str::to_owned).collect())
-}
-
-/// The command line with `@N` replaced in every argument. `polylogue @2
-/// read` is also accepted for `polylogue read @2`, and the same for the
-/// other commands that take one session.
-pub fn rewrite_args(
-    paths: &crate::config::Paths,
-    args: Vec<String>,
-    root: &Path,
-) -> Result<Vec<String>, String> {
-    let rows = || last_rows(paths, root);
-    let mut args = args;
-    const VERBS: [&str; 4] = ["read", "export", "takeover", "continue"];
-    if args.len() > 2 && is_position(&args[1]) && VERBS.contains(&args[2].as_str()) {
-        args.swap(1, 2);
-    }
-    args.into_iter().map(|a| resolve(&a, &rows)).collect()
-}
-
-fn is_position(word: &str) -> bool {
-    word.strip_prefix('@')
-        .is_some_and(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()))
-}
-
-/// The ID each row of a printed answer is known by: its own `id`, else
-/// its session's or message's.
-pub fn row_ids(rows: &serde_json::Value) -> Vec<String> {
-    rows.as_array()
-        .into_iter()
-        .flatten()
-        .map(|r| {
-            ["id", "session", "message"]
-                .iter()
-                .find_map(|k| r[*k].as_str())
-                .unwrap_or("")
-                .to_owned()
-        })
-        .collect()
+        .ok_or("row numbers work on a terminal; use the references printed above")?;
+    let file = fs::File::open(path).map_err(|_| "no list has been printed in this terminal yet")?;
+    serde_json::from_reader(file).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

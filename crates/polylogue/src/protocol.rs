@@ -104,30 +104,6 @@ pub mod help {
     }
 }
 
-pub mod explain {
-    //! Explaining a query, and pages of the language's own description.
-    use schemars::JsonSchema;
-    use serde::{Deserialize, Serialize};
-
-    #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-    #[serde(deny_unknown_fields)]
-    pub struct Arguments {
-        /// query, syntax, units, fields, operators or capabilities
-        #[schemars(extend("argument_form" = "positional"))]
-        pub subject: String,
-        /// Required for subject query
-        pub expression: Option<String>,
-        /// List fields for this unit
-        #[schemars(extend("unlisted" = true))]
-        pub unit: Option<String>,
-        /// Declarations per page (default 20)
-        #[schemars(extend("unlisted" = true))]
-        pub page_size: Option<u64>,
-        /// Calling session for self references
-        pub session: Option<String>,
-    }
-}
-
 pub mod follow;
 pub mod import {
     //! Explicit file ingestion through the accepting daemon.

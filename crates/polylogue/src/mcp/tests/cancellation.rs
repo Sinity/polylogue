@@ -4,17 +4,19 @@ use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
-const CONTEXT_TOOLS: &[&str] = &["brief", "recall", "takeover"];
+const CONTEXT_SELECTIONS: &[&str] = &["brief", "recall", "takeover"];
 
 fn tool_call(name: &str) -> Value {
     let arguments = match name {
-        "brief" => json!({"session":"claude-code:s1", "cwd":"/synthetic/project"}),
-        "recall" => json!({"query":"MCP context", "cwd":"/synthetic/project"}),
-        "takeover" => json!({"session":"claude-code:s1"}),
-        "query" => json!({"query":"sessions"}),
+        "brief" => json!({"steps":[{"verb":"brief", "cwd":"/synthetic/project"}]}),
+        "recall" => {
+            json!({"selection":"MCP context", "steps":[{"verb":"brief", "cwd":"/synthetic/project"}]})
+        }
+        "takeover" => json!({"selection":"session:claude-code:s1", "steps":[{"verb":"brief"}]}),
+        "query" => json!({"selection":"sessions"}),
         _ => panic!("no fixture for {name}"),
     };
-    super::tool_call(name, arguments, &format!("cancel-{name}"))
+    super::tool_call("rows", arguments, &format!("cancel-{name}"))
 }
 
 struct PeerCleanup<'a> {
@@ -311,34 +313,34 @@ fn context_deadline(name: &str) {
 
 fn assert_no_prepared(daemon: &test_daemon::TestDaemon) {
     let response =
-        crate::test_daemon::Call::new("query", serde_json::json!({"query": "deliveries"}))
+        crate::test_daemon::Call::new("rows", serde_json::json!({"selection": "deliveries"}))
             .answer(&daemon.daemon);
     let Some(data) = response.value().cloned() else {
         panic!("{response:?}");
     };
     assert_eq!(
-        data["count"], 0,
+        data["reply"]["count"], 0,
         "a refused context must not record prepared delivery"
     );
 }
 
 #[test]
 fn mcp_context_deadline_releases_blocked_read_without_a_prepared_delivery() {
-    for name in CONTEXT_TOOLS {
+    for name in CONTEXT_SELECTIONS {
         context_deadline(name);
     }
 }
 
 #[test]
 fn mcp_context_cancellation_interrupts_preparation_before_its_deadline() {
-    for name in CONTEXT_TOOLS {
+    for name in CONTEXT_SELECTIONS {
         cancelled_read(false, name);
     }
 }
 
 #[test]
 fn mcp_context_disconnect_interrupts_preparation_before_its_deadline() {
-    for name in CONTEXT_TOOLS {
+    for name in CONTEXT_SELECTIONS {
         cancelled_read(true, name);
     }
 }

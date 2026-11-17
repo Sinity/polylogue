@@ -106,8 +106,8 @@ fn surface_answer(
         "socket" => {
             let mut stream = UnixStream::connect(archive.join("daemon.sock")).unwrap();
             let request = command_surface::Request {
-                operation: "query".into(),
-                arguments: json!({"query":text}),
+                operation: "rows".into(),
+                arguments: json!({"selection":text}),
                 request_id: uuid::Uuid::now_v7().to_string(),
                 deadline: command_surface::Deadline::Default,
                 budget_tokens: Default::default(),
@@ -124,7 +124,7 @@ fn surface_answer(
             let reply = mcp.request(
                 "tools/call",
                 json!({"name":"polylogue_read", "arguments":{
-                    "operation":"query", "arguments":{"query":text}, "request_id":uuid::Uuid::now_v7().to_string()
+                    "operation":"rows", "arguments":{"selection":text}, "request_id":uuid::Uuid::now_v7().to_string()
                 }}),
             );
             assert!(reply["error"].is_null(), "{reply}");
@@ -172,22 +172,41 @@ fn mcp_records_only_nonempty_context_deliveries() {
         ("startup", "native-context-startup", false),
         ("resume", "native-context-resume", true),
     ] {
-        let cli = cli(
-            &env,
-            &[
-                "--json",
-                "--request-id",
+        let direct: command_surface::Answer<Value> = if source == "startup" {
+            let output = cli(
+                &env,
+                &[
+                    "--json",
+                    "--request-id",
+                    request_id,
+                    "brief",
+                    "--cwd",
+                    "/synthetic",
+                ],
+            );
+            assert!(output.status.success(), "{output:?}");
+            serde_json::from_slice(&output.stdout).unwrap()
+        } else {
+            let mut socket = UnixStream::connect(env.archive().join("daemon.sock")).unwrap();
+            let request = command_surface::RunnableRequest::new(
+                "rows",
+                json!({"steps":[{"verb":"brief","cwd":"/synthetic","source":source}]}),
                 request_id,
-                "brief",
-                "--cwd",
-                "/synthetic",
-                "--source",
-                source,
-            ],
-        );
-        assert!(cli.status.success(), "{cli:?}");
-        let cli: command_surface::Answer<Value> = serde_json::from_slice(&cli.stdout).unwrap();
-        let mut expected = value(cli).unwrap();
+            );
+            writeln!(socket, "{}", serde_json::to_string(&request).unwrap()).unwrap();
+            let mut line = String::new();
+            BufReader::new(socket).read_line(&mut line).unwrap();
+            serde_json::from_str(&line).unwrap()
+        };
+        let brief = |answer| {
+            let value = value(answer).unwrap();
+            let reports = value["reply"]["steps"].as_array().unwrap();
+            assert_eq!(reports.len(), 1, "{value}");
+            assert_eq!(reports[0]["outcome"]["status"], "done", "{value}");
+            assert_eq!(reports[0]["outcome"]["reply"]["kind"], "brief", "{value}");
+            reports[0]["outcome"]["reply"]["reply"].clone()
+        };
+        let mut expected = brief(direct);
         assert_eq!(expected["delivery"], Value::Null);
         assert_eq!(expected["prepared"]["empty"], empty);
         assert!(
@@ -199,9 +218,9 @@ fn mcp_records_only_nonempty_context_deliveries() {
         );
         let reply = mcp.request(
             "tools/call",
-            json!({"name":"polylogue_context", "arguments":{
-                "operation":"brief",
-                "arguments":{"cwd":"/synthetic", "source":source},
+            json!({"name":"polylogue_read", "arguments":{
+                "operation":"rows",
+                "arguments":{"steps":[{"verb":"brief", "cwd":"/synthetic", "source":source}]},
                 "request_id":request_id,
             }}),
         );
@@ -210,9 +229,9 @@ fn mcp_records_only_nonempty_context_deliveries() {
         let mcp: command_surface::Answer<Value> =
             serde_json::from_value(reply["result"]["structuredContent"].clone()).unwrap();
         if !empty {
-            expected["delivery"] = Value::String(request_id.into());
+            expected["delivery"] = Value::String(format!("{request_id}-1"));
         }
-        assert_eq!(value(mcp).unwrap(), expected, "native {source} context");
+        assert_eq!(brief(mcp), expected, "native {source} context");
     }
 }
 

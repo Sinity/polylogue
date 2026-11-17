@@ -595,8 +595,13 @@ impl<H: Handler> Operation for Row<H> {
                 .and_then(|text| {
                     let mut request = context.request().clone();
                     let object = request.arguments.as_object_mut()?;
-                    object.get("query")?;
-                    object.insert("query".into(), Value::String(text));
+                    let field = if self.row.name == "rows" {
+                        "selection"
+                    } else {
+                        "query"
+                    };
+                    object.get(field)?;
+                    object.insert(field.into(), Value::String(text));
                     request.request_id = polylogue_store::user_writes::new_request_id();
                     request.deadline = command_surface::Deadline::Default;
                     request.cursor = None;

@@ -153,30 +153,95 @@ pub(crate) fn options(reader: &Reader<'_>, ask: &Ask<'_>, seed: u64) -> Result<O
 /// Runs a query in full for keeping: its rows, and, when it has one
 /// top-level exists or seq and no stages, its match rows too. The values
 /// are what was shown; a kept result is read back, never re-run.
-pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
-    let mut opts = options(reader, &ask, uuid::Uuid::now_v7().as_u128() as u64)?;
-    opts.page_size = None;
-    let plan = polylogue_query::compile(ask.text, &opts)?;
-    let program = polylogue_store::query::lower(&plan, &opts)?;
+pub(crate) fn keep_selected(
+    reader: &Reader<'_>,
+    ask: Ask<'_>,
+    retained: &polylogue_model::user::LineSelection,
+    references: Option<&[polylogue_model::Reference]>,
+) -> Result<Value, Failure> {
+    keep_with_rows(reader, ask, retained, references, None)
+}
+
+/// Already visited relation values feed the same kept-result producer.
+pub(crate) fn keep_captured(
+    reader: &Reader<'_>,
+    ask: Ask<'_>,
+    retained: &polylogue_model::user::LineSelection,
+    rows: Vec<Value>,
+    identities: Option<Vec<Vec<Value>>>,
+) -> Result<Value, Failure> {
+    keep_with_rows(reader, ask, retained, None, Some((rows, identities)))
+}
+
+fn keep_with_rows(
+    reader: &Reader<'_>,
+    ask: Ask<'_>,
+    retained: &polylogue_model::user::LineSelection,
+    references: Option<&[polylogue_model::Reference]>,
+    captured: Option<(Vec<Value>, Option<Vec<Vec<Value>>>)>,
+) -> Result<Value, Failure> {
+    if reader.query_scope_fingerprint()? != retained.binding.replay.scope_fingerprint {
+        return Err(Failure::new(
+            polylogue_model::Code::ScopeChanged,
+            "the accepted line's read scope changed",
+        ));
+    }
+    if ask.ranking_identity != retained.binding.query_options.ranking_identity {
+        return Err(Failure::stale_cursor(
+            "the accepted line's ranking provider changed",
+        ));
+    }
+    if let Some(relation) = retained.relation.as_ref() {
+        return Ok(relation.clone());
+    }
+    let binding = &retained.binding;
+    let clock = binding
+        .replay
+        .context
+        .clock
+        .clone()
+        .resolve(ask.context.clock.day.zone().clone())
+        .map_err(Failure::bad_value)?;
+    let opts = polylogue_store::query::execute::options_from_snapshot(
+        &binding.query_options,
+        clock,
+        binding.replay.context.random_seed,
+        None,
+    );
+    let plan = polylogue_query::plan::replay_binding(&binding.replay)?;
+    let program = reader.lower_plan(&plan, &opts)?;
+    if program.measure.is_some() {
+        return keep_measure(reader, &ask, &opts, &plan, &program);
+    }
     let schema = plan.output_schema_for_columns(&program.columns)?;
     let mut match_schema = None;
     let mut match_columns = vec![];
     validate(reader, &program)?;
-    let mut rows = with_similarity(reader, &program, ask.near, || {
-        Ok(reader.query_rows(&program)?)
-    })?;
-    // Each kept row keeps its own row identity, so reading the result back
-    // names the same rows; presentation drops these columns.
-    let identities = match &program.row_kind {
-        RowKind::UnitRows { columns, .. } => Some(
-            rows.iter()
-                .map(|row| columns.iter().map(|c| row[c].clone()).collect::<Vec<_>>())
-                .collect::<Vec<_>>(),
-        ),
-        _ => None,
+    let captured_values = captured.is_some();
+    let (mut rows, identities) = match captured {
+        Some(values) => values,
+        None => {
+            let rows = with_similarity(reader, &program, ask.near, || {
+                Ok(match references {
+                    Some(references) => reader.query_fixed_rows(&program, references)?,
+                    None => reader.query_rows(&program)?,
+                })
+            })?;
+            let identities = match &program.row_kind {
+                RowKind::UnitRows { columns, .. } => Some(
+                    rows.iter()
+                        .map(|row| columns.iter().map(|column| row[column].clone()).collect())
+                        .collect(),
+                ),
+                _ => None,
+            };
+            (rows, identities)
+        }
     };
-    for row in &mut rows {
-        present(&program, row)?;
+    if !captured_values {
+        for row in &mut rows {
+            present(&program, row)?;
+        }
     }
     let mut kept = json!({
         "unit": if program.shape == Shape::Matches { "matches" } else { program.unit.name() },
@@ -185,13 +250,31 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
         "rows": rows,
         "query": ask.text,
         "now": program.clock.now,
+        "read_at": read_at(reader)?,
         "definitions": program.definitions,
+        "ranked":program.ranked,"notes":program.notes,"incomplete":program.incomplete,
     });
     if let Some(identities) = identities {
         kept["identities"] = json!(identities);
     }
-    if polylogue_query::parse(ask.text)?.transforms.is_empty()
-        && let Ok(match_plan) = polylogue_query::compile(&format!("{} | matches", ask.text), &opts)
+    if let Some(matches) = retained.matches.as_ref() {
+        kept["match_columns"] = matches["columns"].clone();
+        kept["matches"] = matches["rows"].clone();
+        match_columns =
+            serde_json::from_value(matches["columns"].clone()).map_err(Failure::internal)?;
+        match_schema =
+            serde_json::from_value(matches["schema"].clone()).map_err(Failure::internal)?;
+    } else if captured_values
+        && polylogue_query::parse(ask.text)?.transforms.is_empty()
+        && let Ok(match_plan) = {
+            let syntax =
+                query_language::format::format_query(plan.expanded_query().query(), plan.catalog())
+                    .map_err(Failure::bad_value)?;
+            let mut match_options = opts.clone();
+            match_options.saved = plan.bindings().saved.clone();
+            match_options.kept = plan.bindings().kept.clone();
+            polylogue_query::compile(&format!("{syntax} | matches"), &match_options)
+        }
     {
         let m = polylogue_store::query::lower(&match_plan, &opts)?;
         match_schema = Some(match_plan.output_schema_for_columns(&m.columns)?);
@@ -218,6 +301,173 @@ pub fn keep(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     kept["output_metadata"] =
         serde_json::to_value(output_metadata).expect("kept metadata serializes");
     Ok(kept)
+}
+
+/// The accepted population uses the same current hydration or retained
+/// relation values as Save, with native identities carried outside its columns.
+pub(crate) fn accepted_population(
+    reader: &Reader<'_>,
+    ask: Ask<'_>,
+    selected: &crate::daemon::verbs::Selection,
+) -> Result<command_surface::Answer<crate::protocol::query::Answer>, Failure> {
+    let retained = selected
+        .retained
+        .as_deref()
+        .ok_or_else(|| Failure::internal("the accepted selection has no binding"))?;
+    let context = ask.context.clone();
+    let value = keep_selected(reader, ask, retained, selected.resolved.as_deref())?;
+    let rows: Vec<serde_json::Map<String, Value>> =
+        serde_json::from_value(value["rows"].clone()).map_err(Failure::internal)?;
+    let empty = rows.is_empty();
+    let incomplete: Vec<String> =
+        serde_json::from_value(value["incomplete"].clone()).map_err(Failure::internal)?;
+    let answer = crate::protocol::query::Answer::Rows(Box::new(crate::protocol::query::Rows {
+        read_at: serde_json::from_value(value["read_at"].clone()).map_err(Failure::internal)?,
+        unit: value["unit"]
+            .as_str()
+            .ok_or_else(|| Failure::internal("the accepted population has no unit"))?
+            .into(),
+        shape: serde_json::from_value(value["shape"].clone()).map_err(Failure::internal)?,
+        columns: serde_json::from_value(value["columns"].clone()).map_err(Failure::internal)?,
+        count: Some(rows.len() as u64),
+        rows,
+        references: selected.resolved.clone(),
+        next: None,
+        ranked: value["ranked"].as_bool().unwrap_or(false),
+        notes: serde_json::from_value(value["notes"].clone()).map_err(Failure::internal)?,
+        incomplete: incomplete.clone(),
+        resolved: crate::protocol::query::Resolved {
+            context: context.run_context(),
+            times: retained.binding.replay.context.resolved_times.clone(),
+        },
+        definitions: serde_json::from_value(value["definitions"].clone())
+            .map_err(Failure::internal)?,
+        unknown: Default::default(),
+        why: None,
+    }));
+    Ok(command_surface::Answer {
+        outcome: if !incomplete.is_empty() {
+            command_surface::Outcome::Degraded {
+                value: answer,
+                missing: incomplete,
+            }
+        } else if empty {
+            command_surface::Outcome::Empty(answer)
+        } else {
+            command_surface::Outcome::Ok(answer)
+        },
+        envelope: Default::default(),
+    })
+}
+
+/// Keep the actual measurement answer, following the normal authenticated
+/// cursor until its declared paging owner has returned every page.
+fn keep_measure(
+    reader: &Reader<'_>,
+    ask: &Ask<'_>,
+    options: &Options,
+    plan: &polylogue_query::plan::Plan,
+    program: &Program,
+) -> Result<Value, Failure> {
+    use crate::protocol::query::Answer;
+    let mut program = program.clone();
+    prepare_measure(&mut program, options.page_size)?;
+    let what = program
+        .measure
+        .as_ref()
+        .expect("measurement program")
+        .what
+        .clone();
+    let (definition, _) = super::measure::find_checked(&what)?;
+    let position = reader.change_position()?;
+    let index = reader.index_identity()?;
+    let seal = CursorSeal::new(reader.cursor_key()?);
+    let context = page::context(
+        plan.question_id(),
+        &position,
+        index,
+        options,
+        &program,
+        options.random_seed.unwrap_or(0),
+        false,
+    )?;
+    let paging = page::Paging {
+        seal: &seal,
+        context,
+    };
+    let resolved = crate::protocol::query::Resolved {
+        context: ask
+            .context
+            .replay_clock(program.clock.clone())?
+            .run_context(),
+        times: program.resolved_times.clone(),
+    };
+    let mut after = None;
+    let mut data = None;
+    loop {
+        let page = with_similarity(reader, &program, ask.near, || {
+            answer(
+                reader,
+                &program,
+                &program.clock.day,
+                after.clone(),
+                &paging,
+                false,
+                resolved.clone(),
+            )
+        })?;
+        let (value, next) = match page.value {
+            Answer::Measure(value) => (value.data, None),
+            Answer::PagedMeasure(value) => (value.data, value.next),
+            Answer::Rows(_) => return Err(Failure::internal("a measurement returned entity rows")),
+        };
+        match &mut data {
+            Some(data) => super::measure::append_page(
+                definition.paging.ok_or_else(|| {
+                    Failure::internal("an unpaged measure returned a continuation")
+                })?,
+                data,
+                value,
+            )?,
+            None => data = Some(value),
+        }
+        let Some(next) = next else {
+            break;
+        };
+        let cursor = page::open(&next, &seal, plan.question_id(), &position, index, options)?;
+        after = Some(page::check(&cursor, &program, options, false)?);
+    }
+    let columns = vec![
+        polylogue_query::Column {
+            name: "measure".into(),
+            kind: polylogue_query::ColKind::Text,
+            reference: None,
+        },
+        polylogue_query::Column {
+            name: "data".into(),
+            kind: polylogue_query::ColKind::Json,
+            reference: None,
+        },
+    ];
+    let output_metadata = polylogue_model::kept::OutputMetadata::captured(
+        polylogue_query::Kept::summary_output(&columns),
+        None,
+    );
+    polylogue_query::Kept {
+        output_metadata: output_metadata.clone(),
+        shape: Some(Shape::Summary),
+        native_identity: false,
+        unit: program.unit.name().into(),
+        columns: columns.clone(),
+        match_columns: vec![],
+    }
+    .validate_output_metadata()?;
+    Ok(
+        json!({"unit":program.unit.name(),"shape":Shape::Summary,"columns":columns,
+        "rows":[{"measure":what,"data":data.expect("a measure returns at least one page")}],
+        "query":ask.text,"now":program.clock.now,"read_at":read_at(reader)?,"definitions":program.definitions,
+        "output_metadata":output_metadata}),
+    )
 }
 
 /// How a query answered, decided where the answer is assembled.
@@ -595,6 +845,13 @@ fn answer(
         snippets(reader, program, &mut rows)?;
         attach(reader, program, &mut rows)?;
     }
+    let references = if matches!(program.row_kind, RowKind::UnitRows { .. }) {
+        rows.iter()
+            .map(|row| polylogue_store::selection::row_reference(program, row))
+            .collect::<Option<Vec<_>>>()
+    } else {
+        None
+    };
     for row in &mut rows {
         present(program, row)?;
     }
@@ -641,6 +898,7 @@ fn answer(
             shape: program.shape,
             columns: program.columns.clone(),
             rows,
+            references,
             count: None,
             next,
             ranked: program.ranked,

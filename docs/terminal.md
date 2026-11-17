@@ -170,7 +170,7 @@ With `--json` the reply has `outcome: "error"` and an `error` object on standard
 
 `polylogue help` prints the cheatsheet: one terminal screen (at most 24 lines at 100 columns), generated from the operation table, the catalog's top values and each row's examples; local, in the local class, with no daemon.
 
-```
+```text
 polylogue 'QUERY' [VERB …]   the quotes hold which rows; the words after say what to do
 polylogue REF [VERB …]       one thing: @3  latest  self  here  7f3a2c10  a chat URL  query:NAME  result:ID
 polylogue read · resume      pick from recent sessions, or from sessions that ended open

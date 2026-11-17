@@ -56,7 +56,7 @@ fn hermes_observer_keeps_events_and_rebuilds_without_conversations() {
         let page = reading(&env, &reference, &[]);
         assert!(!page.document.items.is_empty());
         for format in ["terminal", "html", "markdown"] {
-            let result = cli(&env, &["read", &reference, "--format", format]);
+            let result = cli(&env, &[&reference, "read", "--format", format]);
             assert!(result.status.success(), "{format}: {result:?}");
             let rendered = String::from_utf8(result.stdout).unwrap();
             assert!(rendered.contains("synthetic-later-value"), "{rendered}");
@@ -188,7 +188,7 @@ fn hermes_observer_keeps_events_and_rebuilds_without_conversations() {
         let joined = joined_items(&env, &reference, "16");
         assert_eq!(
             joined,
-            reading(&env, &reference, &["--page-tokens", "100000"])
+            reading(&env, &reference, &["--budget", "100000"])
                 .document
                 .items
         );
@@ -402,7 +402,7 @@ fn hermes_atif_documents_preserve_roles_unknown_media_and_ordered_parts() {
                 reading(
                     &env,
                     &reference,
-                    &["--show", "tools:full", "--page-tokens", "100000"]
+                    &["--show", "tools:full", "--budget", "100000"]
                 )
                 .document
                 .items

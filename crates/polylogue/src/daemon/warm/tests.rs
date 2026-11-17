@@ -551,15 +551,15 @@ fn only_an_executed_ranking_asks_the_provider() {
         // Explaining a ranking runs nothing.
         crate::test_answers::ok(crate::test_daemon::call(
             d,
-            "explain",
-            json!({"subject": "query", "expression": "messages where similar:\"explained\""}),
+            "rows",
+            json!({"selection": "messages where similar:\"explained\"", "explain":true}),
         ));
         assert_eq!(calls.load(Ordering::Acquire), 0, "explain");
         // A query that parses but is refused runs nothing.
         let refused = crate::test_daemon::call(
             d,
-            "query",
-            json!({"query": "messages where no_such_field:1 similar:\"refused\""}),
+            "rows",
+            json!({"selection": "messages where no_such_field:1 similar:\"refused\""}),
         );
         assert!(
             matches!(refused.outcome, command_surface::Outcome::Error(_)),
@@ -569,8 +569,8 @@ fn only_an_executed_ranking_asks_the_provider() {
         // An executed ranking asks once: the run uses the vector asked for.
         crate::test_answers::ok(crate::test_daemon::call(
             d,
-            "query",
-            json!({"query": "messages where similar:\"executed\""}),
+            "rows",
+            json!({"selection": "messages where similar:\"executed\""}),
         ));
         assert_eq!(calls.load(Ordering::Acquire), 1, "executed query");
     });

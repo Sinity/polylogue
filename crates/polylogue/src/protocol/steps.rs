@@ -383,7 +383,7 @@ pub fn declarations() -> StepDeclarations {
     declare::<AnswerStep>(&mut steps, "answer");
     declare::<InterruptStep>(&mut steps, "interrupt");
     declare::<ResumeStep>(&mut steps, "resume");
-    steps
+    steps.cli_selection("selection", "references")
 }
 
 #[cfg(test)]

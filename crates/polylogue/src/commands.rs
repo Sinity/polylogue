@@ -13,7 +13,6 @@
 //! request type; binary inputs reach the daemon directly as bytes.
 
 pub(crate) mod arguments;
-mod replaced;
 
 use crate::cli::{calling_process, local};
 use crate::daemon::handler::{FeedRegistration, Registration, daemon, feed, streams};
@@ -29,26 +28,16 @@ use std::sync::LazyLock;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
     Read,
-    Context,
-    Note,
     Write,
     Act,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 5] = [
-        Tool::Read,
-        Tool::Write,
-        Tool::Act,
-        Tool::Context,
-        Tool::Note,
-    ];
+    pub const ALL: [Tool; 3] = [Tool::Read, Tool::Write, Tool::Act];
 
     pub fn name(self) -> &'static str {
         match self {
             Tool::Read => "polylogue_read",
-            Tool::Context => "polylogue_context",
-            Tool::Note => "polylogue_note",
             Tool::Write => "polylogue_write",
             Tool::Act => "polylogue_act",
         }
@@ -56,8 +45,8 @@ impl Tool {
 
     pub fn access(self) -> ToolAccess {
         match self {
-            Self::Read | Self::Context => ToolAccess::Read,
-            Self::Write | Self::Note => ToolAccess::Write,
+            Self::Read => ToolAccess::Read,
+            Self::Write => ToolAccess::Write,
             Self::Act => ToolAccess::Act,
         }
     }
@@ -73,8 +62,6 @@ explain: true says how a call is read and what it would do, running nothing.
 status() | help(topic?) query, fields, views, kinds, a verb | set(key?) lists settings or shows one | dev sql(statement) | dev schema(...)
 Example: {"arguments":{"selection":"tool_calls where outcome:error since:1d","steps":[{"verb":"read","around":2}]}}"#
             }
-            Tool::Context => "Briefs, recall, takeovers and file advisories",
-            Tool::Note => "Assertions, saved queries, watches, settings",
             Tool::Write => {
                 r#"Everything polylogue_read does, plus annotations: notes, tags, judgments and saved queries, recorded with you as author. Steps add:
   note(text, as?) as: note|decision|finding|lesson|question|goal|problem|handoff|correction|claim|title|outcome|hidden|translation:LANG|summary|...; evidence?, replies_to?, supports?, challenges?, corrects?
@@ -136,8 +123,6 @@ pub enum Cli {
     Subcommand,
     /// A subcommand left out of help: programs run it, people do not.
     Hidden,
-    /// What `polylogue` runs when no subcommand is given.
-    NoSubcommand,
     /// A selection and the verbs after it. Until the line parser reads it,
     /// the row is a hidden subcommand taking `--request`.
     Line,
@@ -178,12 +163,6 @@ pub type Prepare = fn(
 pub enum Run {
     /// The daemon answers through the row's handler.
     Daemon(Registration),
-    /// The daemon answers through the row's handler; the command line
-    /// delivers the answer itself, as a page or a stream.
-    Delivered {
-        registration: Registration,
-        deliver: Deliver,
-    },
     /// A stream the command line follows over the socket.
     Feed {
         registration: FeedRegistration,
@@ -275,17 +254,13 @@ impl Command {
     /// The handler registration of a row the daemon answers once.
     pub(crate) fn registration(&self) -> Option<&Registration> {
         match &self.run {
-            Run::Daemon(registration) | Run::Delivered { registration, .. } => Some(registration),
+            Run::Daemon(registration) => Some(registration),
             Run::Feed { .. } | Run::Local(..) | Run::ConfiguredLocal(..) => None,
         }
     }
 
     pub fn cli_words(&self) -> Vec<String> {
-        if self.cli == Cli::NoSubcommand {
-            vec!["find".into()]
-        } else {
-            self.name.split(' ').map(str::to_owned).collect()
-        }
+        self.name.split(' ').map(str::to_owned).collect()
     }
 
     pub fn http_path(&self) -> String {
@@ -381,22 +356,14 @@ pub const GROUPS: &[Group] = &[
     },
 ];
 
-/// Every command, in the order help lists them: the written ones, with a
-/// `measure NAME` for each measurement after `set`, then the rows the
-/// line replaces.
+/// Every command, in help order, with the declared measurements after `set`.
 pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
     let mut all = WRITTEN.to_vec();
-    all.extend_from_slice(replaced::REPLACED);
     let at = all
         .iter()
         .position(|c| c.name == "set")
         .map_or(all.len(), |i| i + 1);
     all.splice(at..at, MEASURES.iter().map(measure_command));
-    for c in &mut all {
-        if c.name == "query" {
-            c.help = query_help();
-        }
-    }
     all
 });
 
@@ -414,21 +381,6 @@ fn measure_command(m: &'static Measure) -> Command {
         tool: Some(Tool::Read),
         ..CLI
     }
-}
-
-/// The `query` help, naming every unit and measurement.
-fn query_help() -> &'static str {
-    let units: Vec<&str> = polylogue_query::ast::Unit::all()
-        .map(polylogue_query::ast::Unit::name)
-        .collect();
-    format!(
-        "Run a query: rows of a unit ({}) with stages (`| sort by`, `| group by`, `| matches`). \
-         `| measure WHAT` ends a sessions query with a measurement: {}; unknown figures are null, never 0. \
-         Each answer's `view.cursor` continues `changes where after:CURSOR`",
-        units.join(", "),
-        crate::daemon::measure::names()
-    )
-    .leak()
 }
 
 const WRITTEN: &[Command] = &[
@@ -1046,6 +998,7 @@ pub fn declarations() -> &'static std::sync::Arc<command_surface::OperationDecla
                 command_surface::OperationDeclarations::builder(PRODUCT, deadlines());
             declarations.accept(command_surface::RequestOption::Cursor);
             declarations.accept(command_surface::RequestOption::BudgetTokens);
+            declarations.accept(command_surface::RequestOption::Format);
             for code in polylogue_model::Code::ALL {
                 declarations
                     .register_failure_code(code.as_str(), crate::protocol::kind(*code))

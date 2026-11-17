@@ -109,27 +109,27 @@ fn hook_items(
     format: &str,
     budget: &str,
 ) -> Vec<polylogue_model::read::ReadItem> {
-    let mut arguments: Vec<String> = [
+    let arguments: Vec<String> = [
         "--json",
-        "read",
         "session:claude-code:hooks",
+        "read",
         "--format",
         format,
-        "--page-tokens",
+        "--budget",
         budget,
     ]
     .into_iter()
     .map(str::to_owned)
     .collect();
+    let output = cli(
+        fixture,
+        &arguments.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    assert!(output.status.success(), "{output:?}");
+    let mut page = read_page(json(&output));
     let mut items = super::read_current::Items::default();
     let mut seen = std::collections::BTreeSet::new();
     loop {
-        let output = cli(
-            fixture,
-            &arguments.iter().map(String::as_str).collect::<Vec<_>>(),
-        );
-        assert!(output.status.success(), "{output:?}");
-        let page: polylogue_model::read::ReadPage = serde_json::from_value(json(&output)).unwrap();
         assert!(
             !page.document.items.is_empty(),
             "hook read made no progress"
@@ -142,7 +142,7 @@ fn hook_items(
             seen.insert(serde_json::to_string(&next.request).unwrap()),
             "repeated continuation"
         );
-        arguments = continuation_arguments(&next);
+        page = followed_page(fixture, &next);
     }
     items.into_values()
 }

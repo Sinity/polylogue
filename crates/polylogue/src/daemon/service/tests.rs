@@ -387,11 +387,11 @@ fn read_and_query_share_stored_titles() {
     let original = std::fs::read(&source).unwrap();
     let records = || {
         let request = crate::test_daemon::Call::new(
-            "read",
-            serde_json::json!({"target": "session:claude-code:s1", "delivery": "stream", "format": "jsonl"}),
+            "rows",
+            serde_json::json!({"selection": "session:claude-code:s1", "steps":[{"verb":"read", "delivery": "stream", "format": "jsonl"}]}),
         );
         let envelope = command_surface::Request {
-            operation: "read".into(),
+            operation: "rows".into(),
             arguments: request.arguments.clone(),
             request_id: uuid::Uuid::now_v7().to_string(),
             deadline: command_surface::Deadline::None,

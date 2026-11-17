@@ -3,7 +3,7 @@
 //! on live sessions live in `acts`, the browser extension's in `browser`,
 //! and reads in `read`.
 use super::{
-    Failure, advisory_silence, context, delivery_event, error, ok, query_targets, query_targets_in,
+    Failure, advisory_silence, context, delivery_event, error, ok, query_targets_in,
     repeated_request, status, store_error, write, write_from_read,
 };
 use crate::briefing::Ask;
@@ -445,78 +445,6 @@ impl Handler for Help {
     }
 }
 
-/// Explains a query without running it, or pages through the language's
-/// syntax, units, fields, operators and capabilities.
-pub(crate) struct Explain;
-impl Handler for Explain {
-    type Arguments = protocol::explain::Arguments;
-    type Answer = Value;
-    const PAGES: bool = true;
-    fn query_text(arguments: &Self::Arguments) -> Option<&str> {
-        arguments.expression.as_deref()
-    }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
-        let protocol::explain::Arguments {
-            subject,
-            expression,
-            unit,
-            page_size,
-            session,
-        } = arguments;
-        let result = if subject == "query" {
-            if unit.is_some() || page_size.is_some() || call.cursor.is_some() {
-                return Ok(error(
-                    polylogue_model::Code::BadRequest,
-                    "unit, page_size and cursor apply to declaration pages",
-                ));
-            }
-            let Some(text) = expression.as_deref().filter(|s| !s.trim().is_empty()) else {
-                return Ok(error(
-                    polylogue_model::Code::BadRequest,
-                    "expression is required for query",
-                ));
-            };
-            let reader = call.reader()?;
-            let context = call.context()?;
-            let d = call.daemon;
-            super::super::query::with_ranking(
-                &reader,
-                &d.warm,
-                &d.config,
-                |embeddings, ranking_identity, _near| {
-                    super::super::query::explain(
-                        &reader,
-                        super::super::query::Ask {
-                            text,
-                            cursor: None,
-                            page_size: None,
-                            why: false,
-                            session,
-                            context,
-                            embeddings,
-                            ranking_identity,
-                            near: None,
-                            fields: &[],
-                        },
-                    )
-                },
-            )
-        } else {
-            crate::explain::answer(
-                &subject,
-                expression.as_deref(),
-                unit.as_deref(),
-                page_size,
-                call.cursor,
-            )
-        };
-        Ok(match result {
-            Ok(data) => ok(data),
-            Err(f) => f.answer(),
-        })
-    }
-}
-
 /// Chronological recorded activity and a logical-day calendar.
 pub(crate) struct Timeline;
 impl Handler for Timeline {
@@ -816,101 +744,6 @@ impl Handler for Import {
     }
 }
 
-pub(crate) struct Assert;
-impl Handler for Assert {
-    type Arguments = protocol::assertion::Assert;
-    type Answer = polylogue_model::user::UserOutcome;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
-        if arguments.assertions.is_empty() {
-            return Ok(error(
-                polylogue_model::Code::BadRequest,
-                "assertions must not be empty",
-            ));
-        }
-        Ok(write(
-            call.daemon,
-            call.invocation,
-            call.request_id.into(),
-            UserWrite::Assert {
-                assertions: arguments.assertions,
-            },
-        ))
-    }
-}
-
-pub(crate) struct AssertQuery;
-impl Handler for AssertQuery {
-    type Arguments = protocol::assertion::AssertQuery;
-    type Answer = polylogue_model::user::AssertQueryOutcome;
-    const READS_FIRST: bool = true;
-    fn query_text(arguments: &Self::Arguments) -> Option<&str> {
-        Some(&arguments.query)
-    }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
-        let protocol::assertion::AssertQuery { query, assertion } = arguments;
-        if query.trim().is_empty() {
-            return Ok(error(
-                polylogue_model::Code::BadRequest,
-                "query must not be empty",
-            ));
-        }
-        let (d, invocation) = (call.daemon, call.invocation);
-        let reader = call.reader()?;
-        let selected_scope = reader.scope_token();
-        let intended = UserWrite::AssertQuery {
-            query: query.clone(),
-            assertion: assertion.clone(),
-            resolved: Vec::new(),
-        };
-        let resolved = match repeated_request(&reader, call.request_id, &intended, invocation) {
-            Ok(Some(previous)) => previous,
-            Ok(None) => {
-                if assertion
-                    .links
-                    .iter()
-                    .any(|link| link.role == polylogue_model::assertion::LinkRole::About)
-                {
-                    return Ok(error(
-                        polylogue_model::Code::BadRequest,
-                        "a query assertion cannot supply its own about links",
-                    ));
-                }
-                let targets = query_targets(d, &reader, &query, invocation)?;
-                UserWrite::AssertQuery {
-                    query,
-                    assertion,
-                    resolved: targets,
-                }
-            }
-            Err(failure) => return Err(failure),
-        };
-        let targets = match &resolved {
-            UserWrite::AssertQuery { resolved, .. } => resolved.len(),
-            _ => {
-                return Ok(error(
-                    polylogue_model::Code::Conflict,
-                    "stored request has another action",
-                ));
-            }
-        };
-        if targets == 0 {
-            return Ok(error(
-                polylogue_model::Code::Empty,
-                "the query returns no rows; no assertion was written",
-            ));
-        }
-        drop(reader);
-        Ok(super::submit(
-            d,
-            invocation,
-            call.request_id.into(),
-            resolved,
-            Some(selected_scope),
-            |outcome| polylogue_model::user::AssertQueryOutcome::new(outcome, targets),
-        ))
-    }
-}
-
 pub(crate) struct Revise;
 impl Handler for Revise {
     type Arguments = protocol::assertion::Revise;
@@ -1121,80 +954,81 @@ impl Handler for Watch {
     }
 }
 
-/// Runs a query and keeps the rows it returned, as `result:<id>`.
-pub(crate) struct Keep;
-impl Handler for Keep {
-    type Arguments = protocol::saved::Keep;
-    type Answer = polylogue_model::user::UserOutcome;
-    fn query_text(arguments: &Self::Arguments) -> Option<&str> {
-        Some(&arguments.query)
-    }
-    fn ranking_query(arguments: &Self::Arguments, _row: &Command) -> Option<String> {
-        Some(arguments.query.clone())
-    }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
-        let protocol::saved::Keep { name, query } = arguments;
-        let (d, invocation) = (call.daemon, call.invocation);
-        let request_id: String = call.request_id.into();
-        let reader = call.reader()?;
-        let selected_scope = reader.scope_token();
-        let intended = UserWrite::KeepResult {
-            name: name.clone(),
-            query: query.clone(),
-            rows_json: String::new(),
-            read_at: String::new(),
-        };
-        match repeated_request(&reader, &request_id, &intended, invocation) {
-            Ok(Some(previous)) => {
-                drop(reader);
-                return Ok(write_from_read(
-                    d,
-                    invocation,
-                    request_id,
-                    previous,
-                    selected_scope,
-                ));
-            }
-            Err(failure) => return Err(failure),
-            Ok(None) => {}
+/// Keep the line's accepted selection through the existing authored-result write.
+pub(crate) fn keep(
+    name: Option<String>,
+    query: String,
+    selection: &crate::daemon::verbs::Selection,
+    call: &Call<'_>,
+) -> Result<Answer<polylogue_model::user::UserOutcome>, Failure> {
+    let (d, invocation) = (call.daemon, call.invocation);
+    let request_id: String = call.request_id.into();
+    let reader = call.reader()?;
+    let selected_scope = reader.scope_token();
+    let intended = UserWrite::KeepResult {
+        name: name.clone(),
+        query: query.clone(),
+        rows_json: String::new(),
+        read_at: String::new(),
+    };
+    match repeated_request(&reader, &request_id, &intended, invocation) {
+        Ok(Some(previous)) => {
+            drop(reader);
+            return Ok(write_from_read(
+                d,
+                invocation,
+                request_id,
+                previous,
+                selected_scope,
+            ));
         }
-        let context = call.context()?;
-        let kept = super::super::query::with_ranking(
-            &reader,
-            &d.warm,
-            &d.config,
-            |embeddings, ranking_identity, near| {
-                let ask = super::super::query::Ask {
-                    text: &query,
-                    cursor: None,
-                    page_size: None,
-                    why: false,
-                    session: None,
-                    context,
-                    embeddings,
-                    ranking_identity,
-                    near: Some(near),
-                    fields: &[],
-                };
-                super::super::query::keep(&reader, ask)
-            },
-        );
-        let kept = kept?;
-        drop(reader);
-        let read_at = serde_json::json!({ "now": kept["now"] }).to_string();
-        Ok(write_from_read(
-            d,
-            invocation,
-            request_id,
-            UserWrite::KeepResult {
-                name,
-                query,
-                rows_json: kept.to_string(),
-                read_at,
-            },
-            selected_scope,
-        ))
+        Err(failure) => return Err(failure),
+        Ok(None) => {}
     }
+    let context = call.context()?;
+    let kept = super::super::query::with_ranking(
+        &reader,
+        &d.warm,
+        &d.config,
+        |embeddings, ranking_identity, near| {
+            let ask = super::super::query::Ask {
+                text: &query,
+                cursor: None,
+                page_size: None,
+                why: false,
+                session: None,
+                context,
+                embeddings,
+                ranking_identity,
+                near: Some(near),
+                fields: &[],
+            };
+            super::super::query::keep_selected(
+                &reader,
+                ask,
+                selection
+                    .retained
+                    .as_deref()
+                    .ok_or_else(|| Failure::internal("Save ran without its accepted selection"))?,
+                selection.resolved.as_deref(),
+            )
+        },
+    );
+    let kept = kept?;
+    drop(reader);
+    let read_at = serde_json::json!({ "now": kept["now"], "position":kept["read_at"] }).to_string();
+    Ok(write_from_read(
+        d,
+        invocation,
+        request_id,
+        UserWrite::KeepResult {
+            name,
+            query,
+            rows_json: kept.to_string(),
+            read_at,
+        },
+        selected_scope,
+    ))
 }
 
 /// Reads a setting or the catalog without a value; writes one with a value.

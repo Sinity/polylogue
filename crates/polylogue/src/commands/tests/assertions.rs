@@ -1,17 +1,10 @@
 use super::*;
-
-fn statement() -> Value {
-    json!({"kind":"note","key":null,"value":"Synthetic decision","valid_until":null,
-        "links":[{"role":"about","reference":"repo:example"}]})
-}
-
-/// Whether the operation's typed arguments accept `args`.
-fn decodes(name: &str, args: &Value) -> bool {
-    let row = command(name).unwrap();
+fn accepts(arguments: &Value) -> bool {
+    let row = command("rows").unwrap();
     row.registration()
         .unwrap()
         .admit(
-            args,
+            arguments,
             row,
             &Caller {
                 surface: Surface::Mcp,
@@ -20,44 +13,19 @@ fn decodes(name: &str, args: &Value) -> bool {
         )
         .is_ok()
 }
-
-fn schemas(name: &str) -> (Value, Value) {
-    let description = declarations()
-        .descriptions()
-        .iter()
-        .find(|description| description.spec.name == name)
-        .unwrap();
-    (
-        description.input_schema.clone(),
-        description.output_schema.clone(),
-    )
-}
-
 #[test]
-fn assertion_operations_take_typed_arguments_and_keep_identity_beside_them() {
-    for (name, args) in [
-        ("assert", json!({"assertions":[statement()]})),
-        (
-            "assert-query",
-            json!({"query":"sessions","assertion":{
-                "kind":"note","value":"Synthetic finding","key":null,"valid_until":null,"links":[]
-            }}),
-        ),
-        (
-            "revise",
-            json!({"bases":["assertion:root@revision"],"patch":{"value":{"change":"set","value":"Updated"}}}),
-        ),
-        (
-            "withdraw",
-            json!({"targets":["assertion:root@revision"],"reason":"Superseded"}),
-        ),
+fn authored_steps_take_their_declared_fields_and_transport_identity() {
+    for step in [
+        json!({"verb":"note","text":"Synthetic finding","as":"decision"}),
+        json!({"verb":"tag","name":"reviewed"}),
+        json!({"verb":"edit","text":"Updated finding"}),
+        json!({"verb":"withdraw","reason":"Superseded"}),
+        json!({"verb":"judge","verdict":"accept","reason":"Matches the test"}),
+        json!({"verb":"save","name":"reviewed"}),
     ] {
-        let command = crate::commands::command(name).unwrap();
-        assert!(
-            command.tool == Some(crate::commands::Tool::Note) && command.http && command.writes
-        );
-        assert!(decodes(name, &args), "{name}");
-        for field in [
+        let arguments = json!({"selection":"session:claude-code:s1","steps":[step]});
+        assert!(accepts(&arguments), "{arguments}");
+        for name in [
             "author",
             "via",
             "machine",
@@ -65,125 +33,70 @@ fn assertion_operations_take_typed_arguments_and_keep_identity_beside_them() {
             "seen_hash",
             "request_id",
         ] {
-            let mut invalid = args.clone();
-            invalid[field] = json!("caller-controlled");
-            assert!(!decodes(name, &invalid), "{name}: {field}");
+            let mut invalid = arguments.clone();
+            invalid["steps"][0][name] = json!("caller-controlled");
+            assert!(!accepts(&invalid), "{invalid}");
         }
     }
 }
-
 #[test]
-fn cli_and_http_values_keep_assertion_data_unwrapped() {
-    let args = json!({"assertions":[statement()]});
-    let encoded = args["assertions"].to_string();
-    let (_, _, cli) = crate::cli::request_arguments(
-        &["polylogue", "assert", &encoded],
-        std::path::Path::new("/"),
+fn authored_line_steps_keep_their_values_on_the_cli() {
+    let words = [
+        "session:claude-code:s1",
+        "note",
+        "Synthetic decision",
+        "--as",
+        "decision",
+        "tag",
+        "reviewed",
+        "--request-id",
+        "same-id",
+    ];
+    let parsed = crate::cli::line::parse(
+        &words.map(str::to_owned),
+        &crate::cli::line::FirstWordCatalog::default(),
+        false,
     )
     .unwrap();
-    let http = declarations()
-        .parse_http_query("assert", &[("assertions".into(), encoded)], "same-id")
-        .unwrap();
-    assert_eq!(Value::Object(cli), args);
-    assert_eq!(http.arguments, args);
-    assert!(crate::cli::parse(&["polylogue", "assert", "broken JSON"]).is_err());
-}
-
-#[test]
-fn assertion_arguments_refuse_caller_fields_and_nonexact_revision_bases() {
-    for (name, args) in [
-        (
-            "assert",
-            json!({"assertions":[{"kind":"note","value":"text","links":[],"author":"operator"}]}),
-        ),
-        (
-            "assert-query",
-            json!({"query":"sessions","assertion":statement(),"resolved":["session:claude-code:s1"]}),
-        ),
-        ("revise", json!({"bases":["assertion:root"],"patch":{}})),
-        (
-            "revise",
-            json!({"bases":["variant:root@revision"],"patch":{}}),
-        ),
-        (
-            "revise",
-            json!({"bases":["assertion:root@revision"],"patch":{"seen_hash":"invented"}}),
-        ),
-        ("withdraw", json!({"targets":["bare-predecessor-id"]})),
-    ] {
-        assert!(!decodes(name, &args), "{name}: {args}");
-    }
-}
-
-#[test]
-fn assertion_operations_refuse_empty_work() {
-    let daemon = crate::test_daemon::start("empty assertion work");
-    for (name, args) in [
-        ("assert", json!({"assertions":[]})),
-        (
-            "assert-query",
-            json!({"query":"  ","assertion":statement()}),
-        ),
-        ("revise", json!({"bases":[],"patch":{}})),
-        ("withdraw", json!({"targets":[]})),
-    ] {
-        let answer = crate::test_daemon::call(&daemon.daemon, name, args);
-        assert_eq!(
-            answer.failure().and_then(|failure| failure.code.as_deref()),
-            Some("bad_request"),
-            "{name}: {answer:?}"
-        );
-    }
-}
-
-#[test]
-fn assertion_operations_are_registered_on_every_surface() {
-    for name in ["assert", "assert-query", "revise", "withdraw"] {
-        let command = crate::commands::command(name).unwrap();
-        assert!(command.registration().is_some());
-        assert_eq!(command.http_path(), format!("/{name}"));
-        assert_eq!(command.tool, Some(crate::commands::Tool::Note));
-    }
-}
-
-#[test]
-fn assertion_schemas_show_closed_arguments_and_results() {
-    for name in ["assert", "assert-query", "revise", "withdraw"] {
-        let (arguments, answer) = schemas(name);
-        assert_eq!(arguments["additionalProperties"], false, "{name}");
-        assert!(arguments["properties"].get("request_id").is_none());
-        assert!(arguments["properties"].get("author").is_none());
-        let wire = answer.to_string();
-        let outcome = if name == "assert-query" {
-            "AssertQueryOutcome"
-        } else {
-            "UserOutcome"
-        };
-        assert!(
-            wire.contains(outcome) && wire.contains("repeat") && wire.contains("pending"),
-            "{name}: {answer}"
-        );
-    }
-    let arguments = schemas("assert").0;
-    assert_eq!(arguments["properties"]["assertions"]["type"], "array");
-    assert_eq!(arguments["properties"]["assertions"]["minItems"], 1);
-    assert!(arguments.to_string().contains("NewAssertion"));
-}
-
-#[test]
-fn bulk_assertion_answer_declares_its_population_count() {
-    type BulkAnswer = polylogue_model::user::AssertQueryOutcome;
-    let (_, schema) = schemas("assert-query");
-    assert!(
-        schema["$defs"]["AssertQueryOutcome"]["properties"]
-            .get("targets")
-            .is_some(),
-        "{schema}"
+    let request = crate::cli::run_line::request(&parsed).unwrap();
+    assert_eq!(request.request_id, "same-id");
+    assert_eq!(request.arguments["selection"], "session:claude-code:s1");
+    assert_eq!(
+        request.arguments["steps"],
+        json!([{"verb":"note","text":"Synthetic decision","as":"decision"},{"verb":"tag","name":"reviewed"}])
     );
-    let value = json!({"id":"selected","repeat":false,"pending":false,"targets":3});
-    let answer: BulkAnswer = serde_json::from_value(value.clone()).unwrap();
-    assert_eq!(serde_json::to_value(answer).unwrap(), value);
-    let mut unknown = value;
-    unknown["caller_count"] = json!(3);
-    assert!(serde_json::from_value::<BulkAnswer>(unknown).is_err());
+}
+#[test]
+fn rows_declares_closed_authored_steps_and_uses_the_write_tool() {
+    let row = command("rows").unwrap();
+    assert!(row.http && row.writes);
+    let steps = declarations().steps("rows", "steps").unwrap();
+    assert!(
+        steps
+            .validate_step(&json!({"verb":"note","text":"hello","as":"decision"}))
+            .is_ok()
+    );
+    assert!(
+        steps
+            .validate_step(&json!({"verb":"note","text":"hello","author":"operator"}))
+            .is_err()
+    );
+    assert!(
+        steps
+            .validate_step(&json!({"verb":"edit","text":"hello","bases":["annotation:a@b"]}))
+            .is_err()
+    );
+    let request = crate::client::request(
+        "rows",
+        json!({"selection":"session:claude-code:s1","steps":[{"verb":"note","text":"hello"}]}),
+        "authored".into(),
+    );
+    let parsed = declarations()
+        .parse_mcp_call(
+            "polylogue_write",
+            json!({"arguments":request.arguments,"request_id":request.request_id}),
+        )
+        .unwrap();
+    assert_eq!(parsed.arguments, request.arguments);
+    assert_eq!(parsed.request_id, "authored");
 }

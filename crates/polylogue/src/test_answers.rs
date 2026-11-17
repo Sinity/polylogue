@@ -43,3 +43,45 @@ pub(crate) fn degraded<T: Debug>(answer: Answer<T>) -> (T, Vec<String>) {
         other => panic!("expected a degraded answer, got {other:?}"),
     }
 }
+
+/// A single successful read step from the declared line operation.
+#[track_caller]
+pub(crate) fn read(answer: Answer<serde_json::Value>) -> polylogue_model::read::ReadPage {
+    use crate::protocol::line::{LineAnswer, StepAnswer, StepOutcome};
+    let line: LineAnswer = serde_json::from_value(
+        answer
+            .value()
+            .unwrap_or_else(|| panic!("expected a read value: {answer:?}"))
+            .clone(),
+    )
+    .unwrap();
+    let LineAnswer::Steps(mut steps) = line else {
+        panic!("expected read steps: {answer:?}")
+    };
+    assert_eq!(steps.steps.len(), 1, "{answer:?}");
+    match steps.steps.remove(0).outcome {
+        StepOutcome::Done {
+            reply: StepAnswer::Read(page),
+            ..
+        } => *page,
+        other => panic!("expected a completed read: {other:?}"),
+    }
+}
+
+/// A refusal at acceptance or at the single requested line step.
+#[track_caller]
+pub(crate) fn refusal(answer: Answer<serde_json::Value>) -> command_surface::Failure {
+    use crate::protocol::line::{LineAnswer, StepOutcome};
+    if let command_surface::Outcome::Error(error) = &answer.outcome {
+        return error.clone();
+    }
+    let line: LineAnswer = serde_json::from_value(answer.value().unwrap().clone()).unwrap();
+    let LineAnswer::Steps(mut steps) = line else {
+        panic!("expected refused steps: {answer:?}")
+    };
+    assert_eq!(steps.steps.len(), 1, "{answer:?}");
+    match steps.steps.remove(0).outcome {
+        StepOutcome::Failed { error } => error,
+        other => panic!("expected a refused read: {other:?}"),
+    }
+}

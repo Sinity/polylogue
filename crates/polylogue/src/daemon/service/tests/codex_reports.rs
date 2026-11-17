@@ -25,36 +25,34 @@ fn codex_usage_and_rate_only_quota_reach_mcp() {
             == 2
     });
     let archive = Archive::at(&daemon.daemon.archive.root);
-    let usage: serde_json::Value = serde_json::from_str(
-        &crate::mcp::tests::call(
-            &archive,
-            "query",
-            json!({"query":"sessions | measure usage"})
-                .as_object()
-                .unwrap()
-                .clone(),
-        )
-        .unwrap(),
-    )
-    .unwrap();
+    let usage = crate::test_answers::ok(crate::mcp::tests::structured_call_as(
+        &archive,
+        "rows",
+        json!({"selection":"sessions | measure usage"})
+            .as_object()
+            .unwrap()
+            .clone(),
+        "codex-usage",
+    ));
+    assert_eq!(usage["kind"], "listing");
+    let usage = &usage["reply"];
     assert!(usage["data"]["messages"].is_null());
     assert_eq!(
         usage["data"]["recorded_usage"]["measured_completion_observations"],
         2
     );
     assert_eq!(usage["data"]["recorded_usage"]["known_usage"]["input"], 30);
-    let quota: serde_json::Value = serde_json::from_str(
-        &crate::mcp::tests::call(
-            &archive,
-            "query",
-            json!({"query":"sessions | measure quota"})
-                .as_object()
-                .unwrap()
-                .clone(),
-        )
-        .unwrap(),
-    )
-    .unwrap();
+    let quota = crate::test_answers::ok(crate::mcp::tests::structured_call_as(
+        &archive,
+        "rows",
+        json!({"selection":"sessions | measure quota"})
+            .as_object()
+            .unwrap()
+            .clone(),
+        "codex-quota",
+    ));
+    assert_eq!(quota["kind"], "listing");
+    let quota = &quota["reply"];
     let codex = quota["data"]["tools"]
         .as_array()
         .unwrap()

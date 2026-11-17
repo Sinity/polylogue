@@ -32,6 +32,16 @@ impl RequestMetadata {
     }
 }
 
+/// Accepted inputs for Save. Native keyed rows are hydrated at the step;
+/// derived relations and match rows retain their resolved values.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LineSelection {
+    pub binding: crate::query_objects::ExecutionBinding,
+    pub relation: Option<serde_json::Value>,
+    pub matches: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "write", rename_all = "snake_case", deny_unknown_fields)]
 pub enum UserWrite {
@@ -39,6 +49,7 @@ pub enum UserWrite {
     ResolveLine {
         request: serde_json::Value,
         resolved: Option<Vec<crate::Reference>>,
+        retained: Option<Box<LineSelection>>,
     },
     /// A trusted daemon checkpoint with its immutable signal outbox and receipts.
     SignalCommit(Box<crate::signal::Commit>),
@@ -181,7 +192,12 @@ impl UserWrite {
         };
         match &mut intent {
             Self::AssertQuery { resolved, .. } => resolved.clear(),
-            Self::ResolveLine { resolved, .. } => *resolved = None,
+            Self::ResolveLine {
+                resolved, retained, ..
+            } => {
+                *resolved = None;
+                *retained = None;
+            }
             Self::KeepResult {
                 rows_json, read_at, ..
             } => {

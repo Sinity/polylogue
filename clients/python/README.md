@@ -2,7 +2,7 @@
 
 Install with `pip install ./clients/python`, beside an installed `polylogue`
 CLI. The client needs only Python's standard library at runtime. It invokes
-CLI JSON with an argument list and uses the same daemon as other clients.
+CLI JSON with an argument list. Generated continuation requests go directly to the same daemon socket, retaining their structured fields.
 
 ```python
 from polylogue.client import Client, Refused
@@ -15,7 +15,9 @@ if page.data["value"]["reply"].get("next") is not None:
 
 try:
     session = client.read("session:claude-code:example")
-    ready = session.json()["value"]["document"]["footer"].get("next")
+    report = session.json()["value"]["reply"]["steps"][0]
+    page = report["outcome"]["reply"]["reply"]
+    ready = page["document"]["footer"].get("next")
     if ready is not None:
         following = client.follow_read(ready)
 except Refused as error:
@@ -27,17 +29,17 @@ except Refused as error:
 integer precision and complete refusals survive. Regular calls keep the whole
 shared `outcome`/`value` envelope. Empty and degraded answers keep their payloads;
 refusals expose the complete error answer. Query cursors belong to query pages.
-Read continuations use `client.follow_read(request)` for generated `rows`, `read` and
+Read continuations use `client.follow_read(request)` for generated `rows` and
 `attachment` actions, including previous pages. A listing is the `rows` reply with `kind: "listing"`. It preserves the original
 arguments, request ID, cursor and omitted-versus-null deadline/budget fields,
-and rejects unsupported operation kinds and envelope options explicitly.
+and rejects unsupported operation kinds. The daemon checks request options against its declarations. A socket refusal has `returncode=None`; CLI refusals retain their process exit code.
 Use `client.read(identity, page_tokens=600)` to choose the number of tokens transferred in one page.
 
 `client.call(*arguments)` takes the same words as a CLI command, without
 `polylogue --json`. It covers the other declared operations. A write is sent
 once. For retries, give the same `--request-id` and identical arguments; the
 client never invents a second write after a lost answer. An explicit archive is
-passed as the CLI's `--archive` argument for regular calls and change feeds.
+passed as the CLI's `--archive` argument for regular calls and change feeds, and selects `ARCHIVE/daemon.sock` for continuations. Without an explicit archive, the status reply supplies that path.
 Relative paths are made absolute when `Client` is constructed; declared path
 aliases are preserved, including short aliases used for Unix sockets.
 

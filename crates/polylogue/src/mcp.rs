@@ -171,22 +171,8 @@ fn format_answer(
                         .map_err(|error| bad_request(&error.to_string()))?;
                 return rows_text(&line).map(|text| format!("{text}{notes}"));
             }
-            if command.name == "read" {
-                return crate::commands::declarations()
-                    .render_text(command.name, answer, command_surface::TextStyle::Plain)
-                    .map(|text| format!("{text}{notes}"))
-                    .map_err(|failure| error_text(&failure));
-            }
             let value = answer.value().expect("a non-error answer has a value");
-            Ok(
-                if command.tool == Some(Tool::Context) && value.get("prepared").is_some() {
-                    polylogue_render::terminal::escape(
-                        value["prepared"]["text"].as_str().unwrap_or_default(),
-                    )
-                } else {
-                    polylogue_render::terminal::json(value, true)
-                },
-            )
+            Ok(polylogue_render::terminal::json(value, true))
         }
     }
 }

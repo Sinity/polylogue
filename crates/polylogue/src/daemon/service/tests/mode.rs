@@ -68,8 +68,8 @@ fn launch(startup: crate::config::Startup) -> std::io::Result<Runtime> {
 
 fn read_request() -> crate::test_daemon::Call {
     crate::test_daemon::Call::new(
-        "read",
-        serde_json::json!({"target": "claude-code:s1", "format": "json"}),
+        "rows",
+        serde_json::json!({"selection": "session:claude-code:s1", "steps":[{"verb":"read", "format":"json"}]}),
     )
 }
 
@@ -107,10 +107,17 @@ fn blocked(runtime: &Runtime, path: &std::path::Path) {
             "set",
             serde_json::json!({"key": Some("browser.actions"), "value": Some("on")}),
         ),
-        crate::test_daemon::Call::new("recall", serde_json::json!({"query": "question"}))
-            .id("delivery")
-            .surface(crate::commands::Surface::Hook),
-        crate::test_daemon::Call::new("keep", serde_json::json!({"query": "sessions"})).id("keep"),
+        crate::test_daemon::Call::new(
+            "rows",
+            serde_json::json!({"selection":"question", "steps":[{"verb":"brief"}]}),
+        )
+        .id("delivery")
+        .surface(crate::commands::Surface::Hook),
+        crate::test_daemon::Call::new(
+            "rows",
+            serde_json::json!({"selection":"sessions", "steps":[{"verb":"save"}]}),
+        )
+        .id("keep"),
         crate::test_daemon::Call::new("embed", serde_json::json!({"yes": true})),
     ];
     for request in requests {

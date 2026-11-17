@@ -1,27 +1,8 @@
 //! The assertion operations take the domain's closed write shapes.
-use polylogue_model::{
-    Reference,
-    assertion::{AssertionPatch, NewAssertion},
-};
+use polylogue_model::{Reference, assertion::AssertionPatch};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Assert {
-    /// JSON array of assertions
-    #[schemars(length(min = 1), extend("argument_form" = "positional"))]
-    pub assertions: Vec<NewAssertion>,
-}
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct AssertQuery {
-    /// Query selecting the assertion targets
-    #[schemars(length(min = 1), extend("argument_form" = "positional"))]
-    pub query: String,
-    /// Assertion JSON without about links
-    pub assertion: NewAssertion,
-}
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Revise {

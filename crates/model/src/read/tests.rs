@@ -416,7 +416,7 @@ fn show_hide_words_round_trip_through_one_table() {
                 "turns".into(),
                 "context".into(),
             ],
-            &["assertions".into(), "spawns".into()],
+            &["annotations".into(), "spawns".into()],
         )
         .unwrap();
     assert_eq!(options.tools, Some(Expansion::Full));
@@ -424,6 +424,8 @@ fn show_hide_words_round_trip_through_one_table() {
     assert!(options.inherited && options.turns && options.context_meter);
     assert!(!options.assertions && options.spawns == SpawnFold::Hidden);
     let (show, hide) = options.show_hide_words();
+    assert_eq!(hide, ["annotations", "spawns"]);
+    assert_eq!(serde_json::to_value(&options).unwrap()["assertions"], false);
     let mut again = ReadOptions::default();
     again.apply_show_hide(&show, &hide).unwrap();
     assert_eq!(again, options);
@@ -456,7 +458,7 @@ fn spawn_levels_and_help_come_from_the_show_table() {
         again.apply_show_hide(&show, &hide).unwrap();
         assert_eq!(again, options, "{word}");
     }
-    for refused in ["spawns:N", "spawns:0", "spawns:deep", "tools:2"] {
+    for refused in ["spawns:N", "spawns:0", "spawns:deep", "tools:0"] {
         assert!(
             matches!(
                 ReadOptions::default().apply_show_hide(&[refused.into()], &[]),
@@ -470,7 +472,7 @@ fn spawn_levels_and_help_come_from_the_show_table() {
             "{}[:{}{}]",
             kind.name(),
             kind.levels().join("|"),
-            if kind.takes_depth() { "|N" } else { "" }
+            if kind.takes_number() { "|N" } else { "" }
         );
         assert!(
             ShowKind::HELP.contains(&entry),
@@ -553,4 +555,30 @@ fn follow_up_holds_one_request_per_direction() {
         serde_json::from_str::<ReadFooter>(&encoded).unwrap(),
         footer
     );
+}
+
+#[test]
+fn full_tool_output_and_numeric_line_limits_round_trip_without_changing_stored_fields() {
+    for (word, lines) in [
+        ("tools:full", 0),
+        ("tools:2", 2),
+        ("tools:7", 7),
+        ("tools:100", 100),
+        ("tools:18446744073709551615", u64::MAX),
+    ] {
+        let mut options = ReadOptions::default();
+        options.apply_show_hide(&[word.into()], &[]).unwrap();
+        assert_eq!(options.tools, Some(Expansion::Full));
+        assert_eq!(options.output_lines, lines);
+        let (show, hide) = options.show_hide_words();
+        assert_eq!(show, [word]);
+        assert!(hide.is_empty());
+        let mut restored = ReadOptions::default();
+        restored.apply_show_hide(&show, &hide).unwrap();
+        assert_eq!(restored, options);
+        assert_eq!(
+            serde_json::to_value(&options).unwrap()["output_lines"],
+            lines
+        );
+    }
 }

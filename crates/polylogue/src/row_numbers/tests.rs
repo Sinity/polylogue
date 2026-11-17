@@ -1,46 +1,41 @@
 use super::*;
-
-fn rows() -> Result<Vec<String>, String> {
-    Ok(vec!["claude-code:a1".into(), "codex:b2".into()])
-}
-
 #[test]
-fn positions_become_the_listed_ids() {
-    assert_eq!(resolve("@2", &rows).unwrap(), "codex:b2");
+fn row_number_ranges_and_hits_resolve() {
+    let shown = ShownRows {
+        question: "clock".into(),
+        shown_at: 0,
+        rows: vec![
+            Row {
+                reference: "session:codex:first".into(),
+                hits: vec![
+                    "message:codex:first#1".into(),
+                    "message:codex:first#2".into(),
+                ],
+            },
+            Row {
+                reference: "session:codex:second".into(),
+                hits: vec![],
+            },
+            Row {
+                reference: "session:codex:third".into(),
+                hits: vec![],
+            },
+        ],
+    };
     assert_eq!(
-        resolve("sessions where (parent:@1) since:7d", &rows).unwrap(),
-        "sessions where (parent:claude-code:a1) since:7d"
+        select("@1-2,3", &shown).unwrap(),
+        [
+            "session:codex:first",
+            "session:codex:second",
+            "session:codex:third"
+        ]
     );
-    // `@` inside a word is not a position.
+    assert_eq!(select("@1.2", &shown).unwrap(), ["message:codex:first#2"]);
+    assert_eq!(select("@all", &shown).unwrap().len(), 3);
     assert_eq!(
-        resolve("note:n1@n2 file:x@HEAD", &rows).unwrap(),
-        "note:n1@n2 file:x@HEAD"
+        select("@2.1", &shown).unwrap_err(),
+        "row @2 has no hit 1; use @2"
     );
-    assert!(resolve("@3", &rows).unwrap_err().contains("has 2 rows"));
-    assert!(
-        resolve("@1.2", &rows)
-            .unwrap_err()
-            .contains("hit within a row")
-    );
-    // Text without a position never reads the rows.
-    let none = || -> Result<Vec<String>, String> { Err("unread".into()) };
-    assert_eq!(resolve("repo:x", &none).unwrap(), "repo:x");
-}
-
-#[test]
-fn a_leading_position_moves_after_its_verb() {
-    let dir = tempfile::tempdir().unwrap();
-    let args: Vec<String> = ["polylogue", "read", "x"].map(String::from).to_vec();
-    let paths = crate::config::Paths::resolve(&crate::config::EnvSnapshot::from_values([(
-        "HOME".into(),
-        dir.path().as_os_str().to_owned(),
-    )]))
-    .unwrap();
-    assert_eq!(
-        rewrite_args(&paths, args.clone(), dir.path()).unwrap(),
-        args
-    );
-    assert!(is_position("@12"));
-    assert!(!is_position("@"));
-    assert!(!is_position("@1x"));
+    assert!(select("@0", &shown).is_err());
+    assert!(select("@3-2", &shown).is_err());
 }

@@ -15,35 +15,6 @@ use std::time::Duration;
 /// Time kept before the deadline to send the marks.
 pub(super) const REPLY_MARGIN: Duration = Duration::from_millis(500);
 
-/// Lines for a session or a sessions query as its live state changes and
-/// its rows arrive, until the deadline.
-pub(crate) struct Follow;
-
-/// What to follow; `marks` continues a previous follow.
-#[derive(serde::Serialize, serde::Deserialize, command_surface::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct Arguments {
-    /// A session reference or a query
-    #[schemars(extend("argument_form" = "words"))]
-    pub target: String,
-    /// Where a previous follow of the same target stopped
-    #[schemars(extend("hidden" = true))]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub marks: Option<Marks>,
-}
-
-impl crate::daemon::handler::Feed for Follow {
-    type Arguments = Arguments;
-    fn produce(
-        arguments: Self::Arguments,
-        d: &Daemon,
-        operation: &Arc<polylogue_reading::operation::Context>,
-        output: &mut dyn std::io::Write,
-    ) -> Result<(), Failure> {
-        run(d, operation, &arguments.target, arguments.marks, output).map(|_| ())
-    }
-}
-
 pub(crate) fn run(
     d: &Daemon,
     operation: &Arc<polylogue_reading::operation::Context>,
@@ -77,7 +48,13 @@ pub(crate) fn run(
         {
             let reader = d.reads.reader()?;
             let (counter, changed) = reader.sessions_changed_after(looked.unwrap_or(i64::MAX))?;
-            for session in selected(&reader, operation, query, now)? {
+            let selected = selected(&reader, operation, query, now)?
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>();
+            marks
+                .sessions
+                .retain(|session, _| selected.contains(session));
+            for session in selected {
                 let mark = marks.sessions.get(&session);
                 if looked.is_some() && mark.is_some() && !changed.contains(&session) {
                     continue;
@@ -99,19 +76,20 @@ pub(crate) fn run(
             }
             looked = Some(counter);
         }
+        // Marks finish a batch before the client decides whether all sessions settled.
+        crate::protocol::stream::event(
+            output,
+            "record",
+            &Line::Marks {
+                marks: marks.clone(),
+            },
+        )
+        .map_err(Failure::io)?;
         let left = limit
             .as_ref()
             .and_then(polylogue_store::read::limit::ReadLimit::remaining)
             .map(|left| left.saturating_sub(REPLY_MARGIN));
         if left.is_some_and(|left| left.is_zero()) {
-            crate::protocol::stream::event(
-                output,
-                "record",
-                &Line::Marks {
-                    marks: marks.clone(),
-                },
-            )
-            .map_err(Failure::io)?;
             return Ok(marks);
         }
         // Waiting for the next commit is not work: the executor place goes

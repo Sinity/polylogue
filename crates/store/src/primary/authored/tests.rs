@@ -1331,6 +1331,7 @@ fn accepted_line_keeps_original_population_without_annotation_effects() {
         UserWrite::ResolveLine {
             request: body.clone(),
             resolved: Some(vec![Reference::parse("session:codex:first").unwrap()]),
+            retained: None,
         },
     );
     let first = prepare_with(&conn, &original, &[], &[]).unwrap();
@@ -1342,6 +1343,7 @@ fn accepted_line_keeps_original_population_without_annotation_effects() {
         UserWrite::ResolveLine {
             request: body,
             resolved: Some(vec![Reference::parse("session:codex:later").unwrap()]),
+            retained: None,
         },
     );
     let repeated = prepare_with(&conn, &retry, std::slice::from_ref(&first), &[]).unwrap();
@@ -1353,6 +1355,7 @@ fn accepted_line_keeps_original_population_without_annotation_effects() {
         UserWrite::ResolveLine {
             request: serde_json::json!({"operation":"rows", "arguments":{"selection":"sessions"}}),
             resolved: None,
+            retained: None,
         },
     );
     assert!(

@@ -70,6 +70,7 @@ fn line_resolution_has_its_own_kinds_and_existing_authored_definitions_stay_exac
         resolved: Some(vec![
             polylogue_model::Reference::parse("session:codex:one").unwrap(),
         ]),
+        retained: None,
     });
     let authored = prepared(UserWrite::Assert { assertions: vec![] });
     for (product, old_product, name, old_name) in [

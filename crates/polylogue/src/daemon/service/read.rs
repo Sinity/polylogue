@@ -101,29 +101,6 @@ pub(crate) fn arguments_of(
     })
 }
 
-pub(crate) struct Read;
-impl crate::daemon::handler::Handler for Read {
-    type Arguments = crate::protocol::read::Arguments;
-    type Answer = crate::protocol::read::Answer;
-    const PAGES: bool = true;
-    fn ranking_query(
-        arguments: &Self::Arguments,
-        _row: &crate::commands::Command,
-    ) -> Option<String> {
-        Some(arguments.target.clone())
-    }
-    fn default_deadline(arguments: &Self::Arguments) -> bool {
-        arguments.delivery != ReadDelivery::Stream
-    }
-    const PRINT: fn(&Self::Answer, command_surface::TextStyle) -> String = crate::cli::print::read;
-    fn run(
-        arguments: Self::Arguments,
-        call: &crate::daemon::handler::Call<'_>,
-    ) -> Result<Answer<Self::Answer>, Failure> {
-        page(arguments, call, call.daemon, None)
-    }
-}
-
 /// One page of a read; `services` make its ready calls.
 pub(crate) fn page(
     arguments: crate::protocol::read::Arguments,
@@ -152,20 +129,6 @@ pub(crate) fn page(
     let freshness = page.snapshot.freshness.clone();
     Ok(crate::protocol::read(page, &freshness))
 }
-impl crate::daemon::handler::Streams for Read {
-    fn streaming(arguments: &Self::Arguments) -> bool {
-        arguments.delivery == ReadDelivery::Stream
-    }
-    fn produce(
-        arguments: Self::Arguments,
-        call: &crate::daemon::handler::Call<'_>,
-        context: &Arc<Context>,
-        output: &mut dyn Write,
-    ) -> Result<(), Failure> {
-        stream(arguments, call, context, output, call.daemon, None).map(|_| ())
-    }
-}
-
 /// A read as a stream of events; `services` make its ready calls.
 pub(crate) fn stream(
     arguments: crate::protocol::read::Arguments,
@@ -243,10 +206,8 @@ impl ReadServices for Daemon {
         cursor: Option<String>,
         deadline: Deadline,
     ) -> Result<ReadyCall, Error> {
-        let mut request = request.clone();
-        request.cursor = cursor;
-        let ready = ready_request(&request, deadline)?;
-        self.ready_call(&ready).map_err(Error::Operation)
+        crate::daemon::verbs::read::LineReads { daemon: self }
+            .continuation(request, cursor, deadline)
     }
     fn attachment_call(&self, at: &AttachmentPlace) -> Result<ReadyCall, Error> {
         let arguments = serde_json::to_value(crate::protocol::attachment::Arguments {
@@ -276,25 +237,6 @@ impl ReadServices for Daemon {
     }
 }
 
-fn ready_request(request: &ReadRequest, deadline: Deadline) -> Result<RunnableRequest, Error> {
-    let arguments = arguments_of(request).map_err(Error::Internal)?;
-    let arguments =
-        serde_json::to_value(arguments).map_err(|error| Error::Internal(error.to_string()))?;
-    let cursor = request.cursor.clone();
-    let identity = canonical_json::canonical_hash("polylogue-read-call", &(&arguments, &cursor))
-        .map_err(|error| Error::Internal(error.to_string()))?;
-    Ok(RunnableRequest {
-        operation: "read".into(),
-        arguments,
-        request_id: format!("read-page-{}", identity.to_hex()),
-        deadline,
-        budget_tokens: Default::default(),
-        cursor,
-        fresh: false,
-        format: Default::default(),
-    })
-}
-
 fn failure(error: Error, request: &ReadRequest) -> Failure {
     let stale = error.code() == "stale_cursor";
     let mut failure = Failure::from(error);
@@ -316,9 +258,27 @@ fn failure(error: Error, request: &ReadRequest) -> Failure {
             format!(" --view {}", request.options.view)
         };
         failure.error.message.push_str(&format!(
-            "; run `polylogue read {target}{view}` again to start over"
+            "; run `polylogue {target} read{view}` again to start over"
         ));
-        match ready_request(&repeated, Deadline::Default) {
+        let arguments = arguments_of(&repeated)
+            .map_err(Error::Internal)
+            .and_then(|arguments| {
+                let rows = crate::protocol::line::Rows {
+                    selection: Some(repeated.target.clone()),
+                    steps: vec![crate::protocol::line::Step::Read(Box::new(
+                        crate::daemon::verbs::read::step_of(arguments, None),
+                    ))],
+                    ..Default::default()
+                };
+                serde_json::to_value(rows).map_err(|error| Error::Internal(error.to_string()))
+            });
+        match arguments.map(|arguments| {
+            crate::client::request(
+                "rows",
+                arguments,
+                polylogue_store::user_writes::new_request_id(),
+            )
+        }) {
             Ok(request) => {
                 failure.error = failure.error.with_suggestion(Suggestion::Request(request))
             }

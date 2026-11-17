@@ -2,7 +2,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// `save NAME QUERY`.
+/// Inputs to the saved-question write used by the Save step.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Save {
@@ -17,7 +17,7 @@ pub struct Save {
     pub denominator: Option<String>,
 }
 
-/// `watch QUERY`.
+/// Inputs to the watch write used by the Save step.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Watch {
@@ -31,17 +31,6 @@ pub struct Watch {
     #[serde(default)]
     #[schemars(extend("unlisted" = true))]
     pub notify: bool,
-    /// The query
-    #[schemars(extend("argument_form" = "rest"))]
-    pub query: String,
-}
-
-/// `keep QUERY`.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Keep {
-    /// A name for the kept result
-    pub name: Option<String>,
     /// The query
     #[schemars(extend("argument_form" = "rest"))]
     pub query: String,

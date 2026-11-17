@@ -102,6 +102,7 @@ pub(crate) struct Selection {
     pub resolved: Option<Vec<Reference>>,
     /// The query text when the selection is a query.
     pub question: Option<String>,
+    pub retained: Option<Box<polylogue_model::user::LineSelection>>,
 }
 
 /// What the line names.

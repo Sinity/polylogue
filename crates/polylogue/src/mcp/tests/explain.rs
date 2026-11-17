@@ -1,15 +1,15 @@
 use super::*;
 
 #[test]
-fn explain_is_a_table_tool_with_paged_declarations_and_query_errors() {
+fn help_pages_declarations_and_lines_explain_queries() {
     let w = test_daemon::start("grammar discovery");
     let archive = Archive::at(&w.daemon.archive.root);
-    assert!(operations(Tool::Read).any(|command| command.name == "explain"));
+    assert!(operations(Tool::Read).any(|command| command.name == "help"));
     let page: serde_json::Value = serde_json::from_str(
         &call(
             &archive,
-            "explain",
-            args(json!({"subject": "fields", "page_size": 1})),
+            "help",
+            args(json!({"topic": "fields", "page_size": 1})),
         )
         .unwrap(),
     )
@@ -18,8 +18,8 @@ fn explain_is_a_table_tool_with_paged_declarations_and_query_errors() {
     let second: serde_json::Value = serde_json::from_str(
         &call_page(
             &archive,
-            "explain",
-            json!({"subject":"fields","page_size":1}),
+            "help",
+            json!({"topic":"fields","page_size":1}),
             Some(next),
         )
         .unwrap(),
@@ -30,19 +30,24 @@ fn explain_is_a_table_tool_with_paged_declarations_and_query_errors() {
     let query: serde_json::Value = serde_json::from_str(
         &call(
             &archive,
-            "explain",
-            args(json!({"subject": "query", "expression": "tool_calls where outcome:error"})),
+            "rows",
+            args(json!({"selection": "tool_calls where outcome:error", "explain":true})),
         )
         .unwrap(),
     )
     .unwrap();
-    assert_eq!(query["explanation"]["program"]["unit"], "tool_calls");
-    for arguments in [
-        json!({"subject": "query"}),
-        json!({"subject": "query", "expression": "messages where invalid:x"}),
-    ] {
-        assert!(call(&archive, "explain", args(arguments)).is_err());
-    }
+    assert_eq!(
+        query["plan"]["explanation"]["program"]["unit"],
+        "tool_calls"
+    );
+    assert!(
+        call(
+            &archive,
+            "rows",
+            args(json!({"selection":"messages where invalid:x", "explain":true}))
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -51,8 +56,8 @@ fn explain_preserves_query_error_kinds_and_correction_hints() {
     let archive = Archive::at(&w.daemon.archive.root);
     let error = call(
         &archive,
-        "explain",
-        args(json!({"subject": "query", "expression": "\"unclosed phrase"})),
+        "rows",
+        args(json!({"selection": "\"unclosed phrase", "explain":true})),
     )
     .unwrap_err();
     assert!(error.starts_with("error (invalid_query):"), "{error}");

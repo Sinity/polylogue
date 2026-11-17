@@ -3,6 +3,8 @@
 import base64
 import json
 import sys
+import socket
+import threading
 import tempfile
 import unittest
 from dataclasses import FrozenInstanceError
@@ -13,6 +15,10 @@ from polylogue.client import Client, Refused
 
 ARCHIVE, EXECUTABLE = sys.argv[1:3]
 del sys.argv[1:3]
+
+
+def read_page(answer):
+    return answer["value"]["reply"]["steps"][0]["outcome"]["reply"]["reply"]
 
 
 class ClientTests(unittest.TestCase):
@@ -46,6 +52,41 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(answer, json.loads(self.capture.read_bytes()))
         self.assertEqual(json.loads(self.arguments.read_text())[:2], ["--archive", str(self.archive_alias.absolute())])
         return answer
+
+    def checked_follow(self, request):
+        # Forward this execution to the real daemon, recording both sides of
+        # the socket boundary independently of Client's JSON handling.
+        with tempfile.TemporaryDirectory() as directory:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+                listener.bind(str(Path(directory) / "daemon.sock"))
+                listener.listen(1)
+                observed = {}
+                def forward():
+                    with listener.accept()[0] as connection:
+                        with connection.makefile("rb") as incoming:
+                            raw = incoming.readline()
+                        observed["request"] = json.loads(raw)
+                        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as upstream:
+                            upstream.connect(str(self.archive_alias / "daemon.sock"))
+                            upstream.sendall(raw)
+                            with upstream.makefile("rb") as response:
+                                raw_answer = response.readline()
+                        observed["answer"] = json.loads(raw_answer)
+                        connection.sendall(raw_answer)
+                worker = threading.Thread(target=forward, daemon=True)
+                worker.start()
+                client = Client(directory, executable=EXECUTABLE)
+                try:
+                    answer = client.follow_read(request).json()
+                except Refused as error:
+                    worker.join()
+                    self.assertEqual(observed["request"], request)
+                    self.assertEqual(error.answer.json(), observed["answer"])
+                    raise
+                worker.join()
+                self.assertEqual(observed["request"], request)
+                self.assertEqual(answer, observed["answer"])
+                return answer
 
     def test_declared_archive_alias_is_preserved_for_calls_and_feeds(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -83,12 +124,12 @@ class ClientTests(unittest.TestCase):
         self.assertTrue(query["value"]["reply"]["rows"])
         read = self.checked(lambda: self.client.read("session:claude-code:python"))
         self.assertIn(read["outcome"], {"ok", "degraded"})
-        self.assertTrue(read["value"]["document"]["items"])
-        self.assertIn("read_at", read["value"]["snapshot"])
+        self.assertTrue(read_page(read)["document"]["items"])
+        self.assertIn("read_at", read_page(read)["snapshot"])
         self.assertEqual(
             [
                 item["kind"]["text"]
-                for item in read["value"]["document"]["items"]
+                for item in read_page(read)["document"]["items"]
                 if item["kind"]["kind"] == "text"
             ],
             ["a synthetic Python client session"],
@@ -96,13 +137,13 @@ class ClientTests(unittest.TestCase):
 
     def test_generated_read_calls_continue_without_losing_their_envelope(self):
         target = "session:claude-code:python-pages"
-        whole = self.direct.call("read", target, "--page-tokens", "100000").json()["value"]["document"]["items"]
+        whole = read_page(self.direct.call(target, "read", "--budget", "100000").json())["document"]["items"]
         answer = self.checked(lambda: self.client.read(target, page_tokens=600))
-        snapshot = answer["value"]["snapshot"]
+        snapshot = read_page(answer)["snapshot"]
         complete, partial, seen_calls = [], {}, set()
         count = 0
         while True:
-            page = answer["value"]
+            page = read_page(answer)
             # Every executed page writes its own run, which records when it
             # ran and the archive position its run row advanced; everything
             # else continues the first page's question and index read
@@ -137,16 +178,13 @@ class ClientTests(unittest.TestCase):
             ready = page["document"]["footer"].get("next")
             if ready is None:
                 break
-            self.assertNotIn(ready["cursor"], seen_calls)
-            seen_calls.add(ready["cursor"])
-            answer = self.checked(lambda: self.client.follow_read(ready))
-            arguments = json.loads(self.arguments.read_text())[3:]
-            self.assertEqual(arguments[0], "read")
-            self.assertEqual(json.loads(arguments[arguments.index("--request") + 1]), ready["arguments"])
-            self.assertEqual(arguments[arguments.index("--request-id") + 1], ready["request_id"])
-            self.assertEqual(arguments[arguments.index("--cursor") + 1], ready["cursor"])
-            self.assertNotIn("--deadline", arguments)
-            self.assertNotIn("--budget", arguments)
+            cursor = ready["arguments"]["steps"][0]["cursor"]
+            self.assertNotIn(cursor, seen_calls)
+            seen_calls.add(cursor)
+            answer = self.checked_follow(ready)
+            self.assertEqual(ready["operation"], "rows")
+            self.assertNotIn("deadline", ready)
+            self.assertNotIn("budget_tokens", ready)
             count += 1
             self.assertLess(count, 100)
         self.assertGreater(count, 0)
@@ -156,56 +194,45 @@ class ClientTests(unittest.TestCase):
                          ["Python λ🙂 continuation. " * 300])
 
     def test_read_follow_ups_preserve_nulls_and_previous_pages(self):
-        first = self.direct.call("read", "session:claude-code:python-pages", "--page-tokens", "600",
-                                 "--deadline", "none").json()["value"]
+        first = read_page(self.direct.call("session:claude-code:python-pages", "read", "--budget", "600", "--deadline", "none").json())
         next_request = first["document"]["footer"]["next"]
         self.assertIsNone(next_request["deadline"])
-        second = self.checked(lambda: self.client.follow_read(next_request))["value"]
-        arguments = json.loads(self.arguments.read_text())
-        self.assertEqual(arguments[arguments.index("--deadline") + 1], "none")
+        second = read_page(self.checked_follow(next_request))
         previous = second["document"]["footer"]["previous"]
-        restored = self.checked(lambda: self.client.follow_read(previous))["value"]
+        restored = read_page(self.checked_follow(previous))
         self.assertEqual(restored["document"]["items"], first["document"]["items"])
-        # Read pages do not prepare global budgeted context. Explicit null and
-        # numeric budgets must reach that refusal, rather than become absence.
+        # The request budget belongs to the listing; the read step's own
+        # budget and cursor remain unchanged.
         for budget in [None, 37]:
             request = {**next_request, "budget_tokens": budget}
-            with self.assertRaises(Refused) as raised:
-                self.client.follow_read(request)
-            self.assertEqual(raised.exception.kind, "bad_request")
-            self.assertIn("does not prepare budgeted context", str(raised.exception))
-            arguments = json.loads(self.arguments.read_text())
-            self.assertEqual(arguments[arguments.index("--budget") + 1], "none" if budget is None else "37")
+            followed = read_page(self.checked_follow(request))
+            self.assertEqual(followed["document"]["items"], second["document"]["items"])
+            self.assertEqual(request["arguments"]["steps"][0]["budget"], 600)
 
     def test_rows_follow_up_preserves_the_listing_request(self):
         request = {"operation": "rows", "arguments": {"selection": "sessions", "page_size": 1},
                    "request_id": "python-rows-follow", "deadline": None}
-        answer = self.checked(lambda: self.client.follow_read(request))
+        answer = self.checked_follow(request)
         self.assertEqual(answer["value"]["kind"], "listing")
         self.assertEqual(len(answer["value"]["reply"]["rows"]), 1)
-        arguments = json.loads(self.arguments.read_text())
-        self.assertEqual(arguments[3], "rows")
-        self.assertEqual(json.loads(arguments[arguments.index("--request") + 1]), request["arguments"])
-        self.assertEqual(arguments[arguments.index("--request-id") + 1], request["request_id"])
-        self.assertEqual(arguments[arguments.index("--deadline") + 1], "none")
 
     def test_generated_attachment_action_and_unsupported_operations(self):
-        page = self.direct.read("session:claude-code:python-image").json()["value"]
+        page = read_page(self.direct.read("session:claude-code:python-image").json())
         attachment = next(item["kind"] for item in page["document"]["items"]
                           if item["kind"]["kind"] == "attachment")
         request = attachment["open"]
         self.assertEqual(request["operation"], "attachment")
-        answer = self.checked(lambda: self.client.follow_read(request))
+        answer = self.checked_follow(request)
         self.assertEqual(base64.b64decode(answer["value"]["content_base64"]), b"synthetic Python attachment")
-        before = self.arguments.read_bytes()
         for operation in ["query", "set"]:
             with self.assertRaises(ValueError):
                 self.client.follow_read({**request, "operation": operation})
-            self.assertEqual(self.arguments.read_bytes(), before)
-        for field, value in [("fresh", True), ("format", "json")]:
-            with self.assertRaises(ValueError):
-                self.client.follow_read({**request, field: value})
-            self.assertEqual(self.arguments.read_bytes(), before)
+        with self.assertRaises(Refused) as raised:
+            self.checked_follow({**request, "fresh": True})
+        self.assertEqual(raised.exception.kind, "bad_request")
+        self.assertIsNone(raised.exception.returncode)
+        formatted = self.checked_follow({**request, "format": "json"})
+        self.assertEqual(base64.b64decode(formatted["value"]["content_base64"]), b"synthetic Python attachment")
 
     def test_refusals_keep_the_whole_answer(self):
         with self.assertRaises(Refused) as raised:

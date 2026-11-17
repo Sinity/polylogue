@@ -12,29 +12,55 @@ use tower::ServiceExt;
 /// Every read command all three surfaces offer, with the arguments it is
 /// asked with here.
 const ASKED: &[(&str, &[&str])] = &[
-    ("query", &["sessions"]),
-    ("query", &["messages where parser"]),
-    ("query", &["sessions where"]),
-    ("explain", &["syntax"]),
+    ("rows", &["sessions"]),
+    ("rows", &["messages where parser"]),
+    ("rows", &["sessions where"]),
     ("help", &["units"]),
     ("dev sql", &["SELECT id FROM v1_sessions ORDER BY id"]),
     ("dev schema infer", &[]),
     ("dev schema unread", &[]),
     ("list", &[]),
-    ("read", &["session:claude-code:s1"]),
-    ("read", &["session:claude-code:missing"]),
+    ("rows", &["session:claude-code:s1", "read"]),
+    ("rows", &["session:claude-code:missing", "read"]),
     ("attachment", &["claude-code:missing", "0"]),
-    ("read", &["assertion:missing"]),
-    ("continue", &["claude-code:s1"]),
-    ("brief", &["--cwd", "/synthetic", "--source", "startup"]),
-    ("takeover", &["claude-code:s1"]),
-    ("takeover", &["claude-code:missing"]),
-    ("recall", &["parser", "--cwd", "/synthetic"]),
+    ("rows", &["assertion:missing", "read"]),
+    ("rows", &["claude-code:s1", "resume"]),
+    ("rows", &["brief", "--cwd", "/synthetic"]),
+    ("rows", &["claude-code:s1", "brief"]),
+    ("rows", &["claude-code:missing", "brief"]),
+    ("rows", &["parser", "brief", "--cwd", "/synthetic"]),
     ("chat list", &[]),
     ("backfill list", &[]),
     ("timeline", &["--date", "2024-01-01"]),
     ("cost", &["--date", "2024-01-01"]),
 ];
+fn parse_line(argv: &[&str]) -> Result<(&'static Command, command_surface::ParsedCommand), String> {
+    let words = argv
+        .iter()
+        .skip(1)
+        .map(|word| (*word).to_owned())
+        .collect::<Vec<_>>();
+    let parsed = crate::cli::line::parse(
+        &words,
+        &crate::cli::line::FirstWordCatalog::default(),
+        false,
+    )
+    .map_err(|error| error.message)?;
+    if parsed.first == crate::cli::line::FirstWord::Command {
+        return crate::cli::parse(argv);
+    }
+    let row = command("rows").unwrap();
+    let request = crate::cli::run_line::request(&parsed).map_err(|error| error.message)?;
+    Ok((
+        row,
+        command_surface::ParsedCommand {
+            request,
+            kind: declarations().spec_named("rows").unwrap().kind.clone(),
+            json: parsed.line.json,
+            calling_process: Default::default(),
+        },
+    ))
+}
 
 /// Read commands left out, each with the reason.
 const LEFT_OUT: &[(&str, &str)] = &[(
@@ -50,12 +76,11 @@ type Answer = Result<Value, String>;
 type Exit = Option<u8>;
 
 fn cli_answer(w: &test_daemon::TestDaemon, argv: &[&str], request_id: &str) -> (Answer, Exit) {
-    let cwd = std::env::current_dir().unwrap();
-    let (c, _, arguments) = match crate::cli::request_arguments(argv, &cwd) {
+    let (c, values) = match parse_line(argv) {
         Ok(parsed) => parsed,
         Err(e) => return (Err(format!("bad_request: {e}")), None),
     };
-    let request = crate::client::request(c.name, Value::Object(arguments), request_id.into());
+    let request = crate::client::request(c.name, values.request.arguments, request_id.into());
     let answer = crate::client::call_ready(&w.daemon.archive, &request).unwrap();
     let exit = answer.exit_code();
     let shown = crate::protocol::into_value(answer).map_err(|error| {
@@ -213,7 +238,8 @@ fn socket_authorship() -> Authorship {
 
 fn context_authorship_path(name: &str) -> Option<&'static str> {
     match name {
-        "query" | "list" => Some("/resolved/context/authorship"),
+        "list" => Some("/resolved/context/authorship"),
+        "rows" => Some("/reply/resolved/context/authorship"),
         "timeline" | "cost" => Some("/context/authorship"),
         _ => None,
     }
@@ -221,6 +247,9 @@ fn context_authorship_path(name: &str) -> Option<&'static str> {
 
 fn assert_transport_authorship(answer: &Answer, name: &str, expected: &Authorship) {
     if let (Ok(value), Some(path)) = (answer, context_authorship_path(name)) {
+        if name == "rows" && value["kind"] != "listing" {
+            return;
+        }
         assert_eq!(
             value.pointer(path).expect("operation context authorship"),
             &serde_json::to_value(expected).unwrap()
@@ -231,6 +260,9 @@ fn assert_transport_authorship(answer: &Answer, name: &str, expected: &Authorshi
 fn expected_transport_answer(baseline: &Answer, name: &str, authorship: &Authorship) -> Answer {
     let mut expected = baseline.clone();
     if let (Ok(value), Some(path)) = (&mut expected, context_authorship_path(name)) {
+        if name == "rows" && value["kind"] != "listing" {
+            return expected;
+        }
         *value
             .pointer_mut(path)
             .expect("operation context authorship") = serde_json::to_value(authorship).unwrap();
@@ -259,7 +291,9 @@ fn read_position(w: &test_daemon::TestDaemon) -> polylogue_model::ChangePosition
 
 fn assert_read_page(answer: &Answer, position: &polylogue_model::ChangePosition) {
     let value = answer.as_ref().expect("session read succeeds");
-    let page: polylogue_model::read::ReadPage = serde_json::from_value(value.clone()).unwrap();
+    let page: polylogue_model::read::ReadPage =
+        serde_json::from_value(value["reply"]["steps"][0]["outcome"]["reply"]["reply"].clone())
+            .unwrap();
     assert_eq!(
         &page.snapshot.read_at, position,
         "the page must report the independently observed position"
@@ -348,16 +382,16 @@ fn every_client_answers_the_same_request_identically() {
         let command = command(name).unwrap();
         let words = command.cli_words();
         let mut argv = vec!["polylogue"];
-        if command.cli != Cli::NoSubcommand {
+        if command.cli != Cli::Line {
             argv.extend(words.iter().map(String::as_str));
         }
         argv.extend(*args);
-        let (c, values) = crate::cli::parse(&argv).unwrap();
-        let cli_position = (*name == "read").then(|| read_position(&w));
+        let (c, values) = parse_line(&argv).unwrap();
+        let cli_position = (args.last() == Some(&"read")).then(|| read_position(&w));
         let (cli, cli_exit) = cli_answer(&w, &argv, &request_id);
-        let mcp_position = (*name == "read").then(|| read_position(&w));
+        let mcp_position = (args.last() == Some(&"read")).then(|| read_position(&w));
         let mcp = mcp_answer(&w, c, &values, &request_id);
-        let http_position = (*name == "read").then(|| read_position(&w));
+        let http_position = (args.last() == Some(&"read")).then(|| read_position(&w));
         let (http, http_exit) = http_answer(&web, c, &values, &request_id);
         if cli_exit.is_some() {
             assert_eq!(
@@ -370,28 +404,39 @@ fn every_client_answers_the_same_request_identically() {
         assert_transport_authorship(&cli, name, &socket_author);
         assert_transport_authorship(&mcp, name, &socket_author);
         assert_transport_authorship(&http, name, &web_author);
-        if *name == "read" && args.first() == Some(&"session:claude-code:s1") {
+        if args.last() == Some(&"read") && args.first() == Some(&"session:claude-code:s1") {
             assert_read_page(&cli, cli_position.as_ref().unwrap());
             assert_read_page(&mcp, mcp_position.as_ref().unwrap());
             assert_read_page(&http, http_position.as_ref().unwrap());
             // Keep the complete raw answer. Only its expected per-invocation
             // descriptor differs, and that value was observed outside the answer.
             let mut expected = cli.as_ref().unwrap().clone();
-            expected["snapshot"]["read_at"] = serde_json::to_value(mcp_position.unwrap()).unwrap();
+            expected["reply"]["steps"][0]["outcome"]["reply"]["reply"]["snapshot"]["read_at"] =
+                serde_json::to_value(mcp_position.unwrap()).unwrap();
             assert_eq!(Ok(expected.clone()), mcp, "whole MCP read answer");
-            expected["snapshot"]["read_at"] = serde_json::to_value(http_position.unwrap()).unwrap();
+            expected["reply"]["steps"][0]["outcome"]["reply"]["reply"]["snapshot"]["read_at"] =
+                serde_json::to_value(http_position.unwrap()).unwrap();
             assert_eq!(Ok(expected), http, "whole HTTP read answer");
             continue;
         }
-        if matches!(*name, "brief" | "takeover" | "recall")
+        if args.contains(&"brief")
             && let Ok(value) = &cli
         {
             // Session's protocol handler runs in this test process. The
             // daemon observes that socket peer as CLI, so it does not record
             // a model delivery. The MCP process control is in e2e.
-            assert_eq!(value["delivery"], Value::Null);
-            assert_eq!(http.as_ref().unwrap()["delivery"], Value::Null);
-            assert_eq!(mcp.as_ref().unwrap()["delivery"], Value::Null);
+            assert_eq!(
+                value["reply"]["steps"][0]["outcome"]["reply"]["reply"]["delivery"],
+                Value::Null
+            );
+            assert_eq!(
+                http.as_ref().unwrap()["reply"]["steps"][0]["outcome"]["reply"]["reply"]["delivery"],
+                Value::Null
+            );
+            assert_eq!(
+                mcp.as_ref().unwrap()["reply"]["steps"][0]["outcome"]["reply"]["reply"]["delivery"],
+                Value::Null
+            );
         }
         assert_eq!(
             cli,
