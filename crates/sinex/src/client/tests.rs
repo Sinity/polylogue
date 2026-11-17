@@ -48,6 +48,51 @@ pub(super) fn synchronous(config: &Config, authentication: &Authentication) -> S
     }
 }
 
+// Registrations use the same byte transport as other frames when their
+// declarations exceed the broker payload. Decode the original before replying.
+fn registration_acknowledgment(
+    payload: &[u8],
+    frame_root: &Path,
+) -> sinex_protocol::Acknowledgment {
+    let frame: sinex_protocol::Ingress = serde_json::from_slice(payload).unwrap();
+    let identity = frame.frame().to_owned();
+    let content_hash = sinex_transport::producer::content_hash(&frame).unwrap();
+    let registration = match frame {
+        sinex_protocol::Ingress::LargeFrame {
+            frame,
+            blob,
+            length,
+        } => {
+            let reader = sinex_transport::frame_bytes::reader(
+                frame_root,
+                "polylogue",
+                &frame,
+                &blob,
+                length,
+            )
+            .unwrap();
+            serde_json::from_reader(reader).unwrap()
+        }
+        frame => frame,
+    };
+    assert_eq!(registration.frame(), identity);
+    assert_eq!(
+        sinex_transport::producer::content_hash(&registration).unwrap(),
+        content_hash,
+    );
+    let sinex_protocol::Ingress::RegisterKinds { declarations, .. } = &registration else {
+        panic!("kind registration expected before sending")
+    };
+    let mut acknowledgment = crate::tests::no_event_acknowledgment(&registration);
+    acknowledgment.result = sinex_protocol::FrameResult::KindsRegistered {
+        kinds: declarations
+            .iter()
+            .map(|kind| (kind.kind.clone(), kind.definition_hash()))
+            .collect(),
+    };
+    acknowledgment
+}
+
 #[test]
 fn registration_acknowledgment_establishes_family() {
     let server = server();
@@ -55,6 +100,7 @@ fn registration_acknowledgment_establishes_family() {
     let file = root.path().join("password");
     std::fs::write(&file, format!("{PASSWORD}\n")).unwrap();
     let url = server.url().to_string();
+    let frame_root = root.path().to_path_buf();
     let (ready, wait) = std::sync::mpsc::channel();
     let fake_sinex = std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -75,11 +121,8 @@ fn registration_acknowledgment_establishes_family() {
             assert!(inbox.starts_with("_INBOX.polylogue."));
             sinex_transport::replies::publish_json(&client,inbox.to_string(),ProducerWelcome::Welcome{family:Some("polylogue".into()),canonical_publisher:true},Duration::from_secs(5)).await.unwrap();
             let frame=ingress.next().await.unwrap();
-            let sinex_protocol::Ingress::RegisterKinds{frame,declarations}=serde_json::from_slice(&frame.payload).unwrap() else {panic!("kind registration expected")};
-            let hashes:Vec<_>=declarations.iter().map(|declaration|(declaration.kind.clone(),declaration.definition_hash())).collect();
-            let mut acknowledgment=crate::tests::no_event_acknowledgment(&sinex_protocol::Ingress::RegisterKinds{frame:frame.clone(),declarations:declarations.clone()});
-            acknowledgment.result=sinex_protocol::FrameResult::KindsRegistered{kinds:hashes};
-            client.publish("auth.ack.polylogue",serde_json::to_vec(&sinex_protocol::AckHint{number:1,frame_hash:blake3::hash(frame.as_bytes()).to_hex().to_string()}).unwrap().into()).await.unwrap();
+            let acknowledgment=registration_acknowledgment(&frame.payload,&frame_root);
+            client.publish("auth.ack.polylogue",serde_json::to_vec(&sinex_protocol::AckHint{number:1,frame_hash:blake3::hash(acknowledgment.frame.as_bytes()).to_hex().to_string()}).unwrap().into()).await.unwrap();
             let request=recorded.next().await.unwrap();
             let query:sinex_protocol::RecordedQuery=serde_json::from_slice(&request.payload).unwrap();assert_eq!(query.numbers,[1]);
             sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),sinex_protocol::RecordedPage{acknowledgments:vec![acknowledgment],next:None,..Default::default()},Duration::from_secs(5)).await.unwrap();
@@ -535,6 +578,7 @@ fn dropped_waiting_sender_keeps_the_original_frame() {
     let root = tempfile::tempdir().unwrap();
     let config = config(&server, root.path(), None);
     let url = server.url().to_string();
+    let frame_root = config.store.clone();
     let (ready, waiting) = std::sync::mpsc::channel();
     let (published, wait_published) = std::sync::mpsc::channel();
     let (stop, stopped) = tokio::sync::oneshot::channel();
@@ -577,23 +621,15 @@ fn dropped_waiting_sender_keeps_the_original_frame() {
             .await
             .unwrap();
             let message = ingress.next().await.unwrap();
-            let frame: sinex_protocol::Ingress = serde_json::from_slice(&message.payload).unwrap();
-            let sinex_protocol::Ingress::RegisterKinds { declarations, .. } = &frame else {
-                panic!("register before sending")
-            };
-            let mut acknowledgment = crate::tests::no_event_acknowledgment(&frame);
-            acknowledgment.result = sinex_protocol::FrameResult::KindsRegistered {
-                kinds: declarations
-                    .iter()
-                    .map(|kind| (kind.kind.clone(), kind.definition_hash()))
-                    .collect(),
-            };
+            let acknowledgment = registration_acknowledgment(&message.payload, &frame_root);
             client
                 .publish(
                     "auth.ack.polylogue",
                     serde_json::to_vec(&sinex_protocol::AckHint {
                         number: acknowledgment.number,
-                        frame_hash: blake3::hash(frame.frame().as_bytes()).to_hex().to_string(),
+                        frame_hash: blake3::hash(acknowledgment.frame.as_bytes())
+                            .to_hex()
+                            .to_string(),
                     })
                     .unwrap()
                     .into(),
@@ -752,20 +788,10 @@ impl FakeSinex {
         .await
         .unwrap();
     }
-    async fn register(&mut self) {
+    async fn register(&mut self, frame_root: &Path) {
         use futures_util::StreamExt;
         let message = self.ingress.next().await.unwrap();
-        let frame: sinex_protocol::Ingress = serde_json::from_slice(&message.payload).unwrap();
-        let sinex_protocol::Ingress::RegisterKinds { declarations, .. } = &frame else {
-            panic!("register before sending")
-        };
-        let mut acknowledgment = crate::tests::no_event_acknowledgment(&frame);
-        acknowledgment.result = sinex_protocol::FrameResult::KindsRegistered {
-            kinds: declarations
-                .iter()
-                .map(|kind| (kind.kind.clone(), kind.definition_hash()))
-                .collect(),
-        };
+        let acknowledgment = registration_acknowledgment(&message.payload, frame_root);
         self.acknowledge(acknowledgment).await;
     }
 }
@@ -812,11 +838,12 @@ fn current_frame_is_acknowledged_with_5000_frames_waiting() {
         .build()
         .unwrap();
     let mut fake_sinex = runtime.block_on(FakeSinex::start(&server, "BACKLOG_INGRESS"));
+    let frame_root = config.store.clone();
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let serving = std::thread::spawn(move || {
         runtime.block_on(async move {
             fake_sinex.welcome().await;
-            fake_sinex.register().await;
+            fake_sinex.register(&frame_root).await;
             let mut current = None;
             let mut oldest = None;
             for _ in 0..4 {
