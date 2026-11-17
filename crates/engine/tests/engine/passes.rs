@@ -822,7 +822,7 @@ fn copied_tool_history_keeps_items_after_restart() {
         + &record(
             6,
             "response_item",
-            json!({"type":"function_call_output", "call_id":"parent-tool",
+            json!({"type":"function_call_output", "id":"parent-result", "call_id":"parent-tool",
             "output":"parent synthetic result"}),
         );
     let child = |id: &str, suffix: &str| {
