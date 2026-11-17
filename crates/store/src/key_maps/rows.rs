@@ -39,6 +39,9 @@ struct Run {
     length: u64,
     first: [u8; 32],
     last: [u8; 32],
+    samples: Vec<([u8; 32], u64)>,
+    #[cfg(test)]
+    reads: std::sync::atomic::AtomicU64,
 }
 impl Run {
     fn read(&self, at: u64) -> Result<Record> {
@@ -46,6 +49,9 @@ impl Run {
         self.file
             .as_file()
             .read_exact_at(&mut bytes, at * RECORD_BYTES as u64)?;
+        #[cfg(test)]
+        self.reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(Record::decode(bytes))
     }
     fn visit(
@@ -56,7 +62,14 @@ impl Run {
         if key < &self.first || key > &self.last {
             return Ok(ControlFlow::Continue(()));
         }
-        let (mut lo, mut hi) = (0, self.length);
+        // Start before the first sample equal to the key: its candidates can
+        // begin before that sample and continue across several samples.
+        let sample = self.samples.partition_point(|(value, _)| value < key);
+        let mut lo = sample.checked_sub(1).map_or(0, |n| self.samples[n].1);
+        let mut hi = self
+            .samples
+            .get(sample)
+            .map_or(self.length, |(_, at)| at + 1);
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
             if self.read(mid)?.key < *key {
@@ -99,15 +112,24 @@ impl RunReader {
         Ok(Some(Record::decode(bytes)))
     }
 }
+fn sample_bytes(buffer: usize) -> usize {
+    (buffer / 8).max(std::mem::size_of::<([u8; 32], u64)>())
+}
 struct RunWriter {
+    samples: Vec<([u8; 32], u64)>,
+    stride: u64,
     file: BufWriter<tempfile::NamedTempFile>,
     length: u64,
     first: [u8; 32],
     last: [u8; 32],
 }
 impl RunWriter {
-    fn new(buffer: usize) -> Result<Self> {
+    fn new(buffer: usize, maximum: u64) -> Result<Self> {
+        let capacity = (sample_bytes(buffer) / std::mem::size_of::<([u8; 32], u64)>()).max(1);
+        let stride = maximum.div_ceil(capacity as u64).max(1);
         Ok(Self {
+            samples: Vec::with_capacity(capacity),
+            stride,
             file: BufWriter::with_capacity(buffer, tempfile::NamedTempFile::new()?),
             length: 0,
             first: [0; 32],
@@ -115,6 +137,9 @@ impl RunWriter {
         })
     }
     fn push(&mut self, record: Record) -> Result<()> {
+        if self.length.is_multiple_of(self.stride) {
+            self.samples.push((record.key, self.length));
+        }
         self.file.write_all(&record.encode())?;
         if self.length == 0 {
             self.first = record.key;
@@ -129,6 +154,9 @@ impl RunWriter {
             length: self.length,
             first: self.first,
             last: self.last,
+            samples: self.samples,
+            #[cfg(test)]
+            reads: std::sync::atomic::AtomicU64::new(0),
         })
     }
 }
@@ -150,10 +178,11 @@ impl KeyRows {
         let bytes = usize::try_from(bytes).unwrap_or(usize::MAX).max(64 * 1024);
         let filter_bytes = (bytes / 8).clamp(64, 8 * 1024 * 1024);
         let directory = std::mem::size_of::<[Option<Run>; LEVELS]>();
-        let buffer = (bytes.saturating_sub(filter_bytes + directory) / (LEVELS + 4))
+        let buffer = (bytes.saturating_sub(filter_bytes + directory) / (LEVELS + LEVELS / 8 + 4))
             .clamp(RECORD_BYTES, 64 * 1024);
-        let fixed =
-            filter_bytes + buffer * (LEVELS + 1) + std::mem::size_of::<[Option<Run>; LEVELS]>();
+        let fixed = filter_bytes
+            + (buffer + sample_bytes(buffer)) * (LEVELS + 1)
+            + std::mem::size_of::<[Option<Run>; LEVELS]>();
         Ok(Self {
             entries: BTreeMap::new(),
             runs: std::array::from_fn(|_| None),
@@ -239,7 +268,7 @@ impl KeyRows {
         if self.entries.is_empty() {
             return Ok(());
         }
-        let mut output = RunWriter::new(self.buffer)?;
+        let mut output = RunWriter::new(self.buffer, self.entries.len() as u64)?;
         for ((key, value), sequence) in &self.entries {
             output.push(Record {
                 key: *key,
@@ -281,7 +310,8 @@ impl KeyRows {
             .iter_mut()
             .map(RunReader::next)
             .collect::<Result<_>>()?;
-        let mut output = RunWriter::new(self.buffer)?;
+        let maximum = self.runs.iter().flatten().map(|run| run.length).sum();
+        let mut output = RunWriter::new(self.buffer, maximum)?;
         let mut latest: Option<Record> = None;
         while let Some((at, record)) = current
             .iter()
@@ -329,7 +359,7 @@ fn merge(first: &Run, second: &Run, buffer: usize) -> Result<Run> {
         RunReader::new(second, buffer)?,
     );
     let (mut x, mut y) = (a.next()?, b.next()?);
-    let mut output = RunWriter::new(buffer)?;
+    let mut output = RunWriter::new(buffer, first.length + second.length)?;
     while let (Some(left), Some(right)) = (x, y) {
         match left.order().cmp(&right.order()) {
             std::cmp::Ordering::Less => {
