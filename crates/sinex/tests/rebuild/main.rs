@@ -426,7 +426,7 @@ fn send_captured_events(
                 payload: payload.clone(),
                 location: Some(sinex_model::RecordLocation {
                     material,
-                    anchor: offset,
+                    record_offset: offset,
                 }),
                 output_index: 0,
                 parents: vec![],

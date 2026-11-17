@@ -375,10 +375,10 @@ async fn transport(
 
 pub(crate) fn submit_error(error: sinex_transport::producer::SubmitError) -> Error {
     match error {
-        sinex_transport::producer::SubmitError::ReceiptConflict {
+        sinex_transport::producer::SubmitError::AckConflict {
             frame,
             offered_hash,
-            receipt: acknowledgment,
+            ack: acknowledgment,
         } => Error::AcknowledgmentConflict {
             frame,
             offered_hash,
@@ -404,7 +404,7 @@ pub(crate) fn verified_acknowledgment(
             "recorded acknowledgment changed its operation identity",
         ));
     }
-    sinex_transport::producer::check_receipt(&frame, acknowledgment).map_err(submit_error)
+    sinex_transport::producer::check_ack(&frame, acknowledgment).map_err(submit_error)
 }
 
 pub(crate) fn checked(acknowledgment: Acknowledgment) -> Result<Acknowledgment> {
