@@ -91,6 +91,14 @@ pub fn command() -> clap::Command {
             }
         }
     }
+    root = root.subcommand_precedence_over_arg(true).arg(
+        clap::Arg::new("selection")
+            .value_name("SELECTION")
+            .help("One quoted query or reference")
+            .add(clap_complete::engine::ArgValueCompleter::new(
+                completion::Query,
+            )),
+    );
     crate::config::augment_command(root)
 }
 
