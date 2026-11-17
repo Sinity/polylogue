@@ -744,126 +744,13 @@ impl Handler for Import {
     }
 }
 
-pub(crate) struct Revise;
-impl Handler for Revise {
-    type Arguments = protocol::assertion::Revise;
-    type Answer = polylogue_model::user::UserOutcome;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
-        if arguments.bases.is_empty() {
-            return Ok(error(
-                polylogue_model::Code::BadRequest,
-                "bases must not be empty",
-            ));
-        }
-        Ok(write(
-            call.daemon,
-            call.invocation,
-            call.request_id.into(),
-            UserWrite::ReviseAssertions {
-                bases: arguments.bases,
-                patch: arguments.patch,
-            },
-        ))
-    }
-}
-
-pub(crate) struct Withdraw;
-impl Handler for Withdraw {
-    type Arguments = protocol::assertion::Withdraw;
-    type Answer = polylogue_model::user::UserOutcome;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
-        if arguments.targets.is_empty() {
-            return Ok(error(
-                polylogue_model::Code::BadRequest,
-                "targets must not be empty",
-            ));
-        }
-        Ok(write(
-            call.daemon,
-            call.invocation,
-            call.request_id.into(),
-            UserWrite::WithdrawAssertions {
-                targets: arguments.targets,
-                reason: arguments.reason,
-            },
-        ))
-    }
-}
-
-/// The operator accepts or rejects one revision of an agent's note.
-pub(crate) struct Judge;
-impl Handler for Judge {
-    type Arguments = protocol::assertion::Judge;
-    type Answer = polylogue_model::user::UserOutcome;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
-        let protocol::assertion::Judge {
-            note,
-            accepted,
-            reason,
-        } = arguments;
-        let reference = match polylogue_model::Reference::parse(&note) {
-            Ok(polylogue_model::Reference::Assertion(reference)) => reference,
-            Ok(_) => {
-                return Ok(error(
-                    polylogue_model::Code::BadRequest,
-                    "a judgment needs a natural assertion reference",
-                ));
-            }
-            Err(e) => return Ok(error(polylogue_model::Code::BadRequest, e)),
-        };
-        let reader = call.reader()?;
-        let selected_scope = reader.scope_token();
-        let found = match reader.assertion(&reference) {
-            Ok(Some(found)) => found,
-            Ok(None) => {
-                return Ok(error(
-                    polylogue_model::Code::NotFound,
-                    format!("no assertion {note}"),
-                ));
-            }
-            Err(e) => return Ok(store_error(&e)),
-        };
-        if !found.fact.author.is_agent() {
-            return Ok(error(
-                polylogue_model::Code::BadRequest,
-                "only assertions agents wrote are accepted or rejected; revise or withdraw the operator's own",
-            ));
-        }
-        drop(reader);
-        let judgment = polylogue_model::assertion::NewAssertion {
-            kind: polylogue_model::assertion::AssertionKind::Judgment,
-            key: Some(if accepted { "accepted" } else { "rejected" }.into()),
-            value: reason.map(Value::String),
-            links: vec![polylogue_model::assertion::NewAssertionLink {
-                role: polylogue_model::assertion::LinkRole::About,
-                reference: polylogue_model::Reference::Assertion(
-                    polylogue_model::RevisionReference {
-                        root: found.fact.root,
-                        revision: Some(found.fact.id),
-                    },
-                ),
-            }],
-            valid_until: None,
-        };
-        Ok(write_from_read(
-            call.daemon,
-            call.invocation,
-            call.request_id.into(),
-            UserWrite::Assert {
-                assertions: vec![judgment],
-            },
-            selected_scope,
-        ))
-    }
-}
-
 /// Submit the complete Save as one authored write and one retry receipt.
 pub(crate) fn save_selection(
     step: protocol::steps::SaveStep,
     query: String,
     selection: &crate::daemon::verbs::Selection,
     call: &Call<'_>,
-) -> Result<Answer<(protocol::line::SaveReport, Vec<String>)>, Failure> {
+) -> Result<Answer<(protocol::line::SaveReport, Vec<polylogue_model::Reference>)>, Failure> {
     let (d, invocation) = (call.daemon, call.invocation);
     let request_id: String = call.request_id.into();
     let reader = call.reader()?;
@@ -885,18 +772,7 @@ pub(crate) fn save_selection(
         let mut report = receipt
             .save
             .expect("Save transaction returns its resolved outcomes");
-        let mut undo = Vec::new();
-        for outcome in report
-            .saved
-            .iter()
-            .chain(report.watch.iter())
-            .filter(|outcome| !outcome.repeat)
-        {
-            undo.extend(crate::daemon::verbs::undo_line(
-                &outcome.id,
-                &crate::daemon::verbs::written(&outcome.id, 1),
-            ));
-        }
+        let written = receipt.written;
         for outcome in report
             .saved
             .iter_mut()
@@ -906,7 +782,7 @@ pub(crate) fn save_selection(
             outcome.pending = receipt.outcome.pending;
             outcome.repeat |= receipt.outcome.repeat;
         }
-        (report, undo)
+        (report, written)
     };
     match repeated_request(&reader, &request_id, &intended, invocation) {
         Ok(Some(previous)) => {

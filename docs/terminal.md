@@ -114,7 +114,7 @@ next: polylogue @1 read · polylogue 'rate limit' pick read · polylogue 'rate l
 ```
 
 - A default that removed rows is named whenever it removed any (`3 subagent sessions folded into their parents`); a plain-word search says it was one.
-- After a write: what was written, the recorded author, and the undo line (`polylogue annotation:01JB7Q2M withdraw`, or for a step over many rows `polylogue 'annotations where request:01JD7Q4M' withdraw --all`; [annotations.md](annotations.md#the-write-path)).
+- After a write: what was written, the recorded author, and the undo command. It withdraws the exact revisions that request created; a bulk command passes those references on standard input. Reused annotations have no new undo, and a retry retains the original undo ([annotations.md](annotations.md#the-write-path)).
 - After an act: who it reached, by which channel, and that it cannot be undone.
 - After an empty reply (exit 1): how many rows each condition kept and the nearest line that returns rows.
 - When the rows are kept, the footer names `result:<id>`.

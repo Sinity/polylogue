@@ -14,7 +14,7 @@ use crate::daemon::Failure;
 use crate::daemon::handler::Call;
 use crate::protocol::line::{Step, StepAnswer};
 use command_surface::{Answer, Envelope, Outcome};
-use polylogue_model::{Code, Reference, RevisionReference};
+use polylogue_model::{Code, Reference};
 
 /// One verb of a line.
 pub(crate) trait Verb {
@@ -239,39 +239,45 @@ pub(crate) fn would(
     }
 }
 
-/// The line that takes back what one write step committed: the one
-/// annotation by its reference, or every annotation of the step's request.
-pub(crate) fn undo_line(request_id: &str, committed: &[Reference]) -> Option<String> {
-    match committed {
-        [] => None,
-        [one] => Some(format!(
-            "polylogue {} withdraw",
-            polylogue_render::shell_quote(&one.to_string())
-        )),
-        _ => Some(format!(
-            "polylogue {} withdraw --all",
-            polylogue_render::shell_quote(&format!(
-                "{} where request:{request_id}",
-                polylogue_query::ast::Unit::Assertions.name()
-            ))
-        )),
+/// The command that withdraws exactly the revisions this write created.
+pub(crate) fn undo_line(
+    request_id: &str,
+    committed: &[Reference],
+) -> Result<Option<String>, Failure> {
+    if committed.is_empty() {
+        return Ok(None);
     }
-}
-
-/// The annotations one request wrote, `count` of them, by their IDs.
-pub(crate) fn written(request_id: &str, count: usize) -> Vec<Reference> {
-    (1..=count)
-        .map(|n| {
-            Reference::Assertion(RevisionReference {
-                root: if count == 1 {
-                    request_id.to_owned()
-                } else {
-                    format!("{request_id}.{n}")
-                },
-                revision: None,
-            })
+    let rows = crate::protocol::line::Rows {
+        references: committed.iter().map(ToString::to_string).collect(),
+        steps: vec![Step::Withdraw(
+            crate::protocol::steps::WithdrawStep::default(),
+        )],
+        all: committed.len() > 1,
+        ..Default::default()
+    };
+    let request = crate::client::request(
+        "rows",
+        serde_json::to_value(rows).map_err(Failure::internal)?,
+        format!("{request_id}-undo"),
+    );
+    crate::commands::declarations()
+        .cli_command(&request)
+        .map(Some)
+        .map_err(|mut error| {
+            error.message = format!(
+                "the write committed, but its undo command could not be written: {}",
+                error.message
+            );
+            error.hint = Some(format!(
+                "written revisions: {}",
+                committed
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            Failure { error }
         })
-        .collect()
 }
 
 /// The refusal of an option whose body is not built yet.

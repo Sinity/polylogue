@@ -17,6 +17,8 @@ use polylogue_model::user::{UserOutcome, UserRequest, UserWrite};
 pub struct UserReceipt {
     pub outcome: UserOutcome,
     pub save: Option<polylogue_model::user::SaveReport>,
+    /// Exact assertion revisions created by the accepted write, including on retry.
+    pub written: Vec<polylogue_model::Reference>,
 }
 impl UserReceipt {
     pub(crate) fn recorded(
@@ -30,7 +32,25 @@ impl UserReceipt {
                 })?),
                 _ => None,
             };
-        Ok(Self { outcome, save })
+        Ok(Self {
+            outcome,
+            save,
+            written: Self::references(&prepared.effect),
+        })
+    }
+    fn references(
+        effect: &polylogue_model::authored::AuthoredEffect,
+    ) -> Vec<polylogue_model::Reference> {
+        effect
+            .assertions
+            .iter()
+            .map(|fact| {
+                polylogue_model::Reference::Assertion(polylogue_model::RevisionReference::exact(
+                    fact.root.clone(),
+                    fact.id.clone(),
+                ))
+            })
+            .collect()
     }
 }
 
@@ -197,6 +217,7 @@ pub(crate) fn apply_using(
         return Ok(UserReceipt {
             outcome: prepared.outcome,
             save: None,
+            written: UserReceipt::references(&prepared.effect),
         });
     }
     let hash = crate::primary::authored::request_hash(r)?;
@@ -660,6 +681,7 @@ pub(crate) fn apply_using(
     Ok(UserReceipt {
         outcome,
         save: save_outcomes,
+        written: UserReceipt::references(&effect),
     })
 }
 

@@ -1,6 +1,5 @@
 //! Product failure codes classified once into the shared transport contract.
 pub mod act;
-pub mod assertion;
 pub mod attachment {
     //! Attachment descriptors and bytes share one checked range operation.
     use schemars::JsonSchema;

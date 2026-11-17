@@ -1055,6 +1055,17 @@ fn choose(env: &crate::Fixture, args: &[&str], keys: &[u8]) -> Output {
     output
 }
 
+fn printed_cli(env: &crate::Fixture, command: &str) -> Output {
+    let mut shell = Command::new("sh");
+    env.environment(&mut shell);
+    let script = format!("polylogue() {{ \"$POLYLOGUE_TEST_BINARY\" \"$@\"; }}\n{command}");
+    shell
+        .env("POLYLOGUE_TEST_BINARY", crate::BIN)
+        .args(["-c", &script])
+        .output()
+        .unwrap()
+}
+
 #[test]
 fn picker_prefix_suffix_retry_cancellation_and_complete_undo_set() {
     let dir = tempfile::tempdir().unwrap();
@@ -1174,14 +1185,7 @@ fn picker_prefix_suffix_retry_cancellation_and_complete_undo_set() {
         );
     }
     for command in undo.iter().rev() {
-        let mut shell = Command::new("sh");
-        env.environment(&mut shell);
-        let script = format!("polylogue() {{ \"$POLYLOGUE_TEST_BINARY\" \"$@\"; }}\n{command}");
-        let output = shell
-            .env("POLYLOGUE_TEST_BINARY", crate::BIN)
-            .args(["-c", &script])
-            .output()
-            .unwrap();
+        let output = printed_cli(&env, command);
         assert!(output.status.success(), "{output:?}");
     }
     let found = json(&cli(&env, &["--json", "assertions where kind:tag"]));
@@ -1215,6 +1219,71 @@ fn picker_prefix_suffix_retry_cancellation_and_complete_undo_set() {
     assert_eq!(found["reply"]["count"], 2, "{found}");
     let suffix = json(&cli(&env, &["--json", "sessions where tag:suffix"]));
     assert_eq!(suffix["reply"]["count"], 0, "{suffix}");
+    let prior = cli(
+        &env,
+        &[
+            "--request-id",
+            "tag-existing",
+            "session:claude-code:s1",
+            "tag",
+            "only-once",
+        ],
+    );
+    assert!(prior.status.success(), "{prior:?}");
+    let mixed_args = [
+        "--json",
+        "--request-id",
+        "tag-mixed",
+        "sessions | sort by id",
+        "tag",
+        "only-once",
+        "--all",
+    ];
+    let mixed = cli(&env, &mixed_args);
+    assert!(mixed.status.success(), "{mixed:?}");
+    let first = json(&mixed);
+    let undo = first["reply"]["steps"][0]["outcome"]["undo"]
+        .as_array()
+        .unwrap();
+    assert_eq!(undo.len(), 1);
+    let retry = cli(&env, &mixed_args);
+    assert!(retry.status.success(), "{retry:?}");
+    assert_eq!(
+        json(&retry)["reply"]["steps"][0]["outcome"]["undo"],
+        serde_json::json!(undo)
+    );
+    let restored = printed_cli(&env, undo[0].as_str().unwrap());
+    assert!(restored.status.success(), "{restored:?}");
+    let remaining = json(&cli(
+        &env,
+        &[
+            "--json",
+            "sessions where tag:only-once | sort by id",
+            "--fields",
+            "id",
+        ],
+    ));
+    assert_eq!(
+        remaining["reply"]["rows"],
+        serde_json::json!([{"id":"claude-code:s1"}])
+    );
+    let already = cli(
+        &env,
+        &[
+            "--json",
+            "--request-id",
+            "tag-already",
+            "session:claude-code:s1",
+            "tag",
+            "only-once",
+        ],
+    );
+    assert!(already.status.success(), "{already:?}");
+    assert!(
+        json(&already)["reply"]["steps"][0]["outcome"]
+            .get("undo")
+            .is_none()
+    );
 }
 
 #[test]
@@ -1277,17 +1346,7 @@ fn printed_cli_continuation_and_previous_keep_the_accepted_options() {
         .collect::<Vec<_>>();
     assert_eq!(commands.len(), 1, "{stderr}");
     assert!(commands[0].contains(&next.request.request_id));
-    let mut shell = Command::new("sh");
-    env.environment(&mut shell);
-    let script = format!(
-        "polylogue() {{ \"$POLYLOGUE_TEST_BINARY\" \"$@\"; }}\n{}",
-        commands[0]
-    );
-    let continued = shell
-        .env("POLYLOGUE_TEST_BINARY", crate::BIN)
-        .args(["-c", &script])
-        .output()
-        .unwrap();
+    let continued = printed_cli(&env, commands[0]);
     assert!(continued.status.success(), "{continued:?}");
     let second: ReadDocument = serde_json::from_slice(&continued.stdout).unwrap();
     let expected = followed_page(&env, next);

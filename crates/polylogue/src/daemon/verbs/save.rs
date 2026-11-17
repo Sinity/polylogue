@@ -43,7 +43,10 @@ impl Verb for Save {
                 StepAnswer::Saved(report)
             },
         )?;
-        done.undo = undo;
+        for reference in undo {
+            done.undo
+                .extend(super::undo_line(&reference.to_string(), &[reference])?);
+        }
         Ok(done)
     }
 
