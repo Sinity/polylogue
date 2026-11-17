@@ -536,6 +536,22 @@ pub fn run(
     if let Run::Delivered { deliver, .. } = cmd.run {
         return deliver(&values, startup, call);
     }
+    if cmd.name == "rows"
+        && cmd.registration().is_some_and(|registration| {
+            registration
+                .admit(
+                    &call.arguments,
+                    cmd,
+                    &crate::commands::Caller {
+                        surface: crate::commands::Surface::Cli,
+                        cwd: Some(cwd.to_owned()),
+                    },
+                )
+                .is_ok_and(|policy| policy.streaming)
+        })
+    {
+        return write_out::line_stream(&values, startup, call);
+    }
     let root = startup.config.archive.clone();
     let answer = match crate::client::call_ready(&Archive::at(&root), call) {
         Ok(r) => r,

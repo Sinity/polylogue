@@ -79,6 +79,51 @@ pub(crate) fn run(
         }
     }
 }
+/// Stream the declared line through the same validated read consumer.
+pub(crate) fn line_stream(
+    values: &command_surface::ParsedCommand,
+    startup: &crate::config::Startup,
+    accepted: &command_surface::RunnableRequest,
+) -> ExitCode {
+    let archive = Archive::at(&startup.config.archive);
+    let result = consume(
+        None,
+        false,
+        polylogue_render::Format::Terminal,
+        None,
+        false,
+        values.json,
+        Some(startup),
+        |callback| {
+            crate::client::stream::run_call(
+                &archive,
+                accepted,
+                crate::client::connection_budget(accepted, None),
+                callback,
+            )
+        },
+    );
+    match result {
+        Ok(code) => ExitCode::from(code),
+        Err(DeliveryError::Text(error)) => fail(
+            startup.output,
+            values.json,
+            polylogue_model::Code::ReadOutput,
+            &error,
+            1,
+        ),
+        Err(DeliveryError::Answer(answer)) => super::fail_with(
+            startup.output,
+            values.json,
+            match &answer.outcome {
+                command_surface::Outcome::Error(error) => error,
+                _ => unreachable!("stream error contains a failure"),
+            },
+            &answer.envelope.notes,
+        ),
+    }
+}
+
 /// One page as `format`, the first line bold on a colour terminal.
 fn encode_page(
     startup: &crate::config::Startup,
@@ -359,6 +404,7 @@ fn deliver(
         package_format,
         with_blobs,
         values.json,
+        None,
         |callback| {
             crate::client::stream::run_call(
                 &archive,
@@ -387,6 +433,7 @@ fn consume(
     package_format: Option<polylogue_model::bundle::Format>,
     with_blobs: bool,
     json: bool,
+    line: Option<&crate::config::Startup>,
     run: impl FnOnce(
         &mut dyn FnMut(command_surface::SseEvent) -> io::Result<bool>,
     ) -> Result<(), crate::client::stream::Error>,
@@ -394,9 +441,55 @@ fn consume(
     let mut sink = None;
     let mut completed = false;
     let mut code = 0_u8;
+    let mut failed = None;
     let result = run(&mut |frame| {
+        if line.is_some() && json {
+            let data: serde_json::Value =
+                serde_json::from_str(&frame.data).map_err(io::Error::other)?;
+            writeln!(
+                io::stdout().lock(),
+                "{}",
+                serde_json::json!({"event":frame.event,"data":data})
+            )?;
+        }
+        if let Some(startup) = line
+            && matches!(frame.event.as_str(), "steps" | "answer")
+        {
+            let answer: command_surface::Answer<crate::protocol::line::LineAnswer> =
+                serde_json::from_str(&frame.data).map_err(io::Error::other)?;
+            if let Some(crate::protocol::line::LineAnswer::Steps(steps)) = answer.value() {
+                for step in &steps.steps {
+                    if let crate::protocol::line::StepOutcome::Failed { error } = &step.outcome {
+                        failed.get_or_insert(error.kind.exit_code());
+                    }
+                }
+            }
+            if !json {
+                if let Some(value) = answer.value() {
+                    write!(
+                        io::stdout().lock(),
+                        "{}",
+                        super::print::line(value, super::style(startup.output))
+                    )?;
+                }
+                super::notes(
+                    &crate::protocol::notes(&answer).cloned().collect::<Vec<_>>(),
+                    startup.output,
+                );
+            }
+            if frame.event == "answer" {
+                if sink.is_some() {
+                    return Err(io::Error::other("line ended inside a read"));
+                }
+                completed = true;
+                code = failed.unwrap_or(answer.exit_code());
+                return Ok(true);
+            }
+            return Ok(false);
+        }
         match frame.event.as_str() {
             "begin" => {
+                completed = false;
                 if sink.is_some() {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -578,7 +671,7 @@ fn consume(
                                 )?;
                             }
                             eprintln!("polylogue: wrote {}", path.display());
-                        } else {
+                        } else if !(line.is_some() && json) {
                             encode(
                                 &begin,
                                 &mut items,
@@ -589,8 +682,8 @@ fn consume(
                         }
                     }
                 }
-                completed = true;
-                return Ok(true);
+                completed = line.is_none();
+                return Ok(line.is_none());
             }
             _ => {
                 return Err(io::Error::new(

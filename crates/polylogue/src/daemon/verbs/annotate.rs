@@ -173,10 +173,35 @@ fn each(
     let query = selection
         .query_text()
         .ok_or_else(|| Failure::bad_request("a write needs rows"))?;
-    let mut done = delegated(
-        handlers::AssertQuery::run(assertion::AssertQuery { query, assertion }, &call.call)?,
-        StepAnswer::WroteEach,
-    )?;
+    let resolved = selection.references()?.to_vec();
+    let targets = resolved.len();
+    let reader = call.call.reader()?;
+    let scope = reader.scope_token();
+    drop(reader);
+    let answer = crate::daemon::service::submit(
+        call.call.daemon,
+        call.call.invocation,
+        call.call.request_id.into(),
+        polylogue_model::user::UserWrite::AssertQuery {
+            query,
+            assertion,
+            resolved,
+        },
+        Some(scope),
+        |outcome| polylogue_model::user::AssertQueryOutcome::new(outcome, targets),
+    );
+    let answer = if targets == 0 {
+        match answer.outcome {
+            command_surface::Outcome::Ok(value) => command_surface::Answer {
+                outcome: command_surface::Outcome::Empty(value),
+                envelope: answer.envelope,
+            },
+            _ => answer,
+        }
+    } else {
+        answer
+    };
+    let mut done = delegated(answer, StepAnswer::WroteEach)?;
     if let StepAnswer::WroteEach(outcome) = &done.reply {
         done.undo.extend(undo_line(
             call.call.request_id,

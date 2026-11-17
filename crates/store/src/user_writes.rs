@@ -227,6 +227,11 @@ pub(crate) fn apply_using(
         mode,
     };
     let outcome = match &r.write {
+        UserWrite::ResolveLine { .. } => Ok(UserOutcome {
+            id: r.id.clone(),
+            repeat: false,
+            pending: false,
+        }),
         UserWrite::Assert { assertions } => {
             crate::assertions::write_preparing(tx, assertions, context, &mut resolve_saved)
         }
@@ -236,13 +241,14 @@ pub(crate) fn apply_using(
             ..
         } => {
             use polylogue_model::assertion::{LinkRole, NewAssertionLink};
-            if resolved.is_empty()
-                || assertion
-                    .links
-                    .iter()
-                    .any(|link| link.role == LinkRole::About)
+            if assertion
+                .links
+                .iter()
+                .any(|link| link.role == LinkRole::About)
             {
-                return Err(StoreError::Invalid("a query assertion needs resolved targets and cannot supply its own about links".into()));
+                return Err(StoreError::Invalid(
+                    "a query assertion cannot supply its own about links".into(),
+                ));
             }
             // One deliberate write of a single-valued mark revises it; a bulk
             // write over several rows never does. Systematic labelling goes
@@ -473,7 +479,11 @@ pub(crate) fn apply_using(
             crate::assertions::write_preparing(tx, &[statement], context, &mut resolve_saved)
         }
     }?;
-    let effect = crate::primary::authored::capture(tx, r, seq)?;
+    let effect = if matches!(r.write, UserWrite::ResolveLine { .. }) {
+        polylogue_model::authored::AuthoredEffect::default()
+    } else {
+        crate::primary::authored::capture(tx, r, seq)?
+    };
     tx.execute(
         &source.sql("UPDATE @source.client_request SET outcome=?2,effect=?3 WHERE id=?1"),
         params![

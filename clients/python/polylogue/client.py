@@ -10,13 +10,24 @@ from .models import Answer, _copy
 __all__ = ["Client", "Refused"]
 
 
+def _failure(answer):
+    if answer.get("outcome") == "error":
+        return answer["error"]
+    value = answer.get("value", {})
+    if value.get("kind") == "steps":
+        for step in value["reply"]["steps"]:
+            if step["outcome"]["status"] == "failed":
+                return step["outcome"]["error"]
+    return None
+
+
 class Refused(RuntimeError):
     """The complete refusal, including a corrected query when supplied."""
 
     def __init__(self, answer, returncode):
         self.answer = Answer(answer)
         self.returncode = returncode
-        error = answer["error"]
+        error = _failure(answer)
         self.kind = error.get("kind", "client")
         super().__init__(error.get("message", str(answer)))
 
@@ -49,7 +60,7 @@ class Client:
         except (ValueError, UnicodeDecodeError) as error:
             raise RuntimeError(f"Polylogue returned no JSON answer (exit {result.returncode})") from error
         outcome = answer.get("outcome") if isinstance(answer, dict) else None
-        if outcome == "error":
+        if _failure(answer):
             if result.returncode == 0:
                 raise RuntimeError("Polylogue returned an error with a successful exit status")
             raise Refused(answer, result.returncode)
@@ -59,6 +70,46 @@ class Client:
         if result.returncode != expected:
             raise RuntimeError(f"Polylogue's {outcome} answer disagrees with exit {result.returncode}")
         return Answer(answer)
+
+    def stream(self, *arguments):
+        """Yield typed finite line events through its final answer.
+
+        Each read completes independently. The final answer ends the line;
+        failures retain their earlier step reports and undo lines.
+        Closing the iterator terminates and reaps the child process.
+        """
+        with subprocess.Popen(self._arguments(*arguments), stdout=subprocess.PIPE) as process:
+            final = None
+            failed = None
+            try:
+                for line in process.stdout:
+                    event = json.loads(line)
+                    if "event" not in event:
+                        if _failure(event):
+                            raise Refused(event, process.wait())
+                        raise RuntimeError("Polylogue returned no line event")
+                    if final is not None:
+                        raise RuntimeError("Polylogue emitted an event after its final answer")
+                    if event["event"] in {"steps", "answer"}:
+                        if _failure(event["data"]) and failed is None:
+                            failed = event["data"]
+                    if event["event"] == "answer":
+                        final = event["data"]
+                    yield _copy(event)
+                code = process.wait()
+                if failed is not None:
+                    if code == 0:
+                        raise RuntimeError("Polylogue returned a failed step with a successful exit status")
+                    raise Refused(failed, code)
+                if final is None:
+                    raise RuntimeError("Polylogue's line stopped before its final answer")
+                expected = {"ok":0, "empty":1, "degraded":5}[final["outcome"]]
+                if code != expected:
+                    raise RuntimeError(f"Polylogue's line answer disagrees with exit {code}")
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                process.wait()
 
     def status(self):
         return self.call("status")

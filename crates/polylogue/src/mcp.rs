@@ -214,6 +214,7 @@ fn rows_text(line: &LineAnswer) -> Result<String, String> {
                             .render_text("rows", &answer, command_surface::TextStyle::Plain)
                             .map_err(|failure| error_text(&failure))?
                     }
+                    StepAnswer::Streamed(_) | StepAnswer::Followed(_) => String::new(),
                     StepAnswer::Brief(brief) => {
                         polylogue_render::terminal::escape(&brief.prepared.text)
                     }

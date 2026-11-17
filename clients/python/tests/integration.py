@@ -61,6 +61,22 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(client._arguments("status")[:3], [EXECUTABLE, "--archive", declared])
             self.assertEqual(client._arguments("dev", "feed")[:3], [EXECUTABLE, "--archive", declared])
 
+    def test_ordered_line_stream_reads_every_step_and_finishes_once(self):
+        arguments = {"references":["session:claude-code:python"], "steps":[
+            {"verb":"note", "text":"Python first line note"},
+            {"verb":"read", "delivery":"stream"},
+            {"verb":"tag", "name":"python-later"},
+            {"verb":"read", "delivery":"stream"}]}
+        events = list(self.direct.stream("rows", "--request", json.dumps(arguments),
+            "--request-id", "python-ordered"))
+        self.assertEqual([event["event"] for event in events].count("complete"),2)
+        self.assertEqual(events[-1]["event"],"answer")
+        reports = [report for event in events if event["event"] in {"steps","answer"}
+            for report in event["data"]["value"]["reply"]["steps"]]
+        self.assertEqual([report["verb"] for report in reports],["note","read","tag","read"])
+        self.assertEqual([report["request_id"] for report in reports],
+            ["python-ordered-1","python-ordered-2","python-ordered-3","python-ordered-4"])
+
     def test_query_and_read_match_cli_json(self):
         query = self.checked(lambda: self.client.query("sessions"))
         self.assertEqual(query["outcome"], "ok")

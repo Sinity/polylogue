@@ -159,7 +159,7 @@ impl crate::daemon::handler::Streams for Read {
         context: &Arc<Context>,
         output: &mut dyn Write,
     ) -> Result<(), Failure> {
-        stream(arguments, call, context, output, call.daemon)
+        stream(arguments, call, context, output, call.daemon).map(|_| ())
     }
 }
 
@@ -170,14 +170,24 @@ pub(crate) fn stream(
     context: &Arc<Context>,
     output: &mut dyn Write,
     services: &impl ReadServices,
-) -> Result<(), Failure> {
-    let request = request_of(arguments, None).map_err(Failure::bad_request)?;
+) -> Result<Answer<ReadComplete>, Failure> {
+    let request =
+        request_of(arguments, call.cursor.map(str::to_owned)).map_err(Failure::bad_request)?;
     super::accepting(call.daemon)?;
     let reader = call.reader()?;
     let request = polylogue_reading::with_variants(&reader, services, request.clone())
         .map_err(|error| failure(error, &request))?;
-    polylogue_reading::stream(&reader, services, &request, context, output)
-        .map_err(|error| failure(error, &request))
+    let freshness = services.freshness(&reader)?;
+    let complete = polylogue_reading::stream(&reader, services, &request, context, output)
+        .map_err(|error| failure(error, &request))?;
+    if complete.counts == polylogue_model::bundle::Counts::default()
+        && complete.footer.coverage.is_empty()
+        && freshness.up_to_date()
+    {
+        Ok(Answer::empty(complete))
+    } else {
+        Ok(crate::protocol::read(complete, &freshness))
+    }
 }
 
 impl ReadServices for Daemon {

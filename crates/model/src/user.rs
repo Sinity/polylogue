@@ -35,6 +35,11 @@ impl RequestMetadata {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "write", rename_all = "snake_case", deny_unknown_fields)]
 pub enum UserWrite {
+    /// A line's accepted intent and fixed population, shared by every step and retry.
+    ResolveLine {
+        request: serde_json::Value,
+        resolved: Option<Vec<crate::Reference>>,
+    },
     /// A trusted daemon checkpoint with its immutable signal outbox and receipts.
     SignalCommit(Box<crate::signal::Commit>),
     Variant {
@@ -176,6 +181,7 @@ impl UserWrite {
         };
         match &mut intent {
             Self::AssertQuery { resolved, .. } => resolved.clear(),
+            Self::ResolveLine { resolved, .. } => *resolved = None,
             Self::KeepResult {
                 rows_json, read_at, ..
             } => {

@@ -371,3 +371,144 @@ fn listing_wait_answers_before_request_deadline() {
         json!({"selection": "sessions where tag:later", "wait": "1h"})
     );
 }
+
+fn socket_events(d: &TestDaemon, id: &str, arguments: Value) -> Vec<(String, Value)> {
+    let request = crate::client::request("rows", arguments, id.into());
+    let mut events = Vec::new();
+    crate::client::stream::run_call(
+        &d.daemon.archive,
+        &request,
+        Some(std::time::Duration::from_secs(10)),
+        |frame| {
+            let done = frame.event == "answer";
+            events.push((frame.event, serde_json::from_str(&frame.data).unwrap()));
+            Ok(done)
+        },
+    )
+    .unwrap();
+    events
+}
+
+#[test]
+fn socket_chain_streams_each_read_at_its_step_and_retries_writes_once() {
+    let d = test_daemon::start("ordered stream prompt");
+    let arguments = json!({
+        "selection": "sessions where NOT tag:done",
+        "steps": [
+            {"verb":"tag", "name":"done"},
+            {"verb":"read", "view":"raw", "delivery":"stream"},
+            {"verb":"note", "text":"after-note"},
+            {"verb":"read", "view":"raw", "delivery":"stream"}
+        ]
+    });
+    for retry in [false, true] {
+        let events = socket_events(&d, "ordered", arguments.clone());
+        let names: Vec<_> = events.iter().map(|(event, _)| event.as_str()).collect();
+        assert_eq!(
+            names.iter().filter(|event| **event == "begin").count(),
+            2,
+            "{events:?}"
+        );
+        assert_eq!(
+            names.iter().filter(|event| **event == "complete").count(),
+            2
+        );
+        assert_eq!(names.last(), Some(&"answer"));
+        let reports: Vec<_> = events
+            .iter()
+            .filter(|(name, _)| name == "steps" || name == "answer")
+            .flat_map(|(_, answer)| answer["value"]["reply"]["steps"].as_array().unwrap().iter())
+            .collect();
+        assert_eq!(
+            reports
+                .iter()
+                .map(|report| report["verb"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["tag", "read", "note", "read"]
+        );
+        for index in [0, 2] {
+            assert_eq!(reports[index]["outcome"]["reply"]["reply"]["repeat"], retry);
+        }
+        let mut reads = vec![String::new(), String::new()];
+        let mut index = 0;
+        for (name, value) in &events {
+            if name == "record" {
+                reads[index].push_str(&value.to_string());
+            }
+            if name == "complete" {
+                index += 1;
+            }
+        }
+        assert!(
+            reads
+                .iter()
+                .all(|read| read.contains("ordered stream prompt")),
+            "{reads:?}"
+        );
+        if !retry {
+            assert!(!reads[0].contains("after-note"), "{reads:?}");
+            assert!(reads[1].contains("after-note"), "{reads:?}");
+        }
+        assert_eq!(count(&d, "assertions where kind:tag OR kind:note"), 2);
+    }
+    let changed = json!({"selection":"sessions", "steps":[{"verb":"note", "text":"another"}]});
+    assert_eq!(
+        refusal(line(&d, "ordered", changed)).kind,
+        command_surface::FailureKind::Conflict
+    );
+}
+
+#[test]
+fn stream_prefix_failure_keeps_undo_and_does_not_start_a_read() {
+    let d = test_daemon::start("prefix failure prompt");
+    let events = socket_events(
+        &d,
+        "prefix",
+        json!({
+            "references":["session:claude-code:s1"],
+            "steps":[{"verb":"note","text":"kept-note"},{"verb":"edit","text":"cannot-edit-session"},
+                {"verb":"read","delivery":"stream"}]
+        }),
+    );
+    assert!(
+        events
+            .iter()
+            .all(|(name, _)| name == "steps" || name == "answer"),
+        "{events:?}"
+    );
+    let reports: Vec<_> = events
+        .iter()
+        .flat_map(|(_, answer)| answer["value"]["reply"]["steps"].as_array().unwrap().iter())
+        .collect();
+    assert_eq!(
+        reports
+            .iter()
+            .map(|step| step["outcome"]["status"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["done", "failed", "not_run"]
+    );
+    assert_eq!(
+        reports[0]["outcome"]["undo"],
+        json!(["polylogue assertion:prefix-1 withdraw"])
+    );
+    assert_eq!(count(&d, "assertions where kind:note"), 1);
+}
+
+#[test]
+fn empty_fixed_selection_streams_no_records_and_keeps_empty_outcome() {
+    let d = test_daemon::start("not selected");
+    let events = socket_events(
+        &d,
+        "empty",
+        json!({
+            "selection":"sessions where 0 = 1", "steps":[
+                {"verb":"tag","name":"no-target"}, {"verb":"read","delivery":"stream"}]
+        }),
+    );
+    assert!(
+        events.iter().all(|(name, _)| name != "record"),
+        "{events:?}"
+    );
+    assert_eq!(events.last().unwrap().1["outcome"], "empty", "{events:?}");
+    assert_eq!(count(&d, "assertions"), 0);
+}

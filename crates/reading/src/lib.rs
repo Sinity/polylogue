@@ -712,7 +712,7 @@ pub fn stream(
     request: &ReadRequest,
     operation: &Arc<Context>,
     output: &mut dyn Write,
-) -> Result<(), Error> {
+) -> Result<ReadComplete, Error> {
     if request.delivery != ReadDelivery::Stream {
         return Err(Error::bad_request(
             "streaming reads require stream delivery",
@@ -758,7 +758,7 @@ fn rows_stream(
     object_facts: Option<&LayoutFacts>,
     mut footer: ReadFooter,
     output: &mut dyn Write,
-) -> Result<(), Error> {
+) -> Result<ReadComplete, Error> {
     let ready_attachment = |message: &MessageId, block, index, input: Option<&str>| {
         attachment_call(d, message, block, index, input)
     };

@@ -212,13 +212,14 @@ impl<'a> Stream<'a> {
         self.emit("blob", chunk)
     }
 
-    pub(super) fn finish(mut self, mut footer: ReadFooter) -> Result<(), Error> {
+    pub(super) fn finish(mut self, mut footer: ReadFooter) -> Result<ReadComplete, Error> {
         footer.shown = self.shown;
         footer.count = ValueState::known(self.shown);
         let complete = ReadComplete {
             footer,
             counts: self.counts,
         };
-        self.emit("complete", &complete)
+        self.emit("complete", &complete)?;
+        Ok(complete)
     }
 }

@@ -110,6 +110,7 @@ pub fn line(answer: &protocol::line::LineAnswer, style: TextStyle) -> String {
             StepOutcome::Done { reply, undo: lines } => {
                 out.push_str(&match reply {
                     StepAnswer::Read(page) => read(page, style),
+                    StepAnswer::Streamed(_) | StepAnswer::Followed(_) => String::new(),
                     StepAnswer::Brief(prepared) => context(prepared, style),
                     StepAnswer::Resume(found) => resume(found, style),
                     other => json(other, style),
