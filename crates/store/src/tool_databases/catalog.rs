@@ -111,7 +111,10 @@ pub(super) struct Catalog {
 }
 impl Catalog {
     pub fn open(archive: &Archive, input: &str) -> crate::Result<Self> {
-        let conn = crate::archive::open_read(&archive.index_db())?;
+        let conn = archive.open_index_connection(
+            &archive.index_db(),
+            crate::archive::index_build::Reads::Pipeline,
+        )?;
         conn.pragma_update(None, "temp_store", "file")?;
         conn.pragma_update(Some("temp"), "cache_size", -1024)?;
         conn.execute_batch(

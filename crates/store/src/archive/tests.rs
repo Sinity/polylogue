@@ -650,7 +650,13 @@ fn private_index_readers_recover_journals_without_accepting_writes() {
         )
         .unwrap();
     }
-    for pooled in [false, true] {
+    let provider = dir.path().join("provider.sqlite");
+    Connection::open(&provider)
+        .unwrap()
+        .execute_batch("CREATE TABLE source(value TEXT); INSERT INTO source VALUES('sentinel')")
+        .unwrap();
+    let original_provider = fs::read(&provider).unwrap();
+    for reader_kind in ["direct", "pool", "tool database"] {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -672,7 +678,7 @@ fn private_index_readers_recover_journals_without_accepting_writes() {
             .unwrap_err();
         assert_eq!(error.sqlite_error().unwrap().extended_code, 776);
         drop(original);
-        if pooled {
+        if reader_kind == "pool" {
             let pool = crate::ReadPool::open(&archive).unwrap();
             let reader = pool.reader().unwrap();
             assert_eq!(
@@ -709,6 +715,34 @@ fn private_index_readers_recover_journals_without_accepting_writes() {
                     .unwrap()[0]["value"],
                 0
             );
+        } else if reader_kind == "tool database" {
+            let input = crate::InputKey {
+                id: "synthetic-db".into(),
+                format: "codex-database".into(),
+                route: polylogue_model::Route::Live,
+            };
+            let observation = crate::Observation {
+                machine: "test-machine".into(),
+                host: "test".into(),
+                path: provider.display().to_string(),
+                path_bytes: provider.as_os_str().as_encoded_bytes().to_vec(),
+                facts: None,
+                seen_at_ms: 1,
+                import: None,
+                container: None,
+                database: None,
+            };
+            let mut output = Vec::new();
+            let report = crate::tool_databases::DatabaseReader::default()
+                .capture(&provider, &archive, &input, &observation, |bytes, _| {
+                    output.extend(bytes);
+                    Ok(())
+                })
+                .unwrap()
+                .unwrap();
+            assert_eq!(report.rows, 1);
+            assert!(String::from_utf8(output).unwrap().contains("sentinel"));
+            assert_eq!(fs::read(&provider).unwrap(), original_provider);
         } else {
             let reader = archive.open_index_read().unwrap();
             assert_eq!(

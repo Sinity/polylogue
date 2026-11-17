@@ -376,7 +376,7 @@ impl ReadPool {
     }
 
     fn connect(&self, path: &Path) -> Result<Connection> {
-        let conn = self.archive.open_pool_read(path, self.reads)?;
+        let conn = self.archive.open_index_connection(path, self.reads)?;
         if self.archive.is_primary() {
             crate::primary::scope::require_readable(&conn)?;
         }

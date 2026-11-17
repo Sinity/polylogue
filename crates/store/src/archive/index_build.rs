@@ -247,12 +247,14 @@ impl Archive {
     /// the private file this archive is currently building. query_only still
     /// rejects application writes and leaves SQLite free to recover its journal.
     pub(crate) fn open_index_read(&self) -> Result<Connection> {
-        let conn = self.open_pool_read(&self.index_db(), Reads::Pipeline)?;
+        let conn = self.open_index_connection(&self.index_db(), Reads::Pipeline)?;
         conn.pragma_update(None, "query_only", true)?;
         Ok(conn)
     }
 
-    pub(crate) fn open_pool_read(&self, path: &Path, reads: Reads) -> Result<Connection> {
+    /// An internal read connection with TEMP writes available to hydration
+    /// and tool-database comparisons. Its facade owns application-write refusal.
+    pub(crate) fn open_index_connection(&self, path: &Path, reads: Reads) -> Result<Connection> {
         let recover = {
             let paths = Paths::of(&self.root);
             let inner = self.index_build.inner();
