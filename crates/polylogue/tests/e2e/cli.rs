@@ -1212,3 +1212,116 @@ fn picker_prefix_suffix_retry_cancellation_and_complete_undo_set() {
     let suffix = json(&cli(&env, &["--json", "sessions where tag:suffix"]));
     assert_eq!(suffix["reply"]["count"], 0, "{suffix}");
 }
+
+#[test]
+fn printed_cli_continuation_and_previous_keep_the_accepted_options() {
+    use polylogue_model::read::ReadDocument;
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let project = home.join(".claude/projects/-pages");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("s1.jsonl"),
+        line("u1", "s1", &"Synthetic λ🙂 page text. ".repeat(100)),
+    )
+    .unwrap();
+    let env = crate::Fixture::new(
+        &dir.path().join("archive"),
+        &home,
+        &dir.path().join("config"),
+    );
+    let _daemon = start_daemon(&env);
+    wait_status(&env, |status| status["store"]["messages"] == 1);
+    let output = cli(
+        &env,
+        &[
+            "--budget",
+            "333",
+            "--deadline",
+            "none",
+            "--request-id",
+            "cli-page-grants",
+            "--fresh",
+            "--all",
+            "session:claude-code:s1",
+            "read",
+            "--format",
+            "json",
+            "--budget",
+            "1",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let first: ReadDocument = serde_json::from_slice(&output.stdout).unwrap();
+    let next = first.footer.next.as_ref().expect("one token must continue");
+    let check_options = |call: &polylogue_model::read::ReadyCall| {
+        assert_eq!(
+            call.request.budget_tokens,
+            command_surface::TokenBudget::Tokens(333)
+        );
+        assert_eq!(call.request.deadline, command_surface::Deadline::None);
+        assert!(call.request.fresh);
+        assert_eq!(call.request.format, command_surface::Format::Text);
+        assert_eq!(call.request.arguments["all"], true);
+        assert_eq!(call.request.arguments["steps"][0]["budget"], 1);
+        assert_eq!(call.request.arguments["steps"][0]["format"], "json");
+    };
+    check_options(next);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let commands = stderr
+        .lines()
+        .filter_map(|line| line.strip_prefix("continue: "))
+        .collect::<Vec<_>>();
+    assert_eq!(commands.len(), 1, "{stderr}");
+    assert!(commands[0].contains(&next.request.request_id));
+    let mut shell = Command::new("sh");
+    env.environment(&mut shell);
+    let script = format!(
+        "polylogue() {{ \"$POLYLOGUE_TEST_BINARY\" \"$@\"; }}\n{}",
+        commands[0]
+    );
+    let continued = shell
+        .env("POLYLOGUE_TEST_BINARY", crate::BIN)
+        .args(["-c", &script])
+        .output()
+        .unwrap();
+    assert!(continued.status.success(), "{continued:?}");
+    let second: ReadDocument = serde_json::from_slice(&continued.stdout).unwrap();
+    let expected = followed_page(&env, next);
+    assert_eq!(second.items, expected.document.items);
+    assert_eq!(second.header, expected.document.header);
+    let previous = second
+        .footer
+        .previous
+        .as_ref()
+        .expect("second page has a predecessor");
+    check_options(previous);
+    let cursor = previous.request.arguments["steps"][0]["cursor"]
+        .as_str()
+        .unwrap();
+    let returned = cli(
+        &env,
+        &[
+            "--budget",
+            "333",
+            "--deadline",
+            "none",
+            "--request-id",
+            &previous.request.request_id,
+            "--fresh",
+            "--all",
+            "session:claude-code:s1",
+            "read",
+            "--format",
+            "json",
+            "--budget",
+            "1",
+            "--cursor",
+            cursor,
+        ],
+    );
+    assert!(returned.status.success(), "{returned:?}");
+    let returned: ReadDocument = serde_json::from_slice(&returned.stdout).unwrap();
+    assert_eq!(returned.items, first.items);
+    assert_eq!(returned.header, first.header);
+}

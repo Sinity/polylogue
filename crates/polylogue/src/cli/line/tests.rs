@@ -262,6 +262,10 @@ fn line_formatter_diagnoses_unrepresentable_step_fields() {
 fn generated_cli_next_and_previous_requests_reach_the_real_reader() {
     let daemon = crate::test_daemon::start(&"Synthetic λ🙂 page. ".repeat(30));
     let first = parsed(&[
+        "--budget",
+        "333",
+        "--fresh",
+        "--all",
         "session:claude-code:s1",
         "read",
         "--budget",
@@ -296,6 +300,14 @@ fn generated_cli_next_and_previous_requests_reach_the_real_reader() {
         .next
         .as_ref()
         .expect("one-token page must continue");
+    assert_eq!(
+        next.request.budget_tokens,
+        command_surface::TokenBudget::Tokens(333)
+    );
+    assert_eq!(next.request.deadline, command_surface::Deadline::None);
+    assert_eq!(next.request.format, command_surface::Format::Json);
+    assert!(next.request.fresh);
+    assert_eq!(next.request.arguments["all"], true);
     let second = read(&next.request);
     let previous = second
         .document
@@ -303,6 +315,14 @@ fn generated_cli_next_and_previous_requests_reach_the_real_reader() {
         .previous
         .as_ref()
         .expect("second page has a predecessor");
+    assert_eq!(
+        previous.request.budget_tokens,
+        command_surface::TokenBudget::Tokens(333)
+    );
+    assert_eq!(previous.request.deadline, command_surface::Deadline::None);
+    assert_eq!(previous.request.format, command_surface::Format::Json);
+    assert!(previous.request.fresh);
+    assert_eq!(previous.request.arguments["all"], true);
     let restored = read(&previous.request);
     assert_eq!(restored.document.items, first.document.items);
     assert_eq!(restored.document.header, first.document.header);

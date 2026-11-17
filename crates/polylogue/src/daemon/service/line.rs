@@ -687,6 +687,7 @@ impl Stream<'_> {
             self.output,
             &LineReads {
                 daemon: call.daemon,
+                accepted: self.context.accepted_request(),
             },
             selection.resolved.as_deref(),
         )?;

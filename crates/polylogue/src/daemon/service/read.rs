@@ -101,11 +101,10 @@ pub(crate) fn arguments_of(
     })
 }
 
-/// One page of a read; `services` make its ready calls.
+/// One page of a read, with ready calls bound to its accepted request.
 pub(crate) fn page(
     arguments: crate::protocol::read::Arguments,
     call: &crate::daemon::handler::Call<'_>,
-    services: &impl ReadServices,
     references: Option<&[polylogue_model::Reference]>,
 ) -> Result<Answer<ReadPage>, Failure> {
     let mut request =
@@ -122,6 +121,10 @@ pub(crate) fn page(
     };
     let reader = call.reader()?;
     let context = call.context()?;
+    let services = &crate::daemon::verbs::read::LineReads {
+        daemon: call.daemon,
+        accepted: context.accepted_request(),
+    };
     let request = polylogue_reading::with_variants(&reader, services, request.clone())
         .map_err(|error| failure(error, &request))?;
     let page = polylogue_reading::page(&reader, services, &request, &context, history)
@@ -206,8 +209,11 @@ impl ReadServices for Daemon {
         cursor: Option<String>,
         deadline: Deadline,
     ) -> Result<ReadyCall, Error> {
-        crate::daemon::verbs::read::LineReads { daemon: self }
-            .continuation(request, cursor, deadline)
+        crate::daemon::verbs::read::LineReads {
+            daemon: self,
+            accepted: None,
+        }
+        .continuation(request, cursor, deadline)
     }
     fn attachment_call(&self, at: &AttachmentPlace) -> Result<ReadyCall, Error> {
         let arguments = serde_json::to_value(crate::protocol::attachment::Arguments {
