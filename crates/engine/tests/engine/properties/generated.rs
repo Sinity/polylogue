@@ -169,6 +169,16 @@ fn run_all_at_once(c: &Corpus) -> (ClaudeHome, Vec<Vec<Record>>) {
     (w, v)
 }
 
+#[test]
+fn three_copied_inputs_keep_the_build_writable() {
+    let c = corpus(&Shape {
+        parents: vec![5],
+        children: vec![(7, 4, 3), (2, 3, 3)],
+    });
+    let (w, _) = run_all_at_once(&c);
+    assert_eq!(w.count("SELECT COUNT(*) AS n FROM message"), 11);
+}
+
 proptest! {
     // Seeds of past failures are kept beside this file; cargo runs
     // integration tests from the package directory.

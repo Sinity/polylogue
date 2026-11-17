@@ -505,6 +505,7 @@ fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
     const MESSAGES: usize = 34;
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
+    eprintln!("brief fixture: populating {SESSIONS} sessions and {MESSAGES} messages each");
     let pks = f
         .many_sessions(ManySessions {
             prefix: "/work/dense",
@@ -514,6 +515,7 @@ fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
             last: T0 - 60_000,
         })
         .unwrap();
+    eprintln!("brief fixture: populated; preparing reads");
     const { assert!(SESSIONS * MESSAGES >= 1_000_000) };
     // Three of the newest are working there now.
     for &pk in &pks[SESSIONS - 3..] {

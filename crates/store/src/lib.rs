@@ -376,6 +376,13 @@ impl StoreError {
 
 impl From<rusqlite::Error> for StoreError {
     fn from(error: rusqlite::Error) -> Self {
+        #[cfg(any(test, feature = "fixture"))]
+        if error.sqlite_error_code() == Some(rusqlite::ErrorCode::ReadOnly) {
+            eprintln!(
+                "readonly SQLite error: {error:?}\n{}",
+                std::backtrace::Backtrace::force_capture()
+            );
+        }
         if error.sqlite_error_code() == Some(rusqlite::ErrorCode::OperationInterrupted)
             && let Some(cause) = cancellation::interrupted_by()
         {
