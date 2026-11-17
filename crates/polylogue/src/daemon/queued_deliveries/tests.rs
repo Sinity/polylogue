@@ -16,10 +16,13 @@ fn captured_advice_remains_pending_until_current_history_confirms_application() 
         },
     );
     reply
-        .send(Ok(UserOutcome {
-            id: "advice-request".into(),
-            repeat: false,
-            pending: true,
+        .send(Ok(polylogue_store::user_writes::UserReceipt {
+            outcome: polylogue_model::user::UserOutcome {
+                id: "advice-request".into(),
+                repeat: false,
+                pending: true,
+            },
+            save: None,
         }))
         .unwrap();
     let first = queued.pending_advice("codex:recipient").unwrap();
