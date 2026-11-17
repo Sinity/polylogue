@@ -345,3 +345,54 @@ fn old_incomplete_query_run_and_current_completion_use_one_publisher_identity() 
         vec![outcome.clone()]
     );
 }
+
+#[test]
+fn unchanged_named_source8_observation_keeps_original_material_on_retry() {
+    let source = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let previous = client(source.path());
+    let write = ProductWrite {
+        product: Product::AttachmentBinding {
+            record: Box::new(super::binding_rebuild::binding_record()),
+        },
+        location: None,
+        parents: vec![],
+        machine: None,
+        output_index: 0,
+    };
+    previous
+        .prepare_named_products("unchanged-binding", std::slice::from_ref(&write))
+        .unwrap();
+    let observation = "unchanged-binding:observation";
+    let queue = previous.queue().unwrap();
+    let mut original = queue.decode_frame(observation).unwrap();
+    let sinex_protocol::Ingress::Material { material, .. } = &mut original else {
+        panic!("expected observation material")
+    };
+    material.source.version = 8;
+    let mut bytes = vec![];
+    queue
+        .body(observation)
+        .unwrap()
+        .read_to_end(&mut bytes)
+        .unwrap();
+    drop(queue);
+    let saved = crate::spool::Spool::open(target.path(), "polylogue-test").unwrap();
+    saved
+        .prepare_material(original.clone(), bytes.as_slice())
+        .unwrap();
+    drop(saved);
+    let current = client(target.path());
+    current
+        .prepare_named_products("unchanged-binding", &[write])
+        .unwrap();
+    let queue = current.queue().unwrap();
+    assert_eq!(queue.decode_frame(observation).unwrap(), original);
+    let mut repeated = vec![];
+    queue
+        .body(observation)
+        .unwrap()
+        .read_to_end(&mut repeated)
+        .unwrap();
+    assert_eq!(repeated, bytes);
+}
