@@ -107,7 +107,9 @@ fn failing_step_stops_line_and_prints_undo() {
     assert_eq!(statuses, ["done", "failed", "not_run"]);
     assert_eq!(
         steps[0]["outcome"]["undo"],
-        json!(["polylogue assertion:line-1 withdraw"])
+        json!([
+            r"printf '%s\n' 'assertion:line-1@line-1' | polylogue --request-id line-1-undo - withdraw"
+        ])
     );
     assert_eq!(steps[1]["outcome"]["error"]["kind"], "bad_request");
     assert_eq!(steps[1]["request_id"], "line-2");
@@ -496,7 +498,9 @@ fn stream_prefix_failure_keeps_undo_and_does_not_start_a_read() {
         );
         assert_eq!(
             reports[0]["outcome"]["undo"],
-            json!(["polylogue assertion:prefix-1 withdraw"])
+            json!([
+                r"printf '%s\n' 'assertion:prefix-1@prefix-1' | polylogue --request-id prefix-1-undo - withdraw"
+            ])
         );
         assert_eq!(reports[0]["outcome"]["reply"]["reply"]["repeat"], retry);
         assert_eq!(count(&d, "assertions where kind:note"), 1);

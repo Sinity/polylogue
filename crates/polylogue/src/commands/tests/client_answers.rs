@@ -179,7 +179,10 @@ fn http_answer(
         let body =
             serde_json::json!({"operation":c.name,"arguments":arguments,"request_id":request_id});
         (
-            axum::http::Request::post(format!("/api/v1{}", c.http_path())),
+            axum::http::Request::post(format!("/api/v1{}", c.http_path())).header(
+                axum::http::header::ORIGIN,
+                format!("http://127.0.0.1:{}", web.port),
+            ),
             Body::from(body.to_string()),
         )
     } else {
@@ -203,8 +206,15 @@ fn http_answer(
             .oneshot(request)
             .await
             .unwrap();
+        let status = response.status();
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        serde_json::from_slice(&bytes).unwrap()
+        serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+            panic!(
+                "{} HTTP {status} returned invalid JSON: {error}: {}",
+                c.name,
+                String::from_utf8_lossy(&bytes)
+            )
+        })
     });
     let answer: command_surface::Answer<Value> = serde_json::from_value(body).unwrap();
     let exit = answer.exit_code();
