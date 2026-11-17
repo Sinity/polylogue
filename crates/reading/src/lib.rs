@@ -773,7 +773,7 @@ fn rows_stream(
         attachment_call(d, message, block, index, input)
     };
     let rendering = Rendering {
-        at: operation.ran_at,
+        at: snapshot.ran_at,
         target: &reading.target,
         options: &reading.options,
         near,

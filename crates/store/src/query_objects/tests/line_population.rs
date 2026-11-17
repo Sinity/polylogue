@@ -175,6 +175,7 @@ fn preserved_register(path: &std::path::Path, corrupt: bool) -> (Value, QueryRun
     std::fs::write(path.parent().unwrap().join("lock"), b"").unwrap();
     let connection = rusqlite::Connection::open(path).unwrap();
     crate::schema::ensure_archive(&connection).unwrap();
+    super::super::apply_object(&connection, &question("sessions"), 1).unwrap();
     let (body, completion) = old_body(Some(Reference::parse("session:codex:preserved").unwrap()));
     connection
         .execute(
@@ -272,10 +273,11 @@ fn pending_begin_and_completion_join_the_preserved_population_once() {
     let original = std::fs::read(&source).unwrap();
     let (body, completion) = old_body(None);
     let groups = [
+        serde_json::json!({"product":{"product":"query","object":question("sessions")}}),
         serde_json::json!({"product":{"product":"query_run_outcome","outcome":completion}}),
         serde_json::json!({"product":{"product":"query_run","run":body}}),
     ];
-    let append = |connection: &Connection| {
+    let append = |connection: &rusqlite::Transaction<'_>| {
         crate::query_objects::line_population::stage_products(connection, &groups)?;
         crate::query_objects::line_population::stage_products(connection, &groups)
     };
@@ -389,5 +391,199 @@ fn active_archive_or_missing_custody_lock_changes_no_preserved_entries() {
     assert_eq!(preserved_tree(source.path()), before);
     assert!(!source.path().join("lock").exists());
     assert!(!target.exists());
+    assert_eq!(preserved_tree(source.path()), before);
+}
+
+#[test]
+fn converted_products_reconstruct_exact_objects_begins_and_completions() {
+    let source = tempfile::tempdir().unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let original = source.path().join("archive.db");
+    let current = destination.path().join("current.db");
+    let (body, completion) = preserved_register(&original, false);
+    convert_register(&original, &current, |_| Ok(())).unwrap();
+    let mut products = vec![];
+    assert_eq!(
+        crate::query_objects::line_population::visit_current_products(&current, |product| {
+            products.push(product);
+            Ok(())
+        })
+        .unwrap(),
+        3
+    );
+    let expected = convert_run(body).unwrap();
+    assert_eq!(
+        products,
+        vec![
+            crate::primary::Product::Query {
+                object: Box::new(question("sessions"))
+            },
+            crate::primary::Product::QueryRun {
+                run: Box::new(expected.run.clone())
+            },
+            crate::primary::Product::QueryRunOutcome {
+                outcome: Box::new(expected.completion(completion).unwrap())
+            },
+        ]
+    );
+    let mut repeated = vec![];
+    crate::query_objects::line_population::visit_current_products(&current, |product| {
+        repeated.push(product);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(products, repeated);
+}
+
+#[test]
+fn preserved_authored_requests_keep_ids_slots_and_repeat_without_effects() {
+    use polylogue_model::{
+        assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink},
+        user::UserWrite,
+    };
+    let origin = crate::fixture::writer::WriterArchive::new();
+    let write = UserWrite::Assert {
+        assertions: vec![NewAssertion {
+            kind: AssertionKind::Tag,
+            key: Some("preserved-tag".into()),
+            value: None,
+            valid_until: None,
+            links: vec![NewAssertionLink {
+                role: LinkRole::About,
+                reference: Reference::parse("session:codex:preserved").unwrap(),
+            }],
+        }],
+    };
+    for id in ["preserved-tag-request", "preserved-deduplicated-request"] {
+        origin
+            .writer
+            .user(crate::fixture::authored::operator_request(
+                id.into(),
+                write.clone(),
+            ))
+            .unwrap();
+    }
+    let pool = crate::ReadPool::open(&origin.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let mut authored = vec![];
+    reader
+        .visit_authored(&mut |prepared| {
+            authored.push(prepared.clone());
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(authored.len(), 2);
+    assert_eq!(
+        authored
+            .iter()
+            .map(|prepared| prepared.effect.assertions.len())
+            .sum::<usize>(),
+        1
+    );
+    let source = tempfile::tempdir().unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let original = source.path().join("archive.db");
+    let current = destination.path().join("current.db");
+    preserved_register(&original, false);
+    let before = preserved_tree(source.path());
+    let products: Vec<_> = authored.iter().map(|prepared| serde_json::json!({"product":{"product":"restored_request","prepared":prepared}})).collect();
+    convert_register(&original, &current, |tx| {
+        crate::query_objects::line_population::stage_products(tx, &products)?;
+        crate::query_objects::line_population::stage_products(tx, &products)
+    })
+    .unwrap();
+    assert_eq!(preserved_tree(source.path()), before);
+    let connection = Connection::open(&current).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT count(*) FROM assertion", [], |row| row
+                .get::<_, u64>(0))
+            .unwrap(),
+        1
+    );
+    assert!(
+        connection
+            .query_row("SELECT count(*) FROM assertion_slot", [], |row| row
+                .get::<_, u64>(0))
+            .unwrap()
+            > 0
+    );
+    let slots: Vec<(Vec<u8>, String)> = connection
+        .prepare("SELECT slot,id FROM assertion_slot ORDER BY slot,id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    let mut restored = vec![];
+    crate::query_objects::line_population::visit_current_products(&current, |product| {
+        if let crate::primary::Product::RestoredRequest { prepared } = product {
+            restored.push(prepared);
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(restored, authored);
+    drop(connection);
+    assert_eq!(
+        convert_register(&original, &current, |tx| {
+            crate::query_objects::line_population::stage_products(tx, &products)
+        })
+        .unwrap(),
+        0
+    );
+    let connection = Connection::open(&current).unwrap();
+    let repeated: Vec<(Vec<u8>, String)> = connection
+        .prepare("SELECT slot,id FROM assertion_slot ORDER BY slot,id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(slots, repeated);
+    assert_eq!(preserved_tree(source.path()), before);
+}
+
+#[test]
+fn primary_cache_transition_uses_source_tables_and_current_products() {
+    let source = tempfile::tempdir().unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let original = source.path().join("index.db");
+    let current = destination.path().join("current.db");
+    std::fs::write(source.path().join("lock"), b"").unwrap();
+    let connection = Connection::open(&original).unwrap();
+    crate::schema::ensure_primary_index(&connection).unwrap();
+    super::super::apply_object(&connection, &question("sessions"), 1).unwrap();
+    let (body, completion) = old_body(None);
+    connection.execute("INSERT INTO source_query_run(id,binding_hash,run_hash,query,run,completion) VALUES(?1,?2,?3,?4,?5,?6)", params![completion.run.as_str(), completion.binding_hash.to_string(), completion.run_hash.to_string(), question("sessions").id.to_string(), super::super::pack(&body).unwrap(), super::super::pack(&completion).unwrap()]).unwrap();
+    connection.pragma_update(None, "user_version", 8).unwrap();
+    drop(connection);
+    let before = preserved_tree(source.path());
+    assert_eq!(
+        convert_register(&original, &current, |_| Ok(())).unwrap(),
+        1
+    );
+    let mut products = vec![];
+    assert_eq!(
+        crate::query_objects::line_population::visit_current_products(&current, |product| {
+            products.push(product);
+            Ok(())
+        })
+        .unwrap(),
+        3
+    );
+    let converted = convert_run(body).unwrap();
+    assert_eq!(
+        products[1],
+        crate::primary::Product::QueryRun {
+            run: Box::new(converted.run.clone())
+        }
+    );
+    assert_eq!(
+        products[2],
+        crate::primary::Product::QueryRunOutcome {
+            outcome: Box::new(converted.completion(completion).unwrap())
+        }
+    );
     assert_eq!(preserved_tree(source.path()), before);
 }

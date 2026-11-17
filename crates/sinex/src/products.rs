@@ -699,7 +699,8 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                             "query_run" => 5,
                             "restored_assertion" => 2,
                             "tool_call" | "prefix_copy" | "prefix_member" => 2,
-                            "restored_history" | "attachment_binding" | "query_run_outcome" => 1,
+                            "query_run_outcome" => 2,
+                            "restored_history" | "attachment_binding" => 1,
                             "query" => 2,
                             _ => 3,
                         }
@@ -879,3 +880,22 @@ pub(crate) fn events(
 
 #[cfg(test)]
 mod tests;
+
+/// Query product logical names survive format changes. Their immutable frames
+/// belong to the current declared source, including completions of old runs.
+pub(crate) fn named_frame(name: &str) -> String {
+    if [
+        "query:",
+        "query-run:",
+        "query-run-outcome:",
+        "authored-restore:",
+        "assertion-restore:",
+    ]
+    .iter()
+    .any(|prefix| name.starts_with(prefix))
+    {
+        format!("polylogue-source-{}:{name}", crate::SOURCE_VERSION)
+    } else {
+        name.to_owned()
+    }
+}

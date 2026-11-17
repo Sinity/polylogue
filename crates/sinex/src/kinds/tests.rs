@@ -169,14 +169,13 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
                 "polylogue.parse_progress" => 7,
                 "polylogue.input_observation" => 6,
                 "polylogue.query_run" => 5,
+                "polylogue.query_run_outcome" => 2,
                 "polylogue.blob" | "polylogue.coverage" => 3,
                 "polylogue.fragment" => 4,
                 "polylogue.assertion" => 4,
                 "polylogue.query" => 2,
                 "polylogue.tool_call" | "polylogue.prefix_copy" | "polylogue.prefix_member" => 2,
-                "polylogue.historical_restore"
-                | "polylogue.attachment_binding"
-                | "polylogue.query_run_outcome" => 1,
+                "polylogue.historical_restore" | "polylogue.attachment_binding" => 1,
                 other => panic!("undeclared successor kind/version expectation: {other}"),
             }
         );

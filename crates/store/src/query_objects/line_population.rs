@@ -1,9 +1,14 @@
 //! Explicit conversion of preserved execution bodies. Normal readers never
 //! call this; the finite tool is retired after the format transition.
 use super::*;
+use crate::encoding::Columns;
 use polylogue_model::BlobHash;
 use serde_json::Value;
 use std::path::Path;
+
+fn sql(connection: &Connection, text: &str) -> Result<String> {
+    Ok(crate::source::Source::of(connection)?.sql(text))
+}
 
 pub struct ConvertedRun {
     pub run: QueryRun,
@@ -99,7 +104,7 @@ impl ConvertedRun {
 pub fn convert_register(
     source: &Path,
     destination: &Path,
-    pending: impl FnOnce(&Connection) -> Result<()>,
+    pending: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<()>,
 ) -> Result<u64> {
     use rusqlite::{
         OpenFlags,
@@ -191,8 +196,10 @@ pub fn convert_register(
     pending(&tx)?;
     let mut changed = 0;
     {
-        let mut statement = tx
-            .prepare("SELECT id,binding_hash,run_hash,run,completion FROM query_run ORDER BY id")?;
+        let mut statement = tx.prepare(&sql(
+            &tx,
+            "SELECT id,binding_hash,run_hash,run,completion FROM @source.query_run ORDER BY id",
+        )?)?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
             let id: String = row.get(0)?;
@@ -217,7 +224,7 @@ pub fn convert_register(
             let new_intent = converted.run.record_hash()?.to_string();
             changed += u64::from(new_binding != binding || new_intent != intent);
             tx.execute(
-                "UPDATE query_run SET binding_hash=?2,run_hash=?3,run=?4,completion=?5 WHERE id=?1",
+                &sql(&tx, "UPDATE @source.query_run SET binding_hash=?2,run_hash=?3,run=?4,completion=?5 WHERE id=?1")?,
                 params![
                     id,
                     new_binding,
@@ -250,20 +257,43 @@ pub fn convert_register(
     Ok(changed)
 }
 
-/// Add preserved query products to the staged register before conversion.
+/// Add preserved query and authored products to the staged register before conversion.
 /// Their original bodies and hashes remain intact until the one transaction
 /// converts every begin and its completion together.
-pub fn stage_products(connection: &Connection, writes: &[Value]) -> Result<()> {
+pub fn stage_products(connection: &rusqlite::Transaction<'_>, writes: &[Value]) -> Result<()> {
     for write in writes {
         let product = &write["product"];
         match product["product"].as_str() {
+            Some("request" | "restored_request" | "restored_assertion") => {
+                let product: crate::primary::Product = serde_json::from_value(product.clone())?;
+                match product {
+                    crate::primary::Product::Request(prepared)
+                    | crate::primary::Product::RestoredRequest { prepared } => {
+                        crate::primary::authored::restore(connection, &prepared, 0)?;
+                    }
+                    crate::primary::Product::RestoredAssertion { fact, import } => {
+                        crate::assertions::apply(connection, std::slice::from_ref(&fact), 0)?;
+                        if let Some(import) = import {
+                            crate::assertions::imports::record(connection, &fact.id, &import, 0)?;
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            Some("query") => {
+                let object: QueryObject = serde_json::from_value(product["object"].clone())?;
+                super::apply_object(connection, &object, 0)?;
+            }
             Some("query_run") => {
                 let body = &product["run"];
                 let converted = convert_run(body.clone())?;
                 let id = converted.run.id.as_str();
                 let hashes: Option<(String, String)> = connection
                     .query_row(
-                        "SELECT binding_hash,run_hash FROM query_run WHERE id=?1",
+                        &sql(
+                            &connection,
+                            "SELECT binding_hash,run_hash FROM @source.query_run WHERE id=?1",
+                        )?,
                         [id],
                         |row| Ok((row.get(0)?, row.get(1)?)),
                     )
@@ -279,7 +309,7 @@ pub fn stage_products(connection: &Connection, writes: &[Value]) -> Result<()> {
                     }
                     _ => None,
                 };
-                connection.execute("INSERT INTO query_run(id,binding_hash,run_hash,query,object_ref,run) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO UPDATE SET run=coalesce(run,excluded.run),query=coalesce(query,excluded.query),object_ref=coalesce(object_ref,excluded.object_ref)",
+                connection.execute(&sql(connection, "INSERT INTO @source.query_run(id,binding_hash,run_hash,query,object_ref,run) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO UPDATE SET run=coalesce(run,excluded.run),query=coalesce(query,excluded.query),object_ref=coalesce(object_ref,excluded.object_ref)")?,
                     params![id,binding,intent,converted.run.question.map(|question|question.to_string()),object,super::pack(body)?])?;
             }
             Some("query_run_outcome") => {
@@ -287,9 +317,8 @@ pub fn stage_products(connection: &Connection, writes: &[Value]) -> Result<()> {
                     serde_json::from_value(product["outcome"].clone())?;
                 super::validate_run_outcome(&completion)?;
                 let id = completion.run.as_str();
-                let known: Option<(String, String, Option<Vec<u8>>)> = connection
-                    .query_row(
-                        "SELECT binding_hash,run_hash,completion FROM query_run WHERE id=?1",
+                let known: Option<(String, String, Option<Vec<u8>>)> = connection.query_row(
+                        &sql(connection, "SELECT binding_hash,run_hash,completion FROM @source.query_run WHERE id=?1")?,
                         [id],
                         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                     )
@@ -304,7 +333,7 @@ pub fn stage_products(connection: &Connection, writes: &[Value]) -> Result<()> {
                 {
                     return Err(StoreError::Conflict(id.into()));
                 }
-                connection.execute("INSERT INTO query_run(id,binding_hash,run_hash,completion) VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET completion=coalesce(completion,excluded.completion)",
+                connection.execute(&sql(connection, "INSERT INTO @source.query_run(id,binding_hash,run_hash,completion) VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET completion=coalesce(completion,excluded.completion)")?,
                     params![id,completion.binding_hash.to_string(),completion.run_hash.to_string(),super::pack(&completion)?])?;
             }
             Some(_) => {}
@@ -316,4 +345,118 @@ pub fn stage_products(connection: &Connection, writes: &[Value]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Visit converted authored, question and execution records in dependency order. The
+/// destination is a private conversion result, never the preserved register.
+pub fn visit_current_products(
+    path: &Path,
+    mut visit: impl FnMut(crate::primary::Product) -> Result<()>,
+) -> Result<u64> {
+    let connection = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let version = crate::schema::version(&connection)?;
+    let identity: i32 = connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
+    if identity != crate::schema::FORMAT_ID
+        || !matches!(
+            version,
+            crate::schema::ARCHIVE_VERSION | crate::schema::PRIMARY_INDEX_VERSION
+        )
+    {
+        return Err(StoreError::invalid(
+            "only a current converted register can be reconstructed",
+        ));
+    }
+    let mut count = 0;
+    crate::primary::authored::visit(&connection, &mut |prepared| {
+        visit(crate::primary::Product::RestoredRequest {
+            prepared: prepared.clone(),
+        })?;
+        count += 1;
+        Ok(())
+    })?;
+    crate::assertions::visit(&connection, None, |assertion| {
+        let mut statement = connection.prepare(&sql(&connection, "SELECT input,chain,machine,actor,at FROM @source.assertion_import WHERE assertion=?1 ORDER BY machine,input,chain,actor")?)?;
+        let mut rows = statement.query([&assertion.fact.id])?;
+        let mut imported = false;
+        while let Some(row) = rows.next()? {
+            let at: String = row.get(4)?;
+            visit(crate::primary::Product::RestoredAssertion {
+                fact: assertion.fact.clone(),
+                import: Some(polylogue_model::authored::ImportAttribution {
+                    input: row.get(0)?,
+                    chain: row.get(1)?,
+                    machine: row.get(2)?,
+                    actor: row.id(3)?,
+                    at: polylogue_model::Timestamp::parse_rfc3339(&at)
+                        .ok_or_else(|| StoreError::invalid("invalid preserved import timestamp"))?,
+                }),
+            })?;
+            imported = true;
+            count += 1;
+        }
+        if !imported {
+            visit(crate::primary::Product::RestoredAssertion {
+                fact: assertion.fact,
+                import: None,
+            })?;
+            count += 1;
+        }
+        Ok(())
+    })?;
+    let mut objects = connection.prepare(&sql(
+        &connection,
+        "SELECT hash,object FROM @source.query ORDER BY hash",
+    )?)?;
+    let mut rows = objects.query([])?;
+    while let Some(row) = rows.next()? {
+        let identity: String = row.get(0)?;
+        let object: QueryObject = crate::encoding::unpack_json(&row.get::<_, Vec<u8>>(1)?)?;
+        super::validate_integrity(&object)?;
+        if object.id.to_string() != identity {
+            return Err(StoreError::Conflict(identity));
+        }
+        visit(crate::primary::Product::Query {
+            object: Box::new(object),
+        })?;
+        count += 1;
+    }
+    let mut runs = connection.prepare(&sql(
+        &connection,
+        "SELECT id,binding_hash,run_hash,run,completion FROM @source.query_run ORDER BY id",
+    )?)?;
+    let mut rows = runs.query([])?;
+    while let Some(row) = rows.next()? {
+        let id: String = row.get(0)?;
+        let body: Option<Vec<u8>> = row.get(3)?;
+        let run: QueryRun = crate::encoding::unpack_json(
+            &body.ok_or_else(|| StoreError::invalid("converted execution has no begin"))?,
+        )?;
+        super::validate_run(&run)?;
+        if run.id.as_str() != id
+            || run.binding_hash()?.to_string() != row.get::<_, String>(1)?
+            || run.record_hash()?.to_string() != row.get::<_, String>(2)?
+        {
+            return Err(StoreError::Conflict(id));
+        }
+        let binding = run.binding_hash()?;
+        let intent = run.record_hash()?;
+        let completion: Option<Vec<u8>> = row.get(4)?;
+        visit(crate::primary::Product::QueryRun { run: Box::new(run) })?;
+        count += 1;
+        if let Some(body) = completion {
+            let outcome: QueryRunOutcome = crate::encoding::unpack_json(&body)?;
+            super::validate_run_outcome(&outcome)?;
+            if outcome.run.as_str() != id
+                || outcome.binding_hash != binding
+                || outcome.run_hash != intent
+            {
+                return Err(StoreError::Conflict(id));
+            }
+            visit(crate::primary::Product::QueryRunOutcome {
+                outcome: Box::new(outcome),
+            })?;
+            count += 1;
+        }
+    }
+    Ok(count)
 }

@@ -151,7 +151,7 @@ fn named_query_phases_survive_restart_until_applied() {
         let version = match kind {
             "polylogue.query" => 2,
             "polylogue.query_run" => 5,
-            "polylogue.query_run_outcome" => 1,
+            "polylogue.query_run_outcome" => 2,
             other => panic!("unexpected named query phase kind: {other}"),
         };
         assert_eq!(declaration.kind.version, version, "{kind}");
@@ -185,7 +185,7 @@ fn named_query_phases_survive_restart_until_applied() {
             kept(&sinex, NamedProductSelector::Exact(name.clone())),
             vec![product.clone()]
         );
-        let observation = format!("{name}:observation");
+        let observation = format!("{}:observation", crate::products::named_frame(name));
         let bytes = {
             let queue = sinex.queue().unwrap();
             let mut bytes = vec![];
@@ -203,6 +203,7 @@ fn named_query_phases_survive_restart_until_applied() {
     }
     sinex.drain_observations().unwrap();
     for (ordinal, (name, _)) in expected.iter().enumerate() {
+        let name = crate::products::named_frame(name);
         sinex.queue().unwrap().acknowledge(serde_json::from_value(json!({"number":ordinal+10,"frame":name,"material":null,"admitted":[],"content_hash":null,"result":"admitted","counts":crate::tests::zero_counts(),"commit_seq":10})).unwrap()).unwrap();
     }
     sinex
@@ -266,4 +267,81 @@ fn attachment_binding_is_a_named_product() {
     assert_eq!(prepared.identity, "plain-name");
     assert!(prepared.pending);
     assert_eq!(sinex.status().unwrap().prepared_materials, 1);
+}
+
+#[test]
+fn old_incomplete_query_run_and_current_completion_use_one_publisher_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let sinex = client(root.path());
+    let phases = phases();
+    let (name, begin) = &phases[1];
+    let (_, outcome) = &phases[2];
+    // Preserved predecessor bytes remain in their immutable original frame.
+    let mut old_payload = crate::products::payload(begin, 0).unwrap();
+    let options = old_payload["record"]["run"]["binding"]["execution"]["query_options"]
+        .as_object_mut()
+        .unwrap();
+    options.remove("references");
+    options.insert("direct_reference".into(), serde_json::Value::Null);
+    let old_run = &old_payload["record"]["run"];
+    let converted =
+        polylogue_store::query_objects::line_population::convert_run(old_run.clone()).unwrap();
+    assert_eq!(
+        Product::QueryRun {
+            run: Box::new(converted.run.clone())
+        },
+        *begin
+    );
+    old_payload["binding_hash"] = serde_json::to_value(converted.old_binding).unwrap();
+    old_payload["run_hash"] = serde_json::to_value(converted.old_run).unwrap();
+    let old: sinex_protocol::Ingress = serde_json::from_value(json!({
+        "kind":"events","source":{"name":"polylogue","version":8},"frame":name,
+        "events":[{"kind":{"name":"polylogue.query_run","version":4},"payload":old_payload,"class":"open"}],"failures":[]
+    })).unwrap();
+    sinex.queue().unwrap().prepare(old.clone()).unwrap();
+    let write = |product: &Product| ProductWrite {
+        product: product.clone(),
+        location: None,
+        parents: vec![],
+        machine: None,
+        output_index: 0,
+    };
+    let current = sinex.prepare_named_products(name, &[write(begin)]).unwrap();
+    assert_eq!(current.identity, format!("polylogue-source-9:{name}"));
+    assert_eq!(sinex.queue().unwrap().decode_frame(name).unwrap(), old);
+    let completed = sinex
+        .prepare_named_products(&phases[2].0, &[write(outcome)])
+        .unwrap();
+    assert_eq!(
+        completed.identity,
+        format!("polylogue-source-9:{}", phases[2].0)
+    );
+    let queued = sinex.status().unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            sinex
+                .prepare_named_products(name, &[write(begin)])
+                .unwrap()
+                .identity,
+            current.identity
+        );
+        assert_eq!(
+            sinex
+                .prepare_named_products(&phases[2].0, &[write(outcome)])
+                .unwrap()
+                .identity,
+            completed.identity
+        );
+    }
+    let repeated = sinex.status().unwrap();
+    assert_eq!(queued.prepared_materials, repeated.prepared_materials);
+    assert_eq!(queued.prepared_writes, repeated.prepared_writes);
+    assert_eq!(
+        kept(&sinex, NamedProductSelector::Exact(name.clone())),
+        vec![begin.clone()]
+    );
+    assert_eq!(
+        kept(&sinex, NamedProductSelector::Exact(phases[2].0.clone())),
+        vec![outcome.clone()]
+    );
 }

@@ -251,6 +251,27 @@ pub enum Product {
 }
 
 impl Product {
+    /// The normal restoration publisher fixes the operation name from its
+    /// immutable authored effect and original import membership.
+    pub fn restoration_identity(&self) -> crate::Result<Option<String>> {
+        let (prefix, bytes) = match self {
+            Self::RestoredRequest { prepared } => {
+                ("authored-restore", serde_json::to_vec(prepared)?)
+            }
+            Self::RestoredAssertion { fact, import } => (
+                "assertion-restore",
+                serde_json::to_vec(&(
+                    fact,
+                    import
+                        .as_ref()
+                        .map(|i| (&i.input, i.chain, &i.machine, &i.actor)),
+                ))?,
+            ),
+            _ => return Ok(None),
+        };
+        Ok(Some(format!("{prefix}:{}", blake3::hash(&bytes).to_hex())))
+    }
+
     pub fn reading(&self) -> Option<&Reading> {
         match self {
             Self::Interpreted { reading, .. }
