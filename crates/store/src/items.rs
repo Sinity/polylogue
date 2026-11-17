@@ -1128,15 +1128,15 @@ fn stored_message_entries(conn: &Connection, pk: i64) -> Result<Vec<IndexEntry>>
 /// present. Its worker prepares the shown value under its snapshot;
 /// the existing derive token protects these entries when the writer applies it.
 pub(crate) fn prepare_stored_message(conn: &Connection, pk: i64) -> Result<Vec<IndexEntry>> {
-    let hash: Vec<u8> = conn
+    let (version, hash): (i64, Vec<u8>) = conn
         .prepare_cached(
-            "SELECT v.version_hash FROM message m JOIN message_source s
+            "SELECT s.version_pk,v.version_hash FROM message m JOIN message_source s
            ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
          JOIN message_version v ON v.pk=s.version_pk WHERE m.pk=?1",
         )?
-        .query_row([pk], |row| row.get(0))?;
+        .query_row([pk], |row| Ok((row.get(0)?, row.get(1)?)))?;
     let (mut message, block_selection) =
-        crate::versions::read_message(conn, &hash)?.ok_or_else(|| {
+        crate::versions::read_message_by_key(conn, version, &hash)?.ok_or_else(|| {
             StoreError::Invalid("revealed message has no kept selected version".into())
         })?;
     conn.prepare_cached(

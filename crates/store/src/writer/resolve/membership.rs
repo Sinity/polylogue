@@ -373,16 +373,23 @@ fn merge_message(
 }
 
 fn known_message(
+    resolver: &Resolver,
     index: &Connection,
     values: Option<&dyn ValueSource>,
     hash: &[u8],
 ) -> Result<Option<(Message, PreparedMessage)>> {
-    let stored = crate::versions::read_message(index, hash)?
-        .map(|(message, block_selection)| {
-            let prepared = PreparedMessage::projected(&message, &block_selection)?;
-            Ok::<_, StoreError>((message, prepared))
-        })
-        .transpose()?;
+    let stored = match resolver.upkeep().key_maps() {
+        Some(keys) => match keys.message_version(index, hash)? {
+            Some(pk) => crate::versions::read_message_by_key(index, pk, hash)?,
+            None => None,
+        },
+        None => crate::versions::read_message(index, hash)?,
+    }
+    .map(|(message, block_selection)| {
+        let prepared = PreparedMessage::projected(&message, &block_selection)?;
+        Ok::<_, StoreError>((message, prepared))
+    })
+    .transpose()?;
     let staged = values
         .map(|values| values.message(hash))
         .transpose()?
@@ -1033,7 +1040,7 @@ impl<'a> MembershipState<'a> {
             } else {
                 match self.message_values.get(prepared.hash.as_slice()) {
                     Some(value) => Some(Arc::clone(value)),
-                    None => known_message(self.index, self.values, &prepared.hash)?
+                    None => known_message(self.resolver, self.index, self.values, &prepared.hash)?
                         .map(|value| Arc::new(MessageValue::from(value))),
                 }
             };
@@ -1609,6 +1616,7 @@ impl<'a> MembershipState<'a> {
     /// Composes each touched message from each input's latest reading.
     fn choose_messages(&mut self, choices: &mut Choices) -> Result<()> {
         let Self {
+            resolver,
             index,
             messages,
             shown_messages,
@@ -1627,8 +1635,8 @@ impl<'a> MembershipState<'a> {
             if current.len() > 1 {
                 for member in &current {
                     if !message_values.contains_key(&member.hash) {
-                        let value =
-                            known_message(index, *values, &member.hash)?.ok_or_else(|| {
+                        let value = known_message(resolver, index, *values, &member.hash)?
+                            .ok_or_else(|| {
                                 StoreError::Invalid("a message reading has no value".into())
                             })?;
                         message_values
@@ -1686,9 +1694,10 @@ impl<'a> MembershipState<'a> {
                         .is_some_and(|(before, after)| before != after)
             });
             if changed && !message_values.contains_key(&main.hash) {
-                let value = known_message(index, *values, &main.hash)?.ok_or_else(|| {
-                    StoreError::Invalid("a selected message version has no value".into())
-                })?;
+                let value =
+                    known_message(resolver, index, *values, &main.hash)?.ok_or_else(|| {
+                        StoreError::Invalid("a selected message version has no value".into())
+                    })?;
                 message_values.insert(main.hash.clone(), Arc::new(MessageValue::from(value)));
             }
             let value = if changed {

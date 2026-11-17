@@ -170,7 +170,15 @@ fn cleared_parser_state_stays_cleared_after_checkpoint_and_restart() {
             Some(serde_json::json!({"_polylogue_context":delta})),
         ));
         let tx = writer.transaction().unwrap();
-        apply(&tx, 1, 1, &step, &Default::default()).unwrap();
+        apply(
+            &tx,
+            1,
+            1,
+            &step,
+            &Default::default(),
+            &crate::writer::resolve::IndexUpkeep::PerTransaction,
+        )
+        .unwrap();
         tx.execute(
             "UPDATE parse_state SET parsed_upto=?1 WHERE input_pk=1 AND chain=1",
             [step.parsed_upto],
