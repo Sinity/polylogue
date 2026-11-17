@@ -32,3 +32,83 @@ fn spilled_updates_and_rewrites_keep_each_keys_latest_value() {
         assert_eq!(rows.get(&key(n)).unwrap(), None);
     }
 }
+
+fn ordered(n: u64) -> [u8; 32] {
+    let mut key = [0; 32];
+    key[..8].copy_from_slice(&n.to_be_bytes());
+    key
+}
+
+#[test]
+fn spilled_lookup_reads_blocks_instead_of_one_record_per_comparison() {
+    let mut writer = RunWriter::new(4096, 200_000).unwrap();
+    for n in 0..200_000 {
+        writer
+            .push(Record {
+                key: ordered(n * 2),
+                value: n as i64,
+                sequence: n,
+            })
+            .unwrap();
+    }
+    let run = writer.finish().unwrap();
+    for n in [1, 401, 82_003, 199_999] {
+        run.reads.store(0, std::sync::atomic::Ordering::Relaxed);
+        let mut found = Vec::new();
+        let _ = run
+            .visit(&ordered(n * 2), &mut |record| {
+                found.push(record.value);
+                Ok(ControlFlow::Continue(()))
+            })
+            .unwrap();
+        assert_eq!(found, vec![n as i64]);
+        // A record binary search needs at least seventeen disk reads here.
+        assert!(run.reads.load(std::sync::atomic::Ordering::Relaxed) <= 7);
+        let mut missing = Vec::new();
+        let _ = run
+            .visit(&ordered(n * 2 - 1), &mut |record| {
+                missing.push(record.value);
+                Ok(ControlFlow::Continue(()))
+            })
+            .unwrap();
+        assert!(missing.is_empty());
+    }
+}
+
+#[test]
+fn duplicate_keys_cross_sample_and_block_boundaries_without_losing_candidates() {
+    let mut writer = RunWriter::new(128, 1000).unwrap();
+    for n in 0..1000 {
+        writer
+            .push(Record {
+                key: ordered(if n < 83 {
+                    0
+                } else if n < 917 {
+                    1
+                } else {
+                    2
+                }),
+                value: n,
+                sequence: n as u64,
+            })
+            .unwrap();
+    }
+    let run = writer.finish().unwrap();
+    let mut found = Vec::new();
+    let _ = run
+        .visit(&ordered(1), &mut |record| {
+            found.push(record.value);
+            Ok(ControlFlow::Continue(()))
+        })
+        .unwrap();
+    assert_eq!(found, (83..917).collect::<Vec<_>>());
+    let mut calls = 0;
+    let result = run
+        .visit(&ordered(1), &mut |_| {
+            calls += 1;
+            Ok(ControlFlow::Break(()))
+        })
+        .unwrap();
+    assert!(result.is_break());
+    assert_eq!(calls, 1);
+}
