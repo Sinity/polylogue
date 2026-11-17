@@ -286,7 +286,7 @@ impl<'a> Encoder<'a> {
                 }
                 self.line(&item.source.reference)?;
                 for assertion in &header.assertions {
-                    self.line(&annotation_text(assertion))?;
+                    self.line(&annotation_text(assertion, self.format))?;
                 }
             }
             ItemKind::Text { text } => {
@@ -519,7 +519,7 @@ impl<'a> Encoder<'a> {
                     self.line(&line)?;
                 }
                 for assertion in assertions {
-                    self.line(&annotation_text(assertion))?;
+                    self.line(&annotation_text(assertion, self.format))?;
                 }
                 if let Some(open) = open {
                     self.line(&self.call_text(open)?)?;
@@ -869,7 +869,7 @@ pub(crate) fn lineage_text(lineage: &polylogue_model::read::SessionLineage) -> S
     }
 }
 
-pub(crate) fn annotation_text(assertion: &Annotation) -> String {
+pub(crate) fn annotation_text(assertion: &Annotation, format: Format) -> String {
     let key = assertion
         .key
         .as_ref()
@@ -880,5 +880,8 @@ pub(crate) fn annotation_text(assertion: &Annotation) -> String {
     } else {
         format!(": {}", assertion.value)
     };
-    format!("◆ {}{key}{value} ({})", assertion.kind, assertion.author)
+    match format {
+        Format::Html => format!("◆ {}{key}{value} · {}", assertion.kind, assertion.author),
+        _ => format!("◆ {}{key}{value} ({})", assertion.kind, assertion.author),
+    }
 }

@@ -696,17 +696,35 @@ fn line_deadline_still_applies_after_resolution_journal_handoff() {
 
 #[test]
 fn ordered_read_stream_preserves_degraded_read_outcome() {
-    let d = test_daemon::start_with_sources_and_workers(
-        "readable session beside an incomplete source",
-        &|home| {
-            std::fs::write(
-                home.join(".claude/projects/-p/incomplete.jsonl"),
-                b"{unfinished source record\n",
-            )
-            .unwrap();
-        },
+    let d = test_daemon::start("readable session beside an incomplete source");
+    let bytes = polylogue_testkit::claude_user("u-pending", "s-pending", "not parsed yet");
+    let mut batch = polylogue_store::fixture::writer::step(
+        "pending-completeness",
+        "claude-code",
+        "/home/op/pending.jsonl",
+        Default::default(),
         0,
-        2,
+        0,
+    );
+    batch.length = bytes.len() as u64;
+    batch.parse.clear();
+    let prepared = d.daemon.archive.prepare_bytes(bytes.as_bytes()).unwrap();
+    d.daemon
+        .writes
+        .as_ref()
+        .unwrap()
+        .store_bytes(prepared, batch)
+        .unwrap();
+    let completeness = d
+        .daemon
+        .reads
+        .reader()
+        .unwrap()
+        .completeness(&polylogue_engine::reading_contracts())
+        .unwrap();
+    assert!(
+        !completeness.caught_up(),
+        "captured bytes must await their parsed checkpoint"
     );
     let finite = line(
         &d,
