@@ -99,8 +99,8 @@ impl Run {
             if loaded != Some(lo) {
                 count = self.block(lo, &mut bytes)?;
             }
-            for raw in bytes[..count * RECORD_BYTES].chunks_exact(RECORD_BYTES) {
-                let record = Record::decode(raw.try_into().expect("record"));
+            for raw in bytes[..count * RECORD_BYTES].as_chunks::<RECORD_BYTES>().0 {
+                let record = Record::decode(*raw);
                 if record.key < *key {
                     continue;
                 }
