@@ -300,7 +300,7 @@ fn refused_surface(rows: &Rows, call: &Call<'_>) -> Result<Option<Failure>, Fail
 
 /// The refusals of a line's shape, before anything resolves.
 fn check(rows: &Rows, given: &Given) -> Result<(), Failure> {
-    if rows.steps.iter().any(|step| matches!(step, Step::Pick(_))) {
+    if !rows.dry_run && rows.steps.iter().any(|step| matches!(step, Step::Pick(_))) {
         return Err(refused_pick());
     }
     if let Some(position) = rows

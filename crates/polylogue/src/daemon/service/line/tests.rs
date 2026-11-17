@@ -941,3 +941,58 @@ fn kept_paged_measure_follows_every_page_with_its_original_population() {
     let repeated = steps(&d, "complete-paged-measure", request);
     assert_eq!(kept_result(&d, &repeated[0])["rows"], kept["rows"]);
 }
+
+#[test]
+fn requested_picker_population_retains_order_and_retry_after_prefix_changes_predicate() {
+    let mut d = two_sessions();
+    let request = json!({
+        "selection":"sessions where NOT tag:prefix | sort by id",
+        "all":true,"return_selection":true,
+        "steps":[{"verb":"tag","name":"prefix"}]
+    });
+    for restart in [false, true] {
+        if restart {
+            d.restart();
+        }
+        let answer = crate::test_answers::ok(line(&d, "accepted-picker-prefix", request.clone()));
+        let population = &answer["reply"]["resolved"]["population"]["value"];
+        assert_eq!(
+            population["references"],
+            json!(["session:claude-code:s1", "session:claude-code:s2"]),
+            "{answer}"
+        );
+        assert_eq!(population["rows"].as_array().unwrap().len(), 2, "{answer}");
+        assert_eq!(population["count"], 2, "{answer}");
+        assert_eq!(count(&d, "sessions where NOT tag:prefix"), 0);
+        assert_eq!(count(&d, "assertions where kind:tag"), 2);
+    }
+    let conflict = refusal(line(
+        &d,
+        "accepted-picker-prefix",
+        json!({
+            "selection":"sessions","all":true,"return_selection":true,
+            "steps":[{"verb":"tag","name":"prefix"}]
+        }),
+    ));
+    assert_eq!(conflict.code.as_deref(), Some("conflict"));
+}
+
+#[test]
+fn dry_run_picker_describes_steps_without_writing() {
+    let d = two_sessions();
+    let reports = steps(
+        &d,
+        "dry-picker",
+        json!({"selection":"sessions","all":true,"dry_run":true,
+        "steps":[{"verb":"tag","name":"prefix"},{"verb":"pick"},{"verb":"tag","name":"suffix"}]}),
+    );
+    assert_eq!(reports.len(), 3);
+    assert!(
+        reports[1]["outcome"]["would"]
+            .as_str()
+            .unwrap()
+            .contains("picker"),
+        "{reports:?}"
+    );
+    assert_eq!(count(&d, "assertions where kind:tag"), 0);
+}

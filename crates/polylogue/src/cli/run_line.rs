@@ -241,7 +241,7 @@ pub(crate) fn run(
             Some("read" | "resume")
         );
     let pick = parsed.steps.iter().position(|step| step.verb == "pick");
-    if (needs_choice || pick.is_some()) && !parsed.line.explain {
+    if (needs_choice || pick.is_some()) && !parsed.line.explain && !parsed.line.dry_run {
         let split = pick.unwrap_or(0);
         let frozen = pick.is_some() && split > 0 && terminal() && !json;
         let mut before = request.clone();

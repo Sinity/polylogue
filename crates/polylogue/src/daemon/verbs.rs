@@ -335,8 +335,11 @@ impl Verb for Pick {
     fn run(_: Self::Step, _: &Selection, _: &StepCall<'_>) -> Result<StepDone, Failure> {
         Err(refused_pick())
     }
-    fn would(_: &Self::Step, _: &Selection, _: &StepCall<'_>) -> Result<String, Failure> {
-        Err(refused_pick())
+    fn would(_: &Self::Step, selection: &Selection, _: &StepCall<'_>) -> Result<String, Failure> {
+        Ok(format!(
+            "would open the picker over {}",
+            selection.described()
+        ))
     }
 }
 
