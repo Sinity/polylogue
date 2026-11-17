@@ -8,7 +8,6 @@ use std::os::unix::fs::FileExt;
 
 const LEVELS: usize = 64;
 const RECORD_BYTES: usize = 48;
-const BLOCK_RECORDS: u64 = 4096 / RECORD_BYTES as u64;
 
 #[derive(Clone, Copy)]
 struct Record {
@@ -45,17 +44,15 @@ struct Run {
     reads: std::sync::atomic::AtomicU64,
 }
 impl Run {
-    fn block(&self, block: u64, bytes: &mut [u8]) -> Result<usize> {
-        let start = block * BLOCK_RECORDS;
-        let count = (self.length - start).min(BLOCK_RECORDS) as usize;
-        self.file.as_file().read_exact_at(
-            &mut bytes[..count * RECORD_BYTES],
-            start * RECORD_BYTES as u64,
-        )?;
+    fn read(&self, at: u64) -> Result<Record> {
+        let mut bytes = [0; RECORD_BYTES];
+        self.file
+            .as_file()
+            .read_exact_at(&mut bytes, at * RECORD_BYTES as u64)?;
         #[cfg(test)]
         self.reads
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok(count)
+        Ok(Record::decode(bytes))
     }
     fn visit(
         &self,
@@ -65,54 +62,31 @@ impl Run {
         if key < &self.first || key > &self.last {
             return Ok(ControlFlow::Continue(()));
         }
-        // The preceding sample includes keys crossing a block boundary. Samples
-        // contain full keys; a hash collision never removes a candidate row.
+        // Start before the first sample equal to the key: its candidates can
+        // begin before that sample and continue across several samples.
         let sample = self.samples.partition_point(|(value, _)| value < key);
-        let mut lo = sample
-            .checked_sub(1)
-            .map_or(0, |n| self.samples[n].1 / BLOCK_RECORDS);
+        let mut lo = sample.checked_sub(1).map_or(0, |n| self.samples[n].1);
         let mut hi = self
             .samples
             .get(sample)
-            .map_or(self.length.div_ceil(BLOCK_RECORDS), |(_, at)| {
-                at / BLOCK_RECORDS + 1
-            });
-        let mut bytes = [0; BLOCK_RECORDS as usize * RECORD_BYTES];
-        let mut loaded = None;
-        let mut count = 0;
+            .map_or(self.length, |(_, at)| at + 1);
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
-            count = self.block(mid, &mut bytes)?;
-            loaded = Some(mid);
-            let last = Record::decode(
-                bytes[(count - 1) * RECORD_BYTES..count * RECORD_BYTES]
-                    .try_into()
-                    .expect("record"),
-            );
-            if last.key < *key {
+            if self.read(mid)?.key < *key {
                 lo = mid + 1;
             } else {
                 hi = mid;
             }
         }
-        while lo * BLOCK_RECORDS < self.length {
-            if loaded != Some(lo) {
-                count = self.block(lo, &mut bytes)?;
+        while lo < self.length {
+            let record = self.read(lo)?;
+            if record.key != *key {
+                break;
             }
-            for raw in bytes[..count * RECORD_BYTES].as_chunks::<RECORD_BYTES>().0 {
-                let record = Record::decode(*raw);
-                if record.key < *key {
-                    continue;
-                }
-                if record.key > *key {
-                    return Ok(ControlFlow::Continue(()));
-                }
-                if visit(record)?.is_break() {
-                    return Ok(ControlFlow::Break(()));
-                }
+            if visit(record)?.is_break() {
+                return Ok(ControlFlow::Break(()));
             }
             lo += 1;
-            loaded = None;
         }
         Ok(ControlFlow::Continue(()))
     }
@@ -138,6 +112,9 @@ impl RunReader {
         Ok(Some(Record::decode(bytes)))
     }
 }
+fn sample_bytes(buffer: usize) -> usize {
+    (buffer / 8).max(std::mem::size_of::<([u8; 32], u64)>())
+}
 struct RunWriter {
     samples: Vec<([u8; 32], u64)>,
     stride: u64,
@@ -148,12 +125,8 @@ struct RunWriter {
 }
 impl RunWriter {
     fn new(buffer: usize, maximum: u64) -> Result<Self> {
-        let capacity = (buffer / std::mem::size_of::<([u8; 32], u64)>()).max(1);
-        let stride = maximum
-            .div_ceil(capacity as u64)
-            .div_ceil(BLOCK_RECORDS)
-            .max(1)
-            * BLOCK_RECORDS;
+        let capacity = (sample_bytes(buffer) / std::mem::size_of::<([u8; 32], u64)>()).max(1);
+        let stride = maximum.div_ceil(capacity as u64).max(1);
         Ok(Self {
             samples: Vec::with_capacity(capacity),
             stride,
@@ -205,11 +178,10 @@ impl KeyRows {
         let bytes = usize::try_from(bytes).unwrap_or(usize::MAX).max(64 * 1024);
         let filter_bytes = (bytes / 8).clamp(64, 8 * 1024 * 1024);
         let directory = std::mem::size_of::<[Option<Run>; LEVELS]>();
-        let buffer = (bytes.saturating_sub(filter_bytes + directory + 4096) / (2 * LEVELS + 4))
+        let buffer = (bytes.saturating_sub(filter_bytes + directory) / (LEVELS + LEVELS / 8 + 4))
             .clamp(RECORD_BYTES, 64 * 1024);
         let fixed = filter_bytes
-            + buffer * (2 * LEVELS + 2)
-            + 4096
+            + (buffer + sample_bytes(buffer)) * (LEVELS + 1)
             + std::mem::size_of::<[Option<Run>; LEVELS]>();
         Ok(Self {
             entries: BTreeMap::new(),

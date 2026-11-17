@@ -40,8 +40,8 @@ fn ordered(n: u64) -> [u8; 32] {
 }
 
 #[test]
-fn spilled_lookup_reads_blocks_instead_of_one_record_per_comparison() {
-    let mut writer = RunWriter::new(4096, 200_000).unwrap();
+fn spilled_lookup_narrows_disk_search_with_bounded_samples() {
+    let mut writer = RunWriter::new(64 * 1024, 200_000).unwrap();
     for n in 0..200_000 {
         writer
             .push(Record {
@@ -63,7 +63,7 @@ fn spilled_lookup_reads_blocks_instead_of_one_record_per_comparison() {
             .unwrap();
         assert_eq!(found, vec![n as i64]);
         // A record binary search needs at least seventeen disk reads here.
-        assert!(run.reads.load(std::sync::atomic::Ordering::Relaxed) <= 7);
+        assert!(run.reads.load(std::sync::atomic::Ordering::Relaxed) <= 12);
         let mut missing = Vec::new();
         let _ = run
             .visit(&ordered(n * 2 - 1), &mut |record| {
@@ -76,8 +76,8 @@ fn spilled_lookup_reads_blocks_instead_of_one_record_per_comparison() {
 }
 
 #[test]
-fn duplicate_keys_cross_sample_and_block_boundaries_without_losing_candidates() {
-    let mut writer = RunWriter::new(128, 1000).unwrap();
+fn duplicate_keys_cross_sample_boundaries_without_losing_candidates() {
+    let mut writer = RunWriter::new(1024, 1000).unwrap();
     for n in 0..1000 {
         writer
             .push(Record {
