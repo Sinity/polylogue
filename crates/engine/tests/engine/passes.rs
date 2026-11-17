@@ -926,9 +926,10 @@ fn prepared_item_private_input_probe() {
     let home = ClaudeHome::new();
     let dir = home.home.join(".codex/sessions/2026/03/01");
     fs::create_dir_all(&dir).unwrap();
-    let source = std::path::Path::new(&source);
-    fs::copy(source, dir.join(source.file_name().unwrap())).unwrap();
-    let (mut engine, _lock) = home.engine(4 << 20);
-    let pass = engine.run_pass().unwrap();
-    assert!(pass.errors.is_empty(), "{pass:?}");
+    for source in std::env::split_paths(&source) {
+        fs::copy(&source, dir.join(source.file_name().unwrap())).unwrap();
+        let (mut engine, _lock) = home.engine(4 << 20);
+        let pass = engine.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "{pass:?}");
+    }
 }
