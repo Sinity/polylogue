@@ -1,7 +1,6 @@
 //! Explicit conversion of preserved execution bodies. Normal readers never
 //! call this; the finite tool is retired after the format transition.
 use super::*;
-use crate::encoding::Columns;
 use polylogue_model::BlobHash;
 use serde_json::Value;
 use std::path::Path;
