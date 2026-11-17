@@ -953,3 +953,247 @@ fn ordered_read_destinations_receive_their_own_steps() {
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert_eq!(stderr.matches("undo: polylogue").count(), 1, "{stderr}");
 }
+/// Drive the real binary through a PTY, waiting for a seeded candidate before
+/// choosing. A failed assertion still kills and reaps the owned client.
+fn choose(env: &crate::Fixture, args: &[&str], keys: &[u8]) -> Output {
+    use rustix::pty::{OpenptFlags, grantpt, ioctl_tiocgptpeer, openpt, unlockpt};
+    use std::fs::File;
+    use std::sync::mpsc;
+    struct Client(Option<Child>);
+    impl Drop for Client {
+        fn drop(&mut self) {
+            if let Some(child) = self.0.as_mut() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+    let flags = OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC;
+    let master = openpt(flags).unwrap();
+    grantpt(&master).unwrap();
+    unlockpt(&master).unwrap();
+    let slave = File::from(ioctl_tiocgptpeer(&master, flags).unwrap());
+    assert!(
+        Command::new("stty")
+            .args(["rows", "24", "cols", "100"])
+            .stdin(slave.try_clone().unwrap())
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut master = File::from(master);
+    let mut command = env.command();
+    let child = command
+        .args(args)
+        .stdin(slave.try_clone().unwrap())
+        .stdout(slave.try_clone().unwrap())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut client = Client(Some(child));
+    drop(command);
+    drop(slave);
+    let (send, receive) = mpsc::channel();
+    let mut reader = master.try_clone().unwrap();
+    let output_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let mut buffer = [0; 8192];
+        while let Ok(count) = reader.read(&mut buffer) {
+            if count == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buffer[..count]);
+            let _ = send.send(buffer[..count].to_vec());
+        }
+        bytes
+    });
+    let deadline = Instant::now() + READY_DEADLINE;
+    let mut shown = Vec::new();
+    while !String::from_utf8_lossy(&shown).contains("Alpha picker candidate") {
+        let left = deadline
+            .checked_duration_since(Instant::now())
+            .expect("picker did not show its accepted candidates");
+        shown.extend(
+            receive
+                .recv_timeout(left)
+                .expect("picker output ended before its candidates"),
+        );
+    }
+    master.write_all(keys).unwrap();
+    while client.0.as_mut().unwrap().try_wait().unwrap().is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "picker did not finish after selection"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let mut output = client.0.take().unwrap().wait_with_output().unwrap();
+    drop(master);
+    output.stdout = output_reader.join().unwrap();
+    output
+}
+
+#[test]
+fn picker_prefix_suffix_retry_cancellation_and_complete_undo_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let project = home.join(".claude/projects/-picker");
+    std::fs::create_dir_all(&project).unwrap();
+    for (id, title) in [
+        ("s1", "Alpha picker candidate"),
+        ("s2", "Beta picker candidate"),
+    ] {
+        std::fs::write(project.join(format!("{id}.jsonl")), line(id, id, title)).unwrap();
+    }
+    let env = crate::Fixture::new(
+        &dir.path().join("archive"),
+        &home,
+        &dir.path().join("config"),
+    );
+    let _daemon = start_daemon(&env);
+    wait_status(&env, |status| status["store"]["messages"] == 2);
+    for (id, title) in [
+        ("s1", "Alpha picker candidate"),
+        ("s2", "Beta picker candidate"),
+    ] {
+        let out = cli(
+            &env,
+            &[
+                &format!("session:claude-code:{id}"),
+                "note",
+                title,
+                "--as",
+                "title",
+            ],
+        );
+        assert!(out.status.success(), "{out:?}");
+    }
+    let explained = cli(
+        &env,
+        &[
+            "--explain",
+            "sessions",
+            "tag",
+            "not-written",
+            "--all",
+            "pick",
+            "tag",
+            "also-not-written",
+        ],
+    );
+    assert!(explained.status.success(), "{explained:?}");
+    let empty = json(&cli(&env, &["--json", "assertions where kind:tag"]));
+    assert_eq!(empty["reply"]["count"], 0, "{empty}");
+    let simple = choose(
+        &env,
+        &[
+            "--request-id",
+            "simple-picker",
+            "sessions | sort by id",
+            "pick",
+            "note",
+            "Selected through the picker",
+        ],
+        b"\r",
+    );
+    assert!(simple.status.success(), "{simple:?}");
+    let picked = json(&cli(
+        &env,
+        &[
+            "--json",
+            "assertions where request:simple-picker-pick-suffix-1",
+        ],
+    ));
+    assert_eq!(picked["reply"]["count"], 1, "{picked}");
+    for (id, count) in [("s1", 1), ("s2", 0)] {
+        let selected = json(&cli(
+            &env,
+            &[
+                "--json",
+                &format!("assertions where kind:note about:session:claude-code:{id}"),
+            ],
+        ));
+        assert_eq!(selected["reply"]["count"], count, "{selected}");
+    }
+    let words = [
+        "--request-id",
+        "picker-prefix-suffix",
+        "sessions where NOT tag:prefix | sort by id",
+        "tag",
+        "prefix",
+        "--all",
+        "pick",
+        "tag",
+        "suffix",
+    ];
+    let mut undo = Vec::new();
+    for _ in 0..2 {
+        let output = choose(&env, &words, b"\r");
+        assert!(output.status.success(), "{output:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        let current: Vec<_> = stderr
+            .lines()
+            .filter_map(|line| line.strip_prefix("undo: "))
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(current.len(), 2, "{stderr}");
+        if undo.is_empty() {
+            undo = current;
+        } else {
+            assert_eq!(current, undo);
+        }
+        let found = json(&cli(&env, &["--json", "assertions where kind:tag"]));
+        assert_eq!(found["reply"]["count"], 3, "{found}");
+        let chosen = json(&cli(
+            &env,
+            &["--json", "sessions where tag:suffix", "--fields", "id"],
+        ));
+        assert_eq!(
+            chosen["reply"]["rows"],
+            serde_json::json!([{"id":"claude-code:s1"}]),
+            "{chosen}"
+        );
+    }
+    for command in undo.iter().rev() {
+        let mut shell = Command::new("sh");
+        env.environment(&mut shell);
+        let script = format!("polylogue() {{ \"$POLYLOGUE_TEST_BINARY\" \"$@\"; }}\n{command}");
+        let output = shell
+            .env("POLYLOGUE_TEST_BINARY", crate::BIN)
+            .args(["-c", &script])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+    let found = json(&cli(&env, &["--json", "assertions where kind:tag"]));
+    assert_eq!(found["reply"]["count"], 0, "{found}");
+    let cancelled = choose(
+        &env,
+        &[
+            "--request-id",
+            "picker-cancel",
+            "sessions where NOT tag:prefix | sort by id",
+            "tag",
+            "prefix",
+            "--all",
+            "pick",
+            "tag",
+            "suffix",
+        ],
+        b"\x1b",
+    );
+    assert!(cancelled.status.success(), "{cancelled:?}");
+    let stderr = String::from_utf8(cancelled.stderr).unwrap();
+    assert_eq!(
+        stderr
+            .lines()
+            .filter(|line| line.starts_with("undo: "))
+            .count(),
+        1,
+        "{stderr}"
+    );
+    let found = json(&cli(&env, &["--json", "assertions where kind:tag"]));
+    assert_eq!(found["reply"]["count"], 2, "{found}");
+    let suffix = json(&cli(&env, &["--json", "sessions where tag:suffix"]));
+    assert_eq!(suffix["reply"]["count"], 0, "{suffix}");
+}

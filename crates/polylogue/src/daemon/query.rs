@@ -18,6 +18,7 @@ mod page;
 use query_language::cursor::CursorSeal;
 
 /// What a request asks besides the text.
+#[derive(Clone)]
 pub struct Ask<'a> {
     pub text: &'a str,
     pub cursor: Option<&'a str>,
@@ -301,6 +302,81 @@ fn keep_with_rows(
     kept["output_metadata"] =
         serde_json::to_value(output_metadata).expect("kept metadata serializes");
     Ok(kept)
+}
+
+/// Resolve a line population and capture only the relation values that cannot
+/// be hydrated later from native identities.
+pub(crate) fn capture_selection(
+    reader: &Reader<'_>,
+    ask: &Ask<'_>,
+) -> Result<
+    (
+        polylogue_model::user::LineSelection,
+        Option<Vec<polylogue_model::Reference>>,
+    ),
+    Failure,
+> {
+    use polylogue_model::query_objects::ExecutionPresentation;
+    use polylogue_store::query::Statements;
+    let mut options = options(reader, ask, uuid::Uuid::now_v7().as_u128() as u64)?;
+    options.page_size = None;
+    let prepared = reader.prepare_query_selection(ask.text, &options)?;
+    let native = prepared.program().shape == Shape::Rows && prepared.program().measure.is_none();
+    let measure = prepared.program().measure.is_some();
+    let derived = measure || matches!(prepared.program().statements, Statements::Derived(_));
+    let mut references = Vec::new();
+    let mut rows = Vec::new();
+    let mut identities =
+        matches!(prepared.program().row_kind, RowKind::UnitRows { .. }).then(Vec::new);
+    if !measure {
+        reader.visit_selection(
+            &prepared,
+            polylogue_store::read::VisitFrom::First,
+            ask.near,
+            |row| {
+                if native {
+                    let target = row
+                        .target
+                        .ok_or_else(|| Failure::internal("a native row has no reference"))?;
+                    references.push(target.reference());
+                }
+                if derived {
+                    if let Some(identities) = &mut identities {
+                        let Some(polylogue_store::selection::RowIdentity::Entity { key, .. }) =
+                            row.identity
+                        else {
+                            return Err(Failure::internal("a native result has no identity"));
+                        };
+                        identities.push(key);
+                    }
+                    rows.push(row.values);
+                }
+                Ok::<_, Failure>(std::ops::ControlFlow::Continue(()))
+            },
+        )?;
+    }
+    let mut retained = polylogue_model::user::LineSelection {
+        binding: prepared.execution_binding(
+            polylogue_store::query::execute::options_snapshot(
+                &options,
+                false,
+                ask.ranking_identity.clone(),
+            )?,
+            ExecutionPresentation::Query,
+            None,
+        )?,
+        relation: None,
+        matches: None,
+    };
+    let value = keep_captured(reader, ask.clone(), &retained, rows, identities)?;
+    if derived {
+        retained.relation = Some(value);
+    } else if value.get("matches").is_some() {
+        retained.matches = Some(
+            serde_json::json!({"rows":value["matches"], "columns":value["match_columns"], "schema":value["output_metadata"]["matches"]}),
+        );
+    }
+    Ok((retained, native.then_some(references)))
 }
 
 /// The accepted population uses the same current hydration or retained

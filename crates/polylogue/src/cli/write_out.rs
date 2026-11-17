@@ -8,7 +8,6 @@ use polylogue_model::{bundle::Counts, read::*};
 use polylogue_store::export_items::ExportItems;
 use std::{
     io::{self, Read, Write},
-    path::Path,
     process::ExitCode,
 };
 

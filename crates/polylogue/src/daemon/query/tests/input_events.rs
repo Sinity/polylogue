@@ -69,6 +69,6 @@ fn input_observations_are_typed_general_rows_and_do_not_enter_session_scopes() {
         0,
         "field labels are not supplied textual values"
     );
-    let kept = keep(&reader, ask("events")).unwrap();
+    let kept = save_rows(&reader, ask("events")).unwrap();
     assert_eq!(kept["rows"][0]["data"], data);
 }

@@ -73,7 +73,7 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
             error.message
         );
         assert_eq!(
-            keep(&reader, ask(&query, T0)).unwrap_err().code(),
+            save_rows(&reader, ask(&query, T0)).unwrap_err().code(),
             "resync_required",
             "keep {query}"
         );

@@ -53,7 +53,7 @@ fn every_way_of_reading_gives_the_same_answer() {
         let kept = {
             let pool = w.fx.reads().unwrap();
             let reader = pool.reader().unwrap();
-            keep(&reader, ask(text)).unwrap()
+            save_rows(&reader, ask(text)).unwrap()
         };
         let id = format!("kept-{n}");
         w.fx.kept_result(&id, text, &kept.to_string()).unwrap();

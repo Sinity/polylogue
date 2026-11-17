@@ -526,8 +526,6 @@ fn retain_selection(
     text: &str,
     call: &Call<'_>,
 ) -> Result<(polylogue_model::user::LineSelection, Option<Vec<Reference>>), Failure> {
-    use polylogue_model::query_objects::ExecutionPresentation;
-    use polylogue_store::query::{RowKind, Shape, Statements};
     let reader = call.reader()?;
     let daemon = call.daemon;
     crate::daemon::query::with_ranking(
@@ -535,8 +533,9 @@ fn retain_selection(
         &daemon.warm,
         &daemon.config,
         |embeddings, ranking_identity, near| {
-            let ask = || {
-                Ok::<_, Failure>(crate::daemon::query::Ask {
+            crate::daemon::query::capture_selection(
+                &reader,
+                &crate::daemon::query::Ask {
                     text,
                     cursor: None,
                     page_size: None,
@@ -544,81 +543,11 @@ fn retain_selection(
                     session: None,
                     context: call.context()?,
                     embeddings,
-                    ranking_identity: ranking_identity.clone(),
+                    ranking_identity,
                     near: Some(near),
                     fields: &[],
-                })
-            };
-            let mut options = crate::daemon::query::options(
-                &reader,
-                &ask()?,
-                uuid::Uuid::now_v7().as_u128() as u64,
-            )?;
-            options.page_size = None;
-            let prepared = reader.prepare_query_selection(text, &options)?;
-            let native =
-                prepared.program().shape == Shape::Rows && prepared.program().measure.is_none();
-            let measure = prepared.program().measure.is_some();
-            let derived =
-                measure || matches!(prepared.program().statements, Statements::Derived(_));
-            let mut references = Vec::new();
-            let mut rows = Vec::new();
-            let mut identities =
-                matches!(prepared.program().row_kind, RowKind::UnitRows { .. }).then(Vec::new);
-            if !measure {
-                reader.visit_selection(
-                    &prepared,
-                    polylogue_store::read::VisitFrom::First,
-                    Some(near),
-                    |row| {
-                        if native {
-                            let target = row.target.ok_or_else(|| {
-                                Failure::internal("a native row has no reference")
-                            })?;
-                            references.push(target.reference());
-                        }
-                        if derived {
-                            if let Some(identities) = &mut identities {
-                                let Some(polylogue_store::selection::RowIdentity::Entity {
-                                    key,
-                                    ..
-                                }) = row.identity
-                                else {
-                                    return Err(Failure::internal(
-                                        "a native result has no identity",
-                                    ));
-                                };
-                                identities.push(key);
-                            }
-                            rows.push(row.values);
-                        }
-                        Ok::<_, Failure>(std::ops::ControlFlow::Continue(()))
-                    },
-                )?;
-            }
-            let mut retained = polylogue_model::user::LineSelection {
-                binding: prepared.execution_binding(
-                    polylogue_store::query::execute::options_snapshot(
-                        &options,
-                        false,
-                        ranking_identity.clone(),
-                    )?,
-                    ExecutionPresentation::Query,
-                    None,
-                )?,
-                relation: None,
-                matches: None,
-            };
-            let value =
-                crate::daemon::query::keep_captured(&reader, ask()?, &retained, rows, identities)?;
-            if derived {
-                retained.relation = Some(value);
-            } else if value.get("matches").is_some() {
-                retained.matches = Some(
-                    serde_json::json!({"rows":value["matches"], "columns":value["match_columns"], "schema":value["output_metadata"]["matches"]}),
-                );
-            }
-            Ok((retained, native.then_some(references)))
+                },
+            )
         },
     )
 }

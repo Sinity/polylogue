@@ -265,11 +265,10 @@ pub(crate) fn run(
             if parsed.steps[0].verb == "resume" {
                 before.arguments["steps"] = json!([parsed.steps[0].step]);
             } else {
-                before.arguments["selection"] = json!(if parsed.steps[0].step["follow"] == true {
-                    crate::protocol::steps::FOLLOW_USUAL
-                } else {
-                    crate::protocol::steps::READ_USUAL
-                });
+                before.arguments["selection"] =
+                    json!(crate::protocol::steps::usual_read_selection(
+                        parsed.steps[0].step["follow"] == true
+                    ));
             }
         }
         let question = before.arguments["selection"]
