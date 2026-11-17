@@ -50,12 +50,12 @@ class Client:
         command = [self.executable]
         if self.archive is not None:
             command.extend(["--archive", self.archive])
-        return [*command, "--json", *arguments]
+        return [*command, *arguments]
 
     def call(self, *arguments):
         """One declared command, with the same arguments and answer as CLI JSON."""
         result = subprocess.run(
-            self._arguments(*arguments),
+            self._arguments("--json", *arguments),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
         try:
@@ -81,7 +81,7 @@ class Client:
         failures retain their earlier step reports and undo lines.
         Closing the iterator terminates and reaps the child process.
         """
-        with subprocess.Popen(self._arguments(*arguments), stdout=subprocess.PIPE) as process:
+        with subprocess.Popen(self._arguments("--json", *arguments), stdout=subprocess.PIPE) as process:
             final = None
             failed = None
             try:

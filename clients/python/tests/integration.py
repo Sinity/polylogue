@@ -103,13 +103,22 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(client._arguments("dev", "feed")[:3], [EXECUTABLE, "--archive", declared])
 
     def test_ordered_line_stream_reads_every_step_and_finishes_once(self):
-        arguments = {"references":["session:claude-code:python"], "steps":[
-            {"verb":"note", "text":"Python first line note"},
-            {"verb":"read", "delivery":"stream"},
-            {"verb":"tag", "name":"python-later"},
-            {"verb":"read", "delivery":"stream"}]}
-        events = list(self.direct.stream("rows", "--request", json.dumps(arguments),
-            "--request-id", "python-ordered"))
+        with tempfile.TemporaryDirectory() as directory:
+            first = Path(directory) / "first.json"
+            second = Path(directory) / "second.json"
+            events = list(self.direct.stream(
+                "--request-id", "python-ordered", "--", "session:claude-code:python",
+                "note", "Python first line note",
+                "read", "--to", str(first), "--format", "json",
+                "tag", "python-later",
+                "read", "--to", str(second), "--format", "json"))
+            for path in [first, second]:
+                document = json.loads(path.read_bytes())
+                self.assertEqual(
+                    [item["kind"]["text"] for item in document["items"]
+                     if item["kind"]["kind"] == "text"],
+                    ["a synthetic Python client session"])
+
         self.assertEqual([event["event"] for event in events].count("complete"),2)
         self.assertEqual(events[-1]["event"],"answer")
         reports = [report for event in events if event["event"] in {"steps","answer"}
