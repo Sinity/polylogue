@@ -81,25 +81,33 @@ fn archive_with_notes() -> Morrow {
             vec![Reference::Message(decision)],
         ),
     ] {
-        let response = crate::test_daemon::Call::new(
-            "assert",
-            serde_json::json!({"assertions": [NewAssertion {
-                kind,
-                key: key.map(Into::into),
-                value: value.map(|value| serde_json::json!(value)),
-                links: targets
-                    .into_iter()
-                    .map(|reference| NewAssertionLink {
-                        role: LinkRole::About,
-                        reference,
-                    })
-                    .collect(),
-                valid_until: None,
-            }]}),
+        let invocation = runtime
+            .daemon
+            .invocation(&polylogue_model::authorship::Authorship {
+                author: polylogue_model::Author::Operator,
+                via: polylogue_model::authorship::Channel::Cli,
+            });
+        crate::daemon::service::acts::author(
+            &runtime.daemon,
+            &invocation,
+            id.into(),
+            polylogue_model::user::UserWrite::Assert {
+                assertions: vec![NewAssertion {
+                    kind,
+                    key: key.map(Into::into),
+                    value: value.map(|value| serde_json::json!(value)),
+                    links: targets
+                        .into_iter()
+                        .map(|reference| NewAssertionLink {
+                            role: LinkRole::About,
+                            reference,
+                        })
+                        .collect(),
+                    valid_until: None,
+                }],
+            },
         )
-        .id(id)
-        .answer(&runtime.daemon);
-        crate::test_answers::ok(response);
+        .unwrap();
     }
     runtime.shutdown().unwrap();
     archive

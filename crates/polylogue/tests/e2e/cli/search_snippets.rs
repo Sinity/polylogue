@@ -44,9 +44,9 @@ fn run(term: &str, earlier: bool, output: bool) {
         } else {
             term.to_owned()
         };
-        let result = cli(fixture, &["--json", "find", &query]);
+        let result = cli(fixture, &["--json", &query]);
         assert!(result.status.success(), "{result:?}");
-        let result = json(&result);
+        let result = json(&result)["reply"].clone();
         assert_eq!(result["count"], 1, "{result}");
         let snippet = &result["rows"][0]["snippet"];
         assert_eq!(snippet["session"], "claude-code:stored");
@@ -72,9 +72,9 @@ fn run(term: &str, earlier: bool, output: bool) {
         } else {
             "messages where lodz"
         };
-        let unicode = cli(fixture, &["--json", "find", unicode_query]);
+        let unicode = cli(fixture, &["--json", unicode_query]);
         assert!(unicode.status.success(), "{unicode:?}");
-        let unicode = json(&unicode);
+        let unicode = json(&unicode)["reply"].clone();
         assert_eq!(unicode["count"], 1, "{unicode}");
         let snippet = &unicode["rows"][0]["snippet"];
         let unicode_text = snippet["text"].as_str().unwrap();

@@ -42,7 +42,7 @@ fn read_target(
     let call = match cursor {
         Some(resume) => {
             let mut resume = resume.clone();
-            resume.arguments["page_tokens"] = serde_json::json!(budget);
+            resume.arguments["steps"][0]["budget"] = serde_json::json!(budget);
             test_daemon::Call::from_request(&resume)
         }
         None => test_daemon::read(polylogue_reading::ReadRequest {
@@ -60,10 +60,7 @@ fn read_target(
         }),
     };
     let response = call.answer(&d.daemon);
-    let Some(value) = response.value().cloned() else {
-        panic!("{response:?}")
-    };
-    serde_json::from_value(value).unwrap()
+    crate::test_answers::read(response)
 }
 
 fn resume(call: Option<&polylogue_model::read::ReadyCall>) -> Option<RunnableRequest> {

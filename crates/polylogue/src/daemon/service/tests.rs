@@ -22,11 +22,7 @@ fn read(
     }
     let request = if let Some(resume) = cursor {
         let mut resume = resume.clone();
-        let mut arguments: crate::protocol::read::Arguments =
-            serde_json::from_value(resume.arguments.clone()).unwrap();
-        arguments.page_tokens =
-            budget.map(|value| std::num::NonZeroU64::new(value as u64).unwrap());
-        resume.arguments = serde_json::to_value(arguments).unwrap();
+        resume.arguments["steps"][0]["budget"] = serde_json::json!(budget);
         crate::test_daemon::Call::from_request(&resume)
     } else {
         crate::test_daemon::read(polylogue_reading::ReadRequest {
@@ -47,10 +43,7 @@ fn read(
 }
 
 fn typed(response: command_surface::Answer<serde_json::Value>) -> polylogue_model::read::ReadPage {
-    let Some(data) = response.value().cloned() else {
-        panic!("{response:?}")
-    };
-    serde_json::from_value(data).unwrap()
+    crate::test_answers::read(response)
 }
 fn encoded(page: &polylogue_model::read::ReadPage, format: polylogue_render::Format) -> String {
     let mut bytes = Vec::new();
@@ -94,17 +87,17 @@ fn a_read_honours_its_view_format_and_budget() {
     ));
     assert_ne!(first.document.items, second.document.items);
     let mut malformed = cursor.clone();
-    malformed.cursor = Some("m0.b0.c0".into());
+    malformed.arguments["steps"][0]["cursor"] = serde_json::json!("m0.b0.c0");
     for (view, format, cursor, expected) in [
         ("nope", "json", None, "bad_request"),
         ("transcript", "pdf", None, "bad_request"),
         ("transcript", "json", Some(&malformed), "invalid_query"),
     ] {
         assert!(
-            matches!(
-                read(&w.daemon, view, format, None, cursor),
-                command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some(expected)
-            ),
+            crate::test_answers::refusal(read(&w.daemon, view, format, None, cursor))
+                .code
+                .as_deref()
+                == Some(expected),
             "{view} {format} {cursor:?}"
         );
     }
@@ -127,9 +120,12 @@ fn reading_variants_setting_is_the_default_and_is_bound_in_the_cursor() {
         call.request.clone()
     };
     let variants = |call: &command_surface::RunnableRequest| -> Vec<String> {
-        serde_json::from_value::<crate::protocol::read::Arguments>(call.arguments.clone())
-            .unwrap()
-            .variant
+        let rows: crate::protocol::line::Rows =
+            serde_json::from_value(call.arguments.clone()).unwrap();
+        let crate::protocol::line::Step::Read(step) = &rows.steps[0] else {
+            panic!("expected a read")
+        };
+        step.alternate.iter().cloned().collect()
     };
     set(r#"["translation:pl"]"#);
     let first = next(&typed(read(&w.daemon, "transcript", "json", Some(1), None)));
@@ -138,7 +134,7 @@ fn reading_variants_setting_is_the_default_and_is_bound_in_the_cursor() {
     // even when the continuation names no variant.
     set("[]");
     let mut bare = first.clone();
-    bare.arguments["variant"] = serde_json::json!([]);
+    bare.arguments["steps"][0]["alternate"] = serde_json::Value::Null;
     let second = typed(read(&w.daemon, "transcript", "json", Some(1), Some(&bare)));
     if second.document.footer.next.is_some() {
         assert_eq!(variants(&next(&second)), ["translation:pl"]);
@@ -163,6 +159,59 @@ fn reading_variants_setting_is_the_default_and_is_bound_in_the_cursor() {
     })
     .answer(&w.daemon);
     assert!(variants(&next(&typed(originals))).is_empty());
+}
+
+#[test]
+fn several_setting_alternates_survive_next_and_previous_when_the_setting_changes() {
+    use polylogue_model::read::{CursorSeal, PageCursor};
+    let w = test_daemon::start(&"a synthetic sentence for paging ".repeat(100));
+    let set = |value: &str| {
+        crate::test_answers::ok(
+            crate::test_daemon::Call::new(
+                "set",
+                serde_json::json!({"key":"reading.variants","value":value}),
+            )
+            .answer(&w.daemon),
+        );
+    };
+    set(r#"["translation:pl","translation:de"]"#);
+    let first = typed(read(&w.daemon, "transcript", "json", Some(1), None));
+    let next = first.document.footer.next.as_ref().unwrap().request.clone();
+    let variants = |request: &command_surface::RunnableRequest| {
+        let reader = w.daemon.reads.reader().unwrap();
+        let seal = CursorSeal {
+            key: reader.cursor_key().unwrap(),
+            generation: reader.change_position().unwrap().generation,
+        };
+        PageCursor::open(
+            request.arguments["steps"][0]["cursor"].as_str().unwrap(),
+            &seal,
+        )
+        .unwrap()
+        .variants
+    };
+    assert_eq!(variants(&next), ["translation:pl", "translation:de"]);
+    assert!(next.arguments["steps"][0].get("alternate").is_none());
+    set("[]");
+    let second = typed(read(&w.daemon, "transcript", "json", Some(1), Some(&next)));
+    let previous = second
+        .document
+        .footer
+        .previous
+        .as_ref()
+        .unwrap()
+        .request
+        .clone();
+    assert_eq!(variants(&previous), ["translation:pl", "translation:de"]);
+    let original = typed(read(
+        &w.daemon,
+        "transcript",
+        "json",
+        Some(1),
+        Some(&previous),
+    ));
+    assert_eq!(original.document.items, first.document.items);
+    assert_eq!(original.document.header, first.document.header);
 }
 
 fn config(home: &std::path::Path) -> Config {
@@ -442,12 +491,13 @@ fn read_and_query_share_stored_titles() {
         })
         .unwrap();
     assert!(stored.title.is_none());
-    let response = crate::test_daemon::Call::new("query", serde_json::json!({"query": "sessions"}))
-        .answer(&w.daemon);
+    let response =
+        crate::test_daemon::Call::new("rows", serde_json::json!({"selection": "sessions"}))
+            .answer(&w.daemon);
     let Some(data) = response.value().cloned() else {
         panic!("{response:?}")
     };
-    assert_eq!(data["rows"][0]["title"], "First human question");
+    assert_eq!(data["reply"]["rows"][0]["title"], "First human question");
     for (format, title) in [
         (polylogue_render::Format::Markdown, "# First human question"),
         (

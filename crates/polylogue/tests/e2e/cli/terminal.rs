@@ -76,6 +76,7 @@ fn archived_controls_are_data_in_pipes_and_terminals() {
         counts: bundle::Counts {
             sessions: 1,
             messages: 1,
+            assertions: 1,
             ..Default::default()
         },
         flags: bundle::Flags {
@@ -92,6 +93,24 @@ fn archived_controls_are_data_in_pipes_and_terminals() {
     };
     let records = [
         Record::Manifest(Box::new(manifest)),
+        Record::Assertion(Box::new(polylogue_model::assertion::AssertionRecord {
+            reference: "assertion:hostile-watch@hostile-watch".into(),
+            assertion: polylogue_model::assertion::AssertionFact {
+                id: "hostile-watch".into(),
+                root: "hostile-watch".into(),
+                kind: polylogue_model::assertion::AssertionKind::Signal,
+                key: Some(HOSTILE.into()),
+                value: Some(
+                    json!({"name":HOSTILE,"query":"sessions where kind:*","fires":"on_new","deliver":"notice","interrupt":false}),
+                ),
+                author: polylogue_model::Author::Operator,
+                via: polylogue_model::authorship::Channel::Import,
+                machine: "synthetic-host".into(),
+                created_at: None,
+                valid_until: None,
+                links: vec![],
+            },
+        })),
         Record::Session(bundle::SessionRecord {
             copied_prefixes: Vec::new(),
             reference: "session:claude-code:hostile".into(),
@@ -122,8 +141,6 @@ fn archived_controls_are_data_in_pipes_and_terminals() {
     let imported = cli(&env, &["import", source.to_str().unwrap()]);
     assert!(imported.status.success(), "{imported:?}");
     wait_status(&env, |status| status["store"]["search_pending"] == 0);
-    let watched = cli(&env, &["watch", "--name", HOSTILE, "sessions where kind:*"]);
-    assert!(watched.status.success(), "{watched:?}");
     let status = wait_status(&env, |status| {
         status["signals"]["rules"]
             .as_array()

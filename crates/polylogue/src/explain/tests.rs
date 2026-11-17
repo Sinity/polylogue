@@ -2,8 +2,8 @@ use super::*;
 
 fn explain(expression: Option<&str>) -> crate::test_daemon::Call {
     crate::test_daemon::Call::new(
-        "explain",
-        serde_json::json!({"subject": "query", "expression": expression.map(str::to_owned), "session": Some("claude-code:s1")}),
+        "rows",
+        serde_json::json!({"selection":expression.map(|text| format!("({text})")),"explain":true}),
     )
 }
 
@@ -88,9 +88,11 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
         polylogue_model::WallClock::fixed("2026-10-29T08:00:00Z".parse().unwrap()),
         day,
     );
-    let save =
-        crate::test_daemon::Call::new("save", serde_json::json!({"name": "mine", "query": "self"}))
-            .id("save-explain");
+    let save = crate::test_daemon::Call::new(
+        "rows",
+        serde_json::json!({"selection":"self","steps":[{"verb":"save","name":"mine"}]}),
+    )
+    .id("save-explain");
     let caller = polylogue_model::authorship::Authorship {
         author: polylogue_model::Author::Agent(Some(
             polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
@@ -98,11 +100,17 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
         via: polylogue_model::authorship::Channel::Mcp,
     };
     crate::test_answers::ok(save.authorship(caller.clone()).answer(&w.daemon));
-    let kept = crate::test_answers::ok(
-        crate::test_daemon::Call::new("keep", serde_json::json!({"query": "sessions"}))
-            .id("keep-explain")
-            .answer(&w.daemon),
+    let kept = crate::test_answers::step(
+        crate::test_daemon::Call::new(
+            "rows",
+            serde_json::json!({"selection":"sessions","steps":[{"verb":"save"}]}),
+        )
+        .id("keep-explain")
+        .answer(&w.daemon),
     );
+    let crate::protocol::line::StepAnswer::Saved(kept) = kept else {
+        panic!("expected kept result")
+    };
     let position = w.daemon.reads.reader().unwrap().change_position().unwrap();
     for expression in [
         "tool_calls where outcome:error | group by session | count".to_owned(),
@@ -112,10 +120,10 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
         "tool_calls | union (outcome:error)".into(),
         "sessions | tool_calls | union (outcome:error)".into(),
         "query:mine".into(),
-        format!("result:{}", kept["id"].as_str().unwrap()),
+        format!("result:{}", kept.kept.id.as_str()),
     ] {
         let result = crate::test_answers::ok((explain(Some(&expression))).answer(&w.daemon));
-        let explanation = &result["explanation"];
+        let explanation = &result["reply"]["plan"]["explanation"];
         let program = &explanation["program"];
         // A unit's rows are read key first; a derived relation whole.
         let statements = &program["statements"];
@@ -151,8 +159,10 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
         w.daemon.reads.reader().unwrap().change_position().unwrap(),
         position
     );
+    let none = crate::test_answers::ok(explain(None).answer(&w.daemon));
+    assert_eq!(none["reply"]["form"], "none");
+    assert!(none["reply"]["plan"].is_null());
     for expression in [
-        None,
         Some(""),
         Some("messages where nonsense:x"),
         Some("bananas where role:user"),
@@ -193,15 +203,15 @@ fn capabilities_list_each_operation_with_unlisted_arguments_and_answer() {
     let capabilities = entries("capabilities", None).unwrap();
     let read = capabilities
         .iter()
-        .find(|entry| entry["kind"] == "command" && entry["name"] == "read")
+        .find(|entry| entry["kind"] == "command" && entry["name"] == "rows")
         .unwrap();
     assert_eq!(read["tool"], "polylogue_read");
     let unlisted = read["unlisted"].as_array().unwrap();
-    // The show table's `show` replaces the per-kind flags such as
-    // `thinking`; one argument form, so no `FullArguments` definition.
-    assert!(unlisted.contains(&json!("show")), "{unlisted:?}");
-    assert!(!unlisted.contains(&json!("target")), "{unlisted:?}");
-    assert!(read["arguments"]["properties"]["show"].is_object());
+    assert!(
+        unlisted.contains(&json!("return_selection")),
+        "{unlisted:?}"
+    );
+    assert!(read["arguments"]["properties"]["steps"].is_object());
     assert!(read["answer"].is_object());
     let list = capabilities
         .iter()

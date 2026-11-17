@@ -106,10 +106,6 @@ pub(crate) fn arguments(
         (until.is_some(), "until"),
         (first.is_some(), "first"),
         (last.is_some(), "last"),
-        (
-            alternate.as_deref().is_some_and(|a| a != "none"),
-            "alternate",
-        ),
         (*beside, "beside"),
         (*blind, "blind"),
         (seed.is_some(), "seed"),
@@ -143,11 +139,7 @@ pub(crate) fn arguments(
         hide: hide.clone(),
         output_lines: crate::protocol::read::output_lines(),
         for_others: *neutral_names,
-        variant: if alternate.is_some() {
-            vec!["none".into()]
-        } else {
-            Vec::new()
-        },
+        variant: alternate.iter().cloned().collect(),
         with_blobs: false,
         at: None,
         diff: diff.clone(),
@@ -162,7 +154,7 @@ pub(crate) fn arguments(
 pub(crate) fn step_of(
     arguments: crate::protocol::read::Arguments,
     cursor: Option<String>,
-) -> ReadStep {
+) -> Result<ReadStep, Failure> {
     let crate::protocol::read::Arguments {
         target: _,
         view,
@@ -181,13 +173,23 @@ pub(crate) fn step_of(
         latest: _,
         physical,
     } = arguments;
-    ReadStep {
+    let alternate = match variant.as_slice() {
+        [] => None,
+        [alternate] => Some(alternate.clone()),
+        _ if cursor.is_some() => None,
+        _ => {
+            return Err(Failure::bad_request(
+                "a fresh read names one --alternate; a continuation preserves all alternates in its cursor",
+            ));
+        }
+    };
+    Ok(ReadStep {
         view,
         show,
         hide,
         around,
         diff,
-        alternate: (variant == ["none"]).then(|| "none".to_owned()),
+        alternate,
         physical,
         neutral_names: for_others,
         format: format.map(|format| format.name().to_owned()),
@@ -195,7 +197,7 @@ pub(crate) fn step_of(
         cursor,
         delivery,
         ..ReadStep::default()
-    }
+    })
 }
 
 /// The daemon's read services, whose next pages are `rows` calls.
@@ -238,7 +240,9 @@ impl ReadServices for LineReads<'_> {
                 .as_ref()
                 .map(|references| references.iter().map(ToString::to_string).collect())
                 .unwrap_or_default(),
-            steps: vec![Step::Read(Box::new(step_of(arguments, cursor)))],
+            steps: vec![Step::Read(Box::new(
+                step_of(arguments, cursor).map_err(|failure| Error::Operation(failure.error))?,
+            ))],
             ..Rows::default()
         };
         let arguments =
@@ -255,8 +259,7 @@ impl ReadServices for LineReads<'_> {
             fresh: false,
             format: Default::default(),
         };
-        // `rows` has no HTTP route yet, so its next call is checked against
-        // its own declaration rather than offered as an HTTP call.
+        // A continuation obeys the same declared options as its first page.
         let row = crate::commands::command("rows").expect("rows is a row");
         row.registration()
             .expect("rows is answered by the daemon")

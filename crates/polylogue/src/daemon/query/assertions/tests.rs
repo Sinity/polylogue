@@ -7,36 +7,31 @@ use polylogue_model::assertion::{
 use polylogue_model::{Author, SessionId};
 
 fn add(w: &test_daemon::TestDaemon, id: &str, authored: (Author, NewAssertion)) {
-    let limit = crate::daemon::execution::limit(None, Default::default());
-    let response =
-        crate::test_daemon::Call::new("assert", serde_json::json!({"assertions": [authored.1]}))
-            .id(id)
-            .limit(limit.clone())
-            .authorship(
-                polylogue_model::authorship::Authorship {
-                    author: authored.0,
-                    via: polylogue_model::authorship::Channel::Cli,
-                }
-                .clone(),
-            )
-            .answer(&w.daemon);
-    crate::test_answers::ok(response);
+    let invocation = w
+        .daemon
+        .invocation(&polylogue_model::authorship::Authorship {
+            author: authored.0,
+            via: polylogue_model::authorship::Channel::Cli,
+        });
+    crate::daemon::service::acts::author(
+        &w.daemon,
+        &invocation,
+        id.into(),
+        polylogue_model::user::UserWrite::Assert {
+            assertions: vec![authored.1],
+        },
+    )
+    .unwrap();
 }
 
-fn operator(
-    w: &test_daemon::TestDaemon,
-    request: crate::test_daemon::Call,
-) -> command_surface::Answer<serde_json::Value> {
-    (request)
-        .limit(crate::daemon::execution::limit(None, Default::default()).clone())
-        .authorship(
-            polylogue_model::authorship::Authorship {
-                author: Author::Operator,
-                via: polylogue_model::authorship::Channel::Cli,
-            }
-            .clone(),
-        )
-        .answer(&w.daemon)
+fn operator(w: &test_daemon::TestDaemon, id: &str, write: polylogue_model::user::UserWrite) {
+    let invocation = w
+        .daemon
+        .invocation(&polylogue_model::authorship::Authorship {
+            author: Author::Operator,
+            via: polylogue_model::authorship::Channel::Cli,
+        });
+    crate::daemon::service::acts::author(&w.daemon, &invocation, id.into(), write).unwrap();
 }
 
 fn note(author: Author, target: &str, value: &str) -> (Author, NewAssertion) {
@@ -84,18 +79,20 @@ fn notes_are_listed_by_their_current_revision_and_withdrawals_leave_them_out() {
         first,
         note(Author::Operator, "repo:morrow", "run nextest"),
     );
-    let revised = operator(
+    operator(
         &w,
-        crate::test_daemon::Call::new(
-            "revise",
-            serde_json::json!({"bases": [format!("assertion:{first}@{first}")], "patch": AssertionPatch {
+        "018f0000-0000-7000-8000-000000000002",
+        polylogue_model::user::UserWrite::ReviseAssertions {
+            bases: vec![polylogue_model::RevisionReference::exact(
+                first.into(),
+                first.into(),
+            )],
+            patch: AssertionPatch {
                 value: Change::Set(serde_json::json!("run cargo nextest")),
                 ..Default::default()
-            }}),
-        )
-        .id("018f0000-0000-7000-8000-000000000002"),
+            },
+        },
     );
-    crate::test_answers::ok(revised);
     let agent = Author::Agent(Some(SessionId::parse("codex:x").unwrap()));
     add(
         &w,
@@ -120,15 +117,14 @@ fn notes_are_listed_by_their_current_revision_and_withdrawals_leave_them_out() {
     );
     drop(reader);
 
-    let withdrawn = operator(
+    operator(
         &w,
-        crate::test_daemon::Call::new(
-            "withdraw",
-            serde_json::json!({"targets": [format!("assertion:{first}")], "reason": Some("superseded")}),
-        )
-        .id("018f0000-0000-7000-8000-000000000005"),
+        "018f0000-0000-7000-8000-000000000005",
+        polylogue_model::user::UserWrite::WithdrawAssertions {
+            targets: vec![Reference::parse(&format!("assertion:{first}")).unwrap()],
+            reason: Some("superseded".into()),
+        },
     );
-    crate::test_answers::ok(withdrawn);
     let reader = w.daemon.reads.reader().unwrap();
     assert_eq!(
         values(&list(&reader, &about, &context).unwrap()),

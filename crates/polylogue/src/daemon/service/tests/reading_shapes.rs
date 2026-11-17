@@ -161,10 +161,7 @@ fn read(d: &test_daemon::TestDaemon, target: &str, options: ReadOptions) -> Read
         cursor: None,
     }))
     .answer(&d.daemon);
-    let Some(data) = response.value().cloned() else {
-        panic!("{response:?}")
-    };
-    serde_json::from_value(data).unwrap()
+    crate::test_answers::read(response)
 }
 
 fn texts(page: &ReadPage) -> Vec<String> {

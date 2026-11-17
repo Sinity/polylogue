@@ -42,22 +42,25 @@ fn policy(name: &str, arguments: Value, surface: Surface) -> Result<Policy, Fail
 fn typed_query_runs_through_the_shared_table_and_socket() {
     let daemon = crate::test_daemon::start("typed operation example");
     let table = crate::commands::table(Arc::clone(&daemon.daemon));
-    let envelope = request("query", json!({"query":"sessions"}), "query-example");
+    let envelope = request("rows", json!({"selection":"sessions"}), "query-example");
     let answer = runtime().block_on(table.call(
         envelope.clone(),
         command_surface::Via::Cli,
         Default::default(),
     ));
     assert_eq!(answer.exit_code(), 0, "{answer:?}");
-    let typed: crate::protocol::query::Answer =
-        serde_json::from_value(answer.value().unwrap().clone()).unwrap();
+    let crate::protocol::line::LineAnswer::Listing(typed) =
+        serde_json::from_value(answer.value().unwrap().clone()).unwrap()
+    else {
+        panic!("expected a listing")
+    };
     assert_eq!(typed.rows().unwrap().len(), 1);
     let socket = crate::client::call_ready(&daemon.daemon.archive, &envelope).unwrap();
     assert_eq!(
-        socket.value().unwrap()["rows"],
-        answer.value().unwrap()["rows"]
+        socket.value().unwrap()["reply"]["rows"],
+        answer.value().unwrap()["reply"]["rows"]
     );
-    assert_eq!(socket.value().unwrap()["count"], 1);
+    assert_eq!(socket.value().unwrap()["reply"]["count"], 1);
 }
 
 #[test]
@@ -67,10 +70,10 @@ fn typed_query_refuses_unknown_fields_and_another_operations_arguments() {
     for arguments in [
         json!({"author":"operator"}),
         json!({"paths":["some-input"]}),
-        json!({"query":42}),
+        json!({"selection":42}),
     ] {
         let answer = runtime().block_on(table.call(
-            request("query", arguments, "refusal"),
+            request("rows", arguments, "refusal"),
             command_surface::Via::Mcp,
             Default::default(),
         ));
@@ -372,8 +375,8 @@ fn measurement_answers_keep_resolved_context_on_shared_socket() {
         let answer = crate::client::call_ready(
             &daemon.daemon.archive,
             &request(
-                "query",
-                json!({"query":text}),
+                "rows",
+                json!({"selection":text}),
                 &format!("measurement-context-{paged}"),
             ),
         )
@@ -381,6 +384,7 @@ fn measurement_answers_keep_resolved_context_on_shared_socket() {
         let value = answer
             .value()
             .unwrap_or_else(|| panic!("{text}: {answer:?}"));
+        let value = &value["reply"];
         let typed: crate::protocol::query::Answer = serde_json::from_value(value.clone()).unwrap();
         match &typed {
             crate::protocol::query::Answer::Measure(measure) => {
@@ -449,16 +453,16 @@ fn measurement_answers_keep_resolved_context_on_shared_socket() {
 fn named_context_budget_and_identity_survive_the_socket() {
     let daemon = crate::test_daemon::start("context budget example");
     let mut envelope = request(
-        "brief",
-        json!({"cwd":"/synthetic","source":"resume"}),
+        "rows",
+        json!({"steps":[{"verb":"brief","cwd":"/synthetic","source":"resume"}]}),
         "context-budget-example",
     );
     envelope.budget_tokens = command_surface::TokenBudget::Tokens(200);
     // A hook's brief records its delivery, so it writes; its read phase
     // still has a deadline.
-    let hook = policy("brief", envelope.arguments.clone(), Surface::Hook).unwrap();
+    let hook = policy("rows", envelope.arguments.clone(), Surface::Hook).unwrap();
     assert!(!hook.read_only && hook.read_phase);
-    let person = policy("brief", envelope.arguments.clone(), Surface::Cli).unwrap();
+    let person = policy("rows", envelope.arguments.clone(), Surface::Cli).unwrap();
     assert!(person.read_only);
     for (budget, option) in [
         (command_surface::TokenBudget::Default, None),
@@ -477,31 +481,33 @@ fn named_context_budget_and_identity_survive_the_socket() {
                 assert_eq!(encoded["budget_tokens"], tokens)
             }
         }
-        let mut words = vec![
-            "polylogue",
-            "brief",
-            "--cwd",
-            "/synthetic",
-            "--source",
-            "resume",
-        ];
+        let mut words = Vec::new();
         if let Some(option) = option {
             words.extend(["--budget", option]);
         }
-        let (_, values, arguments) =
-            crate::cli::request_arguments(&words, std::path::Path::new("/")).unwrap();
-        assert_eq!(Value::Object(arguments), selected.arguments);
-        assert_eq!(values.request.budget_tokens, budget);
+        words.extend(["brief", "--cwd", "/synthetic", "--source", "resume"]);
+        let words = words.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        let parsed =
+            crate::cli::line::parse(&words, &crate::cli::line::FirstWordCatalog::default(), true)
+                .unwrap();
+        let actual = crate::cli::run_line::request(&parsed).unwrap();
+        assert_eq!(
+            serde_json::from_value::<crate::protocol::line::Rows>(actual.arguments).unwrap(),
+            serde_json::from_value::<crate::protocol::line::Rows>(selected.arguments).unwrap()
+        );
+        assert_eq!(actual.budget_tokens, budget);
     }
     let answer = crate::client::call_ready(&daemon.daemon.archive, &envelope).unwrap();
     assert_eq!(answer.exit_code(), 0, "{answer:?}");
-    let prepared: crate::protocol::context::Answer =
-        serde_json::from_value(answer.value().unwrap().clone()).unwrap();
+    let crate::protocol::line::StepAnswer::Brief(prepared) = crate::test_answers::step(answer)
+    else {
+        panic!("expected a brief")
+    };
     assert!(prepared.prepared.text.len() <= 800);
     assert!(prepared.prepared.text.contains("context-budget-example"));
     let mut unsupported = envelope;
-    unsupported.operation = "query".into();
-    unsupported.arguments = json!({"query":"sessions"});
+    unsupported.operation = "status".into();
+    unsupported.arguments = json!({});
     let refused = crate::client::call_ready(&daemon.daemon.archive, &unsupported).unwrap();
     assert_eq!(
         refused.failure().map(|failure| failure.message.as_str()),
@@ -512,7 +518,7 @@ fn named_context_budget_and_identity_survive_the_socket() {
 
 #[test]
 fn brief_arguments_carry_the_start_source() {
-    let arguments: crate::protocol::context::Brief =
+    let arguments: crate::protocol::steps::BriefStep =
         serde_json::from_value(json!({"cwd":"/x","source":"resume"})).unwrap();
     assert_eq!(arguments.source, crate::briefing::StartSource::Resume);
 }

@@ -9,23 +9,31 @@ use crate::briefing::StartSource;
 /// call: it answers a synchronous write only after the queued ones.
 fn after_queued_writes(d: &test_daemon::TestDaemon) {
     crate::test_answers::ok(
-        crate::test_daemon::Call::new("keep", serde_json::json!({"query": "sessions"}))
-            .answer(&d.daemon),
+        crate::test_daemon::Call::new(
+            "set",
+            serde_json::json!({"key":"browser.actions","value":"on"}),
+        )
+        .answer(&d.daemon),
     );
 }
 
 fn takeover(d: &test_daemon::TestDaemon, request_id: &str) -> serde_json::Value {
-    let request =
-        crate::test_daemon::Call::new("takeover", serde_json::json!({"session": "claude-code:s1"}))
-            .id(request_id)
-            .surface(crate::commands::Surface::Hook);
-    crate::test_answers::ok((request).answer(&d.daemon))
+    let request = crate::test_daemon::Call::new(
+        "rows",
+        serde_json::json!({"selection":"session:claude-code:s1","steps":[{"verb":"brief"}]}),
+    )
+    .id(request_id)
+    .surface(crate::commands::Surface::Hook);
+    match crate::test_answers::step(request.answer(&d.daemon)) {
+        crate::protocol::line::StepAnswer::Brief(reply) => serde_json::to_value(reply).unwrap(),
+        other => panic!("expected a brief: {other:?}"),
+    }
 }
 
 fn deliveries(d: &test_daemon::TestDaemon) -> u64 {
     let request =
-        crate::test_daemon::Call::new("query", serde_json::json!({"query": "deliveries"}));
-    crate::test_answers::ok((request).answer(&d.daemon))["count"]
+        crate::test_daemon::Call::new("rows", serde_json::json!({"selection": "deliveries"}));
+    crate::test_answers::ok(crate::test_answers::listing(request.answer(&d.daemon)))["count"]
         .as_u64()
         .unwrap()
 }
@@ -56,10 +64,12 @@ fn accepted_write_result_survives_the_read_deadline() {
     blocker.lock_shared().unwrap();
     let id = polylogue_store::user_writes::new_request_id();
     let limit = ReadLimit::new(Duration::from_secs(2), Default::default());
-    let request =
-        crate::test_daemon::Call::new("takeover", serde_json::json!({"session": "claude-code:s1"}))
-            .id(&id)
-            .surface(crate::commands::Surface::Mcp);
+    let request = crate::test_daemon::Call::new(
+        "rows",
+        serde_json::json!({"selection":"session:claude-code:s1","steps":[{"verb":"brief"}]}),
+    )
+    .id(&id)
+    .surface(crate::commands::Surface::Mcp);
     let (response, handed_off) = std::thread::scope(|scope| {
         let worker = scope.spawn(|| request.limit(limit.clone()).answer(&d.daemon));
         let until = Instant::now() + Duration::from_secs(5);
@@ -86,9 +96,11 @@ fn accepted_write_result_survives_the_read_deadline() {
         limit.check(),
         Err(polylogue_store::StoreError::ReadDeadlineExceeded)
     ));
-    let Some(data) = response.value().cloned() else {
-        panic!("accepted write result was reported as a refusal: {response:?}");
+    let data = match crate::test_answers::step(response) {
+        crate::protocol::line::StepAnswer::Brief(reply) => serde_json::to_value(reply).unwrap(),
+        other => panic!("accepted brief was refused: {other:?}"),
     };
+    let id = format!("{id}-1");
     assert_eq!(data["delivery"], id);
     after_queued_writes(&d);
     let reader = d.daemon.reads.reader().unwrap();
@@ -140,21 +152,12 @@ fn daemon_with_a_project() -> test_daemon::TestDaemon {
 
 fn brief(d: &test_daemon::TestDaemon, request_id: &str, source: StartSource) -> serde_json::Value {
     let request = crate::test_daemon::Call::new(
-        "brief",
-        serde_json::json!({
-            "cwd": "/home/op/proj",
-            "session": "claude-code:newcomer",
-            "source": source,
-        }),
-    )
-    .id(request_id)
-    .surface(crate::commands::Surface::Hook);
-    match request.answer(&d.daemon) {
-        command_surface::Answer {
-            outcome: command_surface::Outcome::Ok(data),
-            ..
-        } => data,
-        other => panic!("{other:?}"),
+        "rows",
+        serde_json::json!({"steps":[{"verb":"brief", "cwd":"/home/op/proj", "for":"claude-code:newcomer", "source":source}]}),
+    ).id(request_id).surface(crate::commands::Surface::Hook);
+    match crate::test_answers::step(request.answer(&d.daemon)) {
+        crate::protocol::line::StepAnswer::Brief(reply) => serde_json::to_value(reply).unwrap(),
+        other => panic!("expected a directory brief: {other:?}"),
     }
 }
 
@@ -173,9 +176,12 @@ fn hold_writer(
     let daemon = std::sync::Arc::clone(&d.daemon);
     let held = std::thread::spawn(move || {
         crate::test_answers::ok(
-            crate::test_daemon::Call::new("keep", serde_json::json!({"query": "sessions"}))
-                .id(id)
-                .answer(&daemon),
+            crate::test_daemon::Call::new(
+                "set",
+                serde_json::json!({"key":"browser.actions","value":"on"}),
+            )
+            .id(id)
+            .answer(&daemon),
         );
     });
     pause.wait().unwrap();
@@ -188,6 +194,7 @@ fn a_brief_answers_while_the_writer_is_held_and_its_delivery_commits_after() {
     let (pause, held) = hold_writer(&d, "held-writer-turn");
     let id = polylogue_store::user_writes::new_request_id();
     let answer = brief(&d, &id, StartSource::Startup);
+    let id = format!("{id}-1");
     assert_eq!(answer["delivery"], id.as_str());
     assert!(
         answer["prepared"]["text"]
@@ -220,6 +227,7 @@ fn a_repeated_delivery_event_is_applied_once() {
     let d = daemon_with_a_project();
     let id = polylogue_store::user_writes::new_request_id();
     brief(&d, &id, StartSource::Startup);
+    let id = format!("{id}-1");
     let event = crate::test_daemon::Call::new(
         "internal delivery-event",
         serde_json::json!({"delivery": id.clone(), "what": polylogue_model::DeliveryOutcome::Delivered, "detail": Some("written to the harness hook output")}),
@@ -316,6 +324,7 @@ fn a_brief_answers_while_the_writer_queue_is_full_and_its_delivery_commits_once_
     let id = polylogue_store::user_writes::new_request_id();
     let started = Instant::now();
     let answer = brief(&d, &id, StartSource::Startup);
+    let id = format!("{id}-1");
     assert!(
         started.elapsed() < Duration::from_millis(1_500),
         "a full queue delayed the brief by {:?}",
@@ -369,6 +378,7 @@ fn timeout_outcome_requires_positive_preparation_without_waiting_for_the_writer(
     let (pause, held) = hold_writer(&d, "held-timeout-write-result");
     let id = polylogue_store::user_writes::new_request_id();
     let prepared = brief(&d, &id, StartSource::Startup);
+    let id = format!("{id}-1");
     let event = |delivery: &str| {
         crate::test_daemon::Call::new("internal delivery-event", serde_json::json!({"delivery": delivery, "what": polylogue_model::DeliveryOutcome::NotSent, "detail": Some("timeout")})).answer(&d.daemon)
     };
@@ -399,23 +409,9 @@ fn delivered(d: &test_daemon::TestDaemon, delivery: &str) {
 
 /// An operator lesson about the brief's directory, written now.
 fn lesson(d: &test_daemon::TestDaemon, text: &str) {
-    use polylogue_model::assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink};
-    let lesson = NewAssertion {
-        kind: AssertionKind::Lesson,
-        key: None,
-        value: Some(serde_json::json!(text)),
-        valid_until: None,
-        links: vec![NewAssertionLink {
-            role: LinkRole::About,
-            reference: polylogue_model::Reference::Cwd("/home/op/proj".into()),
-        }],
-    };
-    crate::test_answers::ok(
-        crate::test_daemon::Call::new("assert", serde_json::json!({"assertions": [lesson]}))
-            .authorship(polylogue_model::authorship::Authorship {
-                author: polylogue_model::Author::Operator,
-                via: polylogue_model::authorship::Channel::Cli,
-            })
+    crate::test_answers::step(
+        crate::test_daemon::Call::new("rows", serde_json::json!({"selection":"cwd:/home/op/proj", "steps":[{"verb":"note","as":"lesson","text":text}]}))
+            .authorship(polylogue_model::authorship::Authorship { author: polylogue_model::Author::Operator, via: polylogue_model::authorship::Channel::Cli })
             .answer(&d.daemon),
     );
 }

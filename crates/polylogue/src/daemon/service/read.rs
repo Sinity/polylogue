@@ -266,7 +266,8 @@ fn failure(error: Error, request: &ReadRequest) -> Failure {
                 let rows = crate::protocol::line::Rows {
                     selection: Some(repeated.target.clone()),
                     steps: vec![crate::protocol::line::Step::Read(Box::new(
-                        crate::daemon::verbs::read::step_of(arguments, None),
+                        crate::daemon::verbs::read::step_of(arguments, None)
+                            .map_err(|failure| Error::Operation(failure.error))?,
                     ))],
                     ..Default::default()
                 };
@@ -282,7 +283,10 @@ fn failure(error: Error, request: &ReadRequest) -> Failure {
             Ok(request) => {
                 failure.error = failure.error.with_suggestion(Suggestion::Request(request))
             }
-            Err(error) => return Failure::from(error),
+            Err(error) => failure
+                .error
+                .message
+                .push_str(&format!("; fresh request options: {error}")),
         }
     }
     failure

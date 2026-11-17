@@ -795,8 +795,9 @@ mod terminal;
 
 mod index_open;
 
+#[cfg(target_os = "linux")]
 #[test]
-fn continue_exec_without_recorded_directory_is_refused() {
+fn terminal_resume_without_recorded_directory_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let archive = dir.path().join("archive");
@@ -809,12 +810,26 @@ fn continue_exec_without_recorded_directory_is_refused() {
     let _daemon = start_daemon(&env);
     wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(1));
 
-    let out = cli(&env, &["continue", "claude-code:s1", "--exec"]);
+    use rustix::pty::{OpenptFlags, grantpt, ioctl_tiocgptpeer, openpt, unlockpt};
+    let flags = OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC;
+    let master = openpt(flags).unwrap();
+    grantpt(&master).unwrap();
+    unlockpt(&master).unwrap();
+    let terminal = std::fs::File::from(ioctl_tiocgptpeer(&master, flags).unwrap());
+    let out = env
+        .command()
+        .args(["session:claude-code:s1", "resume"])
+        .stdin(terminal.try_clone().unwrap())
+        .stdout(terminal)
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    drop(master);
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("directory_unknown"), "{stderr}");
     assert!(
-        stderr.contains("polylogue takeover claude-code:s1"),
+        stderr.contains("polylogue claude-code:s1 brief"),
         "{stderr}"
     );
 }

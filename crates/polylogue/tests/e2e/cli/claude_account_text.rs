@@ -275,18 +275,10 @@ fn account_and_project_text_import_without_turns_or_invented_document_authorship
     let imported = cli(&env, &["--json", "import", copy.to_str().unwrap()]);
     let _ = import_report(&imported);
     assert_eq!(document(&env, reference), before);
-    let notes = serde_json::to_string(&[polylogue_model::assertion::NewAssertion {
-        kind: polylogue_model::assertion::AssertionKind::Note,
-        key: None,
-        value: Some(json!("Synthetic document note")),
-        valid_until: None,
-        links: vec![polylogue_model::assertion::NewAssertionLink {
-            role: polylogue_model::assertion::LinkRole::About,
-            reference: polylogue_model::Reference::parse(reference).unwrap(),
-        }],
-    }])
-    .unwrap();
-    let note = cli(&env, &["--json", "assert", &notes]);
+    let note = cli(
+        &env,
+        &["--json", reference, "note", "Synthetic document note"],
+    );
     assert!(note.status.success(), "{note:?}");
     drop(daemon);
     // Rebuild this test archive from its stored bytes after the source file is gone.

@@ -264,8 +264,11 @@ fn only_authored_commits_wake_the_rules() {
     let writes = fixture.daemon.writes.as_ref().unwrap();
     let committed = writes.completion_commits();
     // A first-page read hands its question and run to the writer.
-    let read = crate::test_daemon::Call::new("read", json!({"target": "messages"}))
-        .answer(&fixture.daemon);
+    let read = crate::test_daemon::Call::new(
+        "rows",
+        json!({"selection":"messages", "steps":[{"verb":"read"}]}),
+    )
+    .answer(&fixture.daemon);
     assert!(read.value().is_some(), "{read:?}");
     let records = committed.recv().unwrap();
     assert!(records.query_records && !records.authored, "{records:?}");

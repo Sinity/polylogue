@@ -434,10 +434,14 @@ fn cli_reads_deep_parents_and_reports_incomplete_parent_prefixes() {
     assert_eq!(std::fs::read(&path).unwrap(), original);
     let context = cli(
         &env,
-        &["--json", "takeover", "claude-code:missing-branch-point"],
+        &[
+            "--json",
+            "session:claude-code:missing-branch-point",
+            "brief",
+        ],
     );
     assert!(context.status.success(), "{context:?}");
-    let context = json(&context);
+    let context = json(&context)["reply"]["steps"][0]["outcome"]["reply"]["reply"].clone();
     assert!(
         context["prepared"]["text"]
             .as_str()

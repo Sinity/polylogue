@@ -179,7 +179,7 @@ fn outer_parent_expires_during_sql_under_a_null_envelope() {
 fn a_null_stream_envelope_is_still_capped_by_the_outer_parent() {
     let r = reader();
     rt().block_on(async {
-        let path = typed_url(&r.w,"read",serde_json::json!({"target":"session:claude-code:s1","delivery":"stream","format":"jsonl"}),"parent-before-stream",command_surface::Deadline::None);
+        let path = typed_url(&r.w,"rows",serde_json::json!({"selection":"session:claude-code:s1","steps":[{"verb":"read","delivery":"stream","format":"jsonl"}]}),"parent-before-stream",command_surface::Deadline::None);
         let request = authed(get(&path))
             .header("x-polylogue-deadline-ms",crate::daemon::execution::deadline(Duration::ZERO).to_string())
             .body(Body::empty()).unwrap();
@@ -196,7 +196,7 @@ fn a_null_stream_envelope_is_still_capped_by_the_outer_parent() {
 fn a_finite_stream_envelope_keeps_its_shorter_bound_than_the_outer_parent() {
     let r = reader();
     rt().block_on(async {
-        let path = typed_url(&r.w,"read",serde_json::json!({"target":"session:claude-code:s1","delivery":"stream","format":"jsonl"}),"logical-before-parent",command_surface::Deadline::Milliseconds(0));
+        let path = typed_url(&r.w,"rows",serde_json::json!({"selection":"session:claude-code:s1","steps":[{"verb":"read","delivery":"stream","format":"jsonl"}]}),"logical-before-parent",command_surface::Deadline::Milliseconds(0));
         let request = authed(get(&path))
             .header("x-polylogue-deadline-ms",crate::daemon::execution::deadline(Duration::from_secs(1)).to_string())
             .body(Body::empty()).unwrap();
@@ -304,8 +304,8 @@ fn an_expired_http_read_parent_creates_no_query_object_begin_or_outcome() {
     rt().block_on(async {
         let path = typed_url(
             &r.w,
-            "read",
-            serde_json::json!({"target":"session:claude-code:s1"}),
+            "rows",
+            serde_json::json!({"selection":"session:claude-code:s1","steps":[{"verb":"read"}]}),
             "expired-before-read-begin",
             command_surface::Deadline::None,
         );
@@ -343,8 +343,8 @@ fn a_page_read_past_its_deadline_answers_deadline_exceeded() {
     rt().block_on(async {
         let path = typed_url(
             &r.w,
-            "read",
-            serde_json::json!({"target": "session:claude-code:s1"}),
+            "rows",
+            serde_json::json!({"selection":"session:claude-code:s1","steps":[{"verb":"read"}]}),
             "page-past-deadline",
             command_surface::Deadline::Milliseconds(0),
         );

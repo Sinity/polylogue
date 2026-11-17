@@ -258,7 +258,6 @@ fn pages_and_api_never_carry_the_archive_path() {
 
 #[test]
 fn the_session_page_escapes_archive_text_and_matches_the_socket() {
-    use polylogue_model::read::ReadPage;
     let mut r = reader();
     // Signal commits advance the archive independently of this read comparison.
     r.w.pause_signals();
@@ -319,16 +318,8 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
                 .change_position()
                 .unwrap()
         };
-        let Ok(data) = crate::protocol::into_value(
-            crate::test_daemon::Call::new(
-                "read",
-                serde_json::json!({"target": "session:claude-code:s1", "format": "json"}),
-            )
-            .answer(&r.web.daemon),
-        ) else {
-            panic!("socket read failed")
-        };
-        let socket: ReadPage = serde_json::from_value(data).unwrap();
+        let socket = crate::test_answers::read(crate::test_daemon::Call::new("rows",
+            serde_json::json!({"selection":"session:claude-code:s1","steps":[{"verb":"read","format":"json"}]})).answer(&r.web.daemon));
         assert_eq!(api.document.items, socket.document.items);
         assert_eq!(api.document.header, socket.document.header);
         assert_eq!(socket.snapshot.read_at, socket_read_at);

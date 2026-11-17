@@ -56,15 +56,14 @@ fn facet_counts_cover_the_population_beyond_the_visible_page() {
 fn search_writes_are_available_through_the_command_table() {
     let r = reader();
     rt().block_on(async {
-        for (operation, body) in [
-            ("save", json!({"request_id":"saved-search","name":"parser","query":"sessions where parser"})),
-            ("keep", json!({"request_id":"kept-search","query":"sessions where parser"})),
-        ] {
+        for (id, name) in [("saved-search", Some("parser")), ("kept-search", None)] {
+            let body = json!({"request_id":id,"selection":"sessions where parser","steps":[{"verb":"save","name":name}]});
             for repeat in [false, true] {
-                let (status, _, raw) = send(&r, own_origin(authed(post(&format!("/api/v1/{operation}")))).body(Body::from(body.to_string())).unwrap()).await;
+                let (status, _, raw) = send(&r, own_origin(authed(post("/api/v1/rows"))).body(Body::from(body.to_string())).unwrap()).await;
                 assert_eq!(status, StatusCode::OK, "{raw}");
                 let value: Value = serde_json::from_str(&raw).unwrap();
-                assert_eq!(value["repeat"], repeat);
+                assert_eq!(value["kept"]["repeat"], repeat);
+                if name.is_some() { assert_eq!(value["saved"]["repeat"], repeat); }
             }
         }
     });
@@ -76,7 +75,7 @@ fn search_writes_are_available_through_the_command_table() {
         1
     );
     assert_eq!(
-        data(&r, "result:kept-search", None)["rows"]
+        data(&r, "result:kept-search-1-keep", None)["rows"]
             .as_array()
             .unwrap()
             .len(),
@@ -84,8 +83,8 @@ fn search_writes_are_available_through_the_command_table() {
     );
     let kept = crate::mcp::tests::call_as(
         &polylogue_store::Archive::at(&r.web.daemon.archive.root),
-        "keep",
-        json!({"query":"sessions where parser"})
+        "rows",
+        json!({"selection":"sessions where parser","steps":[{"verb":"save"}]})
             .as_object()
             .unwrap()
             .clone(),
@@ -93,7 +92,10 @@ fn search_writes_are_available_through_the_command_table() {
     )
     .unwrap();
     let outcome: Value = serde_json::from_str(&kept).unwrap();
-    assert_eq!(outcome["id"], "mcp-kept");
+    assert_eq!(
+        outcome["reply"]["steps"][0]["outcome"]["reply"]["reply"]["kept"]["id"],
+        "mcp-kept-1-keep"
+    );
 }
 
 #[test]
@@ -139,9 +141,9 @@ fn filtered_semantic_and_mixed_results_keep_lower_ranked_matches() {
         assert_eq!(api["rows"], mcp.value().unwrap()["reply"]["rows"]);
         let (status, _, raw) = http.block_on(send(
             &r,
-            own_origin(authed(post("/api/v1/keep")))
+            own_origin(authed(post("/api/v1/rows")))
                 .body(Body::from(
-                    json!({"request_id":format!("keep-{source}"),"query":text}).to_string(),
+                    json!({"request_id":format!("save-{source}"),"selection":text,"steps":[{"verb":"save"}]}).to_string(),
                 ))
                 .unwrap(),
         ));
@@ -151,7 +153,7 @@ fn filtered_semantic_and_mixed_results_keep_lower_ranked_matches() {
             &r,
             &format!(
                 "result:{}",
-                serde_json::to_string(outcome["id"].as_str().unwrap()).unwrap()
+                serde_json::to_string(outcome["kept"]["id"].as_str().unwrap()).unwrap()
             ),
             None,
         );

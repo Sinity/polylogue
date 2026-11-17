@@ -202,11 +202,11 @@ fn scalar_sqlite_selection_values_are_not_treated_as_missing() {
 }
 
 #[test]
-fn public_keep_refuses_a_stale_change_cursor_without_keeping_a_result() {
+fn save_refuses_a_stale_change_cursor_without_keeping_a_result() {
     let daemon = crate::test_daemon::start("synthetic source");
     let result = crate::test_daemon::Call::new(
-        "keep",
-        serde_json::json!({"query": "changes where after:obsolete:0:0 | limit 1"}),
+        "rows",
+        serde_json::json!({"selection":"changes where after:obsolete:0:0 | limit 1", "steps":[{"verb":"save"}]}),
     )
     .id("stale-keep")
     .answer(&daemon.daemon);
@@ -218,7 +218,7 @@ fn public_keep_refuses_a_stale_change_cursor_without_keeping_a_result() {
         pool.reader()
             .unwrap()
             .query(
-                "SELECT count(*) AS n FROM a.kept_result WHERE id='stale-keep'",
+                "SELECT count(*) AS n FROM a.kept_result WHERE id='stale-keep-1-keep'",
                 &[]
             )
             .unwrap()[0]["n"],
