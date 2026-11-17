@@ -71,7 +71,6 @@ pub struct Arguments {
 pub(crate) fn output_lines() -> u64 {
     100
 }
-pub type Answer = polylogue_model::read::ReadPage;
 
 #[cfg(test)]
 mod tests;
