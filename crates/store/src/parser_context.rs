@@ -188,10 +188,9 @@ impl Overlay {
             let mut statement = attempt
                 .scratch
                 .prepare("SELECT namespace FROM cleared_state WHERE dirty=1 ORDER BY namespace")?;
-            let namespaces = statement
+            statement
                 .query_map([], |row| row.get(0))?
-                .collect::<std::result::Result<Vec<String>, _>>()?;
-            namespaces
+                .collect::<std::result::Result<Vec<String>, _>>()?
         };
         let base = attempt.base;
         attempt

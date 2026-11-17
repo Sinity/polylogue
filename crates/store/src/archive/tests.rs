@@ -111,7 +111,7 @@ fn reopening_a_build_does_not_build_its_deferred_indexes() {
     assert!(archive.index_build().is_some());
     let index = rusqlite::Connection::open(archive.index_db()).unwrap();
     // As the writer leaves them while the build runs.
-    for name in crate::schema::BUILT_AT_END.iter().copied() {
+    for &name in crate::schema::BUILT_AT_END {
         index
             .execute_batch(&format!("DROP INDEX IF EXISTS {name}"))
             .unwrap();
