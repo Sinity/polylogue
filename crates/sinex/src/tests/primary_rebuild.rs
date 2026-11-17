@@ -93,14 +93,11 @@ fn rebuilding_cache_preserves_source7_and_source8_pending_authored_intent() {
         let mut extracted = Vec::new();
         assert_eq!(
             crate::line_population::extract(&store, "polylogue-test", &mut extracted).unwrap(),
-            1
+            0
         );
-        let products: Vec<serde_json::Value> = serde_json::from_slice(&extracted).unwrap();
-        assert_eq!(products[0]["product"]["product"], "restored_request");
-        assert_eq!(
-            serde_json::from_value::<PreparedRequest>(products[0]["product"]["prepared"].clone())
-                .unwrap(),
-            request
+        assert!(
+            extracted.is_empty(),
+            "unchanged authored intent needs no conversion"
         );
     }
 }

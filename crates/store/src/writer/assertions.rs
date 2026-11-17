@@ -58,14 +58,21 @@ impl Inner {
             {
                 return Ok(outcome);
             }
-            let product = crate::primary::Product::RestoredAssertion {
+            let identity = format!(
+                "assertion-restore:{}",
+                blake3::hash(&serde_json::to_vec(&(
+                    &restoration.fact,
+                    restoration
+                        .import
+                        .as_ref()
+                        .map(|i| (&i.input, i.chain, &i.machine, &i.actor))
+                ))?)
+                .to_hex()
+            );
+            let writes = self.product_writes(vec![crate::primary::Product::RestoredAssertion {
                 fact: restoration.fact.clone(),
                 import: restoration.import.clone(),
-            };
-            let identity = product
-                .restoration_identity()?
-                .expect("assertion restoration identity");
-            let writes = self.product_writes(vec![product])?;
+            }])?;
             sinex.prepare_named_products(&identity, &writes)?;
             outcome.pending = true;
             return Ok(outcome);

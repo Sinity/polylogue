@@ -396,3 +396,127 @@ fn unchanged_named_source8_observation_keeps_original_material_on_retry() {
         .unwrap();
     assert_eq!(repeated, bytes);
 }
+
+#[test]
+fn converted_product_file_uses_normal_query_names_and_repeats_without_effects() {
+    use std::io::Write;
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("current-products.jsonl");
+    let expected = phases();
+    let mut output = std::fs::File::create(&file).unwrap();
+    for (_, product) in &expected {
+        serde_json::to_writer(&mut output, product).unwrap();
+        output.write_all(b"\n").unwrap();
+    }
+    drop(output);
+    let sdk = client(&root.path().join("producer"));
+    assert_eq!(
+        crate::line_population::prepare_current(&file, &sdk).unwrap(),
+        3
+    );
+    for (name, product) in &expected {
+        assert_eq!(
+            kept(&sdk, NamedProductSelector::Exact(name.clone())),
+            vec![product.clone()]
+        );
+    }
+    let before = sdk.status().unwrap();
+    assert_eq!(
+        crate::line_population::prepare_current(&file, &sdk).unwrap(),
+        3
+    );
+    let after = sdk.status().unwrap();
+    assert_eq!(before.prepared_materials, after.prepared_materials);
+    assert_eq!(before.prepared_writes, after.prepared_writes);
+    drop(sdk);
+    let sdk = client(&root.path().join("producer"));
+    for (name, product) in expected {
+        assert_eq!(kept(&sdk, NamedProductSelector::Exact(name)), vec![product]);
+    }
+}
+
+#[test]
+fn unchanged_source8_restoration_retries_keep_original_named_frames() {
+    use polylogue_model::authored::{AuthoredEffect, PreparedRequest};
+    use polylogue_model::user::{UserOutcome, UserWrite};
+    let prepared = PreparedRequest {
+        request: polylogue_store::fixture::authored::operator_request(
+            "preserved-authored".into(),
+            UserWrite::Assert { assertions: vec![] },
+        ),
+        outcome: UserOutcome {
+            id: "preserved-authored".into(),
+            repeat: false,
+            pending: false,
+        },
+        effect: AuthoredEffect::default(),
+    };
+    let name = format!(
+        "authored-restore:{}",
+        blake3::hash(&serde_json::to_vec(&prepared).unwrap()).to_hex()
+    );
+    let write = ProductWrite {
+        product: Product::RestoredRequest { prepared },
+        location: None,
+        parents: vec![],
+        machine: None,
+        output_index: 0,
+    };
+    for material in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let identity = if material {
+            format!("{name}:observation")
+        } else {
+            name.clone()
+        };
+        let bytes = serde_json::to_vec(&[write.clone()]).unwrap();
+        let original = if material {
+            let source = tempfile::tempdir().unwrap();
+            let previous = client(source.path());
+            previous
+                .prepare_named_products(&name, std::slice::from_ref(&write))
+                .unwrap();
+            let mut frame = previous.queue().unwrap().decode_frame(&identity).unwrap();
+            let sinex_protocol::Ingress::Material { material, .. } = &mut frame else {
+                panic!("expected material")
+            };
+            material.source.version = 8;
+            frame
+        } else {
+            let mut source = crate::source_reference();
+            source.version = 8;
+            sinex_protocol::Ingress::Events {
+                source: Some(source),
+                frame: identity.clone(),
+                events: crate::products::events(std::slice::from_ref(&write)).unwrap(),
+                failures: vec![],
+            }
+        };
+        let queue = crate::spool::Spool::open(root.path(), "polylogue-test").unwrap();
+        if material {
+            queue
+                .prepare_material(original.clone(), bytes.as_slice())
+                .unwrap();
+        } else {
+            queue.prepare(original.clone()).unwrap();
+        }
+        drop(queue);
+        let current = client(root.path());
+        for _ in 0..2 {
+            current
+                .prepare_named_products(&name, std::slice::from_ref(&write))
+                .unwrap();
+            let queue = current.queue().unwrap();
+            assert_eq!(queue.decode_frame(&identity).unwrap(), original);
+            if material {
+                let mut actual = vec![];
+                queue
+                    .body(&identity)
+                    .unwrap()
+                    .read_to_end(&mut actual)
+                    .unwrap();
+                assert_eq!(actual, bytes);
+            }
+        }
+    }
+}

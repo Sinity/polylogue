@@ -98,14 +98,27 @@ impl ConvertedRun {
     }
 }
 
-/// Copy a preserved register or primary cache, converting its recorded bodies
-/// in one transaction. The source connection is read-only. An existing equal
-/// destination is a completed repeat; a different destination is refused.
-pub fn convert_register(
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputKind {
+    Register,
+    Products,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct Conversion {
+    pub changed_runs: u64,
+    pub output: OutputKind,
+}
+
+/// Convert a real register to the current register, or extract current products
+/// from a preserved cache. Its derived tables never become a current cache.
+/// The original complete DB/WAL set stays unchanged under its existing lock.
+pub fn convert_preserved(
     source: &Path,
     destination: &Path,
     pending: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<()>,
-) -> Result<u64> {
+) -> Result<Conversion> {
     use rusqlite::{
         OpenFlags,
         backup::{Backup, StepResult},
@@ -164,9 +177,13 @@ pub fn convert_register(
         ));
     }
     let version: u32 = original.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    let target = match version {
-        3 | 4 => crate::schema::ARCHIVE_VERSION,
-        8 | 9 => crate::schema::PRIMARY_INDEX_VERSION,
+    let primary = matches!(
+        crate::source::Source::of(&original)?,
+        crate::source::Source::Cache
+    );
+    let target = match (version, primary) {
+        (3 | 4, false) => OutputKind::Register,
+        (8, true) => OutputKind::Products,
         _ => {
             return Err(StoreError::invalid(
                 "input is outside the execution-body transition",
@@ -235,77 +252,55 @@ pub fn convert_register(
             )?;
         }
     }
-    tx.pragma_update(None, "user_version", target)?;
-    tx.commit()?;
-    if target == crate::schema::ARCHIVE_VERSION {
-        crate::schema::ensure_archive(&output)?;
-    } else {
-        crate::schema::ensure_primary_index(&output)?;
+    if target == OutputKind::Register {
+        tx.pragma_update(None, "user_version", crate::schema::ARCHIVE_VERSION)?;
     }
-    output.close().map_err(|(_, error)| error)?;
+    tx.commit()?;
+    let staged = match target {
+        OutputKind::Register => {
+            crate::schema::ensure_archive(&output)?;
+            output.close().map_err(|(_, error)| error)?;
+            staged
+        }
+        OutputKind::Products => {
+            use std::io::Write;
+            let mut products = tempfile::NamedTempFile::new_in(parent)?;
+            visit_products(&output, |product| {
+                serde_json::to_writer(&mut products, &product)?;
+                products.write_all(b"\n")?;
+                Ok(())
+            })?;
+            output.close().map_err(|(_, error)| error)?;
+            products
+        }
+    };
     staged.as_file().sync_all()?;
     if destination.exists() {
         if digest(staged.path())? != digest(destination)? {
             return Err(StoreError::Conflict(destination.display().to_string()));
         }
-        return Ok(0);
+        return Ok(Conversion {
+            changed_runs: 0,
+            output: target,
+        });
     }
     staged
         .persist_noclobber(destination)
         .map_err(|error| error.error)?;
     std::fs::File::open(parent)?.sync_all()?;
-    Ok(changed)
+    Ok(Conversion {
+        changed_runs: changed,
+        output: target,
+    })
 }
 
-/// Add preserved query and authored products to the staged register before conversion.
+/// Add preserved query products to the staged register before conversion.
 /// Their original bodies and hashes remain intact until the one transaction
 /// converts every begin and its completion together.
 pub fn stage_products(connection: &rusqlite::Transaction<'_>, writes: &[Value]) -> Result<()> {
     for write in writes {
         let product = &write["product"];
         match product["product"].as_str() {
-            Some("request" | "restored_request" | "restored_assertion") => {
-                let product: crate::primary::Product = serde_json::from_value(product.clone())?;
-                match product {
-                    crate::primary::Product::Request(prepared)
-                    | crate::primary::Product::RestoredRequest { prepared } => {
-                        let counter = if crate::primary::authored::stored_request(
-                            connection,
-                            &prepared.request.id,
-                        )?
-                        .is_some()
-                        {
-                            0
-                        } else {
-                            crate::archive::bump_counter(connection)?
-                        };
-                        crate::primary::authored::restore(connection, &prepared, counter)?;
-                    }
-                    crate::primary::Product::RestoredAssertion { fact, import } => {
-                        let new_fact = crate::assertions::get(connection, &fact.id)?.is_none();
-                        let new_import = import
-                            .as_ref()
-                            .map(|import| {
-                                crate::assertions::imports::contains(connection, &fact.id, import)
-                                    .map(|known| !known)
-                            })
-                            .transpose()?
-                            .unwrap_or(false);
-                        let counter = if new_fact || new_import {
-                            crate::archive::bump_counter(connection)?
-                        } else {
-                            0
-                        };
-                        crate::assertions::apply(connection, std::slice::from_ref(&fact), counter)?;
-                        if let Some(import) = import {
-                            crate::assertions::imports::record(
-                                connection, &fact.id, &import, counter,
-                            )?;
-                        }
-                    }
-                    _ => unreachable!(),
-                }
-            }
             Some("query") => {
                 let object: QueryObject = serde_json::from_value(product["object"].clone())?;
                 if !super::known_object(connection, &object)? {
@@ -376,64 +371,36 @@ pub fn stage_products(connection: &rusqlite::Transaction<'_>, writes: &[Value]) 
     Ok(())
 }
 
-/// Visit converted authored, question and execution records in dependency order. The
+/// Visit converted question and execution records in dependency order. The
 /// destination is a private conversion result, never the preserved register.
 pub fn visit_current_products(
     path: &Path,
-    mut visit: impl FnMut(crate::primary::Product) -> Result<()>,
+    visit: impl FnMut(crate::primary::Product) -> Result<()>,
 ) -> Result<u64> {
     let connection = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     let version = crate::schema::version(&connection)?;
     let identity: i32 = connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
     if identity != crate::schema::FORMAT_ID
-        || !matches!(
-            version,
-            crate::schema::ARCHIVE_VERSION | crate::schema::PRIMARY_INDEX_VERSION
+        || version != crate::schema::ARCHIVE_VERSION
+        || matches!(
+            crate::source::Source::of(&connection)?,
+            crate::source::Source::Cache
         )
     {
         return Err(StoreError::invalid(
             "only a current converted register can be reconstructed",
         ));
     }
+    visit_products(&connection, visit)
+}
+
+fn visit_products(
+    connection: &Connection,
+    mut visit: impl FnMut(crate::primary::Product) -> Result<()>,
+) -> Result<u64> {
     let mut count = 0;
-    crate::primary::authored::visit(&connection, &mut |prepared| {
-        visit(crate::primary::Product::RestoredRequest {
-            prepared: prepared.clone(),
-        })?;
-        count += 1;
-        Ok(())
-    })?;
-    crate::assertions::visit(&connection, None, |assertion| {
-        let mut statement = connection.prepare(&sql(&connection, "SELECT input,chain,machine,actor,at FROM @source.assertion_import WHERE assertion=?1 ORDER BY machine,input,chain,actor")?)?;
-        let mut rows = statement.query([&assertion.fact.id])?;
-        let mut imported = false;
-        while let Some(row) = rows.next()? {
-            let at: String = row.get(4)?;
-            visit(crate::primary::Product::RestoredAssertion {
-                fact: assertion.fact.clone(),
-                import: Some(polylogue_model::authored::ImportAttribution {
-                    input: row.get(0)?,
-                    chain: row.get(1)?,
-                    machine: row.get(2)?,
-                    actor: row.id(3)?,
-                    at: polylogue_model::Timestamp::parse_rfc3339(&at)
-                        .ok_or_else(|| StoreError::invalid("invalid preserved import timestamp"))?,
-                }),
-            })?;
-            imported = true;
-            count += 1;
-        }
-        if !imported {
-            visit(crate::primary::Product::RestoredAssertion {
-                fact: assertion.fact,
-                import: None,
-            })?;
-            count += 1;
-        }
-        Ok(())
-    })?;
     let mut objects = connection.prepare(&sql(
-        &connection,
+        connection,
         "SELECT hash,object FROM @source.query ORDER BY hash",
     )?)?;
     let mut rows = objects.query([])?;
@@ -450,7 +417,7 @@ pub fn visit_current_products(
         count += 1;
     }
     let mut runs = connection.prepare(&sql(
-        &connection,
+        connection,
         "SELECT id,binding_hash,run_hash,run,completion FROM @source.query_run ORDER BY id",
     )?)?;
     let mut rows = runs.query([])?;

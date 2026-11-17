@@ -4,9 +4,9 @@ use std::path::Path;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
     let [source, destination, pending @ ..] = arguments.as_slice() else {
-        return Err("usage: convert-line-executions PRESERVED_REGISTER NEW_REGISTER [PRESERVED_QUERY_JSONL]".into());
+        return Err("usage: convert-line-executions PRESERVED_REGISTER NEW_REGISTER_OR_PRODUCTS [PRESERVED_QUERY_JSONL]".into());
     };
-    let changed = polylogue_store::query_objects::line_population::convert_register(
+    let changed = polylogue_store::query_objects::line_population::convert_preserved(
         Path::new(source),
         Path::new(destination),
         |connection| {
@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     println!(
         "{}",
-        serde_json::json!({"converted_runs":changed,"destination":destination.to_string_lossy()})
+        serde_json::json!({"conversion":changed,"destination":destination.to_string_lossy()})
     );
     Ok(())
 }

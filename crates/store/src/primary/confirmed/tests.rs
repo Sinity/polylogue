@@ -732,3 +732,122 @@ fn prepared_application_respects_a_failed_scope_reset_fence() {
         2
     );
 }
+
+#[test]
+fn mixed_live_and_restored_authored_records_keep_first_execution_and_commit_order() {
+    use polylogue_model::{
+        BlobHash,
+        authored::ExecutionEligibility,
+        user::{NewChatAction, UserWrite},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut index = cache(&dir.path().join("index.db"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
+    let context = crate::user_writes::PreparationContext::new(vec!["codex".into()]);
+    let prepared = |id: &str| {
+        let request = crate::fixture::authored::operator_request(
+            id.into(),
+            UserWrite::ChatEnqueue(NewChatAction {
+                id: id.into(),
+                request_key: format!("key-{id}"),
+                request_hash: BlobHash::of(id.as_bytes()),
+                request: serde_json::json!({"text":id}),
+                stage_only: true,
+                needs_approval: false,
+                attachments: vec![],
+            }),
+        );
+        crate::primary::authored::prepare(
+            &index,
+            &request,
+            Some(&context),
+            None,
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap()
+    };
+    let live = prepared("live");
+    let historical = prepared("historical");
+    let historical_first = prepared("historical-first");
+    let live_first = prepared("live-first");
+    let data = [
+        (2, "z-live", Product::Request(live)),
+        (
+            3,
+            "y-historical",
+            Product::RestoredRequest {
+                prepared: historical,
+            },
+        ),
+        (
+            4,
+            "x-historical-first",
+            Product::RestoredRequest {
+                prepared: historical_first.clone(),
+            },
+        ),
+        (5, "c-later-live", Product::Request(historical_first)),
+        (6, "b-live-first", Product::Request(live_first.clone())),
+        (
+            7,
+            "a-later-historical",
+            Product::RestoredRequest {
+                prepared: live_first,
+            },
+        ),
+    ];
+    let mut events: Vec<_> = data
+        .into_iter()
+        .rev()
+        .map(|(position, event, product)| Confirmed {
+            sinex_context: None,
+            position,
+            output_index: 0,
+            event: event.into(),
+            change: ConfirmedChange::Live(Box::new(product)),
+        })
+        .collect();
+    events.push(complete_at(7));
+    let texts = crate::text_rows::TextIds::new(
+        &index,
+        false,
+        crate::archive::MemoryBudget::default().keys() / 3,
+    )
+    .unwrap();
+    for _ in 0..2 {
+        assert_eq!(apply(&texts, &mut index, &resolver, &events).unwrap(), 7);
+        for (id, execution, committed) in [
+            ("live", ExecutionEligibility::Live, 2),
+            ("historical", ExecutionEligibility::Historical, 3),
+            ("historical-first", ExecutionEligibility::Historical, 4),
+            ("live-first", ExecutionEligibility::Live, 6),
+        ] {
+            let action = crate::chat_actions::read(&index, "source_", id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(action.execution, execution, "{id}");
+            assert_eq!(action.events.len(), 1, "{id}");
+            let position: i64 = index
+                .query_row(
+                    "SELECT commit_seq FROM source_client_request WHERE id=?1",
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(position, committed, "{id}");
+        }
+        let count: i64 = index
+            .query_row("SELECT count(*) FROM source_chat_action", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 4);
+    }
+}

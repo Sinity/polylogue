@@ -1,5 +1,5 @@
 use super::*;
-use crate::query_objects::line_population::{convert_register, convert_run};
+use crate::query_objects::line_population::{convert_preserved, convert_run};
 use polylogue_model::{BlobHash, Reference};
 use serde_json::Value;
 
@@ -201,7 +201,12 @@ fn preserved_register_conversion_keeps_source_bytes_and_publishes_once() {
     std::fs::write(&vectors, b"synthetic paid output bytes").unwrap();
     let (_, completion) = preserved_register(&source, false);
     let original = std::fs::read(&source).unwrap();
-    assert_eq!(convert_register(&source, &target, |_| Ok(())).unwrap(), 1);
+    assert_eq!(
+        convert_preserved(&source, &target, |_| Ok(()))
+            .unwrap()
+            .changed_runs,
+        1
+    );
     assert_eq!(std::fs::read(&source).unwrap(), original);
     assert_eq!(
         std::fs::read(&vectors).unwrap(),
@@ -238,7 +243,12 @@ fn preserved_register_conversion_keeps_source_bytes_and_publishes_once() {
     assert_eq!(completed.run_hash, run.record_hash().unwrap());
     drop(output);
     let current_bytes = std::fs::read(&target).unwrap();
-    assert_eq!(convert_register(&source, &target, |_| Ok(())).unwrap(), 0);
+    assert_eq!(
+        convert_preserved(&source, &target, |_| Ok(()))
+            .unwrap()
+            .changed_runs,
+        0
+    );
     assert_eq!(std::fs::read(&target).unwrap(), current_bytes);
     assert_eq!(std::fs::read(&source).unwrap(), original);
 }
@@ -252,7 +262,7 @@ fn invalid_preserved_hash_publishes_nothing_and_keeps_the_source() {
     preserved_register(&source, true);
     let original = std::fs::read(&source).unwrap();
     assert!(matches!(
-        convert_register(&source, &target, |_| Ok(())),
+        convert_preserved(&source, &target, |_| Ok(())),
         Err(StoreError::Conflict(_))
     ));
     assert!(!target.exists());
@@ -281,7 +291,12 @@ fn pending_begin_and_completion_join_the_preserved_population_once() {
         crate::query_objects::line_population::stage_products(connection, &groups)?;
         crate::query_objects::line_population::stage_products(connection, &groups)
     };
-    assert_eq!(convert_register(&source, &target, append).unwrap(), 1);
+    assert_eq!(
+        convert_preserved(&source, &target, append)
+            .unwrap()
+            .changed_runs,
+        1
+    );
     assert_eq!(std::fs::read(&source).unwrap(), original);
     let output = Connection::open(&target).unwrap();
     assert_eq!(
@@ -353,7 +368,9 @@ fn preserved_wal_commits_survive_without_altering_original_files() {
     let original = preserved_tree(source.path());
     let current = destination.path().join("current.db");
     assert_eq!(
-        convert_register(&register, &current, |_| Ok(())).unwrap(),
+        convert_preserved(&register, &current, |_| Ok(()))
+            .unwrap()
+            .changed_runs,
         0
     );
     let converted = Connection::open(current).unwrap();
@@ -381,13 +398,13 @@ fn active_archive_or_missing_custody_lock_changes_no_preserved_entries() {
     let lock = std::fs::File::open(source.path().join("lock")).unwrap();
     lock.lock().unwrap();
     let target = destination.path().join("current.db");
-    assert!(convert_register(&register, &target, |_| Ok(())).is_err());
+    assert!(convert_preserved(&register, &target, |_| Ok(())).is_err());
     assert!(!target.exists());
     assert_eq!(preserved_tree(source.path()), original);
     drop(lock);
     std::fs::remove_file(source.path().join("lock")).unwrap();
     let before = preserved_tree(source.path());
-    assert!(convert_register(&register, &target, |_| Ok(())).is_err());
+    assert!(convert_preserved(&register, &target, |_| Ok(())).is_err());
     assert_eq!(preserved_tree(source.path()), before);
     assert!(!source.path().join("lock").exists());
     assert!(!target.exists());
@@ -401,7 +418,12 @@ fn converted_products_reconstruct_exact_objects_begins_and_completions() {
     let original = source.path().join("archive.db");
     let current = destination.path().join("current.db");
     let (body, completion) = preserved_register(&original, false);
-    convert_register(&original, &current, |_| Ok(())).unwrap();
+    assert_eq!(
+        convert_preserved(&original, &current, |_| Ok(()))
+            .unwrap()
+            .changed_runs,
+        1
+    );
     let mut products = vec![];
     assert_eq!(
         crate::query_objects::line_population::visit_current_products(&current, |product| {
@@ -436,167 +458,39 @@ fn converted_products_reconstruct_exact_objects_begins_and_completions() {
 }
 
 #[test]
-fn preserved_authored_requests_keep_ids_slots_and_repeat_without_effects() {
-    use polylogue_model::{
-        assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink},
-        user::UserWrite,
-    };
-    let origin = crate::fixture::writer::WriterArchive::new();
-    let write = UserWrite::Assert {
-        assertions: vec![NewAssertion {
-            kind: AssertionKind::Tag,
-            key: Some("preserved-tag".into()),
-            value: None,
-            valid_until: None,
-            links: vec![NewAssertionLink {
-                role: LinkRole::About,
-                reference: Reference::parse("session:codex:preserved").unwrap(),
-            }],
-        }],
-    };
-    for id in ["preserved-tag-request", "preserved-deduplicated-request"] {
-        origin
-            .writer
-            .user(crate::fixture::authored::operator_request(
-                id.into(),
-                write.clone(),
-            ))
-            .unwrap();
-    }
-    let pool = crate::ReadPool::open(&origin.archive).unwrap();
-    let reader = pool.reader().unwrap();
-    let mut authored = vec![];
-    reader
-        .visit_authored(&mut |prepared| {
-            authored.push(prepared.clone());
-            Ok(())
-        })
-        .unwrap();
-    assert_eq!(authored.len(), 2);
-    assert_eq!(
-        authored
-            .iter()
-            .map(|prepared| prepared.effect.assertions.len())
-            .sum::<usize>(),
-        1
-    );
-    let source = tempfile::tempdir().unwrap();
-    let destination = tempfile::tempdir().unwrap();
-    let original = source.path().join("archive.db");
-    let current = destination.path().join("current.db");
-    preserved_register(&original, false);
-    let before = preserved_tree(source.path());
-    let mut products: Vec<_> = authored.iter().map(|prepared| serde_json::json!({"product":{"product":"restored_request","prepared":prepared}})).collect();
-    let import = polylogue_model::authored::ImportAttribution {
-        machine: "receiving-machine".into(),
-        input: "preserved-import".into(),
-        chain: 1,
-        actor: polylogue_model::Author::Operator,
-        at: Timestamp::from_unix_ms(1000).unwrap(),
-    };
-    let imported = crate::primary::Product::RestoredAssertion {
-        fact: authored[0].effect.assertions[0].clone(),
-        import: Some(import),
-    };
-    products.push(serde_json::json!({"product":imported}));
-    convert_register(&original, &current, |tx| {
-        crate::query_objects::line_population::stage_products(tx, &products)?;
-        crate::query_objects::line_population::stage_products(tx, &products)
-    })
-    .unwrap();
-    assert_eq!(preserved_tree(source.path()), before);
-    let connection = Connection::open(&current).unwrap();
-    assert_eq!(
-        connection
-            .query_row("SELECT count(*) FROM assertion", [], |row| row
-                .get::<_, u64>(0))
-            .unwrap(),
-        1
-    );
-    assert!(
-        connection
-            .query_row("SELECT count(*) FROM assertion_slot", [], |row| row
-                .get::<_, u64>(0))
-            .unwrap()
-            > 0
-    );
-    let slots: Vec<(Vec<u8>, String)> = connection
-        .prepare("SELECT slot,id FROM assertion_slot ORDER BY slot,id")
-        .unwrap()
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap();
-    let original_connection = Connection::open(origin.archive.archive_db()).unwrap();
-    let original_slots: Vec<(Vec<u8>, String)> = original_connection
-        .prepare("SELECT slot,id FROM assertion_slot ORDER BY slot,id")
-        .unwrap()
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap();
-    assert_eq!(slots, original_slots);
-    let mut restored = vec![];
-    let mut assertions = vec![];
-    crate::query_objects::line_population::visit_current_products(&current, |product| {
-        match product {
-            crate::primary::Product::RestoredRequest { prepared } => restored.push(prepared),
-            crate::primary::Product::RestoredAssertion { .. } => assertions.push(product),
-            _ => {}
-        }
-        Ok(())
-    })
-    .unwrap();
-    assert_eq!(assertions, vec![imported]);
-    assert_eq!(restored, authored);
-    drop(connection);
-    assert_eq!(
-        convert_register(&original, &current, |tx| {
-            crate::query_objects::line_population::stage_products(tx, &products)
-        })
-        .unwrap(),
-        0
-    );
-    let connection = Connection::open(&current).unwrap();
-    let repeated: Vec<(Vec<u8>, String)> = connection
-        .prepare("SELECT slot,id FROM assertion_slot ORDER BY slot,id")
-        .unwrap()
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap();
-    assert_eq!(slots, repeated);
-    assert_eq!(preserved_tree(source.path()), before);
-}
-
-#[test]
 fn primary_cache_transition_uses_source_tables_and_current_products() {
     let source = tempfile::tempdir().unwrap();
     let destination = tempfile::tempdir().unwrap();
     let original = source.path().join("index.db");
-    let current = destination.path().join("current.db");
+    let current = destination.path().join("current.jsonl");
     std::fs::write(source.path().join("lock"), b"").unwrap();
     let connection = Connection::open(&original).unwrap();
     crate::schema::ensure_primary_index(&connection).unwrap();
     super::super::apply_object(&connection, &question("sessions"), 1).unwrap();
     let (body, completion) = old_body(None);
     connection.execute("INSERT INTO source_query_run(id,binding_hash,run_hash,query,run,completion) VALUES(?1,?2,?3,?4,?5,?6)", params![completion.run.as_str(), completion.binding_hash.to_string(), completion.run_hash.to_string(), question("sessions").id.to_string(), super::super::pack(&body).unwrap(), super::super::pack(&completion).unwrap()]).unwrap();
+    // The protected cache8 has inline uniqueness constraints. B3's cache9
+    // declares separate build indexes, so retagging this file cannot open it.
+    connection.execute_batch("DROP TABLE message_version; CREATE TABLE message_version(pk INTEGER PRIMARY KEY,version_hash BLOB NOT NULL UNIQUE) STRICT;
+        DROP TABLE event_value; CREATE TABLE event_value(pk INTEGER PRIMARY KEY,hash BLOB NOT NULL UNIQUE,body BLOB NOT NULL) STRICT;
+        DROP TABLE link_value; CREATE TABLE link_value(pk INTEGER PRIMARY KEY,hash BLOB NOT NULL UNIQUE,body BLOB NOT NULL) STRICT;").unwrap();
     connection.pragma_update(None, "user_version", 8).unwrap();
     drop(connection);
     let before = preserved_tree(source.path());
+    let converted_artifact = convert_preserved(&original, &current, |_| Ok(())).unwrap();
+    assert_eq!(converted_artifact.changed_runs, 1);
     assert_eq!(
-        convert_register(&original, &current, |_| Ok(())).unwrap(),
-        1
+        converted_artifact.output,
+        crate::query_objects::line_population::OutputKind::Products
     );
-    let mut products = vec![];
-    assert_eq!(
-        crate::query_objects::line_population::visit_current_products(&current, |product| {
-            products.push(product);
-            Ok(())
-        })
-        .unwrap(),
-        3
-    );
+    let bytes = std::fs::read(&current).unwrap();
+    assert!(!bytes.starts_with(b"SQLite format 3"));
+    let products: Vec<crate::primary::Product> = std::str::from_utf8(&bytes)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(products.len(), 3);
     let converted = convert_run(body).unwrap();
     assert_eq!(
         products[1],
@@ -609,6 +503,17 @@ fn primary_cache_transition_uses_source_tables_and_current_products() {
         crate::primary::Product::QueryRunOutcome {
             outcome: Box::new(converted.completion(completion).unwrap())
         }
+    );
+    assert_eq!(
+        convert_preserved(&original, &current, |_| Ok(()))
+            .unwrap()
+            .changed_runs,
+        0
+    );
+    assert_eq!(std::fs::read(&current).unwrap(), bytes);
+    assert!(
+        crate::query_objects::line_population::visit_current_products(&original, |_| Ok(()))
+            .is_err()
     );
     assert_eq!(preserved_tree(source.path()), before);
 }

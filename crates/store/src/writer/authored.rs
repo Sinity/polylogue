@@ -58,10 +58,11 @@ impl Inner {
             let product = crate::primary::Product::RestoredRequest {
                 prepared: restoration.prepared.clone(),
             };
-            let identity = product
-                .restoration_identity()?
-                .expect("authored restoration identity");
             let writes = self.product_writes(vec![product])?;
+            let identity = format!(
+                "authored-restore:{}",
+                blake3::hash(&serde_json::to_vec(&restoration.prepared)?).to_hex()
+            );
             sinex.prepare_named_products(&identity, &writes)?;
             outcome.pending = true;
             return Ok(outcome);

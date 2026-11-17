@@ -158,7 +158,7 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
                 | "polylogue.delivery"
                 | "polylogue.delivery_outcome"
                 | "polylogue.request"
-                | "polylogue.request_restore" => 8,
+                | "polylogue.request_restore" => 7,
                 "polylogue.session" => 7,
                 "polylogue.document"
                 | "polylogue.event"
@@ -172,10 +172,13 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
                 "polylogue.query_run_outcome" => 2,
                 "polylogue.blob" | "polylogue.coverage" => 3,
                 "polylogue.fragment" => 4,
-                "polylogue.assertion" => 4,
+                "polylogue.assertion" => 3,
                 "polylogue.query" => 2,
                 "polylogue.tool_call" | "polylogue.prefix_copy" | "polylogue.prefix_member" => 2,
-                "polylogue.historical_restore" | "polylogue.attachment_binding" => 1,
+                "polylogue.historical_restore"
+                | "polylogue.attachment_binding"
+                | "polylogue.line_resolution"
+                | "polylogue.line_resolution_restore" => 1,
                 other => panic!("undeclared successor kind/version expectation: {other}"),
             }
         );
