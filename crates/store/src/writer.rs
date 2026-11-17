@@ -1545,7 +1545,15 @@ impl Inner {
                 index.execute(&sql, [])?;
                 crate::fault::check("index.deferred", &root.to_string_lossy())?;
             }
-            index.execute_batch("PRAGMA analysis_limit = 1000; ANALYZE main;")?;
+            // An empty first build is followed by live writes. ANALYZE would
+            // record zero-cardinality partial indexes and make later pages
+            // prefer a whole-table scan and sort over their ordering index.
+            if index.exists(
+                "SELECT EXISTS(SELECT 1 FROM session UNION ALL SELECT 1 FROM document)",
+                [],
+            )? {
+                index.execute_batch("PRAGMA analysis_limit = 1000; ANALYZE main;")?;
+            }
             add(Stage::SecondaryIndexes, started.elapsed());
             Ok(())
         })

@@ -450,21 +450,19 @@ fn completion_latency_reports_real_shell_callbacks_with_daemon_up_and_down() {
     });
     let ready = Instant::now();
     loop {
-        if callback(
+        let (output, _) = callback(
             &root,
             &cache,
             "zsh",
             &["sessions where repo:neutral"],
             "polylogue",
-        )
-        .0
-        .contains("neutral-repository")
-        {
+        );
+        if output.contains("neutral-repository") {
             break;
         }
         assert!(
             ready.elapsed() < Duration::from_secs(10),
-            "startup catalog did not write the committed repository"
+            "startup catalog did not write the committed repository; callback={output:?}"
         );
         std::thread::sleep(Duration::from_millis(2));
     }
