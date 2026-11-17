@@ -337,6 +337,25 @@ impl Queue {
         )?;
         Ok(Snapshot { connection })
     }
+    /// Read-only access for the finite preserved-execution conversion.
+    #[cfg(feature = "fixture")]
+    pub fn preserved(path: &Path) -> Result<Self> {
+        let connection = archive::open_read(path)?;
+        let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        let identity: u32 =
+            connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
+        if version != 2 || identity != 1347178801 {
+            return Err(StoreError::invalid(
+                "preserved producer queue is not format 2",
+            ));
+        }
+        Ok(Self {
+            path: path.into(),
+            connection,
+            newest_next: std::cell::Cell::new(true),
+        })
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         let connection = archive::open_write(path, archive::cache::SETUP)?;
         let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;

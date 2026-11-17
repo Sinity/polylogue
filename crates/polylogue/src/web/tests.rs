@@ -782,7 +782,8 @@ fn session_parent_links_are_scoped_and_missing_parent_stays_incomplete() {
         assert_eq!(status,StatusCode::OK,"{body}");
         let frames=command_surface::SseDecoder::new().push(body.as_bytes()).unwrap();
         assert_eq!(frames.first().unwrap().event,"begin");
-        assert_eq!(frames.last().unwrap().event,"complete");
+        assert_eq!(frames.iter().filter(|frame|frame.event=="complete").count(),1);
+        assert_eq!(frames.last().unwrap().event,"answer");
         let links:Vec<_>=frames.iter().filter(|frame|frame.event=="record").filter_map(|frame| {
             match serde_json::from_str::<ReadRecord>(&frame.data).unwrap() {
                 ReadRecord::Original {record,..} => match *record {polylogue_model::bundle::Record::Link(row)=>Some(row.link),_=>None}, _=>None,

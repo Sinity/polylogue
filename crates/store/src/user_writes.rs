@@ -275,7 +275,15 @@ pub(crate) fn apply_using(
                 });
                 statements.push(statement);
             }
-            crate::assertions::write_preparing(tx, &statements, context, &mut resolve_saved)
+            if statements.is_empty() {
+                Ok(UserOutcome {
+                    id: r.id.clone(),
+                    repeat: false,
+                    pending: false,
+                })
+            } else {
+                crate::assertions::write_preparing(tx, &statements, context, &mut resolve_saved)
+            }
         }
         UserWrite::ReviseAssertions { bases, patch } => {
             crate::assertions::revise_preparing(tx, bases, patch, context, &mut resolve_saved)
@@ -479,7 +487,9 @@ pub(crate) fn apply_using(
             crate::assertions::write_preparing(tx, &[statement], context, &mut resolve_saved)
         }
     }?;
-    let effect = if matches!(r.write, UserWrite::ResolveLine { .. }) {
+    let effect = if matches!(r.write, UserWrite::ResolveLine { .. })
+        || matches!(&r.write,UserWrite::AssertQuery {resolved,..} if resolved.is_empty())
+    {
         polylogue_model::authored::AuthoredEffect::default()
     } else {
         crate::primary::authored::capture(tx, r, seq)?

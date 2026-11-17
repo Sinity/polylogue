@@ -355,6 +355,20 @@ impl Spool {
         })
     }
 
+    #[cfg(feature = "fixture")]
+    pub(crate) fn preserved(store: &Path, producer: &str) -> Result<Self> {
+        let root = store.join("producer-spool").join(hash(producer.as_bytes()));
+        let lock = File::open(root.join("lock"))?;
+        lock.try_lock_shared().map_err(Error::invalid)?;
+        let queue = Queue::preserved(&root.join("queue.db"))?;
+        Ok(Self {
+            root,
+            queue,
+            waker: RefCell::new(None),
+            _lock: lock,
+        })
+    }
+
     pub fn open(store: &Path, producer: &str) -> Result<Self> {
         let root = store.join("producer-spool").join(hash(producer.as_bytes()));
         fs::create_dir_all(root.join("operations"))?;

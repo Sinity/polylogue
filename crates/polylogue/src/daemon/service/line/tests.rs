@@ -396,9 +396,9 @@ fn socket_chain_streams_each_read_at_its_step_and_retries_writes_once() {
         "selection": "sessions where NOT tag:done",
         "steps": [
             {"verb":"tag", "name":"done"},
-            {"verb":"read", "view":"raw", "delivery":"stream"},
+            {"verb":"read", "view":"transcript", "delivery":"stream"},
             {"verb":"note", "text":"after-note"},
-            {"verb":"read", "view":"raw", "delivery":"stream"}
+            {"verb":"read", "view":"transcript", "delivery":"stream"}
         ]
     });
     for retry in [false, true] {
@@ -533,7 +533,7 @@ fn streamed_read_keeps_the_fixed_query_order() {
         "ordered-population",
         json!({
             "selection":"sessions | sort by id desc", "all":true,
-            "steps":[{"verb":"tag","name":"ordered"},{"verb":"read","delivery":"stream","view":"raw"}]
+            "steps":[{"verb":"tag","name":"ordered"},{"verb":"read","delivery":"stream","view":"transcript"}]
         }),
     );
     let sessions: Vec<String> = events
@@ -564,7 +564,7 @@ fn streamed_read_keeps_message_grain_in_a_fixed_reference_population() {
         "message-population",
         json!({
             "references":["message:claude-code:u2","message:claude-code:u1"],
-            "steps":[{"verb":"tag","name":"message-only"},{"verb":"read","delivery":"stream","view":"raw"}]
+            "steps":[{"verb":"tag","name":"message-only"},{"verb":"read","delivery":"stream","view":"transcript"}]
         }),
     );
     let mut messages = Vec::new();

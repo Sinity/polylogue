@@ -137,7 +137,7 @@ fn length_and_callback_coordinate_keep_keys_apart() {
         crate::kinds::kind_reference("polylogue.query_run")
             .unwrap()
             .version,
-        4
+        5
     );
     assert_eq!(
         crate::kinds::kind_reference("polylogue.query_run_outcome")

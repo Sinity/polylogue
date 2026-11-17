@@ -1,0 +1,288 @@
+//! Explicit conversion of preserved execution bodies. Normal readers never
+//! call this; the finite tool is retired after the format transition.
+use super::*;
+use polylogue_model::BlobHash;
+use serde_json::Value;
+use std::path::Path;
+
+pub struct ConvertedRun {
+    pub run: QueryRun,
+    pub old_binding: BlobHash,
+    pub old_run: BlobHash,
+}
+
+/// Convert only the field owned by the previous execution-options format.
+/// Other variants and all identity, authorship and outcome inputs stay intact.
+pub fn convert_run(mut body: Value) -> Result<ConvertedRun> {
+    let mut changed = false;
+    if body["binding"]["kind"] == "original" {
+        let options = body["binding"]["execution"]["query_options"]
+            .as_object_mut()
+            .ok_or_else(|| StoreError::invalid("execution has no query options"))?;
+        if let Some(reference) = options.remove("direct_reference") {
+            if options.contains_key("references") {
+                return Err(StoreError::invalid(
+                    "execution contains both population formats",
+                ));
+            }
+            if !reference.is_null() && !reference.is_string() {
+                return Err(StoreError::invalid(
+                    "old direct reference is not a reference or null",
+                ));
+            }
+            options.insert(
+                "references".into(),
+                if reference.is_null() {
+                    Value::Null
+                } else {
+                    Value::Array(vec![reference])
+                },
+            );
+            changed = true;
+        }
+    }
+    let run: QueryRun = serde_json::from_value(body)?;
+    super::validate_run(&run)?;
+    let mut previous = serde_json::to_value(&run)?;
+    if changed {
+        let options = previous["binding"]["execution"]["query_options"]
+            .as_object_mut()
+            .unwrap();
+        let references = options.remove("references").unwrap();
+        options.insert(
+            "direct_reference".into(),
+            match references {
+                Value::Null => Value::Null,
+                Value::Array(mut references) if references.len() == 1 => references.remove(0),
+                _ => {
+                    return Err(StoreError::invalid(
+                        "old population did not contain zero or one reference",
+                    ));
+                }
+            },
+        );
+    }
+    let tag = if previous["binding"]["kind"] == "original_object" {
+        "polylogue-object-execution-binding-v1"
+    } else {
+        "polylogue-execution-binding-v1"
+    };
+    let hash = |tag, value: &Value| {
+        canonical_json::canonical_hash(tag, value)
+            .map(|hash| BlobHash(*hash.as_bytes()))
+            .map_err(crate::encoding::identity_encoding)
+    };
+    Ok(ConvertedRun {
+        old_binding: hash(tag, &previous["binding"]["execution"])?,
+        old_run: hash("polylogue-query-run-begin-v1", &previous)?,
+        run,
+    })
+}
+impl ConvertedRun {
+    pub fn completion(&self, mut completion: QueryRunOutcome) -> Result<QueryRunOutcome> {
+        if completion.run != self.run.id
+            || completion.binding_hash != self.old_binding
+            || completion.run_hash != self.old_run
+        {
+            return Err(StoreError::Conflict(completion.run.to_string()));
+        }
+        completion.binding_hash = self.run.binding_hash()?;
+        completion.run_hash = self.run.record_hash()?;
+        super::validate_run_outcome(&completion)?;
+        Ok(completion)
+    }
+}
+
+/// Copy a preserved register or primary cache, converting its recorded bodies
+/// in one transaction. The source connection is read-only. An existing equal
+/// destination is a completed repeat; a different destination is refused.
+pub fn convert_register(
+    source: &Path,
+    destination: &Path,
+    pending: impl FnOnce(&Connection) -> Result<()>,
+) -> Result<u64> {
+    use rusqlite::{
+        OpenFlags,
+        backup::{Backup, StepResult},
+    };
+    use std::io::Read;
+    fn digest(path: &Path) -> Result<blake3::Hash> {
+        let mut file = std::fs::File::open(path)?;
+        let mut hash = blake3::Hasher::new();
+        let mut bytes = [0; 65536];
+        loop {
+            let n = file.read(&mut bytes)?;
+            if n == 0 {
+                break;
+            }
+            hash.update(&bytes[..n]);
+        }
+        Ok(hash.finalize())
+    }
+    let original = Connection::open_with_flags(source, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let identity: i32 = original.pragma_query_value(None, "application_id", |row| row.get(0))?;
+    if identity != crate::schema::FORMAT_ID {
+        return Err(StoreError::invalid(
+            "preserved input is not a Polylogue register or cache",
+        ));
+    }
+    let version: u32 = original.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let target = match version {
+        3 | 4 => crate::schema::ARCHIVE_VERSION,
+        8 | 9 => crate::schema::PRIMARY_INDEX_VERSION,
+        _ => {
+            return Err(StoreError::invalid(
+                "input is outside the execution-body transition",
+            ));
+        }
+    };
+    let parent = destination
+        .parent()
+        .ok_or_else(|| StoreError::invalid("destination needs a parent"))?;
+    let staged = tempfile::NamedTempFile::new_in(parent)?;
+    let mut output = Connection::open(staged.path())?;
+    {
+        let backup = Backup::new(&original, &mut output)?;
+        loop {
+            match backup.step(128)? {
+                StepResult::Done => break,
+                StepResult::More => {}
+                _ => {
+                    return Err(StoreError::invalid(
+                        "preserved input is busy; freeze its snapshot first",
+                    ));
+                }
+            }
+        }
+    }
+    let tx = output.transaction()?;
+    pending(&tx)?;
+    let mut changed = 0;
+    {
+        let mut statement = tx
+            .prepare("SELECT id,binding_hash,run_hash,run,completion FROM query_run ORDER BY id")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let binding: String = row.get(1)?;
+            let intent: String = row.get(2)?;
+            let body: Option<Vec<u8>> = row.get(3)?;
+            let completion: Option<Vec<u8>> = row.get(4)?;
+            let body=body.ok_or_else(||StoreError::invalid(format!("execution {id} has no original begin; locate its preserved register or spool body before conversion")))?;
+            let converted = convert_run(crate::encoding::unpack_json(&body)?)?;
+            if converted.run.id.as_str() != id
+                || converted.old_binding.to_string() != binding
+                || converted.old_run.to_string() != intent
+            {
+                return Err(StoreError::Conflict(id));
+            }
+            let completion = completion
+                .map(|body| converted.completion(crate::encoding::unpack_json(&body)?))
+                .transpose()?
+                .map(|completion| super::pack(&completion))
+                .transpose()?;
+            let new_binding = converted.run.binding_hash()?.to_string();
+            let new_intent = converted.run.record_hash()?.to_string();
+            changed += u64::from(new_binding != binding || new_intent != intent);
+            tx.execute(
+                "UPDATE query_run SET binding_hash=?2,run_hash=?3,run=?4,completion=?5 WHERE id=?1",
+                params![
+                    id,
+                    new_binding,
+                    new_intent,
+                    super::pack(&converted.run)?,
+                    completion
+                ],
+            )?;
+        }
+    }
+    tx.pragma_update(None, "user_version", target)?;
+    tx.commit()?;
+    if target == crate::schema::ARCHIVE_VERSION {
+        crate::schema::ensure_archive(&output)?;
+    } else {
+        crate::schema::ensure_primary_index(&output)?;
+    }
+    output.close().map_err(|(_, error)| error)?;
+    staged.as_file().sync_all()?;
+    if destination.exists() {
+        if digest(staged.path())? != digest(destination)? {
+            return Err(StoreError::Conflict(destination.display().to_string()));
+        }
+        return Ok(0);
+    }
+    staged
+        .persist_noclobber(destination)
+        .map_err(|error| error.error)?;
+    std::fs::File::open(parent)?.sync_all()?;
+    Ok(changed)
+}
+
+/// Add preserved query products to the staged register before conversion.
+/// Their original bodies and hashes remain intact until the one transaction
+/// converts every begin and its completion together.
+pub fn stage_products(connection: &Connection, writes: &[Value]) -> Result<()> {
+    for write in writes {
+        let product = &write["product"];
+        match product["product"].as_str() {
+            Some("query_run") => {
+                let body = &product["run"];
+                let converted = convert_run(body.clone())?;
+                let id = converted.run.id.as_str();
+                let hashes: Option<(String, String)> = connection
+                    .query_row(
+                        "SELECT binding_hash,run_hash FROM query_run WHERE id=?1",
+                        [id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?;
+                let binding = converted.old_binding.to_string();
+                let intent = converted.old_run.to_string();
+                if hashes.is_some_and(|hashes| hashes != (binding.clone(), intent.clone())) {
+                    return Err(StoreError::Conflict(id.into()));
+                }
+                let object = match &converted.run.binding {
+                    RunBinding::OriginalObject { execution } => {
+                        Some(execution.reference.to_string())
+                    }
+                    _ => None,
+                };
+                connection.execute("INSERT INTO query_run(id,binding_hash,run_hash,query,object_ref,run) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO UPDATE SET run=coalesce(run,excluded.run),query=coalesce(query,excluded.query),object_ref=coalesce(object_ref,excluded.object_ref)",
+                    params![id,binding,intent,converted.run.question.map(|question|question.to_string()),object,super::pack(body)?])?;
+            }
+            Some("query_run_outcome") => {
+                let completion: QueryRunOutcome =
+                    serde_json::from_value(product["outcome"].clone())?;
+                super::validate_run_outcome(&completion)?;
+                let id = completion.run.as_str();
+                let known: Option<(String, String, Option<Vec<u8>>)> = connection
+                    .query_row(
+                        "SELECT binding_hash,run_hash,completion FROM query_run WHERE id=?1",
+                        [id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .optional()?;
+                if let Some((binding, intent, body)) = known {
+                    if binding != completion.binding_hash.to_string()
+                        || intent != completion.run_hash.to_string()
+                        || body
+                            .map(|body| crate::encoding::unpack_json::<QueryRunOutcome>(&body))
+                            .transpose()?
+                            .is_some_and(|prior| prior != completion)
+                    {
+                        return Err(StoreError::Conflict(id.into()));
+                    }
+                }
+                connection.execute("INSERT INTO query_run(id,binding_hash,run_hash,completion) VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET completion=coalesce(completion,excluded.completion)",
+                    params![id,completion.binding_hash.to_string(),completion.run_hash.to_string(),super::pack(&completion)?])?;
+            }
+            Some(_) => {}
+            None => {
+                return Err(StoreError::invalid(
+                    "preserved product has no declared variant",
+                ));
+            }
+        }
+    }
+    Ok(())
+}

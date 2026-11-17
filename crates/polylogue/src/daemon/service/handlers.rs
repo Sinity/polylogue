@@ -893,6 +893,12 @@ impl Handler for AssertQuery {
                 ));
             }
         };
+        if targets == 0 {
+            return Ok(error(
+                polylogue_model::Code::Empty,
+                "the query returns no rows; no assertion was written",
+            ));
+        }
         drop(reader);
         Ok(super::submit(
             d,

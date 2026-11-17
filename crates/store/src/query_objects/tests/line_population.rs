@@ -1,0 +1,263 @@
+use super::*;
+use crate::query_objects::line_population::{convert_register, convert_run};
+use polylogue_model::{BlobHash, Reference};
+use serde_json::Value;
+
+fn read_presentation() -> ExecutionPresentation {
+    ExecutionPresentation::Read {
+        options: Default::default(),
+        delivery: Default::default(),
+        format: polylogue_model::read::Format::Json,
+        page_budget: Some(Default::default()),
+        direct_source: None,
+    }
+}
+fn old_body(reference: Option<Reference>) -> (Value, QueryRunOutcome) {
+    let object = question("sessions");
+    let mut current = run(
+        &object,
+        "preserved-run",
+        100,
+        ChangePosition {
+            generation: "preserved".into(),
+            index: 0,
+            archive: 0,
+        },
+    );
+    if reference.is_some() {
+        current.binding.original_mut().unwrap().presentation = read_presentation();
+    }
+    current
+        .binding
+        .original_mut()
+        .unwrap()
+        .query_options
+        .references = reference.clone().map(|reference| vec![reference]);
+    let mut body = serde_json::to_value(&current).unwrap();
+    let options = body["binding"]["execution"]["query_options"]
+        .as_object_mut()
+        .unwrap();
+    options.remove("references");
+    options.insert(
+        "direct_reference".into(),
+        serde_json::to_value(reference).unwrap(),
+    );
+    let hash = |tag, value: &Value| {
+        BlobHash(
+            *canonical_json::canonical_hash(tag, value)
+                .unwrap()
+                .as_bytes(),
+        )
+    };
+    let mut completion = outcome(&current, 7);
+    completion.binding_hash = hash(
+        "polylogue-execution-binding-v1",
+        &body["binding"]["execution"],
+    );
+    completion.run_hash = hash("polylogue-query-run-begin-v1", &body);
+    (body, completion)
+}
+
+#[test]
+fn preserved_execution_conversion_maps_none_and_one_and_is_idempotent() {
+    for reference in [
+        None,
+        Some(Reference::parse("session:codex:preserved").unwrap()),
+    ] {
+        let (body, completion) = old_body(reference.clone());
+        let converted = convert_run(body).unwrap();
+        assert_eq!(
+            converted
+                .run
+                .binding
+                .original()
+                .unwrap()
+                .query_options
+                .references,
+            reference.map(|reference| vec![reference])
+        );
+        let completed = converted.completion(completion.clone()).unwrap();
+        assert_eq!(completed.count, Some(7));
+        assert_eq!(completed.run, completion.run);
+        assert_eq!(completed.at, completion.at);
+        assert_eq!(completed.outcome, completion.outcome);
+        assert_eq!(
+            completed.binding_hash,
+            converted.run.binding_hash().unwrap()
+        );
+        assert_eq!(completed.run_hash, converted.run.record_hash().unwrap());
+        let again = convert_run(serde_json::to_value(&converted.run).unwrap()).unwrap();
+        assert_eq!(again.run, converted.run);
+        assert_eq!(again.completion(completed.clone()).unwrap(), completed);
+    }
+}
+
+#[test]
+fn current_zero_and_ordered_populations_and_object_runs_stay_intact() {
+    let object = question("sessions");
+    let mut current = run(
+        &object,
+        "unchanged-run",
+        100,
+        ChangePosition {
+            generation: "preserved".into(),
+            index: 0,
+            archive: 0,
+        },
+    );
+    current.binding.original_mut().unwrap().presentation = read_presentation();
+    for references in [
+        vec![],
+        vec![
+            Reference::parse("message:codex:m2").unwrap(),
+            Reference::parse("session:codex:s1").unwrap(),
+        ],
+    ] {
+        current
+            .binding
+            .original_mut()
+            .unwrap()
+            .query_options
+            .references = Some(references);
+        let converted = convert_run(serde_json::to_value(&current).unwrap()).unwrap();
+        assert_eq!(converted.run, current);
+        assert_eq!(converted.old_binding, current.binding_hash().unwrap());
+        assert_eq!(converted.old_run, current.record_hash().unwrap());
+    }
+    current.question = None;
+    current.binding = RunBinding::OriginalObject {
+        execution: Box::new(polylogue_model::query_objects::ObjectExecutionBinding {
+            reference: Reference::Request("preserved-request".into()),
+            content_hash: BlobHash::of(b"original bytes"),
+            scope_fingerprint: None,
+            versions: Default::default(),
+            presentation: read_presentation(),
+            accepted_request: None,
+        }),
+    };
+    let converted = convert_run(serde_json::to_value(&current).unwrap()).unwrap();
+    assert_eq!(converted.run, current);
+    assert_eq!(converted.old_binding, current.binding_hash().unwrap());
+    assert_eq!(converted.old_run, current.record_hash().unwrap());
+}
+
+fn preserved_register(path: &std::path::Path, corrupt: bool) -> (Value, QueryRunOutcome) {
+    let connection = rusqlite::Connection::open(path).unwrap();
+    crate::schema::ensure_archive(&connection).unwrap();
+    let (body, completion) = old_body(Some(Reference::parse("session:codex:preserved").unwrap()));
+    connection
+        .execute(
+            "INSERT INTO meta(key,value) VALUES('preserved-fixture','unaltered')",
+            [],
+        )
+        .unwrap();
+    connection.execute("INSERT INTO query_run(id,binding_hash,run_hash,query,run,completion) VALUES(?1,?2,?3,?4,?5,?6)",
+        params![completion.run.as_str(),completion.binding_hash.to_string(),
+            if corrupt {BlobHash::of(b"wrong").to_string()} else {completion.run_hash.to_string()},
+            body["question"].as_str().unwrap(),super::super::pack(&body).unwrap(),super::super::pack(&completion).unwrap()]).unwrap();
+    connection.pragma_update(None, "user_version", 3).unwrap();
+    (body, completion)
+}
+
+#[test]
+fn preserved_register_conversion_keeps_source_bytes_and_publishes_once() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("preserved.db");
+    let target = directory.path().join("current.db");
+    let vectors = directory.path().join("embeddings.db");
+    std::fs::write(&vectors, b"synthetic paid output bytes").unwrap();
+    let (_, completion) = preserved_register(&source, false);
+    let original = std::fs::read(&source).unwrap();
+    assert_eq!(convert_register(&source, &target, |_| Ok(())).unwrap(), 1);
+    assert_eq!(std::fs::read(&source).unwrap(), original);
+    assert_eq!(
+        std::fs::read(&vectors).unwrap(),
+        b"synthetic paid output bytes"
+    );
+    let output = Connection::open(&target).unwrap();
+    crate::schema::ensure_archive(&output).unwrap();
+    assert_eq!(crate::schema::version(&output).unwrap(), 4);
+    assert_eq!(
+        output
+            .query_row(
+                "SELECT value FROM meta WHERE key='preserved-fixture'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+        "unaltered"
+    );
+    let (run, completed): (Vec<u8>, Vec<u8>) = output
+        .query_row(
+            "SELECT run,completion FROM query_run WHERE id=?1",
+            [completion.run.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let run: QueryRun = crate::encoding::unpack_json(&run).unwrap();
+    let completed: QueryRunOutcome = crate::encoding::unpack_json(&completed).unwrap();
+    assert_eq!(
+        run.binding.original().unwrap().query_options.references,
+        Some(vec![Reference::parse("session:codex:preserved").unwrap()])
+    );
+    assert_eq!(completed.count, Some(7));
+    assert_eq!(completed.binding_hash, run.binding_hash().unwrap());
+    assert_eq!(completed.run_hash, run.record_hash().unwrap());
+    drop(output);
+    let current_bytes = std::fs::read(&target).unwrap();
+    assert_eq!(convert_register(&source, &target, |_| Ok(())).unwrap(), 0);
+    assert_eq!(std::fs::read(&target).unwrap(), current_bytes);
+    assert_eq!(std::fs::read(&source).unwrap(), original);
+}
+
+#[test]
+fn invalid_preserved_hash_publishes_nothing_and_keeps_the_source() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("invalid.db");
+    let target = directory.path().join("unpublished.db");
+    preserved_register(&source, true);
+    let original = std::fs::read(&source).unwrap();
+    assert!(matches!(
+        convert_register(&source, &target, |_| Ok(())),
+        Err(StoreError::Conflict(_))
+    ));
+    assert!(!target.exists());
+    assert_eq!(std::fs::read(&source).unwrap(), original);
+}
+
+#[test]
+fn pending_begin_and_completion_join_the_preserved_population_once() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("preserved.db");
+    let target = directory.path().join("current.db");
+    let connection = Connection::open(&source).unwrap();
+    crate::schema::ensure_archive(&connection).unwrap();
+    connection.pragma_update(None, "user_version", 3).unwrap();
+    drop(connection);
+    let original = std::fs::read(&source).unwrap();
+    let (body, completion) = old_body(None);
+    let groups = [
+        serde_json::json!({"product":{"product":"query_run_outcome","outcome":completion}}),
+        serde_json::json!({"product":{"product":"query_run","run":body}}),
+    ];
+    let append = |connection: &Connection| {
+        crate::query_objects::line_population::stage_products(connection, &groups)?;
+        crate::query_objects::line_population::stage_products(connection, &groups)
+    };
+    assert_eq!(convert_register(&source, &target, append).unwrap(), 1);
+    assert_eq!(std::fs::read(&source).unwrap(), original);
+    let output = Connection::open(&target).unwrap();
+    assert_eq!(
+        output
+            .query_row("SELECT count(*) FROM query_run", [], |row| row
+                .get::<_, u64>(0))
+            .unwrap(),
+        1
+    );
+    let packed: Vec<u8> = output
+        .query_row("SELECT completion FROM query_run", [], |row| row.get(0))
+        .unwrap();
+    let current: QueryRunOutcome = crate::encoding::unpack_json(&packed).unwrap();
+    assert_eq!(current.count, completion.count);
+    assert_eq!(current.run, completion.run);
+}
