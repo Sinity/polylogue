@@ -62,7 +62,7 @@ pub(crate) fn intern(
                 marked,
             )?
             .ok_or_else(|| {
-                StoreError::Invalid("a new text conflicts with a stored identity".into())
+                crate::StoreError::Invalid("a new text conflicts with a stored identity".into())
             })?;
             (id, marked)
         }
