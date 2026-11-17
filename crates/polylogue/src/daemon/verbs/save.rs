@@ -128,6 +128,25 @@ impl Verb for Save {
 }
 
 fn check(step: &SaveStep) -> Result<(), Failure> {
+    if let Some(name) = &step.name {
+        let captured = if crate::commands::is_cli_command(name) {
+            Some("command")
+        } else if crate::protocol::steps::declarations()
+            .verbs()
+            .iter()
+            .any(|verb| verb.verb() == name)
+        {
+            Some("verb")
+        } else {
+            None
+        };
+        if let Some(kind) = captured {
+            return Err(Failure::bad_value(format!(
+                "{name:?} names a {kind}; choose another saved query name"
+            )));
+        }
+    }
+
     if step
         .name
         .as_deref()

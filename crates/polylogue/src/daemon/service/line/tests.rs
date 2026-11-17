@@ -832,7 +832,7 @@ fn unkeyed_aggregate_is_unchanged_by_its_own_saves() {
         &d,
         "aggregate-save",
         json!({"selection":query,"steps":[
-            {"verb":"save","name":"first-count"}, {"verb":"save","name":"second-count"}
+            {"verb":"save","name":"first-count","denominator":"assertions"}, {"verb":"save","name":"second-count","denominator":"assertions"}
         ]}),
     );
     for report in reports {
@@ -913,7 +913,7 @@ fn kept_paged_measure_follows_every_page_with_its_original_population() {
                 .unwrap();
             }
         },
-        1,
+        30,
         2,
     );
     let query = "sessions | measure compare:origin";
@@ -922,7 +922,7 @@ fn kept_paged_measure_follows_every_page_with_its_original_population() {
         first["next"].is_string(),
         "fixture must exceed ordinary measure page size: {first}"
     );
-    let request = json!({"selection":query,"steps":[{"verb":"save","name":"complete-measure"}]});
+    let request = json!({"selection":query,"steps":[{"verb":"save","name":"complete-measure","denominator":"sessions"}]});
     let reports = steps(&d, "complete-paged-measure", request.clone());
     let kept = kept_result(&d, &reports[0]);
     assert_eq!(kept["shape"], "summary", "{kept}");
@@ -995,4 +995,27 @@ fn dry_run_picker_describes_steps_without_writing() {
         "{reports:?}"
     );
     assert_eq!(count(&d, "assertions where kind:tag"), 0);
+}
+
+#[test]
+fn newly_saved_names_cannot_be_captured_by_commands_or_verbs() {
+    let d = test_daemon::start("saved name grammar");
+    for name in ["status", "read"] {
+        let failure = crate::test_answers::refusal(line(
+            &d,
+            &format!("reserved-{name}"),
+            json!({
+                "selection":"sessions", "steps":[{"verb":"save","name":name}]
+            }),
+        ));
+        assert_eq!(failure.code.as_deref(), Some("bad_value"));
+        assert!(failure.message.contains(name), "{failure:?}");
+    }
+    assert_eq!(count(&d, "assertions where kind:saved_query"), 0);
+    steps(
+        &d,
+        "ordinary-saved-name",
+        json!({"selection":"sessions", "steps":[{"verb":"save","name":"grammar-control"}]}),
+    );
+    assert_eq!(count(&d, "query:grammar-control"), 1);
 }

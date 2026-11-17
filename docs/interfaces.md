@@ -115,7 +115,7 @@ Each verb takes a fixed number of words after it, then its options; only `save`'
 | `interrupt` | 0 | — |
 | `resume` | 0 | `--fork`, `--anyway`; `--in HARNESS`, and with it `--at`, `--cwd`, `--stop-source` |
 
-Line options on every line: `--json`, `--deadline MS|none`, `--request-id ID`, `--dry-run`, `--explain`, `--wait D`, `--all`, `--fresh`. Listing options, before the first verb: `--page-size N`, `--fields a,b`, `--why`, `--to`, `--cursor`, `--budget`. The same concept has the same option name on every verb and command that has it ([Option names](#option-names)).
+Line options on every line: `--json`, `--deadline MS|none`, `--request-id ID`, `--dry-run`, `--explain`, `--wait D`, `--all`, `--fresh`. Listing options, before the first verb: `--page-size N`, `--fields a,b`, `--why`, `--to`, `--cursor`, `--budget`. The same concept has the same option name on every verb and command that has it ([Option names](#option-names)). Boolean line and listing flags accept explicit values, such as `--all=false` and `--why=true`.
 
 ## Chains
 

@@ -1,5 +1,4 @@
 //! One selection followed by declared verbs. Shell arguments retain their boundaries.
-use crate::commands::Cli;
 use command_surface::{ArgumentForm, StepDeclaration};
 use polylogue_model::Code;
 use serde_json::Value;
@@ -157,12 +156,7 @@ fn first(word: Option<&str>, catalog: &FirstWordCatalog, verbs: &[StepDeclaratio
     if word == "-" {
         return FirstWord::Stdin;
     }
-    if matches!(word, "--help" | "-h")
-        || crate::commands::COMMANDS.iter().any(|row| {
-            matches!(row.cli, Cli::Subcommand | Cli::Hidden)
-                && row.name.split(' ').next() == Some(word)
-        })
-    {
+    if matches!(word, "--help" | "-h") || crate::commands::is_cli_command(word) {
         return FirstWord::Command;
     }
     if verbs.iter().any(|verb| verb.verb() == word) {
@@ -216,12 +210,28 @@ fn line_option(
     index: &mut usize,
     line: &mut LineOptions,
 ) -> Result<bool, Refusal> {
+    let (word, assigned) = args[*index]
+        .split_once('=')
+        .map_or((args[*index].as_str(), None), |(name, value)| {
+            (name, Some(value))
+        });
+    let flag = match word {
+        "--json" => Some(&mut line.json),
+        "--fresh" => Some(&mut line.fresh),
+        "--dry-run" => Some(&mut line.dry_run),
+        "--explain" => Some(&mut line.explain),
+        "--all" => Some(&mut line.all),
+        _ => None,
+    };
+    if let Some(flag) = flag {
+        *flag = assigned
+            .map(str::parse::<bool>)
+            .transpose()
+            .map_err(|_| Refusal::new(Code::BadValue, format!("{word} needs true or false")))?
+            .unwrap_or(true);
+        return Ok(true);
+    }
     match args[*index].as_str() {
-        "--json" => line.json = true,
-        "--fresh" => line.fresh = true,
-        "--dry-run" => line.dry_run = true,
-        "--explain" => line.explain = true,
-        "--all" => line.all = true,
         "--deadline" => line.deadline = Some(value(args, index)?),
         "--request-id" => line.request_id = Some(value(args, index)?),
         "--wait" => line.wait = Some(value(args, index)?),
@@ -242,6 +252,11 @@ fn listing_option(
         }
         "--fields" => listing.fields = value(args, index)?.split(',').map(str::to_owned).collect(),
         "--why" => listing.why = true,
+        word if word.starts_with("--why=") => {
+            listing.why = word[6..]
+                .parse()
+                .map_err(|_| Refusal::new(Code::BadValue, "--why needs true or false"))?
+        }
         "--to" => listing.to = Some(Destination::parse(&value(args, index)?)),
         "--cursor" => listing.cursor = Some(value(args, index)?),
         "--budget" => listing.budget = Some(value(args, index)?),

@@ -127,6 +127,12 @@ pub enum Cli {
     /// the row is a hidden subcommand taking `--request`.
     Line,
 }
+/// The first word of an actual command, from the same table as CLI parsing.
+pub(crate) fn is_cli_command(word: &str) -> bool {
+    COMMANDS.iter().any(|row| {
+        matches!(row.cli, Cli::Subcommand | Cli::Hidden) && row.name.split(' ').next() == Some(word)
+    })
+}
 
 impl Cli {
     /// Left out of help and completion.

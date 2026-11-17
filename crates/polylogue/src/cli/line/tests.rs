@@ -250,7 +250,12 @@ fn line_formatter_diagnoses_unrepresentable_step_fields() {
     let error = crate::commands::declarations()
         .cli_command(&request)
         .unwrap_err();
-    assert!(error.message.contains("delivery"), "{error:?}");
+    assert!(
+        error
+            .message
+            .contains("read has options unavailable on the command line"),
+        "{error:?}"
+    );
 }
 
 #[test]
