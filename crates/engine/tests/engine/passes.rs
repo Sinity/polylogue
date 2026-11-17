@@ -867,7 +867,12 @@ fn copied_tool_history_keeps_items_after_restart() {
     let path = |id| rollouts.join(format!("rollout-2026-03-01T10-00-00-{id}.jsonl"));
     let parent_prefix: String = prefix
         .lines()
-        .filter(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()["ordinal"] != 6)
+        .filter(|line| {
+            !matches!(
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["ordinal"].as_u64(),
+                Some(4 | 6)
+            )
+        })
         .map(|line| format!("{line}\n"))
         .collect();
     let parent = record(1, "session_meta", parent_header) + &parent_prefix;
