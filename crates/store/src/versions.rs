@@ -364,6 +364,8 @@ fn read_body<T: DeserializeOwned>(
     Ok(serde_json::from_value(value)?)
 }
 
+type MessageRow = (Option<Vec<u8>>, Option<Vec<u8>>, i64);
+
 /// The value and its block positions belong to the caller's one read snapshot.
 pub(crate) fn read_message(
     conn: &Connection,
@@ -375,7 +377,7 @@ pub(crate) fn read_message(
          LEFT JOIN message_version_body b ON b.version_pk=v.pk
          LEFT JOIN message_block_selection p ON p.version_pk=v.pk WHERE v.version_hash=?1",
             [hash],
-            |row| <(Option<Vec<u8>>, Option<Vec<u8>>, i64)>::try_from(row),
+            |row| MessageRow::try_from(row),
         )
         .optional()?;
     decode_message(conn, hash, stored)
@@ -395,9 +397,7 @@ pub(crate) fn read_message_by_key(
          LEFT JOIN message_block_selection p ON p.version_pk=v.pk
          WHERE v.pk=?1 AND v.version_hash=?2",
         )?
-        .query_row(params![pk, hash], |row| {
-            <(Option<Vec<u8>>, Option<Vec<u8>>, i64)>::try_from(row)
-        })
+        .query_row(params![pk, hash], |row| MessageRow::try_from(row))
         .optional()?;
     decode_message(conn, hash, stored)
 }
@@ -405,7 +405,7 @@ pub(crate) fn read_message_by_key(
 fn decode_message(
     conn: &Connection,
     hash: &[u8],
-    stored: Option<(Option<Vec<u8>>, Option<Vec<u8>>, i64)>,
+    stored: Option<MessageRow>,
 ) -> Result<Option<(Message, MessageProjection)>> {
     let Some((body, layout, pk)) = stored else {
         return Ok(None);
