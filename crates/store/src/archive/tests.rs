@@ -661,7 +661,10 @@ fn private_index_readers_recover_journals_without_accepting_writes() {
             .status()
             .unwrap();
         assert!(status.success());
-        let original = open_read(&path).unwrap();
+        // The normal opener's schema-dependent cache pragma can itself meet
+        // the hot journal. A bare READONLY open isolates its SELECT refusal.
+        let original =
+            Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
         let error = original
             .query_row("SELECT sum(value) FROM recovery_probe", [], |row| {
                 row.get::<_, i64>(0)

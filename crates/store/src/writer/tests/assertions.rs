@@ -277,7 +277,15 @@ fn unknown_authored_time_keeps_current_revision_queries() {
 #[test]
 fn private_readers_hydrate_authored_membership_in_temp_tables() {
     let archive = test_archive();
-    restore(&archive, fact("kept", "kept", AssertionKind::Note, &[]));
+    restore(
+        &archive,
+        fact(
+            "kept",
+            "kept",
+            AssertionKind::Note,
+            &[(LinkRole::About, "session:claude-code:synthetic")],
+        ),
+    );
     assert!(archive.archive.index_build().is_some());
     let pool = ReadPool::open(&archive.archive).unwrap();
     let reader = pool.reader().unwrap();
