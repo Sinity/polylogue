@@ -186,5 +186,5 @@ result = "exit"
 timeout_seconds = 0
 scratch = "none"
 cache = "none"
-admission = { memory_mib = 512 }
-unit_properties = ["CPUWeight=20", "IOWeight=20", "MemoryHigh=1G"]
+admission = { memory_mib = 4096 }
+unit_properties = ["CPUWeight=20", "IOWeight=20", "MemoryHigh=4G", "MemoryMax=6G", "MemorySwapMax=1G"]
