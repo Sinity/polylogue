@@ -11,6 +11,10 @@
     "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::antigravity::VERSION=1",
     "772aeaf490963ed1d9ba12440682a9730f823105dc2a36129b8433e3fe71cd64"
   ],
+  "antigravity-database": [
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::antigravity::database::VERSION=1",
+    "31af61d461d1c6b651a1f133e93e1635c5f24f7f3d94d95e8996883e26fd151b"
+  ],
   "antigravity-exports": [
     "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::antigravity::VERSION=1",
     "772aeaf490963ed1d9ba12440682a9730f823105dc2a36129b8433e3fe71cd64"

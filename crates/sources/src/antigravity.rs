@@ -13,6 +13,7 @@ use polylogue_model::{
 use std::collections::HashMap;
 use std::path::Path;
 
+pub mod database;
 pub mod server;
 
 pub const VERSION: u32 = 1;
