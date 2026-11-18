@@ -259,19 +259,12 @@ Building the archive overlaps every stage:
 - consumers of committed positions: derived data (computed on a thread of
   its own and written by the writer only if its inputs are unchanged), the
   request-log view and the completion catalog;
-- at the end of an index build, two threads build the full-text indexes in
-  private disk files from one ordered scan. The scan reads each referenced
-  text group once per bounded rowid window and sends its texts in rowid order.
-  The scan window and the two queues share 64 MiB. Their declarations and
-  configuration are the installed schema's own statements. Meanwhile the
-  writer builds the trigram and deferred secondary indexes. Once both search files are finished, their
-  configuration is checked and both tables are copied into the main file in
-  one transaction on a short-lived connection.
-  That commit invalidates the existing writer's and readers' cached full-text
-  structures through SQLite's normal data-version change. The copy reuses one
-  closed side writer's page-cache share. A stop or error leaves the
-  previous search tables intact. The build file is then installed as
-  `index.db` ([durability](#durability));
+- at the end of an index build, the writer fills both full-text tables in one
+  transaction in the private index. A bounded scan reads each referenced text
+  group once per window and visits its texts in rowid order. Each table uses
+  its installed schema's tokenizer and configuration. A stop or error rolls
+  back both tables together. The writer builds the trigram and deferred
+  secondary indexes before installing the build as `index.db` ([durability](#durability));
 - live inputs ahead of bulk work.
 
 The writer's transactions are sized by the bytes and rows they cover, not
