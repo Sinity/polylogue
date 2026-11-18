@@ -714,9 +714,21 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
                         "SELECT EXISTS(SELECT 1 FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk JOIN source_revision r ON r.input=i.id AND r.chain=p.chain WHERE i.format='claude-code' AND r.length=?1 AND (p.parsed_upto>=r.length OR (p.status IN ('waiting','refused','failed') AND p.at_length=r.length))) AS ready", &[polylogue_store::SqlValue::Int(length.try_into().unwrap())],
                     )?[0]["ready"] == 1,
                 };
-                Ok(!pass.capture_pending
-                    && source_applied
-                    && reader.messages(&session, false)? == wanted)
+                if pass.capture_pending
+                    || !source_applied
+                    || reader.messages(&session, false)? != wanted
+                {
+                    return Ok(false);
+                }
+                // This phase must settle before the harness changes the source again.
+                // A visible reading can still have a spooled observation awaiting ACK.
+                let status = sdk
+                    .status()
+                    .expect("producer status between source changes");
+                Ok(status.prepared_materials == 0
+                    && status.prepared_writes == 0
+                    && status.sinex_position.is_some()
+                    && reader.confirmed_checkpoint()? == status.sinex_position)
             },
             || {
                 let actual = ReadPool::open(&archive)
