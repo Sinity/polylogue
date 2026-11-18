@@ -591,10 +591,10 @@ pub(crate) fn finish_ended(d: &Daemon, now: i64, everyone: bool) {
             .collect();
         match state {
             Some(state) if state.running() => {
-                if !pending.is_empty() {
-                    if let Err(error) = crate::mailbox::raise(d.acts.mail(), &id) {
-                        crate::log::log!(warning, "session mailbox update failed: {error}");
-                    }
+                if !pending.is_empty()
+                    && let Err(error) = crate::mailbox::raise(d.acts.mail(), &id)
+                {
+                    crate::log::log!(warning, "session mailbox update failed: {error}");
                 }
             }
             _ => stopped.push((id, state, pending)),

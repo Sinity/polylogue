@@ -24,12 +24,7 @@ impl SpoolStatus {
         )
     }
 
-    pub(super) fn record(
-        &mut self,
-        stream: &'static str,
-        bytes: &[u8],
-        result: &std::io::Result<()>,
-    ) {
+    fn record(&mut self, stream: &'static str, bytes: &[u8], result: &std::io::Result<()>) {
         let previously_failed = self.0.contains_key(stream);
         match result {
             Err(error) => {
@@ -52,15 +47,74 @@ impl SpoolStatus {
     }
 }
 
+pub(crate) struct PendingLines {
+    route: &'static str,
+    stream: &'static str,
+    pub(super) bytes: Vec<u8>,
+    writer: uuid::Uuid,
+    status: SharedStatus,
+}
+
+impl PendingLines {
+    pub(crate) fn new(route: &'static str, stream: &'static str, status: SharedStatus) -> Self {
+        Self {
+            route,
+            stream,
+            bytes: Vec::new(),
+            writer: uuid::Uuid::now_v7(),
+            status,
+        }
+    }
+
+    pub(super) fn file_name(&self, boot: &str) -> String {
+        format!(
+            "{boot}-{}-{}-{}",
+            std::process::id(),
+            self.stream,
+            self.writer
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn path(&self, spool: &Path, boot: &str) -> PathBuf {
+        spool
+            .join(self.route)
+            .join(format!("{}.ndjson", self.file_name(boot)))
+    }
+
+    pub(crate) fn append(
+        &mut self,
+        spool: &Path,
+        boot: &str,
+        lines: &[Value],
+    ) -> std::io::Result<()> {
+        for line in lines {
+            serde_json::to_writer(&mut self.bytes, line)?;
+            self.bytes.push(b'\n');
+        }
+        let result = if self.bytes.is_empty() {
+            Ok(())
+        } else {
+            let name = self.file_name(boot);
+            super::spool_file(spool, self.route, &name)
+                .and_then(|mut file| super::write_pending(&mut self.bytes, &mut file))
+        };
+        self.status
+            .locked()
+            .record(self.stream, &self.bytes, &result);
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::io::Write as _;
 
     #[test]
     fn each_producer_keeps_failed_lines_and_their_original_bytes_until_retry() {
         for (route, stream) in [
+            ("process", "process"),
             ("registry", "claude-registry"),
             ("registry", "codex-status"),
             ("git", "git"),
@@ -186,54 +240,72 @@ mod tests {
         assert_eq!(status()["pending_writes"]["live_event_lines"], 0);
         assert!(status()["pending_writes"]["last_error"].is_null());
     }
-}
 
-pub(crate) struct PendingLines {
-    route: &'static str,
-    stream: &'static str,
-    bytes: Vec<u8>,
-    status: SharedStatus,
-}
-
-impl PendingLines {
-    pub(crate) fn new(route: &'static str, stream: &'static str, status: SharedStatus) -> Self {
-        Self {
-            route,
-            stream,
-            bytes: Vec::new(),
-            status,
-        }
+    #[test]
+    fn writers_with_the_same_process_and_stream_own_different_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut first = PendingLines::new("registry", "host", Default::default());
+        let mut second = PendingLines::new("registry", "host", Default::default());
+        first
+            .append(directory.path(), "boot", &[json!({"event":"first"})])
+            .unwrap();
+        second
+            .append(directory.path(), "boot", &[json!({"event":"second"})])
+            .unwrap();
+        let first_path = first.path(directory.path(), "boot");
+        let second_path = second.path(directory.path(), "boot");
+        assert_ne!(first_path, second_path);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&std::fs::read(first_path).unwrap()).unwrap(),
+            json!({"event":"first"})
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&std::fs::read(second_path).unwrap()).unwrap(),
+            json!({"event":"second"})
+        );
     }
 
-    #[cfg(test)]
-    pub(super) fn path(&self, spool: &Path, boot: &str) -> PathBuf {
-        spool.join(self.route).join(format!(
-            "{boot}-{}-{}.ndjson",
-            std::process::id(),
-            self.stream
-        ))
-    }
-
-    pub(crate) fn append(
-        &mut self,
-        spool: &Path,
-        boot: &str,
-        lines: &[Value],
-    ) -> std::io::Result<()> {
-        for line in lines {
-            serde_json::to_writer(&mut self.bytes, line)?;
-            self.bytes.push(b'\n');
+    #[test]
+    fn legacy_and_instance_spools_are_read_without_a_filename_boot_guess() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut pending = PendingLines::new("registry", "host", Default::default());
+        let observation = json!({"at_ns":"1790531445000000000", "route":"registry",
+            "event":"Status", "provider":"claude-code", "session_id":"s1",
+            "payload":{"status":"busy", "pid":4242,"start":77,"boot_id":"payload-boot"}});
+        let spool = directory.path().join("spool");
+        std::fs::write(&spool, b"blocked").unwrap();
+        assert!(
+            pending
+                .append(
+                    &spool,
+                    "different-filename-boot",
+                    std::slice::from_ref(&observation)
+                )
+                .is_err()
+        );
+        std::fs::remove_file(&spool).unwrap();
+        pending
+            .append(&spool, "different-filename-boot", &[])
+            .unwrap();
+        let new_path = pending.path(&spool, "different-filename-boot");
+        let bytes = std::fs::read(&new_path).unwrap();
+        let old_path = spool.join("registry/legacy-boot.ndjson");
+        std::fs::write(&old_path, &bytes).unwrap();
+        for path in [old_path, new_path] {
+            let bytes = std::fs::read(&path).unwrap();
+            assert!(polylogue_sources::hook_spool::recognize(&path, &bytes));
+            let parser = polylogue_sources::hook_spool::open(&path).unwrap();
+            let (step, _) = parser.step(None, &bytes, 0, &Default::default()).unwrap();
+            assert_eq!(step.output.events.len(), 1);
+            let event = &step.output.events[0];
+            assert_eq!(event.kind, "registry_status");
+            assert_eq!(
+                event.session.as_ref().unwrap().to_string(),
+                "claude-code:s1"
+            );
+            assert_eq!(event.data["boot_id"], "payload-boot");
+            assert_eq!(event.data["status"], "busy");
+            assert_eq!(event.range, Some((0, bytes.len() as u64 - 1)));
         }
-        let result = if self.bytes.is_empty() {
-            Ok(())
-        } else {
-            let name = format!("{boot}-{}-{}", std::process::id(), self.stream);
-            super::spool_file(spool, self.route, &name)
-                .and_then(|mut file| super::write_pending(&mut self.bytes, &mut file))
-        };
-        self.status
-            .locked()
-            .record(self.stream, &self.bytes, &result);
-        result
     }
 }

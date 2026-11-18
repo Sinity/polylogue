@@ -22,9 +22,9 @@
 //! exists, each change of a loaded thread's status is written as one
 //! `ThreadStatus` line carrying the status object whole.
 
+use polylogue_model::JsonExt as _;
 use polylogue_model::SessionId;
 use polylogue_model::live::ProcessIdentity;
-use polylogue_model::{JsonExt as _, LockExt as _};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -219,33 +219,30 @@ pub(crate) struct Watcher {
     /// the live events stop naming them.
     reported_gone: BTreeSet<(String, ProcessIdentity)>,
     /// Process observations not yet appended, including a partial line.
-    pending: Vec<u8>,
+    pending: PendingLines,
 }
 
 impl Watcher {
-    pub(crate) fn new(proc_root: PathBuf, boot: String, boot_time_ms: Option<i64>) -> Self {
+    pub(crate) fn new(
+        proc_root: PathBuf,
+        boot: String,
+        boot_time_ms: Option<i64>,
+        status: SharedStatus,
+    ) -> Self {
         Self {
             proc_root,
             boot,
             boot_time_ms,
             watched: BTreeMap::new(),
             reported_gone: BTreeSet::new(),
-            pending: Vec::new(),
+            pending: PendingLines::new("process", "process", status),
         }
     }
 
     /// The process spool has one writer. Failed appends keep the original
     /// bytes, so later samples retry without changing times or line identities.
     fn append_process(&mut self, spool: &Path, lines: &[Value]) -> std::io::Result<()> {
-        for line in lines {
-            serde_json::to_writer(&mut self.pending, line)?;
-            self.pending.push(b'\n');
-        }
-        if self.pending.is_empty() {
-            return Ok(());
-        }
-        let mut file = spool_file(spool, "process", &self.boot)?;
-        write_pending(&mut self.pending, &mut file)
+        self.pending.append(spool, &self.boot, lines)
     }
 
     /// Brings the watched set in line with the roots the live events name
@@ -1101,7 +1098,12 @@ pub(crate) fn run(
             run_codex(reader, spool, boot, clock, stop, status)
         })?
     };
-    let mut watcher = Watcher::new(PathBuf::from("/proc"), boot.clone(), boot_time_ms());
+    let mut watcher = Watcher::new(
+        PathBuf::from("/proc"),
+        boot.clone(),
+        boot_time_ms(),
+        std::sync::Arc::clone(&daemon.live_spool),
+    );
     let mut registry = Registry::new(paths.claude_sessions.clone());
     let mut registry_lines = PendingLines::new(
         "registry",
@@ -1146,11 +1148,7 @@ pub(crate) fn run(
         }
         let mut process_lines = watcher.update_roots(&roots, now);
         process_lines.extend(watcher.sample(now));
-        let result = watcher.append_process(&paths.spool, &process_lines);
-        daemon
-            .live_spool
-            .locked()
-            .record("process", &watcher.pending, &result);
+        let _ = watcher.append_process(&paths.spool, &process_lines);
         let _ = registry_lines.append(&paths.spool, &boot, &registry.read(now, identity));
         let _ = git_lines.append(
             &paths.spool,
@@ -1170,11 +1168,7 @@ pub(crate) fn run(
             BTreeSet::new()
         };
         let gone = watcher.exited(&ready, clock.now());
-        let result = watcher.append_process(&paths.spool, &gone);
-        daemon
-            .live_spool
-            .locked()
-            .record("process", &watcher.pending, &result);
+        let _ = watcher.append_process(&paths.spool, &gone);
         match stop.recv_timeout(if polled { Duration::ZERO } else { wake }) {
             Err(RecvTimeoutError::Timeout) => {}
             Ok(()) | Err(RecvTimeoutError::Disconnected) => {
@@ -1184,10 +1178,6 @@ pub(crate) fn run(
                     .unwrap_or_else(|_| Err(std::io::Error::other("Codex status worker panicked")))
                     .err();
                 let result = watcher.append_process(&paths.spool, &[]);
-                daemon
-                    .live_spool
-                    .locked()
-                    .record("process", &watcher.pending, &result);
                 for result in [
                     result,
                     registry_lines.append(&paths.spool, &boot, &[]),

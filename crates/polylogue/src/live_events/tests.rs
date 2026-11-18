@@ -77,7 +77,12 @@ fn the_watcher_writes_only_changes_and_reads_nothing_without_roots() {
     let dir = tempfile::tempdir().unwrap();
     let proc_root = dir.path().join("proc");
     // No roots: nothing is read, even from a `/proc` that does not exist.
-    let mut w = Watcher::new(dir.path().join("absent"), "b1".into(), Some(0));
+    let mut w = Watcher::new(
+        dir.path().join("absent"),
+        "b1".into(),
+        Some(0),
+        Default::default(),
+    );
     assert!(w.update_roots(&[], now()).is_empty());
     assert!(w.sample(now()).is_empty());
     fake_proc(
@@ -88,7 +93,7 @@ fn the_watcher_writes_only_changes_and_reads_nothing_without_roots() {
             (12, 11, 700, "cargo"),
         ],
     );
-    let mut w = Watcher::new(proc_root.clone(), "b1".into(), Some(0));
+    let mut w = Watcher::new(proc_root.clone(), "b1".into(), Some(0), Default::default());
     let roots = [root("s", 10, 500, "b1")];
     assert_eq!(
         events(&w.update_roots(&roots, now())),
@@ -115,7 +120,12 @@ fn a_root_from_another_boot_or_start_time_is_written_gone() {
     let dir = tempfile::tempdir().unwrap();
     let proc_root = dir.path().join("proc");
     fake_proc(&proc_root, &[(10, 1, 999, "other")]);
-    let mut w = Watcher::new(proc_root, "b2".into(), Some(1_700_000_000_000));
+    let mut w = Watcher::new(
+        proc_root,
+        "b2".into(),
+        Some(1_700_000_000_000),
+        Default::default(),
+    );
     let lines = w.update_roots(
         &[root("old", 10, 500, "b1"), root("reused", 10, 500, "b2")],
         now(),
@@ -149,7 +159,7 @@ fn an_exited_root_waiting_to_be_reaped_is_gone() {
         .unwrap()
         .replace(") S ", ") Z ");
     std::fs::write(&stat, text).unwrap();
-    let mut w = Watcher::new(proc_root, "b1".into(), None);
+    let mut w = Watcher::new(proc_root, "b1".into(), None, Default::default());
     let roots = [root("s", 10, 500, "b1")];
     assert_eq!(
         events(&w.update_roots(&roots, now())),
@@ -166,7 +176,7 @@ fn root_gone_retries_after_the_process_spool_becomes_writable() {
         let proc_root = dir.path().join("proc");
         let spool = dir.path().join("spool");
         fake_proc(&proc_root, &[(10, 1, 500, "claude")]);
-        let mut watcher = Watcher::new(proc_root.clone(), "b1".into(), None);
+        let mut watcher = Watcher::new(proc_root.clone(), "b1".into(), None, Default::default());
         let roots = [root("s", 10, 500, "b1")];
         if !already_gone {
             let started = watcher.update_roots(&roots, now());
@@ -186,16 +196,16 @@ fn root_gone_retries_after_the_process_spool_becomes_writable() {
         }
         std::fs::write(&process, b"blocked").unwrap();
         assert!(watcher.append_process(&spool, &observed).is_err());
-        assert!(!watcher.pending.is_empty());
+        assert!(!watcher.pending.bytes.is_empty());
         std::fs::remove_file(&process).unwrap();
         let later = jiff::Timestamp::from_second(now().as_second() + 10).unwrap();
         let repeated = watcher.update_roots(&roots, later);
         assert!(repeated.is_empty());
         watcher.append_process(&spool, &repeated).unwrap();
-        assert!(watcher.pending.is_empty());
+        assert!(watcher.pending.bytes.is_empty());
         assert!(watcher.exited(&BTreeSet::new(), later).is_empty());
         watcher.append_process(&spool, &[]).unwrap();
-        let bytes = std::fs::read(process.join("b1.ndjson")).unwrap();
+        let bytes = std::fs::read(watcher.pending.path(&spool, "b1")).unwrap();
         let lines: Vec<Value> = serde_json::Deserializer::from_slice(&bytes)
             .into_iter()
             .collect::<Result<_, _>>()
@@ -230,27 +240,32 @@ fn a_partial_process_spool_write_retries_only_its_unwritten_suffix() {
     let dir = tempfile::tempdir().unwrap();
     let spool = dir.path().join("spool");
     std::fs::write(&spool, b"blocked").unwrap();
-    let mut watcher = Watcher::new(dir.path().join("absent"), "b1".into(), None);
+    let mut watcher = Watcher::new(
+        dir.path().join("absent"),
+        "b1".into(),
+        None,
+        Default::default(),
+    );
     let observed = watcher.update_roots(&[root("s", 10, 500, "b1")], now());
     assert!(watcher.append_process(&spool, &observed).is_err());
-    let expected = watcher.pending.clone();
+    let expected = watcher.pending.bytes.clone();
     std::fs::remove_file(&spool).unwrap();
     let mut writer = FullAfterPrefix {
-        file: spool_file(&spool, "process", "b1").unwrap(),
+        file: spool_file(&spool, "process", &watcher.pending.file_name("b1")).unwrap(),
         remaining: 13,
         interrupted: true,
     };
-    assert!(write_pending(&mut watcher.pending, &mut writer).is_err());
-    assert_eq!(watcher.pending, expected[13..]);
+    assert!(write_pending(&mut watcher.pending.bytes, &mut writer).is_err());
+    assert_eq!(watcher.pending.bytes, expected[13..]);
     drop(writer);
-    let suffix = watcher.pending.clone();
+    let suffix = watcher.pending.bytes.clone();
     let mut full: &mut [u8] = &mut [];
-    let error = write_pending(&mut watcher.pending, &mut full).unwrap_err();
+    let error = write_pending(&mut watcher.pending.bytes, &mut full).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::WriteZero);
-    assert_eq!(watcher.pending, suffix);
+    assert_eq!(watcher.pending.bytes, suffix);
     watcher.append_process(&spool, &[]).unwrap();
     watcher.append_process(&spool, &[]).unwrap();
-    let bytes = std::fs::read(spool.join("process/b1.ndjson")).unwrap();
+    let bytes = std::fs::read(watcher.pending.path(&spool, "b1")).unwrap();
     assert_eq!(bytes, expected);
     let lines: Vec<Value> = serde_json::Deserializer::from_slice(&bytes)
         .into_iter()
@@ -267,7 +282,12 @@ fn a_root_exit_is_seen_through_its_pidfd_at_once() {
         .unwrap();
     let pid = child.id();
     let me = identity(pid).expect("a live child has an identity");
-    let mut w = Watcher::new(PathBuf::from("/proc"), me.boot.clone(), None);
+    let mut w = Watcher::new(
+        PathBuf::from("/proc"),
+        me.boot.clone(),
+        None,
+        Default::default(),
+    );
     let roots = [LiveRoot {
         session: "claude-code:child".into(),
         root: me,
