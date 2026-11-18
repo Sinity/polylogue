@@ -1,6 +1,174 @@
 use super::*;
 use serde_json::json;
 
+fn transcript_line(index: u64, source: &str, kind: &str, extra: serde_json::Value) -> String {
+    let mut row = json!({"step_index":index,"source":source,"type":kind,"status":"DONE","created_at":"2026-03-05T04:21:34Z"});
+    row.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    format!("{row}\n")
+}
+
+#[test]
+fn antigravity_cli_transcripts_append_repeat_and_rebuild_with_scoped_step_ids() {
+    let w = ClaudeHome::new();
+    let directory = w
+        .home
+        .join(".gemini/antigravity-cli/brain/first/.system_generated/logs");
+    fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("transcript_full.jsonl");
+    let first = transcript_line(
+        0,
+        "USER_EXPLICIT",
+        "USER_INPUT",
+        json!({"content":"Read the fixture"}),
+    );
+    fs::write(&path, &first).unwrap();
+    {
+        let (mut engine, _lock) = w.engine(64 << 20);
+        let pass = engine.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    }
+    let next = [
+        transcript_line(1,"MODEL","PLANNER_RESPONSE",json!({"content":"Reading","tool_calls":[{"name":"view_file","args":{"AbsolutePath":"/work/example.rs"}}]})),
+        transcript_line(2,"MODEL","VIEW_FILE",json!({"content":"example contents"})),
+        transcript_line(3,"SYSTEM","CHECKPOINT",json!({"content":"saved point"})),
+    ].concat();
+    fs::write(&path, format!("{first}{next}")).unwrap();
+    let other = w
+        .home
+        .join(".gemini/antigravity-cli/brain/second/.system_generated/logs/transcript_full.jsonl");
+    fs::create_dir_all(other.parent().unwrap()).unwrap();
+    fs::write(
+        &other,
+        transcript_line(
+            0,
+            "USER_EXPLICIT",
+            "USER_INPUT",
+            json!({"content":"Another prompt"}),
+        ),
+    )
+    .unwrap();
+    let before;
+    {
+        let (mut engine, _lock) = w.engine(64 << 20);
+        let pass = engine.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+        let quiet = engine.run_pass().unwrap();
+        assert!(quiet.errors.is_empty());
+        assert_eq!(quiet.bytes_read, 0);
+        let pool = w.reads();
+        let reader = pool.reader().unwrap();
+        let id = SessionId::parse("antigravity:first").unwrap();
+        before = reader.messages(&id, false).unwrap();
+        assert_eq!(
+            before.iter().map(Message::text).collect::<Vec<_>>(),
+            ["Read the fixture", "Reading", ""]
+        );
+        assert_eq!(
+            before[2].prompt_kind,
+            Some(polylogue_model::PromptKind::Harness)
+        );
+        assert!(
+            matches!(&before[2].blocks[0],polylogue_model::Block::ToolResult {call_id:Some(call),output:Some(output),..} if call=="step-1-0" && output=="example contents")
+        );
+        let second = reader
+            .messages(&SessionId::parse("antigravity:second").unwrap(), false)
+            .unwrap();
+        assert_eq!(second.len(), 1);
+        assert_ne!(before[0].id, second[0].id);
+        assert_eq!(
+            reader
+                .events(&id)
+                .unwrap()
+                .iter()
+                .filter(|event| event.kind == "antigravity_checkpoint")
+                .count(),
+            1
+        );
+        let inputs = reader.query("SELECT format FROM a.input", &[]).unwrap();
+        assert_eq!(inputs.len(), 2);
+        assert!(inputs.iter().all(|row| row["format"] == "antigravity"));
+    }
+    fs::remove_file(path).unwrap();
+    fs::remove_file(other).unwrap();
+    delete_index(&w.root);
+    let (mut engine, _lock) = w.engine(64 << 20);
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    let pool = w.reads();
+    let reader = pool.reader().unwrap();
+    assert_eq!(
+        reader
+            .messages(&SessionId::parse("antigravity:first").unwrap(), false)
+            .unwrap(),
+        before
+    );
+}
+
+#[test]
+fn antigravity_transcript_and_summary_preserve_parent_evidence_in_both_orders() {
+    for summary_first in [false, true] {
+        let w = ClaudeHome::new();
+        let summary = w
+            .home
+            .join(".gemini/antigravity-cli/conversation_summaries.db");
+        let transcript = w.home.join(
+            ".gemini/antigravity-cli/brain/child/.system_generated/logs/transcript_full.jsonl",
+        );
+        for write_summary in [summary_first, !summary_first] {
+            if write_summary {
+                fs::create_dir_all(summary.parent().unwrap()).unwrap();
+                let conn = rusqlite::Connection::open(&summary).unwrap();
+                conn.execute_batch("CREATE TABLE conversation_summaries(conversation_id TEXT PRIMARY KEY,title TEXT,workspace_uris TEXT,parent_conversation_id TEXT,last_modified_time TEXT); INSERT INTO conversation_summaries VALUES('child','Child title','[]','parent','2026-03-05T04:21:34Z');").unwrap();
+            } else {
+                fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+                fs::write(
+                    &transcript,
+                    transcript_line(
+                        0,
+                        "USER_EXPLICIT",
+                        "USER_INPUT",
+                        json!({"content":"Child prompt"}),
+                    ),
+                )
+                .unwrap();
+            }
+            let (mut engine, _lock) = w.engine(64 << 20);
+            let pass = engine.run_pass().unwrap();
+            assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+        }
+        let pool = w.reads();
+        let reader = pool.reader().unwrap();
+        let rows = reader
+            .query("SELECT kind FROM session WHERE id='antigravity:child'", &[])
+            .unwrap();
+        assert_eq!(
+            rows[0]["kind"], "main",
+            "existing timed-input precedence, summary_first={summary_first}"
+        );
+        assert_eq!(
+            reader
+                .query(
+                    "SELECT kind FROM session_link WHERE parent_id='antigravity:parent'",
+                    &[]
+                )
+                .unwrap()[0]["kind"],
+            "spawn"
+        );
+        assert_eq!(
+            reader
+                .events(&SessionId::parse("antigravity:child").unwrap())
+                .unwrap()
+                .iter()
+                .find(|event| event.kind == "antigravity_summary")
+                .unwrap()
+                .data["parent_conversation_id"],
+            "parent"
+        );
+    }
+}
+
 #[test]
 fn antigravity_summary_database_updates_repeats_and_rebuilds_without_the_source() {
     let w = ClaudeHome::new();

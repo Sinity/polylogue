@@ -452,7 +452,10 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: "antigravity",
-        modules: modules!(crate::antigravity::VERSION),
+        modules: modules!(
+            crate::antigravity::VERSION,
+            crate::antigravity::cli::VERSION
+        ),
         harness_prefixes: &[],
         support: Support::Parsed,
         arrival: Arrival::Live,
@@ -496,7 +499,10 @@ pub static ORIGINS: &[OriginSpec] = &[
     },
     OriginSpec {
         name: "antigravity-exports",
-        modules: modules!(crate::antigravity::VERSION),
+        modules: modules!(
+            crate::antigravity::VERSION,
+            crate::antigravity::cli::VERSION
+        ),
         harness_prefixes: &[],
         support: Support::Parsed,
         arrival: Arrival::Spool,

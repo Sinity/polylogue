@@ -8,15 +8,15 @@
     "d45d8b9e745b127f491ccc90d1ab03c74be904ed7a96684cf16436958c2f6bc7"
   ],
   "antigravity": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::antigravity::VERSION=1",
-    "772aeaf490963ed1d9ba12440682a9730f823105dc2a36129b8433e3fe71cd64"
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::antigravity::VERSION=1,crate::antigravity::cli::VERSION=1",
+    "4782a10352c13ddce87d12b788b7183ef08be8ef35cfa1beafdf95c8eb3a00c0"
   ],
   "antigravity-database": [
     "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::antigravity::database::VERSION=1",
     "31af61d461d1c6b651a1f133e93e1635c5f24f7f3d94d95e8996883e26fd151b"
   ],
   "antigravity-exports": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::antigravity::VERSION=1",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::antigravity::VERSION=1,crate::antigravity::cli::VERSION=1",
     "772aeaf490963ed1d9ba12440682a9730f823105dc2a36129b8433e3fe71cd64"
   ],
   "browser-capture": [
