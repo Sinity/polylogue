@@ -397,8 +397,10 @@ fn sinex_rows(socket: &Path, query: &str) -> usize {
     let value = real_sinex::request(
         socket,
         "read",
-        serde_json::json!({ "method": "query", "query": query, "page": 1000 }),
-    );
+        "/v1",
+        serde_json::json!({ "method": "query", "query": query, "page-size": 1000 }),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
     value["result"]["rows"]
         .as_array()
         .unwrap_or_else(|| panic!("no rows in {value}"))
@@ -513,8 +515,10 @@ fn sinex_query_rows(running: &Running, query: &str) -> Vec<serde_json::Value> {
     let answer = real_sinex::request(
         &running.socket,
         "read",
+        "/v1",
         serde_json::json!({"method":"query","query":query}),
-    );
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(answer["outcome"], "ok", "{query}: {answer}");
     answer["result"]["rows"].as_array().unwrap().clone()
 }
@@ -681,12 +685,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         let commits = engine.writer().completion_commits();
         let ready = Instant::now();
         loop {
-            match ReadPool::open(&archive)
-                .unwrap()
-                .reader()
-                .unwrap()
-                .source_boundary()
-            {
+            match ReadPool::open(&archive).and_then(|pool| pool.reader()?.source_boundary()) {
                 Ok(Some(_)) => break,
                 Ok(None) | Err(polylogue_store::StoreError::ScopeChanged) => {}
                 Err(error) => panic!("initial source snapshot: {error}"),
@@ -871,10 +870,11 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
     let selected = real_sinex::request(
         &running.socket,
         "read",
+        "/v1",
         serde_json::json!({
             "method":"query", "query":"events where event_type = polylogue.message AND payload.role = assistant"
         }),
-    );
+    ).unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(selected["outcome"], "ok", "{selected}");
     let rows = selected["result"]["rows"].as_array().unwrap();
     let selected = rows
@@ -883,7 +883,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         .unwrap();
     let id = selected["id"].as_str().unwrap();
     let target = format!("sinex:ev/{id}");
-    let archived = real_sinex::request_at(
+    let archived = real_sinex::request(
         &running.socket,
         "agent",
         "/v1/rows",
@@ -892,7 +892,8 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
             "deadline":null,
             "arguments":{"selection":target,"steps":[{"verb":"archive"}]}
         }),
-    );
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(archived["outcome"], "ok", "{archived}");
     assert_eq!(
         archived["value"]["steps"][0]["outcome"]["status"], "done",
@@ -922,7 +923,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
             .unwrap(),
         remaining
     );
-    let restored = real_sinex::request_at(
+    let restored = real_sinex::request(
         &running.socket,
         "agent",
         "/v1/rows",
@@ -931,7 +932,8 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
             "deadline":null,
             "arguments":{"selection":target,"steps":[{"verb":"restore"}]}
         }),
-    );
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(restored["outcome"], "ok", "{restored}");
     assert_eq!(
         restored["value"]["steps"][0]["outcome"]["status"], "done",

@@ -185,28 +185,32 @@ fn binary() -> String {
 
 // Sinex backup also latches the daemon telemetry generation. Its finite
 // natural seal may take 300 seconds; use the real Sinex fixture's 600-second budget.
-pub fn request(socket: &Path, role: &str, body: serde_json::Value) -> serde_json::Value {
-    request_at(socket, role, "/v1", body)
-}
-
-pub fn request_at(
+pub fn request(
     socket: &Path,
     role: &str,
     route: &str,
     body: serde_json::Value,
-) -> serde_json::Value {
+) -> Result<serde_json::Value, String> {
     let body = body.to_string();
-    let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+    let mut stream = std::os::unix::net::UnixStream::connect(socket)
+        .map_err(|error| format!("connect Sinex {}: {error}", socket.display()))?;
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(600)))
-        .unwrap();
-    write!(stream,"POST {route} HTTP/1.1\r\nHost: sinexd\r\nContent-Type: application/json\r\nAuthorization: Bearer {role}-rebuild-token\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+        .map_err(|error| error.to_string())?;
+    write!(stream,"POST {route} HTTP/1.1\r\nHost: sinexd\r\nContent-Type: application/json\r\nAuthorization: Bearer {role}-rebuild-token\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).map_err(|error| format!("write Sinex request: {error}"))?;
     let mut reply = Vec::new();
-    stream.read_to_end(&mut reply).unwrap();
+    stream
+        .read_to_end(&mut reply)
+        .map_err(|error| format!("read Sinex reply: {error}"))?;
     let split = reply
         .windows(4)
         .position(|part| part == b"\r\n\r\n")
-        .expect("HTTP headers");
+        .ok_or_else(|| {
+            format!(
+                "Sinex reply has no HTTP headers: {}",
+                String::from_utf8_lossy(&reply)
+            )
+        })?;
     let headers = String::from_utf8_lossy(&reply[..split]).to_ascii_lowercase();
     let mut body = &reply[split + 4..];
     let mut decoded = Vec::new();
@@ -231,6 +235,21 @@ pub fn request_at(
         }
         body = &decoded;
     }
-    serde_json::from_slice(body)
-        .unwrap_or_else(|error| panic!("{error}: {}", String::from_utf8_lossy(&reply)))
+    let status = headers.lines().next().unwrap_or("missing HTTP status");
+    let code = status
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok());
+    if !code.is_some_and(|code| (200..300).contains(&code)) {
+        return Err(format!(
+            "Sinex {route}: {status}: {}",
+            String::from_utf8_lossy(body)
+        ));
+    }
+    serde_json::from_slice(body).map_err(|error| {
+        format!(
+            "Sinex {route}: {status}: {error}: {}",
+            String::from_utf8_lossy(body)
+        )
+    })
 }
