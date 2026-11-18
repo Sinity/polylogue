@@ -356,8 +356,10 @@ fn an_unwritable_derived_cache_keeps_the_observed_identity() {
         .status()
         .unwrap();
     assert!(status.success());
-    let (identity, _, _) =
-        git_identity(dir.path(), &paths, Instant::now() + Duration::from_secs(10)).unwrap();
-    assert_eq!(identity["branch"], "main");
-    assert_eq!(identity["root_commits"], json!([identity["head"]]));
+    let observed = git_identity(dir.path(), &paths, Instant::now() + Duration::from_secs(10));
+    assert!(
+        matches!(&observed, Ok((identity, _, _))
+        if identity["branch"] == "main" && identity["root_commits"] == json!([identity["head"]])),
+        "{observed:?}"
+    );
 }
