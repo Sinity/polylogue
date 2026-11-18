@@ -261,19 +261,10 @@ pub(crate) fn finish(archive: &Archive, index: &Connection) -> Result<bool> {
     {
         return Ok(false);
     }
-    // A private reader may still pin an earlier WAL end. A passive
-    // checkpoint leaves that reader running; the next flush tries again.
-    let (frames, on_disk): (i64, i64) =
-        index.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |row| {
-            Ok((row.get(1)?, row.get(2)?))
-        })?;
-    if frames < 0 || frames != on_disk {
-        #[cfg(test)]
-        eprintln!("primary rebuild waiting for its WAL: {on_disk} of {frames} frames checkpointed");
-        return Ok(false);
-    }
+    // Publication changes a name. SQLite keeps both the database and its WAL
+    // on their original paths, so readers need not release older WAL snapshots.
+    crate::archive::generation::publish(index)?;
     let paths = Paths::of(&archive.root);
-    File::open(&paths.build)?.sync_all()?;
     sync_directory(&paths.dir)?;
     crate::fault::check("primary.build.after_sync", &archive.root.to_string_lossy())?;
     let link = paths.dir.join("install");

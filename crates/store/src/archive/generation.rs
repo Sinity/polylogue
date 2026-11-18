@@ -34,6 +34,17 @@ pub(crate) fn rotate(index: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Give the newly served index its cursor identity. In WAL mode a FULL commit
+/// syncs every preceding committed frame, including ones a reader still pins.
+pub(super) fn publish(index: &Connection) -> Result<()> {
+    with_full_sync(index, || {
+        let tx = index.unchecked_transaction()?;
+        rotate(&tx)?;
+        tx.commit()?;
+        Ok(())
+    })
+}
+
 pub(super) fn open(archive: &super::Archive, index: &Connection) -> Result<()> {
     let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
     begin(index, boot.trim(), Some(&archive.read_scope))
@@ -49,9 +60,7 @@ fn begin(
             "the current boot has no identity".into(),
         ));
     }
-    let previous: i64 = index.pragma_query_value(None, "synchronous", |r| r.get(0))?;
-    index.pragma_update(None, "synchronous", previous.max(2))?;
-    let result = (|| {
+    with_full_sync(index, || {
         let tx = index.unchecked_transaction()?;
         let generation = crate::meta_get(&tx, "generation")?;
         let mut changed = false;
@@ -74,7 +83,13 @@ fn begin(
             scope.finish_reset();
         }
         Ok(())
-    })();
+    })
+}
+
+fn with_full_sync(index: &Connection, work: impl FnOnce() -> Result<()>) -> Result<()> {
+    let previous: i64 = index.pragma_query_value(None, "synchronous", |r| r.get(0))?;
+    index.pragma_update(None, "synchronous", previous.max(2))?;
+    let result = work();
     index.pragma_update(None, "synchronous", previous)?;
     result
 }

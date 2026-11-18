@@ -129,6 +129,24 @@ fn serving(archive: &Archive) -> crate::ReadPool {
     crate::ReadPool::serving(archive, 3, 8 << 20).unwrap()
 }
 
+/// The private read has an older end mark than the last committed page.
+/// Even a checkpoint at this exact boundary cannot copy every WAL frame.
+fn assert_pinned_wal(archive: &Archive) {
+    let index =
+        crate::archive::open_runtime_writer(&archive.index_db(), crate::archive::cache::SETUP)
+            .unwrap();
+    let (busy, frames, copied): (i64, i64, i64) = index
+        .query_row("PRAGMA main.wal_checkpoint(PASSIVE)", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .unwrap();
+    assert_eq!(busy, 0);
+    assert!(
+        copied >= 0 && copied < frames,
+        "{copied} of {frames} WAL frames copied"
+    );
+}
+
 #[test]
 fn rebuild_swaps_only_when_caught_up() {
     let directory = tempfile::tempdir().unwrap();
@@ -159,6 +177,9 @@ fn rebuild_swaps_only_when_caught_up() {
     // The candidate has no attachment catalog row yet.
     assert_eq!(bytes(&old), b"confirmed original");
     snapshot(&writer, 5, &["retained", "new"], Some(&attachment));
+    let pipeline = crate::ReadPool::open(&archive).unwrap();
+    let private = pipeline.reader().unwrap();
+    assert_eq!(private.confirmed_checkpoint().unwrap(), Some(5));
     latest(&writer, 7);
     assert!(writer.flush().unwrap().errors.is_empty());
     assert_eq!(
@@ -184,7 +205,9 @@ fn rebuild_swaps_only_when_caught_up() {
             delivery: None,
         })])
         .unwrap();
+    assert_pinned_wal(&archive);
     assert!(writer.flush().unwrap().errors.is_empty());
+    assert_eq!(private.confirmed_checkpoint().unwrap(), Some(5));
     assert!(
         std::fs::symlink_metadata(cache.join("index.db"))
             .unwrap()
@@ -199,6 +222,8 @@ fn rebuild_swaps_only_when_caught_up() {
     assert_eq!(old.confirmed_checkpoint().unwrap(), Some(4));
     drop(current);
     drop(old);
+    drop(private);
+    drop(pipeline);
     // The follower still observes the writer's physical file after publication.
     latest(&writer, 9);
     writer
@@ -284,10 +309,15 @@ fn primary_rebuild_crash_child() {
         let (archive, _lock) = Archive::open_primary(&cache, &producer.root).unwrap();
         let writer = Writer::start_on_sinex(&archive, producer.clone()).unwrap();
         begin(&writer);
+        let pipeline = crate::ReadPool::open(&archive).unwrap();
+        let private = pipeline.reader().unwrap();
+        assert_eq!(private.confirmed_checkpoint().unwrap(), None);
         snapshot(&writer, 7, &["retained", "new"], None);
         latest(&writer, 7);
         writer.synchronize_primary().unwrap();
+        assert_pinned_wal(&archive);
         assert!(writer.flush().unwrap().errors.is_empty());
+        assert_eq!(private.confirmed_checkpoint().unwrap(), None);
     }
     let _fold = Archive::open_primary(&cache, &producer.root).unwrap();
     panic!("did not reach {point}");
