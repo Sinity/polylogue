@@ -118,9 +118,25 @@ pub(crate) fn named_definitions(
     let names: BTreeSet<String> = polylogue_query::plan::referenced_saved_names(&parsed)
         .into_iter()
         .collect();
-    let definitions =
+    let mut definitions =
         crate::assertions::saved_query_snapshot(authored, names.iter().map(String::as_str))?
             .definitions;
+    for name in &names {
+        if let Some((saved_name, revision)) = name.rsplit_once('@') {
+            let revision = revision
+                .parse::<u32>()
+                .ok()
+                .filter(|number| *number > 0)
+                .ok_or_else(|| QueryError::BadValue {
+                    field: "query".into(),
+                    value: name.clone(),
+                    position: 0,
+                    message: "a saved revision is a positive integer: query:NAME@N".into(),
+                })?;
+            let definition = crate::assertions::named_revision(authored, saved_name, revision)?;
+            definitions.insert(name.clone(), vec![definition]);
+        }
+    }
     bindings.saved = saved_queries_from(original, authored, pending, provisional, definitions)?;
     let shipped = super::shipped_bindings(origins)?;
     for name in &names {

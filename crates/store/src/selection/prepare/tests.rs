@@ -311,3 +311,90 @@ fn hash_prefix_resolves() {
         polylogue_model::Code::NotYetAvailable
     );
 }
+
+#[test]
+fn numeric_saved_revision_binds_the_original_recorded_question_and_body() {
+    use polylogue_model::assertion::{AssertionLink, LinkRole};
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(directory.path()).unwrap();
+    let conn = crate::archive::open_archive_writer(&fixture.archive).unwrap();
+    let first =
+        polylogue_query::plan::prepare("sessions where repo:first", &Bindings::default(), |_| {
+            Ok(())
+        })
+        .unwrap()
+        .query_object()
+        .unwrap();
+    let later =
+        polylogue_query::plan::prepare("sessions where repo:later", &Bindings::default(), |_| {
+            Ok(())
+        })
+        .unwrap()
+        .query_object()
+        .unwrap();
+    crate::query_objects::apply_object(&conn, &first, 1).unwrap();
+    crate::query_objects::apply_object(&conn, &later, 2).unwrap();
+    let first_fact = definition("first", "focus", "sessions where repo:first", first.id);
+    let mut later_fact = definition("later", "focus", "sessions where repo:later", later.id);
+    later_fact.root = "first".into();
+    later_fact.created_at = None;
+    later_fact.links.push(AssertionLink {
+        role: LinkRole::Revises,
+        reference: Reference::Assertion(RevisionReference::exact("first".into(), "first".into())),
+        seen_hash: None,
+        quote: None,
+    });
+    // Arrival order is not revision order.
+    crate::assertions::apply(&conn, &[later_fact], 3).unwrap();
+    crate::assertions::apply(&conn, &[first_fact], 10).unwrap();
+    drop(conn);
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let conn = reader.conn().unwrap();
+    for (spelling, id, hash) in [
+        ("focus@1", "first", first.id),
+        ("focus@2", "later", later.id),
+        ("focus", "later", later.id),
+    ] {
+        let text = format!("query:{spelling}");
+        let loaded = named_definitions(conn, conn, &text, &[], None, None)
+            .unwrap()
+            .saved;
+        let definition = &loaded[spelling][0];
+        assert_eq!(definition.revision, id);
+        assert_eq!(definition.root, "first");
+        assert_eq!(definition.hash, hash);
+        let SavedQueryBody::Available {
+            object: Some(body), ..
+        } = &definition.body
+        else {
+            panic!("original stored body")
+        };
+        assert_eq!(body.id, hash);
+        assert_eq!(
+            body.normal_form,
+            if id == "first" {
+                first.normal_form.clone()
+            } else {
+                later.normal_form.clone()
+            }
+        );
+        let plan = reader
+            .prepare_query_plan(&text, &super::super::tests::options())
+            .unwrap();
+        let used = plan
+            .definitions()
+            .iter()
+            .find(|used| used.name == spelling)
+            .unwrap();
+        assert_eq!(used.revision, id);
+        assert_eq!(used.question_id, hash);
+    }
+    assert_eq!(
+        reader
+            .prepare_query_plan("query:focus@9", &super::super::tests::options())
+            .unwrap_err()
+            .code(),
+        polylogue_model::Code::NotFound
+    );
+}
