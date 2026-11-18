@@ -38,11 +38,41 @@ fn note(text: &str, targets: &[&str]) -> NewAssertion {
     }
 }
 fn read(d: &Daemon, target: &str, hide: bool) -> ReadPage {
-    crate::test_answers::read(Call::new("rows", json!({
-        "selection":target,
-        "steps":[{"verb":"read","budget":100_000,"hide":if hide { vec!["assertions"] } else { vec![] }}]
-    })).answer(d))
+    let words = [
+        target,
+        "read",
+        "--budget",
+        "100000",
+        if hide { "--hide" } else { "--show" },
+        if hide {
+            "annotations"
+        } else {
+            "annotations:header"
+        },
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    let parsed = crate::cli::line::parse(
+        &words,
+        &crate::cli::line::FirstWordCatalog::default(),
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        parsed.selection,
+        Some(crate::cli::line::SelectionWord::Text(target.to_owned()))
+    );
+    let steps = parsed
+        .steps
+        .into_iter()
+        .map(|step| step.step)
+        .collect::<Vec<_>>();
+    crate::test_answers::read(
+        Call::new("rows", json!({"selection":target,"steps":steps})).answer(d),
+    )
 }
+
 fn annotations(page: &ReadPage, message: &str) -> Vec<Annotation> {
     let items: Vec<_> = page
         .document
