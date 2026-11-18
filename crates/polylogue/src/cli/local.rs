@@ -4,6 +4,7 @@
 
 use polylogue_model::JsonExt as _;
 pub mod arguments;
+mod shell;
 
 use super::fail;
 use crate::commands::Command;
@@ -184,27 +185,18 @@ fn install_with_output(
         return not_built("--instructions");
     }
     if matches!(target, "zsh" | "bash" | "fish") {
-        if !arguments.dry_run || arguments.remove {
-            return not_built(target);
-        }
-        return match completion_script(target, arguments.program.as_deref().unwrap_or("polylogue"))
-        {
-            Ok(script) => match output.write_all(script.as_bytes()) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(error) => fail(
-                    startup.output,
-                    json,
-                    polylogue_model::Code::Io,
-                    &error.to_string(),
-                    1,
-                ),
-            },
+        return match shell::install(startup, &arguments, json, output) {
+            Ok(()) => ExitCode::SUCCESS,
             Err(error) => fail(
                 startup.output,
                 json,
-                polylogue_model::Code::BadRequest,
-                &error,
-                2,
+                if error.kind() == std::io::ErrorKind::InvalidInput {
+                    polylogue_model::Code::BadRequest
+                } else {
+                    polylogue_model::Code::Io
+                },
+                &error.to_string(),
+                1,
             ),
         };
     }
@@ -293,15 +285,26 @@ fn completion_script(shell: &str, program: &str) -> Result<String, String> {
         .completer(shell)
         .ok_or_else(|| format!("unknown shell {shell:?}"))?;
     let mut registration = Vec::new();
+    // Shell function names are separate from the quoted command they run.
+    let name = format!(
+        "polylogue_{}",
+        &blake3::hash(program.as_bytes()).to_hex()[..12]
+    );
     completer
-        .write_registration("COMPLETE", program, program, program, &mut registration)
+        .write_registration("COMPLETE", &name, program, program, &mut registration)
         .map_err(|error| error.to_string())?;
     String::from_utf8(registration)
         .map(|registration| {
-            registration.replace(
+            let registration = registration.replace(
                 "COMPLETE=\"zsh\"",
                 "_POLYLOGUE_COMPLETE_PREFIX=\"$PREFIX\" COMPLETE=\"zsh\"",
-            )
+            );
+            let registration = if shell == "zsh" {
+                registration.replacen('\n', "\nif (( ! $+functions[compdef] )); then\n    autoload -Uz compinit && compinit\nfi\n", 1)
+            } else {
+                registration
+            };
+            format!("{registration}{}", shell::picker_script(shell, program))
         })
         .map_err(|error| error.to_string())
 }

@@ -259,7 +259,9 @@ pub(crate) fn run(
     let pick = parsed.steps.iter().position(|step| step.verb == "pick");
     if (needs_choice || pick.is_some()) && !parsed.line.explain && !parsed.line.dry_run {
         let split = pick.unwrap_or(0);
-        let frozen = pick.is_some() && split > 0 && terminal() && !json;
+        let terminal_picker = terminal()
+            || (pick.is_some() && io::stdin().is_terminal() && io::stderr().is_terminal());
+        let frozen = pick.is_some() && split > 0 && terminal_picker && !json;
         let mut before = request.clone();
         before.request_id = format!(
             "{}-pick-{}",
@@ -355,7 +357,7 @@ pub(crate) fn run(
             }
         };
         let one = choices.rows.len() == 1 && choices.next.is_none();
-        if (!terminal() || json) && !(needs_choice && one) {
+        if (!terminal_picker || json) && !(needs_choice && one) {
             let mut refusal = Refusal::new(
                 Code::Ambiguous,
                 "choose references from the listing; this action needs a terminal picker",

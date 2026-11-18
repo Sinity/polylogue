@@ -111,6 +111,8 @@ let
           pkgs.dbus
           pkgs.nodejs_22
           pkgs.sqlite
+          pkgs.zsh
+          pkgs.fish
           (lib.getBin pkgs.util-linux)
         ];
         SHELL = pkgs.runtimeShell;
@@ -166,6 +168,8 @@ in
       pkgs.nats-server
       pkgs.dbus
       pkgs.sqlite
+      pkgs.zsh
+      pkgs.fish
       pkgs.jq
       pkgs.mold
     ];

@@ -7,20 +7,28 @@ use std::io::{self, IsTerminal, Write};
 
 /// Drawing is restricted to the lines allocated below the shell prompt.
 pub(super) struct Screen {
-    output: io::Stdout,
+    output: Box<dyn Write>,
+    terminal: bool,
     lines: u16,
     active: bool,
 }
 impl Screen {
-    pub fn stdout() -> Self {
+    pub fn terminal() -> Self {
+        let stdout = io::stdout().is_terminal();
+        let terminal = io::stdin().is_terminal() && (stdout || io::stderr().is_terminal());
         Self {
-            output: io::stdout(),
+            output: if stdout {
+                Box::new(io::stdout())
+            } else {
+                Box::new(io::stderr())
+            },
+            terminal,
             lines: 0,
             active: false,
         }
     }
     pub fn is_terminal(&self) -> bool {
-        io::stdin().is_terminal() && self.output.is_terminal()
+        self.terminal
     }
     pub fn size(&self) -> Result<(u16, u16)> {
         terminal::size().map_err(Failure::io)

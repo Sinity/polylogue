@@ -101,7 +101,7 @@ pub enum Choice {
 /// Opens over query rows or an ambiguity's candidates and returns references.
 /// A complete one-row selection runs the supplied Enter action directly.
 pub fn open<S: Source>(source: Arc<S>, options: Options) -> Result<Choice> {
-    let mut screen = Screen::stdout();
+    let mut screen = Screen::terminal();
     run(source, options, &mut screen)
 }
 
@@ -435,7 +435,7 @@ fn run<S: Source>(source: Arc<S>, options: Options, screen: &mut Screen) -> Resu
     }
     state.accept(page);
     if state.page.rows.len() == 1 && state.page.next.is_none() {
-        return finish(&*source, &options, screen, state.chosen());
+        return finish(&*source, &options, state.chosen());
     }
     let machine = options.json || matches!(options.format.as_deref(), Some("json" | "jsonl"));
     if !screen.is_terminal() || machine {
@@ -478,20 +478,13 @@ fn run<S: Source>(source: Arc<S>, options: Options, screen: &mut Screen) -> Resu
     let choice = result?;
     restored?;
     match choice {
-        Choice::Selected(references) => finish(&*source, &options, screen, references),
+        Choice::Selected(references) => finish(&*source, &options, references),
         Choice::Cancelled => Ok(Choice::Cancelled),
     }
 }
 
-fn finish(
-    source: &impl Source,
-    options: &Options,
-    screen: &mut Screen,
-    references: Vec<String>,
-) -> Result<Choice> {
-    if options.enter.is_empty() {
-        screen.print(&references)?;
-    } else {
+fn finish(source: &impl Source, options: &Options, references: Vec<String>) -> Result<Choice> {
+    if !options.enter.is_empty() {
         source.act(Action::Enter, &references)?;
     }
     Ok(Choice::Selected(references))
