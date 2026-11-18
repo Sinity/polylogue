@@ -280,7 +280,7 @@ fn pending_requests(runtime: &Runtime) -> Vec<polylogue_model::authored::Prepare
 fn confirm_authored(
     home: &ClaudeHome,
     connection: std::sync::Arc<polylogue_sinex::Sinex>,
-    records: Vec<(u64, &str, polylogue_model::authored::PreparedRequest)>,
+    records: Vec<(i64, &str, polylogue_model::authored::PreparedRequest)>,
 ) {
     use polylogue_store::primary::{Confirmed, ConfirmedChange, Product, ReplayControl};
     let (archive, _lock) =

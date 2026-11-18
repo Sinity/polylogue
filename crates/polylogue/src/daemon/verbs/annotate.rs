@@ -399,8 +399,8 @@ fn withdrawn(step: &WithdrawStep, selection: &Selection) -> Result<Vec<Reference
             .map_err(Failure::from)?;
         return Err(Failure::bad_request(format!(
             "withdraw needs annotations or alternates; {} is one of {} selected rows. To withdraw annotations about that row, use {}",
-            polylogue_model::terminal::escape(&address), references.len(),
-            polylogue_model::terminal::escape(&line),
+            polylogue_render::terminal::escape(&address), references.len(),
+            polylogue_render::terminal::escape(&line),
         )).error.with_suggestion(command_surface::Suggestion::Request(request)).into());
     }
     Ok(references.to_vec())

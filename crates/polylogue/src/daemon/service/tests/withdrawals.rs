@@ -272,7 +272,10 @@ fn a_saved_query_expression_withdraws_results_instead_of_the_definition() {
         .answer(&d.daemon),
     );
     let original = request(&d, "withdraw-results-1");
-    let note = Reference::Assertion(RevisionReference::exact("result-note-1", "result-note-1"));
+    let note = Reference::Assertion(RevisionReference::exact(
+        "result-note-1".into(),
+        "result-note-1".into(),
+    ));
     assert!(
         matches!(&original.request.write, UserWrite::WithdrawAssertions { targets, .. } if targets == &vec![note])
     );
@@ -391,7 +394,7 @@ fn the_withdrawal_correction_quotes_opaque_addresses_and_keeps_other_notes() {
     let remaining = request(&d, &format!("{}-1", next.request_id));
     assert!(
         matches!(&remaining.request.write, UserWrite::WithdrawAssertions { targets, .. }
-        if targets == &vec![Reference::Assertion(RevisionReference::exact("opaque-note-1", "opaque-note-1"))])
+        if targets == &vec![Reference::Assertion(RevisionReference::exact("opaque-note-1".into(), "opaque-note-1".into()))])
     );
 }
 
