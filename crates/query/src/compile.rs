@@ -86,7 +86,8 @@ impl SavedQuery {
     }
 }
 
-/// A saved query a program ran, by the revision its name resolved to.
+/// A name resolved for this execution: a saved-query revision, or a
+/// `result:NAME` with its immutable `result:<id>` in `revision`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Definition {
     pub name: String,

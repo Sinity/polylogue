@@ -928,7 +928,8 @@ fn since_seen_tracks_the_computed_author_and_new_source_or_authored_work() {
 
 #[test]
 fn runs_lists_the_native_begin_completion_and_reopened_record() {
-    use crate::fixture::writer::WriterArchive;
+    use crate::fixture::writer::{WriterArchive, message};
+    use polylogue_model::Role;
     use polylogue_model::{
         Author, RunId, Timestamp,
         authorship::{Authorship, Channel},
@@ -940,11 +941,22 @@ fn runs_lists_the_native_begin_completion_and_reopened_record() {
     use std::collections::BTreeMap;
     let mut archive = WriterArchive::new();
     let opts = all_columns_options();
-    let plan =
-        polylogue_query::plan::prepare("sessions", &polylogue_query::Bindings::default(), |_| {
-            Ok(())
-        })
-        .unwrap();
+    archive.write(
+        "run-before",
+        vec![message(
+            "before",
+            "run-before",
+            Role::User,
+            opts.clock.now.as_millisecond() - 3600000,
+            vec![],
+        )],
+    );
+    let plan = polylogue_query::plan::prepare(
+        "sessions where since:1d",
+        &polylogue_query::Bindings::default(),
+        |_| Ok(()),
+    )
+    .unwrap();
     let object = plan.query_object().unwrap();
     archive.writer.query_object(object.clone(), None).unwrap();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
@@ -965,7 +977,7 @@ fn runs_lists_the_native_begin_completion_and_reopened_record() {
                 query_options: crate::query::execute::options_snapshot(&opts, false, None).unwrap(),
                 presentation: ExecutionPresentation::Query,
                 accepted_request: Some(
-                    serde_json::json!({"id":"accepted-run","operation":"rows","arguments":{"selection":"sessions"}}),
+                    serde_json::json!({"id":"accepted-run","operation":"rows","arguments":{"selection":"sessions where since:1d"}}),
                 ),
                 replay: ReplayBinding {
                     bound_ast: object.query.clone(),
@@ -984,7 +996,7 @@ fn runs_lists_the_native_begin_completion_and_reopened_record() {
                         versions: BTreeMap::from([("compiler".into(), "shared-query-v1".into())]),
                     },
                     scope_fingerprint: None,
-                    original_text: "sessions".into(),
+                    original_text: "sessions where since:1d".into(),
                 },
             }),
         },
@@ -1057,7 +1069,92 @@ fn runs_lists_the_native_begin_completion_and_reopened_record() {
             .unwrap()
             .query_run(&expected.id, None)
             .unwrap(),
-        Some(expected)
+        Some(expected.clone())
+    );
+    drop(pool);
+    let later_clock = query_language::time::Clock::new(
+        "2026-10-31T12:00:00Z".parse().unwrap(),
+        opts.clock.day.clone(),
+    );
+    archive.write(
+        "run-after",
+        vec![message(
+            "after",
+            "run-after",
+            Role::User,
+            later_clock.now.as_millisecond() - 3600000,
+            vec![],
+        )],
+    );
+    let mut current = opts.clone();
+    current.clock = later_clock;
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let selected = reader
+        .prepare_selection(&format!("run:{}", expected.id), &current)
+        .unwrap();
+    assert_eq!(selected.question_id(), object.id);
+    let mut rerun = reader.query_rows(selected.program()).unwrap();
+    for row in &mut rerun {
+        present(selected.program(), row).unwrap();
+    }
+    assert_eq!(
+        rerun
+            .iter()
+            .map(|row| row["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["claude-code:run-after"]
+    );
+    assert_eq!(
+        reader.query_run(&expected.id, None).unwrap(),
+        Some(expected.clone()),
+        "running the question again does not rewrite the original run"
+    );
+    assert_eq!(
+        reader
+            .prepare_query_selection("run:018f0000-0000-7000-8000-000000000099", &current)
+            .err()
+            .expect("unknown run must fail")
+            .code(),
+        polylogue_model::Code::NotFound
+    );
+    drop(selected);
+    drop(reader);
+    drop(pool);
+    let mut object_run = expected.clone();
+    object_run.id = RunId::parse("018f0000-0000-7000-8000-000000000012").unwrap();
+    object_run.question = None;
+    object_run.binding = RunBinding::OriginalObject {
+        execution: Box::new(polylogue_model::query_objects::ObjectExecutionBinding {
+            reference: Reference::Request("synthetic-original-read".into()),
+            content_hash: polylogue_model::BlobHash::of(b"synthetic original object"),
+            scope_fingerprint: None,
+            versions: Default::default(),
+            presentation: ExecutionPresentation::Read {
+                options: Default::default(),
+                delivery: polylogue_model::read::ReadDelivery::Stream,
+                format: polylogue_model::read::Format::Jsonl,
+                page_budget: None,
+                direct_source: None,
+            },
+            accepted_request: None,
+        }),
+    };
+    archive
+        .writer
+        .begin_query_run(object_run.clone(), None)
+        .unwrap();
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let no_question = reader
+        .prepare_query_selection(&format!("run:{}", object_run.id), &current)
+        .err()
+        .expect("an original-object read has no question");
+    assert_eq!(no_question.code(), polylogue_model::Code::BadRequest);
+    assert!(no_question.to_string().contains("has no query question"));
+    assert_eq!(
+        reader.query_run(&object_run.id, None).unwrap(),
+        Some(object_run)
     );
 }
 
@@ -1302,4 +1399,38 @@ fn every_shipped_query_runs_on_demo_archive() {
     // This fixture has neither signal deliveries nor non-operator annotations.
     assert_eq!(counts["notices"], 0);
     assert_eq!(counts["review"], 0);
+}
+
+#[test]
+fn resolved_result_name_is_disclosed_with_its_immutable_id() {
+    let d = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(d.path()).unwrap();
+    let id = "018f0000-0000-7000-8000-000000000021";
+    fixture.kept_result(id,"sessions",r#"{"unit":"sessions","columns":[{"name":"id","kind":"text"}],"rows":[{"id":"test:fixed"}]}"#).unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let opts = all_columns_options();
+    let mut bindings = reader
+        .selection_definitions(&format!("result:{id}"), &opts.origins)
+        .unwrap();
+    // The name resolver owns this mapping; lowering must carry its decision
+    // into the existing reply field without putting the alias in question identity.
+    bindings
+        .kept_names
+        .insert("latest-report".into(), id.into());
+    let named =
+        polylogue_query::plan::prepare("result:latest-report", &bindings, |_| Ok(())).unwrap();
+    let direct =
+        polylogue_query::plan::prepare(&format!("result:{id}"), &bindings, |_| Ok(())).unwrap();
+    assert_eq!(named.question_id(), direct.question_id());
+    let program = reader.lower_plan(&named, &opts).unwrap();
+    assert!(program.definitions.contains(&polylogue_query::Definition {
+        name: "result:latest-report".into(),
+        revision: format!("result:{id}"),
+    }));
+    let mut rows = reader.query_rows(&program).unwrap();
+    for row in &mut rows {
+        present(&program, row).unwrap();
+    }
+    assert_eq!(rows, [serde_json::json!({"id":"test:fixed"})]);
 }

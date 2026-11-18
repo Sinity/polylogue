@@ -239,6 +239,9 @@ impl Reader<'_> {
         target: &str,
         options: &Options,
     ) -> Result<PreparedSelection<'read>, SelectionError> {
+        if matches!(Reference::parse(target), Ok(Reference::Run(_))) {
+            return self.prepare_query_selection(target, options);
+        }
         self.check()?;
         let scope = self.scope_token();
         scope.check()?;

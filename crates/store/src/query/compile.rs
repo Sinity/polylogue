@@ -140,8 +140,7 @@ pub struct Program {
     pub near: Option<Near>,
     /// The answer rows have their own semantic similarities to count.
     pub counts_near: bool,
-    /// The saved queries it ran, each at the revision its name resolved
-    /// to when it was compiled.
+    /// Saved-query revisions and result-name IDs resolved for this execution.
     pub definitions: Vec<Definition>,
     /// The instant and zone the times were resolved against.
     pub clock: query_language::time::Clock,
@@ -288,6 +287,15 @@ pub fn lower(plan: &polylogue_query::plan::Plan, opts: &Options) -> Result<Progr
         let used = Definition {
             name: definition.name.clone(),
             revision: definition.revision.clone(),
+        };
+        if !program.definitions.contains(&used) {
+            program.definitions.push(used);
+        }
+    }
+    for (name, id) in &plan.bindings().kept_names {
+        let used = Definition {
+            name: format!("result:{name}"),
+            revision: format!("result:{id}"),
         };
         if !program.definitions.contains(&used) {
             program.definitions.push(used);

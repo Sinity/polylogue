@@ -55,6 +55,38 @@ pub(crate) fn prepare_query_plan_on(
         }
         .into());
     }
+    if let Ok(Reference::Run(id)) = Reference::parse(text) {
+        let source = crate::source::Source::reading(original)?;
+        let run =
+            crate::query_objects::lookup_run(original, source, &id, pending)?.ok_or_else(|| {
+                SelectionError::invalid(
+                    polylogue_model::Code::NotFound,
+                    format!("no saved run {id}"),
+                )
+            })?;
+        let question = run.question.ok_or_else(|| {
+            SelectionError::invalid(
+                polylogue_model::Code::BadRequest,
+                "this run read an object and has no query question to run again",
+            )
+        })?;
+        let object = crate::query_objects::query_object_on(
+            original,
+            source,
+            &question.to_string(),
+            pending,
+        )?
+        .or_else(|| provisional.and_then(|prepared| prepared.object(question).cloned()))
+        .ok_or_else(|| QueryError::Unavailable {
+            what: format!("run:{id} question query:{question}"),
+        })?;
+        // Only the immutable question is reused. Lowering resolves time, here
+        // and private reading marks with this invocation's execution options.
+        return Ok(polylogue_query::plan::replay(
+            &object,
+            polylogue_query::plan::catalog_fingerprint(),
+        )?);
+    }
     let bindings = named_definitions(
         original,
         authored,
@@ -378,8 +410,8 @@ pub(super) fn resolve_reference(
     condition: &mut ConditionKind,
     self_session: Option<&str>,
 ) -> Result<(), QueryError> {
-    // `last` and `latest` depend on the query's other conditions, so the
-    // compiler resolves them inside the query.
+    // `latest` depends on the query's other conditions, so the
+    // compiler resolves it inside the query.
     let is_self = match condition {
         ConditionKind::Reference { reference } => reference == "self",
         ConditionKind::Text {
