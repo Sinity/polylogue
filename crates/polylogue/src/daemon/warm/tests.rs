@@ -182,15 +182,33 @@ fn vector_loading_leaves_the_cache_unlocked_and_clear_prevents_publication() {
 
 #[test]
 fn older_vector_snapshot_does_not_replace_newer_cached_values() {
-    let daemon = crate::test_daemon::start("vector snapshot ordering");
-    let warm = Warm::new(&daemon.daemon.archive, daemon.daemon.clock.clone());
+    // The overlapping snapshots use a pool independent of daemon workers.
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = polylogue_store::Archive::open_or_create(dir.path()).unwrap();
+    let clock = polylogue_model::WallClock::new(jiff::Timestamp::now);
+    let warm = Warm::new(&archive, clock.clone());
+    let reads = polylogue_store::ReadPool::open(&archive).unwrap();
+    let mut store = polylogue_store::vectors::Vectors::writer(&archive, 256).unwrap();
     let key = "synthetic/model/2/document/unit";
-    put_vector(&daemon, key, 1, [1., 0.]);
+    let mut put = |hash, values: [f32; 2]| {
+        store
+            .put(
+                key,
+                &[polylogue_store::vectors::Vector {
+                    text_hash: vec![hash],
+                    chunk: 0,
+                    values: values.to_vec(),
+                }],
+                &clock,
+            )
+            .unwrap();
+    };
+    put(1, [1., 0.]);
     // A read whose snapshot predates the next write.
-    let older = daemon.daemon.reads.reader().unwrap();
+    let older = reads.reader().unwrap();
     let older_revision = older.vectors().unwrap().revision(key).unwrap();
-    put_vector(&daemon, key, 2, [0., 1.]);
-    let reader = daemon.daemon.reads.reader().unwrap();
+    put(2, [0., 1.]);
+    let reader = reads.reader().unwrap();
     let current = warm.vectors_of(&reader, key).unwrap();
     assert!(current.revision > older_revision);
     assert_eq!(current.vectors(), 2);
