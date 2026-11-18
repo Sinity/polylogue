@@ -5,24 +5,28 @@ use polylogue_model::{MessageId, PromptKind, Role, read::*};
 use polylogue_store::Reader;
 use std::ops::ControlFlow;
 
-/// Current notes and marks are prepared from the same reader as their target.
+/// Current visible annotations share their target’s pinned reader.
 pub(super) fn annotations(
     reader: &Reader<'_>,
     reference: &polylogue_model::Reference,
     at: polylogue_model::Timestamp,
 ) -> Result<Vec<Annotation>, Error> {
     let mut annotations = Vec::new();
-    let _ = reader.visit_assertion_references_linked(
-        reference,
-        &[polylogue_model::assertion::LinkRole::About],
-        |revision| {
-            if reader.assertion_is_unexpired(&revision, at)?
-                && reader
-                    .assertion_revision_state(&revision)?
-                    .is_some_and(|state| !state.withdrawn)
-                && let Some(assertion) = reader.assertion(&revision)?
+    let mut visit = |revision: polylogue_model::RevisionReference| {
+        // Both visitors select current revisions before loading their bodies.
+        if let Some(assertion) = reader.assertion(&revision)? {
+            let fact = assertion.fact;
+            use polylogue_model::assertion::AssertionKind;
+            if fact.valid_until.is_none_or(|until| until > at)
+                && !matches!(
+                    fact.kind,
+                    AssertionKind::Seen
+                        | AssertionKind::Withdrawal
+                        | AssertionKind::SavedQuery
+                        | AssertionKind::Signal
+                        | AssertionKind::Setting
+                )
             {
-                let fact = assertion.fact;
                 annotations.push(Annotation {
                     reference: polylogue_model::Reference::Assertion(revision).to_string(),
                     key: fact.key,
@@ -32,9 +36,18 @@ pub(super) fn annotations(
                     open: None,
                 });
             }
-            Ok(ControlFlow::Continue(()))
-        },
-    )?;
+        }
+        Ok(ControlFlow::Continue(()))
+    };
+    if let polylogue_model::Reference::Message(message) = reference {
+        let _ = reader.visit_message_annotation_references(message, &mut visit)?;
+    } else {
+        let _ = reader.visit_assertion_references_linked(
+            reference,
+            &[polylogue_model::assertion::LinkRole::About],
+            &mut visit,
+        )?;
+    }
     Ok(annotations)
 }
 

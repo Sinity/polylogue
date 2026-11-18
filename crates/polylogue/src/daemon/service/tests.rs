@@ -645,6 +645,7 @@ fn read_derived_write_keeps_its_selected_scope_after_reader_release() {
 
 mod advisory;
 
+mod read_annotations;
 mod read_attachments;
 mod read_links;
 mod read_objects;

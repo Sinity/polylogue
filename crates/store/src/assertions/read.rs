@@ -1,5 +1,5 @@
-//! Typed reads of assertions over the stored current-revision index. Direct
-//! association is exact; container membership belongs to the query backend.
+//! Typed reads of assertions over the stored current-revision index. Message
+//! annotations include spans through their original typed containers.
 use super::*;
 use crate::ConnExt as _;
 use crate::Reader;
@@ -48,6 +48,58 @@ impl Reader<'_> {
         }
         self.check()?;
         Ok(found)
+    }
+
+    /// Current assertions About a message or a span of its original message/block text.
+    /// Indexed address ranges nominate candidates; typed containers decide membership.
+    pub fn visit_message_annotation_references(
+        &self,
+        message: &polylogue_model::MessageId,
+        mut visit: impl FnMut(RevisionReference) -> Result<ControlFlow<()>>,
+    ) -> Result<ControlFlow<()>> {
+        let conn = self.conn()?;
+        let source = Source::reading(conn)?;
+        let reference = Reference::Message(message.clone());
+        let message_prefix = format!("span:{}#", reference.stored_form());
+        let block_prefix = format!("span:block:{message}#");
+        let message_end = format!("span:{}$", reference.stored_form());
+        let block_end = format!("span:block:{message}$");
+        let mut statement = conn.prepare_cached(&source.sql(
+            "SELECT a.root,a.id,l.ref FROM @source.link l JOIN @source.assertion a ON a.id=l.record JOIN @source.revision_state r ON r.id=a.id WHERE l.role='about' AND r.current=1 AND r.withdrawn=0 AND (l.ref=?1 OR (l.ref>=?2 AND l.ref<?3) OR (l.ref>=?4 AND l.ref<?5)) ORDER BY a.root,a.id,l.ref",
+        ))?;
+        let mut rows = statement.query(params![
+            reference.stored_form(),
+            message_prefix,
+            message_end,
+            block_prefix,
+            block_end
+        ])?;
+        let mut previous = None;
+        while let Some(row) = rows.next()? {
+            self.check()?;
+            let linked = row.get::<_, String>(2)?;
+            let mut target = Reference::parse_stored(&linked)
+                .map_err(|error| StoreError::invalid(error.to_string()))?;
+            while target != reference {
+                let Some(container) = target.container() else {
+                    break;
+                };
+                target = container;
+            }
+            if target != reference {
+                continue;
+            }
+            let revision = RevisionReference::exact(row.get(0)?, row.get(1)?);
+            if previous.as_ref() != Some(&revision) {
+                previous = Some(revision.clone());
+                if visit(revision)?.is_break() {
+                    self.check()?;
+                    return Ok(ControlFlow::Break(()));
+                }
+            }
+        }
+        self.check()?;
+        Ok(ControlFlow::Continue(()))
     }
 
     fn resolved_assertion_revision(
