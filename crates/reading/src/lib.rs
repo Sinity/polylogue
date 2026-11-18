@@ -194,6 +194,7 @@ struct Compiled<'a> {
     selection: &'a PreparedSelection<'a>,
     options: &'a polylogue_store::query::Options,
     ranking_identity: Option<String>,
+    history: Option<&'a saved_query::SavedQuery>,
 }
 
 fn prepared<T>(
@@ -260,8 +261,9 @@ fn prepared<T>(
                     },
                 ),
             };
-            if let Some(saved) = saved_query::header(reader, &reading.target, &selection)? {
-                kind = HeaderKind::SavedQuery(Box::new(saved));
+            let history = saved_query::prepare(reader, &reading.target, &selection, operation)?;
+            if let Some(saved) = &history {
+                kind = HeaderKind::SavedQuery(Box::new(saved.header.clone()));
             }
             let header = ReadHeader {
                 target: selection
@@ -279,6 +281,7 @@ fn prepared<T>(
                     selection: &selection,
                     options: &compile.options,
                     ranking_identity: compile.ranking_identity,
+                    history: history.as_ref(),
                 },
                 snapshot,
                 header,
@@ -319,6 +322,7 @@ struct Rendering<'a> {
     ready_attachment: &'a attachment_facts::ReadyAttachment<'a>,
     page: bool,
     object_facts: Option<&'a LayoutFacts>,
+    history_seed: Option<polylogue_model::BlobHash>,
 }
 
 fn attachment_call(
@@ -369,6 +373,7 @@ fn record_run(
                     selection: &selection,
                     options: &compile.options,
                     ranking_identity: compile.ranking_identity,
+                    history: None,
                 },
                 history,
             )
@@ -397,6 +402,7 @@ fn record_compiled(
         selection,
         options,
         ranking_identity,
+        history: _,
     } = compiled;
     let object = selection.query_object()?;
     let query_options = polylogue_store::query::execute::options_snapshot(
@@ -528,13 +534,19 @@ pub fn page(
                         request,
                         operation,
                         &reading,
-                        &rows::Rows::Selection(compiled.selection),
+                        &match compiled.history {
+                            Some(history) => rows::Rows::SavedQuery(compiled.selection, history),
+                            None => rows::Rows::Selection(compiled.selection),
+                        },
                         snapshot,
                         header,
                         ReadFraming::Query {
                             question: compiled.selection.question_id(),
                         },
-                        PageCursor::version(&[]),
+                        compiled.history.map_or_else(
+                            || Ok(PageCursor::version(&[])),
+                            |history| history.version(),
+                        )?,
                         near,
                         None,
                         ReadFooter::default(),
@@ -583,7 +595,9 @@ fn rows_page(
             opened
                 .check(&reading.target, &reading.digest)
                 .map_err(cursor_failure)?;
-            if matches!(selected, rows::Rows::Object(..)) && opened.rewritten(&versions) {
+            if (matches!(selected, rows::Rows::Object(..)) || selected.history().is_some())
+                && opened.rewritten(&versions)
+            {
                 return Err(Error::stale_cursor(
                     "the stored record changed since this page was issued",
                 ));
@@ -594,15 +608,38 @@ fn rows_page(
                 ));
             }
             match opened.position {
-                PagePosition::Record { start_row, place } => {
-                    Ok((start_row, place, opened.direction))
-                }
+                PagePosition::Record {
+                    start_row,
+                    place,
+                    history_seed,
+                } => Ok((start_row, place, opened.direction, history_seed)),
                 _ => Err(Error::InvalidCursor(
                     "the cursor belongs to a session reading".into(),
                 )),
             }
         })
         .transpose()?;
+    let history_seed = if selected.history().is_some() {
+        match &opened {
+            Some((_, _, _, Some(seed))) => Some(*seed),
+            Some(_) => {
+                return Err(Error::stale_cursor(
+                    "the saved-query history cursor predates this reading layout",
+                ));
+            }
+            None => selected.history().map(|history| history.seed),
+        }
+    } else {
+        if opened
+            .as_ref()
+            .is_some_and(|(_, _, _, seed)| seed.is_some())
+        {
+            return Err(Error::InvalidCursor(
+                "the cursor belongs to a saved-query history reading".into(),
+            ));
+        }
+        None
+    };
     let ready_attachment = |message: &MessageId, block, index, input: Option<&str>| {
         attachment_call(d, message, block, index, input)
     };
@@ -614,6 +651,7 @@ fn rows_page(
         ready_attachment: &ready_attachment,
         page: true,
         object_facts,
+        history_seed,
     };
     let scope = reader.scope_token();
     let mut budget = reading.budget.expect("a paged reading has a budget");
@@ -624,8 +662,8 @@ fn rows_page(
         .ok_or_else(|| Error::bad_request("reading metadata exceeds page framing"))?;
     let backwards = opened
         .as_ref()
-        .is_some_and(|(_, _, direction)| *direction == ReadDirection::Before);
-    let page_start = opened.as_ref().map(|(_, place, _)| {
+        .is_some_and(|(_, _, direction, _)| *direction == ReadDirection::Before);
+    let page_start = opened.as_ref().map(|(_, place, _, _)| {
         let mut place = *place;
         place.selection.row = if backwards { BACKWARD_START_ROW } else { 0 };
         place
@@ -657,7 +695,7 @@ fn rows_page(
             != Push::Full)
     };
     let start = rows::RowStart {
-        row: opened.as_ref().and_then(|(row, _, _)| row.clone()),
+        row: opened.as_ref().and_then(|(row, _, _, _)| row.clone()),
         place: page_start,
         direction: if backwards {
             ReadDirection::Before
@@ -692,6 +730,7 @@ fn rows_page(
             position: PagePosition::Record {
                 start_row: row,
                 place,
+                history_seed,
             },
             direction,
         };
@@ -764,7 +803,10 @@ pub fn stream(
                 d,
                 request,
                 &reading,
-                &rows::Rows::Selection(compiled.selection),
+                &match compiled.history {
+                    Some(history) => rows::Rows::SavedQuery(compiled.selection, history),
+                    None => rows::Rows::Selection(compiled.selection),
+                },
                 snapshot,
                 header,
                 near,
@@ -801,6 +843,7 @@ fn rows_stream(
         ready_attachment: &ready_attachment,
         page: false,
         object_facts,
+        history_seed: selected.history().map(|history| history.seed),
     };
     let scope = reader.scope_token();
     let check = || {

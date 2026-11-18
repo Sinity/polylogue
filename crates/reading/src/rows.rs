@@ -4,7 +4,20 @@ use polylogue_store::selection::SelectionRow;
 
 pub(crate) enum Rows<'a> {
     Selection(&'a PreparedSelection<'a>),
+    SavedQuery(
+        &'a PreparedSelection<'a>,
+        &'a crate::saved_query::SavedQuery,
+    ),
     Object(&'a ReadRecord, ReadRecordKind),
+}
+
+impl Rows<'_> {
+    pub(crate) fn history(&self) -> Option<&crate::saved_query::SavedQuery> {
+        match self {
+            Self::SavedQuery(_, history) => Some(history),
+            _ => None,
+        }
+    }
 }
 
 pub(crate) struct RowStart {
@@ -29,39 +42,63 @@ pub(crate) fn visit_rows(
         ));
     }
     let backwards = start.direction == ReadDirection::Before;
-    let Rows::Selection(selection) = rows else {
-        let Rows::Object(record, kind) = rows else {
-            unreachable!()
-        };
-        let at = SelectionLocator {
-            row: start.place.map_or(0, |place| place.selection.row),
-            record: ReadRecordLocator {
-                kind: *kind,
-                ordinal: 0,
-            },
-        };
-        if start.place.is_some_and(|place| place.selection != at) {
-            return Err(Error::stale_cursor(
-                "the stored record this page continues from changed",
-            ));
-        }
-        if !rendering.page {
-            emit(record, at, None)?;
+    let (selection, history) = match rows {
+        Rows::Selection(selection) => (*selection, None),
+        Rows::SavedQuery(selection, history) => (*selection, Some(*history)),
+        Rows::Object(record, kind) => {
+            let at = SelectionLocator {
+                row: start.place.map_or(0, |place| place.selection.row),
+                record: ReadRecordLocator {
+                    kind: *kind,
+                    ordinal: 0,
+                },
+            };
+            if start.place.is_some_and(|place| place.selection != at) {
+                return Err(Error::stale_cursor(
+                    "the stored record this page continues from changed",
+                ));
+            }
+            if !rendering.page {
+                emit(record, at, None)?;
+                return Ok(());
+            }
+            let selected = |_: &Source| Ok(false);
+            let empty_facts = LayoutFacts::default();
+            let layout = layout_facts::Layout {
+                options: rendering.options,
+                facts: rendering.object_facts.unwrap_or(&empty_facts),
+                selected: &selected,
+                ready_attachment: rendering.ready_attachment,
+                backwards,
+                page_start: start.place.map(|place| place.item),
+            };
+            output::emit_record(reader, record, at, &layout, emit)?;
             return Ok(());
         }
-        let selected = |_: &Source| Ok(false);
-        let empty_facts = LayoutFacts::default();
-        let layout = layout_facts::Layout {
-            options: rendering.options,
-            facts: rendering.object_facts.unwrap_or(&empty_facts),
-            selected: &selected,
-            ready_attachment: rendering.ready_attachment,
-            backwards,
-            page_start: start.place.map(|place| place.item),
-        };
-        output::emit_record(reader, record, at, &layout, emit)?;
-        return Ok(());
     };
+    let prefix_start = history.is_some() && start.row.is_none();
+    if prefix_start {
+        let history = history.expect("a saved-query prefix");
+        let row = start.place.map_or(0, |place| place.selection.row);
+        if !visit_history(
+            reader,
+            history,
+            rendering,
+            start.place,
+            row,
+            backwards,
+            emit,
+        )? || backwards
+        {
+            return Ok(());
+        }
+    }
+    let data_start = RowStart {
+        row: start.row.clone(),
+        place: start.place.filter(|_| !prefix_start),
+        direction: start.direction,
+    };
+    let start = &data_start;
     let mut walk = Walk {
         reader,
         selection,
@@ -70,7 +107,9 @@ pub(crate) fn visit_rows(
         emit,
     };
     let mut first = true;
-    let mut ordinal = start.place.map_or(0, |place| place.selection.row);
+    let mut ordinal = start
+        .place
+        .map_or(u64::from(prefix_start), |place| place.selection.row);
     if backwards {
         let mut current = None;
         reader.visit_selection::<Error>(
@@ -98,6 +137,7 @@ pub(crate) fn visit_rows(
         if !walk.visit_row(ordinal, row, start.place, start.direction)? {
             return Ok(());
         }
+        let mut full = false;
         reader.visit_selection::<Error>(
             selection,
             polylogue_store::read::VisitFrom::Before(&row_position),
@@ -112,10 +152,17 @@ pub(crate) fn visit_rows(
                 Ok(if walk.visit_row(ordinal, row, None, start.direction)? {
                     ControlFlow::Continue(())
                 } else {
+                    full = true;
                     ControlFlow::Break(())
                 })
             },
         )?;
+        if !full && let Some(history) = history {
+            let row = ordinal.checked_sub(1).ok_or_else(|| {
+                Error::internal("saved history lies before the row coordinate range")
+            })?;
+            visit_history(reader, history, rendering, None, row, true, emit)?;
+        }
     } else {
         reader.visit_selection::<Error>(
             selection,
@@ -152,6 +199,82 @@ pub(crate) fn visit_rows(
         }
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn visit_history(
+    reader: &Reader<'_>,
+    history: &crate::saved_query::SavedQuery,
+    rendering: &Rendering<'_>,
+    from: Option<ItemPlace>,
+    row: u64,
+    backwards: bool,
+    emit: &mut Emit<'_>,
+) -> Result<bool, Error> {
+    let seed = rendering
+        .history_seed
+        .ok_or_else(|| Error::internal("saved-query history has no reading identity"))?;
+    let first = from.map_or_else(
+        || {
+            if backwards {
+                history.item_count() - 1
+            } else {
+                0
+            }
+        },
+        |place| place.selection.record.ordinal as usize,
+    );
+    if first >= history.item_count()
+        || from.is_some_and(|place| place.selection.record.kind != ReadRecordKind::Presentation)
+    {
+        return Err(Error::stale_cursor(
+            "the saved-query history position changed",
+        ));
+    }
+    let selected = |_: &Source| Ok(false);
+    let facts = LayoutFacts::default();
+    let mut index = first;
+    loop {
+        reader.check()?;
+        let record = ReadRecord::Presentation {
+            parts: vec![ReadPart::Item(history.item(index, seed)?)],
+        };
+        let at = SelectionLocator {
+            row,
+            record: ReadRecordLocator {
+                kind: ReadRecordKind::Presentation,
+                ordinal: index as u64,
+            },
+        };
+        let keep = if rendering.page {
+            let layout = layout_facts::Layout {
+                options: rendering.options,
+                facts: &facts,
+                selected: &selected,
+                ready_attachment: rendering.ready_attachment,
+                backwards,
+                page_start: from.filter(|_| index == first).map(|place| place.item),
+            };
+            output::emit_record(reader, &record, at, &layout, emit)?
+        } else {
+            emit(&record, at, None)?
+        };
+        if !keep {
+            return Ok(false);
+        }
+        if backwards {
+            let Some(previous) = index.checked_sub(1) else {
+                break;
+            };
+            index = previous;
+        } else {
+            index += 1;
+            if index == history.item_count() {
+                break;
+            }
+        }
+    }
+    Ok(true)
 }
 
 fn missing_row(target: &str) -> Error {

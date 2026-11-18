@@ -45,6 +45,50 @@ fn header(page: &ReadPage) -> &SavedQueryHeader {
     saved
 }
 
+fn history_items(page: &ReadPage) -> impl Iterator<Item = &SavedQueryItem> {
+    page.document
+        .items
+        .iter()
+        .filter_map(|item| match &item.kind {
+            ItemKind::Card { card } => match card.as_ref() {
+                Card::SavedQuery { item } => Some(item.as_ref()),
+                _ => None,
+            },
+            _ => None,
+        })
+}
+fn history(page: &ReadPage) -> polylogue_model::saved_queries::SavedQueryRecord {
+    let mut record = polylogue_model::saved_queries::SavedQueryRecord {
+        name: header(page).name.clone(),
+        revisions: vec![],
+        kept: vec![],
+        watch: None,
+        dependents: vec![],
+    };
+    for item in history_items(page) {
+        match item {
+            SavedQueryItem::Revision(revision) => record.revisions.push(revision.clone()),
+            SavedQueryItem::Kept(kept) => record.kept.push(kept.clone()),
+            SavedQueryItem::Watch { reference } => record.watch.clone_from(reference),
+            SavedQueryItem::Dependent { reference, .. } => {
+                record.dependents.push(reference.clone())
+            }
+        }
+    }
+    record
+}
+fn resaves(page: &ReadPage) -> Vec<&ReadyCall> {
+    history_items(page)
+        .flat_map(|item| match item {
+            SavedQueryItem::Dependent { resave, .. } => resave.as_slice(),
+            _ => &[],
+        })
+        .collect()
+}
+fn data_items(page: &ReadPage) -> Vec<ReadItem> {
+    page.document.items.iter().filter(|item| !matches!(&item.kind, ItemKind::Card { card } if matches!(card.as_ref(), Card::SavedQuery { .. }))).cloned().collect()
+}
+
 #[test]
 fn saved_query_read_lists_dependents_with_executable_resave_lines() {
     let mut d = test_daemon::start("saved question reader");
@@ -75,14 +119,20 @@ fn saved_query_read_lists_dependents_with_executable_resave_lines() {
         .unwrap();
     let first = read(&d.daemon, "query:focus");
     let saved = header(&first);
-    assert_eq!(saved.query, before);
-    assert_eq!(saved.query.revisions.len(), 2);
-    assert_eq!(saved.selected_revision, saved.query.revisions[1].reference);
-    assert_eq!(saved.query.kept.len(), 2);
-    assert!(saved.query.watch.is_some());
-    assert_eq!(saved.query.dependents.len(), 1);
-    assert_eq!(saved.resave.len(), 1);
-    let refresh = &saved.resave[0].request;
+    let saved_history = history(&first);
+    assert_eq!(saved_history, before);
+    assert_eq!(saved_history.revisions.len(), 2);
+    assert_eq!(
+        saved.selected_revision,
+        saved_history.revisions[1].reference
+    );
+    assert_eq!(saved.question.to_string(), before.revisions[1].hash);
+    assert_eq!(saved_history.kept.len(), 2);
+    assert!(saved_history.watch.is_some());
+    assert_eq!(saved_history.dependents.len(), 1);
+    let calls = resaves(&first);
+    assert_eq!(calls.len(), 1);
+    let refresh = &calls[0].request;
     assert_eq!(
         refresh.arguments,
         json!({"selection":"query:focus | count","steps":[{"verb":"save","name":"summary","denominator":before.revisions[0].hash}]})
@@ -148,22 +198,20 @@ fn saved_query_read_lists_dependents_with_executable_resave_lines() {
         header(&old).selected_revision,
         before.revisions[0].reference
     );
+    assert_eq!(data_items(&old), read(&d.daemon, "sessions").document.items);
     assert_eq!(
-        old.document.items,
-        read(&d.daemon, "sessions").document.items
-    );
-    assert_eq!(
-        first.document.items,
+        data_items(&first),
         read(&d.daemon, "messages").document.items
     );
     d.restart();
     d.pause_signals();
     let repeated = read(&d.daemon, "query:focus");
-    assert_eq!(header(&repeated).query.revisions, saved.query.revisions);
-    assert_eq!(header(&repeated).query.kept, saved.query.kept);
-    assert_eq!(header(&repeated).query.watch, saved.query.watch);
+    let repeated_history = history(&repeated);
+    assert_eq!(repeated_history.revisions, saved_history.revisions);
+    assert_eq!(repeated_history.kept, saved_history.kept);
+    assert_eq!(repeated_history.watch, saved_history.watch);
     assert_eq!(header(&repeated).selected_revision, saved.selected_revision);
-    assert_eq!(repeated.document.items, first.document.items);
+    assert_eq!(data_items(&repeated), data_items(&first));
     let answer = crate::test_answers::step(Call::from_request(refresh).answer(&d.daemon));
     assert!(matches!(
         answer,
@@ -182,7 +230,7 @@ fn saved_query_read_lists_dependents_with_executable_resave_lines() {
     crate::test_answers::step(Call::new("rows", json!({"selection":"annotations where kind:saved_query key:summary","steps":[{"verb":"withdraw"}]})).answer(&d.daemon));
     // Withdrawing one exact revision reveals its predecessor.
     let previous_dependent = read(&d.daemon, "query:focus");
-    assert_eq!(header(&previous_dependent).resave.len(), 1);
+    assert_eq!(resaves(&previous_dependent).len(), 1);
     let polylogue_model::Reference::Assertion(mut family) =
         polylogue_model::Reference::parse(&refreshed.revisions[0].reference).unwrap()
     else {
@@ -191,8 +239,8 @@ fn saved_query_read_lists_dependents_with_executable_resave_lines() {
     family.revision = None;
     crate::test_answers::step(Call::new("rows", json!({"selection":polylogue_model::Reference::Assertion(family).to_string(),"steps":[{"verb":"withdraw"}]})).answer(&d.daemon));
     let without_dependent = read(&d.daemon, "query:focus");
-    assert!(header(&without_dependent).resave.is_empty());
-    assert!(!header(&without_dependent).query.dependents.is_empty());
+    assert!(resaves(&without_dependent).is_empty());
+    assert!(!history(&without_dependent).dependents.is_empty());
 }
 
 #[test]
@@ -215,10 +263,7 @@ fn saved_query_reads_keep_missing_withdrawn_and_historical_names_distinct() {
         );
     }
     assert_eq!(
-        header(&read(&d.daemon, "query:focus@1"))
-            .query
-            .revisions
-            .len(),
+        history(&read(&d.daemon, "query:focus@1")).revisions.len(),
         1
     );
     save(&d.daemon, "recent-override", "recent", "messages", false);
@@ -233,3 +278,5 @@ fn saved_query_reads_keep_missing_withdrawn_and_historical_names_distinct() {
         HeaderKind::SavedQuery(_)
     ));
 }
+
+mod pages;

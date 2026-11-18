@@ -83,6 +83,10 @@ pub enum PagePosition {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         start_row: Option<OrderPosition>,
         place: ItemPlace,
+        /// Per-reading identity for exact saved-history actions. Other row
+        /// cursors omit it; saved-history cursors without it must restart.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        history_seed: Option<BlobHash>,
     },
 }
 

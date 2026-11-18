@@ -89,3 +89,11 @@ pub struct KeptSummary {
     pub rows: u64,
     pub at: crate::Timestamp,
 }
+
+/// The current authored definition behind an explicit dependent re-save call.
+#[derive(Debug, Clone)]
+pub struct DependentSavedQuery {
+    pub name: String,
+    pub revision: crate::RevisionReference,
+    pub value: crate::assertion::values::SavedQuery,
+}
