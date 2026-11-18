@@ -759,6 +759,15 @@ impl RowWriter<'_, '_> {
         Ok(())
     }
 
+    fn message_pk(&self, id: &str) -> Result<Option<i64>> {
+        let pk = self.keys.get(resolve::Kind::Message, id.as_bytes())?.pk;
+        Ok(self
+            .tx
+            .prepare_cached("SELECT pk FROM message WHERE pk=?1")?
+            .query_row([pk], |row| row.get(0))
+            .optional()?)
+    }
+
     fn session_pk(&self, cache: &mut HashMap<String, i64>, id: &SessionId) -> Result<i64> {
         let key = id.to_string();
         if let Some(pk) = cache.get(&key) {
