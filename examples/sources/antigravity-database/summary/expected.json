@@ -1,0 +1,60 @@
+{
+  "counts": {
+    "records": 1,
+    "used": {
+      "conversation_summaries": 1
+    },
+    "unreadable": {},
+    "skipped": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [
+      {
+        "session": "antigravity:synthetic-child",
+        "kind": "antigravity_summary",
+        "at": "2026-03-05T04:21:34Z",
+        "at_quality": "intrinsic",
+        "at_precision": "second",
+        "range": [
+          0,
+          302
+        ],
+        "data": {
+          "conversation_id": "synthetic-child",
+          "title": "Inspect the example",
+          "workspace_uris": "[\"file:///work/example\"]",
+          "parent_conversation_id": "synthetic-parent",
+          "last_modified_time": "2026-03-05 05:21:34+01:00",
+          "preview": "A summary, not a message"
+        }
+      }
+    ],
+    "links": [
+      {
+        "kind": "spawn",
+        "copies_prefix": false,
+        "parent": "antigravity:synthetic-parent",
+        "child": "antigravity:synthetic-child",
+        "evidence": "parent_conversation_id"
+      }
+    ],
+    "messages": [],
+    "sessions": [
+      {
+        "id": "antigravity:synthetic-child",
+        "kind": "subagent",
+        "title": {
+          "text": "Inspect the example",
+          "source": "summary"
+        },
+        "cwd": [
+          "/work/example"
+        ],
+        "started_quality": "unknown"
+      }
+    ]
+  }
+}

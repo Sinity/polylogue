@@ -76,7 +76,7 @@ Ignored: `logs_2.sqlite` (diagnostic log); `thread_history_*.sqlite` (a derived 
 **Antigravity**: everything under `~/.gemini/antigravity/` (`conversations/*.pb`, `brain/**`, `annotations/*.pbtxt`, `implicit/*`, `code_tracker/**`, `knowledge/**`, `user_settings.pb`); `~/.gemini/antigravity-cli/` (`conversations/*.db` and `conversation_summaries.db` as rows, `history.jsonl`, `brain/**` including `.system_generated/logs/*.jsonl`, `annotations/`, `implicit/`, `knowledge/`, `jetski_state.pbtxt`); and `~/.config/Antigravity/User/{globalStorage,workspaceStorage/*}/state.vscdb` as rows. Ignored: the OAuth token, `bin/`, `builtin/`, `cache/`, `updater/`, lock files, `crashes/`, MCP schema caches, `log/`. Its readers, from the plainest format to the hardest:
 1. CLI transcripts `brain/<id>/.system_generated/logs/transcript_full.jsonl`; where a trajectory store of the same ID exists, its `step-<idx>` IDs are the message IDs;
 2. CLI trajectory stores, decoded with descriptors from the installed language server;
-3. summaries and prompts (`conversation_summaries.db`, `history.jsonl`);
+3. summaries and prompts (`conversation_summaries.db`, `history.jsonl`): summary rows offer their titles, workspace directories and explicit parent links; the complete row remains a source-timed event. Summary previews are not messages, and last modification is not session start;
 4. brain artifacts, as versioned documents of their conversation;
 5. IDE `.pb` conversations, through the language server's own RPC on a Unix socket or with a per-run token, never an unauthenticated loopback port; without the server, the session exists with its metadata and an event saying the transcript could not be read;
 6. `state.vscdb` rows.
