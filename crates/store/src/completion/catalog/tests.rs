@@ -222,8 +222,9 @@ fn tag_only_contributors_are_listed_and_removed_alone() {
                     value: None,
                     authored: None,
                     conflicts: vec![
-                        polylogue_model::Reference::parse("assertion:setting@left").unwrap(),
-                        polylogue_model::Reference::parse("assertion:setting@right").unwrap(),
+                        polylogue_model::Reference::parse_stored("assertion:setting@left").unwrap(),
+                        polylogue_model::Reference::parse_stored("assertion:setting@right")
+                            .unwrap(),
                     ],
                 },
             })?;

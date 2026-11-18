@@ -329,7 +329,7 @@ pub fn stage_products(connection: &rusqlite::Transaction<'_>, writes: &[Value]) 
                 }
                 let object = match &converted.run.binding {
                     RunBinding::OriginalObject { execution } => {
-                        Some(execution.reference.to_string())
+                        Some(execution.reference.stored_form())
                     }
                     _ => None,
                 };

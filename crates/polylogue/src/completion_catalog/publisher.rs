@@ -561,7 +561,7 @@ impl State {
             .find(|value| value.root == change.family && value.revision == saved.revision)
             .ok_or_else(|| {
                 polylogue_store::StoreError::NotFound(format!(
-                    "assertion:{}@{}",
+                    "annotation:{}@{}",
                     change.family, saved.revision
                 ))
             })?;

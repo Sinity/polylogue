@@ -228,13 +228,14 @@ fn prepare_inner(
         let bound = query_language::bind::bind(&query, &catalog)
             .map_err(|e| QueryError::language(e, text))?;
         query = bound.query().clone();
+        values::normalize(&mut query, bound.typing())?;
         walk(&mut query, &mut |_| Ok(()), &mut |condition| {
             resolve(&mut condition.kind)
         })?;
         normalize_references(&mut query)?;
         let original = query_language::bind::bind(&query, &catalog)
             .map_err(|e| QueryError::language(e, text))?;
-        values::check(&original)?;
+        values::check(&mut query, original.typing())?;
         let mut identity = original.query().clone();
         let names = std::cell::RefCell::new(Vec::<String>::new());
         walk(
@@ -490,14 +491,15 @@ fn normalize_references(query: &mut Query) -> Result<(), QueryError> {
         let ConditionKind::Reference { reference: text } = &condition.kind else {
             return Ok(());
         };
-        let Some(reference) = polylogue_model::Reference::parse(text)
+        let Some(reference) = polylogue_model::Reference::parse_stored(text)
+            .or_else(|_| polylogue_model::Reference::parse(text))
             .ok()
             .filter(|reference| crate::catalog::reference_unit(reference).is_some())
         else {
             return Ok(());
         };
         condition.kind = ConditionKind::Reference {
-            reference: reference.to_string(),
+            reference: reference.stored_form(),
         };
         Ok(())
     })

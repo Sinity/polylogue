@@ -47,7 +47,7 @@ fn reference(text: &str, role: LinkRole, roots: &BTreeMap<String, String>) -> Ma
             )
         }));
     }
-    Reference::parse(text).map_err(|error| error.to_string())
+    Reference::parse_stored(text).map_err(|error| error.to_string())
 }
 
 fn author(text: &str) -> Mapped<Author> {

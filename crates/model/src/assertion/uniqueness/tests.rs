@@ -4,7 +4,7 @@ use crate::Json;
 use authored::{SlotValue, UniqueSlot, WhenHeld};
 
 fn r(text: &str) -> Reference {
-    Reference::parse(text).unwrap()
+    Reference::parse_stored(text).unwrap()
 }
 fn input(
     kind: AssertionKind,
@@ -243,4 +243,21 @@ fn canonical_text_is_equal_exactly_when_values_are_equal() {
         let right: Json = serde_json::from_str(right).unwrap();
         assert_ne!(values::canonical(&left), values::canonical(&right));
     }
+}
+
+#[test]
+fn a_human_annotation_target_keeps_the_stored_unique_slot() {
+    let mut tag = input(
+        AssertionKind::Tag,
+        Some("status"),
+        serde_json::json!({"value":"checked"}),
+        &[(LinkRole::About, "assertion:target@revision")],
+    );
+    tag.links[0].reference = Reference::parse("annotation:target@revision").unwrap();
+    let slots = slots(&tag, &Author::Operator, None);
+    assert_eq!(slots.len(), 1);
+    assert!(slots[0].parts.contains(&(
+        "about".into(),
+        SlotValue::One("assertion:target@revision".into())
+    )));
 }

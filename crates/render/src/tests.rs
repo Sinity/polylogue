@@ -2238,7 +2238,7 @@ fn selected_fragment_in(container: polylogue_model::Reference, text: &str, start
         end,
     };
     Record::TextFragment(Box::new(TextFragmentRecord {
-        reference: span.to_string(),
+        reference: span.stored_form(),
         commit: 7,
         fragment: TextFragment {
             container: container.clone(),
@@ -3291,5 +3291,38 @@ fn run_card_renders_zero_pending_and_unrecorded_counts_truthfully() {
                 assert!(output.contains(expected), "{expected}: {output}");
             }
         }
+    }
+}
+
+#[test]
+fn visible_reference_names_leave_structured_source_records_unchanged() {
+    for (stored, surface) in [
+        ("assertion:root@revision", "annotation:root@revision"),
+        ("variant:root@revision#2", "alternate:root@revision#2"),
+        (
+            "span:variant:root@revision#2#b=0-3",
+            "span:alternate:root@revision#2#b=0-3",
+        ),
+    ] {
+        let doc = document(vec![ReadItem {
+            source: Source::record(stored),
+            kind: ItemKind::Raw {
+                record: RawRecord {
+                    reference: stored.into(),
+                    input: "synthetic-source".into(),
+                    media_type: "text/plain".into(),
+                    bytes: b"exact source bytes".to_vec(),
+                },
+            },
+        }]);
+        for format in [Format::Terminal, Format::Markdown, Format::Html] {
+            let rendered = encode(&doc, format);
+            assert!(rendered.contains(surface), "{format:?}: {rendered}");
+            assert!(!rendered.contains(stored), "{format:?}: {rendered}");
+        }
+        let encoded: serde_json::Value = serde_json::from_str(&encode(&doc, Format::Json)).unwrap();
+        assert_eq!(encoded["items"][0]["source"]["ref"], stored);
+        assert_eq!(encoded["items"][0]["kind"]["record"]["reference"], stored);
+        assert_eq!(doc.items[0].source.reference, stored);
     }
 }

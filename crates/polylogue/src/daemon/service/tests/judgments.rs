@@ -64,7 +64,7 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
         .id("r1"),
         Author::Agent(None),
     );
-    let agent_id = format!("assertion:{}", agent["id"].as_str().unwrap());
+    let agent_id = format!("annotation:{}", agent["id"].as_str().unwrap());
     let own = ok(
         &d,
         crate::test_daemon::Call::new(
@@ -78,7 +78,7 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
         1
     );
     // The operator's own notes are revised or withdrawn, not judged.
-    let refused = crate::test_daemon::Call::new("rows", serde_json::json!({"selection": format!("assertion:{}", own["id"].as_str().unwrap()), "steps":[{"verb":"judge", "verdict":"accept"}]})).id("r3").answer(&d.daemon);
+    let refused = crate::test_daemon::Call::new("rows", serde_json::json!({"selection": format!("annotation:{}", own["id"].as_str().unwrap()), "steps":[{"verb":"judge", "verdict":"accept"}]})).id("r3").answer(&d.daemon);
     assert!(crate::test_answers::refusal(refused).code.as_deref() == Some("bad_request"));
     ok(
         &d,
@@ -206,7 +206,7 @@ fn recorded_history_keeps_note_and_judgment_authors() {
     );
     ok(
         &d,
-        crate::test_daemon::Call::new("rows", serde_json::json!({"selection": format!("assertion:{}", agent["id"].as_str().unwrap()), "steps":[{"verb":"judge", "verdict":"accept"}]})).id("r2"),
+        crate::test_daemon::Call::new("rows", serde_json::json!({"selection": format!("annotation:{}", agent["id"].as_str().unwrap()), "steps":[{"verb":"judge", "verdict":"accept"}]})).id("r2"),
     );
     let reader = d.daemon.reads.reader().unwrap();
     let mut requests = Vec::new();
@@ -239,7 +239,7 @@ fn a_rejudged_revision_reads_its_latest_operator_judgment_everywhere() {
             .id("lesson"),
         Author::Agent(None),
     );
-    let target = format!("assertion:{}", agent["id"].as_str().unwrap());
+    let target = format!("annotation:{}", agent["id"].as_str().unwrap());
     for (request_id, accepted) in [("j1", true), ("j2", false), ("j3", true)] {
         ok(
             &d,
@@ -326,7 +326,7 @@ fn second_judgment_by_same_author_revises_the_first_regardless_of_clock() {
             .id("lesson"),
         Author::Agent(None),
     );
-    let target = format!("assertion:{}", agent["id"].as_str().unwrap());
+    let target = format!("annotation:{}", agent["id"].as_str().unwrap());
     ok(
         &d,
         crate::test_daemon::Call::new(
@@ -377,7 +377,7 @@ fn revising_a_withdrawal_is_refused() {
         &d,
         crate::test_daemon::Call::new(
             "rows",
-            serde_json::json!({"selection":"assertion:note-1", "steps":[{"verb":"withdraw", "reason":"superseded"}]}),
+            serde_json::json!({"selection":"annotation:note-1", "steps":[{"verb":"withdraw", "reason":"superseded"}]}),
         )
         .id("withdrawal"),
     );
@@ -385,7 +385,7 @@ fn revising_a_withdrawal_is_refused() {
         &d,
         crate::test_daemon::Call::new(
             "rows",
-            serde_json::json!({"selection":"assertion:withdrawal-1@withdrawal-1", "steps":[{"verb":"edit","text":"a new reason"}]}),
+            serde_json::json!({"selection":"annotation:withdrawal-1@withdrawal-1", "steps":[{"verb":"edit","text":"a new reason"}]}),
         )
         .id("revision"),
         Author::Operator,

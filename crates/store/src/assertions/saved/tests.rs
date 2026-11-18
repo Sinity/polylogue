@@ -9,7 +9,7 @@ fn named_revisions(conn: &Connection, name: &str) -> Result<Vec<Assertion>> {
 }
 
 fn r(value: &str) -> Reference {
-    Reference::parse(value).unwrap()
+    Reference::parse_stored(value).unwrap()
 }
 fn fact(id: &str, name: &str, hash: u8, base: Option<&str>) -> AssertionFact {
     AssertionFact {
@@ -143,7 +143,7 @@ fn saved_revision_forks_are_ambiguous_and_merged_depth_is_exact() {
             assert_eq!(reference, "query:focus@2");
             assert_eq!(
                 candidates,
-                ["assertion:family@left", "assertion:family@right"]
+                ["annotation:family@left", "annotation:family@right"]
             );
         }
         other => panic!("fork must be explicit: {other}"),
@@ -179,7 +179,7 @@ fn saved_revision_history_diagnoses_missing_parents_and_cycles() {
     super::super::apply(&conn, &[child], 1).unwrap();
     match named_revisions(&conn, "missing-parent").unwrap_err() {
         StoreError::ReferenceUnavailable { reference, reason } => {
-            assert_eq!(reference, "assertion:family@missing");
+            assert_eq!(reference, "annotation:family@missing");
             assert!(reason.contains("parent"));
         }
         other => panic!("missing original must be explicit: {other}"),
@@ -258,7 +258,7 @@ fn saved_query_record_keeps_history_kept_watch_and_dependent_identities() {
     assert_eq!(record.name, "focus");
     assert_eq!(record.revisions.len(), 1);
     assert_eq!(record.revisions[0].revision, 1);
-    assert_eq!(record.revisions[0].reference, "assertion:family@first");
+    assert_eq!(record.revisions[0].reference, "annotation:family@first");
     assert_eq!(
         record.revisions[0].hash,
         format!("query:{}", first_object.id)
@@ -269,7 +269,7 @@ fn saved_query_record_keeps_history_kept_watch_and_dependent_identities() {
     assert_eq!(record.kept[0].result, "result:kept-original");
     assert_eq!(record.kept[0].rows, 0);
     assert_eq!(record.kept[0].at, Timestamp::from_unix_ms(7).unwrap());
-    assert_eq!(record.watch.as_deref(), Some("assertion:watch@watch"));
+    assert_eq!(record.watch.as_deref(), Some("annotation:watch@watch"));
     assert_eq!(record.dependents, vec![format!("query:{}", dependent.id)]);
     assert!(reader.saved_query_record("absent").unwrap().is_none());
 }
@@ -375,7 +375,10 @@ fn numeric_saved_revisions_bind_the_current_family_after_withdrawal_and_resave()
     match named_revision(&conn, "focus", 2).unwrap_err() {
         StoreError::Ambiguous { candidates, .. } => assert_eq!(
             candidates,
-            ["assertion:replacement@left", "assertion:replacement@right"]
+            [
+                "annotation:replacement@left",
+                "annotation:replacement@right"
+            ]
         ),
         other => panic!("same-family fork must remain explicit: {other}"),
     }
@@ -392,7 +395,7 @@ fn numeric_saved_revisions_keep_independent_current_and_retired_histories_ambigu
     let expect_ambiguous = || match named_revision(&conn, "focus", 1).unwrap_err() {
         StoreError::Ambiguous { candidates, .. } => assert_eq!(
             candidates,
-            ["assertion:family@first", "assertion:other-family@other"]
+            ["annotation:family@first", "annotation:other-family@other"]
         ),
         error => panic!("independent originals must remain explicit: {error}"),
     };
@@ -447,7 +450,7 @@ fn numeric_saved_revisions_ignore_withdrawn_siblings_but_keep_active_redo_forks(
     match named_revision(&conn, "focus", 2).unwrap_err() {
         StoreError::Ambiguous { candidates, .. } => assert_eq!(
             candidates,
-            ["assertion:family@parallel", "assertion:family@redo"]
+            ["annotation:family@parallel", "annotation:family@redo"]
         ),
         error => panic!("two active redo heads must remain ambiguous: {error}"),
     }

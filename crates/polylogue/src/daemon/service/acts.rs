@@ -369,12 +369,13 @@ fn record_sent(d: &Daemon, delivery: &str, sent: Result<(), String>) {
 /// The ping pack: the text, what it is about, how to answer, and the
 /// delivery reference.
 fn ping_text(delivery: &str, ping: &str, author: &str, text: &str, about: Option<&str>) -> String {
-    let mut pack = format!("Ping from {author} (delivery:{delivery}, assertion:{ping}):\n{text}\n");
+    let mut pack =
+        format!("Ping from {author} (delivery:{delivery}, annotation:{ping}):\n{text}\n");
     if let Some(about) = about {
         pack.push_str(&format!("About: {about}\n"));
     }
     pack.push_str(&format!(
-        "Answer with Polylogue's MCP `rows` operation (tool `polylogue_write`): `selection` and `replies_to` both name `assertion:{ping}@{ping}`; use a `note` step with `as: finding` and your answer as `text`. Reach the sender with a `send` step (tool `polylogue_act`)."
+        "Answer with Polylogue's MCP `rows` operation (tool `polylogue_write`): `selection` and `replies_to` both name `annotation:{ping}@{ping}`; use a `note` step with `as: finding` and your answer as `text`. Reach the sender with a `send` step (tool `polylogue_act`)."
     ));
     pack
 }
@@ -1119,7 +1120,7 @@ fn start_session(
 /// work.
 fn role_text(role: &Role, text: &str) -> String {
     format!(
-        "You run as the role `{}` (assertion:{}):\n{}\n\n{}",
+        "You run as the role `{}` (annotation:{}):\n{}\n\n{}",
         role.name, role.assertion, role.instructions, text
     )
 }

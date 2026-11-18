@@ -78,7 +78,7 @@ impl Reader<'_> {
         ))?;
         let roles =
             serde_json::to_string(&roles.iter().map(|role| role.as_str()).collect::<Vec<_>>())?;
-        let mut rows = statement.query(params![reference.to_string(), roles])?;
+        let mut rows = statement.query(params![reference.stored_form(), roles])?;
         while let Some(row) = rows.next()? {
             self.check()?;
             let root = row.get::<_, String>(0)?;

@@ -290,8 +290,8 @@ fn selected_source(
             .locate(Some(message))?
             .is_some());
     }
-    let reference =
-        polylogue_model::Reference::parse(&source.reference).map_err(Error::not_yet_available)?;
+    let reference = polylogue_model::Reference::parse_stored(&source.reference)
+        .map_err(Error::not_yet_available)?;
     reader
         .selection_contains(selection, &reference, near)
         .map_err(Error::from)

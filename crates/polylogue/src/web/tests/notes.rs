@@ -139,10 +139,10 @@ async fn write_one(f: &Fixture, id: &str, line: Value) -> Value {
     command(f, "rows", id, line).await
 }
 async fn revise(f: &Fixture, id: &str, root: &str, base: &str, value: Value) {
-    command(f,"rows",id,json!({"selection":format!("assertion:{root}-1@{base}-1"),"steps":[{"verb":"edit","text":value}]})).await;
+    command(f,"rows",id,json!({"selection":format!("annotation:{root}-1@{base}-1"),"steps":[{"verb":"edit","text":value}]})).await;
 }
 async fn stored(f: &Fixture, root: &str, revision: &str) -> Assertion {
-    let reference = format!("assertion:{root}@{revision}");
+    let reference = format!("annotation:{root}@{revision}");
     // The original object-read oracle now checks the complete answer stream.
     // No deadline is lifted and no generated child is rewritten.
     let (status, bytes) = send_raw(
@@ -266,12 +266,12 @@ fn operator_edits_and_judgments_keep_earlier_revisions() {
             ("accept", "accepted", "checked"),
             ("reject", "rejected", "reconsidered"),
         ] {
-            command(&f, "rows", id, json!({"selection":"assertion:agent-1@agent-1","steps":[{"verb":"judge","verdict":if key == "accepted" {"accept"} else {"reject"},"reason":reason}]})).await;
+            command(&f, "rows", id, json!({"selection":"annotation:agent-1@agent-1","steps":[{"verb":"judge","verdict":if key == "accepted" {"accept"} else {"reject"},"reason":reason}]})).await;
         }
         // Judging the revision again revises the operator's judgment of it.
         let current = query(
             &f,
-            "annotations where kind:judgment about:\"assertion:agent-1@agent-1\"",
+            "annotations where kind:judgment about:\"annotation:agent-1@agent-1\"",
         )
         .await;
         assert_eq!(current["count"], 1, "{current}");
@@ -279,24 +279,24 @@ fn operator_edits_and_judgments_keep_earlier_revisions() {
         assert_eq!(
             query(
                 &f,
-                "annotations where kind:judgment current:* about:\"assertion:agent-1@agent-1\""
+                "annotations where kind:judgment current:* about:\"annotation:agent-1@agent-1\""
             )
             .await["count"],
             2
         );
         agent_write(
             &f,
-            crate::test_daemon::Call::new("rows", json!({"selection":"assertion:agent-1@agent-1", "steps":[{"verb":"edit","text":"new proposal"}]})).id("agent-new"),
+            crate::test_daemon::Call::new("rows", json!({"selection":"annotation:agent-1@agent-1", "steps":[{"verb":"edit","text":"new proposal"}]})).id("agent-new"),
         );
         let pending = query(&f, "annotations where agent:true judged:unknown").await;
         assert_eq!(pending["count"], 1);
         assert_eq!(pending["rows"][0]["id"], "agent-new-1");
-        let retry = command(&f,"rows","reject",json!({"selection":"assertion:agent-1@agent-1","steps":[{"verb":"judge","verdict":"reject","reason":"reconsidered"}]})).await;
+        let retry = command(&f,"rows","reject",json!({"selection":"annotation:agent-1@agent-1","steps":[{"verb":"judge","verdict":"reject","reason":"reconsidered"}]})).await;
         assert_eq!(retry["repeat"], true);
         assert_eq!(
             query(
                 &f,
-                "annotations where kind:judgment current:* about:\"assertion:agent-1@agent-1\""
+                "annotations where kind:judgment current:* about:\"annotation:agent-1@agent-1\""
             )
             .await["count"],
             2
@@ -305,7 +305,7 @@ fn operator_edits_and_judgments_keep_earlier_revisions() {
             &f,
             "rows",
             "withdraw-agent",
-            json!({"selection":"assertion:agent-1@agent-new-1","steps":[{"verb":"withdraw","reason":"closed"}]}),
+            json!({"selection":"annotation:agent-1@agent-new-1","steps":[{"verb":"withdraw","reason":"closed"}]}),
         )
         .await;
         assert_eq!(
@@ -354,7 +354,7 @@ fn selected_current_and_kept_rows_have_distinct_populations() {
         assert_eq!(result["targets"], 1);
         assert_eq!(
             about(&stored(&f, "bulk-1", "bulk-1").await),
-            vec!["assertion:question-1@question-1"]
+            vec!["annotation:question-1@question-1"]
         );
         write_one(
             &f,
@@ -370,7 +370,7 @@ fn selected_current_and_kept_rows_have_distinct_populations() {
         assert_eq!(
             query(
                 &f,
-                "annotations where about:\"assertion:question-1@question-1\""
+                "annotations where about:\"annotation:question-1@question-1\""
             )
             .await["count"],
             1
@@ -402,7 +402,7 @@ fn selected_current_and_kept_rows_have_distinct_populations() {
         assert_eq!(command(&f, "rows", "fixed", args).await["repeat"], true);
         assert_eq!(
             about(&stored(&f, "fixed-1", "fixed-1").await),
-            vec!["assertion:question-1@question-1"]
+            vec!["annotation:question-1@question-1"]
         );
     });
 }
@@ -419,7 +419,7 @@ fn editing_keyed_assertions_preserves_relations_and_expiry() {
             &["repo:morrow".into()],
         );
         content["steps"][0]["valid_until"] = json!("2099-01-01T00:00:00Z");
-        content["steps"][0]["derived_from"] = json!(["assertion:other-1@other-1"]);
+        content["steps"][0]["derived_from"] = json!(["annotation:other-1@other-1"]);
         write_one(&f, "keyed", content).await;
         revise(&f, "keyed-edit", "keyed", "keyed", json!("edited")).await;
         let row = stored(&f, "keyed-1", "keyed-edit-1").await;
@@ -435,14 +435,14 @@ fn editing_keyed_assertions_preserves_relations_and_expiry() {
                 .links
                 .iter()
                 .any(|link| link.role == LinkRole::DerivedFrom
-                    && link.reference.to_string() == "assertion:other-1@other-1")
+                    && link.reference.to_string() == "annotation:other-1@other-1")
         );
         assert!(
             row.fact
                 .links
                 .iter()
                 .any(|link| link.role == LinkRole::Revises
-                    && link.reference.to_string() == "assertion:keyed-1@keyed-1")
+                    && link.reference.to_string() == "annotation:keyed-1@keyed-1")
         );
         assert_eq!(about(&row), vec!["repo:morrow"]);
     });
@@ -605,7 +605,7 @@ fn bulk_retry_uses_committed_targets_after_the_query_becomes_empty() {
             &f,
             "rows",
             "closed",
-            json!({"selection":"assertion:question-1@question-1","steps":[{"verb":"withdraw"}]}),
+            json!({"selection":"annotation:question-1@question-1","steps":[{"verb":"withdraw"}]}),
         )
         .await;
         assert_eq!(
@@ -617,7 +617,7 @@ fn bulk_retry_uses_committed_targets_after_the_query_becomes_empty() {
         assert_eq!(repeated["targets"], 1);
         assert_eq!(
             about(&stored(&f, "bulk-retry-1", "bulk-retry-1").await),
-            vec!["assertion:question-1@question-1"]
+            vec!["annotation:question-1@question-1"]
         );
         for field in ["selection", "steps"] {
             let mut changed = args.clone();
@@ -667,7 +667,7 @@ fn assertion_fields_and_saved_query_edits_keep_metadata() {
                 .links
                 .iter()
                 .any(|link| link.role == LinkRole::Revises
-                    && link.reference.to_string() == "assertion:Saved:Case-1@Saved:Case-1")
+                    && link.reference.to_string() == "annotation:Saved:Case-1@Saved:Case-1")
         );
         for field in ["derived_from", "valid_until"] {
             let mut invalid = note("invalid");

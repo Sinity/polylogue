@@ -52,7 +52,7 @@ fn direct_assertion(
         .assertion(revision)?
         .ok_or_else(|| Error::not_found(format!("no assertion {reference}")))?;
     let record = Record::Assertion(Box::new(polylogue_model::assertion::AssertionRecord {
-        reference: format!("assertion:{}@{}", row.fact.root, row.fact.id),
+        reference: row.fact.reference().stored_form(),
         assertion: row.fact,
     }));
     visit(record, LayoutFacts::default())

@@ -12,7 +12,7 @@ fn statement(kind: AssertionKind, target: &str, value: &str) -> NewAssertion {
         value: Some(Json::String(value.into())),
         links: vec![NewAssertionLink {
             role: LinkRole::About,
-            reference: Reference::parse(target).unwrap(),
+            reference: Reference::parse_stored(target).unwrap(),
         }],
         valid_until: None,
     }

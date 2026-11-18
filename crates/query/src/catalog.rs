@@ -192,8 +192,24 @@ fn build(origins: &[String]) -> Catalog {
 
 pub use query_language::catalog::{AGGREGATES, FUNCTIONS, TRANSFORMS};
 pub use query_language::complete::{Completion, CompletionKind};
+/// Completion uses surface names without changing the catalog of stored bindings.
+pub fn surface_references(catalog: &mut Catalog) {
+    catalog.references.retain(|reference| {
+        !matches!(reference,
+        ReferenceForm::Prefix { prefix, .. }
+            if polylogue_model::AUTHORED_REFERENCE_SPELLINGS.iter()
+                .any(|(stored, _)| prefix == &format!("{stored}:")))
+    });
+    catalog.references.extend(
+        polylogue_model::AUTHORED_REFERENCE_SPELLINGS
+            .into_iter()
+            .map(|(_, surface)| ReferenceForm::prefix(format!("{surface}:"))),
+    );
+}
 pub fn complete(text: &str, position: usize, catalog: &Catalog) -> Vec<Completion> {
-    query_language::complete::complete(text, position, catalog)
+    let mut surface = catalog.clone();
+    surface_references(&mut surface);
+    query_language::complete::complete(text, position, &surface)
 }
 
 /// The row domain a read target selects; every target has one.

@@ -226,7 +226,7 @@ fn typed_setting_answer_and_snapshot_share_defaults_scope_and_authored_value() {
     );
     assert_eq!(
         setting.authored.unwrap().reference,
-        polylogue_model::Reference::parse("assertion:setting-on@setting-on").unwrap()
+        polylogue_model::Reference::parse_stored("assertion:setting-on@setting-on").unwrap()
     );
     let snapshot = reader.settings_snapshot("synthetic-machine").unwrap();
     assert!(snapshot.browser_actions().unwrap());

@@ -80,7 +80,7 @@ fn scope_resolution_uses_accepting_host_and_rejects_archive_overrides() {
 
 #[test]
 fn setting_conflict_picks_no_default_and_spares_other_keys() {
-    let reference = |text: &str| crate::Reference::parse(text).unwrap();
+    let reference = |text: &str| crate::Reference::parse_stored(text).unwrap();
     let conflict = vec![
         reference("assertion:setting@left"),
         reference("assertion:setting@right"),

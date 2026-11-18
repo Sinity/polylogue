@@ -135,7 +135,7 @@ fn mcp_step_failure_keeps_undo_and_skipped_steps() {
         answer.value().unwrap()["reply"]["steps"][2]["outcome"]["status"],
         "not_run"
     );
-    let undo = r"printf '%s\n' 'assertion:step-failure-1@step-failure-1' | polylogue --request-id step-failure-1-undo - withdraw";
+    let undo = r"printf '%s\n' 'annotation:step-failure-1@step-failure-1' | polylogue --request-id step-failure-1-undo - withdraw";
     let reports = &answer.value().unwrap()["reply"]["steps"];
     assert_eq!(reports[0]["outcome"]["undo"], json!([undo]));
     assert_eq!(reports[1]["outcome"]["error"]["kind"], "bad_request");

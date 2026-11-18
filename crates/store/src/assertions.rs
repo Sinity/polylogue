@@ -63,7 +63,7 @@ fn links(conn: &Connection, id: &str) -> Result<Vec<AssertionLink>> {
         let quote: Option<String> = row.get(3)?;
         result.push(AssertionLink {
             role: row.name::<LinkRole>(0)?,
-            reference: Reference::parse(&reference).map_err(|error| {
+            reference: Reference::parse_stored(&reference).map_err(|error| {
                 StoreError::stored(1, format!("reference {reference:?}: {error}"))
             })?,
             seen_hash: row.optional_hash(2)?.map(BlobHash),
@@ -315,7 +315,7 @@ pub(crate) fn insert(
             params![
                 assertion.id,
                 link.role.as_str(),
-                link.reference.to_string(),
+                link.reference.stored_form(),
                 link.seen_hash.map(|hash| hash.0.to_vec()),
                 link.quote.as_ref().map(serde_json::to_string).transpose()?,
             ],
@@ -427,7 +427,7 @@ impl<'a> StoredLinks<'a> {
         let mut statement = self.conn.prepare_cached(&self.source.sql(
             "SELECT a.root,a.id,a.created_at FROM @source.link l JOIN @source.assertion a ON a.id=l.record WHERE l.ref=?1 AND l.role=?2 ORDER BY a.root,a.id",
         ))?;
-        let mut rows = statement.query(params![reference.to_string(), role.as_str()])?;
+        let mut rows = statement.query(params![reference.stored_form(), role.as_str()])?;
         let mut incoming = Vec::new();
         while let Some(row) = rows.next()? {
             check_read()?;
@@ -475,7 +475,7 @@ impl Links for StoredLinks<'_> {
         let mut targets = Vec::new();
         while let Some(row) = rows.next()? {
             let text: String = row.get(0)?;
-            if let Reference::Assertion(revision) = Reference::parse(&text)
+            if let Reference::Assertion(revision) = Reference::parse_stored(&text)
                 .map_err(|error| StoreError::stored(0, format!("reference {text:?}: {error}")))?
             {
                 targets.push(target(&revision));

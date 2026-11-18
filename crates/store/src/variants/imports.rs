@@ -45,7 +45,7 @@ fn insert(
     counter: i64,
 ) -> Result<()> {
     let source = Source::of(conn)?;
-    conn.execute(&source.sql("INSERT OR IGNORE INTO @source.variant_import(ref,variant,observed,input,chain,machine,actor,at,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)"),params![reference.to_string(),variant,observed,attribution.input,attribution.chain,attribution.machine,attribution.actor.to_string(),attribution.at.to_string(),counter])?;
+    conn.execute(&source.sql("INSERT OR IGNORE INTO @source.variant_import(ref,variant,observed,input,chain,machine,actor,at,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)"),params![reference.stored_form(),variant,observed,attribution.input,attribution.chain,attribution.machine,attribution.actor.to_string(),attribution.at.to_string(),counter])?;
     Ok(())
 }
 
@@ -91,7 +91,7 @@ pub(super) fn copy(from: &Connection, to: &Connection) -> Result<()> {
         let reference: String = row.get(0)?;
         let variant: String = row.get(1)?;
         let at: String = row.get(7)?;
-        let reference = Reference::parse(&reference)
+        let reference = Reference::parse_stored(&reference)
             .map_err(|error| StoreError::stored(0, error.to_string()))?;
         let attribution = ImportAttribution {
             input: row.get(3)?,

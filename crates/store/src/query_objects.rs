@@ -384,7 +384,7 @@ pub(crate) fn apply_run(
         crate::StoreError::invalid("query run order exceeds SQLite's integer range")
     })?;
     let object_ref = match &run.binding {
-        RunBinding::OriginalObject { execution } => Some(execution.reference.to_string()),
+        RunBinding::OriginalObject { execution } => Some(execution.reference.stored_form()),
         _ => None,
     };
     conn.execute(

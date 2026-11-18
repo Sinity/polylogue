@@ -158,7 +158,7 @@ fn advisory_selection_requires_a_current_operator_judgment_and_scoped_file() {
     assert!(
         prepared
             .text
-            .contains(&format!("polylogue assertion:{reference} read"))
+            .contains(&format!("polylogue annotation:{reference} read"))
     );
     assert!(selected(&w, "Inspect src/parser.rs2", CWD).empty);
     assert!(!selected(&w, "Inspect ../src/parser.rs", "/synthetic/repo/subdir").empty);

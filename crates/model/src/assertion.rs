@@ -340,13 +340,19 @@ pub enum AssertionError {
 }
 
 impl AssertionFact {
+    pub fn reference(&self) -> crate::Reference {
+        crate::Reference::Assertion(crate::RevisionReference::exact(
+            self.root.clone(),
+            self.id.clone(),
+        ))
+    }
     /// Link order does not change the identity of an immutable assertion.
     /// Times are kept to the millisecond, as they are stored.
     pub fn canonicalized(&self) -> Result<Self, AssertionError> {
         self.validate()?;
         let mut fact = self.clone();
         fact.links
-            .sort_by_cached_key(|link| (link.role.as_str(), link.reference.to_string()));
+            .sort_by_cached_key(|link| (link.role.as_str(), link.reference.stored_form()));
         let millisecond =
             |time: Timestamp| Timestamp::from_unix_ms(time.unix_ms()).ok_or(AssertionError::Time);
         fact.created_at = fact.created_at.map(millisecond).transpose()?;

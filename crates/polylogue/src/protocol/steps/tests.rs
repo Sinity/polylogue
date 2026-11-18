@@ -23,7 +23,7 @@ fn step_parse_reads_keywords_and_relations_into_the_typed_step() {
         "--as",
         "finding",
         "--supports",
-        "assertion:a1,assertion:a2",
+        "annotation:a1,annotation:a2",
     ]
     .map(String::from);
     let parsed = steps().parse_step("note", &words).unwrap();
@@ -32,7 +32,7 @@ fn step_parse_reads_keywords_and_relations_into_the_typed_step() {
         Step::Note(Box::new(NoteStep {
             text: "flaky clock".into(),
             kind: Some("finding".into()),
-            supports: vec!["assertion:a1".into(), "assertion:a2".into()],
+            supports: vec!["annotation:a1".into(), "annotation:a2".into()],
             ..NoteStep::default()
         }))
     );

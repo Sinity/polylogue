@@ -20,7 +20,7 @@ pub(crate) fn grammar(text: &str, position: usize) -> Vec<Completion> {
         return vec![];
     }
     let catalog = base_catalog();
-    query_language::complete::complete(text, position, &catalog)
+    polylogue_query::catalog::complete(text, position, &catalog)
 }
 /// Completion opens only the supplied derived catalog, never the archive.
 pub(crate) fn complete_file(
@@ -44,6 +44,7 @@ fn complete_snapshot(
         return Ok(grammar(text, position));
     };
     let mut catalog = reader.catalog()?;
+    polylogue_query::catalog::surface_references(&mut catalog);
     let mut loaded = Vec::new();
     loop {
         let before = catalog.source_outputs.len();

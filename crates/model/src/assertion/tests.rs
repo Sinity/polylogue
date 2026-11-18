@@ -118,7 +118,8 @@ fn assertion_text_keeps_declared_fields_and_empty_strings() {
             links: if kind == AssertionKind::Judgment {
                 vec![AssertionLink {
                     role: LinkRole::About,
-                    reference: crate::Reference::parse("assertion:subject@revision").unwrap(),
+                    reference: crate::Reference::parse_stored("assertion:subject@revision")
+                        .unwrap(),
                     seen_hash: None,
                     quote: None,
                 }]
@@ -205,4 +206,26 @@ fn authored_unknown_time_and_known_wire_identity_round_trip() {
     let wire = serde_json::to_value(&fact).unwrap();
     assert_eq!(wire["created_at"], serde_json::to_value(time).unwrap());
     assert_eq!(serde_json::from_value::<AssertionFact>(wire).unwrap(), fact);
+}
+
+#[test]
+fn surface_reference_names_do_not_reorder_or_respell_canonical_links() {
+    let original = serde_json::json!({
+        "id":"named-note","root":"named-note","kind":"note","key":null,
+        "value":"exact note","author":"unattributed","via":"import","machine":"synthetic",
+        "created_at":"2026-01-01T00:00:00Z","valid_until":null,
+        "links":[
+            {"role":"about","reference":"assertion:root@revision","seen_hash":null},
+            {"role":"about","reference":"url:https://example.test/source","seen_hash":null},
+            {"role":"about","reference":"variant:root@revision#2","seen_hash":null}
+        ]
+    });
+    let mut fact: AssertionFact = serde_json::from_value(original.clone()).unwrap();
+    fact.links.reverse();
+    let canonical = fact.canonicalized().unwrap();
+    assert_eq!(serde_json::to_value(&canonical).unwrap(), original);
+    assert_eq!(
+        canonical.links[2].reference.to_string(),
+        "alternate:root@revision#2"
+    );
 }

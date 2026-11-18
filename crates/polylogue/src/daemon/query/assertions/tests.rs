@@ -125,7 +125,7 @@ fn notes_are_listed_by_their_current_revision_and_withdrawals_leave_them_out() {
         &w,
         "018f0000-0000-7000-8000-000000000005",
         polylogue_model::user::UserWrite::WithdrawAssertions {
-            targets: vec![Reference::parse(&format!("assertion:{first}")).unwrap()],
+            targets: vec![Reference::parse_stored(&format!("assertion:{first}")).unwrap()],
             reason: Some("superseded".into()),
         },
     );
@@ -140,7 +140,7 @@ fn notes_are_listed_by_their_current_revision_and_withdrawals_leave_them_out() {
             &list(
                 &reader,
                 &format!(
-                    "{about} withdrawn:true assertion:{first}@018f0000-0000-7000-8000-000000000002"
+                    "{about} withdrawn:true annotation:{first}@018f0000-0000-7000-8000-000000000002"
                 ),
                 &context
             )

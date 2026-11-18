@@ -43,7 +43,7 @@ fn fragment(version: BlobHash, text: &str, total: u64, source: &str) -> Record {
         },
     };
     Record::TextFragment(Box::new(TextFragmentRecord {
-        reference: fragment.reference().to_string(),
+        reference: fragment.reference().stored_form(),
         commit: 17,
         fragment,
     }))

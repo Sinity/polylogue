@@ -239,9 +239,7 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
         Product::RestoredRequest { prepared, .. } => {
             Some(format!("request:{}", prepared.request.id))
         }
-        Product::RestoredAssertion { fact, .. } => {
-            Some(format!("assertion:{}@{}", fact.root, fact.id))
-        }
+        Product::RestoredAssertion { fact, .. } => Some(fact.reference().stored_form()),
         Product::Coverage(coverage) => Some(format!("coverage:{}", coverage.machine)),
         Product::Query { object } => Some(format!("query:{}", object.id)),
         Product::QueryRun { run } => Some(format!("query-run:{}", run.id)),

@@ -20,7 +20,7 @@ fn fact(root: &str, id: &str, kind: AssertionKind, links: &[(LinkRole, &str)]) -
             .iter()
             .map(|(role, reference)| AssertionLink {
                 role: *role,
-                reference: Reference::parse(reference).unwrap(),
+                reference: Reference::parse_stored(reference).unwrap(),
                 seen_hash: None,
                 quote: None,
             })
@@ -96,7 +96,7 @@ fn query_and_typed_about_share_forks_and_withdrawal() {
     let mut associated = Vec::new();
     let flow = pinned
         .visit_assertion_references_linked(
-            &Reference::parse(about.1).unwrap(),
+            &Reference::parse_stored(about.1).unwrap(),
             &[polylogue_model::assertion::LinkRole::About],
             |row| {
                 associated.push(row.revision.expect("linked revisions are exact"));

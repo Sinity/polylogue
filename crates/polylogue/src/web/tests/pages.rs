@@ -315,7 +315,7 @@ fn exact_reference_routes_do_not_substitute_prefixes_or_current_note_revisions()
         let page = read_page(&r, &exact, &[]).await;
         assert_eq!(page.document.header.target, exact);
         // A message prefix and a note prefix remain absent exact references.
-        for path in ["/m/claude-code:u", "/a/assertion:exact@exact"] {
+        for path in ["/m/claude-code:u", "/a/annotation:exact@exact"] {
             assert_eq!(send_html(&r, path).await.0, StatusCode::NOT_FOUND, "{path}");
         }
     });

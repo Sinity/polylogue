@@ -102,6 +102,8 @@ pub enum ReferenceError {
     NoKind(String),
     #[error("{text} is a Sinex reference; write {global}")]
     SinexLocal { text: String, global: String },
+    #[error("{written} is the stored spelling; try {corrected}")]
+    StoredSpelling { written: String, corrected: String },
     #[error("reference {0:?} has an unknown kind")]
     UnknownKind(String),
     #[error("reference {0:?}: {1}")]
@@ -113,6 +115,9 @@ pub enum ReferenceError {
 }
 /// Sinex citation kinds whose local forms need a global correction in Polylogue.
 pub const SINEX_LOCAL_KINDS: [&str; 5] = ["ev", "record", "key", "at", "window"];
+/// Stored and surface names of authored reference kinds, respectively.
+pub const AUTHORED_REFERENCE_SPELLINGS: [(&str, &str); 2] =
+    [("assertion", "annotation"), ("variant", "alternate")];
 
 impl Reference {
     /// An exact question identity has canonical lowercase hexadecimal spelling
@@ -128,7 +133,25 @@ impl Reference {
             .ok()
             .map(|hash| query_language::identity::QuestionId(hash.0))
     }
+    /// Parse a reference written by a person or an agent.
     pub fn parse(text: &str) -> Result<Self, ReferenceError> {
+        Self::parse_form(text, false).map_err(|error| {
+            if matches!(error, ReferenceError::StoredSpelling { .. })
+                && let Ok(reference) = Self::parse_stored(text)
+            {
+                return ReferenceError::StoredSpelling {
+                    written: text.into(),
+                    corrected: reference.to_string(),
+                };
+            }
+            error
+        })
+    }
+    /// Parse the exact spelling used by stored records and captured bindings.
+    pub fn parse_stored(text: &str) -> Result<Self, ReferenceError> {
+        Self::parse_form(text, true)
+    }
+    fn parse_form(text: &str, stored: bool) -> Result<Self, ReferenceError> {
         let (kind, rest) = text
             .split_once(':')
             .ok_or_else(|| ReferenceError::NoKind(text.into()))?;
@@ -191,8 +214,22 @@ impl Reference {
             "run" => Self::Run(RunId::parse(rest).map_err(id)?),
             "request" => Self::Request(nonempty(rest)?),
             "attachment" => Self::Attachment(nonempty(rest)?),
-            "assertion" => Self::Assertion(revision(rest)?),
-            "variant" => {
+            "assertion" | "variant" if !stored => {
+                let surface = if kind == "assertion" {
+                    "annotation"
+                } else {
+                    "alternate"
+                };
+                return Err(ReferenceError::StoredSpelling {
+                    written: text.into(),
+                    corrected: format!("{surface}:{rest}"),
+                });
+            }
+            "annotation" | "alternate" if stored => {
+                return Err(ReferenceError::UnknownKind(text.into()));
+            }
+            "assertion" | "annotation" => Self::Assertion(revision(rest)?),
+            "variant" | "alternate" => {
                 let (reference, part) = match rest.rsplit_once('#') {
                     Some((reference, part)) => (reference, Some(number(part)?)),
                     None => (rest, None),
@@ -286,7 +323,7 @@ impl Reference {
                 if start > end {
                     return Err(invalid("span end precedes its start"));
                 }
-                let container = Box::new(Self::parse(container)?);
+                let container = Box::new(Self::parse_form(container, stored)?);
                 if !matches!(
                     container.as_ref(),
                     Self::Message(_)
@@ -306,7 +343,7 @@ impl Reference {
                         }
                 ) {
                     return Err(invalid(
-                        "span container must be a message, document, block, exact assertion or exact variant part",
+                        "span container must be a message, document, block, exact annotation or exact alternate part",
                     ));
                 }
                 Self::Span {
@@ -318,6 +355,29 @@ impl Reference {
             }
             _ => return Err(ReferenceError::UnknownKind(text.into())),
         })
+    }
+    /// Canonical storage spelling; display names never enter content identities.
+    pub fn stored_form(&self) -> String {
+        match self {
+            Self::Assertion(revision) => format!("assertion:{revision}"),
+            Self::Variant { revision, part } => match part {
+                Some(n) => format!("variant:{revision}#{n}"),
+                None => format!("variant:{revision}"),
+            },
+            Self::Span {
+                container,
+                unit,
+                start,
+                end,
+            } => {
+                format!(
+                    "span:{}#{}={start}-{end}",
+                    container.stored_form(),
+                    unit.as_str()
+                )
+            }
+            _ => self.to_string(),
+        }
     }
     /// The direct container named by this address. Message/session membership
     /// and relationships requiring stored data are resolved by the store.
@@ -360,9 +420,9 @@ impl fmt::Display for Reference {
             Self::Run(id) => write!(f, "run:{id}"),
             Self::Request(id) => write!(f, "request:{id}"),
             Self::Attachment(id) => write!(f, "attachment:{id}"),
-            Self::Assertion(revision) => write!(f, "assertion:{revision}"),
+            Self::Assertion(revision) => write!(f, "annotation:{revision}"),
             Self::Variant { revision, part } => {
-                write!(f, "variant:{revision}")?;
+                write!(f, "alternate:{revision}")?;
                 if let Some(n) = part {
                     write!(f, "#{n}")?;
                 }
@@ -436,12 +496,12 @@ impl std::str::FromStr for Reference {
 }
 impl Serialize for Reference {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_newtype_struct("polylogue_reference", &self.to_string())
+        s.serialize_newtype_struct("polylogue_reference", &self.stored_form())
     }
 }
 impl<'de> Deserialize<'de> for Reference {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        Self::parse(&String::deserialize(d)?).map_err(serde::de::Error::custom)
+        Self::parse_stored(&String::deserialize(d)?).map_err(serde::de::Error::custom)
     }
 }
 #[cfg(test)]

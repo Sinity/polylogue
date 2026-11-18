@@ -110,7 +110,7 @@ fn failing_step_stops_line_and_prints_undo() {
     assert_eq!(
         steps[0]["outcome"]["undo"],
         json!([
-            r"printf '%s\n' 'assertion:line-1@line-1' | polylogue --request-id line-1-undo - withdraw"
+            r"printf '%s\n' 'annotation:line-1@line-1' | polylogue --request-id line-1-undo - withdraw"
         ])
     );
     assert_eq!(steps[1]["outcome"]["error"]["kind"], "bad_request");
@@ -501,7 +501,7 @@ fn stream_prefix_failure_keeps_undo_and_does_not_start_a_read() {
         assert_eq!(
             reports[0]["outcome"]["undo"],
             json!([
-                r"printf '%s\n' 'assertion:prefix-1@prefix-1' | polylogue --request-id prefix-1-undo - withdraw"
+                r"printf '%s\n' 'annotation:prefix-1@prefix-1' | polylogue --request-id prefix-1-undo - withdraw"
             ])
         );
         assert_eq!(reports[0]["outcome"]["reply"]["reply"]["repeat"], retry);
@@ -630,7 +630,7 @@ fn session_notes_are_visible_in_pages_and_hide_or_withdraw_removes_them() {
     let withdrawn = steps(
         &daemon,
         "withdraw-note",
-        json!({"selection":"assertion:page-note-1",
+        json!({"selection":"annotation:page-note-1",
         "steps":[{"verb":"withdraw"}]}),
     );
     assert_eq!(withdrawn[0]["outcome"]["status"], "done");
@@ -1062,11 +1062,11 @@ fn a_save_retry_retains_original_child_revisions_and_undo_after_definition_chang
     assert_eq!(undo.len(), 1);
     let command = undo[0].as_str().unwrap();
     assert!(
-        command.contains("assertion:first-save-1.1@first-save-1.1"),
+        command.contains("annotation:first-save-1.1@first-save-1.1"),
         "{command}"
     );
     assert!(
-        command.contains("assertion:first-save-1.2@first-save-1.2"),
+        command.contains("annotation:first-save-1.2@first-save-1.2"),
         "{command}"
     );
     assert!(command.contains("first-save-1-undo"), "{command}");

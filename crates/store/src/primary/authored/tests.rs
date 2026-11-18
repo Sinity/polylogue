@@ -214,7 +214,7 @@ fn saved_family_and_revision_stay_fixed_across_replay() {
     assert_eq!(third.effect.assertions[0].root, "first");
     assert!(third.effect.assertions[0].links.iter().any(|link| link.role
         == polylogue_model::assertion::LinkRole::Revises
-        && link.reference == Reference::parse("assertion:first@second").unwrap()));
+        && link.reference == Reference::parse_stored("assertion:first@second").unwrap()));
     assert_eq!(count(&conn, "assertion"), 0);
     let mut rebuilt = cache();
     commit(&mut rebuilt, &third, 1);
@@ -1608,7 +1608,7 @@ fn sinex_reference_keeps_authored_request_identity_on_replay() {
     .into_iter()
     .map(|text| NewAssertionLink {
         role: LinkRole::About,
-        reference: Reference::parse(text).unwrap(),
+        reference: Reference::parse_stored(text).unwrap(),
     })
     .collect();
     let r = request(

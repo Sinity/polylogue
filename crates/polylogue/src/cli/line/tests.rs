@@ -409,3 +409,32 @@ fn every_docs_example_parses() {
             .collect()
     );
 }
+
+#[test]
+fn stored_reference_spellings_reach_the_normal_selection_correction() {
+    for (written, corrected) in [
+        ("assertion:root@revision", "annotation:root@revision"),
+        ("variant:root@revision#2", "alternate:root@revision#2"),
+        (
+            "span:assertion:root@revision#c=0-3",
+            "span:annotation:root@revision#c=0-3",
+        ),
+    ] {
+        let line = parsed(&[written, "read"]);
+        assert_eq!(line.first.rule(), 7);
+        assert_eq!(line.selection, Some(SelectionWord::Text(written.into())));
+        assert_eq!(line.steps[0].verb, "read");
+        let error =
+            polylogue_query::plan::prepare(written, &polylogue_query::Bindings::default(), |_| {
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains(corrected), "{error}");
+        assert!(error.to_string().contains("stored spelling"), "{error}");
+    }
+    for surface in ["annotation:root@revision", "alternate:root@revision#2"] {
+        let line = parsed(&[surface, "read"]);
+        assert_eq!(line.first.rule(), 7);
+        assert_eq!(line.selection, Some(SelectionWord::Text(surface.into())));
+    }
+}

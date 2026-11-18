@@ -144,7 +144,7 @@ fn variant_application_keeps_forks_and_restores_base() {
                 .iter()
                 .map(|reference| AssertionLink {
                     role: LinkRole::Withdraws,
-                    reference: Reference::parse(reference).unwrap(),
+                    reference: Reference::parse_stored(reference).unwrap(),
                     seen_hash: None,
                     quote: None,
                 })

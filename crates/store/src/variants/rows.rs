@@ -104,7 +104,10 @@ pub(super) fn insert(conn: &Connection, v: &Variant, counter: i64) -> Result<()>
         return if existing == expected {
             Ok(())
         } else {
-            Err(StoreError::Conflict(format!("variant:{}@{}", v.root, v.id)))
+            Err(StoreError::Conflict(format!(
+                "alternate:{}@{}",
+                v.root, v.id
+            )))
         };
     }
     let source = Source::of(conn)?;
@@ -117,7 +120,7 @@ pub(super) fn insert_part(conn: &Connection, p: &VariantPart) -> Result<()> {
             Ok(())
         } else {
             Err(StoreError::Conflict(format!(
-                "variant:{}#{}",
+                "alternate:{}#{}",
                 p.variant, p.n
             )))
         };

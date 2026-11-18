@@ -12,7 +12,7 @@ fn db() -> Connection {
     conn
 }
 fn reference(value: &str) -> Reference {
-    Reference::parse(value).unwrap()
+    Reference::parse_stored(value).unwrap()
 }
 fn request(id: &str) -> UserRequest {
     UserRequest {
@@ -92,7 +92,7 @@ fn cardinality_and_stale_base_use_graph_after_each_overlay_change() {
         SettingMode::Standalone,
     );
     assert!(
-        matches!(stale,Err(StoreError::Stale {current,..}) if current==vec!["assertion:first@second"])
+        matches!(stale,Err(StoreError::Stale {current,..}) if current==vec!["annotation:first@second"])
     );
     let withdrawal = NewAssertion {
         kind: AssertionKind::Withdrawal,
@@ -198,7 +198,7 @@ fn recorded_apply_keeps_forks_until_the_next_live_write() {
         .map(|link| link.reference.to_string())
         .collect();
     revised.sort();
-    assert_eq!(revised, ["assertion:one@one", "assertion:other@other"]);
+    assert_eq!(revised, ["annotation:one@one", "annotation:other@other"]);
 }
 #[test]
 fn sinex_fact_keeps_its_captured_source_and_hash() {

@@ -278,8 +278,8 @@ fn saved_forks_do_not_poison_unit_queries() {
     prepare("sessions", &snapshot, |_| Ok(())).unwrap();
     let fork = snapshot.saved.get_mut("alias").unwrap();
     fork[0].conflicts = vec![
-        polylogue_model::Reference::parse("assertion:root-b@left").unwrap(),
-        polylogue_model::Reference::parse("assertion:root-b@right").unwrap(),
+        polylogue_model::Reference::parse_stored("assertion:root-b@left").unwrap(),
+        polylogue_model::Reference::parse_stored("assertion:root-b@right").unwrap(),
     ];
     let error = prepare("query:alias", &snapshot, |_| Ok(()))
         .unwrap_err()
@@ -457,5 +457,65 @@ fn an_original_authored_binding_keeps_identity_across_catalog_changes() {
     assert_eq!(
         serde_json::to_value(&execution).unwrap(),
         original["write"]["retained"]["binding"],
+    );
+}
+
+#[test]
+fn human_reference_spellings_bind_the_existing_stored_question_identity() {
+    let catalog = crate::catalog::catalog(&[]);
+    for (surface, stored) in [
+        (
+            "annotation:root@revision",
+            "annotations where assertion:root@revision",
+        ),
+        (
+            "annotations where about:annotation:root@revision",
+            "annotations where about:assertion:root@revision",
+        ),
+        (
+            "annotations where links_to:alternate:root@revision#2",
+            "annotations where links_to:variant:root@revision#2",
+        ),
+        (
+            "annotations where reference:annotation:root@revision",
+            "annotations where reference:assertion:root@revision",
+        ),
+        (
+            "alternates where source:annotation:root@revision",
+            "alternates where source:assertion:root@revision",
+        ),
+        (
+            "deliveries where refs:annotation:root@revision",
+            "deliveries where refs:assertion:root@revision",
+        ),
+        (
+            "deliveries where left_out:annotation:root@revision",
+            "deliveries where left_out:assertion:root@revision",
+        ),
+        (
+            "changes where ref:annotation:root@revision",
+            "changes where ref:assertion:root@revision",
+        ),
+    ] {
+        let plan = prepare(surface, &Bindings::default(), |_| Ok(())).unwrap();
+        // Explicit canonical input bypasses the surface normalization being tested.
+        let old = query_language::parse::parse(stored, &catalog).unwrap();
+        let expected =
+            query_language::identity::question_id(&old, &catalog, &BTreeMap::new()).unwrap();
+        assert_eq!(plan.question_id(), expected, "{surface}");
+        let object = plan.query_object().unwrap();
+        let restored = replay(&object, catalog_fingerprint()).unwrap();
+        assert_eq!(restored.query_object().unwrap(), object);
+    }
+    let plan = prepare(
+        "annotations where root:alternate:opaque",
+        &Bindings::default(),
+        |_| Ok(()),
+    )
+    .unwrap();
+    let text = serde_json::to_string(plan.identity_query()).unwrap();
+    assert!(
+        text.contains("alternate:opaque"),
+        "opaque root IDs keep their bytes"
     );
 }

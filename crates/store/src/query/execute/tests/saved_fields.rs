@@ -39,7 +39,7 @@ fn statement(kind: AssertionKind, value: &str, links: &[(LinkRole, String)]) -> 
             .iter()
             .map(|(role, r)| NewAssertionLink {
                 role: *role,
-                reference: Reference::parse(r).unwrap(),
+                reference: Reference::parse_stored(r).unwrap(),
             })
             .collect(),
     }
@@ -118,7 +118,7 @@ fn links_to_matches_any_revision() {
     assert_eq!(
         rows(
             &f,
-            &format!("annotations where links_to:assertion:{target}"),
+            &format!("annotations where links_to:annotation:{target}"),
             &["id"]
         )[0]["id"],
         linked
@@ -196,7 +196,7 @@ fn answered_and_open_follow_links() {
         question
     );
     f.user(UserWrite::WithdrawAssertions {
-        targets: vec![Reference::parse(&format!("assertion:{blocker}@{blocker}")).unwrap()],
+        targets: vec![Reference::parse_stored(&format!("assertion:{blocker}@{blocker}")).unwrap()],
         reason: None,
     })
     .unwrap();
@@ -486,11 +486,11 @@ fn alternate_true_admits_alternate_text() {
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let reader = pool.reader().unwrap();
     let source_hash = reader
-        .reference_hash(&Reference::parse(source).unwrap())
+        .reference_hash(&Reference::parse_stored(source).unwrap())
         .unwrap()
         .unwrap();
     let of_hash = reader
-        .reference_hash(&Reference::parse(part).unwrap())
+        .reference_hash(&Reference::parse_stored(part).unwrap())
         .unwrap()
         .unwrap();
     drop(reader);
@@ -585,7 +585,7 @@ fn alternate_true_admits_alternate_text() {
             .user(operator_request(
                 id.into(),
                 UserWrite::WithdrawAssertions {
-                    targets: vec![Reference::parse(target).unwrap()],
+                    targets: vec![Reference::parse_stored(target).unwrap()],
                     reason: None,
                 },
             ))
@@ -882,7 +882,7 @@ fn goal_stays_open_until_a_current_reply_is_accepted() {
             valid_until: None,
             links: vec![NewAssertionLink {
                 role: LinkRole::About,
-                reference: Reference::parse(&format!("assertion:{reply}@{reply}")).unwrap(),
+                reference: Reference::parse_stored(&format!("assertion:{reply}@{reply}")).unwrap(),
             }],
         }],
     })
