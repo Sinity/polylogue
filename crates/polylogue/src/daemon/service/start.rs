@@ -17,7 +17,7 @@ pub struct Runtime {
     pub(super) signals_stop: Option<polylogue_store::cancellation::Cancellation>,
     pub(super) signals: Option<JoinHandle<std::io::Result<()>>>,
     live_events_stop: Option<Sender<()>>,
-    live_events: Option<JoinHandle<()>>,
+    live_events: Option<JoinHandle<std::io::Result<()>>>,
     /// Records hosted-connection outcomes and runs resumes.
     acts: Option<JoinHandle<()>>,
     completion: Option<crate::completion_catalog::publisher::Publisher>,
@@ -44,7 +44,7 @@ impl Runtime {
             );
             let result = crate::signals::run(daemon, stopped);
             if let Err(error) = &result {
-                eprintln!("polylogue: signal worker: {error}");
+                crate::log::log!(error, "signal worker: {error}");
             }
             result
         })?;
@@ -148,14 +148,16 @@ impl Runtime {
             .executor
             .stop(crate::daemon::executor::STOP_WAIT);
         if let Some(started) = executor_started {
-            eprintln!(
-                "polylogue: shutdown executor drain finished in {:?}",
+            crate::log::log!(
+                info,
+                "shutdown executor drain finished in {:?}",
                 started.elapsed()
             );
         }
         if running > 0 {
-            eprintln!(
-                "polylogue: {running} request(s) did not stop within {} s; stopping without them",
+            crate::log::log!(
+                warning,
+                "{running} request(s) did not stop within {} s; stopping without them",
                 crate::daemon::executor::STOP_WAIT.as_secs()
             );
         }
@@ -175,10 +177,13 @@ impl Runtime {
         if let Some(stop) = self.live_events_stop.take() {
             let _ = stop.send(());
         }
-        if let Some(worker) = self.live_events.take()
-            && worker.join().is_err()
-        {
-            failure.get_or_insert_with(|| std::io::Error::other("live event worker panicked"));
+        if let Some(worker) = self.live_events.take() {
+            let result = worker
+                .join()
+                .unwrap_or_else(|_| Err(std::io::Error::other("live event worker panicked")));
+            if let Err(error) = result {
+                failure.get_or_insert(error);
+            }
         }
         if let Some(worker) = self.acts.take() {
             self.daemon.acts.stop_reports();
@@ -196,7 +201,7 @@ impl Runtime {
         }
         if let Some(engine) = self.engine.take() {
             let started = Instant::now();
-            eprintln!("polylogue: shutdown engine drain started");
+            crate::log::log!(info, "shutdown engine drain started");
             match engine.join() {
                 Ok((result, engine)) => {
                     if let Err(error) = result {
@@ -218,8 +223,9 @@ impl Runtime {
                     failure.get_or_insert_with(|| std::io::Error::other("loop thread panicked"));
                 }
             }
-            eprintln!(
-                "polylogue: shutdown engine drain finished in {:?}",
+            crate::log::log!(
+                info,
+                "shutdown engine drain finished in {:?}",
                 started.elapsed()
             );
         }
@@ -233,7 +239,7 @@ impl Runtime {
 impl Drop for Runtime {
     fn drop(&mut self) {
         if let Err(error) = self.shutdown() {
-            eprintln!("polylogue: shutdown: {error}");
+            crate::log::log!(error, "shutdown: {error}");
         }
     }
 }
@@ -373,6 +379,7 @@ pub fn start(
         warm,
         scope: crate::daemon::scope::SharedScopeIndex::default(),
         queued_deliveries: crate::daemon::queued_deliveries::QueuedDeliveries::default(),
+        live_spool: Default::default(),
         advisories: crate::advisory::Cooldowns::default(),
         acts: crate::live_acts::Acts::new(
             mail,

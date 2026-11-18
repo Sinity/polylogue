@@ -291,7 +291,7 @@ impl Drop for Supervisor {
     fn drop(&mut self) {
         self.started.take();
         if let Err(error) = self.join() {
-            eprintln!("polylogue: lifecycle: {error}");
+            crate::log::log!(error, "lifecycle: {error}");
         }
     }
 }
@@ -316,7 +316,7 @@ async fn supervise(
             signal = signals.next() => {
                 let signal = signal?;
                 if first_signal.is_some() { std::process::exit(128 + signal.number()); }
-                eprintln!("polylogue: stopping on {}", signal.name());
+                crate::log::log!(info, "stopping on {}", signal.name());
                 first_signal = Some(signal);
             }
             started = &mut receive => match started { Ok(started) => break started, Err(_) => return Ok(()) },
@@ -340,18 +340,18 @@ async fn supervise(
         }
     };
     if let Stop::Idle = &stop {
-        eprintln!("polylogue: the loop is idle; stopping");
+        crate::log::log!(info, "the loop is idle; stopping");
     }
     if let Stop::Signal(signal) = &stop {
         if first_signal.is_none() {
-            eprintln!("polylogue: stopping on {}", signal.name());
+            crate::log::log!(info, "stopping on {}", signal.name());
         }
         first_signal = Some(*signal);
     }
     if let Some(notifications) = &notifications
         && let Err(error) = notifications.send(b"STOPPING=1")
     {
-        eprintln!("polylogue: service stopping notification: {error}");
+        crate::log::log!(error, "service stopping notification: {error}");
     }
     let mut drained = tokio::task::spawn_blocking(move || drain(app));
     let result = loop {
@@ -479,18 +479,21 @@ async fn probe(archive: &polylogue_store::Archive, budget: Duration) -> bool {
 
 fn drain(mut app: Started) -> io::Result<()> {
     let started = std::time::Instant::now();
-    eprintln!(
-        "polylogue: shutdown started at {} ms since Unix epoch",
+    crate::log::log!(
+        info,
+        "shutdown started at {} ms since Unix epoch",
         app.runtime.daemon.clock.now_ms()
     );
     app.runtime.stop_accepting();
-    eprintln!(
-        "polylogue: shutdown stopped accepting requests at {:?}",
+    crate::log::log!(
+        info,
+        "shutdown stopped accepting requests at {:?}",
         started.elapsed()
     );
     let mut failure = app.socket.shutdown().err();
-    eprintln!(
-        "polylogue: shutdown socket drain finished at {:?}",
+    crate::log::log!(
+        info,
+        "shutdown socket drain finished at {:?}",
         started.elapsed()
     );
     if let Some(web) = &mut app.web
@@ -498,15 +501,17 @@ fn drain(mut app: Started) -> io::Result<()> {
     {
         failure.get_or_insert(error);
     }
-    eprintln!(
-        "polylogue: shutdown HTTP drain finished at {:?}",
+    crate::log::log!(
+        info,
+        "shutdown HTTP drain finished at {:?}",
         started.elapsed()
     );
     if let Err(error) = app.runtime.shutdown() {
         failure.get_or_insert(error);
     }
-    eprintln!(
-        "polylogue: shutdown runtime drain finished at {:?}",
+    crate::log::log!(
+        info,
+        "shutdown runtime drain finished at {:?}",
         started.elapsed()
     );
     failure.map_or(Ok(()), Err)

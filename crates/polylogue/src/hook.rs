@@ -496,7 +496,7 @@ fn context(startup: &Startup, ask: Ask, budget_tokens: Option<u32>) -> Option<(S
     if timed_out {
         // No prepared bytes were emitted. Only the daemon's existing queue
         // may confirm preparation; without it, acceptance stays unresolved.
-        let _ = ask_daemon(
+        let accepted = ask_daemon(
             startup,
             "internal delivery-event",
             json!({
@@ -507,6 +507,9 @@ fn context(startup: &Startup, ask: Ask, budget_tokens: Option<u32>) -> Option<(S
             self::request_id(startup.clock.now()).ok()?,
             DELIVERED_BUDGET,
         );
+        if accepted.is_none_or(|answer| answer.failure().is_some()) {
+            eprintln!("polylogue: could not hand the timed-out delivery outcome to the daemon");
+        }
         return Some((
             String::new(),
             "Polylogue context timed out; continue with the current task and local instructions."
@@ -540,7 +543,7 @@ fn delivered(startup: &Startup, delivery: &str, budget: Duration) {
     let Ok(request_id) = request_id(startup.clock.now()) else {
         return;
     };
-    let _ = ask_daemon(
+    let accepted = ask_daemon(
         startup,
         "internal delivery-event",
         json!({
@@ -551,6 +554,9 @@ fn delivered(startup: &Startup, delivery: &str, budget: Duration) {
         request_id,
         budget,
     );
+    if accepted.is_none_or(|answer| answer.failure().is_some()) {
+        eprintln!("polylogue: could not hand delivery outcome {delivery} to the daemon");
+    }
 }
 
 /// The hook output carrying context for the model.

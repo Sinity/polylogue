@@ -45,6 +45,7 @@ pub struct Answer {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct PendingWrites {
     pub delivery_outcomes: u64,
+    pub live_event_lines: u64,
     pub last_error: Option<String>,
 }
 

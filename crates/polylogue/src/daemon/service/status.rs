@@ -1,5 +1,6 @@
 //! One typed status constructor over current archive and runtime observations.
 use super::{Daemon, error, store_error};
+use polylogue_model::LockExt as _;
 
 /// Status over an index that is not current is a degraded answer.
 pub(super) fn answer(
@@ -60,7 +61,6 @@ pub(super) fn answer(
         Ok(freshness) => freshness,
         Err(error) => return store_error(&error),
     };
-    let (delivery_outcomes, last_error) = d.queued_deliveries.pending_outcomes();
     let status = crate::protocol::status::Answer {
         archive: Some(d.archive.root.clone()),
         pid: std::process::id(),
@@ -68,10 +68,7 @@ pub(super) fn answer(
         store,
         index_build: d.archive.index_build(),
         totals_error,
-        pending_writes: crate::protocol::status::PendingWrites {
-            delivery_outcomes,
-            last_error,
-        },
+        pending_writes: pending_writes(d),
         loop_status,
         signals,
         notices,
@@ -127,7 +124,6 @@ pub(super) fn building(
         },
         sinex: IndexFreshness::Standalone,
     };
-    let (delivery_outcomes, last_error) = d.queued_deliveries.pending_outcomes();
     let status = crate::protocol::status::Answer {
         archive: Some(d.archive.root.clone()),
         pid: std::process::id(),
@@ -135,10 +131,7 @@ pub(super) fn building(
         store: None,
         index_build: Some(build),
         totals_error: Some(unread.clone()),
-        pending_writes: crate::protocol::status::PendingWrites {
-            delivery_outcomes,
-            last_error,
-        },
+        pending_writes: pending_writes(d),
         loop_status,
         signals,
         notices: crate::protocol::status::Notices::Unavailable {
@@ -193,4 +186,17 @@ fn primary(
             error: error.to_string(),
         },
     })
+}
+
+fn pending_writes(d: &Daemon) -> crate::protocol::status::PendingWrites {
+    let (delivery_outcomes, outcome_error) = d.queued_deliveries.pending_outcomes();
+    let (live_event_lines, spool_error) = d.live_spool.locked().summary();
+    crate::protocol::status::PendingWrites {
+        delivery_outcomes,
+        live_event_lines,
+        last_error: outcome_error
+            .into_iter()
+            .chain(spool_error)
+            .reduce(|left, right| format!("{left}; {right}")),
+    }
 }

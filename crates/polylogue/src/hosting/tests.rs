@@ -49,6 +49,83 @@ fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
     path
 }
 
+#[test]
+fn hosted_statuses_survive_a_failed_spool_and_are_written_once_after_recovery() {
+    let mut hosting = Hosting::start(
+        "claude-code",
+        HostProtocol::ClaudeStreamJson,
+        CLAUDE_AGENT,
+        Some("s1"),
+    );
+    std::fs::write(&hosting.config.spool, b"blocked").unwrap();
+    let client = HostedStdio::connect(
+        &hosting.config.socket,
+        HostProtocol::ClaudeStreamJson,
+        String::new(),
+    )
+    .unwrap();
+    client.send("synthetic turn", None).unwrap();
+    wait_until("the permission after failed status writes", || {
+        client.request().is_some()
+    });
+    assert!(status_lines(&hosting.config.spool).is_empty());
+    std::fs::remove_file(&hosting.config.spool).unwrap();
+    client.answer(true, None).unwrap();
+    wait_until("the recovered status writes", || {
+        status_lines(&hosting.config.spool)
+            .iter()
+            .any(|(_, word)| word.as_deref() == Some("idle"))
+    });
+    hosting.quit(&client);
+    let lines = status_lines(&hosting.config.spool);
+    let words: Vec<_> = lines
+        .iter()
+        .filter_map(|(_, word)| word.as_deref())
+        .collect();
+    assert_eq!(words, ["busy", "blocked", "busy", "idle"]);
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|(event, _)| event == "HostedEnded")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_host_reports_a_failed_final_spool_flush_after_stopping_its_producers() {
+    let mut hosting = Hosting::start(
+        "claude-code",
+        HostProtocol::ClaudeStreamJson,
+        CLAUDE_AGENT,
+        Some("s1"),
+    );
+    std::fs::write(&hosting.config.spool, b"blocked").unwrap();
+    let client = HostedStdio::connect(
+        &hosting.config.socket,
+        HostProtocol::ClaudeStreamJson,
+        String::new(),
+    )
+    .unwrap();
+    client.send("synthetic turn", None).unwrap();
+    wait_until("the permission after failed status writes", || {
+        client.request().is_some()
+    });
+    client
+        .state
+        .0
+        .locked()
+        .write(&json!({"method":"polylogue_test/quit"}))
+        .unwrap();
+    let error = hosting.server.take().unwrap().join().unwrap().unwrap_err();
+    assert!(
+        error.to_string().contains("host live event spool drain"),
+        "{error}"
+    );
+    assert!(status_lines(&hosting.config.spool).is_empty());
+    assert!(!hosting.config.socket.exists());
+}
+
 fn wait_until(what: &str, ok: impl Fn() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !ok() {

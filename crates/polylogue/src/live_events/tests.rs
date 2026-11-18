@@ -331,6 +331,37 @@ fn the_registry_reader_writes_each_change_once_with_the_file_whole() {
     assert_eq!(r.read(now(), identity)[0]["payload"]["status"], "blocked");
 }
 
+#[test]
+fn a_registry_change_is_preserved_after_its_reader_has_advanced() {
+    let directory = tempfile::tempdir().unwrap();
+    let registry = directory.path().join("sessions");
+    let spool = directory.path().join("spool");
+    std::fs::create_dir(&registry).unwrap();
+    std::fs::write(
+        registry.join("4242.json"),
+        br#"{"pid":4242,"sessionId":"s9","status":"busy"}"#,
+    )
+    .unwrap();
+    std::fs::write(&spool, b"blocked").unwrap();
+    let mut reader = Registry::new(registry);
+    let lines = reader.read(now(), |_| None);
+    assert_eq!(lines.len(), 1);
+    let mut pending = PendingLines::new("registry", "claude-registry", Default::default());
+    assert!(pending.append(&spool, "boot", &lines).is_err());
+    let repeated = reader.read(now(), |_| None);
+    assert!(repeated.is_empty(), "the reader has consumed the change");
+    std::fs::remove_file(&spool).unwrap();
+    pending.append(&spool, "boot", &repeated).unwrap();
+    let files: Vec<_> = std::fs::read_dir(spool.join("registry")).unwrap().collect();
+    assert_eq!(files.len(), 1);
+    let bytes = std::fs::read(files[0].as_ref().unwrap().path()).unwrap();
+    let actual: Vec<Value> = serde_json::Deserializer::from_slice(&bytes)
+        .into_iter()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(actual, lines);
+}
+
 /// A stand-in for `codex app-server proxy`: answers `thread/loaded/list`
 /// from the file `threads` and `thread/read` from the file `status` beside
 /// it, and every other request with an empty result.

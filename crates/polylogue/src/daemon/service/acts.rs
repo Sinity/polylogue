@@ -592,7 +592,9 @@ pub(crate) fn finish_ended(d: &Daemon, now: i64, everyone: bool) {
         match state {
             Some(state) if state.running() => {
                 if !pending.is_empty() {
-                    let _ = crate::mailbox::raise(d.acts.mail(), &id);
+                    if let Err(error) = crate::mailbox::raise(d.acts.mail(), &id) {
+                        crate::log::log!(warning, "session mailbox update failed: {error}");
+                    }
                 }
             }
             _ => stopped.push((id, state, pending)),
@@ -614,7 +616,9 @@ pub(crate) fn finish_ended(d: &Daemon, now: i64, everyone: bool) {
                 reason.clone(),
             );
         }
-        let _ = crate::mailbox::lower(d.acts.mail(), &session);
+        if let Err(error) = crate::mailbox::lower(d.acts.mail(), &session) {
+            crate::log::log!(warning, "session mailbox update failed: {error}");
+        }
     }
 }
 
@@ -929,7 +933,9 @@ fn resume_session(daemon: &std::sync::Arc<Daemon>, run: ResumeRun) {
                     next = Some(candidate);
                     break;
                 }
-                let _ = crate::mailbox::raise(daemon.acts.mail(), &candidate.session);
+                if let Err(error) = crate::mailbox::raise(daemon.acts.mail(), &candidate.session) {
+                    crate::log::log!(warning, "session mailbox update failed: {error}");
+                }
                 daemon.acts.release(&candidate.delivery);
                 next = daemon.acts.resume_finished(&candidate.session);
             }

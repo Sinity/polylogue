@@ -277,6 +277,7 @@ struct Relay {
     backlog: VecDeque<Vec<u8>>,
     tracker: Tracker,
     session: Option<SessionId>,
+    spool: crate::live_events::PendingLines,
 }
 
 /// The first line a host sends each new connection.
@@ -291,6 +292,7 @@ fn hello(relay: &Relay) -> Vec<u8> {
 }
 
 fn status_line(
+    pending: &mut crate::live_events::PendingLines,
     config: &HostConfig,
     session: &SessionId,
     identity: Option<&polylogue_model::live::ProcessIdentity>,
@@ -310,7 +312,7 @@ fn status_line(
     let line =
         crate::live_events::line("registry", event, session, jiff::Timestamp::now(), payload);
     let boot = crate::live_events::boot_id().unwrap_or_else(|| "unknown".into());
-    let _ = crate::live_events::append(&config.spool, "registry", &boot, &[line]);
+    let _ = pending.append(&config.spool, &boot, &[line]);
 }
 
 /// The session a protocol line names, once the agent has said it.
@@ -348,13 +350,16 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
         client: None,
         backlog: VecDeque::new(),
         tracker: Tracker::new(config.protocol),
+        spool: crate::live_events::PendingLines::new("registry", "host", Default::default()),
         session: config
             .session_id
             .as_deref()
             .and_then(|id| SessionId::parse(&format!("{}:{id}", config.harness)).ok()),
     }));
     let stopping = Arc::new(AtomicBool::new(false));
+    let clients = Arc::new(Mutex::new(Vec::<std::thread::JoinHandle<()>>::new()));
     let accept = {
+        let clients = Arc::clone(&clients);
         let relay = Arc::clone(&relay);
         let input = Arc::clone(&input);
         let stopping = Arc::clone(&stopping);
@@ -392,13 +397,15 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
                         continue;
                     }
                     relay.backlog.clear();
-                    relay.client = Some(stream);
+                    if let Some(previous) = relay.client.replace(stream) {
+                        let _ = previous.shutdown(std::net::Shutdown::Both);
+                    }
                 }
                 let relay = Arc::clone(&relay);
                 let input = Arc::clone(&input);
                 let config = config.clone();
                 let identity = identity.clone();
-                let _ = polylogue_model::spawn_named("polylogue-host-client", move || {
+                let client = polylogue_model::spawn_named("polylogue-host-client", move || {
                     for line in BufReader::new(reader).split(b'\n') {
                         let Ok(line) = line else { return };
                         if let Ok(message) = serde_json::from_slice::<Value>(&line) {
@@ -407,6 +414,7 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
                                 && let Some(session) = relay.session.clone()
                             {
                                 status_line(
+                                    &mut relay.spool,
                                     &config,
                                     &session,
                                     identity.as_ref(),
@@ -414,6 +422,9 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
                                     Some(word),
                                 );
                             }
+                            let boot =
+                                crate::live_events::boot_id().unwrap_or_else(|| "unknown".into());
+                            let _ = relay.spool.append(&config.spool, &boot, &[]);
                         }
                         let mut input = input.locked();
                         if input
@@ -426,6 +437,11 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
                         }
                     }
                 });
+                if let Ok(client) = client {
+                    let mut clients = clients.locked();
+                    clients.retain(|client| !client.is_finished());
+                    clients.push(client);
+                }
             }
         })?
     };
@@ -440,6 +456,7 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
                 && let Some(session) = relay.session.clone()
             {
                 status_line(
+                    &mut relay.spool,
                     config,
                     &session,
                     identity.as_ref(),
@@ -448,6 +465,8 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
                 );
             }
         }
+        let boot = crate::live_events::boot_id().unwrap_or_else(|| "unknown".into());
+        let _ = relay.spool.append(&config.spool, &boot, &[]);
         let sent = relay.client.as_mut().is_some_and(|client| {
             client
                 .write_all(&line)
@@ -455,7 +474,9 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
                 .is_ok()
         });
         if !sent {
-            relay.client = None;
+            if let Some(client) = relay.client.take() {
+                let _ = client.shutdown(std::net::Shutdown::Both);
+            }
             // A later daemon acts only on requests, answers and turn ends;
             // the agent's narration stays in its transcript.
             if serde_json::from_slice::<Value>(&line).is_ok_and(|m| protocol_traffic(&m)) {
@@ -464,10 +485,6 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
         }
     }
     let _ = child.wait();
-    let session = relay.locked().session.clone();
-    if let Some(session) = session {
-        status_line(config, &session, identity.as_ref(), "HostedEnded", None);
-    }
     stopping.store(true, Ordering::SeqCst);
     // Wakes the accept loop so it sees it should stop.
     let _ = UnixStream::connect(&config.socket);
@@ -477,12 +494,31 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
     if let Some(client) = relay.locked().client.take() {
         let _ = client.shutdown(std::net::Shutdown::Both);
     }
+    for client in std::mem::take(&mut *clients.locked()) {
+        let _ = client.join();
+    }
+    let session = relay.locked().session.clone();
+    if let Some(session) = session {
+        status_line(
+            &mut relay.locked().spool,
+            config,
+            &session,
+            identity.as_ref(),
+            "HostedEnded",
+            None,
+        );
+    }
+    let boot = crate::live_events::boot_id().unwrap_or_else(|| "unknown".into());
+    let spool_result = relay.locked().spool.append(&config.spool, &boot, &[]);
     if let Some(dir) = config.socket.parent()
         && let Some(key) = config.socket.file_stem().and_then(|s| s.to_str())
     {
         remove(dir, key);
     }
-    Ok(())
+    spool_result.map_err(|error| {
+        crate::log::log!(error, "host live event spool drain: {error}");
+        std::io::Error::other(format!("host live event spool drain: {error}"))
+    })
 }
 
 /// Whether a line from the agent is one a daemon acts on: a request, an
@@ -519,7 +555,7 @@ pub(crate) fn spawn_host(
         .arg(spool)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stderr(std::process::Stdio::inherit());
     if let Some(id) = session_id {
         command.arg("--session-id").arg(id);
     }

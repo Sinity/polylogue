@@ -102,7 +102,7 @@ impl Shared {
                 Ok(_) => {}
                 Err(rustix::io::Errno::INTR) => continue,
                 Err(error) => {
-                    eprintln!("polylogue: hang-up watcher: {error}");
+                    crate::log::log!(error, "hang-up watcher: {error}");
                     // Without a watcher no read could notice its client
                     // leave; cancel what is watched rather than leave it.
                     for cancellation in self.watched.locked().values() {
