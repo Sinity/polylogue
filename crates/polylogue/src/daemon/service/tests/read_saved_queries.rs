@@ -50,13 +50,20 @@ fn saved_query_read_lists_dependents_with_executable_resave_lines() {
     let mut d = test_daemon::start("saved question reader");
     d.pause_signals();
     save(&d.daemon, "focus-first", "focus", "sessions", true);
-    save(
-        &d.daemon,
-        "dependent-first",
-        "summary",
-        "query:focus | count",
-        false,
-    );
+    assert!(matches!(
+        crate::test_answers::step(
+            Call::new(
+                "rows",
+                json!({
+                    "selection":"query:focus | count",
+                    "steps":[{"verb":"save","name":"summary","denominator":"sessions"}]
+                })
+            )
+            .id("dependent-first")
+            .answer(&d.daemon)
+        ),
+        crate::protocol::line::StepAnswer::Saved(_)
+    ));
     save(&d.daemon, "focus-second", "focus", "messages", false);
     let before = d
         .daemon
@@ -78,7 +85,7 @@ fn saved_query_read_lists_dependents_with_executable_resave_lines() {
     let refresh = &saved.resave[0].request;
     assert_eq!(
         refresh.arguments,
-        json!({"selection":"query:focus | count","steps":[{"verb":"save","name":"summary"}]})
+        json!({"selection":"query:focus | count","steps":[{"verb":"save","name":"summary","denominator":before.revisions[0].hash}]})
     );
     let declarations = crate::commands::declarations();
     let command = declarations.cli_command(refresh).unwrap();
@@ -99,6 +106,10 @@ fn saved_query_read_lists_dependents_with_executable_resave_lines() {
         ))
     );
     assert_eq!(parsed.steps.len(), 1);
+    assert_eq!(
+        parsed.steps[0].step["denominator"],
+        before.revisions[0].hash
+    );
     for format in [Format::Terminal, Format::Markdown, Format::Html] {
         let mut bytes = Vec::new();
         polylogue_render::encode_document(

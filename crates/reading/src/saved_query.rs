@@ -38,12 +38,18 @@ pub(super) fn header(
     let resave = reader
         .dependent_saved_queries(&query.dependents)?
         .into_iter()
-        .map(|(name, text)| ReadyCall {
-            request: command_surface::RunnableRequest::new(
-                "rows",
-                serde_json::json!({"selection":text,"steps":[{"verb":"save","name":name}]}),
-                crate::operation::new_run_id().to_string(),
-            ),
+        .map(|(name, definition)| {
+            let mut step = serde_json::json!({"verb":"save","name":name});
+            if let Some(denominator) = definition.denominator {
+                step["denominator"] = serde_json::Value::String(denominator);
+            }
+            ReadyCall {
+                request: command_surface::RunnableRequest::new(
+                    "rows",
+                    serde_json::json!({"selection":definition.text,"steps":[step]}),
+                    crate::operation::new_run_id().to_string(),
+                ),
+            }
         })
         .collect();
     Ok(Some(SavedQueryHeader {
