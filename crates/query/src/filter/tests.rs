@@ -239,12 +239,19 @@ fn sinex_local_reference_correction_reaches_selection_errors() {
             ..
         }),
     ));
+    assert!(matches!(
+        filter("sessions where title:\"ev:opaque\"").unwrap(),
+        Filter::Field(FieldTest {
+            field: FieldId::SessionsTitle,
+            ..
+        }),
+    ));
     let Filter::Word(word) = filter("\"ev:opaque\"").unwrap() else {
         panic!("quoted reference text is a search term")
     };
     assert_eq!(word.text, "ev:opaque");
-    assert!(matches!(
-        filter("sessions where colour:red"),
-        Err(QueryError::UnknownField { .. })
-    ));
+    assert_eq!(
+        filter("sessions where colour:red").unwrap_err().kind(),
+        polylogue_model::Code::UnknownField,
+    );
 }

@@ -111,8 +111,8 @@ pub enum ReferenceError {
     #[error("reference {0:?}: {1}")]
     Invalid(String, &'static str),
 }
-// Sinex citation kinds are local only inside Sinex.
-const SINEX_KINDS: [&str; 5] = ["ev", "record", "key", "at", "window"];
+/// Sinex citation kinds whose local forms need a global correction in Polylogue.
+pub const SINEX_LOCAL_KINDS: [&str; 5] = ["ev", "record", "key", "at", "window"];
 
 impl Reference {
     /// An exact question identity has canonical lowercase hexadecimal spelling
@@ -265,7 +265,7 @@ impl Reference {
                 Self::Url(nonempty(rest)?)
             }
             "sinex" => sinex_reference(text)?,
-            kind if SINEX_KINDS.contains(&kind) => {
+            kind if SINEX_LOCAL_KINDS.contains(&kind) => {
                 return Err(ReferenceError::SinexLocal {
                     text: text.into(),
                     global: format!("sinex:{kind}/{rest}"),

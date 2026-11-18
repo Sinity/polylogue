@@ -43,9 +43,9 @@ pub mod query_objects;
 mod quota;
 mod reference;
 pub use reference::{
-    Reference, ReferenceError, RevisionReference, SpanBounds, SpanError, SpanUnit,
-    TEXT_BODY_SEPARATOR, TextBodyError, TextBodyOffsets, TextSpanPiece, assertion_revisions,
-    span_bodies, text_body,
+    Reference, ReferenceError, RevisionReference, SINEX_LOCAL_KINDS, SpanBounds, SpanError,
+    SpanUnit, TEXT_BODY_SEPARATOR, TextBodyError, TextBodyOffsets, TextSpanPiece,
+    assertion_revisions, span_bodies, text_body,
 };
 pub mod read;
 mod route;

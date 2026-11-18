@@ -175,6 +175,11 @@ fn build(origins: &[String]) -> Catalog {
     })
     .collect();
     catalog.references.extend(
+        polylogue_model::SINEX_LOCAL_KINDS
+            .into_iter()
+            .map(|kind| ReferenceForm::prefix(format!("{kind}:"))),
+    );
+    catalog.references.extend(
         origins
             .iter()
             .map(|origin| ReferenceForm::prefix(format!("{origin}:"))),

@@ -236,6 +236,14 @@ impl Binder<'_> {
     }
 
     fn reference(&self, reference: &str, unit: Unit, span: Span) -> Result<Filter, QueryError> {
+        if let Err(error @ polylogue_model::ReferenceError::SinexLocal { .. }) =
+            polylogue_model::Reference::parse(reference)
+        {
+            return Err(QueryError::Invalid {
+                message: error.to_string(),
+                position: span.start,
+            });
+        }
         let kind = reference.split_once(':').map(|(kind, _)| kind);
         if matches!(
             kind,
@@ -380,15 +388,6 @@ impl Binder<'_> {
                 .then(|| fields::lookup(Unit::Sessions, &lower))
                 .flatten()
         }) else {
-            if let Comparison::Match(Value::Scalar { text, .. }) = &comparison
-                && let Err(error @ polylogue_model::ReferenceError::SinexLocal { .. }) =
-                    polylogue_model::Reference::parse(&format!("{field}:{text}"))
-            {
-                return Err(QueryError::Invalid {
-                    message: error.to_string(),
-                    position: span.start,
-                });
-            }
             return Err(unknown_field(self.text, field, unit, span));
         };
         let def = id.declaration();

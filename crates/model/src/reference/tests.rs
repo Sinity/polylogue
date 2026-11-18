@@ -210,7 +210,7 @@ fn sinex_global_reference_round_trips() {
 
 #[test]
 fn sinex_local_form_refused_with_global() {
-    for kind in SINEX_KINDS {
+    for kind in SINEX_LOCAL_KINDS {
         let text = format!("{kind}:opaque");
         assert_eq!(
             Reference::parse(&text).unwrap_err(),
