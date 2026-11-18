@@ -151,7 +151,9 @@ while [ ! -f "$1.exit" ]; do sleep 0.01; done
     );
     let log = hosting.dir.path().join("log");
     let holder_file = log.with_extension("holder");
-    wait_until("the agent's stdin holder", || holder_file.exists());
+    wait_until("the agent's stdin holder", || {
+        std::fs::read_to_string(&holder_file).is_ok_and(|text| text.trim().parse::<i32>().is_ok())
+    });
     let holder = Holder(
         std::fs::read_to_string(holder_file)
             .unwrap()
