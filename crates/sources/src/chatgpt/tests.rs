@@ -374,7 +374,7 @@ fn project_gpt_and_template_facts_keep_their_conversation_urls() {
         .iter()
         .find(|event| {
             event.kind == "conversation_settings"
-                && event.session.as_ref().unwrap().native() == "project-chat"
+                && event.session.as_ref().unwrap().native().as_str() == "project-chat"
         })
         .unwrap();
     assert_eq!(original.data["gizmo_id"], "g-p-project");
@@ -487,7 +487,10 @@ fn browsing_content_uses_the_same_fields_in_messages_and_tool_results() {
         assert_eq!(data.as_ref(), Some(&expected));
         assert_eq!(rows[2].message.role, Role::User);
         assert_eq!(rows[2].message.prompt_kind, Some(PromptKind::Harness));
-        assert_eq!(rows[2].message.parent.as_ref().unwrap().native(), "call");
+        assert_eq!(
+            rows[2].message.parent.as_ref().unwrap().native().as_str(),
+            "call"
+        );
     }
 }
 
