@@ -534,5 +534,12 @@ fn comparison_values_use_the_normalized_conditions_binding() {
         |_| Ok(()),
     )
     .unwrap_err();
-    assert!(matches!(error, QueryError::BadValue { field, .. } if field == "exit_code"));
+    let QueryError::Language { error, .. } = error else {
+        panic!("expected the shared parser's numeric refusal, got {error:?}");
+    };
+    assert_eq!(error.kind, query_language::ErrorKind::BadValue);
+    assert_eq!(
+        error.message,
+        "`invalid` is not a Number value for `exit_code`"
+    );
 }
