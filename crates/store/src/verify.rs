@@ -1,4 +1,4 @@
-//! The on-demand check of stored bytes (`polylogue verify`). It reads every
+//! The on-demand check of stored bytes (`polylogue status --verify`). It reads every
 //! committed blob and checks its encoded bytes against the committed digest
 //! and its decoded bytes against its name, checks every extent against the
 //! blob it cites and every revision against its chain's extents, compares

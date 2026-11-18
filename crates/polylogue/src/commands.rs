@@ -342,10 +342,6 @@ pub const GROUPS: &[Group] = &[
         help: "Token use, cost and subscription windows: `QUERY | measure WHAT` over the sessions a query selects",
     },
     Group {
-        name: "embed",
-        help: "Embeddings and stored-vector status",
-    },
-    Group {
         name: "chat",
         help: "Chat actions: turns the browser extension drafts or sends in a web chat",
     },
@@ -473,8 +469,12 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "status",
-        examples: &["polylogue status"],
-        help: "What the archive holds, what the daemon is doing and which sessions are running, waiting first",
+        examples: &[
+            "polylogue status",
+            "polylogue status --vectors",
+            "polylogue status --verify --manifest /home/op/archive.tsv",
+        ],
+        help: "What the archive holds and what the daemon is doing; --vectors counts stored vectors, --verify checks every stored byte at idle priority (CLI only)",
         reason: "Orient the caller with measured archive and daemon state",
         latency: command_surface::LatencyClass::Status,
         run: Run::Daemon(daemon::<H::Status>()),
@@ -499,15 +499,6 @@ const WRITTEN: &[Command] = &[
         tool: Some(Tool::Write),
         http: true,
         writes: true,
-        ..CLI
-    },
-    Command {
-        name: "verify",
-        reason: "Check every stored byte against its recorded hash without changing anything",
-        latency: command_surface::LatencyClass::Local,
-        help: "Check stored bytes at idle priority: every blob against its name, every extent and revision against the bytes it cites, the kept counters and each database; reports, never repairs",
-        run: Run::Daemon(daemon::<H::Verify>()),
-        tool: Some(Tool::Read),
         ..CLI
     },
     Command {
@@ -578,13 +569,6 @@ const WRITTEN: &[Command] = &[
         run: Run::Daemon(daemon::<H::Sql>()),
         http: true,
         tool: Some(Tool::Read),
-        ..CLI
-    },
-    Command {
-        name: "embed status",
-        reason: "Report the stored embedding vectors and what a build would add",
-        help: "Vectors per model, and the provider settings",
-        run: Run::Daemon(daemon::<H::EmbedStatus>()),
         ..CLI
     },
     Command {

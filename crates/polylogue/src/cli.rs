@@ -630,7 +630,7 @@ pub fn status_output(
         crate::protocol::status::Arguments::deserialize(&values.request.arguments)
             .map(|arguments| (status, arguments))
     });
-    let (status, arguments) = match decoded {
+    let (mut status, arguments) = match decoded {
         Ok(decoded) => decoded,
         Err(error) => {
             return fail(
@@ -652,7 +652,11 @@ pub fn status_output(
                 )
             );
         } else {
+            let verification = status.verification.take();
             print!("{}", print::json(&status, style(startup.output)));
+            if let Some(found) = verification {
+                print!("{}", print::verification(&found, style(startup.output)));
+            }
         }
         return ExitCode::from(answer.exit_code());
     }

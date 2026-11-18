@@ -6,12 +6,21 @@ use polylogue_model::LockExt as _;
 pub(super) fn answer(
     d: &Daemon,
     reader: &polylogue_store::Reader<'_>,
+    include_vectors: bool,
 ) -> command_surface::Answer<crate::protocol::status::Answer> {
     // Totals are counters the writer keeps with the rows they count: reading
     // them costs the same at any archive size.
     let (store, totals_error) = match reader.status() {
         Ok(store) => (Some(store), None),
         Err(error) => (None, Some(error.to_string())),
+    };
+    let (vectors, vectors_error) = if include_vectors {
+        match reader.vectors().and_then(|vectors| vectors.status()) {
+            Ok(vectors) => (Some(vectors), None),
+            Err(error) => (None, Some(error.to_string())),
+        }
+    } else {
+        (None, None)
     };
     let loop_status = d
         .status
@@ -61,6 +70,7 @@ pub(super) fn answer(
         Ok(freshness) => freshness,
         Err(error) => return store_error(&error),
     };
+    let vector_error = vectors_error.clone();
     let status = crate::protocol::status::Answer {
         archive: Some(d.archive.root.clone()),
         pid: std::process::id(),
@@ -68,6 +78,9 @@ pub(super) fn answer(
         store,
         index_build: d.archive.index_build(),
         totals_error,
+        vectors,
+        vectors_error,
+        verification: None,
         pending_writes: pending_writes(d),
         loop_status,
         signals,
@@ -80,10 +93,24 @@ pub(super) fn answer(
         primary: primary(d, reader),
     };
     let super::ModeState::Blocked { path, error, .. } = &d.mode else {
-        return capture_note(d, crate::protocol::read(status, &freshness));
+        let mut missing: Vec<String> = freshness.notes().into_iter().map(str::to_owned).collect();
+        if let Some(error) = vector_error {
+            missing.push(format!("vector counts: {error}"));
+        }
+        return capture_note(
+            d,
+            if freshness.up_to_date() && missing.is_empty() {
+                command_surface::Answer::ok(status)
+            } else {
+                command_surface::Answer::degraded(status, missing)
+            },
+        );
     };
     let mut missing: Vec<String> = freshness.notes().into_iter().map(str::to_owned).collect();
     missing.push(format!("{}: {error}", path.display()));
+    if let Some(error) = vector_error {
+        missing.push(format!("vector counts: {error}"));
+    }
     capture_note(d, command_surface::Answer::degraded(status, missing))
 }
 
@@ -102,6 +129,7 @@ fn capture_note(
 pub(super) fn building(
     d: &Daemon,
     build: polylogue_store::archive::index_build::IndexBuild,
+    include_vectors: bool,
 ) -> command_surface::Answer<crate::protocol::status::Answer> {
     use polylogue_model::freshness::{
         CompletenessDimension, CompletenessReason, IndexFreshness, ReadCompleteness, ReadFreshness,
@@ -141,6 +169,9 @@ pub(super) fn building(
         store: None,
         index_build: Some(build),
         totals_error: Some(unread.clone()),
+        vectors: None,
+        vectors_error: include_vectors.then(|| unread.clone()),
+        verification: None,
         pending_writes: pending_writes(d),
         loop_status,
         signals,
@@ -210,3 +241,44 @@ fn pending_writes(d: &Daemon) -> crate::protocol::status::PendingWrites {
             .reduce(|left, right| format!("{left}; {right}")),
     }
 }
+
+/// Keep runtime incompleteness and verification problems in one status answer.
+pub(super) fn with_verification(
+    mut status: command_surface::Answer<crate::protocol::status::Answer>,
+    checked: command_surface::Answer<polylogue_store::verify::Verification>,
+) -> command_surface::Answer<crate::protocol::status::Answer> {
+    use command_surface::{Answer, Outcome};
+    status.envelope.notes.extend(checked.envelope.notes);
+    let (verification, problems) = match checked.outcome {
+        Outcome::Ok(found) | Outcome::Empty(found) => (found, Vec::new()),
+        Outcome::Degraded { value, missing } => (value, missing),
+        Outcome::Error(error) => {
+            return Answer {
+                envelope: status.envelope,
+                outcome: Outcome::Error(error),
+            };
+        }
+    };
+    let (mut value, mut missing) = match status.outcome {
+        Outcome::Ok(value) | Outcome::Empty(value) => (value, Vec::new()),
+        Outcome::Degraded { value, missing } => (value, missing),
+        Outcome::Error(error) => {
+            return Answer {
+                envelope: status.envelope,
+                outcome: Outcome::Error(error),
+            };
+        }
+    };
+    value.verification = Some(verification);
+    missing.extend(problems);
+    status.outcome = if missing.is_empty() {
+        Outcome::Ok(value)
+    } else {
+        Outcome::Degraded { value, missing }
+    };
+    status
+}
+
+#[cfg(test)]
+#[path = "status/tests.rs"]
+mod tests;

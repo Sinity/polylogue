@@ -10,7 +10,10 @@ pub struct Arguments {
     /// One line for status bars: running sessions and the longest wait
     #[serde(default)]
     pub line: bool,
-    /// Check the stored bytes against their hashes
+    /// Count stored vectors per model (reads the vector store)
+    #[serde(default)]
+    pub vectors: bool,
+    /// Check the stored bytes against their hashes (CLI only)
     #[serde(default)]
     pub verify: bool,
     /// Write the checked revisions to this manifest
@@ -29,6 +32,14 @@ pub struct Answer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index_build: Option<polylogue_store::archive::index_build::IndexBuild>,
     pub totals_error: Option<String>,
+    /// Exact stored counts, requested with --vectors or --verify.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vectors: Option<polylogue_store::vectors::VectorStatus>,
+    /// Why requested vector counts could not be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vectors_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<polylogue_store::verify::Verification>,
     pub pending_writes: PendingWrites,
     #[serde(flatten)]
     pub loop_status: polylogue_engine::LoopStatus,

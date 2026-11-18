@@ -341,7 +341,9 @@ async fn answer_as(
         Ok(policy) => policy,
         Err(failure) => return json_answer(web, failure.answer::<serde_json::Value>()),
     };
-    if !policy.read_phase {
+    if !policy.read_phase
+        || (!policy.default_deadline && request.deadline == command_surface::Deadline::Default)
+    {
         request.deadline = command_surface::Deadline::None;
     }
     if policy.streaming {

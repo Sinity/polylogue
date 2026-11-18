@@ -164,7 +164,7 @@ Commands are not about selected rows.
 |---|---|---|
 | *(bare)* | `polylogue` | where things stand and what to type next ([terminal.md](terminal.md#the-orientation-screen)) |
 | `help` | `help [VERB\|TOPIC] [--all] [--to browser\|FILE] [--format html\|markdown]` | teaches the words; local and generated ([terminal.md](terminal.md#help)) |
-| `status` | `status [--line] [--verify [--manifest FILE]]` | health of the daemon and archive, not rows ([operations.md](operations.md#status)) |
+| `status` | `status [--line] [--vectors] [--verify [--manifest FILE]]` | health of the daemon and archive, not rows ([operations.md](operations.md#status)) |
 | `start` | `start TEXT [--in HARNESS\|WEBCHAT \| --role NAME] [--cwd DIR] [--attach FILE]… [--model M] [--effort E] [--project P] [--submit]` | starts something that has no row yet ([session-control.md](session-control.md#start)) |
 | `web` | `web` | opens the workbench ([web.md](web.md)) |
 | `import` | `import PATH… [--origin NAME] [--withdraw-missing]` · `import PROVIDER [--since TIME] [--cancel]` | takes files or a provider, not rows ([capture.md](capture.md#import), [extension.md](extension.md#importing-a-provider)) |

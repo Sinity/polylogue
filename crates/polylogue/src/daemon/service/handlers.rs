@@ -242,27 +242,71 @@ impl Handler for Status {
     type Arguments = protocol::status::Arguments;
     type Answer = protocol::status::Answer;
     const CLASS: crate::daemon::executor::Class = crate::daemon::executor::Class::Interactive;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
-        if arguments.verify || arguments.manifest.is_some() {
-            let option = if arguments.manifest.is_some() {
-                "manifest"
-            } else {
-                "verify"
-            };
-            return Ok(error(
-                polylogue_model::Code::NotBuilt,
-                format!("status --{option} is not built yet"),
+    fn class(arguments: &Self::Arguments) -> crate::daemon::executor::Class {
+        if arguments.verify || arguments.vectors {
+            crate::daemon::executor::Class::Background
+        } else {
+            Self::CLASS
+        }
+    }
+    fn default_deadline(arguments: &Self::Arguments) -> bool {
+        !(arguments.verify || arguments.vectors)
+    }
+    fn validate(
+        arguments: &Self::Arguments,
+        caller: &crate::commands::Caller,
+    ) -> Result<(), Failure> {
+        if arguments.manifest.is_some() && !arguments.verify {
+            return Err(Failure::bad_request("--manifest requires --verify"));
+        }
+        if arguments.line && (arguments.verify || arguments.vectors) {
+            return Err(Failure::bad_request(
+                "--line cannot be combined with --verify or --vectors",
             ));
         }
-        Ok(match call.reader() {
-            Ok(reader) => status::answer(call.daemon, &reader),
+        if arguments.verify && caller.surface != crate::commands::Surface::Cli {
+            return Err(Failure::bad_request(
+                "archive verification is available only on the command line",
+            ));
+        }
+        Ok(())
+    }
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
+        let manifest = arguments
+            .manifest
+            .as_deref()
+            .map(|path| call.path(path, "manifest path"))
+            .transpose()?;
+        // Drop the reader before waiting for idle-priority verification.
+        let mut status = match call.reader() {
+            Ok(reader) => {
+                status::answer(call.daemon, &reader, arguments.vectors || arguments.verify)
+            }
             Err(failure) => match call.daemon.archive.index_build() {
                 Some(build) if failure.code() == "index_building" => {
-                    status::building(call.daemon, build)
+                    status::building(call.daemon, build, arguments.vectors || arguments.verify)
                 }
                 _ => failure.answer(),
             },
-        })
+        };
+        if arguments.verify
+            && status
+                .value()
+                .is_some_and(|status| status.store.is_none() && status.index_build.is_some())
+        {
+            status
+                .envelope
+                .notes
+                .push("archive verification awaits a readable index".into());
+            return Ok(status);
+        }
+        if !arguments.verify || status.value().is_none() {
+            return Ok(status);
+        }
+        Ok(status::with_verification(
+            status,
+            super::super::verify::run(call.daemon, manifest.as_deref()),
+        ))
     }
 }
 
@@ -464,26 +508,6 @@ impl Handler for SchemaUnread {
             Ok(reader) => super::super::schema::unread(&reader, arguments.origin.as_deref()),
             Err(failure) => failure.answer(),
         })
-    }
-}
-
-/// The on-demand check of stored bytes, with an optional manifest file.
-pub(crate) struct Verify;
-impl Handler for Verify {
-    type Arguments = protocol::verify::Arguments;
-    type Answer = protocol::verify::Answer;
-    const CLASS: crate::daemon::executor::Class = crate::daemon::executor::Class::Background;
-    fn default_deadline(_: &Self::Arguments) -> bool {
-        false
-    }
-    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::verify;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
-        let manifest = arguments
-            .manifest
-            .as_deref()
-            .map(|path| call.path(path, "manifest path"))
-            .transpose()?;
-        Ok(super::super::verify::run(call.daemon, manifest.as_deref()))
     }
 }
 
@@ -860,16 +884,6 @@ impl Handler for Embed {
             arguments.limit,
             arguments.yes,
         )
-    }
-}
-
-/// The stored embedding vectors and what a build would add.
-pub(crate) struct EmbedStatus;
-impl Handler for EmbedStatus {
-    type Arguments = protocol::embed::Status;
-    type Answer = crate::embeddings::Answer;
-    fn run(_: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
-        embed(call, "status", None, None, false)
     }
 }
 

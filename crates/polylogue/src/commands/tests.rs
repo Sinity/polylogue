@@ -393,3 +393,23 @@ fn measure_options_build_the_same_query_as_the_query_surface() {
 }
 
 mod assertions;
+
+#[test]
+fn status_parses_verification_manifest_and_explicit_vectors() {
+    let (_, _, arguments) = cli(&[
+        "polylogue",
+        "status",
+        "--verify",
+        "--manifest",
+        "checked.tsv",
+    ]);
+    let arguments: crate::protocol::status::Arguments = serde_json::from_value(arguments).unwrap();
+    assert!(arguments.verify);
+    assert_eq!(
+        arguments.manifest.unwrap(),
+        std::path::PathBuf::from("checked.tsv")
+    );
+    let (_, _, arguments) = cli(&["polylogue", "status", "--vectors"]);
+    let arguments: crate::protocol::status::Arguments = serde_json::from_value(arguments).unwrap();
+    assert!(arguments.vectors && !arguments.verify);
+}
