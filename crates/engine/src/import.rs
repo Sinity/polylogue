@@ -256,21 +256,22 @@ impl Engine {
         report: &mut ImportReport,
     ) -> Result<BTreeSet<String>, EngineError> {
         let mut executed = BTreeSet::new();
-        // Historical hook files are independent line streams. Retain the whole
-        // raw group first, then feed bounded batches through the existing pool.
-        // A repeated input or path must observe the preceding parse checkpoint;
-        // other origins retain their authored/array execution order.
-        const HOOK_PLANS: usize = 128;
-        let mut hooks: Vec<Plan> = Vec::with_capacity(HOOK_PLANS);
+        // Retain the raw group before feeding independent line streams to the
+        // pool. Repeated inputs or paths need the preceding parse checkpoint.
+        // Other formats keep their authored and document execution order.
+        const LINE_PLANS: usize = 128;
+        let mut lines: Vec<Plan> = Vec::with_capacity(LINE_PLANS);
         for ((at, origin, facts, input), outcome) in metadata.into_iter().zip(outcomes) {
-            if origin.name != "hook-spool"
+            let batch_lines = matches!(origin.name, "hook-spool" | "codex" | "claude-code")
+                && matches!((origin.open)(&at), Some(polylogue_sources::Parse::Lines(_)));
+            if !batch_lines
                 || outcome.is_err()
-                || hooks.len() == HOOK_PLANS
-                || hooks
+                || lines.len() == LINE_PLANS
+                || lines
                     .iter()
                     .any(|plan| plan.input.id == input.id || plan.path == at)
             {
-                self.execute(std::mem::take(&mut hooks), &mut report.pass)?;
+                self.execute(std::mem::take(&mut lines), &mut report.pass)?;
             }
             let stored = match outcome {
                 Ok(stored) => stored,
@@ -291,14 +292,14 @@ impl Engine {
             }
             if let Some(plan) = self.stored_import_plan(&at, origin, input, &stored, facts)? {
                 executed.insert(plan.input.id.clone());
-                if origin.name == "hook-spool" {
-                    hooks.push(plan);
+                if batch_lines {
+                    lines.push(plan);
                 } else {
                     self.execute(vec![plan], &mut report.pass)?;
                 }
             }
         }
-        self.execute(hooks, &mut report.pass)?;
+        self.execute(lines, &mut report.pass)?;
         Ok(executed)
     }
 
