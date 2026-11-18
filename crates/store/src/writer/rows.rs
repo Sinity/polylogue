@@ -527,10 +527,20 @@ pub(crate) fn finish(
     texts: &crate::text_rows::TextIds,
     counter: i64,
 ) -> Result<u64> {
-    changes.finish_summaries(tx, Some(counter))?;
-    changes.finish_links(tx)?;
-    let read = crate::items::refresh(tx, changes)?;
-    crate::session_values::refresh(tx, changes)?;
+    {
+        let _counts = crate::timing::writer_step("counts");
+        changes.finish_summaries(tx, Some(counter))?;
+    }
+    let read = {
+        let _items = crate::timing::writer_step("links-items");
+        changes.finish_links(tx)?;
+        crate::items::refresh(tx, changes)?
+    };
+    {
+        let _values = crate::timing::writer_step("values");
+        crate::session_values::refresh(tx, changes)?;
+    }
+    let _cleanup = crate::timing::writer_step("cleanup-commit");
     // A first build derives every session once, when it ends.
     if !upkeep.at_build_end() {
         let sessions = changes.sessions(tx)?;

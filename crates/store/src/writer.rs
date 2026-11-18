@@ -1829,6 +1829,7 @@ impl Inner {
             crate::fault::check("write.between_commits", "")?;
         }
 
+        let applying = crate::timing::writer_step("apply");
         let indexed = batches.collect::<Vec<_>>();
         let text_transaction = self.texts.transaction();
         let itx = self
@@ -1878,7 +1879,9 @@ impl Inner {
             }
             stats.0 += 1;
         }
+        drop(applying);
         self.report.item_units_read += rows::finish(&itx, &changes, &upkeep, &self.texts, counter)?;
+        let _committing = crate::timing::writer_step("cleanup-commit");
         let source_changed = if !primary {
             let changed = crate::chain_progress::recorded(&self.archive)?;
             crate::chain_progress::refresh(&itx, &changed)?;
@@ -1887,7 +1890,10 @@ impl Inner {
             None
         };
         crate::fault::check("write.index_commit", "")?;
-        itx.commit()?;
+        {
+            let _commit = crate::timing::writer_step("index-commit");
+            itx.commit()?;
+        }
         text_transaction.commit();
         if let Some(changed) = source_changed {
             crate::chain_progress::forget(&self.archive, &changed)?;

@@ -192,16 +192,28 @@ pub fn set_workers_enabled(enabled: bool) {
 }
 
 pub fn worker() -> WorkerTimeGuard {
-    WorkerTimeGuard(WORKERS_ENABLED.load(Ordering::Relaxed).then(|| {
-        WorkerStart {
-            name: std::thread::current()
-                .name()
-                .unwrap_or("unnamed")
-                .to_owned(),
-            started: clock_seconds(),
-            scheduled: scheduled(),
-        }
-    }))
+    worker_with_name(|| {
+        std::thread::current()
+            .name()
+            .unwrap_or("unnamed")
+            .to_owned()
+    })
+}
+
+pub(crate) fn writer_step(name: &'static str) -> WorkerTimeGuard {
+    worker_with_name(|| format!("row-{name}"))
+}
+
+fn worker_with_name(name: impl FnOnce() -> String) -> WorkerTimeGuard {
+    WorkerTimeGuard(
+        WORKERS_ENABLED
+            .load(Ordering::Relaxed)
+            .then(|| WorkerStart {
+                name: name(),
+                started: clock_seconds(),
+                scheduled: scheduled(),
+            }),
+    )
 }
 impl Drop for WorkerTimeGuard {
     fn drop(&mut self) {
