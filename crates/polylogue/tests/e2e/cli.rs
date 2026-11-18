@@ -1590,3 +1590,72 @@ fn saved_query_retry_and_printed_undo_keep_immutable_results() {
         assert_eq!(json(&out)["reply"]["count"], 1, "{out:?}");
     }
 }
+
+#[test]
+fn resume_without_rows_uses_unfinished_here_and_explicit_targets_still_work() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let sources = home.join(".claude/projects/-resume");
+    let here = dir.path().join("work");
+    let elsewhere = dir.path().join("elsewhere");
+    for path in [&sources, &here, &elsewhere] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    for (id, cwd, closed) in [
+        ("open", &here, false),
+        ("closed", &here, true),
+        ("elsewhere", &elsewhere, false),
+    ] {
+        let mut user: serde_json::Value =
+            serde_json::from_str(&line(id, id, "resume candidate")).unwrap();
+        user["cwd"] = serde_json::json!(cwd);
+        let mut input = format!("{user}\n");
+        if closed {
+            input.push_str(&format!(
+                "{}\n",
+                serde_json::json!({
+                    "type":"assistant", "uuid":"finished-reply", "sessionId":id,
+                    "timestamp":"2026-03-01T10:00:01Z", "cwd":cwd,
+                    "message":{"role":"assistant","content":[{"type":"text","text":"finished"}]}
+                })
+            ));
+        }
+        std::fs::write(sources.join(format!("{id}.jsonl")), input).unwrap();
+    }
+    let env = crate::Fixture::new(
+        &dir.path().join("archive"),
+        &home,
+        &dir.path().join("config"),
+    );
+    let _daemon = start_daemon(&env);
+    wait_status(&env, |status| status["store"]["messages"] == 4);
+    let run = |args: &[&str]| {
+        command(&env)
+            .current_dir(&here)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let automatic = run(&["--json", "--dry-run", "resume"]);
+    assert!(automatic.status.success(), "{automatic:?}");
+    let automatic = json(&automatic);
+    let would = automatic["reply"]["steps"][0]["outcome"]["would"]
+        .as_str()
+        .unwrap();
+    assert!(would.contains("claude-code:open"), "{automatic}");
+    assert!(!would.contains("claude-code:closed"), "{automatic}");
+    assert!(!would.contains("claude-code:elsewhere"), "{automatic}");
+    let explicit = run(&[
+        "--json",
+        "--dry-run",
+        "session:claude-code:closed",
+        "resume",
+    ]);
+    assert!(explicit.status.success(), "{explicit:?}");
+    let explicit = json(&explicit);
+    let would = explicit["reply"]["steps"][0]["outcome"]["would"]
+        .as_str()
+        .unwrap();
+    assert!(would.contains("claude-code:closed"), "{explicit}");
+    assert!(would.contains("--resume"), "{explicit}");
+}

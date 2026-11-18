@@ -730,7 +730,7 @@ impl State {
                 parameters: vec![],
                 help: shipped.help.into(),
                 schema: Some(schema),
-                relation_scope,
+                relation_scope: Some(relation_scope),
             })?;
         }
         for (kept, _) in update.kept.values() {

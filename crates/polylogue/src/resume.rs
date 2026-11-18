@@ -80,34 +80,49 @@ pub struct ResumableSession {
     pub harness_command: Option<Command>,
 }
 
-/// Sessions under `cwd`, newest first, that left something open or carry
-/// a handoff or problem; sessions with nothing open are left out. Which
-/// sessions are under `cwd` comes from the daemon's scope index.
+/// The shipped (or authored replacement) unfinished question supplies the
+/// candidates. Resume adds its main-session requirement and existing details.
 pub fn resumable(
     reader: &Reader<'_>,
-    scope: &crate::daemon::scope::SharedScopeIndex,
     cwd: &Path,
     limit: u64,
     context: &std::sync::Arc<polylogue_reading::operation::Context>,
-) -> Result<Vec<ResumableSession>, StoreError> {
+) -> Result<Vec<ResumableSession>, crate::daemon::Failure> {
     use crate::daemon::query::assertions;
     use polylogue_model::{Reference, assertion::AssertionKind};
-    let dirs = crate::briefing::scope_dirs(cwd);
-    // Look further back than `limit`: most sessions finish cleanly.
-    let looked = usize::try_from(limit.saturating_mul(10).max(50)).unwrap_or(usize::MAX);
-    let stop = polylogue_store::read::limit::ReadLimit::current().and_then(|l| l.deadline());
-    let candidates: Vec<polylogue_store::NearbySession> = scope
-        .read(stop, |index| {
-            index
-                .sessions_under(&dirs, None)
-                .into_iter()
-                .take(looked)
-                .map(|s| s.session.clone())
-                .collect()
-        })
-        .ok_or(StoreError::ReadDeadlineExceeded)?;
+    let text = "query:unfinished | where kind:main | fields id, kind, title, started, last_active as last_activity, messages, cwd";
+    let ask = crate::daemon::query::Ask {
+        text,
+        cursor: None,
+        page_size: Some(limit),
+        why: false,
+        session: None,
+        context: std::sync::Arc::clone(context),
+        embeddings: false,
+        ranking_identity: None,
+        near: None,
+        fields: &[],
+    };
+    let mut options = crate::daemon::query::options(reader, &ask, 0)?;
+    if context.working_directory() != Some(cwd) {
+        options.here = Some(crate::daemon::here::scope(cwd, reader)?);
+    }
+    let prepared = reader.prepare_query_selection(text, &options)?;
+    if prepared.program().unit != polylogue_query::ast::Unit::Sessions
+        || prepared.program().shape != polylogue_query::Shape::Rows
+    {
+        return Err(crate::daemon::Failure::bad_request(
+            "unfinished must select sessions to resume",
+        ));
+    }
+    let mut candidates = reader.query_rows(prepared.program())?;
+    for row in &mut candidates {
+        polylogue_store::query::execute::present(prepared.program(), row)?;
+    }
     let mut out = Vec::new();
-    for s in candidates {
+    for row in candidates {
+        let s: polylogue_store::NearbySession =
+            serde_json::from_value(row).map_err(crate::daemon::Failure::internal)?;
         let id = s.id.to_string();
         let open = reader.open_items(&id)?.unwrap_or_default();
         let conditions = format!(
@@ -126,9 +141,6 @@ pub fn resumable(
                 )
             })
             .collect();
-        if !open.any() && follow_ups.is_empty() {
-            continue;
-        }
         let harness_command = harness_resume(&s.id, reader.resume_directory(&s.id)?.as_deref());
         out.push(ResumableSession {
             session: s,

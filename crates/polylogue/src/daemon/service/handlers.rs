@@ -816,21 +816,13 @@ impl Handler for Continue {
         }
         let cwd = call.directory(arguments.cwd.as_deref())?;
         let context = call.context()?;
-        Ok(
-            match crate::resume::resumable(
-                &reader,
-                &call.daemon.scope,
-                &cwd,
-                arguments.limit.unwrap_or(10),
-                &context,
-            ) {
-                Ok(sessions) if sessions.is_empty() => {
-                    Answer::empty(protocol::resume::Answer::Sessions(sessions))
-                }
-                Ok(sessions) => Answer::ok(protocol::resume::Answer::Sessions(sessions)),
-                Err(e) => store_error(&e),
-            },
-        )
+        let sessions =
+            crate::resume::resumable(&reader, &cwd, arguments.limit.unwrap_or(10), &context)?;
+        Ok(if sessions.is_empty() {
+            Answer::empty(protocol::resume::Answer::Sessions(sessions))
+        } else {
+            Answer::ok(protocol::resume::Answer::Sessions(sessions))
+        })
     }
 }
 
