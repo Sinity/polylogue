@@ -173,27 +173,41 @@ enum BackupEvent {
 }
 
 fn start_backup(
-    socket: PathBuf,
-    output: PathBuf,
     progress: mpsc::SyncSender<BackupEvent>,
+    prepare: impl FnOnce() -> std::result::Result<serde_json::Value, String> + Send + 'static,
 ) -> std::thread::JoinHandle<std::result::Result<serde_json::Value, String>> {
     std::thread::spawn(move || {
-        let request = sinex_protocol::Request::Backup {
-            action: "prepare".into(),
-            hold: None,
-            to: Some(output.display().to_string()),
-            page_size: None,
-            cursor: None,
-        };
-        let result = real_sinex::request(
-            &socket,
-            "operator",
-            "/v1",
-            serde_json::to_value(request).unwrap(),
-        );
+        let result = prepare();
         let _ = progress.send(BackupEvent::Finished);
         result
     })
+}
+
+fn prepare_backup(
+    socket: &Path,
+    token: &Path,
+    output: &Path,
+) -> std::result::Result<serde_json::Value, String> {
+    let daemon = std::env::var_os("SINEXD").ok_or("missing matching SINEXD")?;
+    let client = PathBuf::from(daemon).with_file_name("sinexctl");
+    let result = std::process::Command::new(client)
+        .arg("--endpoint")
+        .arg(format!("unix:{}", socket.display()))
+        .arg("--token-file")
+        .arg(token)
+        .args(["--json", "backup", "prepare", "--deadline", "none", "--to"])
+        .arg(output)
+        .output()
+        .map_err(|error| format!("run sinexctl backup prepare: {error}"))?;
+    if !result.status.success() {
+        return Err(format!(
+            "sinexctl backup prepare {}: {} {}",
+            result.status,
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr),
+        ));
+    }
+    serde_json::from_slice(&result.stdout).map_err(|error| format!("read backup result: {error}"))
 }
 
 #[test]
@@ -254,7 +268,12 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_confirmed_removal(
     let before_encoding = encoding(&sinex, &before_id);
     assert_eq!(frame_count(&running, &before_id), 0);
     let artifact = root.path().join("artifact");
-    let backup = start_backup(running.socket.clone(), artifact.clone(), response_progress);
+    let socket = running.socket.clone();
+    let token = root.path().join("real_sinex/tokens/operator.token");
+    let destination = artifact.clone();
+    let backup = start_backup(response_progress, move || {
+        prepare_backup(&socket, &token, &destination)
+    });
     match wait_capture.recv_timeout(Duration::from_secs(90)).unwrap() {
         BackupEvent::Capturing => (),
         BackupEvent::Finished => panic!(
@@ -281,7 +300,8 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_confirmed_removal(
         .join()
         .unwrap()
         .unwrap_or_else(|error| panic!("{error}"));
-    assert!(reply.get("result").is_some(), "{reply}");
+    assert_eq!(reply["output"].as_str(), artifact.to_str());
+    assert_eq!(reply["hold_open"].as_bool(), Some(true));
     let manifest: sinex_model::backup::Manifest =
         serde_json::from_slice(&std::fs::read(artifact.join("manifest.json")).unwrap()).unwrap();
     assert!(manifest.producers_complete);
@@ -387,7 +407,21 @@ fn backup_http_refusal_reaches_the_waiter_without_a_capture_callback() {
         write!(stream, "HTTP/1.1 422 Unprocessable Entity\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
     });
     let (progress, wait) = mpsc::sync_channel(1);
-    let backup = start_backup(socket, destination, progress);
+    let backup = start_backup(progress, move || {
+        let request = sinex_protocol::Request::Backup {
+            action: "prepare".into(),
+            hold: None,
+            to: Some(destination.display().to_string()),
+            page_size: None,
+            cursor: None,
+        };
+        real_sinex::request(
+            &socket,
+            "operator",
+            "/v1",
+            serde_json::to_value(request).unwrap(),
+        )
+    });
     assert!(matches!(
         wait.recv_timeout(Duration::from_secs(5)).unwrap(),
         BackupEvent::Finished
