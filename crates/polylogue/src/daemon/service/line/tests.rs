@@ -1,3 +1,5 @@
+mod saved_queries;
+
 use crate::test_daemon::{self, Call, TestDaemon};
 use serde_json::{Value, json};
 
