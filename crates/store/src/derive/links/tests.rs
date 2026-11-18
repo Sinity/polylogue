@@ -249,6 +249,53 @@ fn stored_and_derived(w: &WriterArchive) -> (Vec<serde_json::Value>, Vec<serde_j
 }
 
 #[test]
+fn changed_block_link_lookup_does_not_walk_the_sessions_other_calls() {
+    let mut w = WriterArchive::new();
+    let command = "git commit -m fixture";
+    w.write(
+        "s",
+        bash("s", 1, 1_000, command, true, "[main 1a2b3c4] fixture"),
+    );
+
+    let index = crate::archive::open_read(&w.archive.index_db()).unwrap();
+    let (call, session, call_message, result_message): (i64, i64, i64, i64) = index
+        .query_row(
+            "SELECT t.pk, t.session_pk, c.message_pk, r.message_pk
+             FROM tool_call t JOIN block c ON c.pk = t.call_block_pk
+             JOIN block r ON r.pk = t.result_block_pk WHERE t.command = ?1",
+            [command],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    let work = |message| {
+        let mut query = index.prepare(super::FINISHED_CALLS_BY_MESSAGE).unwrap();
+        let rows = query
+            .query_map(rusqlite::params![message, session], |r| {
+                <(i64, String)>::try_from(r)
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(rows, [(call, command.to_owned())]);
+        query.get_status(rusqlite::StatementStatus::VmStep)
+    };
+    let before = [work(call_message), work(result_message)];
+
+    let history = (2..=257)
+        .flat_map(|n| bash("s", n, i64::from(n) * 1_000, "cargo test", true, "ok"))
+        .collect();
+    w.write("s", history);
+
+    for (message, before) in [call_message, result_message].into_iter().zip(before) {
+        let after = work(message);
+        assert!(
+            after <= before + 32,
+            "link lookup grew from {before} to {after} steps"
+        );
+    }
+}
+
+#[test]
 fn links_after_append_equal_full_recompute() {
     let mut w = WriterArchive::new();
     let mut seen = Vec::new();
