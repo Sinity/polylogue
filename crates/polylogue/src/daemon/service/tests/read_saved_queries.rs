@@ -176,7 +176,7 @@ fn saved_query_read_lists_dependents_with_executable_resave_lines() {
 
 #[test]
 fn saved_query_reads_keep_missing_withdrawn_and_historical_names_distinct() {
-    let d = test_daemon::start("saved query states");
+    let mut d = test_daemon::start("saved query states");
     d.pause_signals();
     save(&d.daemon, "saved-state", "focus", "sessions", false);
     crate::test_answers::step(Call::new("rows", json!({"selection":"annotations where kind:saved_query key:focus","steps":[{"verb":"withdraw"}]})).answer(&d.daemon));
