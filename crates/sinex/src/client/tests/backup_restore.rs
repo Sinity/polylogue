@@ -129,6 +129,12 @@ fn send_and_apply(sinex: &Arc<Sinex>, cache: &Path, items: &[(&str, &[u8])]) {
     }
     let (archive, lock) = Archive::open_primary(cache, &sinex.config.store).unwrap();
     let writer = Writer::start_on_sinex(&archive, sinex.clone()).unwrap();
+    writer.synchronize_primary().unwrap_or_else(|error| {
+        panic!(
+            "synchronize confirmed frames for {}: {error}",
+            cache.display()
+        )
+    });
     wait_until("applying and retiring the frames", cache, sinex, || {
         let pool = match ReadPool::open(&archive) {
             Ok(pool) => pool,
