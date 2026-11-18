@@ -59,9 +59,32 @@ fn message_item(reference: &Reference) -> Option<(&polylogue_model::MessageId, u
 }
 
 /// Positions come from the owning relation, never the spelling of an opaque ID.
-fn later_item(conn: &Connection, previous: Option<&str>, next: Option<&str>) -> Result<bool> {
+fn later_item(
+    conn: &Connection,
+    target: &str,
+    previous: Option<&str>,
+    next: Option<&str>,
+) -> Result<bool> {
     let Some(next) = next else { return Ok(false) };
     let next = Reference::parse(next).map_err(|error| StoreError::invalid(error.to_string()))?;
+    let target =
+        Reference::parse(target).map_err(|error| StoreError::invalid(error.to_string()))?;
+    if let (Reference::Session(session), Some((next_message, next_block))) =
+        (&target, message_item(&next))
+    {
+        let Some(previous) = previous else {
+            crate::read::compare_session_messages(conn, session, next_message, next_message)?;
+            return Ok(true);
+        };
+        let previous =
+            Reference::parse(previous).map_err(|error| StoreError::invalid(error.to_string()))?;
+        let Some((previous_message, previous_block)) = message_item(&previous) else {
+            return Ok(false);
+        };
+        let order =
+            crate::read::compare_session_messages(conn, session, previous_message, next_message)?;
+        return Ok(order.is_lt() || order.is_eq() && next_block > previous_block);
+    }
     let Some(previous) = previous else {
         return Ok(true);
     };
@@ -117,12 +140,22 @@ fn later_item(conn: &Connection, previous: Option<&str>, next: Option<&str>) -> 
 fn advances(conn: &Connection, previous: &SeenMark, next: &SeenMark) -> Result<bool> {
     if previous.at.generation != next.at.generation {
         // The caller validated the incoming generation against the active index.
+        later_item(conn, &next.target, None, next.item.as_deref())?;
         return Ok(true);
     }
     let before = (previous.at.archive, previous.at.index);
     let after = (next.at.archive, next.at.index);
-    Ok(after > before
-        || (after == before && later_item(conn, previous.item.as_deref(), next.item.as_deref())?))
+    if after > before {
+        later_item(conn, &next.target, None, next.item.as_deref())?;
+        return Ok(true);
+    }
+    Ok(after == before
+        && later_item(
+            conn,
+            &next.target,
+            previous.item.as_deref(),
+            next.item.as_deref(),
+        )?)
 }
 
 /// Accepted marks are monotonic against both stored and earlier marks in this request.
@@ -180,6 +213,9 @@ pub(crate) fn advancing(
         Reference::parse(&mark.target).map_err(|error| StoreError::invalid(error.to_string()))?;
         if let Some(item) = &mark.item {
             Reference::parse(item).map_err(|error| StoreError::invalid(error.to_string()))?;
+        }
+        if !current.contains_key(&mark.target) {
+            later_item(index, &mark.target, None, mark.item.as_deref())?;
         }
         let mut advancing = true;
         for previous in current.get(&mark.target).into_iter().flatten() {

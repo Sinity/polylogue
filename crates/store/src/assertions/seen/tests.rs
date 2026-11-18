@@ -157,3 +157,217 @@ fn seen_marks_can_move_to_the_current_generation_without_changing_archive_positi
             .is_none()
     );
 }
+
+fn relation(
+    parent: &str,
+    child: &str,
+    branch: Option<&polylogue_model::MessageId>,
+) -> polylogue_model::Link {
+    polylogue_model::Link {
+        kind: if branch.is_some() {
+            polylogue_model::LinkKind::Fork
+        } else {
+            polylogue_model::LinkKind::Resume
+        },
+        copies_prefix: branch.is_none(),
+        how: None,
+        parent: crate::fixture::writer::sid(parent),
+        child: crate::fixture::writer::sid(child),
+        at: branch.cloned(),
+        call_id: None,
+        evidence: "synthetic recorded relation".into(),
+    }
+}
+
+#[test]
+fn seen_session_items_follow_the_readers_branch_prefix_before_own_messages() {
+    let mut archive = WriterArchive::new();
+    let branch = message("z-branch", "parent", Role::User, 200, vec![]);
+    let excluded = message("a-tail", "parent", Role::User, 0, vec![]);
+    archive.write("parent", vec![branch.clone(), excluded.clone()]);
+    let own = message("a-own", "child", Role::User, -1, vec![]);
+    archive
+        .links
+        .push(relation("parent", "child", Some(&branch.id)));
+    archive.write("child", vec![own.clone()]);
+    let unrelated = message("other", "unrelated", Role::User, 999, vec![]);
+    archive.write("unrelated", vec![unrelated.clone()]);
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let target = Reference::Session(crate::fixture::writer::sid("child"));
+    let position = pool.reader().unwrap().change_position().unwrap();
+    let mark = |message: &polylogue_model::Message| SeenMark {
+        target: target.to_string(),
+        item: Some(Reference::Message(message.id.clone()).to_string()),
+        at: position.clone(),
+    };
+    {
+        let reader = pool.reader().unwrap();
+        let selection = reader
+            .select_messages(&crate::fixture::writer::sid("child"), true)
+            .unwrap();
+        selection.require_complete().unwrap();
+        assert_eq!(
+            selection.locate(Some(&branch.id)).unwrap().unwrap().message,
+            0
+        );
+        assert_eq!(selection.locate(Some(&own.id)).unwrap().unwrap().message, 1);
+        assert!(selection.locate(Some(&excluded.id)).unwrap().is_none());
+        assert!(selection.locate(Some(&unrelated.id)).unwrap().is_none());
+    }
+    assert!(
+        !archive
+            .writer
+            .user(request("seen-inherited", mark(&branch)))
+            .unwrap()
+            .repeat
+    );
+    assert!(
+        !archive
+            .writer
+            .user(request("seen-child", mark(&own)))
+            .unwrap()
+            .repeat
+    );
+    assert!(
+        archive
+            .writer
+            .user(request("seen-reverse", mark(&branch)))
+            .unwrap()
+            .repeat
+    );
+    for (id, item) in [
+        ("seen-excluded-tail", &excluded),
+        ("seen-unrelated", &unrelated),
+    ] {
+        assert!(archive.writer.user(request(id, mark(item))).is_err());
+        assert!(pool.reader().unwrap().user_request(id).unwrap().is_none());
+    }
+    let reader = pool.reader().unwrap();
+    assert_eq!(
+        reader
+            .seen_marks("operator", std::slice::from_ref(&target))
+            .unwrap(),
+        vec![mark(&own)]
+    );
+    assert!(reader.user_request("seen-reverse").unwrap().is_none());
+}
+
+#[test]
+fn seen_session_items_use_recorded_copy_membership_and_share_readers_ambiguity() {
+    let mut archive = WriterArchive::new();
+    let copied = message("z-copied", "parent", Role::User, 100, vec![]);
+    let excluded = message("a-not-copied", "parent", Role::User, -100, vec![]);
+    archive.write("parent", vec![copied.clone(), excluded.clone()]);
+    let own = message("a-own", "child", Role::User, -200, vec![]);
+    archive.links.push(relation("parent", "child", None));
+    archive.write_from(
+        "copy-child",
+        polylogue_model::Session::new(
+            crate::fixture::writer::sid("child"),
+            polylogue_model::SessionKind::Main,
+        ),
+        vec![copied.clone(), own.clone()],
+    );
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let target = Reference::Session(crate::fixture::writer::sid("child"));
+    let position = pool.reader().unwrap().change_position().unwrap();
+    let mark = |message: &polylogue_model::Message| SeenMark {
+        target: target.to_string(),
+        item: Some(Reference::Message(message.id.clone()).to_string()),
+        at: position.clone(),
+    };
+    {
+        let reader = pool.reader().unwrap();
+        let selection = reader
+            .select_messages(&crate::fixture::writer::sid("child"), true)
+            .unwrap();
+        selection.require_complete().unwrap();
+        assert_eq!(
+            selection.locate(Some(&copied.id)).unwrap().unwrap().message,
+            0
+        );
+        assert_eq!(selection.locate(Some(&own.id)).unwrap().unwrap().message, 1);
+        assert!(selection.locate(Some(&excluded.id)).unwrap().is_none());
+    }
+    assert!(
+        !archive
+            .writer
+            .user(request("seen-copy", mark(&copied)))
+            .unwrap()
+            .repeat
+    );
+    assert!(
+        !archive
+            .writer
+            .user(request("seen-copy-own", mark(&own)))
+            .unwrap()
+            .repeat
+    );
+    assert!(
+        archive
+            .writer
+            .user(request("seen-copy-reverse", mark(&copied)))
+            .unwrap()
+            .repeat
+    );
+    assert!(
+        archive
+            .writer
+            .user(request("seen-copy-excluded", mark(&excluded)))
+            .is_err()
+    );
+    drop(pool);
+
+    // Two original copied readings disagree. The reader exposes neither
+    // invented order, and neither can become a seen checkpoint.
+    let conflict_own = message("own", "conflict", Role::User, 0, vec![]);
+    archive.links.push(relation("parent", "conflict", None));
+    archive.write_from(
+        "copy-left",
+        polylogue_model::Session::new(
+            crate::fixture::writer::sid("conflict"),
+            polylogue_model::SessionKind::Main,
+        ),
+        vec![copied.clone(), excluded.clone(), conflict_own.clone()],
+    );
+    archive.links.push(relation("parent", "conflict", None));
+    archive.write_from(
+        "copy-right",
+        polylogue_model::Session::new(
+            crate::fixture::writer::sid("conflict"),
+            polylogue_model::SessionKind::Main,
+        ),
+        vec![excluded, copied.clone(), conflict_own],
+    );
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let selection = reader
+        .select_messages(&crate::fixture::writer::sid("conflict"), true)
+        .unwrap();
+    assert!(
+        selection
+            .parents()
+            .issues
+            .iter()
+            .any(|issue| matches!(issue, crate::read::ParentIssue::ConflictingOrder { .. }))
+    );
+    assert!(selection.locate(Some(&copied.id)).unwrap().is_none());
+    let mark = SeenMark {
+        target: "session:claude-code:conflict".into(),
+        item: Some(Reference::Message(copied.id).to_string()),
+        at: reader.change_position().unwrap(),
+    };
+    drop(selection);
+    drop(reader);
+    assert!(matches!(
+        archive.writer.user(request("seen-copy-conflict", mark)),
+        Err(StoreError::IncompleteParents(_))
+    ));
+    assert!(
+        pool.reader()
+            .unwrap()
+            .user_request("seen-copy-conflict")
+            .unwrap()
+            .is_none()
+    );
+}
