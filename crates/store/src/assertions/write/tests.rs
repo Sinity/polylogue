@@ -711,7 +711,7 @@ fn invalid_text_links_refuse_the_whole_write_with_their_typed_reason() {
             other => panic!("the Markdown refusal must retain its code: {other:?}"),
         }
         assert!(
-            get(&conn, id).unwrap().is_none(),
+            get(&conn, &format!("{id}.1")).unwrap().is_none(),
             "the earlier preview must be removed"
         );
     }

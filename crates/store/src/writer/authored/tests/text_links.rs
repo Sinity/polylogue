@@ -79,6 +79,18 @@ fn old_prepared_notes_restore_without_new_text_interpretation() {
         })
         .unwrap();
     assert_eq!(restored, originals);
+    for original in &originals {
+        for fact in &original.effect.assertions {
+            let stored = reader
+                .assertion(&RevisionReference {
+                    root: fact.root.clone(),
+                    revision: Some(fact.id.clone()),
+                })
+                .unwrap()
+                .unwrap();
+            assert_eq!(stored.fact, *fact);
+        }
+    }
     let stored_hashes = reader.query(
         "SELECT id,hex(content_hash) AS content_hash_hex FROM source_client_request ORDER BY id", &[]
     ).unwrap();
