@@ -233,9 +233,9 @@ fn named_kept_bindings<'a>(
     let source = crate::source::Source::reading(conn)?;
     let mut kept = kept_results_named(conn, source, ids.iter().copied())?;
     let mut names = BTreeMap::new();
-    let mut lookup = conn.prepare_cached(
-        &source.sql("SELECT id FROM @source.kept_result WHERE name=?1 ORDER BY id DESC LIMIT 1"),
-    )?;
+    let mut lookup = conn.prepare_cached(&source.sql(
+        "SELECT id FROM @source.kept_result WHERE name=?1 ORDER BY ran_at DESC,id DESC LIMIT 1",
+    ))?;
     for name in ids {
         // Client request IDs are opaque. An exact existing ID always remains
         // addressable, even when it could also be a saved name.

@@ -377,7 +377,7 @@ impl crate::Reader<'_> {
         }
         let source = Source::reading(conn)?;
         let mut kept_statement = conn.prepare_cached(&source.sql(
-            "SELECT id,json_array_length(rows_json,'$.rows'),ran_at FROM @source.kept_result WHERE name=?1 ORDER BY id DESC",
+            "SELECT id,json_array_length(rows_json,'$.rows'),ran_at FROM @source.kept_result WHERE name=?1 ORDER BY ran_at DESC,id DESC",
         ))?;
         let kept = kept_statement
             .query_map([name], |row| {
