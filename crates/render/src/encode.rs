@@ -1,8 +1,7 @@
 use crate::{Format, html, terminal};
-use polylogue_model::read::*;
+use polylogue_model::{Reference, read::*};
 use serde::Serialize;
 use std::{
-    borrow::Cow,
     fmt::Display,
     io::{self, Write},
 };
@@ -285,7 +284,7 @@ impl<'a> Encoder<'a> {
                 } else {
                     self.line(&format!("\n{text}"))?;
                 }
-                self.line(&reference_text(&item.source.reference))?;
+                self.line(&Reference::display_stored(&item.source.reference))?;
                 for assertion in &header.assertions {
                     self.line(&annotation_text(assertion, self.format))?;
                 }
@@ -394,7 +393,7 @@ impl<'a> Encoder<'a> {
                 let fragment = &record.fragment;
                 self.line(&format!(
                     "Selected source text · {} · bytes {}..{}",
-                    reference_text(&record.reference),
+                    Reference::display_stored(&record.reference),
                     fragment.coverage.start,
                     fragment.coverage.end
                 ))?;
@@ -440,7 +439,7 @@ impl<'a> Encoder<'a> {
             ItemKind::Raw { record } => {
                 self.line(&format!(
                     "{} · {} · {}",
-                    reference_text(&record.reference),
+                    Reference::display_stored(&record.reference),
                     record.input,
                     record.media_type
                 ))?;
@@ -467,7 +466,7 @@ impl<'a> Encoder<'a> {
                 self.line(&format!(
                     "… encoded characters {}..{until} of {total} · {}",
                     position.character,
-                    reference_text(&item.source.reference)
+                    Reference::display_stored(&item.source.reference)
                 ))?;
             }
         }
@@ -957,19 +956,4 @@ pub(crate) fn annotation_text(assertion: &Annotation, format: Format) -> String 
         Format::Html => format!("◆ {}{key}{value} · {}", assertion.kind, assertion.author),
         _ => format!("◆ {}{key}{value} ({})", assertion.kind, assertion.author),
     }
-}
-
-/// Stored model strings retain their identity; visible references use surface names.
-pub(crate) fn reference_text(stored: &str) -> Cow<'_, str> {
-    let container = stored.strip_prefix("span:").unwrap_or(stored);
-    if !container.split_once(':').is_some_and(|(kind, _)| {
-        polylogue_model::AUTHORED_REFERENCE_SPELLINGS
-            .iter()
-            .any(|(stored, _)| kind == *stored)
-    }) {
-        return Cow::Borrowed(stored);
-    }
-    polylogue_model::Reference::parse_stored(stored)
-        .map(|reference| Cow::Owned(reference.to_string()))
-        .unwrap_or(Cow::Borrowed(stored))
 }

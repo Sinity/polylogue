@@ -896,13 +896,13 @@ fn tight_fitting_keeps_later_candidates_and_lossless_bounded_prefixes() {
                 expansion: None,
                 attribution: Some("author:operator via:cli".into()),
                 text: first.clone(),
-                refs: vec!["annotation:old@v1".into()],
+                refs: vec!["assertion:old@v1".into()],
             },
             Item {
                 expansion: None,
                 attribution: Some("author:operator via:cli".into()),
                 text: correction.clone(),
-                refs: vec!["annotation:current@v2".into()],
+                refs: vec!["assertion:current@v2".into()],
             },
         ],
         "notes",
@@ -910,13 +910,17 @@ fn tight_fitting_keeps_later_candidates_and_lossless_bounded_prefixes() {
     );
     let (text, refs, left_out) = fit.finish("", |_| Ok(None)).unwrap();
     assert!(text.len() <= 1600);
-    assert_eq!(refs, ["annotation:old@v1", "annotation:current@v2"]);
+    assert_eq!(refs, ["assertion:old@v1", "assertion:current@v2"]);
     let entries: Vec<serde_json::Value> = text
         .lines()
         .filter_map(|line| line.strip_prefix("┃ "))
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(entries.len(), 2);
+    assert_eq!(
+        entries[1]["refs"],
+        serde_json::json!(["annotation:current@v2"])
+    );
     let current = entries[1]["source"].as_str().unwrap();
     assert!(
         current.starts_with("Correction: use the current checked source."),
@@ -1117,7 +1121,7 @@ fn contrary_note_comes_before_the_claim_under_a_tight_budget() {
     let source = visible_context(&text);
     assert!(source.contains("Correction: the earlier claim is false"));
     assert!(!source.contains("CLAIM THAT MUST NOT APPEAR UNQUALIFIED"));
-    assert!(refs.contains(&"annotation:correction@correction-v1".into()));
+    assert!(refs.contains(&"assertion:correction@correction-v1".into()));
     assert!(text.contains("judgment:operator-authored"));
     assert!(text.contains("expand: `polylogue annotation:original@original-v1 read`"));
 }
@@ -1139,7 +1143,7 @@ fn omitted_candidates_never_read_their_deferred_bodies() {
                 "source metadata requiring preserved attribution ".repeat(100)
             }),
             text: format!("metadata for candidate {index}"),
-            refs: vec![format!("annotation:family-{index}@revision-{index}")],
+            refs: vec![format!("assertion:family-{index}@revision-{index}")],
         })
         .collect();
     fit.section(
@@ -1412,6 +1416,6 @@ fn unjudged_contrary_bodies_are_counted_without_hiding_the_eligible_claim() {
     assert!(text.contains("contrary assertions not inlined: 1"));
     assert!(text.contains("polylogue annotation:unjudged-agent@unjudged-agent-v1 read"));
     assert!(text.contains("accepted by operator"));
-    assert!(refs.contains(&"annotation:unjudged-agent@unjudged-agent-v1".into()));
+    assert!(refs.contains(&"assertion:unjudged-agent@unjudged-agent-v1".into()));
     assert!(text.len() <= 4000);
 }

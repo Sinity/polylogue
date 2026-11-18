@@ -283,6 +283,7 @@ fn surface_names_leave_stored_references_and_serialization_unchanged() {
         let reference = Reference::parse(surface).unwrap();
         assert_eq!(reference.to_string(), surface);
         assert_eq!(reference.stored_form(), stored);
+        assert_eq!(Reference::display_stored(stored), surface);
         assert_eq!(Reference::parse_stored(stored).unwrap(), reference);
         assert_eq!(
             serde_json::to_value(&reference).unwrap(),

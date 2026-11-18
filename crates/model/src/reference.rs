@@ -379,6 +379,20 @@ impl Reference {
             _ => self.to_string(),
         }
     }
+    /// Stored model strings retain their identity; visible references use surface names.
+    pub fn display_stored(stored: &str) -> std::borrow::Cow<'_, str> {
+        let container = stored.strip_prefix("span:").unwrap_or(stored);
+        if !container.split_once(':').is_some_and(|(kind, _)| {
+            AUTHORED_REFERENCE_SPELLINGS
+                .iter()
+                .any(|(stored, _)| kind == *stored)
+        }) {
+            return std::borrow::Cow::Borrowed(stored);
+        }
+        Self::parse_stored(stored)
+            .map(|reference| std::borrow::Cow::Owned(reference.to_string()))
+            .unwrap_or(std::borrow::Cow::Borrowed(stored))
+    }
     /// The direct container named by this address. Message/session membership
     /// and relationships requiring stored data are resolved by the store.
     pub fn container(&self) -> Option<Self> {
