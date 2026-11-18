@@ -54,7 +54,7 @@ pub const SHIPPED_QUERIES: &[ShippedQuery] = &[
     },
     ShippedQuery {
         name: "open",
-        text: "annotations where kind:(question goal problem) open:true",
+        text: "annotations where kind:(question|goal|problem) open:true",
         help: "Open questions, goals and problems",
     },
 ];

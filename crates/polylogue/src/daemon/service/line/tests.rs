@@ -1146,7 +1146,7 @@ fn unnamed_save_keeps_only_rows_and_named_only_options_explain_the_refusal() {
     assert_eq!(report["kept"]["rows"], 1);
     assert_eq!(report["kept"]["result"], "result:only-rows-1");
     assert!(kept[0]["outcome"]["undo"].as_array().unwrap().is_empty());
-    assert_eq!(count(&d, "annotations where kind:(saved_query signal)"), 0);
+    assert_eq!(count(&d, "annotations where kind:(saved_query|signal)"), 0);
     let watch = crate::test_answers::refusal(line(
         &d,
         "nameless-watch",
@@ -1172,5 +1172,82 @@ fn unnamed_save_keeps_only_rows_and_named_only_options_explain_the_refusal() {
     ));
     assert_eq!(figure.code.as_deref(), Some("bad_request"));
     assert_eq!(figure.message, "a figure is a named question");
+    for (option, value) in [("hold", json!("20m")), ("notify", json!(true))] {
+        let mut step = json!({"verb":"save","name":"refined"});
+        step[option] = value;
+        let error = crate::test_answers::refusal(line(
+            &d,
+            &format!("unwatched-{option}"),
+            json!({
+                "selection":"sessions", "steps":[step]
+            }),
+        ));
+        assert_eq!(error.code.as_deref(), Some("bad_request"));
+        assert_eq!(error.message, format!("save --{option} needs --watch"));
+    }
     assert_eq!(count(&d, "results"), 1);
+}
+
+#[test]
+fn save_keeps_the_accepted_membership_after_an_earlier_step_changes_the_predicate() {
+    let d = test_daemon::start("accepted Save membership");
+    let query = "sessions where NOT tag:handled";
+    let before = listing_value(&d, query);
+    assert_eq!(before["count"], 1);
+    let reports = steps(
+        &d,
+        "membership",
+        json!({"selection":query, "steps":[
+            {"verb":"tag", "name":"handled"}, {"verb":"save", "name":"before-handled"}
+        ]}),
+    );
+    assert_eq!(reports[0]["outcome"]["status"], "done");
+    assert_eq!(
+        count(&d, query),
+        0,
+        "the original predicate must now be false"
+    );
+    let kept = kept_result(&d, &reports[1]);
+    assert_eq!(kept["count"], 1, "{kept}");
+    assert_eq!(kept["rows"][0]["id"], "claude-code:s1", "{kept}");
+    assert_eq!(reports[1]["outcome"]["reply"]["reply"]["kept"]["rows"], 1);
+}
+
+#[test]
+fn run_references_refuse_row_verbs_and_offer_the_recorded_run_reading() {
+    let d = test_daemon::start("run reference admission");
+    let reference = "run:018f0000-0000-7000-8000-000000000011";
+    for verb in [
+        json!({"verb":"tag","name":"not-run-rows"}),
+        json!({"verb":"save","name":"not-run-rows"}),
+    ] {
+        let error = crate::test_answers::refusal(line(
+            &d,
+            "run-refusal",
+            json!({
+                "selection":reference, "steps":[verb]
+            }),
+        ));
+        assert_eq!(error.code.as_deref(), Some("bad_request"));
+        assert_eq!(
+            error.message,
+            format!("a run holds no rows; use polylogue {reference} read")
+        );
+        let Some(command_surface::Suggestion::Request(next)) = error.suggestion() else {
+            panic!("{error:?}");
+        };
+        assert_eq!(next.arguments["selection"], reference);
+        assert_eq!(next.arguments["steps"].as_array().unwrap().len(), 1);
+        assert_eq!(next.arguments["steps"][0]["verb"], "read");
+    }
+    let pending_read = crate::test_answers::refusal(line(
+        &d,
+        "run-read-pending",
+        json!({
+            "selection":reference, "steps":[{"verb":"read"}]
+        }),
+    ));
+    assert_eq!(pending_read.code.as_deref(), Some("not_built"));
+    assert_eq!(count(&d, "annotations"), 0);
+    assert_eq!(count(&d, "results"), 0);
 }

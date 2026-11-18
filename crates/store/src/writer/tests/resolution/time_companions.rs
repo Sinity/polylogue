@@ -317,15 +317,15 @@ fn time_companions_keep_missing_relations_distinct() {
     }
     for (text, expected) in [
         (
-            "links where child.started_at.time_quality:unknown",
+            "session_links where child.started_at.time_quality:unknown",
             vec!["claude-code:missing-child"],
         ),
         (
-            "links where child.started_at.time_quality:\"unknown\"",
+            "session_links where child.started_at.time_quality:\"unknown\"",
             vec!["claude-code:child-unknown"],
         ),
         (
-            "links where NOT child.started_at.time_quality:intrinsic",
+            "session_links where NOT child.started_at.time_quality:intrinsic",
             vec!["claude-code:child-unknown"],
         ),
     ] {

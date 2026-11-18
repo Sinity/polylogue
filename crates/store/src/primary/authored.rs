@@ -284,6 +284,7 @@ pub fn validate(prepared: &PreparedRequest) -> Result<()> {
                 "recorded Save must carry one kept effect",
             ));
         };
+        crate::kept::validate_body(&kept.id, &save.rows_json)?;
         let rows: serde_json::Value = serde_json::from_str(&save.rows_json)?;
         if parts.request != prepared.request.id
             || parts.repeat

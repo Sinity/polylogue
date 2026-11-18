@@ -201,7 +201,7 @@ fn changing_a_saved_question_moves_its_existing_watch_to_the_exact_new_revision(
         }),
     ));
     assert!(matches!(withdrawal, StepAnswer::Wrote(_)), "{withdrawal:?}");
-    assert_eq!(count(&d, "annotations where kind:(saved_query signal)"), 0);
+    assert_eq!(count(&d, "annotations where kind:(saved_query|signal)"), 0);
     assert_eq!(count(&d, "results"), 2);
 }
 
@@ -245,9 +245,13 @@ fn a_saved_result_name_stays_fixed_when_the_newest_named_result_changes() {
         2000,
     );
     assert_ne!(first.kept.result, second.kept.result);
+    let named = rows(&d, "named-newest", "result:population");
+    assert_eq!(session_ids(&named), ["claude-code:s2".into()].into());
     assert_eq!(
-        session_ids(&rows(&d, "named-newest", "result:population")),
-        ["claude-code:s2".into()].into()
+        named["definitions"],
+        json!([{
+            "name":"result:population", "revision":second.kept.result
+        }])
     );
     for (id, selection) in [
         ("frozen-definition", "query:frozen-population"),
@@ -273,4 +277,127 @@ fn saving_raw_feed_rows_keeps_the_exact_relation_instead_of_reselecting_entities
     let actual = rows(&d, "raw-feed-kept", &kept.kept.result);
     assert_eq!(actual["rows"], expected["rows"]);
     assert_eq!(actual["columns"], expected["columns"]);
+}
+
+#[test]
+fn recreating_a_withdrawn_figure_keeps_its_watch_on_the_new_family_and_denominator() {
+    let d = two_sessions();
+    let figure = |id: &str, denominator: &str| match crate::test_answers::step(agent(
+        &d,
+        id,
+        json!({
+            "selection":"sessions | count", "steps":[{
+                "verb":"save", "name":"restarted", "watch":true, "denominator":denominator
+            }]
+        }),
+    )) {
+        StepAnswer::Saved(report) => report,
+        other => panic!("{other:?}"),
+    };
+    let first = figure("old-family", "sessions");
+    let first_saved = first.saved.as_ref().unwrap();
+    let old = d
+        .daemon
+        .reads
+        .reader()
+        .unwrap()
+        .assertion(&RevisionReference::exact(
+            first_saved.id.clone(),
+            first_saved.id.clone(),
+        ))
+        .unwrap()
+        .unwrap()
+        .fact;
+    crate::test_answers::step(agent(
+        &d,
+        "withdraw-old-family",
+        json!({
+            "references":[format!("assertion:{}@{}",first_saved.id,first_saved.id)],
+            "steps":[{"verb":"withdraw"}]
+        }),
+    ));
+    let second = figure("new-family", "sessions where id:claude-code:s1");
+    let second_saved = second.saved.as_ref().unwrap();
+    assert_eq!(second_saved.revision, 1);
+    assert_ne!(second_saved.id, first_saved.id);
+    let watch = second.watch.as_ref().unwrap();
+    let reader = d.daemon.reads.reader().unwrap();
+    let new = reader
+        .assertion(&RevisionReference::exact(
+            second_saved.id.clone(),
+            second_saved.id.clone(),
+        ))
+        .unwrap()
+        .unwrap()
+        .fact;
+    let old_value: polylogue_model::assertion::values::SavedQuery =
+        serde_json::from_value(old.value.clone().unwrap()).unwrap();
+    let new_value: polylogue_model::assertion::values::SavedQuery =
+        serde_json::from_value(new.value.clone().unwrap()).unwrap();
+    assert_eq!(
+        old_value.hash, new_value.hash,
+        "only the denominator changed"
+    );
+    assert_ne!(old_value.denominator, new_value.denominator);
+    let rule = reader
+        .assertion(&RevisionReference::exact(
+            watch.id.clone(),
+            watch.id.clone(),
+        ))
+        .unwrap()
+        .unwrap()
+        .fact;
+    let pinned = rule.value.unwrap()["query"].as_str().unwrap().to_owned();
+    assert_eq!(pinned, "query:restarted@1");
+    let bindings = reader.selection_definitions(&pinned, &[]).unwrap();
+    let definition = &bindings.saved["restarted@1"][0];
+    assert_eq!(definition.root, second_saved.id);
+    assert_eq!(
+        definition.denominator.map(|hash| format!("query:{hash}")),
+        new_value.denominator
+    );
+    assert_eq!(
+        reader
+            .assertion(&RevisionReference::exact(
+                first_saved.id.clone(),
+                first_saved.id.clone()
+            ))
+            .unwrap()
+            .unwrap()
+            .fact,
+        old
+    );
+    let history = reader.saved_query_record("restarted").unwrap().unwrap();
+    assert_eq!(history.revisions.len(), 2);
+    drop(reader);
+    let expected = rows(&d, "recreated-expected", "sessions | count");
+    assert_eq!(
+        rows(&d, "recreated-pinned", &pinned)["rows"],
+        expected["rows"]
+    );
+    let third = figure("same-new-family", "sessions");
+    assert_eq!(third.saved.as_ref().unwrap().revision, 2);
+    assert!(
+        third.watch.as_ref().unwrap().new_rule,
+        "denominator changes rebase the watch"
+    );
+    let reader = d.daemon.reads.reader().unwrap();
+    let bindings = reader
+        .selection_definitions("query:restarted@1", &[])
+        .unwrap();
+    assert_eq!(
+        bindings.saved["restarted@1"][0]
+            .denominator
+            .map(|hash| format!("query:{hash}")),
+        new_value.denominator
+    );
+    let newest = reader
+        .selection_definitions("query:restarted@2", &[])
+        .unwrap();
+    assert_eq!(
+        newest.saved["restarted@2"][0]
+            .denominator
+            .map(|hash| format!("query:{hash}")),
+        old_value.denominator
+    );
 }

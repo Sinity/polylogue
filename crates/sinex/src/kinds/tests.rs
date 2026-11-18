@@ -154,8 +154,7 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
             declaration.kind.version,
             match declaration.kind.name.as_str() {
                 "polylogue.message" => 8,
-                "polylogue.kept_result"
-                | "polylogue.delivery"
+                "polylogue.delivery"
                 | "polylogue.delivery_outcome"
                 | "polylogue.request"
                 | "polylogue.request_restore" => 8,

@@ -138,6 +138,15 @@ fn check(step: &SaveStep, selection: &Selection) -> Result<(), Failure> {
             return Err(not_built("save", option));
         }
     }
+    if !step.watch {
+        for (given, option) in [(step.hold.is_some(), "hold"), (step.notify, "notify")] {
+            if given {
+                return Err(Failure::bad_request(format!(
+                    "save --{option} needs --watch"
+                )));
+            }
+        }
+    }
     if step.watch
         && let Some(hold) = &step.hold
         && crate::signals::duration(hold).is_none()

@@ -438,7 +438,7 @@ fn assertion_reference_keeps_its_family_and_revision() {
     let mut options = options();
     options.fields = vec!["value".into()];
     let selected = reader
-        .prepare_selection("assertions where current:* | sort by id", &options)
+        .prepare_selection("annotations where current:* | sort by id", &options)
         .unwrap();
     let mut rows = vec![];
     reader

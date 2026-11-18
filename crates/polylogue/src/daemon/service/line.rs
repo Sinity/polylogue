@@ -285,6 +285,34 @@ fn refused_surface(rows: &Rows, call: &Call<'_>) -> Result<Option<Failure>, Fail
                 .into(),
         ));
     }
+    if let Some(reference) = rows
+        .selection
+        .iter()
+        .chain(&rows.references)
+        .filter_map(|text| Reference::parse(text.trim()).ok())
+        .find(|reference| matches!(reference, Reference::Run(_)))
+        && !rows.steps.is_empty()
+    {
+        if rows.steps.iter().any(|step| !matches!(step, Step::Read(_))) {
+            let mut read = Rows {
+                selection: Some(reference.to_string()),
+                ..Rows::default()
+            };
+            read.steps.push(Step::Read(Box::default()));
+            return Ok(Some(
+                Failure::bad_request(format!(
+                    "a run holds no rows; use polylogue {reference} read"
+                ))
+                .error
+                .with_suggestion(command_surface::Suggestion::Request(repeated(&read, call)?))
+                .into(),
+            ));
+        }
+        return Ok(Some(Failure::new(
+            Code::NotBuilt,
+            "reading a recorded run is not built",
+        )));
+    }
     if call.caller.surface == Surface::Mcp
         && rows
             .steps

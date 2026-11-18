@@ -73,6 +73,8 @@ Over MCP the same step is `polylogue_write {"arguments": {"selection": "tool_cal
 
 Inside a saved query's definition, `result:NAME` is fixed at save time to the `result:<id>` it meant then.
 
+`query:NAME@N` selects revision N in the uniquely current assertion family for NAME. A name recreated after withdrawal has a new family; older families remain addressable by their exact annotation references and question hashes. Without a unique current family, colliding historical revision numbers are ambiguous.
+
 **Listing.** `polylogue saved` (a [shipped saved query](#shipped-saved-queries)) lists saved queries with name, revision, text, newest kept result and whether each is watched. `polylogue 'results where name:failing'` lists every kept result of that name, newest first. `polylogue query:failing read` shows one saved query: its text, revisions, kept results, watch and dependents, with the line that re-saves each dependent.
 
 **Re-saving `NAME`.** A different question writes a new revision (earlier ones stay readable as `query:NAME@N`); the same question writes no revision. Either way a new kept result is written and `result:NAME` moves to it; earlier kept results stay listed, since nothing is deleted. A watch on the name stays on, follows the new revision, and takes the new kept result as its baseline, so a re-save never floods notices.
@@ -116,7 +118,7 @@ Shipped saved queries are data in the code (`crates/model/src/saved_queries.rs`)
 | `questions` | `annotations where kind:question answered:false` |
 | `triage` | `sessions where triage_score > 0 \| sort by triage_score desc` |
 | `saved` | `queries where name:* \| sort by saved_at desc` |
-| `open` | `annotations where kind:(question goal problem) open:true` (open questions, goals and problems) |
+| `open` | `annotations where kind:(question|goal|problem) open:true` (open questions, goals and problems) |
 | `edits` | `annotations where referenced_by:page:* \| sort by at desc` (changes to pages, their slots and the annotations they show, newest first, with author and page; what changed since you looked is `polylogue 'annotations where referenced_by:page:* since:seen \| sort by at desc'`) |
 | `wanted` | `links where target_kind:page target_state:waiting \| group by target \| count` (page names linked or placed that do not exist, with how many link to each) |
 | `changed-sources` | `links where role:cites target_state:(changed missing withdrawn) \| group by page` (citations whose source changed, went missing or was withdrawn) |
@@ -183,7 +185,7 @@ A run or kept result is **pre-registered** when a question naming its `query:<ha
 
 ## Watches
 
-A watch is a saved query that tells you when rows start matching: `save NAME --watch` writes a signal rule (an annotation of kind `signal`) on `query:NAME`, which puts a notice in `status`, in the next briefs and in `polylogue notices` for each row that starts matching, with the line's kept result as the baseline. `--hold 20m` means a row must go on matching that long before it counts; `--notify` also sends a desktop notification. A rule the options cannot state is written with `note --as signal` on the saved query ([annotations.md](annotations.md#note)). The rule schema, routing and the evaluator's behaviour (changes, baselines, cooldowns, thresholds, catching up, downtime) are [operations.md](operations.md#notices) and the common [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/signals/README.md) design. What the query side supplies:
+A watch is a saved query that tells you when rows start matching: `save NAME --watch` writes a signal rule (an annotation of kind `signal`) on `query:NAME`, which puts a notice in `status`, in the next briefs and in `polylogue notices` for each row that starts matching, with the line's kept result as the baseline. `--hold 20m` means a row must go on matching that long before it counts; `--notify` also sends a desktop notification. Both options require `--watch`. A rule the options cannot state is written with `note --as signal` on the saved query ([annotations.md](annotations.md#note)). The rule schema, routing and the evaluator's behaviour (changes, baselines, cooldowns, thresholds, catching up, downtime) are [operations.md](operations.md#notices) and the common [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/signals/README.md) design. What the query side supplies:
 
 - The watch evaluates `query:NAME` again as data arrives, resolving relative times each time, and follows re-saves of the name.
 - Changes are reported as `membership` (rows joined or left), `ranking` or `top_k`, never one for another.

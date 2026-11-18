@@ -489,7 +489,6 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
         ("polylogue.repository", "repository"),
         ("polylogue.parse_progress", "parse_progress"),
         ("polylogue.assertion", "request"),
-        ("polylogue.kept_result", "request"),
         ("polylogue.delivery", "request"),
         ("polylogue.delivery_outcome", "request"),
         ("polylogue.request", "request"),
