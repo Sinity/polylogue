@@ -314,7 +314,21 @@ impl Client {
                     .snapshot_page(state, origin, position, scope, stream_instance)
                     .await;
             }
-            ConfirmedConsumerReply::Refused { reason }
+            ConfirmedConsumerReply::Refused(refusal)
+                if refusal.kind == sinex_protocol::FetchRefusalKind::Denied =>
+            {
+                self.consumer = None;
+                self.consumer_cache = None;
+                self.consumer_instance = None;
+                let mut health = self.health.locked();
+                health.sinex_scope = None;
+                health.sinex_position = None;
+                health.position_observed = None;
+                return Err(
+                    polylogue_store::StoreError::ConfirmedReadDenied(refusal.reason).into(),
+                );
+            }
+            ConfirmedConsumerReply::Refused(sinex_protocol::FetchRefusal { reason, .. })
             | ConfirmedConsumerReply::Gap { reason, .. } => {
                 return Err(Error::Refused {
                     name: "confirmed consumer".into(),

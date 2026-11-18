@@ -208,6 +208,8 @@ pub enum StoreError {
     PrimaryPending { identity: String },
     #[error("capture read {spooled:?} stored original bytes after a source base conflict")]
     UnresolvedBasisConflict { spooled: primary::SpooledGroup },
+    #[error("Sinex denied confirmed read access: {0}")]
+    ConfirmedReadDenied(String),
     #[error("Sinex: {0}")]
     Sinex(String),
     #[error("{0}")]
@@ -305,7 +307,9 @@ impl StoreError {
     /// store error through this one mapping.
     pub fn code(&self) -> polylogue_model::Code {
         match self {
-            Self::ScopeChanged => polylogue_model::Code::ScopeChanged,
+            Self::ScopeChanged | Self::ConfirmedReadDenied(_) => {
+                polylogue_model::Code::ScopeChanged
+            }
             Self::Conflict(_) | Self::ReadIndexReplaced => polylogue_model::Code::Conflict,
             Self::Ambiguous { .. } => polylogue_model::Code::Ambiguous,
             Self::Stale { .. } => polylogue_model::Code::Stale,

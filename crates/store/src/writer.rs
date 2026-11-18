@@ -120,6 +120,7 @@ enum Msg {
         SyncSender<Result<crate::primary::confirmed::Step>>,
     ),
     DrainPrimaryCaptures(SyncSender<Result<()>>),
+    DenyPrimaryReads(SyncSender<Result<()>>),
     /// The stream follower handled a page, or failed to read one.
     StreamFollowed(Option<String>),
     CaptureBody(
@@ -959,6 +960,7 @@ impl Inner {
         let mut live_clock = Vec::new();
         let mut copies = Vec::new();
         let mut confirmations = Vec::new();
+        let mut read_denials = Vec::new();
         let mut prepared_confirmations = Vec::new();
         let mut capture_drains = Vec::new();
         let mut followed = Vec::new();
@@ -1022,6 +1024,10 @@ impl Inner {
                     }
                     Msg::ReplaceChain(input, chain, length, reading, reply) => {
                         replacements.push((input, chain, length, *reading, reply));
+                        false
+                    }
+                    Msg::DenyPrimaryReads(reply) => {
+                        read_denials.push(reply);
                         false
                     }
                     Msg::StageConfirmed(events, reply) => {
@@ -1109,6 +1115,9 @@ impl Inner {
                         Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
                     }
                 }
+            }
+            for reply in read_denials.drain(..) {
+                let _ = reply.send(crate::primary::scope::deny(&mut self.index, &self.location));
             }
             for (events, reply) in confirmations.drain(..) {
                 let _ = reply.send(self.stage_confirmed(&events));

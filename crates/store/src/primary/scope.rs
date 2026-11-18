@@ -42,26 +42,42 @@ pub(crate) fn reset(
     if !replace && current(index)?.as_deref() == Some(scope) && require_readable(index).is_ok() {
         return Ok(false);
     }
-    // Reads stop before the clear starts. A failed clear leaves reads blocked
-    // until the same reset completes.
+    with_reads_blocked(index, archive, scope, |index| {
+        clear(index, archive, resolver, scope)
+    })
+    .map(|()| true)
+}
+
+/// An empty pending scope records that Sinex granted no reads. Only a later
+/// granted scope can clear it, including after a process restart.
+pub(crate) fn deny(index: &mut Connection, archive: &Archive) -> Result<()> {
+    with_reads_blocked(index, archive, "", |_| Ok(()))
+}
+
+fn with_reads_blocked(
+    index: &mut Connection,
+    archive: &Archive,
+    next_scope: &str,
+    work: impl FnOnce(&mut Connection) -> Result<()>,
+) -> Result<()> {
     let mut reset = archive.read_scope.begin_reset()?;
     let mut previous = None;
     let persisted = (|| {
         let synchronous: i64 = index.pragma_query_value(None, "synchronous", |row| row.get(0))?;
         previous = Some(synchronous);
         index.pragma_update(None, "synchronous", synchronous.max(2))?;
-        crate::meta_set(index, "confirmed_scope_pending", scope)?;
+        if crate::meta_get(index, "confirmed_scope_pending")?.as_deref() != Some(next_scope) {
+            crate::meta_set(index, "confirmed_scope_pending", next_scope)?;
+        }
         Ok(())
     })();
     let invalidated = reset.invalidate();
     drop(reset);
-    let result = persisted
-        .and(invalidated)
-        .and_then(|()| clear(index, archive, resolver, scope));
+    let result = persisted.and(invalidated).and_then(|()| work(index));
     let restored = previous
         .map(|previous| index.pragma_update(None, "synchronous", previous))
         .transpose();
-    result.and_then(|()| restored.map(|_| true).map_err(Into::into))
+    result.and_then(|()| restored.map(|_| ()).map_err(Into::into))
 }
 
 fn clear(

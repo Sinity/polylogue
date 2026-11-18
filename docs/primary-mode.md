@@ -281,13 +281,15 @@ other requests; the original request still keeps its own body and write result.
 
 ## Degraded primary
 
-When Sinex is unreachable or refuses this producer:
+When Sinex is unreachable or cannot accept producer writes:
 - reads are served from `index.db`, marked with the stream position they reflect and its lag;
 - capture keeps collecting into the producer client's spool, and the sender retries with the same write identities;
 - material bytes not yet acknowledged are not parsed; chains already confirmed are still parsed, their rows commit and their events wait in the spool;
 - an authored write is prepared in the spool and replied to with its identity and the state `pending` (exit 5, degraded); it becomes visible when Sinex commits it; setting writes keep their write result, including `id`, `repeat` and `pending`;
 - the verdict is `degraded` with the reason `sinex blocked` and the error in plain words, and the shipped `Sinex blocked` rule fires after 10 minutes;
 - Polylogue never falls back to standalone, whatever the cause, a broken configuration file included.
+
+A confirmed-stream read denial withdraws cached answers and interrupts active reads. The cache stays unreadable across a restart. When Sinex grants access again the follower starts at position zero under that grant. A broker or database outage leaves the previous answers available with their applied position.
 
 **Status in primary** adds a section: the mode, the Sinex endpoint and this host's producer identity; reachability and the time of the last acknowledgment (recorded in the producer spool, so a restart during an outage still says how long Sinex has been silent); prepared materials and writes waiting (count and bytes); the stream position applied and its lag; chains parsed but not yet confirmed.
 Send and read failures remain distinct observations in that status. A successful confirmed read does not clear an outstanding send failure; only a successful send retry clears it. Both reasons remain visible when both operations fail.

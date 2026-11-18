@@ -159,7 +159,7 @@ fn registration_acknowledgment_establishes_family() {
             let request=consumers.next().await.unwrap();
             let query:sinex_protocol::ConfirmedConsumer=serde_json::from_slice(&request.payload).unwrap();
             assert_eq!(query.after,0,"an index that applied nothing reads the stream from its start");
-            let reply=sinex_protocol::ConfirmedConsumerReply::Refused{reason:"synthetic refusal".into()};
+            let reply=sinex_protocol::ConfirmedConsumerReply::Refused(sinex_protocol::FetchRefusal{kind:sinex_protocol::FetchRefusalKind::Denied,reason:"synthetic refusal".into()});
             sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),reply,Duration::from_secs(5)).await.unwrap();
         });
     });
@@ -324,9 +324,9 @@ fn registration_acknowledgment_establishes_family() {
     };
     let refused = primary::Sinex::confirmed(&sinex, &state, "cache-test").unwrap_err();
     assert!(
-        refused.to_string().contains("synthetic refusal"),
-        "{refused}"
+        matches!(&refused, polylogue_store::StoreError::ConfirmedReadDenied(reason) if reason == "synthetic refusal")
     );
+    assert_eq!(sinex.status().unwrap().sinex_position, None);
     let both = sinex.status().unwrap().error.unwrap();
     assert!(
         both.contains(&send_error) && both.contains("synthetic refusal"),
