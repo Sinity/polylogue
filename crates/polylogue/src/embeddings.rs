@@ -726,14 +726,15 @@ pub fn ranking_key(reader: &Reader<'_>, provider: Option<&Provider>) -> Option<S
         .flatten()
 }
 
-/// The IDs of every session a sessions query returns, through all its
-/// pages.
+/// Physical session IDs covered by every returned session row, through all
+/// pages. Homogeneous logical sources include their known structural members.
 fn query_sessions(
     reader: &Reader<'_>,
     query: &str,
     context: &std::sync::Arc<polylogue_reading::operation::Context>,
 ) -> Result<Vec<String>, Failure> {
     let mut ids = Vec::new();
+    let mut logical = true;
     let mut cursor: Option<String> = None;
     loop {
         let ask = crate::daemon::query::Ask {
@@ -760,6 +761,7 @@ fn query_sessions(
                 "embedding selection requires complete query results",
             ));
         }
+        logical &= answer.logical_sessions;
         for row in &page.rows {
             let id = row
                 .get("id")
@@ -771,7 +773,13 @@ fn query_sessions(
         }
         match &page.next {
             Some(next) => cursor = Some(next.clone()),
-            None => return Ok(ids),
+            None => {
+                return if logical {
+                    Ok(reader.logical_session_members(&ids)?)
+                } else {
+                    Ok(ids)
+                };
+            }
         }
     }
 }

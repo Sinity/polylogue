@@ -574,6 +574,7 @@ pub enum Outcome {
 #[derive(Debug)]
 pub struct QueryAnswer {
     pub value: crate::protocol::query::Answer,
+    pub logical_sessions: bool,
     pub outcome: Outcome,
     pub notes: Vec<String>,
 }
@@ -582,6 +583,7 @@ impl QueryAnswer {
     fn measure(value: crate::protocol::query::Answer) -> Self {
         Self {
             value,
+            logical_sessions: false,
             outcome: Outcome::Measure,
             notes: Vec::new(),
         }
@@ -978,6 +980,7 @@ fn answer(
             .map(|part| format!("incomplete: {part}")),
     );
     Ok(QueryAnswer {
+        logical_sessions: program.logical_sessions,
         value: Answer::Rows(Box::new(Rows {
             read_at,
             unit: if program.shape == Shape::Matches {

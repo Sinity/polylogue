@@ -209,6 +209,10 @@ impl<'a> Compiler<'a> {
         let mut members = vec![left];
         members.extend(pending.unions);
         let mut fuses = pending.fuses;
+        relation.program.logical_sessions = members
+            .iter()
+            .chain(&fuses)
+            .all(|program| program.logical_sessions);
         for program in members.iter_mut().chain(&mut fuses) {
             let name = self.slot();
             self.ctes

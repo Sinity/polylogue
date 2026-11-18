@@ -103,6 +103,10 @@ pub struct Program {
     pub row_kind: RowKind,
     pub unit: Unit,
     pub shape: Shape,
+    /// Every supplying session source uses the logical-session default.
+    /// Mixed and retained rows do not carry an unambiguous logical grain.
+    #[serde(skip)]
+    pub logical_sessions: bool,
     /// The statements that select, page, count and read the answer's rows.
     pub statements: Statements,
     pub params: Vec<Param>,

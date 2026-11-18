@@ -271,6 +271,7 @@ impl Compiler<'_> {
             columns: columns.clone(),
             column_slots: slots,
             row_sources: Some(vec![]),
+            logical_sessions: false,
             time_text_columns,
             ranked: false,
             snippet_terms: vec![],

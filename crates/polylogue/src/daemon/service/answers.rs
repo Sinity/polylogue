@@ -25,6 +25,7 @@ pub(crate) fn query_outcome(
         mut value,
         outcome,
         notes,
+        ..
     } = answer;
     value.read_at_mut().freshness = Some(freshness.clone());
     let mut notes = notes;

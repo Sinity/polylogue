@@ -1,5 +1,91 @@
 use super::*;
 
+#[test]
+fn logical_members_use_known_roots_before_and_after_lineage_derivation() {
+    use crate::fixture::{Fixture, SessionFacts};
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(dir.path()).unwrap();
+    for name in [
+        "root",
+        "continued",
+        "spawned",
+        "forked",
+        "resumed",
+        "reference",
+        "other",
+        "conflict",
+        "missing",
+        "cycle-a",
+        "cycle-b",
+    ] {
+        fixture
+            .session(SessionFacts {
+                id: &format!("claude-code:{name}"),
+                kind: "main",
+                ..Default::default()
+            })
+            .unwrap();
+    }
+    for (parent, child, kind) in [
+        ("root", "continued", "continuation"),
+        ("continued", "spawned", "spawn"),
+        ("spawned", "forked", "fork"),
+        ("forked", "resumed", "resume"),
+        ("root", "reference", "reference"),
+        ("root", "conflict", "continuation"),
+        ("other", "conflict", "fork"),
+        ("absent", "missing", "continuation"),
+        ("cycle-a", "cycle-b", "continuation"),
+        ("cycle-b", "cycle-a", "continuation"),
+    ] {
+        fixture
+            .link(
+                &format!("claude-code:{parent}"),
+                &format!("claude-code:{child}"),
+                kind,
+                None,
+            )
+            .unwrap();
+    }
+    for derived in [false, true] {
+        if derived {
+            fixture.derive().unwrap();
+        }
+        let pool = fixture.reads().unwrap();
+        let reader = pool.reader().unwrap();
+        let members = |names: &[&str]| {
+            reader
+                .logical_session_members(
+                    &names
+                        .iter()
+                        .map(|name| format!("claude-code:{name}"))
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap()
+        };
+        assert_eq!(
+            members(&["root", "root"]),
+            [
+                "claude-code:continued",
+                "claude-code:forked",
+                "claude-code:resumed",
+                "claude-code:root",
+                "claude-code:spawned"
+            ],
+            "derived={derived}"
+        );
+        for name in ["conflict", "missing", "cycle-a", "cycle-b", "reference"] {
+            assert_eq!(
+                members(&[name]),
+                [format!("claude-code:{name}")],
+                "derived={derived}"
+            );
+        }
+        assert!(members(&[]).is_empty());
+        assert!(members(&["unknown"]).is_empty());
+    }
+}
+
 fn missing(vectors: &Vectors, key: &str, hash: &[u8], chunks: usize) -> HashSet<u32> {
     vectors
         .missing_chunks(key, &[(hash.to_vec(), chunks)])

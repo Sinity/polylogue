@@ -1,6 +1,52 @@
 use super::*;
 use crate::fixture::{Fixture, MessageFacts, SessionFacts};
 
+#[test]
+fn logical_session_grain_survives_saved_sources_and_homogeneous_combinations() {
+    let options = opts(&[("work", "sessions where repo:morrow")]);
+    for query in [
+        "sessions | sort by id | limit 1",
+        "query:work | limit 1",
+        "sessions | union (sessions where repo:morrow)",
+        "sessions | fuse (sessions where repo:morrow)",
+    ] {
+        assert!(
+            compile(query, &options).unwrap().logical_sessions,
+            "{query}"
+        );
+    }
+    for query in [
+        "sessions where physical:true",
+        "sessions where id:claude-code:one",
+        "sessions where kind:main",
+        "sessions | union (sessions where physical:true)",
+        "sessions where physical:true | union (sessions)",
+        "sessions | fuse (sessions where physical:true)",
+    ] {
+        assert!(
+            !compile(query, &options).unwrap().logical_sessions,
+            "{query}"
+        );
+    }
+    let mut options = options;
+    options.kept.insert(
+        "captured".into(),
+        Kept {
+            output_metadata: Default::default(),
+            shape: Some(Shape::Rows),
+            native_identity: true,
+            unit: "sessions".into(),
+            columns: c("sessions").columns,
+            match_columns: vec![],
+        },
+    );
+    assert!(
+        !compile("result:captured", &options)
+            .unwrap()
+            .logical_sessions
+    );
+}
+
 fn ids(fixture: &Fixture, options: &Options, text: &str) -> Vec<String> {
     let program = compile(text, options).unwrap_or_else(|error| panic!("{text}: {error}"));
     let pool = fixture.reads().unwrap();
