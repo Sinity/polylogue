@@ -683,13 +683,17 @@ fn takeover_prompt_times_match_records() {
     // The instants share a local clock time but have different offsets.
     // Stored session order is the reverse of timestamp order.
     for (id, at, text) in [
-        ("later-clock", Some("2026-10-25T01:30:00Z"), "first prompt"),
         (
-            "earlier-clock",
+            "codex:later-clock",
+            Some("2026-10-25T01:30:00Z"),
+            "first prompt",
+        ),
+        (
+            "codex:earlier-clock",
             Some("2026-10-25T00:30:00Z"),
             "second prompt",
         ),
-        ("unknown-clock", None, "third prompt"),
+        ("codex:unknown-clock", None, "third prompt"),
     ] {
         fixture
             .message(
@@ -747,9 +751,17 @@ fn takeover_prompt_times_match_records() {
         .collect();
     assert_eq!(prompts.len(), 3);
     for (prompt, (id, at, text)) in prompts.iter().zip([
-        ("later-clock", "2026-10-25 02:30 +01:00", "first prompt"),
-        ("earlier-clock", "2026-10-25 02:30 +02:00", "second prompt"),
-        ("unknown-clock", "unknown time", "third prompt"),
+        (
+            "codex:later-clock",
+            "2026-10-25 02:30 +01:00",
+            "first prompt",
+        ),
+        (
+            "codex:earlier-clock",
+            "2026-10-25 02:30 +02:00",
+            "second prompt",
+        ),
+        ("codex:unknown-clock", "unknown time", "third prompt"),
     ]) {
         assert_eq!(prompt["refs"], serde_json::json!([format!("message:{id}")]));
         assert!(
