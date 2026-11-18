@@ -19,17 +19,15 @@ fn built_search_vocabulary_matches_incremental_writes() {
     let incremental = open_write(&dir.path().join("incremental.db"), cache::SETUP).unwrap();
     crate::schema::create_index(&built).unwrap();
     crate::schema::create_index(&incremental).unwrap();
-    for (n, (text, bits)) in [
+    let inputs = [
         ("amber cedar amber", 1),
         ("Łódź Straße Øresund", 2),
         ("cedar amber birch", 3),
         ("only unindexed words", 0),
         ("", 3),
         ("shrub's limbs: 𝔘𝔫𝔦𝔠𝔬𝔡𝔢", 1),
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    ];
+    for (n, (text, bits)) in inputs.into_iter().enumerate() {
         let id = n as i64 + 1;
         let hash = blake3::hash(text.as_bytes());
         let normalized = crate::encoding::normalized_text_hash(text);
@@ -48,6 +46,42 @@ fn built_search_vocabulary_matches_incremental_writes() {
                 .unwrap();
         }
     }
+    // Both contiguous and non-contiguous texts share the first group's body.
+    // Keep separate groups in the incremental oracle.
+    let group: i64 = built
+        .query_row("SELECT group_id FROM text WHERE id=1", [], |row| row.get(0))
+        .unwrap();
+    let mut body = String::new();
+    for (id, text) in [(1, inputs[0].0), (2, inputs[1].0), (5, inputs[4].0)] {
+        let start = body.len() as i64;
+        body.push_str(text);
+        built
+            .execute(
+                "UPDATE text SET group_id=?1,start=?2 WHERE id=?3",
+                [group, start, id],
+            )
+            .unwrap();
+    }
+    built
+        .execute(
+            "UPDATE text_group SET body=?1 WHERE id=?2",
+            rusqlite::params![crate::encoding::pack_bytes(body.as_bytes()).unwrap(), group],
+        )
+        .unwrap();
+    // This limit creates several windows and makes the final text a singleton.
+    let mut visited = Vec::new();
+    super::super::search_build::visit_indexed_texts(&built, 26, |id, bits, text| {
+        visited.push((id, bits, text));
+        Ok(())
+    })
+    .unwrap();
+    let expected: Vec<_> = inputs
+        .into_iter()
+        .enumerate()
+        .filter(|(_, (_, bits))| *bits != 0)
+        .map(|(n, (text, bits))| (n as i64 + 1, bits, text.to_owned()))
+        .collect();
+    assert_eq!(visited, expected);
     index_pending(&incremental, || ()).unwrap();
     assert!(vocabulary(&built, "fts_vocab_output").is_empty());
     build_search_indexes(&built, |_| Ok(())).unwrap();
