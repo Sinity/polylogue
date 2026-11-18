@@ -185,7 +185,7 @@ fn start_backup(
             page_size: None,
             cursor: None,
         };
-        let result = real_sinex::try_request_at(
+        let result = real_sinex::request(
             &socket,
             "operator",
             "/v1",

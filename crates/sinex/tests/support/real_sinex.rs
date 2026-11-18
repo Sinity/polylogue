@@ -185,20 +185,7 @@ fn binary() -> String {
 
 // Sinex backup also latches the daemon telemetry generation. Its finite
 // natural seal may take 300 seconds; use the real Sinex fixture's 600-second budget.
-pub fn request(socket: &Path, role: &str, body: serde_json::Value) -> serde_json::Value {
-    request_at(socket, role, "/v1", body)
-}
-
-pub fn request_at(
-    socket: &Path,
-    role: &str,
-    route: &str,
-    body: serde_json::Value,
-) -> serde_json::Value {
-    try_request_at(socket, role, route, body).unwrap_or_else(|error| panic!("{error}"))
-}
-
-pub fn try_request_at(
+pub fn request(
     socket: &Path,
     role: &str,
     route: &str,
