@@ -1,32 +1,12 @@
 //! One accepted Save: immutable rows and any changed question and watch.
 use super::*;
-use crate::assertions::{SavedInput, SavedResolver, WriteContext};
+use crate::assertions::{SavedInput, SavedResolver, WriteContext, single_named_current};
 use polylogue_model::user::{KeptPart, SaveReport, SavedPart, WatchPart};
 use polylogue_model::{
     Reference, RevisionReference,
     assertion::{Assertion, AssertionKind, LinkRole, NewAssertion, NewAssertionLink, values},
 };
 use rusqlite::Connection;
-
-fn current(conn: &Connection, kind: AssertionKind, name: &str) -> Result<Option<Assertion>> {
-    let rows = crate::assertions::named_current(conn, kind, name)?;
-    if rows.len() > 1 {
-        return Err(StoreError::Ambiguous {
-            reference: format!("{}:{name}", kind.as_str()),
-            candidates: rows
-                .iter()
-                .map(|row| {
-                    Reference::Assertion(RevisionReference {
-                        root: row.fact.root.clone(),
-                        revision: Some(row.fact.id.clone()),
-                    })
-                    .to_string()
-                })
-                .collect(),
-        });
-    }
-    Ok(rows.into_iter().next())
-}
 
 fn statement(
     kind: AssertionKind,
@@ -142,7 +122,7 @@ pub(super) fn apply(
                 "{name:?} is not a saved query name"
             )));
         }
-        let previous = current(conn, AssertionKind::SavedQuery, name)?;
+        let previous = single_named_current(conn, AssertionKind::SavedQuery, name)?;
         let previous_value = previous
             .as_ref()
             .map(|row| {
@@ -210,7 +190,7 @@ pub(super) fn apply(
             revision,
             new_revision: false,
         });
-        let previous_watch = current(conn, AssertionKind::Signal, name)?;
+        let previous_watch = single_named_current(conn, AssertionKind::Signal, name)?;
         if save.watch.is_some() || (changed && previous_watch.is_some()) {
             let mut rule = previous_watch
                 .as_ref()

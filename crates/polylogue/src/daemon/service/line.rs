@@ -461,6 +461,37 @@ fn resolve(
     return_selection: bool,
     call: &Call<'_>,
 ) -> Result<Selection, Failure> {
+    // An exact saved name with withdrawal denotes its authored record. Query
+    // expressions (including parameters, revisions and pipelines) denote results.
+    if steps.iter().any(|step| matches!(step, Step::Withdraw(_)))
+        && let Given::Query(text) = &given
+        && let Ok(query) = polylogue_query::parse::parse(text)
+        && query.attach.is_empty()
+        && query.transforms.is_empty()
+        && let polylogue_query::ast::Source::Saved {
+            name,
+            arguments,
+            condition,
+            ..
+        } = &query.source
+        && arguments.is_empty()
+        && condition.is_none()
+        && !name.contains('@')
+        && (Reference::Query {
+            key: name.clone(),
+            parameters: vec![],
+        })
+        .question_id()
+        .is_none()
+    {
+        let target = call.reader()?.saved_query_target(name)?.ok_or_else(|| {
+            Failure::not_found(format!("no current authored saved query query:{name}"))
+        })?;
+        let mut selection = resolve(Given::Reference(target), steps, return_selection, call)?;
+        selection.question = Some(text.clone());
+        selection.given = given;
+        return Ok(selection);
+    }
     let question = match &given {
         Given::Query(text) => Some(text.clone()),
         _ => None,
