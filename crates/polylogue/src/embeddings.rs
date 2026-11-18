@@ -727,14 +727,15 @@ pub fn ranking_key(reader: &Reader<'_>, provider: Option<&Provider>) -> Option<S
 }
 
 /// Physical session IDs covered by every returned session row, through all
-/// pages. Homogeneous logical sources include their known structural members.
+/// pages. Each logical row includes its known structural members; retained
+/// rows keep their captured physical membership.
 fn query_sessions(
     reader: &Reader<'_>,
     query: &str,
     context: &std::sync::Arc<polylogue_reading::operation::Context>,
 ) -> Result<Vec<String>, Failure> {
     let mut ids = Vec::new();
-    let mut logical = true;
+    let mut roots = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
         let ask = crate::daemon::query::Ask {
@@ -761,24 +762,36 @@ fn query_sessions(
                 "embedding selection requires complete query results",
             ));
         }
-        logical &= answer.logical_sessions;
-        for row in &page.rows {
-            let id = row
-                .get("id")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| {
-                    Failure::bad_request("embedding selection requires session identities")
-                })?;
-            ids.push(id.to_owned());
+        let references = page
+            .references
+            .as_ref()
+            .filter(|references| references.len() == page.rows.len())
+            .ok_or_else(|| {
+                Failure::bad_request("embedding selection requires session identities")
+            })?;
+        if answer.logical_sessions.len() != references.len() {
+            return Err(Failure::new(
+                polylogue_model::Code::Store,
+                "embedding selection lost session coordinates",
+            ));
+        }
+        for (reference, logical) in references.iter().zip(&answer.logical_sessions) {
+            let polylogue_model::Reference::Session(id) = reference else {
+                return Err(Failure::bad_request("embed takes session rows"));
+            };
+            if *logical {
+                roots.push(id.to_string());
+            } else {
+                ids.push(id.to_string());
+            }
         }
         match &page.next {
             Some(next) => cursor = Some(next.clone()),
             None => {
-                return if logical {
-                    Ok(reader.logical_session_members(&ids)?)
-                } else {
-                    Ok(ids)
-                };
+                ids.extend(reader.logical_session_members(&roots)?);
+                ids.sort_unstable();
+                ids.dedup();
+                return Ok(ids);
             }
         }
     }

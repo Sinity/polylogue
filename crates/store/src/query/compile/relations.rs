@@ -868,6 +868,9 @@ impl Relation {
         }
         names.extend(self.program.order.iter().map(|k| k.column.clone()));
         names.extend(self.sources.iter().map(|s| s.key.clone()));
+        if let SessionRows::PerRow(column) = &self.program.session_rows {
+            names.insert(column.clone());
+        }
         match &self.program.row_kind {
             RowKind::UnitRows { columns, .. }
             | RowKind::Group { columns }
@@ -976,6 +979,7 @@ impl Compiler<'_> {
         relation.program.time_text_columns.clear();
         relation.program.order = order;
         relation.program.row_kind = RowKind::Group { columns: key_slots };
+        relation.program.session_rows = SessionRows::Physical;
         relation.program.shape = Shape::Groups;
         relation.program.counts_near = false;
         relation.program.ranked = false;
@@ -1141,6 +1145,7 @@ impl Compiler<'_> {
         } else {
             RowKind::Summary
         };
+        relation.program.session_rows = SessionRows::Physical;
         relation.program.counts_near = false;
         relation.program.ranked = false;
         relation.sources.clear();
@@ -1408,6 +1413,7 @@ impl Compiler<'_> {
         );
         self.set_rows(relation, sql);
         relation.program.order = vec![OrderKey::ascending(&final_order)];
+        relation.program.session_rows = SessionRows::Physical;
         relation.program.ranked = false;
         relation.program.counts_near = false;
         relation.program.time_text_columns.clear();

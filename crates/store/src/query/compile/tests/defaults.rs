@@ -2,16 +2,17 @@ use super::*;
 use crate::fixture::{Fixture, MessageFacts, SessionFacts};
 
 #[test]
-fn logical_session_grain_survives_saved_sources_and_homogeneous_combinations() {
+fn session_rows_keep_source_meaning_and_retained_identity() {
     let options = opts(&[("work", "sessions where repo:morrow")]);
     for query in [
         "sessions | sort by id | limit 1",
         "query:work | limit 1",
         "sessions | union (sessions where repo:morrow)",
-        "sessions | fuse (sessions where repo:morrow)",
+        "sessions | fuse (sessions where physical:true)",
     ] {
-        assert!(
-            compile(query, &options).unwrap().logical_sessions,
+        assert_eq!(
+            compile(query, &options).unwrap().session_rows,
+            SessionRows::Logical,
             "{query}"
         );
     }
@@ -19,12 +20,24 @@ fn logical_session_grain_survives_saved_sources_and_homogeneous_combinations() {
         "sessions where physical:true",
         "sessions where id:claude-code:one",
         "sessions where kind:main",
+        "sessions where physical:true | fuse (sessions)",
+    ] {
+        assert_eq!(
+            compile(query, &options).unwrap().session_rows,
+            SessionRows::Physical,
+            "{query}"
+        );
+    }
+    for query in [
         "sessions | union (sessions where physical:true)",
         "sessions where physical:true | union (sessions)",
-        "sessions | fuse (sessions where physical:true)",
+        "sessions | union (sessions where physical:true) | fields id | sort by id | limit 1",
     ] {
         assert!(
-            !compile(query, &options).unwrap().logical_sessions,
+            matches!(
+                compile(query, &options).unwrap().session_rows,
+                SessionRows::PerRow(_)
+            ),
             "{query}"
         );
     }
@@ -40,11 +53,85 @@ fn logical_session_grain_survives_saved_sources_and_homogeneous_combinations() {
             match_columns: vec![],
         },
     );
-    assert!(
-        !compile("result:captured", &options)
-            .unwrap()
-            .logical_sessions
+    assert_eq!(
+        compile("result:captured", &options).unwrap().session_rows,
+        SessionRows::Physical
     );
+}
+
+#[test]
+fn mixed_session_coordinates_survive_projection_nesting_and_keyset_pages() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(dir.path()).unwrap();
+    for (id, cwd) in [("a", "/a"), ("a-tail", "/a"), ("b", "/b"), ("b-tail", "/b")] {
+        fixture
+            .session(SessionFacts {
+                id: &format!("claude-code:{id}"),
+                kind: "main",
+                cwd: Some(cwd),
+                ..Default::default()
+            })
+            .unwrap();
+    }
+    fixture
+        .link("claude-code:a", "claude-code:a-tail", "continuation", None)
+        .unwrap();
+    fixture
+        .link("claude-code:b", "claude-code:b-tail", "continuation", None)
+        .unwrap();
+    let options = Options {
+        page_size: Some(1),
+        ..opts(&[])
+    };
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let source = "sessions where cwd:/a | union (sessions where id:claude-code:b)";
+    for query in [
+        format!("{source} | fields id | sort by id | limit 2"),
+        format!(
+            "{source} | fields id | union (sessions where id:claude-code:a | fields id) | sort by id | limit 2"
+        ),
+        format!("{source} | intersect (sessions where physical:true) | sort by id"),
+    ] {
+        let program = compile(&query, &options).unwrap();
+        let mut selected = Vec::new();
+        let mut after = None;
+        loop {
+            let page = reader.query_page(&program, after.as_deref()).unwrap();
+            for row in &page.rows {
+                let reference = crate::selection::row_reference(&program, row).unwrap();
+                selected.push((
+                    reference.to_string(),
+                    program.session_rows.logical(row).unwrap(),
+                ));
+            }
+            if !page.more {
+                break;
+            }
+            let last = page.rows.last().unwrap();
+            after = Some(
+                program
+                    .order
+                    .iter()
+                    .map(|key| last[&key.column].clone())
+                    .collect::<Vec<_>>(),
+            );
+        }
+        assert_eq!(
+            selected,
+            [
+                ("session:claude-code:a".into(), true),
+                ("session:claude-code:b".into(), false)
+            ],
+            "{query}"
+        );
+    }
+    let grouped = compile(
+        &format!("{source} | group by origin | count | fields origin, count"),
+        &options,
+    )
+    .unwrap();
+    assert_eq!(reader.query_rows(&grouped).unwrap().len(), 1);
 }
 
 fn ids(fixture: &Fixture, options: &Options, text: &str) -> Vec<String> {
