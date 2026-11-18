@@ -666,14 +666,17 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
 
     let running = sinex(home.dir.path());
     let sdk = connect(&running.config);
-    let build = |phase: &str, source_home: &Path, wanted: &[polylogue_model::Message]| {
+    let build_at = |root: &Path,
+                    phase: &str,
+                    source_home: &Path,
+                    wanted: &[polylogue_model::Message]| {
         eprintln!("original reconstruction: {phase}");
         let observed_length = (source_home == home.home).then(|| {
             fs::metadata(home.file("original-session.jsonl"))
                 .unwrap()
                 .len()
         });
-        let (archive, lock) = Archive::open_primary(&home.root, &running.config.store).unwrap();
+        let (archive, lock) = Archive::open_primary(root, &running.config.store).unwrap();
         let mut config = home.config(1 << 20);
         config.home = source_home.into();
         let mut engine = Engine::on_sinex(
@@ -730,6 +733,9 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         drop(engine);
         drop(lock);
         archive
+    };
+    let build = |phase: &str, source_home: &Path, wanted: &[polylogue_model::Message]| {
+        build_at(&home.root, phase, source_home, wanted)
     };
     let initial = build("initial capture", &home.home, &expected_messages);
     let source_revision = |archive: &Archive| {
@@ -935,6 +941,14 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
             .messages(&session, false)
             .unwrap(),
         remaining
+    );
+    let cold = home.dir.path().join("archive-decision-cold-index");
+    fs::create_dir_all(&cold).unwrap();
+    build_at(
+        &cold,
+        "cold rebuild with archived AI reading",
+        &empty,
+        &remaining,
     );
     let restored = real_sinex::request(
         &running.socket,

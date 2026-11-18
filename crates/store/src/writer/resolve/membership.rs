@@ -997,6 +997,11 @@ impl<'a> MembershipState<'a> {
     ) -> Result<()> {
         let mut positions = BTreeMap::<u64, i64>::new();
         let mut read = Vec::new();
+        let hidden = if self.resolver.location().is_primary() {
+            crate::primary::products::hidden_messages(self.index, input_key, chain, step)?
+        } else {
+            Default::default()
+        };
         for (i, (row, prepared)) in step
             .output
             .messages
@@ -1004,6 +1009,11 @@ impl<'a> MembershipState<'a> {
             .zip(&step.prepared.messages)
             .enumerate()
         {
+            if hidden.contains(&i) {
+                choices.keep_messages.push(false);
+                choices.message_order_times.push(None);
+                continue;
+            }
             let pk = self
                 .keys
                 .get(Kind::Message, row.message.id.to_string().as_bytes())?
