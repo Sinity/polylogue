@@ -879,6 +879,9 @@ impl Handler for Setting {
                     "a value requires a setting key",
                 ));
             };
+            if let Some(hint) = polylogue_model::settings::historical_hint(&key) {
+                return Ok(error(polylogue_model::Code::BadValue, hint));
+            }
             call.reader()?;
             return Ok(write(
                 call.daemon,
@@ -903,7 +906,14 @@ impl Handler for Setting {
                 return Ok(error(polylogue_model::Code::BadValue, e));
             }
             return Ok(match reader.setting_current(&key, selected) {
-                Ok(current) => Answer::ok(protocol::setting::Answer::Current(Box::new(current))),
+                Ok(current) => {
+                    let mut answer =
+                        Answer::ok(protocol::setting::Answer::Current(Box::new(current)));
+                    if let Some(hint) = polylogue_model::settings::historical_hint(&key) {
+                        answer.envelope.notes.push(hint.into());
+                    }
+                    answer
+                }
                 Err(e) => store_error(&e),
             });
         }

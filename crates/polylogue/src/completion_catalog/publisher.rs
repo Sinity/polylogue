@@ -694,6 +694,10 @@ impl State {
             }
         }
         for key in keys {
+            if polylogue_model::settings::historical_hint(&key).is_some() {
+                writer.remove_setting(&key)?;
+                continue;
+            }
             let current = reader.setting_current(&key, self.requests.machine())?;
             let choices = if current.supplier == "sinex" {
                 Vec::new()

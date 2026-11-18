@@ -113,3 +113,32 @@ fn setting_conflict_picks_no_default_and_spares_other_keys() {
     assert_eq!(snapshot.reading_variants().unwrap(), ["translation:pl"]);
     assert_eq!(snapshot.get("embed.endpoint").unwrap(), None);
 }
+
+#[test]
+fn old_drive_setting_replays_but_is_not_a_current_control() {
+    assert_eq!(
+        parse("drive.ai-studio", "on", SettingMode::Standalone).unwrap(),
+        Value::Boolean(true)
+    );
+    assert_eq!(
+        parse("drive.ai-studio", "off", SettingMode::Standalone).unwrap(),
+        Value::Boolean(false)
+    );
+    assert!(
+        CATALOG
+            .iter()
+            .all(|declaration| declaration.key != "drive.ai-studio")
+    );
+    let hint = historical_hint("drive.ai-studio").unwrap();
+    assert!(hint.contains("polylogue install drive"));
+    assert!(hint.contains("polylogue install drive --remove"));
+    assert_eq!(
+        parse(
+            "drive.client_id",
+            "synthetic-client",
+            SettingMode::Standalone
+        )
+        .unwrap(),
+        Value::Text("synthetic-client".into())
+    );
+}

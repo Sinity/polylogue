@@ -214,7 +214,6 @@ impl Engine {
     /// Runs each origin's collector, honoring its declared setting.
     fn run_collectors(&mut self) -> Vec<String> {
         let mut errors = Vec::new();
-        let state_dir = self.config.state_dir();
         for origin in ORIGINS {
             let Some(collector) = &origin.collector else {
                 continue;
@@ -247,7 +246,7 @@ impl Engine {
             );
             let paths = polylogue_sources::origin::CollectorPaths {
                 home: &self.config.home,
-                state_dir: &state_dir,
+                archive: &self.archive.root,
                 spool: &spool,
             };
             if let Err(error) = self.advance_collector(origin.name, collector, &paths) {

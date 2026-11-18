@@ -19,7 +19,13 @@ fn install_zsh_dry_run_prints_completion_script() {
     .unwrap();
     let mut output = Vec::new();
     assert_eq!(
-        install_with_output(&parsed, &startup, false, &mut output),
+        install_with_output(
+            &parsed,
+            &startup,
+            false,
+            &mut output,
+            &crate::auth::Drive::default()
+        ),
         ExitCode::SUCCESS
     );
     let script = String::from_utf8(output).unwrap();
@@ -50,7 +56,13 @@ fn install_harness_writes_hooks() {
     .unwrap();
     let mut output = Vec::new();
     assert_eq!(
-        install_with_output(&parsed, &startup, true, &mut output),
+        install_with_output(
+            &parsed,
+            &startup,
+            true,
+            &mut output,
+            &crate::auth::Drive::default()
+        ),
         ExitCode::SUCCESS
     );
     let installed: serde_json::Value =
@@ -76,7 +88,13 @@ fn chrome_install(startup: &crate::config::Startup, options: &[&str]) -> (ExitCo
     arguments.extend_from_slice(options);
     let (_, parsed) = crate::cli::parse(&arguments).unwrap();
     let mut output = Vec::new();
-    let exit = install_with_output(&parsed, startup, true, &mut output);
+    let exit = install_with_output(
+        &parsed,
+        startup,
+        true,
+        &mut output,
+        &crate::auth::Drive::default(),
+    );
     (exit, output)
 }
 
@@ -221,3 +239,5 @@ fn install_chrome_remove_takes_back_a_new_manifest() {
         assert!(!path.exists());
     }
 }
+
+mod drive;

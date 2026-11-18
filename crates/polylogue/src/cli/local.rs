@@ -143,14 +143,20 @@ pub fn browser_host(
     )
 }
 
-/// Install into a harness or Chrome, or print a shell completion script.
+/// Install harness hooks, browser or shell integration, or Drive authorization.
 pub fn install(
     _: &Command,
     v: &command_surface::ParsedCommand,
     startup: &crate::config::Startup,
     json: bool,
 ) -> ExitCode {
-    install_with_output(v, startup, json, &mut std::io::stdout().lock())
+    install_with_output(
+        v,
+        startup,
+        json,
+        &mut std::io::stdout().lock(),
+        &crate::auth::Drive::default(),
+    )
 }
 
 fn install_with_output(
@@ -158,6 +164,7 @@ fn install_with_output(
     startup: &crate::config::Startup,
     json: bool,
     output: &mut dyn std::io::Write,
+    drive: &crate::auth::Drive,
 ) -> ExitCode {
     let arguments: arguments::Install = match serde_json::from_value(v.request.arguments.clone()) {
         Ok(arguments) => arguments,
@@ -209,6 +216,9 @@ fn install_with_output(
             arguments.dry_run,
             output,
         );
+    }
+    if target == "drive" {
+        return install_drive(v, startup, &arguments, json, output, drive);
     }
     if arguments.dry_run {
         return not_built("--dry-run");
@@ -272,6 +282,100 @@ fn install_with_output(
             startup.output,
             json,
             polylogue_model::Code::Io,
+            &error.to_string(),
+            1,
+        ),
+    }
+}
+
+fn install_drive(
+    parsed: &command_surface::ParsedCommand,
+    startup: &crate::config::Startup,
+    arguments: &arguments::Install,
+    json: bool,
+    output: &mut dyn std::io::Write,
+    drive: &crate::auth::Drive,
+) -> ExitCode {
+    let result = (|| -> std::io::Result<()> {
+        let archive = polylogue_store::Archive::at(&startup.config.archive);
+        let path = polylogue_sources::ai_studio::drive::token_path(&archive.root);
+        let client_id = if arguments.remove || path.exists() || !archive.root.exists() {
+            None
+        } else {
+            let pool = polylogue_store::ReadPool::serving(
+                &archive,
+                1,
+                startup
+                    .engine
+                    .reader_memory_per_connection()
+                    .map_err(std::io::Error::other)?,
+            )
+            .map_err(std::io::Error::other)?;
+            let reader = pool.reader().map_err(std::io::Error::other)?;
+            match reader
+                .setting_value("drive.client_id", &startup.config.identity.machine)
+                .map_err(std::io::Error::other)?
+            {
+                Some(polylogue_model::settings::Value::Text(value)) => Some(value),
+                _ => None,
+            }
+        };
+        let wait = match parsed.request.deadline {
+            command_surface::Deadline::Default => Some(std::time::Duration::from_secs(600)),
+            command_surface::Deadline::None => None,
+            command_surface::Deadline::Milliseconds(ms) => {
+                Some(std::time::Duration::from_millis(ms))
+            }
+        };
+        let report = drive.install(
+            &archive.root,
+            client_id.as_deref(),
+            arguments.remove,
+            arguments.dry_run,
+            wait,
+        )?;
+        if json {
+            writeln!(
+                output,
+                "{}",
+                serde_json::to_string(&report).map_err(std::io::Error::other)?
+            )?;
+        } else {
+            use crate::auth::Installation;
+            match report {
+                Installation::Authorized { path } => {
+                    writeln!(output, "Drive authorized; credentials: {}", path.display())?
+                }
+                Installation::AuthorizationPreview { url, scope } => {
+                    writeln!(output, "Authorize {scope}:\n{url}")?
+                }
+                Installation::Removed { path } => writeln!(
+                    output,
+                    "Drive authorization revoked and {} removed",
+                    path.display()
+                )?,
+                Installation::RemovalPreview { path } => writeln!(
+                    output,
+                    "would revoke Drive authorization and remove {}",
+                    path.display()
+                )?,
+                Installation::NotAuthorized { path } => {
+                    writeln!(output, "no Drive authorization at {}", path.display())?
+                }
+            }
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => fail(
+            startup.output,
+            json,
+            if error.kind() == std::io::ErrorKind::InvalidInput {
+                polylogue_model::Code::BadValue
+            } else {
+                polylogue_model::Code::Io
+            },
             &error.to_string(),
             1,
         ),

@@ -12,6 +12,20 @@ pub fn write_atomic(
     bytes: &[u8],
     permissions: Option<fs::Permissions>,
 ) -> io::Result<()> {
+    write(path, bytes, permissions, false)
+}
+
+/// Publishes a complete private file without replacing an existing destination.
+pub fn write_atomic_if_absent(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    write(path, bytes, None, true)
+}
+
+fn write(
+    path: &Path,
+    bytes: &[u8],
+    permissions: Option<fs::Permissions>,
+    new: bool,
+) -> io::Result<()> {
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -22,7 +36,11 @@ pub fn write_atomic(
     }
     file.write_all(bytes)?;
     file.as_file().sync_all()?;
-    file.persist(path).map_err(|error| error.error)?;
+    if new {
+        file.persist_noclobber(path).map_err(|error| error.error)?;
+    } else {
+        file.persist(path).map_err(|error| error.error)?;
+    }
     fs::File::open(parent)?.sync_all()
 }
 

@@ -567,3 +567,80 @@ fn a_commit_without_catalog_changes_writes_nothing() {
         assert!(cache.session_details(id).unwrap().is_some(), "{id}");
     }
 }
+
+#[test]
+fn historical_drive_intent_is_removed_from_initial_and_incremental_completions() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("catalog");
+    let archive = polylogue_store::fixture::writer::WriterArchive::new();
+    let requests = super::super::tests::request_metadata();
+    let set = |id: &str, value: &str| {
+        archive
+            .writer
+            .user(requests.request(
+                id.into(),
+                polylogue_model::user::UserWrite::SetSetting {
+                    key: "drive.ai-studio".into(),
+                    value: value.into(),
+                    machine: None,
+                },
+                polylogue_model::authorship::Authorship {
+                    author: polylogue_model::Author::Operator,
+                    via: polylogue_model::authorship::Channel::Cli,
+                },
+            ))
+            .unwrap();
+    };
+    set("old-off", "off");
+    let mut state = State::new(false, requests.clone());
+    {
+        let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
+        let reader = reads.reader().unwrap();
+        state.refresh(&reader, &path, "synthetic").unwrap();
+        let cache = completion::CatalogReader::open(&path, "synthetic")
+            .unwrap()
+            .unwrap();
+        assert!(cache.settings("drive.ai-studio").unwrap().is_empty());
+        assert_eq!(cache.settings("drive.client_id").unwrap().len(), 1);
+        // Simulate a cache written by the preceding build, then update the
+        // retained authored intent through the normal replay owner.
+        let old = completion::Setting {
+            key: "drive.ai-studio".into(),
+            value: reader
+                .setting_current("drive.ai-studio", "synthetic-host")
+                .unwrap(),
+            choices: vec!["on".into(), "off".into()],
+        };
+        state
+            .writer
+            .as_mut()
+            .unwrap()
+            .1
+            .update(&cache.metadata, |writer| writer.put_setting(&old))
+            .unwrap();
+    }
+    assert_eq!(
+        completion::CatalogReader::open(&path, "synthetic")
+            .unwrap()
+            .unwrap()
+            .settings("drive.ai-studio")
+            .unwrap()
+            .len(),
+        1
+    );
+    set("old-on", "on");
+    let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
+    let reader = reads.reader().unwrap();
+    assert!(reader.change_position().unwrap().archive > state.position.as_ref().unwrap().archive);
+    state.refresh(&reader, &path, "synthetic").unwrap();
+    let cache = completion::CatalogReader::open(&path, "synthetic")
+        .unwrap()
+        .unwrap();
+    assert!(cache.settings("drive.ai-studio").unwrap().is_empty());
+    assert_eq!(
+        reader
+            .setting_value("drive.ai-studio", "synthetic-host")
+            .unwrap(),
+        Some(polylogue_model::settings::Value::Boolean(true))
+    );
+}

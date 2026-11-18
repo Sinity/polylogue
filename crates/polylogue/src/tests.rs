@@ -138,18 +138,20 @@ fn every_catalog_key_changes_an_output() {
         ("browser.actions", "on", &[], |s| {
             format!("{:?}", s.browser_actions())
         }),
-        ("drive.ai-studio", "on", &[], |s| {
-            // The ai-studio collector runs only while its declared setting is on.
-            let collector = polylogue_sources::ORIGINS
-                .iter()
-                .filter_map(|origin| origin.collector.as_ref())
-                .find(|collector| collector.setting == Some("drive.ai-studio"))
-                .expect("a collector reads drive.ai-studio");
-            let on = matches!(
-                s.get(collector.setting.unwrap()),
-                Ok(Some(Value::Boolean(true)))
-            );
-            format!("runs: {on}")
+        ("drive.client_id", "synthetic-client", &[], |settings| {
+            let id = match settings.get("drive.client_id") {
+                Ok(Some(Value::Text(value))) => value.to_string(),
+                _ => String::new(),
+            };
+            crate::auth::consent_url(
+                "https://accounts.example/authorize",
+                &id,
+                "http://127.0.0.1:1234/",
+                "synthetic-state",
+                "synthetic-verifier",
+            )
+            .unwrap()
+            .to_string()
         }),
         ("reading.variants", r#"["translation:pl"]"#, &[], |s| {
             format!("{:?}", s.reading_variants())

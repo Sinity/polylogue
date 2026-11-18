@@ -368,3 +368,58 @@ fn resume_after_pruned_revision_continues_from_next_newer() {
         .retain(|(id, _)| id != "r1" && id != "r2");
     assert_eq!(walk(&c), ["r3", "r4"]);
 }
+
+#[test]
+fn legacy_token_does_not_authorize_new_collector_or_advance_pending_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = dir.path().join("archive");
+    let state = dir.path().join("state/polylogue");
+    let spool = state.join("drive/ai-studio");
+    std::fs::create_dir_all(&archive).unwrap();
+    std::fs::create_dir_all(&spool).unwrap();
+    let legacy = state.join("token.json");
+    let bytes = br#"{"type":"authorized_user","client_id":"legacy","client_secret":"legacy-secret","refresh_token":"legacy-refresh"}"#;
+    std::fs::write(&legacy, bytes).unwrap();
+    let pending = Drive {
+        endpoints: Endpoints::default(),
+        token_path: token_path(&archive),
+        spool: spool.clone(),
+    }
+    .keep_revision("1AbC", Some(revision("r1")), b"retained pending body")
+    .unwrap()
+    .body;
+    let paths = crate::origin::CollectorPaths {
+        home: dir.path(),
+        archive: &archive,
+        spool: &spool,
+    };
+    assert!(COLLECTOR.setting.is_none());
+    let messages = (COLLECTOR.sync)(&paths, &std::sync::atomic::AtomicBool::new(false));
+    assert!(
+        messages.is_empty(),
+        "not signing in is not a collector fault: {messages:?}"
+    );
+    assert!(needs_authorization(&archive));
+    (COLLECTOR.advance.unwrap())(&paths, &mut |_, _, _| {
+        panic!("unauthorized collector must not publish pending bytes")
+    })
+    .unwrap();
+    assert_eq!(std::fs::read(legacy).unwrap(), bytes);
+    assert_eq!(std::fs::read(pending).unwrap(), b"retained pending body");
+    assert!(!token_path(&archive).exists());
+}
+
+#[test]
+fn invalid_present_credentials_are_reported_instead_of_treated_as_unauthorized() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(token_path(dir.path()), b"not a credential record").unwrap();
+    assert!(!needs_authorization(dir.path()));
+    let paths = crate::origin::CollectorPaths {
+        home: dir.path(),
+        archive: dir.path(),
+        spool: &dir.path().join("spool"),
+    };
+    let errors = (COLLECTOR.sync)(&paths, &std::sync::atomic::AtomicBool::new(false));
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0].contains("Drive token"), "{errors:?}");
+}

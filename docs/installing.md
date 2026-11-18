@@ -33,7 +33,7 @@ Zsh installation adds a marked source block to `$ZDOTDIR/.zshrc`, using the home
 
 Alt-p runs `NAME recent pick` and inserts each chosen reference as one quoted shell word at the cursor. The picker draws on the terminal while the binding captures only its reference output. Cancelling inserts nothing.
 
-**Drive.** `install drive` runs Google's one-time consent for read access to the operator's AI Studio prompts, through a loopback redirect, and stores the refresh token in a file readable only by the user in the archive directory. It uses the OAuth client ID the operator registered with Google, read from the setting `drive.client_id`; until that is set it refuses with the line that sets it (`polylogue set drive.client_id ID`). The Drive collector starts once the token exists; `install drive --remove` revokes the token and deletes the file.
+**Drive.** `install drive` runs Google's one-time consent for read access to the operator's AI Studio prompts, through a loopback redirect, and stores the refresh token in a file readable only by the user at `drive-token.json` in the archive directory. The loopback flow uses PKCE and requests offline access. It uses the OAuth client ID the operator registered with Google, read from the setting `drive.client_id`; until that is set it refuses with the line that sets it (`polylogue set drive.client_id ID`). The Drive collector starts once the token exists; `install drive --remove` revokes the token and deletes the file. Failed authorization leaves no token; failed revocation keeps the existing file. Repeating installation keeps the authorized token unchanged. A legacy token outside the archive is left in place and does not authorize the current collector.
 
 ## Configuration
 

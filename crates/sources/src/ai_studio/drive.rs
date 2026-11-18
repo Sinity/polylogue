@@ -1,8 +1,7 @@
 //! The AI Studio collector: reads the prompts AI Studio
 //! saves in the operator's Drive and writes them into the spool the
-//! `ai-studio` origin watches. It runs only when the setting
-//! `drive.ai-studio` is `on`, with the OAuth token the operator authorized
-//! (`$XDG_STATE_HOME/polylogue/token.json`, Google's authorized-user format).
+//! `ai-studio` origin watches. It runs only with the archive's explicitly
+//! authorized `drive-token.json`, in Google's authorized-user format.
 //!
 //! Each prompt has one immutable pending revision. Its bytes are published at
 //! `<fileId>.json` until the engine acknowledges that the archive stored them. Only
@@ -16,8 +15,17 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// The setting that turns the collector on.
-pub const SETTING: &str = "drive.ai-studio";
+/// One credential location shared by authorization and collection.
+pub fn token_path(archive: &Path) -> PathBuf {
+    archive.join("drive-token.json")
+}
+/// No archive credential has been published. Present but unreadable or invalid
+/// credentials still reach the collector and report their actual error.
+pub fn needs_authorization(archive: &Path) -> bool {
+    std::fs::symlink_metadata(token_path(archive))
+        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+}
+pub const SCOPE: &str = "https://www.googleapis.com/auth/drive.readonly";
 const FOLDER: &str = "Google AI Studio";
 const FOLDER_MIME: &str = "application/vnd.google-apps.folder";
 const STATE: &str = ".revisions.json";
@@ -66,11 +74,27 @@ pub struct SyncReport {
     pub pending: usize,
 }
 
-#[derive(Deserialize)]
-struct AuthorizedUser {
-    client_id: String,
-    client_secret: String,
-    refresh_token: String,
+#[derive(Serialize, Deserialize)]
+pub struct AuthorizedUser {
+    #[serde(rename = "type", default = "authorized_user")]
+    kind: String,
+    pub client_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
+    pub refresh_token: String,
+}
+fn authorized_user() -> String {
+    "authorized_user".into()
+}
+impl AuthorizedUser {
+    pub fn new(client_id: String, refresh_token: String) -> Self {
+        Self {
+            kind: authorized_user(),
+            client_id,
+            client_secret: None,
+            refresh_token,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -82,12 +106,12 @@ struct Revision {
 
 impl Drive {
     pub fn sync(&self) -> Result<SyncReport, DriveError> {
+        let token = self.access_token()?;
         let state = self.load_state()?;
         let pending = self.pending_revisions()?;
         for revision in pending.values() {
             self.publish(revision)?;
         }
-        let token = self.access_token()?;
         let agent = ureq::Agent::new_with_defaults();
         let get = |url: &str, query: &[(&str, &str)]| -> Result<Vec<u8>, DriveError> {
             let mut req = agent
@@ -213,15 +237,24 @@ impl Drive {
 
     fn access_token(&self) -> Result<String, DriveError> {
         let err = |m: String| DriveError::Token(self.token_path.clone(), m);
-        let raw = std::fs::read(&self.token_path).map_err(|e| err(e.to_string()))?;
+        let raw = std::fs::read(&self.token_path).map_err(|error| {
+            err(if error.kind() == std::io::ErrorKind::NotFound {
+                "not authorized; run `polylogue install drive`".into()
+            } else {
+                error.to_string()
+            })
+        })?;
         let user: AuthorizedUser = serde_json::from_slice(&raw).map_err(|e| err(e.to_string()))?;
+        let mut form = vec![
+            ("client_id", user.client_id.as_str()),
+            ("refresh_token", user.refresh_token.as_str()),
+            ("grant_type", "refresh_token"),
+        ];
+        if let Some(secret) = user.client_secret.as_deref() {
+            form.push(("client_secret", secret));
+        }
         let mut resp = ureq::post(&self.endpoints.token)
-            .send_form([
-                ("client_id", user.client_id.as_str()),
-                ("client_secret", user.client_secret.as_str()),
-                ("refresh_token", user.refresh_token.as_str()),
-                ("grant_type", "refresh_token"),
-            ])
+            .send_form(form)
             .map_err(|e| err(format!("refresh failed: {e}")))?;
         let v: serde_json::Value = resp
             .body_mut()
@@ -547,23 +580,29 @@ fn write_if_changed(path: &Path, bytes: &[u8]) -> Result<(), DriveError> {
 }
 
 /// The origin's collector: Google's Drive, the token the operator
-/// authorized in `state_dir`, and the origin's spool.
+/// explicitly authorized in its archive, and the origin's spool.
 pub const COLLECTOR: crate::origin::Collector = crate::origin::Collector {
     background: false,
     advance: Some(|paths, accepted| {
+        if !token_path(paths.archive).is_file() {
+            return Ok(());
+        }
         Drive {
             endpoints: Endpoints::default(),
-            token_path: paths.state_dir.join("token.json"),
+            token_path: token_path(paths.archive),
             spool: paths.spool.to_path_buf(),
         }
         .advance(accepted)
         .map_err(|e| e.to_string())
     }),
-    setting: Some(SETTING),
+    setting: None,
     sync: |paths, _stop| {
+        if needs_authorization(paths.archive) {
+            return Vec::new();
+        }
         Drive {
             endpoints: Endpoints::default(),
-            token_path: paths.state_dir.join("token.json"),
+            token_path: token_path(paths.archive),
             spool: paths.spool.to_path_buf(),
         }
         .sync()

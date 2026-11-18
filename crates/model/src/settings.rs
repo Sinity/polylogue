@@ -39,9 +39,9 @@ pub const CATALOG: &[Declaration] = &[
         standalone_only: false,
     },
     Declaration {
-        key: "drive.ai-studio",
-        kind: Kind::Boolean,
-        default: Some("off"),
+        key: "drive.client_id",
+        kind: Kind::Text,
+        default: None,
         scope: Scope::Archive,
         standalone_only: false,
     },
@@ -229,9 +229,27 @@ pub enum Error {
     #[error("runtime setting {0:?} is owned by Sinex in primary mode")]
     SinexOwned(String),
 }
+// These declarations interpret retained authored intent, not current controls.
+const HISTORICAL: &[(Declaration, &str)] = &[(
+    Declaration {
+        key: "drive.ai-studio",
+        kind: Kind::Boolean,
+        default: Some("off"),
+        scope: Scope::Archive,
+        standalone_only: false,
+    },
+    "This setting is historical. Use `polylogue install drive` to authorize collection or `polylogue install drive --remove` to revoke it.",
+)];
+pub fn historical_hint(key: &str) -> Option<&'static str> {
+    HISTORICAL
+        .iter()
+        .find(|(declaration, _)| declaration.key == key)
+        .map(|(_, hint)| *hint)
+}
 pub fn declaration(key: &str) -> Result<&'static Declaration, Error> {
     CATALOG
         .iter()
+        .chain(HISTORICAL.iter().map(|(declaration, _)| declaration))
         .find(|declaration| {
             if let Some(prefix) = declaration.key.strip_suffix('*') {
                 key.strip_prefix(prefix).is_some_and(|name| {
