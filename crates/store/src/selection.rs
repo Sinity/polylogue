@@ -445,7 +445,7 @@ impl Reader<'_> {
                         })?;
                     if fixed
                         .get(index)
-                        .is_none_or(|target| target.stored_form() != at.row_identity)
+                        .is_none_or(|target| target.reference().stored_form() != at.row_identity)
                     {
                         return Err(E::from(SelectionError::invalid(
                             polylogue_model::Code::StaleCursor,
@@ -484,7 +484,7 @@ impl Reader<'_> {
                     aggregates: BTreeMap::new(),
                     position: OrderPosition {
                         values: vec![serde_json::json!(index)],
-                        row_identity: target.stored_form(),
+                        row_identity: target.reference().stored_form(),
                     },
                 })?
                 .is_break()
@@ -571,7 +571,7 @@ impl Reader<'_> {
                 let aggregates = aggregate_values(program, &row);
                 let row_identity = target
                     .as_ref()
-                    .map(Reference::stored_form)
+                    .map(|target| target.reference().stored_form())
                     .or_else(|| {
                         identity
                             .as_ref()
