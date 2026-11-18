@@ -48,6 +48,10 @@ fn the_save_transition_versions_changed_authored_kinds_and_keeps_the_old_manifes
     let previous: sinex_model::SourceDeclaration =
         serde_json::from_str(include_str!("../../tests/rebuild/source7.json")).unwrap();
     let current = declarations("polylogue");
+    let saved_transition: Value = serde_json::from_str(include_str!(
+        "../../tests/rebuild/source11-kind-hashes.json"
+    ))
+    .unwrap();
     assert!(
         previous
             .kinds
@@ -71,10 +75,22 @@ fn the_save_transition_versions_changed_authored_kinds_and_keeps_the_old_manifes
             .iter()
             .find(|kind| kind.kind.name == name)
             .unwrap();
-        let now = current.iter().find(|kind| kind.kind.name == name).unwrap();
-        assert_eq!(now.kind.name, old.kind.name);
-        assert_eq!(now.kind.version, old.kind.version + 1, "{name}");
-        assert_ne!(now.definition_hash(), old.definition_hash(), "{name}");
+        let then = saved_transition["kinds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|kind| kind["name"] == name)
+            .unwrap();
+        assert_eq!(
+            then["version"].as_u64().unwrap(),
+            u64::from(old.kind.version) + 1,
+            "{name}"
+        );
+        assert_ne!(
+            then["definition_hash"].as_str().unwrap(),
+            old.definition_hash(),
+            "{name}"
+        );
     }
     let journal = prepared(UserWrite::ResolveLine {
         request: json!({"selection":"sessions", "steps":[{"verb":"read"}]}),
@@ -197,4 +213,61 @@ fn the_save_transition_versions_changed_authored_kinds_and_keeps_the_old_manifes
             );
         }
     }
+}
+
+#[test]
+fn live_markdown_links_validate_and_decode_through_the_authored_kind() {
+    use polylogue_model::assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink};
+    let archive = polylogue_store::fixture::writer::WriterArchive::new();
+    let request = polylogue_store::fixture::authored::operator_request(
+        "markdown-note".into(),
+        UserWrite::Assert {
+            assertions: vec![NewAssertion {
+                kind: AssertionKind::Note,
+                key: None,
+                value: Some(json!(
+                    "[one](message:codex:one) ![two](message:codex:two \"card\")\n\
+                Source[^s].\n\n[^s]: [three](message:codex:three)"
+                )),
+                valid_until: None,
+                links: vec![NewAssertionLink {
+                    role: LinkRole::About,
+                    reference: polylogue_model::Reference::parse("session:codex:fixture").unwrap(),
+                }],
+            }],
+        },
+    );
+    archive.writer.user(request).unwrap();
+    let pool = polylogue_store::ReadPool::open(&archive.archive).unwrap();
+    let mut prepared = vec![];
+    pool.reader()
+        .unwrap()
+        .visit_authored(&mut |record| {
+            prepared.push(record.clone());
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(prepared.len(), 1);
+    let roles: Vec<_> = prepared[0].effect.assertions[0]
+        .links
+        .iter()
+        .map(|link| link.role)
+        .collect();
+    for role in [LinkRole::Mentions, LinkRole::Cites, LinkRole::Embeds] {
+        assert!(roles.contains(&role));
+    }
+    let product = Product::Request(prepared.pop().unwrap());
+    let declaration = declarations("polylogue")
+        .into_iter()
+        .find(|declaration| declaration.kind.name == kind(&product))
+        .unwrap();
+    let payload = payload(&product, 0).unwrap();
+    jsonschema::validator_for(declaration.payload_schema.as_ref().unwrap())
+        .unwrap()
+        .validate(&payload)
+        .unwrap();
+    assert_eq!(
+        decode_source(&declaration.kind, &declaration.definition_hash(), payload).unwrap(),
+        product
+    );
 }

@@ -1055,3 +1055,5 @@ fn primary_seen_noop_never_enters_the_spool_and_reopens_with_original_effect() {
     );
     assert_eq!(reopened.live_calls.load(Ordering::SeqCst), 0);
 }
+
+mod text_links;

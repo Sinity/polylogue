@@ -402,3 +402,49 @@ fn current_declarations_keep_every_source7_kind_version() {
         "immutable declaration changes: {changed:?}"
     );
 }
+
+#[test]
+fn markdown_link_roles_version_only_the_changed_authored_declarations() {
+    let old: serde_json::Value = serde_json::from_str(include_str!(
+        "../../tests/rebuild/source11-kind-hashes.json"
+    ))
+    .unwrap();
+    let previous = old["kinds"].as_array().unwrap();
+    let changed = [
+        "polylogue.assertion",
+        "polylogue.delivery",
+        "polylogue.delivery_outcome",
+        "polylogue.request",
+        "polylogue.request_restore",
+        "polylogue.line_resolution",
+        "polylogue.line_resolution_restore",
+        "polylogue.line_save",
+        "polylogue.line_save_restore",
+        "polylogue.assertion_restore",
+    ];
+    let current = declarations("polylogue");
+    assert_eq!(current.len(), previous.len());
+    assert_eq!(
+        u64::from(crate::source_reference().version),
+        old["source"]["version"].as_u64().unwrap() + 1
+    );
+    for declaration in current {
+        let name = declaration.kind.name.as_str();
+        let previous = previous.iter().find(|kind| kind["name"] == name).unwrap();
+        let version = previous["version"].as_u64().unwrap();
+        let hash = previous["definition_hash"].as_str().unwrap();
+        if changed.contains(&name) {
+            assert_eq!(u64::from(declaration.kind.version), version + 1, "{name}");
+            assert_ne!(declaration.definition_hash(), hash, "{name}");
+            let roles = declaration.payload_schema.as_ref().unwrap()["$defs"]["LinkRole"]["enum"]
+                .as_array()
+                .unwrap();
+            for role in ["mentions", "cites", "embeds"] {
+                assert!(roles.iter().any(|value| value == role), "{name}: {role}");
+            }
+        } else {
+            assert_eq!(u64::from(declaration.kind.version), version, "{name}");
+            assert_eq!(declaration.definition_hash(), hash, "{name}");
+        }
+    }
+}

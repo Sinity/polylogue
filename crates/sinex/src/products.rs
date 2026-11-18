@@ -707,18 +707,18 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                         *name,
                         "polylogue.line_save" | "polylogue.line_save_restore"
                     ) {
-                        2
+                        3
                     } else if matches!(
                         *name,
                         "polylogue.line_resolution" | "polylogue.line_resolution_restore"
                     ) {
-                        3
-                    } else if *name == "polylogue.assertion" {
                         4
+                    } else if *name == "polylogue.assertion" {
+                        5
                     } else {
                         match *product {
                             "message" => 8,
-                            "request" | "restored_request" => 8,
+                            "request" | "restored_request" => 9,
                             "session" => 7,
                             "document" | "event" | "link" | "background" | "repository" => 6,
                             "parse_progress" => 7,
@@ -726,7 +726,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                             "input" => 6,
                             "fragment" => 4,
                             "query_run" => 6,
-                            "restored_assertion" => 3,
+                            "restored_assertion" => 4,
                             "tool_call" | "prefix_copy" | "prefix_member" => 2,
                             "query_run_outcome" => 2,
                             "restored_history" | "attachment_binding" => 1,

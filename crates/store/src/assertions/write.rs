@@ -418,6 +418,33 @@ fn accept(
         let mut prepared = Vec::with_capacity(statements.len());
         for (index, original) in statements.iter().enumerate() {
             let mut statement = original.clone();
+            let text_links = statement
+                .text()
+                .map(polylogue_model::markdown::links)
+                .transpose()
+                .map_err(|error| crate::StoreError::Selection {
+                    code: match &error {
+                        polylogue_model::markdown::TextError::NotBuilt { .. } => {
+                            polylogue_model::Code::NotBuilt
+                        }
+                        _ => polylogue_model::Code::BadValue,
+                    },
+                    message: error.to_string(),
+                })?
+                .unwrap_or_default();
+            // These links follow the text, including when an edit clears it.
+            statement.links.retain(|link| {
+                !matches!(
+                    link.role,
+                    LinkRole::Mentions | LinkRole::Cites | LinkRole::Embeds
+                )
+            });
+            statement
+                .links
+                .extend(text_links.into_iter().map(|link| NewAssertionLink {
+                    role: link.role,
+                    reference: link.reference,
+                }));
             // A relation is a statement about the revision it relates to, so it
             // also points `about` it; "everything about X" is then one lookup.
             let relations: Vec<Reference> = statement

@@ -1,0 +1,155 @@
+{
+  "source_revision": "364d8ffebf8d7afed2d440d73ba08dffd452651b",
+  "merged_revision": "a2ad97d4345356a0398df220ae68060b34beca44",
+  "source": {
+    "name": "polylogue",
+    "version": 11
+  },
+  "source_fingerprint": "3039d2c443bc26aeea3ec7114bcf95b4ce3f421357523eff59cee59280c9a020",
+  "prepared": [
+    {
+      "request": {
+        "id": "pre-markdown-link",
+        "machine": "synthetic-machine",
+        "authorship": {
+          "author": "operator",
+          "via": "cli"
+        },
+        "at": "1970-01-01T00:00:00.001Z",
+        "write": {
+          "write": "assert",
+          "assertions": [
+            {
+              "kind": "note",
+              "key": null,
+              "value": "[source](https://example.test/source)",
+              "valid_until": null,
+              "links": [
+                {
+                  "role": "about",
+                  "reference": "session:codex:fixture"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "outcome": {
+        "id": "pre-markdown-link",
+        "repeat": false,
+        "pending": false
+      },
+      "effect": {
+        "assertions": [
+          {
+            "id": "pre-markdown-link",
+            "root": "pre-markdown-link",
+            "kind": "note",
+            "key": null,
+            "value": "[source](https://example.test/source)",
+            "author": "operator",
+            "via": "cli",
+            "machine": "synthetic-machine",
+            "created_at": "1970-01-01T00:00:00.001Z",
+            "valid_until": null,
+            "links": [
+              {
+                "role": "about",
+                "reference": "session:codex:fixture",
+                "seen_hash": null
+              }
+            ]
+          }
+        ],
+        "variants": {
+          "variants": [],
+          "variant_parts": []
+        },
+        "kept_results": [],
+        "deliveries": [],
+        "chats": [],
+        "backfills": []
+      }
+    },
+    {
+      "request": {
+        "id": "pre-markdown-session-citation",
+        "machine": "synthetic-machine",
+        "authorship": {
+          "author": "operator",
+          "via": "cli"
+        },
+        "at": "1970-01-01T00:00:00.001Z",
+        "write": {
+          "write": "assert",
+          "assertions": [
+            {
+              "kind": "note",
+              "key": null,
+              "value": "Source[^s].\n\n[^s]: [session](session:codex:fixture)",
+              "valid_until": null,
+              "links": [
+                {
+                  "role": "about",
+                  "reference": "session:codex:fixture"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "outcome": {
+        "id": "pre-markdown-session-citation",
+        "repeat": false,
+        "pending": false
+      },
+      "effect": {
+        "assertions": [
+          {
+            "id": "pre-markdown-session-citation",
+            "root": "pre-markdown-session-citation",
+            "kind": "note",
+            "key": null,
+            "value": "Source[^s].\n\n[^s]: [session](session:codex:fixture)",
+            "author": "operator",
+            "via": "cli",
+            "machine": "synthetic-machine",
+            "created_at": "1970-01-01T00:00:00.001Z",
+            "valid_until": null,
+            "links": [
+              {
+                "role": "about",
+                "reference": "session:codex:fixture",
+                "seen_hash": null
+              }
+            ]
+          }
+        ],
+        "variants": {
+          "variants": [],
+          "variant_parts": []
+        },
+        "kept_results": [],
+        "deliveries": [],
+        "chats": [],
+        "backfills": []
+      }
+    }
+  ],
+  "packed_client_requests": [
+    {
+      "id": "pre-markdown-link",
+      "content_hash_hex": "47F7AC7BA91D7BB241C09C3BA0A2FD39CA9F5BBF8B2392A399608C03360652D8",
+      "request_zstd_hex": "28B52FFD604E00450700D65032206067DB06061111BD7BDF8B2D1A877C2363133104B9323F307AFCA7800000840B280029002900D9B4E31D7CA38BE3B6F45347C6D2CEA577E18ECFD565A9C3D19955666CA2290CAB8391DC1CAFE89DDB14BD399D5377F0D9CA89A3172029113025022419483292C000727CABA3E7CAD6F14A1147E7D68A03EDB209C99A8352E471A06BBA17802417BFE60AC7E7630A71C4D85BFC2299A367B73D5E5965EE14F02ECF933CC9F3E4D70A35A02295B6709B3A976B93D3907CF47EED401D9FAC31B3CA98F63E03451F70040A002156B434063102F1A92E22408D03B2C442C0BAABC7CCF5474C3D",
+      "outcome_zstd_hex": "28B52FFD2039C901007B226964223A227072652D6D61726B646F776E2D6C696E6B222C22726570656174223A66616C73652C2270656E64696E67223A66616C73657D",
+      "effect_zstd_hex": "28B52FFD60C200E5080006953C204069DC067153565AAB4814D85043D0253E31194701A3EBF63AD2987686611810310032003500DB1827BF6753883852AAAD7B423A47CF66EB7766A9D38CEDD19DA5CA58088C71160F46EEF33BA35724775E4C7B9319AF08E9C848DAD9F44AE0DF736993F0707455E97754C4D197356E3EECF7654D373C7A40A1395B20D573C044160AC74F7703A0640A9D50C3259261E91653E64C2B370DB947EFC60EF0F7546C9DA54A69AFB6307A03E43804EE380A90C3400EE31820407E6F5C986CCC0D0B25B9B3526A70121E6093523711AA9239528D73977ED2395A28C99D7BF15912C59D7BA12E228E9485B268189B6565F2D1735B0E003EC998997D9BA37BEEFB6516A298F78EDB0676109611CF982BE99AC39B0F3E5018B4D7B30C"
+    },
+    {
+      "id": "pre-markdown-session-citation",
+      "content_hash_hex": "4783E6BDC07AAA81D07CF8A9A54998289063E7B7ECDDBEFD17B07FFAD4728CD5",
+      "request_zstd_hex": "28B52FFD606A00850700D61033215069AB034611112949B6056DFA13F22C6A7CCC2E50D58D5CD7C33F176154550D0C280029002900F0B9A5E33A4A6C5B97E6067C5E7917B6124767B7BD7A5962B7102A4CBC700AF35622E96B9E57F64E4E5E7BDFE2E80787528554CAE050E950490D101CCFF73A7ABE8D3DBF5671F4E77A3D6DDCF34EBED92507840D6C2824F080287BD1153CAFB12DC5516B91F30D658EAEEDF8798597B983E421BB45EFA710AE07CF933CC973C6FA14A1EFE81D5DC27A5E9B7B0C6F6BDB1C1194BD80BED88C45244315C7322041003281010C005450106445CB63102B881BC25DAC8CC0D8E403B2C442C0BAABC7CC758F987B",
+      "outcome_zstd_hex": "28B52FFD2045FD010052C40E15A0A56D4F2084808858BBC75262FB1FDDC6B8FF4108816F39621634517F3CBEE58839DDCF9187D564BA9441A9C9DD6F6961704047D4D1B119D38000",
+      "effect_zstd_hex": "28B52FFD60EA001D090006153D20504BD4062083FD657353CE727BC81379F9ECD7CE0CCA1CAC9885CBE8AAAA1A02310035003400D0D35ACFDE1FB2797A36DBDF97D5A619E3A72FD3C656552CD3D6B215DBC0968691A148767E5FF409E4DE966973B6864F040A199EAE4BFD8E0A3D9D5923A7C37E67C6F4834F17487EDA4111E7900B53179020009734056413366120690A482A7E98C1EFF92C0C9C88E4A7F7C316F0F75C8C9BD5B5B4F751163DC261180367180787511C466110141CBF372A4B3626ABA7426927D3FBD07ECF55265182DCDB5A8A68142E20A35239215DB93CADA7252BED64F31425C8BD35A3A320897BEB4565849E92288998868CB299EDE96A3310003EC998997D9BA37BEEFB65561443EA8C827788B6B283F08C78CA5C49D7DCB8F90CCBB5A383BB9522D51E"
+    }
+  ]
+}
