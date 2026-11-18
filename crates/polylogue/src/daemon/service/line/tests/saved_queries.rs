@@ -190,6 +190,19 @@ fn changing_a_saved_question_moves_its_existing_watch_to_the_exact_new_revision(
         session_ids(&rows(&d, "watched-current", "query:watched")),
         ["claude-code:s2".into()].into()
     );
+    let root = &first.saved.as_ref().unwrap().id;
+    let revision = &second.saved.as_ref().unwrap().id;
+    let withdrawal = crate::test_answers::step(agent(
+        &d,
+        "withdraw-watched",
+        json!({
+            "references":[format!("assertion:{root}@{revision}")],
+            "steps":[{"verb":"withdraw"}]
+        }),
+    ));
+    assert!(matches!(withdrawal, StepAnswer::Wrote(_)), "{withdrawal:?}");
+    assert_eq!(count(&d, "annotations where kind:(saved_query signal)"), 0);
+    assert_eq!(count(&d, "results"), 2);
 }
 
 #[test]
