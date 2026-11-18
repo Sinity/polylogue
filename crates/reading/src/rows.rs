@@ -4,7 +4,7 @@ use polylogue_store::selection::SelectionRow;
 
 pub(crate) enum Rows<'a> {
     Selection(&'a PreparedSelection<'a>),
-    Object(&'a ReadRecord),
+    Object(&'a ReadRecord, ReadRecordKind),
 }
 
 pub(crate) struct RowStart {
@@ -30,13 +30,13 @@ pub(crate) fn visit_rows(
     }
     let backwards = start.direction == ReadDirection::Before;
     let Rows::Selection(selection) = rows else {
-        let Rows::Object(record) = rows else {
+        let Rows::Object(record, kind) = rows else {
             unreachable!()
         };
         let at = SelectionLocator {
             row: start.place.map_or(0, |place| place.selection.row),
             record: ReadRecordLocator {
-                kind: ReadRecordKind::Authored,
+                kind: *kind,
                 ordinal: 0,
             },
         };

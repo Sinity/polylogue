@@ -171,6 +171,7 @@ pub enum ReadRecordKind {
     Link,
     Document,
     Authored,
+    Run,
     Variant,
     VariantPart,
     Blob,

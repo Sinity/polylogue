@@ -411,6 +411,14 @@ pub struct EditView {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Card {
+    Run {
+        question: Option<crate::Reference>,
+        read_at: crate::ChangePosition,
+        author: Author,
+        count: Option<u64>,
+        exact: Option<bool>,
+        outcome: Option<crate::query_objects::RunOutcome>,
+    },
     Fields {
         title: String,
         figures: Vec<Figure>,

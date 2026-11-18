@@ -26,7 +26,7 @@ pub mod scope;
 
 pub mod authored_read;
 mod object;
-pub use object::ObjectRead;
+pub use object::{ObjectRead, ObjectRecord};
 mod behind_index;
 mod completeness;
 pub use completeness::ReadingContract;

@@ -168,7 +168,8 @@ impl ObjectExecutionBinding {
             crate::Reference::Request(id) => !id.is_empty(),
             crate::Reference::Run(_) => matches!(
                 &self.presentation,
-                ExecutionPresentation::Read { options, .. } if options.view == crate::read::View::Raw
+                ExecutionPresentation::Read { options, .. }
+                    if matches!(options.view, crate::read::View::Transcript | crate::read::View::Raw)
             ),
             _ => false,
         };
@@ -366,9 +367,18 @@ pub struct QueryRunOutcome {
     pub next: Option<crate::read::ReadyCall>,
 }
 
+/// The original beginning and any recorded completion of one execution.
+/// An absent completion is pending, not an empty successful result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordedRun {
+    pub run: QueryRun,
+    pub outcome: Option<QueryRunOutcome>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ExecutionBindingError {
-    #[error("exact object execution requires a request read")]
+    #[error("exact object execution requires a request read or a transcript/raw run read")]
     ObjectTarget,
     #[error(transparent)]
     Read(#[from] crate::read::ReadError),

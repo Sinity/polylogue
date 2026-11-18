@@ -1253,7 +1253,7 @@ fn run_references_refuse_row_verbs_and_offer_the_recorded_run_reading() {
             "selection":reference, "steps":[{"verb":"read"}]
         }),
     ));
-    assert_eq!(pending_read.code.as_deref(), Some("not_built"));
+    assert_eq!(pending_read.code.as_deref(), Some("not_found"));
     assert_eq!(count(&d, "annotations"), 0);
     assert_eq!(count(&d, "results"), 0);
 }

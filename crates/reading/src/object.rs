@@ -12,10 +12,8 @@ fn accepted(operation: &crate::operation::Context) -> Result<Option<serde_json::
 }
 
 pub(super) fn target(request: &ReadRequest) -> Option<Result<Reference, Error>> {
-    let ReadRequest {
-        target, options, ..
-    } = request;
-    (target.starts_with("request:") || options.view == View::Raw && target.starts_with("run:"))
+    let target = &request.target;
+    (target.starts_with("request:") || target.starts_with("run:"))
         .then(|| Reference::parse(target).map_err(Error::bad_request))
 }
 
@@ -35,16 +33,27 @@ fn execute<T>(
         ReadFooter,
         &LayoutFacts,
         polylogue_model::BlobHash,
-    ) -> Result<T, Error>,
+    ) -> Result<(T, Option<ReadyCall>), Error>,
 ) -> Result<T, Error> {
     let (reading, _) = reading(request)?;
     let options = &reading.options;
     let format = reading.format;
     let budget = reading.budget;
     let delivery = request.delivery;
+    if matches!(&reference, Reference::Run(_))
+        && !matches!(options.view, View::Transcript | View::Raw)
+    {
+        return Err(ReadError::UnsupportedTarget {
+            view: options.view,
+            target: reference.to_string(),
+            accepted_views: vec![View::Transcript, View::Raw],
+        }
+        .into());
+    }
     let prepared = reader.prepare_object_read(&reference)?;
     let content_hash = prepared.content_hash();
     let record = prepared.into_record()?;
+    let is_run = matches!(&record, polylogue_store::read::ObjectRecord::Run(_));
     let scope = reader.scope_token();
     let positions = reader.change_position()?;
     let binding = ObjectExecutionBinding {
@@ -102,11 +111,15 @@ fn execute<T>(
                 incomplete: vec![],
             };
             let header = ReadHeader {
-                target: run_reference,
+                target: if is_run {
+                    reference.to_string()
+                } else {
+                    run_reference
+                },
                 view: options.view,
                 title: ValueState::NotApplicable,
                 kind: HeaderKind::Record {
-                    record_type: "accepted_request".into(),
+                    record_type: if is_run { "run" } else { "accepted_request" }.into(),
                 },
                 figures: vec![],
                 zone: Some(operation.clock.day.zone_name().to_owned()),
@@ -114,7 +127,7 @@ fn execute<T>(
             let facts = LayoutFacts {
                 authored: if matches!(&reference, Reference::Request(_)) {
                     Some(AuthoredSelection {
-                        selected: reference,
+                        selected: reference.clone(),
                         coverage: AuthoredCoverage::WholeRequest,
                     })
                 } else {
@@ -123,15 +136,63 @@ fn execute<T>(
                 ..Default::default()
             };
             let mut footer = ReadFooter::default();
-            let projected = output::project(
-                records::SelectedRecord::from(record),
-                options,
-                &facts,
-                false,
-                &mut footer,
-            )?;
-            let projected = projected.unwrap_or(ReadRecord::Presentation { parts: vec![] });
-            let value = run(
+            let projected = match record {
+                polylogue_store::read::ObjectRecord::Request(record) => output::project(
+                    records::SelectedRecord::from(*record),
+                    options,
+                    &facts,
+                    false,
+                    &mut footer,
+                )?
+                .unwrap_or(ReadRecord::Presentation { parts: vec![] }),
+                polylogue_store::read::ObjectRecord::Run(record) => {
+                    let kind = if options.view == View::Raw {
+                        ItemKind::Other {
+                            type_name: "run".into(),
+                            data: serde_json::to_value(&record).map_err(Error::internal)?,
+                        }
+                    } else {
+                        if let Some(question) = record.run.question
+                            && reader.query_object(&question.to_string(), None)?.is_some()
+                        {
+                            let query = Reference::Query {
+                                key: question.to_string(),
+                                parameters: vec![],
+                            };
+                            footer.next = Some(ReadyCall {
+                                request: command_surface::RunnableRequest::new(
+                                    "rows",
+                                    serde_json::json!({"selection":query.to_string()}),
+                                    format!("{id}-question"),
+                                ),
+                            });
+                        }
+                        ItemKind::Card {
+                            card: Box::new(Card::Run {
+                                question: record.run.question.map(|question| Reference::Query {
+                                    key: question.to_string(),
+                                    parameters: vec![],
+                                }),
+                                read_at: record.run.read_at.clone(),
+                                author: record.run.authorship.author.clone(),
+                                count: record.outcome.as_ref().and_then(|outcome| outcome.count),
+                                exact: record.outcome.as_ref().map(|outcome| outcome.exact),
+                                outcome: record
+                                    .outcome
+                                    .as_ref()
+                                    .map(|outcome| outcome.outcome.clone()),
+                            }),
+                        }
+                    };
+                    ReadRecord::Presentation {
+                        parts: vec![ReadPart::Item(ReadItem {
+                            source: Source::record(reference.to_string()),
+                            kind,
+                        })],
+                    }
+                }
+            };
+            let (value, next) = run(
                 projected,
                 snapshot,
                 header,
@@ -148,7 +209,7 @@ fn execute<T>(
                 value,
                 count: Some(1),
                 exact: true,
-                next: None,
+                next: if is_run { next } else { None },
             })
         },
     )
@@ -164,6 +225,11 @@ pub(super) fn page(
         Ok(reference) => reference,
         Err(error) => return Some(Err(error)),
     };
+    let kind = if matches!(&reference, Reference::Run(_)) {
+        ReadRecordKind::Run
+    } else {
+        ReadRecordKind::Authored
+    };
     Some(execute(
         reader,
         d,
@@ -177,13 +243,13 @@ pub(super) fn page(
                     "streaming reads require stream delivery",
                 ));
             }
-            rows_page(
+            let page = rows_page(
                 reader,
                 d,
                 request,
                 operation,
                 &reading,
-                &rows::Rows::Object(&record),
+                &rows::Rows::Object(&record, kind),
                 snapshot,
                 header,
                 ReadFraming::Object { run: id },
@@ -191,7 +257,9 @@ pub(super) fn page(
                 None,
                 Some(facts),
                 footer,
-            )
+            )?;
+            let next = page.document.footer.next.clone();
+            Ok((page, next))
         },
     ))
 }
@@ -207,6 +275,11 @@ pub(super) fn stream(
         Ok(reference) => reference,
         Err(error) => return Some(Err(error)),
     };
+    let kind = if matches!(&reference, Reference::Run(_)) {
+        ReadRecordKind::Run
+    } else {
+        ReadRecordKind::Authored
+    };
     Some(execute(
         reader,
         d,
@@ -215,19 +288,21 @@ pub(super) fn stream(
         reference,
         |record, snapshot, header, _, _, _, footer, facts, _| {
             let (reading, _) = reading(request)?;
-            rows_stream(
+            let complete = rows_stream(
                 reader,
                 d,
                 request,
                 &reading,
-                &rows::Rows::Object(&record),
+                &rows::Rows::Object(&record, kind),
                 snapshot,
                 header,
                 None,
                 Some(facts),
                 footer,
                 output,
-            )
+            )?;
+            let next = complete.footer.next.clone();
+            Ok((complete, next))
         },
     ))
 }
