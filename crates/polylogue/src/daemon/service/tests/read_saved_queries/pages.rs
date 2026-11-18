@@ -280,7 +280,8 @@ fn saved_query_stream_emits_history_records_before_selected_rows() {
     let operation = d.daemon.operation_context(&actor).unwrap();
     let reader = d.daemon.reads.reader().unwrap();
     let mut bytes = Vec::new();
-    polylogue_reading::stream(&reader, &d.daemon, &request, &operation, &mut bytes).unwrap();
+    polylogue_reading::stream(&reader, d.daemon.as_ref(), &request, &operation, &mut bytes)
+        .unwrap();
     let records = std::str::from_utf8(&bytes)
         .unwrap()
         .split("\n\n")
