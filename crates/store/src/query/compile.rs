@@ -103,10 +103,9 @@ pub struct Program {
     pub row_kind: RowKind,
     pub unit: Unit,
     pub shape: Shape,
-    /// Every supplying session source uses the logical-session default.
-    /// Mixed and retained rows do not carry an unambiguous logical grain.
+    /// The physical or logical meaning of a session row's native identity.
     #[serde(skip)]
-    pub logical_sessions: bool,
+    pub session_rows: SessionRows,
     /// The statements that select, page, count and read the answer's rows.
     pub statements: Statements,
     pub params: Vec<Param>,
@@ -157,6 +156,32 @@ pub struct Program {
     /// continues after the last row's values of these columns. Empty for a
     /// summary, which is one row.
     pub order: Vec<OrderKey>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SessionRows {
+    Physical,
+    Logical,
+    /// A private SQL coordinate, selected with the winning operand's values.
+    PerRow(String),
+}
+
+impl SessionRows {
+    pub fn logical(&self, row: &serde_json::Value) -> Option<bool> {
+        match self {
+            Self::Physical => Some(false),
+            Self::Logical => Some(true),
+            Self::PerRow(column) => row.get(column)?.as_i64().map(|value| value != 0),
+        }
+    }
+
+    fn sql(&self, alias: &str) -> String {
+        match self {
+            Self::Physical => "0".into(),
+            Self::Logical => "1".into(),
+            Self::PerRow(column) => format!("{alias}.{}", column_sql(column)),
+        }
+    }
 }
 
 /// One term of an answer's order: a column of the answer and its

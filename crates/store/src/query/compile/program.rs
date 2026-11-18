@@ -761,7 +761,11 @@ impl<'a> Compiler<'a> {
         let statements = self.program_statements(sql, keyed, row_count, row_membership);
         Program {
             row_kind,
-            logical_sessions,
+            session_rows: if logical_sessions {
+                SessionRows::Logical
+            } else {
+                SessionRows::Physical
+            },
             query: self.text.to_owned(),
             unit,
             shape,
