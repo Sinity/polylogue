@@ -281,7 +281,9 @@ const BARE_ITEMS: &[&str] = &[
 fn unwrap(v: &Json) -> Rec<'_> {
     let at = v.get("timestamp").and_then(time::rfc3339);
     let ordinal = v.u64("ordinal");
-    if let Some(payload) = v.get("payload").filter(|p| p.is_object()) {
+    if let Some(payload) = v.get("payload").filter(|p| p.is_object()).or_else(|| {
+        matches!(v.str("type"), Some("retained_context" | "realtime_item")).then_some(v)
+    }) {
         return Rec {
             ty: v.str("type").filter(|s| !s.is_empty()).unwrap_or("?"),
             payload,
