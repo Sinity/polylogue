@@ -112,7 +112,7 @@ impl SavedQuery {
             &self.query.dependents,
             self.dependents
                 .iter()
-                .map(|dependent| (&dependent.name, &dependent.revision))
+                .map(|dependent| (&dependent.name, dependent.revision.to_string()))
                 .collect::<Vec<_>>(),
         ))
         .map_err(Error::internal)
@@ -161,7 +161,7 @@ impl SavedQuery {
                             serde_json::json!({"selection":dependent.value.text,"steps":[step]});
                         let identity = canonical_json::canonical_hash(
                             "saved-query-resave",
-                            &(seed, &dependent.revision, &arguments),
+                            &(seed, dependent.revision.to_string(), &arguments),
                         )
                         .map_err(Error::internal)?;
                         resave.push(ReadyCall {

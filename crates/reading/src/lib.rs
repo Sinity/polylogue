@@ -373,6 +373,7 @@ fn record_run(
                     selection: &selection,
                     options: &compile.options,
                     ranking_identity: compile.ranking_identity,
+                    history: None,
                 },
                 history,
             )
@@ -401,6 +402,7 @@ fn record_compiled(
         selection,
         options,
         ranking_identity,
+        history: _,
     } = compiled;
     let object = selection.query_object()?;
     let query_options = polylogue_store::query::execute::options_snapshot(
