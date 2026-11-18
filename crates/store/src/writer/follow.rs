@@ -98,9 +98,21 @@ fn follow_once(
     queue: &WriterSender,
     index: &Connection,
 ) -> Result<Followed> {
-    let state = crate::primary::confirmed::replay_state(index)?;
+    // A denied or interrupted reset must obtain a fresh grant and replay
+    // from the beginning, even if Sinex later restores the same grant.
+    let state = match crate::primary::scope::require_readable(index) {
+        Ok(()) => crate::primary::confirmed::replay_state(index)?,
+        Err(StoreError::ScopeChanged) => crate::primary::ReplayState::default(),
+        Err(error) => return Err(error),
+    };
     let cache = crate::primary::cache_identity(index)?;
-    let page = sinex.confirmed(&state, &cache)?;
+    let page = match sinex.confirmed(&state, &cache) {
+        Err(denial @ StoreError::ConfirmedReadDenied(_)) => {
+            queue.0.ask(Msg::DenyPrimaryReads)?;
+            return Err(denial);
+        }
+        result => result?,
+    };
     queue.apply_confirmed(page)?;
     let applied = crate::primary::confirmed::replay_state(index)?;
     sinex.acknowledge(&applied, &|event| {

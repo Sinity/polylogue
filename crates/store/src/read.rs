@@ -374,7 +374,9 @@ impl ReadPool {
 
     /// Whether this pool reads a build in progress.
     pub(crate) fn reads_build(&self) -> bool {
-        self.reads == Reads::Pipeline && self.archive.index_build.building()
+        self.reads == Reads::Pipeline
+            && !self.archive.is_primary()
+            && self.archive.index_build.building()
     }
 
     fn connect(&self, path: &Path) -> Result<Connection> {
@@ -1451,12 +1453,21 @@ impl Reader<'_> {
 
     /// The content store the archive's bytes are read from.
     pub fn blob_store(&self) -> Result<crate::blobs::Blobs> {
-        self.pool.archive.blobs()
+        self.blob_reader()
     }
 
-    /// Existing content, with no writable handle or directory setup.
+    /// Use the byte catalog belonging to this reader's index snapshot.
     pub fn blob_reader(&self) -> Result<crate::blobs::Blobs> {
-        self.pool.archive.blob_reader()
+        self.conn()?;
+        let archive = &self.pool.archive;
+        if !archive.is_primary() {
+            return archive.blob_reader();
+        }
+        let (path, _, _) = self
+            .index_identity
+            .as_ref()
+            .expect("the reader has an index");
+        archive.blob_reader_at(path)
     }
 
     /// Reads a range of the selected stored attachment in this reader's read.

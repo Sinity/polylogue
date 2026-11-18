@@ -70,7 +70,7 @@ fn roundtrip(wrong_position: bool) {
                         let start = sinex_protocol::SnapshotStart { stream_instance: "stream".into(), last: Some(expected_last) };
                         assert_eq!(query.start, (!wrong_position).then_some(start));
                         assert_eq!(query.after, if wrong_position { 0 } else { 21 });
-                        reply(&daemon, request, ConfirmedConsumerReply::Refused { reason: "fixture finished".into() }).await;
+                        reply(&daemon, request, ConfirmedConsumerReply::Refused(sinex_protocol::FetchRefusal { kind: sinex_protocol::FetchRefusalKind::Unavailable, reason: "fixture finished".into() })).await;
                         break;
                     }
                     assert_eq!(query.after, 0);

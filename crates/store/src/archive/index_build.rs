@@ -21,6 +21,8 @@
 //! build's, serving readers keep reading it until the rename; otherwise reads
 //! answer [`StoreError::IndexBuilding`].
 
+pub(crate) mod primary;
+
 use crate::ConnExt as _;
 use crate::{Result, StoreError, archive::Archive, schema};
 use polylogue_model::LockExt;
@@ -122,6 +124,7 @@ impl std::fmt::Debug for State {
 #[derive(Default, Clone)]
 struct Inner {
     file: Option<BuildFile>,
+    primary: Option<primary::Build>,
     serving_previous: bool,
     chains: u64,
     chains_read: u64,
@@ -143,7 +146,9 @@ pub(crate) fn state(root: &Path) -> Arc<State> {
     // disk; the archive's open sets the state from what it prepares.
     let state = Arc::new(State::default());
     let paths = Paths::of(root);
-    let file = if paths.built.exists() {
+    let file = if primary::published(&paths) {
+        None
+    } else if paths.built.exists() {
         Some(BuildFile::Ready)
     } else if paths.build.exists() {
         Some(BuildFile::Writing)
@@ -168,6 +173,7 @@ impl Inner {
 
     fn pipeline_index<'a>(&self, paths: &'a Paths, primary: bool) -> &'a Path {
         match (primary, self.file) {
+            (true, _) if self.primary.is_some() => &paths.build,
             (false, Some(BuildFile::Writing)) => &paths.build,
             (false, Some(BuildFile::Ready)) => &paths.built,
             _ => &paths.index,
@@ -205,6 +211,7 @@ impl State {
     fn set(&self, file: Option<BuildFile>, serving_previous: bool) {
         let mut inner = self.inner();
         inner.file = file;
+        inner.primary = None;
         inner.serving_previous = file.is_some() && serving_previous;
     }
 
