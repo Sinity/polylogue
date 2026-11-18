@@ -1,15 +1,23 @@
 use super::*;
 use std::process::Command;
+use std::time::Duration;
 
 #[test]
 fn terminal_identity_needs_adapter_process_and_window() {
+    let dir = tempfile::tempdir().unwrap();
     let environment = Environment {
         host: "synthetic-host".into(),
         boot: Some("synthetic-boot".into()),
         kitty_pid: Some(std::process::id()),
         kitty_window: Some("42".into()),
     };
-    let captured = snapshot("Stop", &json!({"cwd":"/synthetic"}), &environment);
+    let captured = snapshot(
+        "Stop",
+        &json!({"cwd":"/synthetic"}),
+        &environment,
+        &paths(dir.path()),
+        Instant::now() + Duration::from_secs(10),
+    );
     assert_eq!(captured["terminal_identity"]["host"], "synthetic-host");
     assert_eq!(captured["terminal_identity"]["adapter"], "kitty");
     assert_eq!(
@@ -23,9 +31,15 @@ fn terminal_identity_needs_adapter_process_and_window() {
         ..environment
     };
     assert!(
-        snapshot("Stop", &json!({}), &missing)
-            .get("terminal_identity")
-            .is_none()
+        snapshot(
+            "Stop",
+            &json!({}),
+            &missing,
+            &paths(dir.path()),
+            Instant::now() + Duration::from_secs(10)
+        )
+        .get("terminal_identity")
+        .is_none()
     );
 }
 
@@ -66,8 +80,12 @@ fn git_snapshot_records_common_directory_roots_and_head_from_git() {
     ]);
     let head = git(&["rev-parse", "HEAD"]);
     let common = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]);
-    let (identity, repository, unavailable) =
-        git_identity(dir.path(), Duration::from_secs(10)).unwrap();
+    let (identity, repository, unavailable) = git_identity(
+        dir.path(),
+        &paths(dir.path()),
+        Instant::now() + Duration::from_secs(10),
+    )
+    .unwrap();
     assert!(unavailable.is_empty());
     assert_eq!(identity["common_dir"], common);
     assert_eq!(identity["root_commits"], json!([head]));
@@ -108,7 +126,12 @@ fn the_session_start_snapshot_never_stores_remote_credentials() {
         "origin",
         "https://user:secret@example.test/synthetic.git",
     ]);
-    let (_, repository, _) = git_identity(dir.path(), Duration::from_secs(10)).unwrap();
+    let (_, repository, _) = git_identity(
+        dir.path(),
+        &paths(dir.path()),
+        Instant::now() + Duration::from_secs(10),
+    )
+    .unwrap();
     assert_eq!(
         repository.as_deref(),
         Some("https://example.test/synthetic.git")
@@ -118,7 +141,7 @@ fn the_session_start_snapshot_never_stores_remote_credentials() {
 #[test]
 fn unavailable_git_stays_unknown_and_an_elapsed_budget_starts_no_probe() {
     let dir = tempfile::tempdir().unwrap();
-    assert!(git_identity(dir.path(), Duration::ZERO).is_err());
+    assert!(git_identity(dir.path(), &paths(dir.path()), Instant::now()).is_err());
     let captured = snapshot(
         "SessionStart",
         &json!({"cwd":dir.path()}),
@@ -128,6 +151,8 @@ fn unavailable_git_stays_unknown_and_an_elapsed_budget_starts_no_probe() {
             kitty_pid: None,
             kitty_window: None,
         },
+        &paths(dir.path()),
+        Instant::now() + Duration::from_secs(10),
     );
     assert!(captured.get("git_identity").is_none());
     assert!(
@@ -151,6 +176,8 @@ fn captured_stated_facts_survive_spooling_and_parsing() {
             kitty_pid: Some(std::process::id()),
             kitty_window: Some("42".into()),
         },
+        &paths(dir.path()),
+        Instant::now() + Duration::from_secs(10),
     );
     super::super::append_to_spool(
         dir.path(),
@@ -211,6 +238,126 @@ fn git_identity_roots_equal_across_products() {
     ]);
     let mut both = vec![first, second];
     both.sort();
-    let (identity, _, _) = git_identity(dir.path(), Duration::from_secs(20)).unwrap();
+    let (identity, _, _) = git_identity(
+        dir.path(),
+        &paths(dir.path()),
+        Instant::now() + Duration::from_secs(20),
+    )
+    .unwrap();
     assert_eq!(identity["root_commits"], json!(both));
+}
+
+fn paths(root: &Path) -> Paths {
+    Paths {
+        home: root.into(),
+        config: root.join("config"),
+        data: root.join("data"),
+        cache: root.join("cache"),
+        runtime: root.join("runtime"),
+    }
+}
+
+#[test]
+fn known_roots_are_reused_from_the_working_tree_cache() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = paths(dir.path());
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    git(&["init", "--initial-branch=main"]);
+    let commit = || {
+        git(&[
+            "-c",
+            "user.name=Synthetic",
+            "-c",
+            "user.email=synthetic@example.test",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "synthetic",
+        ])
+    };
+    commit();
+    let observe = || {
+        git_identity(dir.path(), &paths, Instant::now() + Duration::from_secs(10))
+            .unwrap()
+            .0
+    };
+    let first = observe();
+    let file = paths.git_roots(dir.path());
+    let mut known: ::git_identity::KnownRoots =
+        serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    known.root_commits.push("known-root-sentinel".into());
+    std::fs::write(&file, serde_json::to_vec(&known).unwrap()).unwrap();
+    let reused = observe();
+    assert!(
+        reused["root_commits"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("known-root-sentinel"))
+    );
+    git(&["branch", "-m", "renamed"]);
+    assert_eq!(observe()["branch"], "renamed");
+    commit();
+    let moved = observe();
+    assert_ne!(moved["head"], first["head"]);
+    assert_eq!(moved["root_commits"], reused["root_commits"]);
+    git(&["checkout", "--orphan", "unrelated"]);
+    commit();
+    let unrelated = observe();
+    assert_eq!(
+        unrelated["root_commits"],
+        json!([git(&["rev-parse", "HEAD"])])
+    );
+    std::fs::write(&file, b"partial cache").unwrap();
+    assert_eq!(observe(), unrelated);
+    let restored: ::git_identity::KnownRoots =
+        serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+    assert_eq!(json!(restored.root_commits), unrelated["root_commits"]);
+}
+
+#[test]
+fn an_unwritable_derived_cache_keeps_the_observed_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut paths = paths(dir.path());
+    paths.cache = dir.path().join("not-a-directory");
+    std::fs::write(&paths.cache, b"synthetic").unwrap();
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["init", "--initial-branch=main"])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args([
+            "-c",
+            "user.name=Synthetic",
+            "-c",
+            "user.email=synthetic@example.test",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "root",
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let (identity, _, _) =
+        git_identity(dir.path(), &paths, Instant::now() + Duration::from_secs(10)).unwrap();
+    assert_eq!(identity["branch"], "main");
+    assert_eq!(identity["root_commits"], json!([identity["head"]]));
 }

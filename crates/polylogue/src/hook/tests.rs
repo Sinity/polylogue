@@ -141,7 +141,11 @@ fn context_uses_the_configured_archive_socket_and_clock() {
             request["arguments"],
             json!({"steps": [{"verb":"brief", "cwd":"/synthetic/project", "for":"codex:turn-1", "source":"startup"}]})
         );
-        assert_eq!(request["deadline"], 1500);
+        assert!(
+            request["deadline"]
+                .as_u64()
+                .is_some_and(|milliseconds| (1..=400).contains(&milliseconds))
+        );
         assert!(request.get("budget_tokens").is_none());
         let id = uuid::Uuid::parse_str(request["request_id"].as_str().unwrap()).unwrap();
         assert_eq!(id.get_timestamp().unwrap().to_unix().0, 1767225600);
@@ -155,6 +159,7 @@ fn context_uses_the_configured_archive_socket_and_clock() {
         "SessionStart",
         &json!({"session_id":"turn-1","cwd":"/synthetic/project"}),
         &startup,
+        Instant::now() + Duration::from_millis(400),
     );
     peer.join().unwrap();
     assert_eq!(
@@ -223,7 +228,7 @@ fn pasted_and_search_briefs_use_rows() {
             }));
             writeln!(stream, "{}", serde_json::to_string(&response).unwrap()).unwrap();
         });
-        let reply = context(&startup, ask, Some(1000));
+        let reply = context(&startup, ask, Some(1000), Instant::now() + CONTEXT_BUDGET);
         peer.join().unwrap();
         assert_eq!(reply, Some(("brief-1".into(), "prepared context".into())));
     }
@@ -233,8 +238,26 @@ fn pasted_and_search_briefs_use_rows() {
 fn each_harness_gets_context_in_its_own_shape() {
     // Without a daemon the hooks fail open: no context, no output.
     let start = json!({"session_id": "a", "cwd": "/nonexistent", "source": "startup"});
-    assert!(respond(Harness::Codex, "Stop", &start, &startup()).is_none());
-    assert!(respond(Harness::Hermes, "SessionStart", &start, &startup()).is_none());
+    assert!(
+        respond(
+            Harness::Codex,
+            "Stop",
+            &start,
+            &startup(),
+            Instant::now() + CONTEXT_BUDGET
+        )
+        .is_none()
+    );
+    assert!(
+        respond(
+            Harness::Hermes,
+            "SessionStart",
+            &start,
+            &startup(),
+            Instant::now() + CONTEXT_BUDGET
+        )
+        .is_none()
+    );
 }
 
 #[test]
@@ -728,6 +751,7 @@ fn a_context_timeout_emits_an_unreferenced_notice_and_names_only_the_original_pr
             source: StartSource::Startup,
         },
         None,
+        Instant::now() + CONTEXT_BUDGET,
     )
     .unwrap();
     peer.join().unwrap();
@@ -759,7 +783,11 @@ fn file_advisory_hook_uses_the_shared_request_and_silences_timeout() {
                 request["arguments"],
                 json!({"prompt":"Inspect src/parser.rs", "cwd":"/synthetic/project", "session":"codex:turn-1"})
             );
-            assert_eq!(request["deadline"], 20);
+            assert!(
+                request["deadline"]
+                    .as_u64()
+                    .is_some_and(|milliseconds| (1..=20).contains(&milliseconds))
+            );
             assert!(request.get("budget_tokens").is_none());
             let id = uuid::Uuid::parse_str(request["request_id"].as_str().unwrap()).unwrap();
             assert_eq!(id.get_timestamp().unwrap().to_unix().0, 1767225600);
@@ -783,6 +811,7 @@ fn file_advisory_hook_uses_the_shared_request_and_silences_timeout() {
             "UserPromptSubmit",
             &json!({"session_id":"turn-1","cwd":"/synthetic/project","prompt":"Inspect src/parser.rs"}),
             &startup,
+            Instant::now() + CONTEXT_BUDGET,
         );
         let listener = peer.join().unwrap();
         if timed_out {
@@ -805,7 +834,7 @@ fn prompt_without_a_path_needs_no_advisory_exchange() {
     let startup = Startup::for_test(startup().engine, dir.path());
     let listener = UnixListener::bind(Archive::at(dir.path()).socket()).unwrap();
     listener.set_nonblocking(true).unwrap();
-    assert!(respond(Harness::Codex, "UserPromptSubmit", &json!({"session_id":"turn-1","cwd":"/synthetic/project","prompt":"Continue the current work"}), &startup).is_none());
+    assert!(respond(Harness::Codex, "UserPromptSubmit", &json!({"session_id":"turn-1","cwd":"/synthetic/project","prompt":"Continue the current work"}), &startup, Instant::now() + CONTEXT_BUDGET).is_none());
     assert_eq!(
         listener.accept().unwrap_err().kind(),
         std::io::ErrorKind::WouldBlock
@@ -831,4 +860,54 @@ fn the_hook_spool_lives_under_the_state_directory() {
         engine.spool_dir(polylogue_sources::hook_spool::ORIGIN),
         Path::new("/synthetic/state/polylogue/hooks")
     );
+}
+
+#[test]
+fn an_elapsed_hook_deadline_sends_no_request_or_delivery() {
+    use std::os::unix::net::UnixListener;
+    let dir = tempfile::tempdir().unwrap();
+    let startup = Startup::for_test(startup().engine, dir.path());
+    let listener = UnixListener::bind(Archive::at(dir.path()).socket()).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let until = Instant::now();
+    let result = respond(
+        Harness::Codex,
+        "SessionStart",
+        &json!({"session_id":"turn-1", "cwd":"/synthetic/project"}),
+        &startup,
+        until,
+    );
+    assert_eq!(result, Some((String::new(), TIMEOUT_NOTICE.into())));
+    assert!(
+        claim(
+            &startup,
+            &SessionId::parse("codex:turn-1").unwrap(),
+            "UserPromptSubmit",
+            until
+        )
+        .is_none()
+    );
+    permission(
+        &startup,
+        &SessionId::parse("claude-code:turn-1").unwrap(),
+        &json!({}),
+        until,
+    );
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[test]
+fn expired_multi_session_context_emits_one_unreferenced_notice() {
+    let startup = startup();
+    let result = respond(
+        Harness::Codex,
+        "UserPromptSubmit",
+        &json!({"session_id":"turn-1", "prompt":"codex:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee codex:bbbbbbbb-cccc-dddd-eeee-ffffffffffff"}),
+        &startup,
+        Instant::now(),
+    );
+    assert_eq!(result, Some((String::new(), TIMEOUT_NOTICE.into())));
 }

@@ -36,13 +36,15 @@ use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How long a hook that brings context waits for the daemon. A brief's
 /// reads are bounded by what it reports and its sections stop before this
 /// deadline, so the hook gets the sections ready in time rather than
 /// nothing; session start never waits longer than this.
 const CONTEXT_BUDGET: Duration = Duration::from_millis(1_500);
+const TIMEOUT_NOTICE: &str =
+    "Polylogue context timed out; continue with the current task and local instructions.";
 /// How long the hook waits to hand a delivery's outcome to the daemon,
 /// which queues it and answers at once.
 const DELIVERED_BUDGET: Duration = Duration::from_millis(20);
@@ -397,12 +399,21 @@ fn is_uuid(w: &str) -> bool {
 
 /// Asks for context and returns its text, recording it as delivered once
 /// it is handed to the harness by the caller.
-fn context(startup: &Startup, ask: Ask, budget_tokens: Option<u32>) -> Option<(String, String)> {
+fn context(
+    startup: &Startup,
+    ask: Ask,
+    budget_tokens: Option<u32>,
+    until: Instant,
+) -> Option<(String, String)> {
     let advisory = matches!(&ask, Ask::Advisory { .. });
+    let remaining = until.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return (!advisory).then(|| (String::new(), TIMEOUT_NOTICE.into()));
+    }
     let allowance = if advisory {
-        crate::advisory::BUDGET
+        remaining.min(crate::advisory::BUDGET)
     } else {
-        CONTEXT_BUDGET
+        remaining
     };
     let request_id = request_id(startup.clock.now()).ok()?;
     let (operation, arguments, cursor) = match ask {
@@ -510,11 +521,7 @@ fn context(startup: &Startup, ask: Ask, budget_tokens: Option<u32>) -> Option<(S
         if accepted.is_none_or(|answer| answer.failure().is_some()) {
             eprintln!("polylogue: could not hand the timed-out delivery outcome to the daemon");
         }
-        return Some((
-            String::new(),
-            "Polylogue context timed out; continue with the current task and local instructions."
-                .into(),
-        ));
+        return Some((String::new(), TIMEOUT_NOTICE.into()));
     }
     let answer = if advisory {
         let data = crate::protocol::into_value(reply.ok()?).ok()?;
@@ -589,6 +596,7 @@ fn start(
     payload: &Value,
     source: StartSource,
     startup: &Startup,
+    until: Instant,
 ) -> Option<(String, String)> {
     let cwd = payload["cwd"].as_str().map(PathBuf::from)?;
     context(
@@ -599,6 +607,7 @@ fn start(
             source,
         },
         None,
+        until,
     )
 }
 
@@ -608,6 +617,7 @@ fn takeovers(
     payload: &Value,
     prompt: &str,
     startup: &Startup,
+    until: Instant,
 ) -> Option<(String, String)> {
     let me = session_of(harness, payload, startup);
     let mut texts = Vec::new();
@@ -633,9 +643,14 @@ fn takeovers(
                 for_session: me.clone(),
             },
             Some(budget),
+            until,
         ) {
+            let timed_out = d.is_empty();
             deliveries.push(d);
             texts.push(t);
+            if timed_out {
+                break;
+            }
         }
     }
     if texts.is_empty() {
@@ -649,9 +664,10 @@ fn prompt_context(
     payload: &Value,
     prompt: &str,
     startup: &Startup,
+    until: Instant,
 ) -> Option<(String, String)> {
     if !pasted_session_ids(prompt).is_empty() {
-        return takeovers(harness, payload, prompt, startup);
+        return takeovers(harness, payload, prompt, startup, until);
     }
     if crate::advisory::paths(prompt).is_empty() {
         return None;
@@ -666,6 +682,7 @@ fn prompt_context(
             session,
         },
         None,
+        until,
     )
 }
 
@@ -675,6 +692,7 @@ pub fn respond(
     event: &str,
     payload: &Value,
     startup: &Startup,
+    until: Instant,
 ) -> Option<(String, String)> {
     match (harness, event) {
         (Harness::ClaudeCode | Harness::Codex | Harness::GeminiCli, "SessionStart") => start(
@@ -682,20 +700,29 @@ pub fn respond(
             payload,
             StartSource::parse(payload["source"].as_str().unwrap_or("startup")),
             startup,
+            until,
         ),
         (Harness::ClaudeCode | Harness::Codex, "UserPromptSubmit")
-        | (Harness::GeminiCli, "BeforeAgent") => {
-            prompt_context(harness, payload, payload["prompt"].as_str()?, startup)
-        }
+        | (Harness::GeminiCli, "BeforeAgent") => prompt_context(
+            harness,
+            payload,
+            payload["prompt"].as_str()?,
+            startup,
+            until,
+        ),
         // Hermes injects context only into a turn's prompt: the first
         // turn's carries the brief, and any turn's the takeovers it asks for.
         (Harness::Hermes, "pre_llm_call") => {
             let extra = &payload["extra"];
             let prompt = extra["user_message"].as_str().unwrap_or("");
             let brief = (extra["is_first_turn"].as_bool() == Some(true))
-                .then(|| start(harness, payload, StartSource::Startup, startup))
+                .then(|| start(harness, payload, StartSource::Startup, startup, until))
                 .flatten();
-            let takeover = prompt_context(harness, payload, prompt, startup);
+            let takeover = if brief.as_ref().is_some_and(|(id, _)| id.is_empty()) {
+                None
+            } else {
+                prompt_context(harness, payload, prompt, startup, until)
+            };
             match (brief, takeover) {
                 (Some((d1, t1)), Some((d2, t2))) => {
                     Some((format!("{d1},{d2}"), format!("{t1}\n\n{t2}")))
@@ -708,6 +735,7 @@ pub fn respond(
 }
 
 pub fn run(harness: Harness, event: &str, startup: &Startup) -> ExitCode {
+    let until = Instant::now() + CONTEXT_BUDGET;
     let mut input = String::new();
     let _ = std::io::stdin().read_to_string(&mut input);
     let payload: Value = serde_json::from_str(&input).unwrap_or(Value::Null);
@@ -715,6 +743,8 @@ pub fn run(harness: Harness, event: &str, startup: &Startup) -> ExitCode {
         event,
         &payload,
         &environment::Environment::observe(&startup.config.identity.host, &startup.hook),
+        &startup.config.paths,
+        until,
     );
     let spool = startup
         .engine
@@ -736,7 +766,7 @@ pub fn run(harness: Harness, event: &str, startup: &Startup) -> ExitCode {
         && event == "PermissionRequest"
         && let Some(session) = &session
     {
-        permission(startup, session, &payload);
+        permission(startup, session, &payload, until);
         return ExitCode::SUCCESS;
     }
     let recorder = EmissionRecorder {
@@ -759,8 +789,8 @@ pub fn run(harness: Harness, event: &str, startup: &Startup) -> ExitCode {
                 s,
             )
         })
-        .and_then(|s| claim(startup, s, event));
-    let responded = respond(harness, event, &payload, startup);
+        .and_then(|s| claim(startup, s, event, until));
+    let responded = respond(harness, event, &payload, startup, until);
     let mut ids: Vec<String> = Vec::new();
     let mut texts: Vec<String> = Vec::new();
     if let Some((deliveries, text)) = &responded {
@@ -794,13 +824,19 @@ pub fn accepts_mail(harness: Harness, event: &str) -> bool {
 
 /// Takes the session's pending pings and notices from the daemon: their
 /// delivery IDs and their texts joined.
-fn claim(startup: &Startup, session: &SessionId, event: &str) -> Option<(Vec<String>, String)> {
+fn claim(
+    startup: &Startup,
+    session: &SessionId,
+    event: &str,
+    until: Instant,
+) -> Option<(Vec<String>, String)> {
+    let remaining = until.checked_duration_since(Instant::now())?;
     let reply = ask_daemon(
         startup,
         "internal mail-claim",
         json!({ "session": session, "event": event }),
         polylogue_store::user_writes::new_request_id(),
-        CONTEXT_BUDGET,
+        remaining,
     )?;
     let data = crate::protocol::into_value(reply).ok()?;
     let items = data["deliveries"].as_array()?;
@@ -815,7 +851,10 @@ fn claim(startup: &Startup, session: &SessionId, event: &str) -> Option<(Vec<Str
 /// Claude Code's synchronous permission hook: a decision given ahead for
 /// the same tool and input is returned at once; with none, nothing is
 /// printed and the harness shows its own prompt.
-fn permission(startup: &Startup, session: &SessionId, payload: &Value) {
+fn permission(startup: &Startup, session: &SessionId, payload: &Value, until: Instant) {
+    let Some(remaining) = until.checked_duration_since(Instant::now()) else {
+        return;
+    };
     let Some(reply) = ask_daemon(
         startup,
         "internal permission",
@@ -825,7 +864,7 @@ fn permission(startup: &Startup, session: &SessionId, payload: &Value) {
             "input": payload["tool_input"],
         }),
         polylogue_store::user_writes::new_request_id(),
-        CONTEXT_BUDGET,
+        remaining,
     ) else {
         return;
     };
