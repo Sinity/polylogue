@@ -436,7 +436,19 @@ fn sparse_registered_context_keeps_full_hash_and_enriches_block_positions() {
                 block_ordinals: vec![ordinal as u64],
             },
         );
-        let (result, work) = apply(&mut conn, b);
+        b.parse[0].prepare();
+        let (_, input_bytes) = crate::text_rows::PreparedTexts::count_input_bytes(|| {
+            resolve::prepare_index(&conn, &mut b, 1, &resolve::IndexUpkeep::PerTransaction)
+                .unwrap();
+        });
+        let merged_bytes: usize = full
+            .blocks
+            .iter()
+            .filter_map(crate::encoding::block_text)
+            .map(str::len)
+            .sum();
+        assert_eq!(input_bytes, if ordinal == 0 { 0 } else { merged_bytes });
+        let (result, work) = apply_prepared(&mut conn, b);
         result.unwrap();
         // Enrichment reuses the first block's older text row, so its
         // context takes full validation while still consuming returned IDs.

@@ -12,7 +12,11 @@ fn fresh_message_selection_shares_one_value_through_preparation_and_spill() {
         vec![message.clone()],
         vec![reference(&message, "large")],
     );
-    resolve::prepare_index(&conn, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
+    b.parse[0].prepare();
+    let (_, input_bytes) = crate::text_rows::PreparedTexts::count_input_bytes(|| {
+        resolve::prepare_index(&conn, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
+    });
+    assert_eq!(input_bytes, 0, "resolver rehashed the prepared source text");
     let choices = &b.parse[0].resolution.as_ref().unwrap().choices;
     let choice = choices.messages.values().next().unwrap().as_ref().unwrap();
     let value = choices.selected_message(choice).unwrap().unwrap();
