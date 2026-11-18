@@ -472,6 +472,18 @@ fn backfill_claim_replays_its_original_job_and_preserves_reports() {
 #[test]
 fn pending_authored_records_are_never_confirmed() {
     let mut conn = cache();
+    let object = polylogue_query::plan::prepare(
+        "sessions",
+        &polylogue_query::Bindings {
+            origins: vec!["codex".into()],
+            ..Default::default()
+        },
+        |_| Ok(()),
+    )
+    .unwrap()
+    .query_object()
+    .unwrap();
+    crate::query_objects::apply_object(&conn, &object, 1).unwrap();
     let writes = [
         request(
             "note",
@@ -525,6 +537,7 @@ fn pending_authored_records_are_never_confirmed() {
         prepared.push(p);
     }
     let mut rebuilt = cache();
+    crate::query_objects::apply_object(&rebuilt, &object, 1).unwrap();
     for (n, p) in prepared.iter().enumerate() {
         let wire = serde_json::to_vec(p).unwrap();
         let restored: PreparedRequest = serde_json::from_slice(&wire).unwrap();

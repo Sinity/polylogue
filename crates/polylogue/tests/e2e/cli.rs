@@ -1577,7 +1577,11 @@ fn saved_query_retry_and_printed_undo_keep_immutable_results() {
     }
     for kind in ["saved_query", "signal"] {
         let out = cli(&env, &["--json", &format!("annotations where kind:{kind}")]);
-        assert!(out.status.success(), "{out:?}");
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "typed empty rows use exit 1: {out:?}"
+        );
         assert_eq!(json(&out)["reply"]["count"], 0);
     }
     for reference in [

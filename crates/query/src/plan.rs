@@ -366,6 +366,11 @@ fn prepare_inner(
 
         let expanded = query_language::bind::bind(&expanded, &catalog)
             .map_err(|e| QueryError::language(e, text))?;
+        let mut bindings = options.clone();
+        // Names are presentation bindings, never additional stored results.
+        // Every source in this plan now names the resolved immutable ID.
+        let aliases = &bindings.kept_names;
+        bindings.kept.retain(|name, _| !aliases.contains_key(name));
         Ok(Plan {
             saved_object: None,
             expanded,
@@ -374,7 +379,7 @@ fn prepare_inner(
             identity,
             catalog,
             definitions,
-            bindings: options.clone(),
+            bindings,
             saved_definitions,
             identity_catalog,
             question_id,

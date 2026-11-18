@@ -401,9 +401,30 @@ fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
         bases[0].revision = Some("first".into());
     }
     assert!(matches!(writer.user(changed), Err(StoreError::Conflict(_))));
+    let mut recorded = resolved;
+    let UserWrite::Save(save) = &mut recorded.write else {
+        unreachable!()
+    };
+    save.outcomes = Some(polylogue_model::user::SaveReport {
+        request: "resolved".into(),
+        saved: Some(polylogue_model::user::SavedPart {
+            id: "resolved".into(),
+            name: "everything".into(),
+            revision: 2,
+            new_revision: true,
+        }),
+        kept: polylogue_model::user::KeptPart {
+            result: "result:resolved".into(),
+            rows: 0,
+            at: recorded.at,
+        },
+        watch: None,
+        repeat: false,
+        pending: false,
+    });
     assert_eq!(
         reads.reader().unwrap().user_request("resolved").unwrap(),
-        Some(resolved)
+        Some(recorded)
     );
     assert_eq!(
         reads.reader().unwrap().user_request("explicit").unwrap(),

@@ -94,7 +94,7 @@ pub(super) fn withdrawal_targets(
             for watch in crate::assertions::named_current(conn, AssertionKind::Signal, &name)? {
                 let reference = Reference::Assertion(RevisionReference {
                     root: watch.fact.root,
-                    revision: Some(watch.fact.id),
+                    revision: wanted.revision.as_ref().map(|_| watch.fact.id),
                 });
                 if known.insert(reference.clone()) {
                     all.push(reference);

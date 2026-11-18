@@ -191,12 +191,11 @@ fn changing_a_saved_question_moves_its_existing_watch_to_the_exact_new_revision(
         ["claude-code:s2".into()].into()
     );
     let root = &first.saved.as_ref().unwrap().id;
-    let revision = &second.saved.as_ref().unwrap().id;
     let withdrawal = crate::test_answers::step(agent(
         &d,
         "withdraw-watched",
         json!({
-            "references":[format!("assertion:{root}@{revision}")],
+            "references":[format!("assertion:{root}")],
             "steps":[{"verb":"withdraw"}]
         }),
     ));
@@ -268,7 +267,7 @@ fn a_saved_result_name_stays_fixed_when_the_newest_named_result_changes() {
 #[test]
 fn saving_raw_feed_rows_keeps_the_exact_relation_instead_of_reselecting_entities() {
     let d = two_sessions();
-    let selection = "feed where kind:session | select kind, ref | sort by ref";
+    let selection = "feed where kind:session | fields kind, ref | sort by ref";
     let expected = rows(&d, "raw-feed-before", selection);
     assert!(expected["count"].as_u64().unwrap() > 0, "{expected}");
     let kept = save(&d, "raw-feed-save", selection, None, false);

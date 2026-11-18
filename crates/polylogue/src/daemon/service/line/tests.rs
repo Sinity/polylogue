@@ -1044,7 +1044,10 @@ fn a_save_retry_retains_original_child_revisions_and_undo_after_definition_chang
         assert_eq!(second_parts[field][created], false);
     }
     assert_eq!(second_parts["repeat"], false);
-    assert!(second[0]["outcome"]["undo"].as_array().unwrap().is_empty());
+    assert!(
+        second[0]["outcome"].get("undo").is_none(),
+        "a keep-only Save has no undo"
+    );
     assert_eq!(second_parts["kept"]["result"], "result:second-save-1");
     steps(&d, "changed-definition", save("messages"));
     for (id, original) in [("first-save", &first[0]), ("second-save", &second[0])] {
@@ -1145,7 +1148,10 @@ fn unnamed_save_keeps_only_rows_and_named_only_options_explain_the_refusal() {
     );
     assert_eq!(report["kept"]["rows"], 1);
     assert_eq!(report["kept"]["result"], "result:only-rows-1");
-    assert!(kept[0]["outcome"]["undo"].as_array().unwrap().is_empty());
+    assert!(
+        kept[0]["outcome"].get("undo").is_none(),
+        "an unnamed Save has no undo"
+    );
     assert_eq!(count(&d, "annotations where kind:(saved_query|signal)"), 0);
     let watch = crate::test_answers::refusal(line(
         &d,
