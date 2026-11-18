@@ -160,16 +160,11 @@ fn execute<T>(
                                 parameters: vec![],
                             };
                             footer.next = Some(ReadyCall {
-                                request: command_surface::RunnableRequest {
-                                    operation: "rows".into(),
-                                    arguments: serde_json::json!({"selection":query.to_string()}),
-                                    request_id: format!("{id}-question"),
-                                    deadline: Default::default(),
-                                    budget_tokens: None,
-                                    cursor: None,
-                                    fresh: false,
-                                    format: Default::default(),
-                                },
+                                request: command_surface::RunnableRequest::new(
+                                    "rows",
+                                    serde_json::json!({"selection":query.to_string()}),
+                                    format!("{id}-question"),
+                                ),
                             });
                         }
                         ItemKind::Card {

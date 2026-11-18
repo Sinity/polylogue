@@ -14,6 +14,7 @@ fn captured(d: &Daemon, selection: &str) -> (QueryRun, QueryRunOutcome) {
     let Reference::Run(id) = Reference::parse(value["run"].as_str().unwrap()).unwrap() else {
         panic!("recorded run")
     };
+    d.writes.as_ref().unwrap().flush_rows().unwrap();
     let reader = d.reads.reader().unwrap();
     (
         reader.query_run(&id, None).unwrap().unwrap(),
