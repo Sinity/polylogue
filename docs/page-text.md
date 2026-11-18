@@ -8,14 +8,14 @@ A note's text, and so a text slot's, is CommonMark with footnotes, in which four
 
 - **References in text become link rows** in the same write: role `mentions` for a link, `cites` for a citation (with its quote and hash), `embeds` for an inline value or an inclusion ([annotations.md](annotations.md#links)). The text stays the source of truth and the rows are written with it, as markers in messages become annotations. A reference that does not resolve yet is a waiting link (for a page, a red link); an ambiguous one refuses that paragraph with the candidates.
 - **Citations travel with their text.** A note's footnote definitions are part of its stored text, so the note carries its sources wherever it is shown or included. Stored labels are local to the note (`[^1]`); a page rendering or working copy numbers them page-wide and maps them back on check-in.
-- **Any reference form** can appear: a session, message, span, block, tool call, kept result or row, annotation, page or section, `file:`, `url:`, `sx:` ([references.md](references.md#forms)).
+- **Any reference form** can appear: a session, message, span, block, tool call, kept result or row, annotation, page or section, `file:`, `url:`, `sinex:<kind>/<id>` ([references.md](references.md#forms)).
 
 ## The four relations
 
 | | Link | Citation | Embed | Inclusion |
 |---|---|---|---|---|
 | **Means** | go there | this sentence rests on that passage | show that thing here, rendered at read | include that text here, in step with its source |
-| **Holds** | any reference | an exact place in a source: a span, message, block, tool call, result row, file lines, an annotation revision, a document, `url:`, `sx:` | captured things, queries, kept results, figures, cards of anything | authored text: an annotation, a page section, a whole page |
+| **Holds** | any reference | an exact place in a source: a span, message, block, tool call, result row, file lines, an annotation revision, a document, `url:`, `sinex:<kind>/<id>` | captured things, queries, kept results, figures, cards of anything | authored text: an annotation, a page section, a whole page |
 | **Markdown** | `[text](REF)` or `<REF>` | `[^1]` in the sentence, `[^1]: "quote" <REF>` below it | `![caption](REF "form")`; a value in a sentence `![…](REF "value")`; a question as a ```` ```query ```` cell | `![](REF "text")` on its own line, REF an annotation or `page:X[#anchor]` |
 | **Stored** | link row `mentions` | link row `cites` with quote, context and hash | a slot (`about` or `query`, a form); inside text, link row `embeds` | a slot whose `about` is the annotation or page, form `text` |
 | **Terminal** | the text underlined, its short reference dimmed after it, a terminal hyperlink to the workbench | `¹` in the text; the slot's footnotes under it: quote, source line, state mark | a boxed card, table or value with its reference line | the text flowing with a `┃` bar and a dimmed `— from page:morrow/architecture#parser` |

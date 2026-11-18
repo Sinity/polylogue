@@ -34,7 +34,7 @@ A page holds references, never copies of captured text. Its content is the archi
 | text | `about` an authored annotation, form `text` | a note, finding, decision, question, claim … written on or brought to the page | a paragraph in the reading column, with its citations |
 | heading | `heading` | a section title | a heading; the section is the heading and what sits under it |
 | excerpt | `about` a span, message, block, tool call output or file lines | captured text quoted exactly | a quotation with its source line and check mark |
-| embed | `about` a session, message range, tool call, attachment, kept result, figure, `url:`, `sx:` reference or page | a thing shown in place | a card, a table, a value, a chart, a transcript range |
+| embed | `about` a session, message range, tool call, attachment, kept result, figure, `url:`, `sinex:<kind>/<id>` reference or page | a thing shown in place | a card, a table, a value, a chart, a transcript range |
 | query | `query`: query text, `query:<hash>` or `query:NAME(params)`; `about` empty while live, the `result:` kept from it when kept | a live question or its kept answer | a table, list, count, value or chart, with its run |
 | included text | `about` another annotation, a page section or a page, form `text`, its home elsewhere | text that lives elsewhere, in step with its source | text flowing in the column, its origin in the margin |
 
@@ -70,7 +70,7 @@ A form says how a slot shows what it holds. Each kind of target has a default an
 | page section `page:X#anchor` | `text` | `card` | the heading and what sits under it |
 | `file:PATH@COMMIT#La-Lb` | `excerpt` | `card` | the lines with their numbers |
 | `url:` | `card` | — | the stored text of the link; reading never fetches it |
-| `sx:` | `card` | `excerpt` | resolved through Sinex in primary mode, `unavailable` otherwise |
+| `sinex:<kind>/<id>` | `card` | `excerpt` | resolved through Sinex in primary mode, `unavailable` otherwise |
 
 `compare` is the side-by-side view ([reading.md](reading.md#compare-and-blind)); on a kept result it may be read `--blind`.
 
@@ -211,7 +211,7 @@ A template is a page named `template/<name>` whose heading and query slots a new
 - **Alternates.** A page read follows the enabled alternates for every shown and included annotation, marked where they replace the original. Translating a page is one request: `polylogue page:flaky-ci note '' --as translation:pl --parts parts.jsonl`, each part's `of` a shown annotation. A page in two languages is one page with alternates, never two pages ([alternates.md](alternates.md)).
 - **Markup.** `page=` and `section=` on any marker write the annotation and its slot in one request; `::heading` and `::slot` place sections and references; a marker's body is Markdown with references, its footnote definitions as indented continuation lines ([markup.md](markup.md#pages)).
 - **Sends.** `send … --page P --section S` asks for the reply in that section ([Reply placement](#reply-placement)).
-- **Primary mode.** Pages, slots and their notes travel to Sinex as authored records like every annotation, applied from the confirmed stream; `sx:` references link, cite and embed Sinex events and materials, resolved through Sinex ([primary-mode.md](primary-mode.md)).
+- **Primary mode.** Pages, slots and their notes travel to Sinex as authored records like every annotation, applied from the confirmed stream; `sinex:<kind>/<id>` references link, cite and embed Sinex events and materials, resolved through Sinex ([primary-mode.md](primary-mode.md)).
 
 ## Members
 

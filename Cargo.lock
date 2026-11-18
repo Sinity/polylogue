@@ -2115,6 +2115,7 @@ dependencies = [
  "command-surface",
  "jiff",
  "query-language",
+ "references",
  "schemars",
  "serde",
  "serde_json",

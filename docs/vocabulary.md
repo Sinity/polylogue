@@ -523,6 +523,7 @@ another line does are in [set-aside.md](set-aside.md#words-another-line-does).
 
 | Word | Now |
 |---|---|
+| `sx:` | `sinex:<kind>/<id>` |
 | `query`, `list` (commands) | the selection alone: `polylogue 'QUERY'` |
 | `live` (as a list) | the saved query `running` |
 | `follow` | `read --follow` |

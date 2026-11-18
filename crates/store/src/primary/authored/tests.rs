@@ -1465,3 +1465,39 @@ fn save_selection_pending_and_effect_replay_keep_one_receipt_and_original_child_
     assert_eq!(count(&rebuilt, "kept_result"), 1);
     assert_eq!(known_request(&rebuilt, &r).unwrap(), Some(first));
 }
+
+#[test]
+fn sinex_reference_keeps_authored_request_identity_on_replay() {
+    let mut conn = cache();
+    let mut note = statement("linked source");
+    note.links = [
+        "sinex:ev/019a2f20-1234-7000-8000-0123456789ab",
+        "sinex:record/machine/origin/type/0",
+        "repo:example",
+        "url:HTTPS://Example.com:443/a?utm_source=x&b=1",
+    ]
+    .into_iter()
+    .map(|text| NewAssertionLink {
+        role: LinkRole::About,
+        reference: Reference::parse(text).unwrap(),
+    })
+    .collect();
+    let r = request(
+        "cross-product-note",
+        10,
+        UserWrite::Assert {
+            assertions: vec![note],
+        },
+    );
+    let original_bytes = serde_json::to_vec(&r).unwrap();
+    let original_hash = request_hash(&r).unwrap();
+    let prepared = prepare_with(&conn, &r, &[], &[]).unwrap();
+    commit(&mut conn, &prepared, 1);
+    let stored = stored_request(&conn, &r.id).unwrap().unwrap();
+    assert_eq!(serde_json::to_vec(&stored.request).unwrap(), original_bytes);
+    assert_eq!(request_hash(&stored.request).unwrap(), original_hash);
+    assert_eq!(stored, prepared);
+    assert_eq!(prepare_with(&conn, &r, &[], &[]).unwrap(), prepared);
+    assert_eq!(count(&conn, "assertion"), 1);
+    assert_eq!(count(&conn, "client_request"), 1);
+}

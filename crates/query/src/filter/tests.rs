@@ -219,3 +219,47 @@ fn values_outside_the_field_are_refused() {
         polylogue_model::Code::UnknownField
     );
 }
+
+#[test]
+fn sinex_local_reference_correction_reaches_selection_errors() {
+    for kind in ["ev", "record", "key", "at", "window"] {
+        let text = format!("{kind}:opaque");
+        assert_eq!(
+            filter(&text).unwrap_err(),
+            QueryError::Invalid {
+                message: format!("{text} is a Sinex reference; write sinex:{kind}/opaque"),
+                position: 0,
+            },
+        );
+    }
+    let combined = "sessions where repo:morrow ev:opaque";
+    assert_eq!(
+        filter(combined).unwrap_err(),
+        QueryError::Invalid {
+            message: "ev:opaque is a Sinex reference; write sinex:ev/opaque".into(),
+            position: combined.find("ev:").unwrap(),
+        },
+    );
+    assert!(matches!(
+        filter(&format!("{} where key:opaque", Unit::Assertions.name())).unwrap(),
+        Filter::Field(FieldTest {
+            field: FieldId::AssertionsKey,
+            ..
+        }),
+    ));
+    assert!(matches!(
+        filter("sessions where title:\"ev:opaque\"").unwrap(),
+        Filter::Field(FieldTest {
+            field: FieldId::SessionsTitle,
+            ..
+        }),
+    ));
+    let Filter::Word(word) = filter("\"ev:opaque\"").unwrap() else {
+        panic!("quoted reference text is a search term")
+    };
+    assert_eq!(word.text, "ev:opaque");
+    assert_eq!(
+        filter("sessions where colour:red").unwrap_err().kind(),
+        polylogue_model::Code::UnknownField,
+    );
+}

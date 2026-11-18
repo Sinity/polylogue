@@ -53,7 +53,7 @@ fn reference_full_forms_round_trip_without_losing_source_names() {
         "repo:project",
         "cwd:/home/op/project",
         "url:https://example.test/a?q=1#part",
-        "sx:material:opaque",
+        "sinex:ev/019a2f20-1234-7000-8000-0123456789ab",
         "span:message:codex:message#b=0-4",
         "span:document:claude-ai:document#u16=1-5",
         "span:block:codex:message#2#c=0-3",
@@ -181,4 +181,82 @@ fn accepted_request_reference_preserves_the_existing_opaque_identity() {
         assert_eq!(reference.container(), None);
     }
     assert!(Reference::parse("request:").is_err());
+}
+
+#[test]
+fn sinex_global_reference_round_trips() {
+    for text in [
+        "sinex:ev/019a2f20-1234-7000-8000-0123456789ab",
+        "sinex:record/machine/origin/type/0",
+        "sinex:key/opaque%23key",
+        "sinex:future-kind/opaque:identity",
+    ] {
+        let reference = Reference::parse(text).unwrap();
+        let Reference::Sinex(object) = &reference else {
+            panic!("not a Sinex object")
+        };
+        assert_eq!(object.product(), references::Product::Sinex);
+        assert_eq!(reference.to_string(), text);
+        assert_eq!(
+            serde_json::to_string(&reference).unwrap(),
+            serde_json::to_string(text).unwrap()
+        );
+        assert_eq!(
+            serde_json::from_str::<Reference>(&serde_json::to_string(text).unwrap()).unwrap(),
+            reference
+        );
+    }
+}
+
+#[test]
+fn sinex_local_form_refused_with_global() {
+    for kind in SINEX_LOCAL_KINDS {
+        let text = format!("{kind}:opaque");
+        assert_eq!(
+            Reference::parse(&text).unwrap_err(),
+            ReferenceError::SinexLocal {
+                text: text.clone(),
+                global: format!("sinex:{kind}/opaque")
+            },
+        );
+        assert_eq!(
+            Reference::parse(&text).unwrap_err().to_string(),
+            format!("{text} is a Sinex reference; write sinex:{kind}/opaque")
+        );
+    }
+}
+
+#[test]
+fn sinex_reference_with_selector_refused() {
+    for text in [
+        "sinex:ev/opaque#c=0-4",
+        "sinex:ev/opaque@revision",
+        "sinex:ev/",
+        "sinex:ev",
+    ] {
+        assert!(
+            matches!(Reference::parse(text), Err(ReferenceError::Invalid(_, _))),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn sinex_read_names_its_reader() {
+    let reference = Reference::parse("sinex:ev/opaque").unwrap();
+    let error = crate::read::ReadTarget::try_from(reference).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("reading a Sinex object needs the Sinex reader")
+    );
+}
+
+#[test]
+fn unknown_reference_prefix_is_refused() {
+    let text = "sx:ev/opaque";
+    assert_eq!(
+        Reference::parse(text),
+        Err(ReferenceError::UnknownKind(text.into()))
+    );
 }
