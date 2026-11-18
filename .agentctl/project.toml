@@ -107,6 +107,7 @@ scratch = "nvme"
 cache = "none"
 
 [operations.measure_run]
+environment = { CARGO_TARGET_DIR = "target" }
 description = "Run a measurement that compiles nothing (a database restore, a benchmark of prebuilt binaries) in the measure queue"
 exec = ["nix", "develop", "--command"]
 arguments = "required"

@@ -88,9 +88,11 @@ settings such as build-output placement, job counts and compiler wrappers.
 Cargo's output directory is `target/` unless `CARGO_TARGET_DIR` is set.
 
 Declared AgentCTL operations clear an ambient `CARGO_TARGET_DIR` before entering
-the target workspace's shell. The shell selects that checkout's isolated host
-target when `sinnix-cargo-target` is available, with dependency artifacts seeded
-by the host helper. For an explicit target experiment, pass
+the target workspace's shell. The `measure_run` operation sets an unused local
+target so a prebuilt measurement skips compiler cache selection and seeding.
+When the operation leaves the target unset, the shell can select that checkout's
+isolated host target and seed its dependency artifacts through `sinnix-cargo-target`.
+For an explicit target experiment, pass
 `exec -- env CARGO_TARGET_DIR=... cargo ...`; this assignment runs after shell
 selection. Keep the experimental target exclusive to the same checkout.
 
