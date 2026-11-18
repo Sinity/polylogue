@@ -475,3 +475,70 @@ fn authored_text_links_live_in_the_effect_without_rewriting_the_request() {
     assert_eq!(prepared[0].request, request);
     assert_eq!(prepared[0].effect.assertions, vec![stored]);
 }
+
+#[test]
+fn tag_receipt_reports_original_skipped_targets_on_retry() {
+    use polylogue_model::{
+        Reference,
+        assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink},
+    };
+    let world = crate::fixture::writer::WriterArchive::new();
+    let first = Reference::parse("session:codex:first").unwrap();
+    let second = Reference::parse("session:codex:second").unwrap();
+    let mut tag = NewAssertion {
+        kind: AssertionKind::Tag,
+        key: Some("status".into()),
+        value: Some(serde_json::json!({"value":"ready"})),
+        valid_until: None,
+        links: vec![NewAssertionLink {
+            role: LinkRole::About,
+            reference: first.clone(),
+        }],
+    };
+    let seed = world
+        .writer
+        .user(crate::fixture::authored::operator_request(
+            "seed-tag".into(),
+            UserWrite::Assert {
+                assertions: vec![tag.clone()],
+            },
+        ))
+        .unwrap();
+    tag.links.clear();
+    let request = crate::fixture::authored::operator_request(
+        "bulk-tags".into(),
+        UserWrite::AssertQuery {
+            query: "sessions".into(),
+            assertion: tag,
+            resolved: vec![first.clone(), second.clone()],
+        },
+    );
+    let accepted = world.writer.user_receipt(request.clone()).unwrap();
+    assert_eq!(accepted.written.len(), 1);
+    assert_eq!(accepted.already, vec![first.clone()]);
+    world
+        .writer
+        .user(crate::fixture::authored::operator_request(
+            "withdraw-seed".into(),
+            UserWrite::WithdrawAssertions {
+                targets: vec![Reference::Assertion(
+                    polylogue_model::RevisionReference::exact(seed.id.clone(), seed.id),
+                )],
+                reason: None,
+            },
+        ))
+        .unwrap();
+    let repeated = world.writer.user_receipt(request.clone()).unwrap();
+    assert!(repeated.outcome.repeat);
+    assert_eq!(repeated.written, accepted.written);
+    assert_eq!(repeated.already, vec![first]);
+    let mut changed = request;
+    let UserWrite::AssertQuery { assertion, .. } = &mut changed.write else {
+        unreachable!()
+    };
+    assertion.value = Some(serde_json::json!({"value":"different"}));
+    assert!(matches!(
+        world.writer.user_receipt(changed),
+        Err(StoreError::Conflict(_))
+    ));
+}

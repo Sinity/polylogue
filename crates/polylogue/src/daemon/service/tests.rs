@@ -651,3 +651,5 @@ mod read_objects;
 mod read_runs;
 
 mod read_failures;
+
+mod tags;

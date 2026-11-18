@@ -493,6 +493,26 @@ pub(crate) fn ok(data: impl serde::Serialize) -> Answer<Value> {
     }
 }
 
+/// The immutable accepted intent, whether confirmed locally or pending in
+/// primary mode. The same ID with another intent remains a conflict.
+pub(crate) fn accepted_write(
+    intended: &UserWrite,
+    call: &crate::daemon::handler::Call<'_>,
+) -> Result<Option<UserWrite>, Failure> {
+    let request = call
+        .invocation
+        .request(call.request_id.into(), intended.clone());
+    #[cfg(feature = "sinex")]
+    if let ModeState::Primary { connection } = &call.daemon.mode
+        && let Some(original) =
+            polylogue_store::primary::authored::pending_request(connection.as_ref(), &request)?
+    {
+        return Ok(Some(original.write));
+    }
+    let reader = call.reader()?;
+    repeated_request(&reader, &request.id, intended, call.invocation)
+}
+
 pub(crate) fn repeated_request(
     reader: &polylogue_store::Reader<'_>,
     id: &str,

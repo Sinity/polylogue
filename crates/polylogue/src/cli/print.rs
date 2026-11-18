@@ -122,6 +122,7 @@ pub fn line(answer: &protocol::line::LineAnswer, style: TextStyle) -> String {
                     StepAnswer::Brief(prepared) => context(prepared, style),
                     StepAnswer::Resume(found) => resume(found, style),
                     StepAnswer::Saved(report) => saved(report, style),
+                    StepAnswer::WroteEach(report) => wrote_each(report, &step.verb),
                     other => json(other, style),
                 });
                 undo.extend(lines);
@@ -142,6 +143,36 @@ pub fn line(answer: &protocol::line::LineAnswer, style: TextStyle) -> String {
     }
     for line in undo {
         let _ = writeln!(out, "undo: {line}");
+    }
+    out
+}
+
+fn wrote_each(report: &polylogue_model::user::AssertQueryOutcome, verb: &str) -> String {
+    let mut out = String::new();
+    if report.pending {
+        let suffix = if report.targets == 1 { "" } else { "s" };
+        let _ = writeln!(out, "{verb} pending for {} row{suffix}", report.targets);
+    } else if verb == "tag" {
+        let suffix = if report.written == 1 { "" } else { "s" };
+        let _ = writeln!(out, "tagged {} row{suffix}", report.written);
+    } else {
+        let suffix = if report.written == 1 { "" } else { "s" };
+        let _ = writeln!(out, "wrote {} annotation{suffix}", report.written);
+    }
+    if report.repeat {
+        out.push_str("repeat; no new writes\n");
+    }
+    if !report.already.is_empty() {
+        let _ = writeln!(
+            out,
+            "already tagged: {}",
+            report
+                .already
+                .iter()
+                .map(|reference| polylogue_render::terminal::escape(reference))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
     out
 }

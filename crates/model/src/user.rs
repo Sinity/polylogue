@@ -275,18 +275,41 @@ pub struct UserOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AssertQueryOutcome {
-    pub id: String,
+    /// Absent when every row was already tagged and no write was submitted.
+    pub id: Option<String>,
     pub repeat: bool,
     pub pending: bool,
     pub targets: usize,
+    /// Revisions in the accepting request's recorded effects; confirmation
+    /// is still reported separately by `pending`.
+    pub written: usize,
+    /// Human reference spellings for targets skipped by the original request.
+    pub already: Vec<String>,
 }
 impl AssertQueryOutcome {
-    pub fn new(outcome: UserOutcome, targets: usize) -> Self {
+    pub fn new(
+        outcome: UserOutcome,
+        targets: usize,
+        written: usize,
+        already: Vec<crate::Reference>,
+    ) -> Self {
         Self {
-            id: outcome.id,
+            id: Some(outcome.id),
             repeat: outcome.repeat,
             pending: outcome.pending,
             targets,
+            written,
+            already: already.iter().map(ToString::to_string).collect(),
+        }
+    }
+    pub fn all_tagged(already: Vec<crate::Reference>) -> Self {
+        Self {
+            id: None,
+            repeat: false,
+            pending: false,
+            targets: already.len(),
+            written: 0,
+            already: already.iter().map(ToString::to_string).collect(),
         }
     }
 }

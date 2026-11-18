@@ -6,6 +6,50 @@ use crate::Reader;
 use std::ops::ControlFlow;
 
 impl Reader<'_> {
+    /// Uses the write's declared uniqueness slots, so reads and acceptance
+    /// agree on a tag's value and author semantics.
+    pub fn tagged(
+        &self,
+        targets: &[Reference],
+        key: &str,
+        value: Option<&serde_json::Value>,
+        author: &Author,
+    ) -> Result<BTreeSet<Reference>> {
+        let conn = self.conn()?;
+        let source = Source::reading(conn)?;
+        let raw = value.map(|value| serde_json::json!({"value": value}));
+        let value =
+            polylogue_model::assertion::values::decode(AssertionKind::Tag, Some(key), raw.as_ref())
+                .map_err(|error| StoreError::invalid(error.to_string()))?;
+        let mut statement = conn.prepare_cached(&source.sql(
+            "SELECT EXISTS(SELECT 1 FROM @source.assertion_slot s JOIN @source.revision_state r ON r.id=s.id WHERE s.slot=?1 AND r.current=1 AND r.withdrawn=0)",
+        ))?;
+        let mut found = BTreeSet::new();
+        for target in targets {
+            self.check()?;
+            let unique = polylogue_model::assertion::uniqueness::unique(
+                AssertionKind::Tag,
+                Some(key),
+                &value,
+                [(LinkRole::About, target)],
+                author,
+                None,
+            )
+            .map_err(|error| StoreError::invalid(error.to_string()))?
+            .ok_or_else(|| StoreError::invalid("a tag has no uniqueness slots"))?;
+            for slot in unique.slots {
+                let held: bool =
+                    statement.query_row([slot.digest().as_slice()], |row| row.get(0))?;
+                if held {
+                    found.insert(target.clone());
+                    break;
+                }
+            }
+        }
+        self.check()?;
+        Ok(found)
+    }
+
     fn resolved_assertion_revision(
         &self,
         reference: &RevisionReference,

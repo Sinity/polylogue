@@ -20,6 +20,8 @@ pub struct UserReceipt {
     pub save: Option<polylogue_model::user::SaveReport>,
     /// Exact assertion revisions created by the accepted write, including on retry.
     pub written: Vec<polylogue_model::Reference>,
+    /// Resolved tag targets absent from the original accepted write's effects.
+    pub already: Vec<polylogue_model::Reference>,
 }
 impl UserReceipt {
     pub(crate) fn recorded(
@@ -36,12 +38,39 @@ impl UserReceipt {
         Ok(Self {
             outcome,
             save,
+            already: Self::already(&prepared.request, &prepared.effect),
             written: if matches!(prepared.request.write, UserWrite::MarkSeen { .. }) {
                 Vec::new()
             } else {
                 Self::references(&prepared.effect)
             },
         })
+    }
+    fn already(
+        request: &UserRequest,
+        effect: &polylogue_model::authored::AuthoredEffect,
+    ) -> Vec<polylogue_model::Reference> {
+        let UserWrite::AssertQuery {
+            assertion,
+            resolved,
+            ..
+        } = &request.write
+        else {
+            return Vec::new();
+        };
+        if assertion.kind != polylogue_model::assertion::AssertionKind::Tag {
+            return Vec::new();
+        }
+        let written: std::collections::BTreeSet<_> = effect
+            .assertions
+            .iter()
+            .flat_map(|fact| fact.about())
+            .collect();
+        resolved
+            .iter()
+            .filter(|target| !written.contains(target))
+            .cloned()
+            .collect()
     }
     fn references(
         effect: &polylogue_model::authored::AuthoredEffect,
@@ -232,6 +261,7 @@ pub(crate) fn apply_using(
                 },
                 save: None,
                 written: Vec::new(),
+                already: Vec::new(),
             });
         }
         Some(marks)
@@ -245,6 +275,7 @@ pub(crate) fn apply_using(
             outcome: prepared.outcome,
             save: None,
             written: UserReceipt::references(&prepared.effect),
+            already: Vec::new(),
         });
     }
     let hash = crate::primary::authored::request_hash(r)?;
@@ -577,6 +608,7 @@ pub(crate) fn apply_using(
     Ok(UserReceipt {
         outcome,
         save: save_outcomes,
+        already: UserReceipt::already(accepted, &effect),
         written: if matches!(r.write, UserWrite::MarkSeen { .. }) {
             Vec::new()
         } else {
