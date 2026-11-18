@@ -320,7 +320,9 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
             }
         };
         // A write keeps its result instead of inheriting a read deadline.
-        if !policy.read_phase {
+        if !policy.read_phase
+            || (!policy.default_deadline && request.deadline == command_surface::Deadline::Default)
+        {
             request.deadline = command_surface::Deadline::None;
         }
         let read_scope = if policy.read_only {

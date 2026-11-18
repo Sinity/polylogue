@@ -1095,3 +1095,42 @@ fn setting_http_keeps_typed_write_repeat_and_current_results() {
         assert_eq!(current.key, "reading.variants");
     });
 }
+
+#[test]
+fn status_vector_details_use_the_http_route_but_verification_is_cli_only() {
+    let r = reader();
+    rt().block_on(async {
+        for (path, expected) in [
+            ("/api/v1/status?vectors=true", StatusCode::OK),
+            ("/api/v1/status?verify=true", StatusCode::BAD_REQUEST),
+        ] {
+            // Inspect the normal HTTP wire response, before application_body
+            // unwraps successful values for other domain tests.
+            let response = router(Arc::clone(&r.web))
+                .oneshot(authed(get(path)).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+            let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            // Socket and CLI consumers decode the wire envelope as JSON, then
+            // the domain payload. Directly buffering flattened f64 fields in
+            // Serde's tagged enum conflicts with arbitrary-precision numbers.
+            let answer: command_surface::Answer<serde_json::Value> =
+                serde_json::from_slice(&bytes).unwrap();
+            if expected == StatusCode::OK {
+                let value = answer.value().unwrap();
+                assert!(value["last_pass"]["seconds"].is_number(), "{value}");
+                let status: crate::protocol::status::Answer =
+                    serde_json::from_value(value.clone()).unwrap();
+                assert_eq!(
+                    status.vectors,
+                    Some(polylogue_store::vectors::VectorStatus::default())
+                );
+            } else {
+                let error = answer.failure().expect("HTTP refuses archive verification");
+                assert_eq!(error.kind, command_surface::FailureKind::BadRequest);
+                assert!(error.message.contains("command line"), "{error:?}");
+            }
+        }
+    });
+}

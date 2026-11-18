@@ -54,14 +54,9 @@ pub mod complete {
 
 pub mod context;
 pub mod embed {
-    //! Embedding builds, their previews and their status.
+    //! Embedding builds and their previews.
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
-
-    /// `embed status` takes no arguments.
-    #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-    #[serde(deny_unknown_fields)]
-    pub struct Status {}
 
     #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
     #[serde(deny_unknown_fields)]
@@ -280,20 +275,6 @@ pub mod stream {
     pub fn error(output: &mut dyn Write, failure: Failure) -> io::Result<()> {
         event(output, "error", &failure.answer::<serde_json::Value>())
     }
-}
-
-pub mod verify {
-    //! The on-demand check of stored bytes.
-    use schemars::JsonSchema;
-    use serde::{Deserialize, Serialize};
-
-    #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-    #[serde(deny_unknown_fields)]
-    pub struct Arguments {
-        /// Also write each revision's input, number, length and BLAKE3 to this new file on the daemon's host
-        pub manifest: Option<std::path::PathBuf>,
-    }
-    pub type Answer = polylogue_store::verify::Verification;
 }
 
 pub mod wire;

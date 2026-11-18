@@ -394,8 +394,8 @@ pub fn idle_summary(summary: &polylogue_engine::RunSummary) -> String {
     out
 }
 
-/// `verify`: the counts, then each problem.
-pub fn verify(found: &polylogue_store::verify::Verification, _style: TextStyle) -> String {
+/// The archive verification counts, then each problem.
+pub fn verification(found: &polylogue_store::verify::Verification, _style: TextStyle) -> String {
     let counts = &found.counts;
     let mut out = format!(
         "{} inputs, {} revisions, {} extents, {} observations, {} blobs ({} bytes)\n",

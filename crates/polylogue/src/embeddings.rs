@@ -22,12 +22,12 @@
 //! `--yes` after a preview.
 
 use crate::daemon::Failure;
-use crate::daemon::service::{error, store_error};
+use crate::daemon::service::error;
 use command_surface::Answer as Answered;
 use polylogue_model::JsonExt as _;
 use polylogue_model::money::Amount;
 use polylogue_store::Reader;
-use polylogue_store::vectors::{Vector, VectorStatus, Vectors};
+use polylogue_store::vectors::{Vector, Vectors};
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
@@ -416,31 +416,12 @@ fn chunks(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// What `embed status` and `embed` answer.
+/// What an embedding preview or build answers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum Answer {
-    Status(EmbeddingStatus),
     Preview(Preview),
     Built(Built),
-}
-
-/// The configured provider, if embeddings are on, and the stored vectors.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct EmbeddingStatus {
-    pub provider: Option<ProviderSettings>,
-    pub vectors: VectorStatus,
-}
-
-/// Where the provider is reached, which model it runs and whether model
-/// calls are on.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ProviderSettings {
-    pub endpoint: String,
-    pub model: String,
-    pub calls: bool,
 }
 
 /// A money amount as `money::Amount` writes it; read back to its nano-USD.
@@ -805,7 +786,7 @@ fn query_sessions(
     }
 }
 
-/// Embedding status, cost preview and build ([`crate::embeddings`]).
+/// Embedding cost preview and build ([`crate::embeddings`]).
 pub fn handle(
     reader: &polylogue_store::Reader<'_>,
     what: &str,
@@ -818,20 +799,6 @@ pub fn handle(
         Ok(p) => p,
         Err(e) => return error(polylogue_model::Code::BadRequest, e),
     };
-    if what == "status" {
-        let vectors = reader.vectors().and_then(|v| v.status());
-        return match vectors {
-            Ok(vectors) => Answered::ok(Answer::Status(EmbeddingStatus {
-                provider: provider.as_ref().map(|p| ProviderSettings {
-                    endpoint: p.endpoint.clone(),
-                    model: p.model.clone(),
-                    calls: p.calls,
-                }),
-                vectors,
-            })),
-            Err(e) => store_error(&e),
-        };
-    }
     let Some(provider) = provider else {
         return error(
             polylogue_model::Code::EmbeddingsOff,

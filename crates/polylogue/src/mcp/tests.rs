@@ -914,3 +914,36 @@ fn set_mcp_keeps_typed_write_repeat_and_read_results() {
 }
 
 mod rows;
+
+#[test]
+fn status_keeps_verification_out_of_the_normal_mcp_tool_path() {
+    let daemon = crate::test_daemon::start("synthetic source");
+    let manifest = daemon._dir.path().join("not-created.tsv");
+    let arguments = json!({"verify":true, "manifest":manifest})
+        .as_object()
+        .unwrap()
+        .clone();
+    let refused = structured_call_as(
+        &daemon.daemon.archive,
+        "status",
+        arguments,
+        "status-verify-refused",
+    );
+    let error = refused.failure().expect("MCP refuses archive verification");
+    assert_eq!(error.kind, command_surface::FailureKind::BadRequest);
+    assert!(error.message.contains("command line"));
+    assert!(!manifest.exists());
+    let answer = structured_call_as(
+        &daemon.daemon.archive,
+        "status",
+        json!({"vectors":true}).as_object().unwrap().clone(),
+        "status-vectors",
+    );
+    let status: crate::protocol::status::Answer =
+        serde_json::from_value(answer.value().unwrap().clone()).unwrap();
+    assert_eq!(
+        status.vectors,
+        Some(polylogue_store::vectors::VectorStatus::default())
+    );
+    assert!(status.verification.is_none());
+}

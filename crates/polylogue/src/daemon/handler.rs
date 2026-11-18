@@ -117,6 +117,10 @@ pub(crate) trait Handler: Send + Sync + 'static {
     /// Which executor places its work may take: interactive answers may take
     /// the reserved place; idle-priority work runs in the background place.
     const CLASS: super::executor::Class = super::executor::Class::Ordinary;
+    /// Argument-dependent work uses the same class at admission and execution.
+    fn class(_arguments: &Self::Arguments) -> super::executor::Class {
+        Self::CLASS
+    }
     /// Answers with nothing, never with a timeout, when its limit runs out.
     const FAILS_OPEN: bool = false;
     /// Reads under a deadline before it writes.
@@ -127,6 +131,10 @@ pub(crate) trait Handler: Send + Sync + 'static {
     /// The answer as text for a person or a model.
     const PRINT: fn(&Self::Answer, TextStyle) -> String = crate::cli::print::json::<Self::Answer>;
 
+    /// Check argument and surface constraints before admitting any work.
+    fn validate(_arguments: &Self::Arguments, _caller: &Caller) -> Result<(), Failure> {
+        Ok(())
+    }
     /// Whether this request leaves the archive unchanged; a request that
     /// changes it is refused while writes are blocked.
     fn read_only(_arguments: &Self::Arguments, row: &Command, caller: &Caller) -> bool {
@@ -461,12 +469,13 @@ fn admit<H: Handler>(
     caller: &Caller,
 ) -> Result<Policy, Failure> {
     let arguments: H::Arguments = decode(arguments)?;
+    H::validate(&arguments, caller)?;
     Ok(Policy {
         read_only: H::read_only(&arguments, row, caller),
         read_phase: H::read_phase(&arguments, row, caller),
         default_deadline: H::default_deadline(&arguments),
         streaming: false,
-        class: H::CLASS,
+        class: H::class(&arguments),
     })
 }
 
@@ -476,12 +485,13 @@ fn admit_stream<H: Streams>(
     caller: &Caller,
 ) -> Result<Policy, Failure> {
     let arguments: H::Arguments = decode(arguments)?;
+    H::validate(&arguments, caller)?;
     Ok(Policy {
         read_only: H::read_only(&arguments, row, caller),
         read_phase: H::read_phase(&arguments, row, caller),
         default_deadline: H::default_deadline(&arguments),
         streaming: H::streaming(&arguments),
-        class: H::CLASS,
+        class: H::class(&arguments),
     })
 }
 
@@ -662,6 +672,7 @@ impl<H: Handler> Operation for Row<H> {
                 }
                 None => None,
             };
+            let class = H::class(&arguments);
             let job = move || {
                 let _table = TableContext::enter(table_context);
                 let limit = match (&parent, deadline) {
@@ -685,7 +696,7 @@ impl<H: Handler> Operation for Row<H> {
                     budget,
                 )
             };
-            let Some(answer) = self.daemon.executor.run(H::CLASS, deadline, job).await else {
+            let Some(answer) = self.daemon.executor.run(class, deadline, job).await else {
                 return Answer::error(super::service::shutting_down().error);
             };
             drop(guard);
@@ -708,6 +719,9 @@ fn answer<H: Handler>(
     budget: TokenBudget,
 ) -> Answer<H::Answer> {
     if let Err(failure) = super::service::accepting(daemon) {
+        return failure.answer();
+    }
+    if let Err(failure) = H::validate(&arguments, caller) {
         return failure.answer();
     }
     let capped = H::read_cap().map(|cap| {
@@ -733,12 +747,13 @@ fn answer<H: Handler>(
     let read_only = H::read_only(&arguments, row, caller);
     let read_phase = H::read_phase(&arguments, row, caller);
     let text = H::query_text(&arguments).map(str::to_owned);
+    let class = H::class(&arguments);
     let work = || {
         if daemon.blocked() && !read_only {
             return daemon.write_refusal().answer();
         }
         let _foreground =
-            (H::CLASS != super::executor::Class::Background).then(|| daemon.foreground());
+            (class != super::executor::Class::Background).then(|| daemon.foreground());
         let call = Call {
             daemon,
             row,
@@ -767,7 +782,7 @@ fn answer<H: Handler>(
             work,
         )
     };
-    if H::CLASS == super::executor::Class::Interactive {
+    if class == super::executor::Class::Interactive {
         polylogue_store::reserved_reads(bounded)
     } else {
         bounded()

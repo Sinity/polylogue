@@ -1,4 +1,4 @@
-//! `polylogue verify`: the store's check of every stored byte, run at idle
+//! `polylogue status --verify`: the store's check of every stored byte, run at idle
 //! priority. It reads only; a manifest, when asked for, is written to a new
 //! file and appears complete or not at all (not when a revision is unreadable).
 use super::service::{Daemon, error, store_error};
@@ -7,7 +7,10 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
-pub(super) fn run(d: &Daemon, manifest: Option<&Path>) -> Answer<crate::protocol::verify::Answer> {
+pub(super) fn run(
+    d: &Daemon,
+    manifest: Option<&Path>,
+) -> Answer<polylogue_store::verify::Verification> {
     let _turn = match d.idle_gate.background() {
         Ok(turn) => turn,
         Err(e) => return store_error(&e),
