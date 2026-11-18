@@ -247,15 +247,11 @@ fn every_catalog_row_and_every_uncited_blob_is_kept() {
         .unwrap()
         .unwrap();
     assert_eq!(members.len(), 5);
-    let rows: Vec<serde_json::Value> = decoded(&members[0])
-        .split(|b| *b == b'\n')
-        .filter(|line| !line.is_empty())
-        .map(|line| serde_json::from_slice(line).unwrap())
-        .collect();
-    assert_eq!(rows.len(), 3);
-    assert_eq!(rows[0]["table"], "blob_refs");
-    assert_eq!(rows[0]["row"]["ref_type"], "attachment");
-    assert!(members[0].path.ends_with("source.db/rows.jsonl"));
+    assert!(members[0].path.ends_with("source.db"));
+    assert_eq!(
+        decoded(&members[0]),
+        std::fs::read(root.path().join("source.db")).unwrap()
+    );
     let kept = members.last().unwrap();
     assert!(
         kept.path
@@ -277,6 +273,116 @@ fn every_catalog_row_and_every_uncited_blob_is_kept() {
         .unwrap()
         .to_string();
     assert!(error.contains("differs from its name"), "{error}");
+}
+
+#[test]
+fn a_native_catalog_reopens_with_its_wal_and_repeats_without_new_revisions() {
+    let home = polylogue_testkit::ClaudeHome::new();
+    let root = home.dir.path().join("python-archive");
+    fixture(&root);
+    let main = root.join("source.db");
+    let journal = root.join("source.db-wal");
+    let held = rusqlite::Connection::open(&main).unwrap();
+    held.pragma_update(None, "journal_mode", "wal").unwrap();
+    held.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+    let wal_only = polylogue_testkit::claude_user("wal-message", "wal-session", "catalog WAL");
+    let hash = Sha256::digest(wal_only.as_bytes());
+    blob(&root, wal_only.as_bytes());
+    held.execute(
+        "INSERT INTO raw_sessions VALUES ('wal-only','claude-code-session','/work/wal-session.jsonl',?1,?2,NULL,'full',NULL,NULL,NULL)",
+        rusqlite::params![hash.as_slice(), wal_only.len() as i64],
+    )
+    .unwrap();
+    let database = std::fs::read(&main).unwrap();
+    let wal = std::fs::read(&journal).unwrap();
+    assert!(!wal.is_empty());
+
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 1024);
+    let legacy = b"{\"table\":\"raw_sessions\",\"row\":{\"raw_id\":\"legacy\"}}\n";
+    let legacy_path = PathBuf::from(format!("{}!/source.db/rows.jsonl", root.display()));
+    let captured = Captured::stream(&engine.archive, legacy.as_slice()).unwrap();
+    engine
+        .import_captured(
+            &legacy_path,
+            polylogue_sources::origin::by_name(KEPT).unwrap(),
+            captured,
+            None,
+            &mut ImportReport::default(),
+        )
+        .unwrap();
+
+    let run = |engine: &mut Engine| {
+        let report = engine
+            .import_with_options(std::slice::from_ref(&root), &archive_format())
+            .unwrap();
+        assert!(
+            report.pass.errors.is_empty() && report.refused.is_empty(),
+            "{report:?}"
+        );
+        report
+    };
+    let first = run(&mut engine);
+    let database_path = first
+        .imported
+        .iter()
+        .find(|path| path.ends_with("source.db"))
+        .unwrap();
+    let wal_path = first
+        .imported
+        .iter()
+        .find(|path| path.ends_with("source.db-wal"))
+        .unwrap();
+    assert_eq!(database_path.parent(), wal_path.parent());
+    assert_eq!(home.texts("wal-session"), ["catalog WAL"]);
+    let first_revisions = home.count("SELECT count(*) AS n FROM a.revision");
+    let repeat = run(&mut engine);
+    assert!(repeat.imported.is_empty(), "{repeat:?}");
+    assert!(repeat.already_stored.contains(database_path));
+    assert!(repeat.already_stored.contains(wal_path));
+    assert_eq!(repeat.pass.bytes_stored, 0);
+    assert_eq!(
+        home.count("SELECT count(*) AS n FROM a.revision"),
+        first_revisions
+    );
+    assert_eq!(std::fs::read(&main).unwrap(), database);
+    assert_eq!(std::fs::read(&journal).unwrap(), wal);
+
+    let reader = engine.reads.reader().unwrap();
+    let restore = |expected: &[u8]| {
+        let hash = blake3::hash(expected).to_hex();
+        let progress = reader.input_progress(hash.as_ref()).unwrap().unwrap();
+        let bytes = reader
+            .stored_range(
+                hash.as_ref(),
+                progress.chain,
+                0,
+                progress.length,
+                &engine.blobs,
+            )
+            .unwrap();
+        assert_eq!(bytes, expected);
+        bytes
+    };
+    restore(legacy);
+    let restored = tempfile::tempdir().unwrap();
+    let restored_main = restored.path().join("source.db");
+    std::fs::write(&restored_main, restore(&database)).unwrap();
+    let count = || {
+        rusqlite::Connection::open_with_flags(
+            &restored_main,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM raw_sessions WHERE raw_id='wal-only'",
+            [],
+            |row| row.get::<_, u64>(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(count(), 0);
+    std::fs::write(restored.path().join("source.db-wal"), restore(&wal)).unwrap();
+    assert_eq!(count(), 1);
 }
 
 #[test]
