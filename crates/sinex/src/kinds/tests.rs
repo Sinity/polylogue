@@ -434,7 +434,7 @@ fn markdown_link_roles_version_only_the_changed_authored_declarations() {
         let version = previous["version"].as_u64().unwrap();
         let hash = previous["definition_hash"].as_str().unwrap();
         if changed.contains(&name) {
-            assert_eq!(u64::from(declaration.kind.version), version + 1, "{name}");
+            assert_eq!(declaration.kind.version, version + 1, "{name}");
             assert_ne!(declaration.definition_hash(), hash, "{name}");
             let roles = declaration.payload_schema.as_ref().unwrap()["$defs"]["LinkRole"]["enum"]
                 .as_array()
@@ -443,7 +443,7 @@ fn markdown_link_roles_version_only_the_changed_authored_declarations() {
                 assert!(roles.iter().any(|value| value == role), "{name}: {role}");
             }
         } else {
-            assert_eq!(u64::from(declaration.kind.version), version, "{name}");
+            assert_eq!(declaration.kind.version, version, "{name}");
             assert_eq!(declaration.definition_hash(), hash, "{name}");
         }
     }

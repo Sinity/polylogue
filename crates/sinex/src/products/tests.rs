@@ -83,7 +83,7 @@ fn the_save_transition_versions_changed_authored_kinds_and_keeps_the_old_manifes
             .unwrap();
         assert_eq!(
             then["version"].as_u64().unwrap(),
-            u64::from(old.kind.version) + 1,
+            old.kind.version + 1,
             "{name}"
         );
         assert_ne!(
