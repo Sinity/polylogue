@@ -297,11 +297,7 @@ thread_local! {
 /// The text at `start..start + length` of the group `body`. Consecutive reads
 /// from one group decode it once.
 pub(crate) fn slice(body: &[u8], start: i64, length: i64) -> Result<String> {
-    let range = usize::try_from(start)
-        .ok()
-        .zip(usize::try_from(length).ok())
-        .and_then(|(start, length)| Some(start..start.checked_add(length)?))
-        .ok_or_else(|| crate::StoreError::stored(0, "a stored text has an invalid place"))?;
+    let range = text_range(start, length)?;
     LAST_GROUP.with(|last| {
         let mut last = last.borrow_mut();
         if last.0 != body {
@@ -315,8 +311,20 @@ pub(crate) fn slice(body: &[u8], start: i64, length: i64) -> Result<String> {
     })
 }
 
-fn decode(body: &[u8]) -> Result<Vec<u8>> {
+pub(super) fn decode(body: &[u8]) -> Result<Vec<u8>> {
     Ok(crate::encoding::unpack_bytes(body)?)
+}
+
+pub(super) fn slice_decoded(group: &[u8], start: i64, length: i64) -> Result<String> {
+    text_of(group, text_range(start, length)?)
+}
+
+fn text_range(start: i64, length: i64) -> Result<std::ops::Range<usize>> {
+    usize::try_from(start)
+        .ok()
+        .zip(usize::try_from(length).ok())
+        .and_then(|(start, length)| Some(start..start.checked_add(length)?))
+        .ok_or_else(|| crate::StoreError::stored(0, "a stored text has an invalid place"))
 }
 
 fn text_of(group: &[u8], range: std::ops::Range<usize>) -> Result<String> {
