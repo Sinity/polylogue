@@ -48,7 +48,7 @@ fn run_card_reads_the_selected_record_and_offers_an_executable_question() {
     d.pause_signals();
     let (run, outcome) = captured(&d.daemon, "sessions");
     let request = call(&run, "transcript", 100_000).id("selected-run-read");
-    let page = crate::test_answers::read(request.answer(&d.daemon));
+    let page = crate::test_answers::read(request.clone().answer(&d.daemon));
     assert_eq!(
         page.document.header.target,
         Reference::Run(run.id.clone()).to_string()
