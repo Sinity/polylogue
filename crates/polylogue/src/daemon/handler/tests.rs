@@ -3,6 +3,7 @@
 //! typed adapters this module replaces.
 mod feeds;
 mod panics;
+mod setting;
 use super::*;
 
 use serde_json::json;
@@ -604,5 +605,15 @@ fn setting_write_returns_its_result_and_value() {
     else {
         panic!("read must return its current setting: {shown:?}")
     };
-    assert_eq!(current.key, "reading.variants");
+    assert_eq!(current.current.key, "reading.variants");
+    assert!(current.allowed_values.is_empty());
+    assert_eq!(current.history.len(), 1);
+    assert_eq!(
+        current.history[0].value,
+        polylogue_model::settings::Value::Variants(vec![])
+    );
+    assert_eq!(
+        current.current.authored.as_ref().unwrap().reference,
+        current.history[0].authored.reference
+    );
 }

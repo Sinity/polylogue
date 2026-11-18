@@ -802,7 +802,7 @@ impl Handler for Setting {
             ) {
                 return Ok(error(polylogue_model::Code::BadValue, e));
             }
-            return Ok(match reader.setting_current(&key, selected) {
+            return Ok(match reader.setting_details(&key, selected) {
                 Ok(current) => {
                     let mut answer =
                         Answer::ok(protocol::setting::Answer::Current(Box::new(current)));

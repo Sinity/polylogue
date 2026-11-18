@@ -232,7 +232,7 @@ pub mod setting {
         /// The setting; without it, list catalog, defaults, scopes and values
         #[schemars(extend("argument_form" = "positional"))]
         pub key: Option<String>,
-        /// The new value; without it, read the current value
+        /// The new value; without it, read the value, allowed choices and history
         #[schemars(extend("argument_form" = "positional"))]
         pub value: Option<String>,
         /// A named host for host-scoped settings; default: the accepting machine
@@ -243,7 +243,7 @@ pub mod setting {
     #[serde(untagged)]
     pub enum Answer {
         Catalog(Vec<polylogue_model::settings::Current>),
-        Current(Box<polylogue_model::settings::Current>),
+        Current(Box<polylogue_model::settings::Details>),
         Outcome(polylogue_model::user::UserOutcome),
     }
 

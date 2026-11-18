@@ -205,6 +205,28 @@ pub struct Current {
     pub authored: Option<Authored>,
     pub conflicts: Vec<crate::Reference>,
 }
+/// The selected setting, its declared choices and every stored revision.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Details {
+    #[serde(flatten)]
+    pub current: Current,
+    /// The host the setting applies to; none for archive-scoped keys.
+    pub machine: Option<String>,
+    /// The declaration's finite choices; empty for an open value type.
+    pub allowed_values: Vec<String>,
+    /// Newest known authored time first, then ID; unknown times are last.
+    pub history: Vec<HistoryEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct HistoryEntry {
+    pub authored: Authored,
+    pub value: Value,
+    /// A current revision in its family, including conflicting heads.
+    pub current: bool,
+    pub withdrawn: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Authored {
     pub reference: crate::Reference,

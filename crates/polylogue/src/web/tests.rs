@@ -1092,7 +1092,17 @@ fn setting_http_keeps_typed_write_repeat_and_current_results() {
         else {
             panic!("read must return a current setting")
         };
-        assert_eq!(current.key, "reading.variants");
+        assert_eq!(current.current.key, "reading.variants");
+        assert!(current.allowed_values.is_empty());
+        assert_eq!(current.history.len(), 1);
+        assert_eq!(
+            current.history[0].value,
+            polylogue_model::settings::Value::Variants(vec![])
+        );
+        assert_eq!(
+            current.current.authored.as_ref().unwrap().reference,
+            current.history[0].authored.reference
+        );
     });
 }
 
