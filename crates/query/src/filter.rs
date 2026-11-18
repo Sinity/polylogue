@@ -380,6 +380,15 @@ impl Binder<'_> {
                 .then(|| fields::lookup(Unit::Sessions, &lower))
                 .flatten()
         }) else {
+            if let Comparison::Match(Value::Scalar { text, .. }) = &comparison
+                && let Err(error @ polylogue_model::ReferenceError::SinexLocal { .. }) =
+                    polylogue_model::Reference::parse(&format!("{field}:{text}"))
+            {
+                return Err(QueryError::Invalid {
+                    message: error.to_string(),
+                    position: span.start,
+                });
+            }
             return Err(unknown_field(self.text, field, unit, span));
         };
         let def = id.declaration();
