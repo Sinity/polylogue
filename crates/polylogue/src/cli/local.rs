@@ -143,7 +143,7 @@ pub fn browser_host(
     )
 }
 
-/// Install into a harness or Chrome, or print a shell completion script.
+/// Install harness hooks, browser or shell integration, or Drive authorization.
 pub fn install(
     _: &Command,
     v: &command_surface::ParsedCommand,

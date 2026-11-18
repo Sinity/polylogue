@@ -81,10 +81,9 @@ impl Provider {
                 if path == "/token"
                     && request.form.get("grant_type").map(String::as_str)
                         == Some("authorization_code")
+                    && let Some(path) = publication.lock().unwrap().take()
                 {
-                    if let Some(path) = publication.lock().unwrap().take() {
-                        std::fs::write(path, br#"{"type":"authorized_user","client_id":"winner","refresh_token":"winner-token"}"#).unwrap();
-                    }
+                    std::fs::write(path, br#"{"type":"authorized_user","client_id":"winner","refresh_token":"winner-token"}"#).unwrap();
                 }
                 let mut location = None;
                 let (status, body) = match path {
@@ -169,7 +168,7 @@ impl Provider {
             authorization: format!("{}/authorize", self.base),
             token: format!("{}/token", self.base),
             revoke: format!("{}/revoke", self.base),
-            browser: browser,
+            browser,
         }
     }
     fn stop(&mut self) {
@@ -178,8 +177,7 @@ impl Provider {
     fn finish(mut self) -> Vec<Request> {
         self.stop();
         self.worker.take().unwrap().join().unwrap();
-        let requests = self.requests.lock().unwrap().clone();
-        requests
+        self.requests.lock().unwrap().clone()
     }
 }
 impl Drop for Provider {
