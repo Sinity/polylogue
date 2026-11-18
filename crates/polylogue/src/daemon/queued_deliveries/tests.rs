@@ -57,11 +57,14 @@ fn a_failed_outcome_write_is_retried_and_reported() {
         held
     };
     let _release = daemon.daemon.archive.stop().on_cancel(fault::release);
-    daemon.wait_for(|_| fault::held());
+    while !fault::held() {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
     let status = crate::protocol::into_value(
         crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&daemon.daemon),
     )
     .unwrap();
+    fault::release();
     assert_eq!(status["pending_writes"]["delivery_outcomes"], 1);
     assert!(
         status["pending_writes"]["last_error"]
@@ -69,7 +72,6 @@ fn a_failed_outcome_write_is_retried_and_reported() {
             .unwrap()
             .contains("write.user")
     );
-    fault::release();
     held.recv_timeout(std::time::Duration::from_secs(10))
         .unwrap()
         .unwrap();
