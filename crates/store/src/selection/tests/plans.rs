@@ -123,6 +123,110 @@ fn outcome_condition_uses_tool_call_action_index() {
     );
 }
 
+#[test]
+fn named_session_drives_a_page_of_shell_calls() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(dir.path()).unwrap();
+    for (id, calls) in [
+        (
+            "test:target",
+            &[
+                ("shell", "cargo test", 1),
+                ("shell", "Cargo Test", 2),
+                ("shell", "cargo build", 3),
+                ("file_read", "cargo test", 4),
+            ][..],
+        ),
+        ("test:target-other", &[("shell", "cargo test", 5)][..]),
+    ] {
+        let session = fixture
+            .session(SessionFacts {
+                id,
+                ..Default::default()
+            })
+            .unwrap();
+        let message = fixture
+            .message(
+                session,
+                MessageFacts {
+                    id: &format!("{id}:m"),
+                    role: "assistant",
+                    written_by: "model",
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        for &(action, command, at) in calls {
+            fixture
+                .tool_call(
+                    session,
+                    message,
+                    CallFacts {
+                        tool: "Bash",
+                        action,
+                        command: Some(command),
+                        outcome: "ok",
+                        at: Some(at),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+    }
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let mut options = options();
+    options.page_size = Some(100);
+    let program = crate::query::compile(
+        "tool_calls where session:test:target action:shell command_norm:\"cargo test\" \
+         | fields command,command_norm",
+        &options,
+    )
+    .unwrap();
+    let sql = program.statements.page(
+        &program.order,
+        program.params.len(),
+        false,
+        false,
+        crate::query::PageColumns::All,
+    );
+    let mut params = crate::selection::values(&program.params);
+    params.push(crate::SqlValue::Int(101));
+    let plan = reader
+        .query(&format!("EXPLAIN QUERY PLAN {sql}"), &params)
+        .unwrap();
+    assert!(
+        plan.iter().any(|step| step["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("INDEX tool_call_session (session_pk=?)"))),
+        "{plan:#?}"
+    );
+
+    let page = reader.query_page(&program, None).unwrap();
+    assert!(!page.more);
+    let commands: Vec<_> = page
+        .rows
+        .into_iter()
+        .map(|mut row| {
+            crate::query::execute::present(&program, &mut row).unwrap();
+            (row["command"].clone(), row["command_norm"].clone())
+        })
+        .collect();
+    assert_eq!(
+        commands,
+        [
+            (
+                serde_json::json!("cargo test"),
+                serde_json::json!("cargo test")
+            ),
+            (
+                serde_json::json!("Cargo Test"),
+                serde_json::json!("Cargo Test")
+            ),
+        ]
+    );
+}
+
 /// `pending` is the stored `unknown` call the session's live state names as
 /// open; `unknown` leaves it out; stored outcomes match as stored.
 #[test]
