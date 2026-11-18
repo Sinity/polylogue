@@ -180,6 +180,16 @@ fn saved_query_read_lists_dependents_with_executable_resave_lines() {
     assert_eq!(refreshed.revisions.len(), 2);
     assert_ne!(refreshed.revisions[0].hash, refreshed.revisions[1].hash);
     crate::test_answers::step(Call::new("rows", json!({"selection":"annotations where kind:saved_query key:summary","steps":[{"verb":"withdraw"}]})).answer(&d.daemon));
+    // Withdrawing one exact revision reveals its predecessor.
+    let previous_dependent = read(&d.daemon, "query:focus");
+    assert_eq!(header(&previous_dependent).resave.len(), 1);
+    let polylogue_model::Reference::Assertion(mut family) =
+        polylogue_model::Reference::parse(&refreshed.revisions[0].reference).unwrap()
+    else {
+        panic!("saved definition is an annotation")
+    };
+    family.revision = None;
+    crate::test_answers::step(Call::new("rows", json!({"selection":polylogue_model::Reference::Assertion(family).to_string(),"steps":[{"verb":"withdraw"}]})).answer(&d.daemon));
     let without_dependent = read(&d.daemon, "query:focus");
     assert!(header(&without_dependent).resave.is_empty());
     assert!(!header(&without_dependent).query.dependents.is_empty());
