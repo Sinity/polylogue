@@ -476,3 +476,58 @@ fn completion_latency_reports_real_shell_callbacks_with_daemon_up_and_down() {
         }
     }
 }
+
+#[test]
+fn normal_install_honors_captured_zdotdir_and_preserves_home_init() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let home_init = root.join("home/.zshrc");
+    std::fs::create_dir_all(home_init.parent().unwrap()).unwrap();
+    std::fs::write(&home_init, b"# home initialization\n").unwrap();
+    let zdotdir = root.join("zsh config");
+    std::fs::create_dir_all(&zdotdir).unwrap();
+    let init = zdotdir.join(".zshrc");
+    let original = b"# custom initialization\n";
+    std::fs::write(&init, original).unwrap();
+    for extra in [vec![], vec!["--remove"]] {
+        let output = crate::command(root)
+            .env("ZDOTDIR", &zdotdir)
+            .args(["install", "zsh"])
+            .args(&extra)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            std::fs::read(&home_init).unwrap(),
+            b"# home initialization\n"
+        );
+        if extra.is_empty() {
+            assert!(
+                std::fs::read_to_string(&init)
+                    .unwrap()
+                    .contains("polylogue")
+            );
+        }
+    }
+    assert_eq!(std::fs::read(init).unwrap(), original);
+}
+
+#[test]
+fn normal_drive_install_without_client_names_the_setting_and_creates_no_token() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = crate::command(temp.path())
+        .args(["install", "drive", "--dry-run"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        text.contains("polylogue set drive.client_id CLIENT_ID"),
+        "{text}"
+    );
+    assert!(!temp.path().join("archive/drive-token.json").exists());
+}

@@ -413,7 +413,7 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "install",
-        help: "Install into a harness, Chrome or a shell; --dry-run prints a shell's completion script",
+        help: "Install harness hooks, Chrome or shell integration, or authorize Google Drive; --dry-run previews the installation",
         run: configured_local::<local::arguments::Install>(local::install),
         examples: &["polylogue install zsh --dry-run"],
         ..CLI

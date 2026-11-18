@@ -183,7 +183,7 @@ pub type AdvanceCollector = fn(&CollectorPaths<'_>, &CollectorAcceptance<'_>) ->
 /// Configured directories a collector reads from and writes to.
 pub struct CollectorPaths<'a> {
     pub home: &'a Path,
-    pub state_dir: &'a Path,
+    pub archive: &'a Path,
     pub spool: &'a Path,
 }
 

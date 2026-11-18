@@ -33,7 +33,7 @@ impl Collectors {
         }
         if collector.background {
             let home = paths.home.to_path_buf();
-            let state_dir = paths.state_dir.to_path_buf();
+            let archive = paths.archive.to_path_buf();
             let spool = paths.spool.to_path_buf();
             let stop = Arc::clone(&self.stop);
             self.tasks.insert(
@@ -42,7 +42,7 @@ impl Collectors {
                     (collector.sync)(
                         &CollectorPaths {
                             home: &home,
-                            state_dir: &state_dir,
+                            archive: &archive,
                             spool: &spool,
                         },
                         &stop,

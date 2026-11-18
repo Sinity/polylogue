@@ -16,7 +16,13 @@ fn invoke(startup: &crate::config::Startup, shell: &str, options: &[&str]) -> (E
     words.extend(options);
     let (_, parsed) = crate::cli::parse(&words).unwrap();
     let mut output = vec![];
-    let code = super::super::install_with_output(&parsed, startup, true, &mut output);
+    let code = super::super::install_with_output(
+        &parsed,
+        startup,
+        true,
+        &mut output,
+        &crate::auth::Drive::default(),
+    );
     (code, output)
 }
 fn paths(

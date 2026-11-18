@@ -436,7 +436,10 @@ impl Reader<'_> {
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for key in rows {
-            if polylogue_model::settings::declaration(&key).is_ok() && !keys.contains(&key) {
+            if polylogue_model::settings::declaration(&key).is_ok()
+                && polylogue_model::settings::historical_hint(&key).is_none()
+                && !keys.contains(&key)
+            {
                 keys.push(key);
             }
         }

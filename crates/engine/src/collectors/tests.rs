@@ -23,7 +23,7 @@ fn a_waiting_collector_runs_off_the_loop_thread_and_does_not_start_twice() {
     let mut collectors = Collectors::default();
     let paths = CollectorPaths {
         home: temp.path(),
-        state_dir: temp.path(),
+        archive: temp.path(),
         spool: &socket,
     };
     assert!(collectors.run("waiting", &WAITING, &paths).is_empty());
@@ -69,7 +69,7 @@ fn dropping_collectors_signals_stop_before_joining_the_workers() {
                 &STOPPING,
                 &CollectorPaths {
                     home: temp.path(),
-                    state_dir: temp.path(),
+                    archive: temp.path(),
                     spool: &socket,
                 }
             )
@@ -88,7 +88,7 @@ static ARCHIVE_ACCEPTANCE: Collector = Collector {
     sync: |_, _| Vec::new(),
     advance: Some(|paths, accepted| {
         let requested =
-            std::fs::read(paths.state_dir.join("expected.json")).map_err(|e| e.to_string())?;
+            std::fs::read(paths.archive.join("expected.json")).map_err(|e| e.to_string())?;
         if accepted(
             &paths.spool.join("1AbC.json"),
             polylogue_model::BlobHash::of(&requested),
@@ -109,13 +109,13 @@ fn collector_acceptance_requires_the_complete_archived_body() {
     std::fs::create_dir_all(&spool).unwrap();
     let paths = CollectorPaths {
         home: &home.home,
-        state_dir: home.dir.path(),
+        archive: home.dir.path(),
         spool: &spool,
     };
     let path = spool.join("1AbC.json");
     let small = br#"{"runSettings":{},"chunkedPrompt":{"chunks":[]}}"#;
     let complete = br#"{"runSettings":{},"chunkedPrompt":{"chunks":[{"role":"user","text":"full stored bytes"}]}}"#;
-    std::fs::write(paths.state_dir.join("expected.json"), complete).unwrap();
+    std::fs::write(paths.archive.join("expected.json"), complete).unwrap();
     assert!(
         engine
             .advance_collector("ai-studio", &ARCHIVE_ACCEPTANCE, &paths)
@@ -148,7 +148,7 @@ fn collector_acceptance_requires_the_complete_archived_body() {
     let mut wrong = complete.to_vec();
     let at = wrong.iter().position(|byte| *byte == b'f').unwrap();
     wrong[at] = b'F';
-    std::fs::write(paths.state_dir.join("expected.json"), &wrong).unwrap();
+    std::fs::write(paths.archive.join("expected.json"), &wrong).unwrap();
     assert!(
         engine
             .advance_collector("ai-studio", &ARCHIVE_ACCEPTANCE, &paths)

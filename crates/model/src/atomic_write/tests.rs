@@ -31,3 +31,18 @@ fn replacement_is_private_and_cleans_up_on_failure() {
     assert!(write_atomic(&destination, b"cannot replace a directory", None).is_err());
     assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
 }
+
+#[test]
+fn private_publication_preserves_a_destination_that_already_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credential");
+    super::write_atomic_if_absent(&path, b"original").unwrap();
+    assert_eq!(
+        super::write_atomic_if_absent(&path, b"replacement")
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::AlreadyExists
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), b"original");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}

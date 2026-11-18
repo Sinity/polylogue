@@ -50,6 +50,7 @@ impl EnvSnapshot {
             "POLYLOGUE_LISTEN",
             "POLYLOGUE_AUTH_TOKEN_FILE",
             "PAGER",
+            "ZDOTDIR",
             "NO_COLOR",
             "TERM",
             "NOTIFY_SOCKET",

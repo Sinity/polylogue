@@ -47,6 +47,8 @@ tokio.workspace = true
 axum.workspace = true
 tokio-util = { version = "0.7", features = ["io", "rt"] }
 uuid.workspace = true
+ureq.workspace = true
+sha2 = "0.10"
 tower.workspace = true
 base64.workspace = true
 blake3.workspace = true
