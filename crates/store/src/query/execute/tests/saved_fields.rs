@@ -919,3 +919,234 @@ fn since_seen_tracks_the_computed_author_and_new_source_or_authored_work() {
         .unwrap();
     assert_eq!(count(&archive, "operator", annotations), 1);
 }
+
+#[test]
+fn runs_lists_the_native_begin_completion_and_reopened_record() {
+    use crate::fixture::writer::WriterArchive;
+    use polylogue_model::{
+        Author, RunId, Timestamp,
+        authorship::{Authorship, Channel},
+        query_objects::{
+            ExecutionBinding, ExecutionPresentation, QueryRun, QueryRunOutcome, ReplayBinding,
+            RunBinding, RunOutcome,
+        },
+    };
+    use std::collections::BTreeMap;
+    let mut archive = WriterArchive::new();
+    let opts = options();
+    let plan =
+        polylogue_query::plan::prepare("sessions", &polylogue_query::Bindings::default(), |_| {
+            Ok(())
+        })
+        .unwrap();
+    let object = plan.query_object().unwrap();
+    archive.writer.query_object(object.clone(), None).unwrap();
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let position = pool.reader().unwrap().change_position().unwrap();
+    drop(pool);
+    let expected = QueryRun {
+        id: RunId::parse("018f0000-0000-7000-8000-000000000011").unwrap(),
+        question: Some(object.id),
+        at: opts.clock.now().into(),
+        read_at: position.clone(),
+        machine: "synthetic-machine".into(),
+        authorship: Authorship {
+            author: Author::Operator,
+            via: Channel::Mcp,
+        },
+        binding: RunBinding::Original {
+            execution: Box::new(ExecutionBinding {
+                query_options: crate::query::execute::options_snapshot(&opts, false, None).unwrap(),
+                presentation: ExecutionPresentation::Query,
+                accepted_request: Some(
+                    serde_json::json!({"id":"accepted-run","operation":"rows","arguments":{"selection":"sessions"}}),
+                ),
+                replay: ReplayBinding {
+                    bound_ast: object.query.clone(),
+                    source_outputs: object.source_outputs.clone(),
+                    definitions: vec![],
+                    context: query_language::cursor::CursorContext {
+                        question: object.id,
+                        clock: opts.clock.wire(),
+                        resolved_times: vec![],
+                        random_seed: 7,
+                        read_positions: BTreeMap::from([
+                            ("generation".into(), position.generation.clone()),
+                            ("index".into(), position.index.to_string()),
+                            ("archive".into(), position.archive.to_string()),
+                        ]),
+                        versions: BTreeMap::from([("compiler".into(), "shared-query-v1".into())]),
+                    },
+                    scope_fingerprint: None,
+                    original_text: "sessions".into(),
+                },
+            }),
+        },
+    };
+    let read = |archive: &WriterArchive, text: &str| {
+        let program = crate::query::compile(text, &opts).unwrap();
+        let pool = crate::ReadPool::open(&archive.archive).unwrap();
+        let reader = pool.reader().unwrap();
+        let mut rows = reader.query_rows(&program).unwrap();
+        for row in &mut rows {
+            present(&program, row).unwrap();
+        }
+        rows
+    };
+    archive
+        .writer
+        .begin_query_run(expected.clone(), None)
+        .unwrap();
+    let begun = read(&archive, "runs");
+    assert_eq!(begun.len(), 1);
+    assert_eq!(begun[0]["id"], format!("run:{}", expected.id));
+    assert_eq!(begun[0]["query"], format!("query:{}", object.id));
+    assert_eq!(begun[0]["author"], "operator");
+    assert_eq!(begun[0]["via"], "mcp");
+    assert_eq!(begun[0]["read_at"], position.to_string());
+    assert_eq!(
+        serde_json::from_value::<Timestamp>(begun[0]["at"].clone()).unwrap(),
+        expected.at
+    );
+    assert!(begun[0]["count"].is_null());
+    assert!(begun[0]["outcome"].is_null());
+    let completed = QueryRunOutcome {
+        run: expected.id.clone(),
+        binding_hash: expected.binding_hash().unwrap(),
+        run_hash: expected.record_hash().unwrap(),
+        at: expected.at,
+        outcome: RunOutcome::Ok,
+        count: Some(7),
+        exact: true,
+        next: None,
+    };
+    drop(archive.writer.finish_query_run(completed.clone()).unwrap());
+    assert!(archive.writer.flush_rows().unwrap().errors.is_empty());
+    let finished = read(&archive, "runs where outcome:ok");
+    assert_eq!(finished.len(), 1);
+    assert_eq!(finished[0]["count"], 7);
+    assert_eq!(finished[0]["exact"], true);
+    assert_eq!(finished[0]["outcome"], serde_json::json!({"state":"ok"}));
+    assert!(read(&archive, "runs where outcome:error").is_empty());
+    archive
+        .writer
+        .begin_query_run(expected.clone(), None)
+        .unwrap();
+    drop(archive.writer.finish_query_run(completed).unwrap());
+    assert!(archive.writer.flush_rows().unwrap().errors.is_empty());
+    assert_eq!(
+        read(&archive, "runs"),
+        finished,
+        "retry creates no duplicate row"
+    );
+    archive.restart();
+    assert_eq!(
+        read(&archive, "runs"),
+        finished,
+        "native reopen retains the same projected row"
+    );
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    assert_eq!(
+        pool.reader()
+            .unwrap()
+            .query_run(&expected.id, None)
+            .unwrap(),
+        Some(expected)
+    );
+}
+
+#[test]
+fn original_kept_bodies_retain_their_recorded_units_and_reference_columns() {
+    let original: Value = serde_json::from_str(include_str!(
+        "../../../../../query/src/plan/tests/fixtures/recorded-unit-objects.json"
+    ))
+    .unwrap();
+    let d = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(d.path()).unwrap();
+    for record in original["kept"].as_array().unwrap() {
+        let id = record["id"].as_str().unwrap();
+        let query = record["query"].as_str().unwrap();
+        let bytes = record["rows_json"].as_str().unwrap();
+        let body: Value = serde_json::from_str(bytes).unwrap();
+        fixture.kept_result(id, query, bytes).unwrap();
+        let pool = fixture.reads().unwrap();
+        let reader = pool.reader().unwrap();
+        // The query surface exposes decoded rows, not the immutable stored body.
+        let stored: String = reader
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT rows_json FROM source_kept_result WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stored, bytes,
+            "original kept bytes and ID survive admission"
+        );
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            format!("{:x}", Sha256::digest(stored.as_bytes())),
+            record["rows_sha256"].as_str().unwrap()
+        );
+        let prepared = reader
+            .prepare_query_selection(&format!("result:{id}"), &options())
+            .unwrap();
+        let program = prepared.program();
+        let mut values = reader.query_rows(program).unwrap();
+        for row in &mut values {
+            present(program, row).unwrap();
+        }
+        assert_eq!(values, body["rows"].as_array().unwrap().clone(), "{id}");
+        let schema = prepared.plan().output_schema().unwrap();
+        if body["unit"] == "assertions" {
+            assert_eq!(schema.unit.as_deref(), Some("assertions"));
+            assert!(
+                matches!(
+                    &program.row_kind,
+                    crate::query::compile::RowKind::UnitRows {
+                        unit: Unit::Annotations,
+                        ..
+                    }
+                ),
+                "recorded annotations keep native authored identity"
+            );
+            let reference = program
+                .columns
+                .iter()
+                .find(|c| c.name == "reference")
+                .unwrap();
+            assert_eq!(
+                reference.reference,
+                Some(polylogue_query::ColumnReference::Assertion)
+            );
+            assert_eq!(body["columns"][1]["reference"], "assertion");
+            assert_eq!(values[0]["reference"], "assertion:f4-note-1@f4-note-1");
+        } else if body["unit"] == "links" {
+            assert_eq!(schema.unit.as_deref(), Some("links"));
+            assert!(
+                matches!(
+                    &program.row_kind,
+                    crate::query::compile::RowKind::UnitRows {
+                        unit: Unit::SessionLinks,
+                        ..
+                    }
+                ),
+                "recorded links keep native row identity"
+            );
+            assert_eq!(
+                program.columns[0].reference,
+                Some(polylogue_query::ColumnReference::Session)
+            );
+        } else {
+            assert_eq!(body["unit"], "changes");
+            assert!(
+                schema.unit.is_none(),
+                "a retained grouped result has no native row domain"
+            );
+            assert_eq!(values[0]["assertion_kind"], "note");
+            assert_eq!(values[0]["count"], 1);
+        }
+    }
+}
