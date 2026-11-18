@@ -409,7 +409,10 @@ pub(crate) fn parse(
         index = split.end;
         let mut stdin = None;
         for word in &split.argument_words {
-            if args[word.index] == "-" && (word.positional || word.field == "parts") {
+            if !word.literal
+                && args[word.index] == "-"
+                && (word.positional || word.field == "parts")
+            {
                 stdin_count += 1;
                 stdin = Some(word.field.clone());
             }
