@@ -722,8 +722,7 @@ fn write_shell_sessions(w: &mut WriterArchive, from: u32, to: u32) {
 }
 
 /// SQLite steps of running every derivation on the session `name` from the
-/// start, as a first build does, on an index without planner statistics, as
-/// it is until its first build ends.
+/// start, as a first build does, on an index without planner statistics.
 fn steps_to_derive_from_start(w: &WriterArchive, name: &str) -> usize {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -780,16 +779,24 @@ fn deriving_a_session_costs_the_same_however_many_calls_other_sessions_hold() {
     target.extend(bash("target", 1, 1_010, "cargo build", false, "error"));
     target.extend(bash("target", 2, 1_020, "cargo build", true, "ok"));
     w.write("target", target);
-    // The first build ended at the first derive and gathered statistics.
-    let analyzed: bool = rusqlite::Connection::open(w.archive.index_db())
-        .unwrap()
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_stat1 WHERE tbl = 'tool_call')",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert!(analyzed);
+    let reads = crate::ReadPool::serving(&w.archive, 1, 8 << 20).unwrap();
+    assert_eq!(
+        reads
+            .reader()
+            .unwrap()
+            .query(
+                "SELECT command_norm FROM tool_call
+                 WHERE session_pk=(SELECT pk FROM session WHERE id='claude-code:target')
+                 ORDER BY at",
+                &[],
+            )
+            .unwrap(),
+        vec![
+            json!({"command_norm":"cargo build"}),
+            json!({"command_norm":"cargo build"}),
+        ]
+    );
+    drop(reads);
     // Rows of other sessions on both sides of the target's in every index,
     // so a range read ends at a neighbour's row in both measurements.
     for from in [10, 20] {
