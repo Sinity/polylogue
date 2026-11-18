@@ -314,7 +314,16 @@ fn known_roots_are_reused_from_the_working_tree_cache() {
     assert_ne!(moved["head"], first["head"]);
     assert_eq!(moved["root_commits"], reused["root_commits"]);
     git(&["checkout", "--orphan", "unrelated"]);
-    commit();
+    git(&[
+        "-c",
+        "user.name=Synthetic",
+        "-c",
+        "user.email=synthetic@example.test",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "unrelated root",
+    ]);
     let unrelated = observe();
     assert_eq!(
         unrelated["root_commits"],
