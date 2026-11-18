@@ -91,6 +91,12 @@ succeeds.
 
 Vectors for text the daemon has not embedded are bought with `polylogue embed [--query 'QUERY'] [--yes]`: without `--yes` it reports what would be embedded and what it would cost, and with `--yes` it spends and builds ([installing.md](installing.md#embedding)). Spending stays an explicit act, so the preview is the default. Once model calls are on, the daemon embeds new text in the background within the budget above; `status` shows the vectors stored, missing and failed. Over MCP, `embed` is an operation of `polylogue_act`.
 
+A query whose session sources all use the logical default selects prose in each
+returned root and its
+known structural members, including continuations. The query's limit counts
+those logical rows. `sessions where physical:true` selects only the returned
+physical parts. Both preview and purchase use the same selected prose.
+
 ### What is embedded
 
 - One vector input per message: the message's person and model prose, its text blocks in order joined by a blank line, NFC-normalized. An input past the model's limit is chunked at that limit and its best chunk ranks. Annotation values are embedded too.
