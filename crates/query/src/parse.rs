@@ -36,7 +36,7 @@ pub fn with_catalog(
 }
 
 /// A query that is only an exact assertion revision (`assertion:R@X`) reads
-/// the assertions unit: the revision is one row whatever the default unit.
+/// the annotations unit: the revision is one row whatever the default unit.
 /// Every other lone reference stays a condition on the default unit.
 fn bind_lone_reference(query: &mut Query) {
     if !query.transforms.is_empty() || !query.attach.is_empty() {
@@ -61,7 +61,7 @@ fn bind_lone_reference(query: &mut Query) {
         && revision.revision.is_some()
     {
         // Explicit, so the unit survives formatting the query back to text.
-        *unit = crate::units::Unit::Assertions.name().to_owned();
+        *unit = crate::units::Unit::Annotations.name().to_owned();
         *implicit = false;
     }
 }

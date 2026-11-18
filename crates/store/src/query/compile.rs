@@ -366,6 +366,8 @@ pub(crate) struct Compiler<'a> {
     /// The index whose relevance ranks the rows, from the selection's
     /// search leg.
     rank_index: Option<polylogue_query::search::SnippetIndex>,
+    /// A top-level alternate or language condition admits this text source.
+    alternate_words: Option<Vec<String>>,
     source_near_allowed: bool,
     /// An unavailable semantic order affects the answer or an earlier selection.
     near_unavailable: bool,
@@ -422,6 +424,7 @@ impl<'a> Compiler<'a> {
             definitions: vec![],
             near_request: None,
             rank_index: None,
+            alternate_words: None,
             source_near_allowed: true,
             near_unavailable: false,
             measuring: false,

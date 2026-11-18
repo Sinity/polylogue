@@ -379,3 +379,41 @@ fn the_catalog_fingerprint_is_computed_once_per_process() {
     let bytes = serde_json::to_vec(&*crate::catalog::catalog(&[])).unwrap();
     assert_eq!(first, blake3::hash(&bytes).to_hex().as_str());
 }
+
+#[test]
+fn recorded_unit_names_are_not_live_units() {
+    let live = crate::catalog::catalog(&[]);
+    for retired in ["assertions", "links", "changes"] {
+        assert!(live.unit(retired).is_none());
+        assert!(crate::units::Unit::from_name(retired).is_none());
+        let parsed = crate::parse(retired).unwrap();
+        assert!(!matches!(parsed.source,Source::Unit{ref unit,..} if unit==retired));
+    }
+}
+
+#[test]
+fn recorded_definitions_do_not_reinterpret_live_search_words() {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("tests/fixtures/recorded-unit-objects.json")).unwrap();
+    let object: polylogue_model::query_objects::QueryObject =
+        serde_json::from_str(fixture["objects"][2]["original_json"].as_str().unwrap()).unwrap();
+    let old = replay(&object, catalog_fingerprint()).unwrap();
+    let mut loaded = Bindings::default();
+    loaded
+        .add_saved("recorded", &old, "revision", "root")
+        .unwrap();
+    for words in ["assertions", "\"assertions\"", "links", "changes"] {
+        let before = prepare(words, &Bindings::default(), |_| Ok(())).unwrap();
+        let after = prepare(words, &loaded, |_| Ok(())).unwrap();
+        assert_eq!(before.question_id(), after.question_id(), "{words}");
+        assert_eq!(
+            identity::normal_form(before.expanded_query().query(), before.catalog()).unwrap(),
+            identity::normal_form(after.expanded_query().query(), after.catalog()).unwrap(),
+            "{words}"
+        );
+        assert!(
+            matches!(after.expanded_query().query().source, Source::Unit{ref unit,..} if unit=="sessions")
+        );
+    }
+    assert!(loaded.catalog().unit("assertions").is_none());
+}

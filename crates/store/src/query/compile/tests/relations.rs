@@ -789,13 +789,13 @@ fn assertion_aggregates_keep_the_selected_rowid_scope() {
         .note("note", None, Some("two"), "session:claude-code:b")
         .unwrap();
     assert_eq!(
-        rows(&fixture, "assertions where kind:note | agg count()"),
+        rows(&fixture, "annotations where kind:note | agg count()"),
         [json!({"count":2})]
     );
     assert_eq!(
         rows(
             &fixture,
-            "assertions where kind:note | group by kind | count"
+            "annotations where kind:note | group by kind | count"
         ),
         [json!({"kind":"note", "count":2})]
     );

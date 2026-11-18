@@ -180,7 +180,7 @@ fn build(origins: &[String]) -> Catalog {
             .map(|origin| ReferenceForm::prefix(format!("{origin}:"))),
     );
     catalog.references.extend(
-        ["self", "last", "latest"]
+        ["self", "here", "latest"]
             .into_iter()
             .map(ReferenceForm::word),
     );
@@ -205,7 +205,7 @@ pub fn target_unit(target: &polylogue_model::read::ReadTarget) -> Unit {
         ReadTarget::Block { .. } => Unit::Blocks,
         ReadTarget::Document(_) => Unit::Documents,
         ReadTarget::Event(_) => Unit::Events,
-        ReadTarget::Assertion { .. } => Unit::Assertions,
+        ReadTarget::Assertion { .. } => Unit::Annotations,
         ReadTarget::Delivery(_) => Unit::Deliveries,
     }
 }
@@ -220,7 +220,7 @@ pub fn reference_unit(reference: &polylogue_model::Reference) -> Option<Unit> {
         Reference::Block { .. } => Unit::Blocks,
         Reference::Document(_) => Unit::Documents,
         Reference::Event(_) => Unit::Events,
-        Reference::Assertion(_) => Unit::Assertions,
+        Reference::Assertion(_) => Unit::Annotations,
         Reference::Delivery(_) => Unit::Deliveries,
         Reference::Span { container, .. } => return reference_unit(container),
         _ => return None,

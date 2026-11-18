@@ -87,13 +87,13 @@ fn where_stages_after_the_source_join_its_filter() {
     );
 }
 
-/// A where stage after `last`, after an order condition, or before
+/// A where stage after `latest`, after an order condition, or before
 /// `| matches` stays a stage, because the conjunction means something else.
 #[test]
 fn where_stages_that_change_meaning_stay_stages() {
     for text in [
-        "sessions where last | where origin:codex",
-        "sessions where repo:morrow | where last",
+        "sessions where latest | where origin:codex",
+        "sessions where repo:morrow | where latest",
         "sessions where exists tool_calls(action:shell) | where origin:codex | matches",
     ] {
         assert_eq!(selection(text).stages_from, 0, "{text}");
@@ -189,7 +189,7 @@ fn prose_words_rank_before_output_terms() {
     // Thinking and substring terms filter without ranking; words under
     // OR or NOT do not rank either.
     assert_eq!(ranks("sessions where thinking:retry"), None);
-    assert_eq!(ranks("assertions where retry"), None);
+    assert_eq!(ranks("annotations where retry"), None);
     assert_eq!(ranks("sessions where retry OR backoff"), None);
     assert_eq!(ranks("sessions where NOT retry"), None);
     assert_eq!(ranks("sessions where repo:polylogue"), None);

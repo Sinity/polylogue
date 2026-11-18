@@ -9,11 +9,15 @@ pub enum Unit {
     ToolCalls,
     Files,
     Events,
-    Assertions,
-    Links,
+    Annotations,
+    Alternates,
+    Queries,
+    Runs,
+    Results,
+    SessionLinks,
     Turns,
     Deliveries,
-    Changes,
+    Feed,
     LiveIntervals,
     Processes,
 }
@@ -26,6 +30,18 @@ impl Unit {
 
     pub fn name(self) -> &'static str {
         crate::units::spec(self).name
+    }
+
+    /// Interpret a source already validated by the shared binder against its
+    /// captured declaration. Live catalogs offer only `from_name` spellings;
+    /// sealed questions retain the names present when their identity was made.
+    pub fn from_bound_name(name: &str) -> Option<Unit> {
+        Self::from_name(name).or_else(|| match name.to_ascii_lowercase().as_str() {
+            "assertions" => Some(Self::Annotations),
+            "links" => Some(Self::SessionLinks),
+            "changes" => Some(Self::Feed),
+            _ => None,
+        })
     }
 
     pub fn from_name(name: &str) -> Option<Unit> {
@@ -118,22 +134,6 @@ pub static DESIGNED_UNITS: &[DesignedUnit] = &[
             column("state", Text),
             column("message", Text),
             column("session", Text),
-        ],
-    },
-    DesignedUnit {
-        name: "variants",
-        columns: &[
-            column("id", Text),
-            column("root", Text),
-            column("base", Text),
-            column("source", Text),
-            column("kind", Text),
-            column("from_lang", Text),
-            column("to_lang", Text),
-            column("author", Text),
-            column("via", Text),
-            column("method", Text),
-            column("created_at", Time),
         ],
     },
     DesignedUnit {
@@ -488,8 +488,8 @@ pub static UNITS: &[UnitSpec] = &[
         }],
     },
     UnitSpec {
-        unit: Unit::Assertions,
-        name: "assertions",
+        unit: Unit::Annotations,
+        name: "annotations",
         in_session: false,
         identity: &["id", "root"],
         main_time: Some("created_at"),
@@ -535,8 +535,8 @@ pub static UNITS: &[UnitSpec] = &[
         relations: &[],
     },
     UnitSpec {
-        unit: Unit::Links,
-        name: "links",
+        unit: Unit::SessionLinks,
+        name: "session_links",
         in_session: false,
         identity: &["parent", "child", "kind", "how"],
         main_time: None,
@@ -809,11 +809,11 @@ pub static UNITS: &[UnitSpec] = &[
         }],
     },
     UnitSpec {
-        unit: Unit::Changes,
-        name: "changes",
+        unit: Unit::Feed,
+        name: "feed",
         in_session: false,
         identity: &["kind", "ref"],
-        main_time: Some("seq"),
+        main_time: None,
         columns: &[
             ColumnSpec {
                 name: "kind",
@@ -835,6 +835,82 @@ pub static UNITS: &[UnitSpec] = &[
                 name: "assertion_kind",
                 kind: Text,
             },
+        ],
+        words: Words::None,
+        relations: &[],
+    },
+    UnitSpec {
+        unit: Unit::Alternates,
+        name: "alternates",
+        in_session: false,
+        identity: &["id"],
+        main_time: Some("created_at"),
+        columns: &[
+            column("id", Text),
+            column("root", Text),
+            column("base", Text),
+            column("source", Text),
+            column("kind", Text),
+            column("from_lang", Text),
+            column("to_lang", Text),
+            column("author", Text),
+            column("via", Text),
+            column("method", Text),
+            column("created_at", Time),
+        ],
+        words: Words::Substring,
+        relations: &[],
+    },
+    UnitSpec {
+        unit: Unit::Queries,
+        name: "queries",
+        in_session: false,
+        identity: &["query", "name"],
+        main_time: Some("saved_at"),
+        columns: &[
+            column("query", Text),
+            column("name", Text),
+            column("revision", Text),
+            column("text", Text),
+            column("saved_at", Time),
+            column("kept", Text),
+            column("watched", Bool),
+        ],
+        words: Words::Substring,
+        relations: &[],
+    },
+    UnitSpec {
+        unit: Unit::Runs,
+        name: "runs",
+        in_session: false,
+        identity: &["id"],
+        main_time: Some("at"),
+        columns: &[
+            column("id", Text),
+            column("query", Text),
+            column("at", Time),
+            column("read_at", Text),
+            column("author", Text),
+            column("via", Text),
+            column("count", Number),
+            column("exact", Bool),
+            column("outcome", Json),
+        ],
+        words: Words::None,
+        relations: &[],
+    },
+    UnitSpec {
+        unit: Unit::Results,
+        name: "results",
+        in_session: false,
+        identity: &["id"],
+        main_time: Some("ran_at"),
+        columns: &[
+            column("id", Text),
+            column("name", Text),
+            column("query", Text),
+            column("ran_at", Time),
+            column("rows", Number),
         ],
         words: Words::None,
         relations: &[],

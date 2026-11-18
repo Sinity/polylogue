@@ -20,11 +20,15 @@ pub enum DefaultId {
     CountedCalls,
     /// Rows of hidden sessions stay out.
     Visible,
-    /// Withdrawal records stay out of assertions.
-    NotWithdrawal,
+    /// Withdrawals and read marks stay out of annotations.
+    NotWithdrawalOrSeen,
     /// Only current revisions.
     CurrentAssertion,
-    /// Withdrawn assertions stay out.
+    /// Only the current nonwithdrawn alternate revisions.
+    CurrentAlternate,
+    /// Read marks are absent from the ordinary feed.
+    NotSeen,
+    /// Withdrawn annotations stay out.
     NotWithdrawn,
     /// Deliveries of hidden sessions stay out; deliveries without a session
     /// stay in.
@@ -51,16 +55,18 @@ impl DefaultId {
             Self::OnActivePath => &["active"],
             Self::CountedCalls => &["action"],
             Self::Visible => &["hidden"],
-            Self::NotWithdrawal => &["kind", "note", "assertion"],
+            Self::NotWithdrawalOrSeen => &["kind", "note", "annotation"],
+            Self::NotSeen => &["assertion_kind"],
+            Self::CurrentAlternate => &["current", "root", "withdrawn"],
             Self::CurrentAssertion => &[
                 "current",
                 "root",
                 "withdrawn",
                 "note",
-                "assertion",
+                "annotation",
                 "seen_by",
             ],
-            Self::NotWithdrawn => &["withdrawn", "note", "assertion", "seen_by"],
+            Self::NotWithdrawn => &["withdrawn", "note", "annotation", "seen_by"],
             Self::VisibleIfSession => &[],
         }
     }
@@ -111,9 +117,11 @@ pub fn declared(unit: Unit) -> &'static [DefaultId] {
         Unit::Files | Unit::Events | Unit::Turns | Unit::LiveIntervals | Unit::Processes => {
             &[Visible]
         }
-        Unit::Assertions => &[NotWithdrawal, CurrentAssertion, NotWithdrawn],
+        Unit::Annotations => &[NotWithdrawalOrSeen, CurrentAssertion, NotWithdrawn],
+        Unit::Alternates => &[CurrentAlternate],
+        Unit::Feed => &[NotSeen],
         Unit::Deliveries => &[VisibleIfSession],
-        Unit::Documents | Unit::Links | Unit::Changes => &[],
+        Unit::Documents | Unit::SessionLinks | Unit::Queries | Unit::Runs | Unit::Results => &[],
     }
 }
 
@@ -174,7 +182,7 @@ fn named_fields(top: &[Condition], unit: Unit) -> HashSet<String> {
 }
 
 /// A reference that names a session rather than this unit's own rows:
-/// `session:X`, `origin:native`, `last`, `latest`, `self`. Over another
+/// `session:X`, `origin:native`, `latest`, `self`. Over another
 /// unit it lifts only the session's visibility default; the unit's own
 /// row defaults (duplicate copies, the active path) still apply, the
 /// same as reading `X | unit`.
@@ -190,7 +198,7 @@ pub fn names_a_session(c: &Condition, unit: Unit, origins: &[String]) -> bool {
         ConditionKind::Text {
             text,
             mode: TextMode::Word,
-        } => matches!(text.as_str(), "last" | "latest" | "self"),
+        } => matches!(text.as_str(), "latest" | "self"),
         _ => false,
     }
 }
@@ -212,14 +220,14 @@ pub fn is_reference(c: &Condition, unit: Unit, origins: &[String]) -> bool {
                         | "request"
                         | "document"
                         | "span"
-                        | "assertion"
+                        | "annotation"
                         | "delivery"
                 )
         }
         ConditionKind::Text {
             text,
             mode: TextMode::Word,
-        } => matches!(text.as_str(), "last" | "latest" | "self") || id_shaped(text),
+        } => matches!(text.as_str(), "latest" | "self" | "here") || id_shaped(text),
         _ => false,
     }
 }

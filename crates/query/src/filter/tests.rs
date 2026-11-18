@@ -161,10 +161,10 @@ fn references_and_words_bind_apart_from_fields() {
         filter("messages where block:codex:abc/1").unwrap(),
         Filter::Rows { reference, .. } if reference == "block:codex:abc/1"
     ));
-    let Filter::All(parts) = filter("sessions where last retr*").unwrap() else {
+    let Filter::All(parts) = filter("sessions where latest retr*").unwrap() else {
         panic!("not a conjunction");
     };
-    assert!(matches!(&parts[0], Filter::SessionWord { word, .. } if word == "last"));
+    assert!(matches!(&parts[0], Filter::SessionWord { word, .. } if word == "latest"));
     assert!(matches!(&parts[1], Filter::Word(Word { text, phrase: false, .. }) if text == "retr*"));
 }
 

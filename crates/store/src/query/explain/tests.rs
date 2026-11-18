@@ -21,6 +21,8 @@ fn explanation_uses_the_same_closed_saved_binding_as_lowering() {
         random_seed: Some(7),
         embeddings: false,
         self_session: None,
+        here: None,
+        seen_marks_of: None,
         fields: vec![],
         kept: BTreeMap::new(),
         provider_catalog: None,

@@ -2,6 +2,7 @@ use super::*;
 use crate::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
 
 mod lineage;
+mod saved_fields;
 mod search;
 
 fn options() -> crate::query::Options {
@@ -19,6 +20,8 @@ fn options() -> crate::query::Options {
         random_seed: Some(7),
         embeddings: false,
         self_session: None,
+        here: None,
+        seen_marks_of: None,
         saved: Default::default(),
         fields: vec!["id".into(), "at".into()],
         kept: Default::default(),
@@ -264,9 +267,9 @@ fn source_time_without_metadata_stays_unknown() {
     let mut options = options();
     options.fields.clear();
     for (text, count) in [
-        ("links where child.started >= 2026-10-01", 0),
-        ("links where NOT child.started >= 2026-10-01", 0),
-        ("links where child.started:unknown", 1),
+        ("session_links where child.started >= 2026-10-01", 0),
+        ("session_links where NOT child.started >= 2026-10-01", 0),
+        ("session_links where child.started:unknown", 1),
     ] {
         let program = crate::query::compile(text, &options).unwrap();
         assert_eq!(

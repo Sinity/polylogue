@@ -35,7 +35,7 @@ fn two_archives_first_title_then_bundle_import_shows_conflict() {
             .unwrap();
     }
     assert_eq!(
-        count(&fixture, "assertions where kind:title conflict:true"),
+        count(&fixture, "annotations where kind:title conflict:true"),
         2
     );
     assert_eq!(count(&fixture, "sessions where has:conflict"), 1);
@@ -56,9 +56,9 @@ fn two_archives_first_title_then_bundle_import_shows_conflict() {
         })
         .unwrap();
     assert_eq!(
-        count(&fixture, "assertions where kind:title conflict:true"),
+        count(&fixture, "annotations where kind:title conflict:true"),
         0
     );
-    assert_eq!(count(&fixture, "assertions where kind:title"), 1);
+    assert_eq!(count(&fixture, "annotations where kind:title"), 1);
     assert_eq!(count(&fixture, "sessions where has:conflict"), 0);
 }

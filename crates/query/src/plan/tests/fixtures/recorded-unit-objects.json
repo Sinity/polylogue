@@ -1,0 +1,21 @@
+{
+  "source_revision": "a548c4e667ac2dfe4bf601fedfc9b6fb6299e26d",
+  "objects": [
+    {
+      "hash": "1515bdf76c55a28118ff28de52e67ccc771aac0757de7d7c89a0c1b29b49b074",
+      "original_json": "{\"id\":[21,21,189,247,108,85,162,129,24,255,40,222,82,230,124,204,119,26,172,7,87,222,125,124,137,160,193,178,155,73,176,116],\"normal_form\":{\"attach\":[],\"source\":{\"condition\":null,\"kind\":\"unit\",\"unit\":\"links\"},\"stages\":[]},\"parameters\":{},\"query\":{\"source\":{\"kind\":\"unit\",\"unit\":\"links\",\"implicit\":false,\"condition\":null},\"attach\":[],\"transforms\":[]},\"source_outputs\":[],\"definitions\":[],\"dependencies\":[],\"edges\":[]}"
+    },
+    {
+      "hash": "a4982a01dac58d9bea70d039c20cc73229bb76af987750ad6ad682b43068e181",
+      "original_json": "{\"id\":[164,152,42,1,218,197,141,155,234,112,208,57,194,12,199,50,41,187,118,175,152,119,80,173,106,214,130,180,48,104,225,129],\"normal_form\":{\"attach\":[],\"source\":{\"condition\":null,\"kind\":\"unit\",\"unit\":\"changes\"},\"stages\":[]},\"parameters\":{},\"query\":{\"source\":{\"kind\":\"unit\",\"unit\":\"changes\",\"implicit\":false,\"condition\":null},\"attach\":[],\"transforms\":[]},\"source_outputs\":[],\"definitions\":[],\"dependencies\":[],\"edges\":[]}"
+    },
+    {
+      "hash": "c84102fd84a432d0a6e9a7ac8340caea98db32b4ade6523799ce178ba0889e0a",
+      "original_json": "{\"id\":[200,65,2,253,132,164,50,208,166,233,167,172,131,64,202,234,152,219,50,180,173,230,82,55,153,206,23,139,160,136,158,10],\"normal_form\":{\"attach\":[],\"source\":{\"condition\":{\"kind\":{\"field\":\"kind\",\"kind\":\"match\",\"value\":{\"kind\":\"scalar\",\"text\":\"note\"}}},\"kind\":\"unit\",\"unit\":\"assertions\"},\"stages\":[]},\"parameters\":{},\"query\":{\"source\":{\"kind\":\"unit\",\"unit\":\"assertions\",\"implicit\":false,\"condition\":{\"span\":{\"start\":17,\"end\":28},\"kind\":{\"kind\":\"match\",\"field\":\"kind\",\"value\":{\"kind\":\"scalar\",\"text\":\"note\",\"quoted\":true}}}},\"attach\":[],\"transforms\":[]},\"source_outputs\":[],\"definitions\":[],\"dependencies\":[],\"edges\":[]}"
+    },
+    {
+      "hash": "d1b827af790472eb490cf391333a9c9554636a1e8bf64d0ea6eff5542ec1f0ce",
+      "original_json": "{\"id\":[209,184,39,175,121,4,114,235,73,12,243,145,51,58,156,149,84,99,106,30,139,246,77,14,166,239,245,84,46,193,240,206],\"normal_form\":{\"attach\":[],\"source\":{\"condition\":{\"kind\":{\"field\":\"assertion_kind\",\"kind\":\"match\",\"value\":{\"kind\":\"scalar\",\"text\":\"note\"}}},\"kind\":\"unit\",\"unit\":\"changes\"},\"stages\":[{\"kind\":{\"keys\":[{\"expression\":{\"kind\":\"field\",\"name\":\"assertion_kind\"},\"name\":\"assertion_kind\"}],\"kind\":\"group\"}},{\"kind\":{\"aggregates\":[{\"arguments\":[],\"function\":\"count\",\"name\":\"count\"}],\"kind\":\"aggregate\"}}]},\"parameters\":{},\"query\":{\"source\":{\"kind\":\"unit\",\"unit\":\"changes\",\"implicit\":false,\"condition\":{\"span\":{\"start\":14,\"end\":35},\"kind\":{\"kind\":\"match\",\"field\":\"assertion_kind\",\"value\":{\"kind\":\"scalar\",\"text\":\"note\",\"quoted\":true}}}},\"attach\":[],\"transforms\":[{\"span\":{\"start\":38,\"end\":61},\"kind\":{\"kind\":\"group\",\"keys\":[{\"expression\":{\"kind\":\"field\",\"name\":\"assertion_kind\"},\"name\":null}]}},{\"span\":{\"start\":64,\"end\":73},\"kind\":{\"kind\":\"aggregate\",\"aggregates\":[{\"function\":\"count\",\"arguments\":[],\"name\":null}]}}]},\"source_outputs\":[],\"definitions\":[],\"dependencies\":[],\"edges\":[]}"
+    }
+  ]
+}

@@ -17,6 +17,8 @@ fn opts(saved: &[(&str, &str)]) -> Options {
         random_seed: None,
         embeddings: false,
         self_session: None,
+        here: None,
+        seen_marks_of: None,
         saved: saved_bindings(saved),
         kept: Default::default(),
         fields: vec![],
@@ -213,10 +215,10 @@ fn fields_choose_the_columns() {
 
 #[test]
 fn changes_continue_from_a_cursor() {
-    let p = c("changes where after:generation:12:3");
+    let p = c("feed where after:generation:12:3");
     let sql = statements(&p);
     assert!(sql.contains("> 12") && sql.contains("> 3"), "{sql}");
-    assert!(compile_err("changes where after:12").contains("GEN:COUNTER:ARCHIVE"));
+    assert!(compile_err("feed where after:12").contains("GEN:COUNTER:ARCHIVE"));
 }
 
 #[test]
@@ -237,8 +239,8 @@ fn every_stored_value_can_be_queried() {
         ("messages where role:", Role::NAMES),
         ("messages where prompt_kind:", PromptKind::NAMES),
         ("blocks where kind:", BlockKind::NAMES),
-        ("links where kind:", LINK_KIND_NAMES),
-        ("links where how:", LINK_HOW_NAMES),
+        ("session_links where kind:", LINK_KIND_NAMES),
+        ("session_links where how:", LINK_HOW_NAMES),
     ];
     for (query, names) in closed {
         for name in *names {
@@ -269,15 +271,15 @@ fn every_stored_value_can_be_queried() {
 #[test]
 fn change_selections_are_output_arrays_not_scalar_operands() {
     for text in [
-        "changes where sessions:x",
-        "changes where messages > 0",
-        "changes | sort by sessions",
-        "changes | group by messages | count",
-        "changes | agg sum(messages)",
+        "feed where sessions:x",
+        "feed where messages > 0",
+        "feed | sort by sessions",
+        "feed | group by messages | count",
+        "feed | agg sum(messages)",
     ] {
         assert!(compile_err(text).contains("selection array"), "{text}");
     }
-    let generations = c("changes where after:generation:1:2 | limit 1").change_generations;
+    let generations = c("feed where after:generation:1:2 | limit 1").change_generations;
     assert!(!generations.is_empty());
     assert!(
         generations
@@ -300,7 +302,6 @@ fn designed_units_answer_not_built() {
     for (text, unit) in [
         ("pastes", "pastes"),
         ("pastes | group by hash | count", "pastes"),
-        ("variants where kind:translation", "variants"),
         ("attachments where supplied_by:model", "attachments"),
         ("origin:codex | attachments", "attachments"),
     ] {
@@ -358,14 +359,14 @@ fn column_references_follow_shown_fields() {
         kinds(c("messages"))["session"],
         Some(ColumnReference::Session)
     );
-    let assertions = kinds(c("assertions"));
+    let assertions = kinds(c("annotations"));
     assert_eq!(assertions["id"], None);
     assert_eq!(assertions["root"], None);
     assert_eq!(assertions["reference"], Some(ColumnReference::Assertion));
     let mut options = opts(&[]);
     options.fields = vec!["id".into(), "root".into(), "reference".into()];
     assert_eq!(
-        kinds(compile("assertions", &options).unwrap()),
+        kinds(compile("annotations", &options).unwrap()),
         std::collections::BTreeMap::from([
             ("id".into(), None),
             ("root".into(), None),
@@ -512,10 +513,10 @@ fn near_builds_only_when_an_answer_needs_ranking() {
 
 #[test]
 fn explicit_identity_equality_keeps_case_and_does_not_expand_a_prefix() {
-    let exact = c("assertions where root = \"Root:Case\" current:true");
+    let exact = c("annotations where root = \"Root:Case\" current:true");
     assert!(exact.params.contains(&Param::Text("Root:Case".into())));
     assert!(!statements(&exact).contains("root LIKE"));
-    let prefix = c("assertions where root:Root");
+    let prefix = c("annotations where root:Root");
     assert!(statements(&prefix).contains("root LIKE"));
 }
 
