@@ -76,6 +76,118 @@ fn a_registered_import_retries_after_restart_without_storing_part_blobs() {
 }
 
 #[test]
+fn a_codex_import_retry_reads_only_after_its_committed_checkpoint() {
+    let home = polylogue_testkit::ClaudeHome::new();
+    let thread = "019a0000-0000-7000-8000-000000000001";
+    let path = home
+        .dir
+        .path()
+        .join(format!("rollout-2026-03-01T10-00-00-{thread}.jsonl"));
+    let record = |kind, payload| {
+        format!(
+            "{}\n",
+            serde_json::json!({"timestamp":"2026-03-01T10:00:01Z","type":kind,"payload":payload})
+        )
+    };
+    let prefix = record(
+        "session_meta",
+        serde_json::json!({"id":thread,"timestamp":"2026-03-01T10:00:00Z","cwd":"/work/fixture"}),
+    ) + &record(
+        "turn_context",
+        serde_json::json!({"turn_id":"turn-one","model":"checkpoint-model"}),
+    ) + &record(
+        "response_item",
+        serde_json::json!({"type":"message","id":"before","role":"user","content":[{"type":"input_text","text":"original prompt"}]}),
+    );
+    let suffix = record(
+        "response_item",
+        serde_json::json!({"type":"message","id":"after","role":"assistant","content":[{"type":"output_text","text":"continued answer"}]}),
+    );
+    let cursor = prefix.len() as u64;
+    let original = prefix + &suffix;
+    std::fs::write(&path, &original).unwrap();
+    {
+        let (mut engine, _lock) = engine(&home, cursor);
+        let origin = polylogue_sources::origin::by_name("codex").unwrap();
+        let captured = Captured::stream(&engine.archive, original.as_bytes()).unwrap();
+        let mut plan = engine
+            .import_plan(&path, origin, captured, None, &mut ImportReport::default())
+            .unwrap()
+            .unwrap();
+        let job = plan.next_job(&engine.stopped_attempt);
+        assert_eq!((job.start, job.end), (0, cursor));
+        let (batch, done) = pool::run(job, &engine.archive, &engine.blobs, true);
+        assert!(done.error.is_none(), "{done:?}");
+        assert_eq!(done.parsed_upto, cursor);
+        for result in engine
+            .writer
+            .store_group(vec![batch.unwrap()], Arc::clone(&engine.blobs))
+            .unwrap()
+        {
+            result.unwrap();
+        }
+        let reader = engine.reads.reader().unwrap();
+        let checkpoint = reader
+            .parser_checkpoint(
+                &plan.input.id,
+                plan.parser_chain.unwrap(),
+                &origin.reading_version(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            checkpoint.progress,
+            polylogue_model::batch::ParseProgress::Parsing
+        );
+        assert_eq!(checkpoint.parsed_upto, cursor);
+        assert!(checkpoint.checkpoint.is_some());
+    }
+
+    let (mut engine, _lock) = engine(&home, cursor);
+    engine.stopped_attempt.executable = polylogue_model::BlobHash::of(b"different executable");
+    let retry = engine
+        .import_with_options(
+            std::slice::from_ref(&path),
+            &ImportOptions {
+                format: Some("codex".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(
+        retry.refused.is_empty() && retry.pass.errors.is_empty(),
+        "{retry:?}"
+    );
+    assert_eq!(retry.already_stored, [path]);
+    assert_eq!(retry.pass.bytes_stored, 0);
+    assert_eq!(retry.pass.bytes_read, suffix.len() as u64);
+    let reader = engine.reads.reader().unwrap();
+    let session = polylogue_model::SessionId::parse(&format!("codex:{thread}")).unwrap();
+    let messages = reader.messages(&session, false).unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].blocks[0].text(), Some("original prompt"));
+    assert_eq!(messages[1].blocks[0].text(), Some("continued answer"));
+    assert_eq!(messages[1].model.as_deref(), Some("checkpoint-model"));
+    let input = blake3::hash(original.as_bytes()).to_hex();
+    let progress = reader.input_progress(input.as_ref()).unwrap().unwrap();
+    assert_eq!(progress.parsed_upto, original.len() as u64);
+    assert_eq!(
+        reader
+            .stored_range(
+                input.as_ref(),
+                progress.chain,
+                0,
+                progress.length,
+                &engine.blobs
+            )
+            .unwrap(),
+        original.as_bytes()
+    );
+    assert_eq!(home.count("SELECT COUNT(*) AS n FROM a.revision"), 1);
+    assert_eq!(home.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
+}
+
+#[test]
 fn a_source_changed_during_capture_is_refused_before_registration() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("source");

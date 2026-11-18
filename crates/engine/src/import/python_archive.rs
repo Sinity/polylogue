@@ -1,9 +1,7 @@
 //! Python Polylogue's source catalog (`--format python-archive`): a
 //! folder with `source.db` and `blob/`. Each raw session becomes an input
-//! read by its origin's parser, with its source facts and append lineage;
-//! every row of every table of `source.db` is kept verbatim, and every blob
-//! no raw session cites (attachments, sidecars, hook payloads) is kept with
-//! its bytes checked against its name.
+//! read by its origin's parser, with its source facts and append lineage.
+//! The exact catalog files and any blob no raw session cites are also kept.
 use super::*;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,16 +14,15 @@ pub(super) fn visit(
     archive: &Archive,
     mut accept: impl FnMut(package::Member) -> std::io::Result<()>,
 ) -> std::io::Result<bool> {
-    let Some(catalog) =
-        polylogue_store::python_archive::Catalog::open(root, &archive.staging_dir())
-            .map_err(std::io::Error::other)?
+    let Some(polylogue_store::python_archive::Catalog {
+        database,
+        wal,
+        inputs,
+    }) = polylogue_store::python_archive::Catalog::capture(root, archive)
+        .map_err(std::io::Error::other)?
     else {
         return Ok(false);
     };
-    let (rows, _) = archive
-        .prepare_write(|out| catalog.write_rows(out))
-        .map_err(std::io::Error::other)?;
-    let inputs = catalog.inputs().map_err(std::io::Error::other)?;
     let mut declared = BTreeMap::new();
     for input in &inputs {
         if declared.insert(input.raw_id.clone(), input).is_some() {
@@ -44,16 +41,26 @@ pub(super) fn visit(
                 .or_insert(Some(input));
         }
     }
-    accept(package::Member {
-        path: PathBuf::from(format!("{}!/source.db/rows.jsonl", root.display())),
-        bytes: rows,
-        container: false,
-        origin: polylogue_sources::origin::by_name(KEPT),
-        parent: None,
-        container_kind: None,
-        member_path_bytes: None,
-        refusal: None,
-    })?;
+    let mut catalog = blake3::Hasher::new_derive_key("polylogue Python catalog snapshot v1");
+    catalog.update(&database.hash().0);
+    if let Some(wal) = &wal {
+        catalog.update(&wal.hash().0);
+    }
+    let catalog = catalog.finalize();
+    for (name, bytes) in
+        std::iter::once(("source.db", database)).chain(wal.map(|bytes| ("source.db-wal", bytes)))
+    {
+        accept(package::Member {
+            path: PathBuf::from(format!("{}!/catalog/{catalog}/{name}", root.display())),
+            bytes,
+            container: false,
+            origin: polylogue_sources::origin::by_name(KEPT),
+            parent: None,
+            container_kind: None,
+            member_path_bytes: None,
+            refusal: None,
+        })?;
+    }
     for input in &inputs {
         let name = Path::new(&input.source_path)
             .file_name()

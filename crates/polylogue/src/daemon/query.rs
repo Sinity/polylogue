@@ -574,6 +574,7 @@ pub enum Outcome {
 #[derive(Debug)]
 pub struct QueryAnswer {
     pub value: crate::protocol::query::Answer,
+    pub logical_sessions: Vec<bool>,
     pub outcome: Outcome,
     pub notes: Vec<String>,
 }
@@ -582,6 +583,7 @@ impl QueryAnswer {
     fn measure(value: crate::protocol::query::Answer) -> Self {
         Self {
             value,
+            logical_sessions: Vec::new(),
             outcome: Outcome::Measure,
             notes: Vec::new(),
         }
@@ -942,6 +944,21 @@ fn answer(
     } else {
         None
     };
+    let logical_sessions =
+        if program.unit == polylogue_query::ast::Unit::Sessions && program.shape == Shape::Rows {
+            rows.iter()
+                .map(|row| {
+                    program.session_rows.logical(row).ok_or_else(|| {
+                        Failure::new(
+                            polylogue_model::Code::Store,
+                            "a selected session has no physical/logical coordinate",
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            Vec::new()
+        };
     for row in &mut rows {
         present(program, row)?;
     }
@@ -978,6 +995,7 @@ fn answer(
             .map(|part| format!("incomplete: {part}")),
     );
     Ok(QueryAnswer {
+        logical_sessions,
         value: Answer::Rows(Box::new(Rows {
             read_at,
             unit: if program.shape == Shape::Matches {

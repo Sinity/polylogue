@@ -18,6 +18,138 @@ fn command(daemon: &crate::test_daemon::TestDaemon, query: &str, yes: bool) -> A
 }
 
 #[test]
+fn embed_mixed_queries_keep_each_winning_rows_scope_and_kept_results_stay_exact() {
+    let seed = |home: &std::path::Path| {
+        let project = home.join(".claude/projects/-p");
+        let continued = serde_json::json!({
+            "type": "continued-in", "sessionId": "pick",
+            "continuedInSessionId": "tail", "timestamp": "2026-03-01T10:00:02Z"
+        });
+        std::fs::write(
+            project.join("pick.jsonl"),
+            format!(
+                "{}{}\n",
+                polylogue_testkit::claude_user("root-prose", "pick", "root prose"),
+                continued
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("tail.jsonl"),
+            polylogue_testkit::claude_user("continued-prose", "tail", "continued prose"),
+        )
+        .unwrap();
+        std::fs::write(project.join("qroot.jsonl"), format!("{}{}\n",
+            polylogue_testkit::claude_user("physical-root", "qroot", "physical root prose"),
+            json!({"type":"continued-in", "sessionId":"qroot", "continuedInSessionId":"qtail", "timestamp":"2026-03-01T10:00:02Z"})
+        )).unwrap();
+        std::fs::write(
+            project.join("qtail.jsonl"),
+            polylogue_testkit::claude_user("excluded-continuation", "qtail", "must stay outside"),
+        )
+        .unwrap();
+    };
+    let mut daemon =
+        crate::test_daemon::start_with_sources_and_workers("unselected prose", &seed, 4, 2);
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    daemon.set("embed.provider", "local");
+    daemon.set("embed.model", "synthetic-logical-command");
+    daemon.set(
+        "embed.endpoint",
+        &format!("http://{}", listener.local_addr().unwrap()),
+    );
+    let logical = "sessions | sort by id | limit 1";
+    let physical = "sessions where physical:true | sort by id | limit 1";
+    let mixed = "sessions | union (sessions where physical:true) | sort by id | limit 1";
+    let physical_first = "sessions where physical:true | union (sessions) | sort by id | limit 1";
+    let nested = "sessions | union (sessions where physical:true) | fields id | union (sessions where physical:true | fields id) | sort by id | limit 1";
+    let aliased = "sessions | union (sessions where physical:true) | sort by id | limit 1 | fields text(id) as label";
+    let distinct =
+        "sessions where \"continued prose\" | union (sessions where id:claude-code:qroot)";
+    let saved = crate::client::request(
+        "rows",
+        json!({
+            "selection": logical, "steps": [{"verb":"save", "name":"captured-root"}]
+        }),
+        uuid::Uuid::now_v7().to_string(),
+    );
+    let saved =
+        crate::test_answers::ok(crate::client::call_ready(&daemon.daemon.archive, &saved).unwrap());
+    let crate::protocol::line::LineAnswer::Steps(mut reports) =
+        serde_json::from_value(saved).unwrap()
+    else {
+        panic!("save reports");
+    };
+    let crate::protocol::line::StepOutcome::Done {
+        reply: crate::protocol::line::StepAnswer::Saved(saved),
+        ..
+    } = reports.steps.remove(0).outcome
+    else {
+        panic!("kept selection");
+    };
+    let kept = saved.kept.result.as_str();
+    daemon.restart();
+    for (query, expected) in [
+        (logical, 2),
+        (physical, 1),
+        (mixed, 2),
+        (physical_first, 1),
+        (nested, 2),
+        (aliased, 2),
+        (kept, 1),
+        (distinct, 3),
+    ] {
+        let Answer::Preview(preview) =
+            crate::protocol::into_value(command(&daemon, query, false)).unwrap()
+        else {
+            panic!("preview for {query}");
+        };
+        assert_eq!(
+            (preview.texts, preview.chunks),
+            (expected, expected),
+            "{query}"
+        );
+    }
+    daemon.set("embed.calls", "on");
+    let server = std::thread::spawn(move || {
+        let (peer, _) = listener.accept().unwrap();
+        crate::test_daemon::embeddings::response(
+            peer,
+            200,
+            r#"{"data":[{"index":0,"embedding":[1,0]},{"index":1,"embedding":[0,1]},{"index":2,"embedding":[1,1]}]}"#,
+        )
+    });
+    let Answer::Built(built) =
+        crate::protocol::into_value(command(&daemon, distinct, true)).unwrap()
+    else {
+        panic!("mixed purchase");
+    };
+    assert_eq!((built.texts, built.vectors, built.failed), (3, 3, 0));
+    let sent = server.join().unwrap();
+    let mut inputs: Vec<_> = sent["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect();
+    inputs.sort_unstable();
+    assert_eq!(
+        inputs,
+        ["continued prose", "physical root prose", "root prose"]
+    );
+    // Every selected logical member is now complete; the closed provider is
+    // not needed for either another logical build or its physical subset.
+    for query in [logical, physical, mixed, physical_first, kept, distinct] {
+        let Answer::Built(built) =
+            crate::protocol::into_value(command(&daemon, query, true)).unwrap()
+        else {
+            panic!("repeat for {query}");
+        };
+        assert_eq!((built.texts, built.vectors, built.failed), (0, 0, 0));
+    }
+}
+
+#[test]
 fn embed_query_bound_selects_all_texts_and_chunks_of_physical_rows_without_preview_calls() {
     let long = "x".repeat(CHUNK_CHARS + 4);
     let selected = "second selected";

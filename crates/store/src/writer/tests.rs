@@ -1180,7 +1180,7 @@ mod stored_text_reuse;
 
 mod parse_positions;
 
-mod private_build;
+pub(super) mod private_build;
 
 mod authorship;
 

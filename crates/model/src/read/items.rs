@@ -411,6 +411,7 @@ pub struct EditView {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Card {
+    Trace(Box<super::TraceCard>),
     Run {
         question: Option<crate::Reference>,
         read_at: crate::ChangePosition,

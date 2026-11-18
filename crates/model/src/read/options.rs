@@ -16,6 +16,7 @@ pub enum View {
     Changes,
     Live,
     Raw,
+    Trace,
 }
 stored_names!(View, name, parse {
     Transcript => "transcript",
@@ -26,6 +27,7 @@ stored_names!(View, name, parse {
     Changes => "changes",
     Live => "live",
     Raw => "raw",
+    Trace => "trace",
 });
 impl View {
     /// The metadata filter and layout consult this same rule.
@@ -37,7 +39,7 @@ impl View {
             }
             Self::Dialogue => &[Text],
             Self::Changes => &[ToolCall, ToolResult],
-            Self::Summary | Self::Links | Self::Live => &[],
+            Self::Summary | Self::Links | Self::Live | Self::Trace => &[],
         }
     }
     pub fn keeps_message(self, message: &Message) -> bool {
@@ -49,7 +51,7 @@ impl View {
                 role != Role::System && !prompt_kind.is_some_and(PromptKind::is_harness)
             }
             Self::Transcript | Self::Context | Self::Changes | Self::Raw => true,
-            Self::Summary | Self::Links | Self::Live => false,
+            Self::Summary | Self::Links | Self::Live | Self::Trace => false,
         }
     }
     pub fn keeps(self, message: &Message, block: &Block) -> bool {
@@ -418,13 +420,17 @@ impl ReadOptions {
                 self.inherited
                     && matches!(
                         self.view,
-                        View::Summary | View::Links | View::Live | View::Raw
+                        View::Summary | View::Links | View::Live | View::Raw | View::Trace
                     ),
                 "inherited",
                 "transcript, dialogue, context, changes",
             ),
             (
-                self.branches && matches!(self.view, View::Summary | View::Links | View::Live),
+                self.branches
+                    && matches!(
+                        self.view,
+                        View::Summary | View::Links | View::Live | View::Trace
+                    ),
                 "branches",
                 "transcript, dialogue, context, changes, raw",
             ),

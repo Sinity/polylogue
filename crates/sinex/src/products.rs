@@ -710,10 +710,10 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                         3
                     } else if matches!(
                         *name,
-                        "polylogue.line_resolution" | "polylogue.line_resolution_restore"
+                        "polylogue.line_resolution"
+                            | "polylogue.line_resolution_restore"
+                            | "polylogue.assertion"
                     ) {
-                        4
-                    } else if *name == "polylogue.assertion" {
                         5
                     } else {
                         match *product {
@@ -725,7 +725,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                             // Input rows refuse fields outside their declared source shape.
                             "input" => 6,
                             "fragment" => 4,
-                            "query_run" => 6,
+                            "query_run" => 7,
                             "restored_assertion" => 4,
                             "tool_call" | "prefix_copy" | "prefix_member" => 2,
                             "query_run_outcome" => 2,

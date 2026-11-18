@@ -120,6 +120,7 @@ enum Msg {
         SyncSender<Result<crate::primary::confirmed::Step>>,
     ),
     DrainPrimaryCaptures(SyncSender<Result<()>>),
+    DenyPrimaryReads(SyncSender<Result<()>>),
     /// The stream follower handled a page, or failed to read one.
     StreamFollowed(Option<String>),
     CaptureBody(
@@ -159,6 +160,8 @@ enum Msg {
     Wake,
     Batch(Box<Batch>),
     Flush(SyncSender<Result<WriteReport>>, bool),
+    /// Sent once a requested derive pass on the replacement has released its read.
+    FinishPrimaryRebuild(SyncSender<Result<()>>),
     /// Run the derive step over sessions whose derived rows are stale;
     /// answered with the number of sessions derived.
     Derive(SyncSender<Result<u64>>),
@@ -366,7 +369,7 @@ const BYTES_PER_TRANSACTION: u64 = 128 << 20;
 /// Records how many stored chains a build has read, from the counts the
 /// writer keeps with each change ([`crate::chain_progress`]).
 fn record_build_progress(archive: &Archive, index: &Connection) -> Result<()> {
-    if archive.is_primary() || !archive.index_build.building() {
+    if !archive.index_build.building() {
         return Ok(());
     }
     let (mut chains, mut read) = (0, 0);
@@ -436,7 +439,13 @@ impl Writer {
         // A standalone build writes its private file ([`crate::archive::index_build`]).
         let building = !archive.is_primary() && archive.index_build.building();
         let index = open_index_writer(archive, building)?;
-        let installed = archive.root.join("index.db");
+        // Primary search and derivation use the same physical file as the
+        // follower, even while another generation serves readers.
+        let installed = if archive.is_primary() {
+            archive.index_db()
+        } else {
+            archive.root.join("index.db")
+        };
         let archive_conn = if archive.is_primary() {
             crate::archive::open_read(&archive.index_db())?
         } else {
@@ -501,6 +510,8 @@ impl Writer {
             derive: derive_thread::DeriveThread::start(
                 installed,
                 queue.clone(),
+                (archive.is_primary() && archive.index_build.building())
+                    .then(|| archive.index_build.clone()),
                 stop.child(),
                 archive.memory_budget().search_cache_mib(),
             )?,
@@ -925,8 +936,8 @@ impl Inner {
     fn stream_followed(&mut self, error: Option<String>) {
         let result = match error {
             Some(error) => Err(error),
-            None => self
-                .complete_ready_captures()
+            None => crate::archive::index_build::primary::observe(&self.location, &self.index)
+                .and_then(|()| self.complete_ready_captures())
                 .map(|()| {
                     self.request_derive(derive_thread::Waiting::Nobody);
                 })
@@ -950,6 +961,7 @@ impl Inner {
     fn run(&mut self, rx: &Receiver<Msg>) {
         let _worker = crate::timing::worker();
         let mut flushes = Vec::new();
+        let mut primary_finish = None;
         let mut derives = Vec::new();
         let mut derive_writes = Vec::new();
         let mut single_files = Vec::new();
@@ -959,6 +971,7 @@ impl Inner {
         let mut live_clock = Vec::new();
         let mut copies = Vec::new();
         let mut confirmations = Vec::new();
+        let mut read_denials = Vec::new();
         let mut prepared_confirmations = Vec::new();
         let mut capture_drains = Vec::new();
         let mut followed = Vec::new();
@@ -1024,6 +1037,10 @@ impl Inner {
                         replacements.push((input, chain, length, *reading, reply));
                         false
                     }
+                    Msg::DenyPrimaryReads(reply) => {
+                        read_denials.push(reply);
+                        false
+                    }
                     Msg::StageConfirmed(events, reply) => {
                         confirmations.push((events, reply));
                         false
@@ -1084,6 +1101,10 @@ impl Inner {
                         group.push(b);
                         true
                     }
+                    Msg::FinishPrimaryRebuild(reply) => {
+                        primary_finish = Some(reply);
+                        false
+                    }
                     Msg::Flush(reply, derive) => {
                         flushes.push((reply, derive));
                         false
@@ -1109,6 +1130,16 @@ impl Inner {
                         Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
                     }
                 }
+            }
+            for reply in read_denials.drain(..) {
+                let old = crate::archive::index_build::primary::withdraw(
+                    &self.location,
+                    None,
+                    None,
+                    true,
+                );
+                let denied = crate::primary::scope::deny(&mut self.index, &self.location);
+                let _ = reply.send(old.and(denied));
             }
             for (events, reply) in confirmations.drain(..) {
                 let _ = reply.send(self.stage_confirmed(&events));
@@ -1243,12 +1274,16 @@ impl Inner {
             if let Err(error) = record_build_progress(&self.location, &self.index) {
                 self.report.errors.push(format!("build progress: {error}"));
             }
-            if !flushes.is_empty()
-                && self.location.is_primary()
-                && let Err(error) = crate::archive::index_rebuild::remove_when_built(
-                    &self.index,
-                    &self.location.index_db(),
-                )
+            if let Some(reply) = primary_finish.take() {
+                let _ = reply.send(self.finish_primary_rebuild());
+            }
+            // A full flush checks the replacement after its derivations have committed.
+            // A row-only flush can publish if earlier passes already finished.
+            if self.location.is_primary()
+                && flushes
+                    .iter()
+                    .any(|(_, derive)| !derive || !self.location.index_build.building())
+                && let Err(error) = self.finish_primary_rebuild()
             {
                 self.report
                     .errors
@@ -1491,6 +1526,16 @@ impl Inner {
             }
             Err(error) => Err(error),
         }
+    }
+
+    fn finish_primary_rebuild(&mut self) -> Result<()> {
+        if self.location.index_build.building() {
+            if crate::archive::index_build::primary::finish(&self.location, &self.index)? {
+                self.commits.committed(crate::completion::Committed::EVERY);
+            }
+            return Ok(());
+        }
+        crate::archive::index_rebuild::remove_when_built(&self.index, &self.location.index_db())
     }
 
     /// Ends a build once every deferred index has committed: the build file

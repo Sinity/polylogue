@@ -9,6 +9,7 @@ use polylogue_model::freshness::{IndexFreshness, ReadCompleteness, ReadFreshness
 
 fn query(outcome: Outcome, notes: &[&str]) -> QueryAnswer {
     QueryAnswer {
+        logical_sessions: Vec::new(),
         value: crate::protocol::query::Answer::Rows(Box::new(crate::protocol::query::Rows {
             read_at: crate::protocol::query::Position {
                 freshness: None,

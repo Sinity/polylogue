@@ -281,13 +281,15 @@ other requests; the original request still keeps its own body and write result.
 
 ## Degraded primary
 
-When Sinex is unreachable or refuses this producer:
+When Sinex is unreachable or cannot accept producer writes:
 - reads are served from `index.db`, marked with the stream position they reflect and its lag;
 - capture keeps collecting into the producer client's spool, and the sender retries with the same write identities;
 - material bytes not yet acknowledged are not parsed; chains already confirmed are still parsed, their rows commit and their events wait in the spool;
 - an authored write is prepared in the spool and replied to with its identity and the state `pending` (exit 5, degraded); it becomes visible when Sinex commits it; setting writes keep their write result, including `id`, `repeat` and `pending`;
 - the verdict is `degraded` with the reason `sinex blocked` and the error in plain words, and the shipped `Sinex blocked` rule fires after 10 minutes;
 - Polylogue never falls back to standalone, whatever the cause, a broken configuration file included.
+
+A confirmed-stream read denial withdraws cached answers and interrupts active reads. The cache stays unreadable across a restart. When Sinex grants access again the follower starts at position zero under that grant. A broker or database outage leaves the previous answers available with their applied position.
 
 **Status in primary** adds a section: the mode, the Sinex endpoint and this host's producer identity; reachability and the time of the last acknowledgment (recorded in the producer spool, so a restart during an outage still says how long Sinex has been silent); prepared materials and writes waiting (count and bytes); the stream position applied and its lag; chains parsed but not yet confirmed.
 Send and read failures remain distinct observations in that status. A successful confirmed read does not clear an outstanding send failure; only a successful send retry clears it. Both reasons remain visible when both operations fail.
@@ -296,9 +298,11 @@ Send and read failures remain distinct observations in that status. A successful
 
 Browser writes distinguish preparation from enqueue. If attached bytes are saved but unconfirmed, the reply is degraded with their capture `identity`; no action has been enqueued. If the authored chat action or provider import job is saved but unconfirmed, the reply carries its write result with `pending: true`, without looking up or claiming a confirmed queued action. A confirmed write returns the current action or job as before. Retries keep the corresponding capture or authored identity.
 
-**Rebuild.** A new local `index.db` (one from another schema set aside at start, [installing.md](installing.md#replacing-an-index-from-another-schema), or one moved aside by hand) resets its subscription position and reads Sinex-confirmed records, with progress in `status`. Reconstruction reads the stored originals and confirmed records; nothing reads the set-aside cache. The producer spool, including pending authored intent, stays under the separate Sinex store root; paid vectors remain in `embeddings.db`. Both keep their original identities and bytes.
+**Deliberate rebuild.** With the daemon stopped, create an empty file named `rebuild-index` under the primary archive and start the daemon normally. The writer moves the closed index and its SQLite files to `index-build/previous.db` and builds `index-build/index.db` from confirmed originals and records, starting the follower at zero. The candidate has its own cache identity. Once the follower observes the same grant and stream, reads use the previous index and report its applied position. A different grant, a denied read, a different stream or an invalidated snapshot withdraws those answers. On restart the previous index must be authorized again.
 
-The set-aside cache remains until the stream is applied through Sinex's latest position and every stored chain has parser progress at its current source length. A known incomplete suffix can end as waiting; a refused or failed attempt needs its program identity. Missing progress and unreadable Sinex events keep it. Its removal runs at local flush or open, rather than scanning the source catalog on each confirmed position.
+A full flush checks the candidate after its search and derivation work commits and the derivation read ends. A row-only flush can also install a candidate whose earlier work has finished. Publication requires that the confirmed prefix reaches the latest observed position, each staged delivery has completed, its source chains have parser progress, its search and derivations are current, and its WAL has checkpointed. The writer syncs the file and atomically publishes the name `index.db`. Workers and open readers keep their own physical SQLite files and WALs. On the next exclusive archive open the candidate is checkpointed and moved over that name, and the previous derived index is removed. A crash before publication resumes the private file. A crash after publication opens the installed candidate. The producer spool, pending authored intent and purchased vectors in `embeddings.db` keep their identities and bytes.
+
+A missing primary index also starts the follower at zero. A cache from another schema is set aside automatically ([installing.md](installing.md#replacing-an-index-from-another-schema)). Its removal runs at local flush or open once the stream reaches the latest position and every stored chain has parser progress at its current source length. A known incomplete suffix can end as waiting. A refused or failed attempt needs its program identity. Missing progress and unreadable Sinex events keep the set-aside cache.
 
 A stream with origin zero starts with the live stream. When Sinex requires a snapshot, Polylogue clears its reconstructible cache and stages bounded snapshot pages on disk. The producer queue, source bytes and paid vector stores are kept as they are.
 

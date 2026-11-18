@@ -1,3 +1,4 @@
+mod rebuild;
 use super::*;
 use crate::primary::PreparedInput;
 use crate::primary::Sinex as _;
@@ -489,9 +490,20 @@ impl crate::primary::Sinex for OfflineProducer {
     }
     fn confirmed(
         &self,
-        _: &crate::primary::ReplayState,
+        state: &crate::primary::ReplayState,
         _: &str,
     ) -> Result<Vec<crate::primary::Confirmed>> {
+        if self.root.join("denied").exists() {
+            return Err(crate::StoreError::ConfirmedReadDenied(
+                "no read grants".into(),
+            ));
+        }
+        if self.root.join("restored").exists() && state.scope.is_none() {
+            assert_eq!(*state, crate::primary::ReplayState::default());
+            return Ok(vec![read_control(crate::primary::ReplayControl::Reset {
+                scope: "original".into(),
+            })]);
+        }
         if self.root.join("ready").exists() {
             Ok(vec![])
         } else {
@@ -509,6 +521,100 @@ impl crate::primary::Sinex for OfflineProducer {
             Self::unavailable()
         }
     }
+}
+
+fn read_control(control: crate::primary::ReplayControl) -> crate::primary::Confirmed {
+    crate::primary::Confirmed {
+        position: 0,
+        event: String::new(),
+        output_index: 0,
+        sinex_context: None,
+        change: crate::primary::ConfirmedChange::Control(Box::new(control)),
+    }
+}
+
+#[test]
+fn a_denied_read_grant_withdraws_the_cache_across_restart_until_replay() {
+    use crate::primary::ReplayControl;
+
+    let directory = tempfile::tempdir().unwrap();
+    let cache = directory.path().join("cache");
+    let producer_root = directory.path().join("producer");
+    std::fs::create_dir(&producer_root).unwrap();
+    let producer = Arc::new(OfflineProducer {
+        root: producer_root.clone(),
+    });
+    {
+        let (archive, _lock) = Archive::open_primary(&cache, &producer_root).unwrap();
+        let writer = Writer::start_on_sinex(&archive, producer.clone()).unwrap();
+        writer
+            .apply_confirmed(vec![read_control(ReplayControl::Reset {
+                scope: "original".into(),
+            })])
+            .unwrap();
+        writer
+            .apply_confirmed(vec![read_control(ReplayControl::Completion {
+                position: 4,
+                delivery: None,
+            })])
+            .unwrap();
+        let pool = crate::ReadPool::open(&archive).unwrap();
+        let reader = pool.reader().unwrap();
+        assert!(writer.synchronize_primary().is_err());
+        assert_eq!(
+            reader.confirmed_replay_state().unwrap().applied_position,
+            Some(4)
+        );
+
+        std::fs::write(producer_root.join("denied"), []).unwrap();
+        assert!(matches!(
+            writer.synchronize_primary(),
+            Err(crate::StoreError::ConfirmedReadDenied(_))
+        ));
+        assert!(matches!(
+            reader.check(),
+            Err(crate::StoreError::ScopeChanged)
+        ));
+        assert!(matches!(
+            pool.reader(),
+            Err(crate::StoreError::ScopeChanged)
+        ));
+    }
+    std::fs::remove_file(producer_root.join("denied")).unwrap();
+    let (archive, _lock) = Archive::open_primary(&cache, &producer_root).unwrap();
+    let pool = crate::ReadPool::open(&archive).unwrap();
+    // The connection and in-memory scope both vanished in the restart.
+    assert!(matches!(
+        pool.reader(),
+        Err(crate::StoreError::ScopeChanged)
+    ));
+    let writer = Writer::start_on_sinex(&archive, producer).unwrap();
+    assert!(writer.synchronize_primary().is_err());
+    assert!(matches!(
+        pool.reader(),
+        Err(crate::StoreError::ScopeChanged)
+    ));
+
+    std::fs::write(producer_root.join("ready"), []).unwrap();
+    std::fs::write(producer_root.join("restored"), []).unwrap();
+    writer.synchronize_primary().unwrap();
+    let replay = pool.reader().unwrap().confirmed_replay_state().unwrap();
+    assert_eq!(replay.scope.as_deref(), Some("original"));
+    assert_eq!(replay.applied_position, None);
+    writer
+        .apply_confirmed(vec![read_control(ReplayControl::Completion {
+            position: 7,
+            delivery: None,
+        })])
+        .unwrap();
+    assert_eq!(
+        pool.reader()
+            .unwrap()
+            .confirmed_replay_state()
+            .unwrap()
+            .applied_position,
+        Some(7)
+    );
 }
 
 #[test]

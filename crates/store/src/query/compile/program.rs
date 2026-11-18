@@ -730,6 +730,11 @@ impl<'a> Compiler<'a> {
     ) -> Program {
         self.measure_statements(&mut parts, &rows);
         let row_kind = rows.row_kind(parts.scope.unit);
+        let logical_sessions = parts.scope.unit == Unit::Sessions
+            && parts
+                .applied
+                .iter()
+                .any(|(id, _)| *id == units::DefaultId::LogicalSessions);
         let SelectionSql { scope, measure, .. } = parts;
         let RowStatements {
             sql,
@@ -756,6 +761,11 @@ impl<'a> Compiler<'a> {
         let statements = self.program_statements(sql, keyed, row_count, row_membership);
         Program {
             row_kind,
+            session_rows: if logical_sessions {
+                SessionRows::Logical
+            } else {
+                SessionRows::Physical
+            },
             query: self.text.to_owned(),
             unit,
             shape,

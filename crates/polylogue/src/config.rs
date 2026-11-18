@@ -293,6 +293,14 @@ impl Paths {
             .join("polylogue")
             .join(crate::runtime_dir::archive_key(archive))
     }
+    /// Rebuildable Git roots, scoped to the working tree whose HEAD was read.
+    pub fn git_roots(&self, repository: &Path) -> PathBuf {
+        let key = blake3::hash(repository.as_os_str().as_encoded_bytes());
+        self.cache
+            .join("polylogue")
+            .join("git-roots")
+            .join(format!("{}.json", &key.to_hex()[..32]))
+    }
     pub fn completion_catalog(&self, archive: &Path) -> PathBuf {
         self.cache
             .join("polylogue")

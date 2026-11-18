@@ -72,6 +72,12 @@ impl Inner {
                 || crate::primary::confirmed::replay_state(&self.index)?
                     .snapshot_progress
                     .is_some();
+            crate::archive::index_build::primary::withdraw(
+                &self.location,
+                Some(scope),
+                snapshot_start.map(|(_, instance)| instance.as_str()),
+                reason.is_some(),
+            )?;
             self.texts.discard_cached();
             let changed = match crate::primary::scope::reset(
                 &mut self.index,

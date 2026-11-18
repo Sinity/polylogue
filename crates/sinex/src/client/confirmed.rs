@@ -265,6 +265,12 @@ impl Client {
         self.pending.clear();
     }
 
+    fn release_consumer(&mut self) {
+        self.consumer = None;
+        self.consumer_cache = None;
+        self.consumer_instance = None;
+    }
+
     async fn page(&mut self, state: &ReplayState, cache: &str) -> Result<Vec<Confirmed>> {
         let after = state.applied_position.unwrap_or(0);
         // The durable consumer is provisioned once per connection; later pages
@@ -314,7 +320,31 @@ impl Client {
                     .snapshot_page(state, origin, position, scope, stream_instance)
                     .await;
             }
-            ConfirmedConsumerReply::Refused { reason }
+            ConfirmedConsumerReply::Refused(refusal)
+                if refusal.kind == sinex_protocol::FetchRefusalKind::Denied =>
+            {
+                self.release_consumer();
+                let mut health = self.health.locked();
+                health.sinex_scope = None;
+                health.sinex_position = None;
+                health.position_observed = None;
+                return Err(
+                    polylogue_store::StoreError::ConfirmedReadDenied(refusal.reason).into(),
+                );
+            }
+            // A restored stream can be behind this cache. Its grant still
+            // identifies which rows may be read while replay starts over.
+            ConfirmedConsumerReply::Gap {
+                scope, position, ..
+            } if !scope.is_empty() && state.scope.as_deref() != Some(scope.as_str()) => {
+                self.release_consumer();
+                let mut health = self.health.locked();
+                health.sinex_position = Some(position);
+                health.position_observed = Some(std::time::Instant::now());
+                health.sinex_scope = Some(scope.clone());
+                return Ok(vec![control_event(ReplayControl::Reset { scope })]);
+            }
+            ConfirmedConsumerReply::Refused(sinex_protocol::FetchRefusal { reason, .. })
             | ConfirmedConsumerReply::Gap { reason, .. } => {
                 return Err(Error::Refused {
                     name: "confirmed consumer".into(),
@@ -335,9 +365,7 @@ impl Client {
             ));
         }
         if state.snapshot_progress.is_some() {
-            self.consumer = None;
-            self.consumer_cache = None;
-            self.consumer_instance = None;
+            self.release_consumer();
             return Ok(vec![control_event(ReplayControl::Reset { scope })]);
         }
         {
@@ -347,8 +375,7 @@ impl Client {
             health.sinex_scope = Some(scope.clone());
         }
         if state.scope.as_deref() != Some(scope.as_str()) {
-            self.consumer = None;
-            self.consumer_cache = None;
+            self.release_consumer();
             return Ok(vec![control_event(ReplayControl::Reset { scope })]);
         }
         if !provisioned {

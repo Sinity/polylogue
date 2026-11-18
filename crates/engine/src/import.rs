@@ -490,8 +490,7 @@ impl Engine {
         Ok(())
     }
 
-    /// Stores the complete import once, then parses it without making
-    /// further new blobs. A retry can rebuild parser state from offset zero.
+    /// Stores the complete import once, then plans its reading from stored bytes.
     #[cfg(test)]
     fn import_plan(
         &mut self,
@@ -602,17 +601,33 @@ impl Engine {
         {
             return Ok(None);
         }
-        let chain = reader.stored_chain(&input.id, stored.chain, size)?;
-        let source = if matches!(
-            (origin.open)(path),
-            Some(polylogue_sources::Parse::Export(_))
-        ) {
-            pool::Bytes::Stored(Arc::new(chain))
+        let parser = (origin.open)(path);
+        let interrupted_lines = matches!(parser.as_ref(), Some(polylogue_sources::Parse::Lines(_)))
+            && reading.as_ref().is_some_and(|reading| {
+                reading.reading_version == version
+                    && reading.parsed_upto == progress.parsed_upto
+                    && (1..size).contains(&reading.parsed_upto)
+                    && reading.progress == polylogue_model::batch::ParseProgress::Parsing
+                    && reading.checkpoint.is_some()
+            });
+        let source = if interrupted_lines {
+            // The ordinary stored-input loader reopens this checkpoint and
+            // starts range reads at its confirmed cursor.
+            pool::Bytes::Unloaded {
+                chain: stored.chain,
+                length: size,
+                decoded: false,
+            }
         } else {
-            pool::Bytes::Import(Arc::new(Mutex::new(read::Imported::from_chain(
-                chain,
-                Arc::clone(&self.blobs),
-            ))))
+            let chain = reader.stored_chain(&input.id, stored.chain, size)?;
+            if matches!(parser, Some(polylogue_sources::Parse::Export(_))) {
+                pool::Bytes::Stored(Arc::new(chain))
+            } else {
+                pool::Bytes::Import(Arc::new(Mutex::new(read::Imported::from_chain(
+                    chain,
+                    Arc::clone(&self.blobs),
+                ))))
+            }
         };
         let mut plan = Plan::stored(
             path.to_path_buf(),

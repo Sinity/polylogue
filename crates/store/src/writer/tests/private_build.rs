@@ -214,17 +214,21 @@ fn private_build_crash_child() {
 
 #[cfg(feature = "faults")]
 fn crash_at(point: &str) -> tempfile::TempDir {
+    crash_test_at(
+        "writer::tests::private_build::private_build_crash_child",
+        point,
+    )
+}
+
+#[cfg(feature = "faults")]
+pub(in crate::writer) fn crash_test_at(test: &str, point: &str) -> tempfile::TempDir {
     let directory = tempfile::tempdir().unwrap();
     let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "writer::tests::private_build::private_build_crash_child",
-            "--nocapture",
-        ])
+        .args(["--exact", test, "--nocapture"])
         .env("POLYLOGUE_PRIVATE_BUILD_ROOT", directory.path())
         .env("POLYLOGUE_PRIVATE_BUILD_POINT", point)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
         .spawn()
         .unwrap();
     let pid = child.id() as libc::pid_t;

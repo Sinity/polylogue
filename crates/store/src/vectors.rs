@@ -647,6 +647,26 @@ impl Reader<'_> {
         Ok(out)
     }
 
+    /// Physical members of the selected logical sessions, using the same
+    /// known-root predicate as session query folding. Unresolved ancestry
+    /// belongs to the session itself, not to an assumed ancestor.
+    pub fn logical_session_members(&self, roots: &[String]) -> Result<Vec<String>> {
+        if roots.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn()?;
+        let mut statement = conn.prepare_cached(&format!(
+            "SELECT s.id FROM session s WHERE {} IN \
+             (SELECT r.pk FROM session r WHERE r.id IN (SELECT value FROM json_each(?1))) \
+             ORDER BY s.id",
+            crate::query::fields::logical_root("s")
+        ))?;
+        let roots = serde_json::to_string(roots)?;
+        let rows = statement.query_map([roots], |row| row.get(0))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
     /// Indexed prose texts with current message membership, with IDs above
     /// `after`, in ID order, at most `limit`. With
     /// `sessions`, only texts of those sessions' blocks.
