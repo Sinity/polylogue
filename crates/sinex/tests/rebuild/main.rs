@@ -681,12 +681,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         let commits = engine.writer().completion_commits();
         let ready = Instant::now();
         loop {
-            match ReadPool::open(&archive)
-                .unwrap()
-                .reader()
-                .unwrap()
-                .source_boundary()
-            {
+            match ReadPool::open(&archive).and_then(|pool| pool.reader()?.source_boundary()) {
                 Ok(Some(_)) => break,
                 Ok(None) | Err(polylogue_store::StoreError::ScopeChanged) => {}
                 Err(error) => panic!("initial source snapshot: {error}"),

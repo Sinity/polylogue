@@ -5,7 +5,7 @@ use polylogue_model::BlobHash;
 use polylogue_model::LockExt;
 use polylogue_store::primary::{Material, Product, ProductWrite, SourceLocation};
 use polylogue_store::{Archive, ReadPool, Writer};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -167,6 +167,35 @@ fn frame_count(real_sinex: &real_sinex::RealSinex, identity: &str) -> i64 {
     real_sinex.sql(&format!("SELECT count(*) FROM core.ingress_frames WHERE producer='polylogue' AND frame='{}' AND refusal IS NULL",identity.replace('\'',"''"))).trim().parse().unwrap()
 }
 
+enum BackupEvent {
+    Capturing,
+    Finished,
+}
+
+fn start_backup(
+    socket: PathBuf,
+    output: PathBuf,
+    progress: mpsc::SyncSender<BackupEvent>,
+) -> std::thread::JoinHandle<std::result::Result<serde_json::Value, String>> {
+    std::thread::spawn(move || {
+        let request = sinex_protocol::Request::Backup {
+            action: "prepare".into(),
+            hold: None,
+            to: Some(output.display().to_string()),
+            page_size: None,
+            cursor: None,
+        };
+        let result = real_sinex::try_request_at(
+            &socket,
+            "operator",
+            "/v1",
+            serde_json::to_value(request).unwrap(),
+        );
+        let _ = progress.send(BackupEvent::Finished);
+        result
+    })
+}
+
 #[test]
 #[ignore = "needs matching public Sinex daemon plus pg_restore; set SINEXD"]
 fn paired_backup_restores_polylogue_pending_frames_after_live_confirmed_removal() {
@@ -192,11 +221,14 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_confirmed_removal(
         &Authentication::Anonymous,
     ));
     let (entered, wait_capture) = mpsc::sync_channel(1);
+    let response_progress = entered.clone();
     let (resume, wait_resume) = mpsc::sync_channel(1);
     let wait_resume = Mutex::new(wait_resume);
     let spool = sinex.spool.clone();
     let callback = move |cancelled: Arc<std::sync::atomic::AtomicBool>| {
-        entered.send(()).map_err(|error| error.to_string())?;
+        entered
+            .send(BackupEvent::Capturing)
+            .map_err(|error| error.to_string())?;
         // No production mutex is held while the fixture waits.
         wait_resume
             .locked()
@@ -222,18 +254,14 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_confirmed_removal(
     let before_encoding = encoding(&sinex, &before_id);
     assert_eq!(frame_count(&running, &before_id), 0);
     let artifact = root.path().join("artifact");
-    let socket = running.socket.clone();
-    let output = artifact.clone();
-    let backup = std::thread::spawn(move || {
-        real_sinex::request(
-            &socket,
-            "operator",
-            serde_json::json!({
-                "method":"backup","action":"prepare","output":output
-            }),
-        )
-    });
-    wait_capture.recv_timeout(Duration::from_secs(90)).unwrap();
+    let backup = start_backup(running.socket.clone(), artifact.clone(), response_progress);
+    match wait_capture.recv_timeout(Duration::from_secs(90)).unwrap() {
+        BackupEvent::Capturing => (),
+        BackupEvent::Finished => panic!(
+            "backup returned before capturing the producer: {:?}",
+            backup.join().unwrap()
+        ),
+    }
     let during = b"synthetic capture while the publication gate is closed";
     let during_id = prepare(&sinex, during);
     let during_encoding = encoding(&sinex, &during_id);
@@ -249,7 +277,10 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_confirmed_removal(
     assert_eq!(frame_count(&running, &before_id), 0);
     assert_eq!(frame_count(&running, &during_id), 0);
     resume.send(()).unwrap();
-    let reply = backup.join().unwrap();
+    let reply = backup
+        .join()
+        .unwrap()
+        .unwrap_or_else(|error| panic!("{error}"));
     assert!(reply.get("result").is_some(), "{reply}");
     let manifest: sinex_model::backup::Manifest =
         serde_json::from_slice(&std::fs::read(artifact.join("manifest.json")).unwrap()).unwrap();
@@ -316,4 +347,53 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_confirmed_removal(
         found, baseline,
         "fresh confirmed stream also rebuilt the pre-backup baseline"
     );
+}
+
+#[test]
+fn backup_http_refusal_reaches_the_waiter_without_a_capture_callback() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let root = tempfile::tempdir().unwrap();
+    let socket = root.path().join("backup.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let destination = root.path().join("artifact");
+    let expected = destination.clone();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(&mut stream);
+        let mut length = 0;
+        loop {
+            let mut line = String::new();
+            assert_ne!(
+                reader.read_line(&mut line).unwrap(),
+                0,
+                "HTTP request ended early"
+            );
+            if line == "\r\n" {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':')
+                && name.eq_ignore_ascii_case("content-length")
+            {
+                length = value.trim().parse::<usize>().unwrap();
+            }
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).unwrap();
+        let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(request["method"], "backup");
+        assert_eq!(request["action"], "prepare");
+        assert_eq!(request["to"], expected.display().to_string());
+        let body = "synthetic backup refusal";
+        write!(stream, "HTTP/1.1 422 Unprocessable Entity\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+    });
+    let (progress, wait) = mpsc::sync_channel(1);
+    let backup = start_backup(socket, destination, progress);
+    assert!(matches!(
+        wait.recv_timeout(Duration::from_secs(5)).unwrap(),
+        BackupEvent::Finished
+    ));
+    let error = backup.join().unwrap().unwrap_err();
+    assert!(error.contains("422"), "{error}");
+    assert!(error.contains("synthetic backup refusal"), "{error}");
+    server.join().unwrap();
 }
