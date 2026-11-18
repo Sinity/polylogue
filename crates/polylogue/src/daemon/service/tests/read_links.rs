@@ -232,11 +232,11 @@ fn a_diamond_shows_each_node_once_with_a_cross_link() {
     assert_eq!(actual_edges, expected_edges);
     for item in &page.document.items {
         if let ItemKind::Card { card } = &item.kind
-            && let Card::LinkNode {
-                lineage: Some(lineage),
-                ..
-            } = card.as_ref()
+            && let Card::LinkNode { lineage, .. } = card.as_ref()
         {
+            let lineage = lineage
+                .as_deref()
+                .expect("each stored diamond node carries its lineage");
             assert!(
                 !matches!(&lineage.issue, Some(LineageIssue::Cycle { .. })),
                 "{lineage:?}"
