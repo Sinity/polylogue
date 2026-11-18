@@ -10,4 +10,6 @@ xtask = "run --quiet --locked -p xtask --"
 # Nothing reads SQLite's process-wide memory statistics or releases its memory
 # on demand, and both took a global mutex on every allocation and page fetch:
 # memory statistics are off, and each connection keeps its own page cache.
-LIBSQLITE3_FLAGS = "-DSQLITE_ENABLE_DBPAGE_VTAB -DSQLITE_DEFAULT_MEMSTATUS=0 -USQLITE_ENABLE_MEMORY_MANAGEMENT"
+# Keep the measured 18-page statement journal in memory. Larger journals
+# still spill. The writer continues to use FILE temporary storage for SQL.
+LIBSQLITE3_FLAGS = "-DSQLITE_ENABLE_DBPAGE_VTAB -DSQLITE_DEFAULT_MEMSTATUS=0 -USQLITE_ENABLE_MEMORY_MANAGEMENT -DSQLITE_STMTJRNL_SPILL=131072"
