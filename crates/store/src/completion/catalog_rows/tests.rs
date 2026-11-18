@@ -191,11 +191,15 @@ fn authored_deltas_follow_only_affected_families_and_setting_keys() {
     for (id, name) in [("saved-a", "alpha"), ("saved-b", "beta")] {
         write(
             id,
-            UserWrite::SaveQuery {
-                name: name.into(),
-                text: "sessions | group by origin | count".into(),
+            UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+                name: Some(name.into()),
+                query: "sessions | group by origin | count".into(),
                 denominator: Some("sessions".into()),
-            },
+                rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
+                read_at: "{}".into(),
+                watch: None,
+                outcomes: None,
+            })),
         );
     }
     write(
@@ -277,11 +281,15 @@ fn authored_deltas_follow_only_affected_families_and_setting_keys() {
     let after = reads.reader().unwrap().change_position().unwrap();
     write(
         "replace-a",
-        UserWrite::SaveQuery {
-            name: "alpha".into(),
-            text: "messages | group by role | count".into(),
+        UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+            name: Some("alpha".into()),
+            query: "messages | group by role | count".into(),
             denominator: Some("messages".into()),
-        },
+            rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
+            read_at: "{}".into(),
+            watch: None,
+            outcomes: None,
+        })),
     );
     let delta = reads
         .reader()

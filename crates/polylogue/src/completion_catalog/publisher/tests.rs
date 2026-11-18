@@ -312,11 +312,15 @@ fn failed_catalog_transaction_retries_the_same_committed_definition_delta() {
             .user(polylogue_store::writer::UserSubmission {
                 request: polylogue_store::fixture::authored::operator_request(
                     id.into(),
-                    UserWrite::SaveQuery {
-                        name: name.into(),
-                        text: "sessions | group by origin | count".into(),
+                    UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+                        name: Some(name.into()),
+                        query: "sessions | group by origin | count".into(),
                         denominator: Some("sessions".into()),
-                    },
+                        rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
+                        read_at: "{}".into(),
+                        watch: None,
+                        outcomes: None,
+                    })),
                 ),
                 scope: None,
                 preparation: Some(crate::daemon::service::authored_preparation()),
@@ -371,12 +375,15 @@ fn late_kept_result_refreshes_inline_dependency() {
     let keep = || {
         polylogue_store::fixture::authored::operator_request(
             "late-kept".into(),
-            UserWrite::KeepResult {
+            UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
                 name: None,
                 query: "sessions".into(),
                 rows_json: rows.clone(),
                 read_at: "{}".into(),
-            },
+                denominator: None,
+                watch: None,
+                outcomes: None,
+            })),
         )
     };
     donor

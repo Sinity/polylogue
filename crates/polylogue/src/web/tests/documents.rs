@@ -148,11 +148,11 @@ fn links_follow_references_in_unit_and_grouped_rows() {
             "{messages}"
         );
         for (query, linked) in [
-            ("assertions", false),
+            ("annotations", false),
             ("sessions | fields text(id) as id", false),
             ("sessions | group by id", true),
             ("sessions | agg min(id)", true),
-            ("result:web-kept-group-1-keep", true),
+            ("result:web-kept-group-1", true),
         ] {
             let path = format!(
                 "/search?q={}",

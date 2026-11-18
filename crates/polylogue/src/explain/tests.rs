@@ -124,7 +124,7 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
         "tool_calls | union (outcome:error)".into(),
         "sessions | tool_calls | union (outcome:error)".into(),
         "query:mine".into(),
-        format!("result:{}", kept.kept.id.as_str()),
+        kept.kept.result.clone(),
     ] {
         let result = crate::test_answers::ok(
             (explain(Some(&expression))).answer_with(&w.daemon, &invocation),

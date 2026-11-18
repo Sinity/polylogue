@@ -82,10 +82,13 @@ fn line_writes_have_their_own_kinds_and_existing_authored_definitions_stay_exact
             watch: None,
             outcomes: Some(polylogue_model::user::SaveReport {
                 saved: None,
-                kept: UserOutcome {
-                    id: "declared-line-keep".into(),
-                    repeat: false,
-                    pending: false,
+                request: "declared-line".into(),
+                repeat: false,
+                pending: false,
+                kept: polylogue_model::user::KeptPart {
+                    result: "result:declared-line".into(),
+                    rows: 0,
+                    at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
                 },
                 watch: None,
             }),
@@ -95,7 +98,7 @@ fn line_writes_have_their_own_kinds_and_existing_authored_definitions_stay_exact
         .effect
         .kept_results
         .push(polylogue_model::authored::KeptResult {
-            id: "declared-line-keep".into(),
+            id: "declared-line".into(),
             name: None,
             query: "sessions".into(),
             ran_at: saved.request.at,

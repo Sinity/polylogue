@@ -31,11 +31,15 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
                 id: "saved-feed".into(),
                 machine: "synthetic".into(),
                 at: Timestamp::from_unix_ms(T0).unwrap(),
-                write: UserWrite::SaveQuery {
-                    name: "old-feed".into(),
-                    text: format!("changes where after:{cursor}"),
+                write: UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+                    name: Some("old-feed".into()),
+                    query: format!("feed where after:{cursor}"),
                     denominator: None,
-                },
+                    rows_json: r#"{"unit":"feed","columns":[],"rows":[]}"#.into(),
+                    read_at: "{}".into(),
+                    watch: None,
+                    outcomes: None,
+                })),
             },
             scope: None,
             preparation: Some(polylogue_store::user_writes::PreparationContext::new(vec![
@@ -57,12 +61,12 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
     let pool = home.reads();
     let reader = pool.reader().unwrap();
     for query in [
-        format!("changes where after:{cursor}"),
-        format!("changes where after:{cursor} AND kind:session"),
-        format!("changes where after:{cursor} | limit 1"),
-        format!("changes where after:{cursor} | group by kind | count"),
-        format!("sessions where exists changes(after:{cursor}) | count"),
-        format!("changes where NOT after:{cursor} OR kind:assertion"),
+        format!("feed where after:{cursor}"),
+        format!("feed where after:{cursor} AND kind:session"),
+        format!("feed where after:{cursor} | limit 1"),
+        format!("feed where after:{cursor} | group by kind | count"),
+        format!("sessions where exists feed(after:{cursor}) | count"),
+        format!("feed where NOT after:{cursor} OR kind:assertion"),
         "query:old-feed".into(),
     ] {
         let error = run(&reader, ask(&query, T0)).unwrap_err();
@@ -84,7 +88,7 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
         initial["read_at"]["generation"]
     );
     let after = format!(
-        "changes where after:{}",
+        "feed where after:{}",
         fresh["read_at"]["cursor"].as_str().unwrap()
     );
     assert_eq!(run(&reader, ask(&after, T0)).unwrap()["count"], 0);
@@ -107,7 +111,7 @@ fn fresh_change_cursors_keep_two_counters_and_include_late_notes() {
     let pinned = pool.reader().unwrap();
     let initial = run(&pinned, ask("sessions", T0)).unwrap();
     let after = format!(
-        "changes where after:{}",
+        "feed where after:{}",
         initial["read_at"]["cursor"].as_str().unwrap()
     );
     engine
@@ -155,7 +159,7 @@ fn fresh_change_cursors_keep_two_counters_and_include_late_notes() {
             .any(|r| r["kind"] == "assertion" && r["ref"] == "000-late-note")
     );
     let after = format!(
-        "changes where after:{}",
+        "feed where after:{}",
         changes["read_at"]["cursor"].as_str().unwrap()
     );
     assert_eq!(run(&reader, ask(&after, T0)).unwrap()["count"], 0);
@@ -206,7 +210,7 @@ fn save_refuses_a_stale_change_cursor_without_keeping_a_result() {
     let daemon = crate::test_daemon::start("synthetic source");
     let result = crate::test_daemon::Call::new(
         "rows",
-        serde_json::json!({"selection":"changes where after:obsolete:0:0 | limit 1", "steps":[{"verb":"save"}]}),
+        serde_json::json!({"selection":"feed where after:obsolete:0:0 | limit 1", "steps":[{"verb":"save"}]}),
     )
     .id("stale-keep")
     .answer(&daemon.daemon);
@@ -218,7 +222,7 @@ fn save_refuses_a_stale_change_cursor_without_keeping_a_result() {
         pool.reader()
             .unwrap()
             .query(
-                "SELECT count(*) AS n FROM a.kept_result WHERE id='stale-keep-1-keep'",
+                "SELECT count(*) AS n FROM a.kept_result WHERE id='stale-keep-1'",
                 &[]
             )
             .unwrap()[0]["n"],

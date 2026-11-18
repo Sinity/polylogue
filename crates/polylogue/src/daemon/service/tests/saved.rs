@@ -52,7 +52,7 @@ fn a_saved_query_runs_by_name_and_saving_again_revises_it() {
     let value = crate::test_answers::empty(query(&d, "query:everything"));
     assert_eq!(value["count"], 0, "{value}");
     assert_eq!(value["definitions"][0]["revision"], second.id);
-    let annotations = crate::test_answers::ok(query(&d, "assertions where kind:saved_query"));
+    let annotations = crate::test_answers::ok(query(&d, "annotations where kind:saved_query"));
     assert_eq!(
         annotations["count"], 1,
         "one family, revised: {annotations}"
@@ -66,15 +66,13 @@ fn save_retries_keep_the_first_revision_after_the_definition_changes() {
     report(save("second", Some("everything"), "messages").answer(&d.daemon));
     d.restart();
     for (id, text) in [("first", "sessions"), ("second", "messages")] {
-        let repeated = report(save(id, Some("everything"), text).answer(&d.daemon))
-            .saved
-            .unwrap();
-        assert_eq!(repeated.id, format!("{id}-1-save"));
+        let repeated = report(save(id, Some("everything"), text).answer(&d.daemon));
         assert!(repeated.repeat);
+        assert_eq!(repeated.saved.unwrap().id, format!("{id}-1"));
     }
     let current = crate::test_answers::ok(query(&d, "query:everything"));
     assert_eq!(current["unit"], "messages");
-    assert_eq!(current["definitions"][0]["revision"], "second-1-save");
+    assert_eq!(current["definitions"][0]["revision"], "second-1");
     for request in [
         save("first", Some("everything"), "documents"),
         save("first", Some("other"), "sessions"),
@@ -87,17 +85,17 @@ fn save_retries_keep_the_first_revision_after_the_definition_changes() {
 #[test]
 fn kept_rows_retry_after_membership_changes() {
     let mut d = test_daemon::start("first prompt");
-    let first = report(save("kept", Some("before"), "assertions").answer(&d.daemon));
+    let first = report(save("kept", Some("before"), "annotations").answer(&d.daemon));
     report(save("saved", Some("everything"), "sessions").answer(&d.daemon));
     d.restart();
-    let repeated = report(save("kept", Some("before"), "assertions").answer(&d.daemon));
-    assert!(repeated.kept.repeat);
-    assert_eq!(repeated.kept.id, first.kept.id);
-    let rows = crate::test_answers::empty(query(&d, &format!("result:{}", first.kept.id)));
+    let repeated = report(save("kept", Some("before"), "annotations").answer(&d.daemon));
+    assert!(repeated.repeat);
+    assert_eq!(repeated.kept, first.kept);
+    let rows = crate::test_answers::empty(query(&d, &first.kept.result));
     assert_eq!(rows["count"], 0);
     for request in [
         save("kept", Some("before"), "sessions"),
-        save("kept", Some("after"), "assertions"),
+        save("kept", Some("after"), "annotations"),
     ] {
         assert_eq!(
             crate::test_answers::refusal(request.answer(&d.daemon))
@@ -146,10 +144,10 @@ fn a_watch_is_a_signal_rule_delivering_notices() {
             .watch
             .is_some()
     );
-    let rules = crate::test_answers::ok(query(&d, "assertions where kind:signal"));
+    let rules = crate::test_answers::ok(query(&d, "annotations where kind:signal"));
     assert_eq!(rules["count"], 1, "{rules}");
     let value = &rules["rows"][0]["value"];
-    assert_eq!(value["query"], "sessions where live:waiting");
+    assert_eq!(value["query"], "query:my-watch@1");
     assert_eq!(value["for"], "20m");
     assert_eq!(value["interrupt"], false);
     for (request, kind) in [
@@ -180,7 +178,7 @@ fn a_pipe_in_a_quoted_value_keeps_the_match_rows() {
     )
     .kept;
     assert_eq!(
-        crate::test_answers::ok(query(&d, &format!("result:{}.matches", kept.id)))["count"],
+        crate::test_answers::ok(query(&d, &format!("{}.matches", kept.result)))["count"],
         1
     );
 }
@@ -205,7 +203,7 @@ fn accepting_caller_is_preserved_on_retry_and_another_actor_cannot_reuse_the_id(
     };
     let saved = report(call(&caller)).saved.unwrap();
     let reads = d.daemon.reads.reader().unwrap();
-    let original = reads.user_request("caller-request").unwrap().unwrap();
+    let original = reads.user_request("caller-request-1").unwrap().unwrap();
     assert_eq!(original.authorship, caller);
     assert_eq!(
         reads
@@ -220,7 +218,7 @@ fn accepting_caller_is_preserved_on_retry_and_another_actor_cannot_reuse_the_id(
         caller.author
     );
     drop(reads);
-    assert!(report(call(&caller)).saved.unwrap().repeat);
+    assert!(report(call(&caller)).repeat);
     for changed in [
         Authorship {
             author: Author::Operator,
@@ -238,7 +236,7 @@ fn accepting_caller_is_preserved_on_retry_and_another_actor_cannot_reuse_the_id(
     }
     let reads = d.daemon.reads.reader().unwrap();
     assert_eq!(
-        reads.user_request("caller-request").unwrap(),
+        reads.user_request("caller-request-1").unwrap(),
         Some(original)
     );
 }

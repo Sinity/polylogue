@@ -254,7 +254,17 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
     let n = std::cell::Cell::new(0);
     let write_as = |w: UserWrite, author: Author| {
         n.set(n.get() + 1);
-        writes.user(request(n.get(), w, author)).unwrap().id
+        writes
+            .user(polylogue_store::writer::UserSubmission {
+                request: request(n.get(), w, author),
+                scope: None,
+                preparation: Some(polylogue_store::user_writes::PreparationContext::new(vec![
+                    "claude-code".into(),
+                ])),
+                parent: None,
+            })
+            .unwrap()
+            .id
     };
     let write = |w| write_as(w, Author::Operator);
     let write_note =
@@ -303,12 +313,17 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
         value: "on".into(),
         machine: None,
     });
-    write(UserWrite::KeepResult {
-        name: Some("kept".into()),
-        query: "sessions".into(),
-        rows_json: "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}".into(),
-        read_at: "{}".into(),
-    });
+    write(UserWrite::SaveSelection(Box::new(
+        polylogue_model::user::SaveSelection {
+            name: Some("kept".into()),
+            query: "sessions".into(),
+            rows_json: "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}".into(),
+            read_at: "{}".into(),
+            denominator: None,
+            watch: None,
+            outcomes: None,
+        },
+    )));
     let delivery = write(UserWrite::Deliver(Delivery {
         recipient_kind: "session".into(),
         recipient_id: Some("claude-code:s1".into()),

@@ -164,7 +164,7 @@ fn dry_run_line_writes_nothing() {
         steps[0]["outcome"]["would"],
         "would write a note about each of session:claude-code:s1"
     );
-    assert_eq!(count(&d, "assertions where kind:note"), 0);
+    assert_eq!(count(&d, "annotations where kind:note"), 0);
 }
 
 #[test]
@@ -210,7 +210,7 @@ fn retried_line_writes_once() {
     let second = steps(&d, "again", rows);
     assert_eq!(first[0]["outcome"]["reply"]["reply"]["repeat"], false);
     assert_eq!(second[0]["outcome"]["reply"]["reply"]["repeat"], true);
-    assert_eq!(count(&d, "assertions where kind:note"), 1);
+    assert_eq!(count(&d, "annotations where kind:note"), 1);
 }
 
 #[test]
@@ -457,7 +457,7 @@ fn socket_chain_streams_each_read_at_its_step_and_retries_writes_once() {
             assert!(!reads[0].contains("after-note"), "{reads:?}");
             assert!(reads[1].contains("after-note"), "{reads:?}");
         }
-        assert_eq!(count(&d, "assertions where kind:tag OR kind:note"), 2);
+        assert_eq!(count(&d, "annotations where kind:tag OR kind:note"), 2);
     }
     let changed = json!({"selection":"sessions", "steps":[{"verb":"note", "text":"another"}]});
     assert_eq!(
@@ -503,7 +503,7 @@ fn stream_prefix_failure_keeps_undo_and_does_not_start_a_read() {
             ])
         );
         assert_eq!(reports[0]["outcome"]["reply"]["reply"]["repeat"], retry);
-        assert_eq!(count(&d, "assertions where kind:note"), 1);
+        assert_eq!(count(&d, "annotations where kind:note"), 1);
     }
 }
 
@@ -523,7 +523,7 @@ fn empty_fixed_selection_streams_no_records_and_keeps_empty_outcome() {
         "{events:?}"
     );
     assert_eq!(events.last().unwrap().1["outcome"], "empty", "{events:?}");
-    assert_eq!(count(&d, "assertions"), 0);
+    assert_eq!(count(&d, "annotations"), 0);
 }
 
 #[test]
@@ -689,7 +689,7 @@ fn line_deadline_still_applies_after_resolution_journal_handoff() {
     assert!(reader.user_request("line-deadline").unwrap().is_some());
     assert!(reader.user_request("line-deadline-1").unwrap().is_none());
     drop(reader);
-    assert_eq!(count(&d, "assertions"), 0);
+    assert_eq!(count(&d, "annotations"), 0);
 }
 
 #[test]
@@ -773,18 +773,18 @@ fn listing_value(d: &TestDaemon, selection: &str) -> Value {
 
 fn kept_result(d: &TestDaemon, report: &Value) -> Value {
     assert_eq!(report["outcome"]["status"], "done", "{report}");
-    let id = report["outcome"]["reply"]["reply"]["kept"]["id"]
+    let result = report["outcome"]["reply"]["reply"]["kept"]["result"]
         .as_str()
         .unwrap();
-    listing_value(d, &format!("result:{id}"))
+    listing_value(d, result)
 }
 
 #[test]
 fn empty_entity_population_stays_empty_across_two_saves_and_retry() {
     let mut d = test_daemon::start("fixed empty save population");
-    let expected = listing_value(&d, "assertions");
+    let expected = listing_value(&d, "annotations");
     assert_eq!(expected["count"], 0);
-    let request = json!({"selection":"assertions", "steps":[
+    let request = json!({"selection":"annotations", "steps":[
         {"verb":"save","name":"first-empty"}, {"verb":"save","name":"second-empty"}
     ]});
     for restart in [false, true] {
@@ -799,7 +799,7 @@ fn empty_entity_population_stays_empty_across_two_saves_and_retry() {
             }
         }
     }
-    assert_eq!(count(&d, "assertions where kind:saved_query"), 2);
+    assert_eq!(count(&d, "annotations where kind:saved_query"), 2);
 }
 
 #[test]
@@ -830,13 +830,13 @@ fn keyed_save_hydrates_earlier_title_and_read_sees_earlier_annotations() {
 #[test]
 fn unkeyed_aggregate_is_unchanged_by_its_own_saves() {
     let d = test_daemon::start("aggregate save population");
-    let query = "assertions | count";
+    let query = "annotations | count";
     let expected = listing_value(&d, query);
     let reports = steps(
         &d,
         "aggregate-save",
         json!({"selection":query,"steps":[
-            {"verb":"save","name":"first-count","denominator":"assertions"}, {"verb":"save","name":"second-count","denominator":"assertions"}
+            {"verb":"save","name":"first-count","denominator":"annotations"}, {"verb":"save","name":"second-count","denominator":"annotations"}
         ]}),
     );
     for report in reports {
@@ -844,7 +844,7 @@ fn unkeyed_aggregate_is_unchanged_by_its_own_saves() {
         assert_eq!(kept["rows"], expected["rows"], "{kept}");
         assert_eq!(kept["columns"], expected["columns"], "{kept}");
     }
-    assert_eq!(count(&d, "assertions where kind:saved_query"), 2);
+    assert_eq!(count(&d, "annotations where kind:saved_query"), 2);
 }
 
 #[test]
@@ -880,14 +880,14 @@ fn saving_a_saved_kept_relation_retains_nested_output_schemas() {
         "kept-source",
         json!({"selection":"session:claude-code:s1","steps":[{"verb":"save"}]}),
     );
-    let source = original[0]["outcome"]["reply"]["reply"]["kept"]["id"]
+    let source = original[0]["outcome"]["reply"]["reply"]["kept"]["result"]
         .as_str()
         .unwrap();
     let expected = kept_result(&d, &original[0]);
     let named = steps(
         &d,
         "name-kept-source",
-        json!({"selection":format!("result:{source}"),"steps":[{"verb":"save","name":"kept-source"}]}),
+        json!({"selection":source,"steps":[{"verb":"save","name":"kept-source"}]}),
     );
     assert_eq!(kept_result(&d, &named[0])["rows"], expected["rows"]);
     let request =
@@ -968,7 +968,7 @@ fn requested_picker_population_retains_order_and_retry_after_prefix_changes_pred
         assert_eq!(population["rows"].as_array().unwrap().len(), 2, "{answer}");
         assert_eq!(population["count"], 2, "{answer}");
         assert_eq!(count(&d, "sessions where NOT tag:prefix"), 0);
-        assert_eq!(count(&d, "assertions where kind:tag"), 2);
+        assert_eq!(count(&d, "annotations where kind:tag"), 2);
     }
     let conflict = refusal(line(
         &d,
@@ -998,7 +998,7 @@ fn dry_run_picker_describes_steps_without_writing() {
             .contains("picker"),
         "{reports:?}"
     );
-    assert_eq!(count(&d, "assertions where kind:tag"), 0);
+    assert_eq!(count(&d, "annotations where kind:tag"), 0);
 }
 
 #[test]
@@ -1015,7 +1015,7 @@ fn newly_saved_names_cannot_be_captured_by_commands_or_verbs() {
         assert_eq!(failure.code.as_deref(), Some("bad_value"));
         assert!(failure.message.contains(name), "{failure:?}");
     }
-    assert_eq!(count(&d, "assertions where kind:saved_query"), 0);
+    assert_eq!(count(&d, "annotations where kind:saved_query"), 0);
     steps(
         &d,
         "ordinary-saved-name",
@@ -1033,24 +1033,36 @@ fn a_save_retry_retains_original_child_revisions_and_undo_after_definition_chang
     let part = |report: &Value| report["outcome"]["reply"]["reply"].clone();
     let first_parts = part(&first[0]);
     let second_parts = part(&second[0]);
-    // Saved queries and signals revise the current named record even when
-    // their value is unchanged. A retry retains its own accepted revisions.
-    for field in ["saved", "watch"] {
-        assert_ne!(second_parts[field]["id"], first_parts[field]["id"]);
-        assert_eq!(second_parts[field]["repeat"], false);
+    // A new Save keeps new rows but reuses an unchanged question and watch.
+    for (field, created) in [("saved", "new_revision"), ("watch", "new_rule")] {
+        assert_eq!(second_parts[field]["id"], first_parts[field]["id"]);
+        assert_eq!(first_parts[field][created], true);
+        assert_eq!(second_parts[field][created], false);
     }
-    assert_eq!(second[0]["outcome"]["undo"].as_array().unwrap().len(), 2);
-    assert_eq!(second_parts["kept"]["id"], "second-save-1-keep");
+    assert_eq!(second_parts["repeat"], false);
+    assert!(second[0]["outcome"]["undo"].as_array().unwrap().is_empty());
+    assert_eq!(second_parts["kept"]["result"], "result:second-save-1");
     steps(&d, "changed-definition", save("messages"));
     for (id, original) in [("first-save", &first[0]), ("second-save", &second[0])] {
         let retry = steps(&d, id, save("sessions"));
         for field in ["saved", "watch", "kept"] {
-            assert_eq!(part(&retry[0])[field]["id"], part(original)[field]["id"]);
-            assert_eq!(part(&retry[0])[field]["repeat"], true);
+            assert_eq!(part(&retry[0])[field], part(original)[field]);
         }
+        assert_eq!(part(&retry[0])["repeat"], true);
         assert_eq!(retry[0]["outcome"]["undo"], original["outcome"]["undo"]);
     }
-    assert_eq!(first[0]["outcome"]["undo"].as_array().unwrap().len(), 2);
+    let undo = first[0]["outcome"]["undo"].as_array().unwrap();
+    assert_eq!(undo.len(), 1);
+    let command = undo[0].as_str().unwrap();
+    assert!(
+        command.contains("assertion:first-save-1.1@first-save-1.1"),
+        "{command}"
+    );
+    assert!(
+        command.contains("assertion:first-save-1.2@first-save-1.2"),
+        "{command}"
+    );
+    assert!(command.contains("first-save-1-undo"), "{command}");
 }
 
 #[test]
@@ -1087,7 +1099,7 @@ fn an_owned_save_finishes_atomically_after_deadline_then_stops_later_steps() {
     assert_eq!(reports[0]["outcome"]["status"], "done", "{value}");
     assert_eq!(
         reports[0]["outcome"]["undo"].as_array().unwrap().len(),
-        2,
+        1,
         "{value}"
     );
     assert_eq!(reports[1]["outcome"]["error"]["kind"], "timeout", "{value}");
@@ -1097,20 +1109,19 @@ fn an_owned_save_finishes_atomically_after_deadline_then_stops_later_steps() {
     let polylogue_model::user::UserWrite::SaveSelection(save) = accepted.write else {
         panic!("one atomic Save request")
     };
-    assert_eq!(save.outcomes.as_ref().unwrap().kept.id, "owned-save-1-keep");
-    for child in [
-        "owned-save-1-save",
-        "owned-save-1-keep",
-        "owned-save-1-watch",
-    ] {
+    assert_eq!(
+        save.outcomes.as_ref().unwrap().kept.result,
+        "result:owned-save-1"
+    );
+    for child in ["owned-save-1.1", "owned-save-1.2"] {
         assert!(
             reader.user_request(child).unwrap().is_none(),
             "one parent receipt: {child}"
         );
     }
     drop(reader);
-    assert_eq!(count(&d, "assertions where kind:saved_query"), 1);
-    assert_eq!(count(&d, "assertions where kind:signal"), 1);
-    assert_eq!(count(&d, "assertions where kind:tag"), 0);
-    assert_eq!(count(&d, "result:owned-save-1-keep"), 1);
+    assert_eq!(count(&d, "annotations where kind:saved_query"), 1);
+    assert_eq!(count(&d, "annotations where kind:signal"), 1);
+    assert_eq!(count(&d, "annotations where kind:tag"), 0);
+    assert_eq!(count(&d, "result:owned-save-1"), 1);
 }

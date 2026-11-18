@@ -27,11 +27,15 @@ fn request(id: &str, write: UserWrite) -> UserRequest {
 fn save(id: &str, name: &str, text: &str) -> UserRequest {
     request(
         id,
-        UserWrite::SaveQuery {
-            name: name.into(),
-            text: text.into(),
+        UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+            name: Some(name.into()),
+            query: text.into(),
             denominator: None,
-        },
+            rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
+            read_at: "{}".into(),
+            watch: None,
+            outcomes: None,
+        })),
     )
 }
 
@@ -223,11 +227,15 @@ fn saved_figure_keeps_its_denominator_as_a_separate_question() {
         .user(crate::writer::UserSubmission {
             request: request(
                 "figure",
-                UserWrite::SaveQuery {
-                    name: "total".into(),
-                    text: "sessions | count".into(),
+                UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+                    name: Some("total".into()),
+                    query: "sessions | count".into(),
                     denominator: Some("sessions".into()),
-                },
+                    rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
+                    read_at: "{}".into(),
+                    watch: None,
+                    outcomes: None,
+                })),
             ),
             scope: None,
             preparation: Some(context()),

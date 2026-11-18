@@ -62,8 +62,8 @@ fn search_writes_are_available_through_the_command_table() {
                 let (status, _, raw) = send(&r, own_origin(authed(post("/api/v1/rows"))).body(Body::from(body.to_string())).unwrap()).await;
                 assert_eq!(status, StatusCode::OK, "{raw}");
                 let value: Value = serde_json::from_str(&raw).unwrap();
-                assert_eq!(value["kept"]["repeat"], repeat);
-                if name.is_some() { assert_eq!(value["saved"]["repeat"], repeat); }
+                assert_eq!(value["repeat"], repeat);
+                if name.is_some() { assert_eq!(value["saved"]["new_revision"], true); }
             }
         }
     });
@@ -75,7 +75,7 @@ fn search_writes_are_available_through_the_command_table() {
         1
     );
     assert_eq!(
-        data(&r, "result:kept-search-1-keep", None)["rows"]
+        data(&r, "result:kept-search-1", None)["rows"]
             .as_array()
             .unwrap()
             .len(),
@@ -93,7 +93,7 @@ fn search_writes_are_available_through_the_command_table() {
     let crate::protocol::line::StepAnswer::Saved(kept) = crate::test_answers::step(kept) else {
         panic!("expected saved selection")
     };
-    assert_eq!(kept.kept.id.as_str(), "mcp-kept-1-keep");
+    assert_eq!(kept.kept.result.as_str(), "result:mcp-kept-1");
 }
 
 #[test]
@@ -151,7 +151,14 @@ fn filtered_semantic_and_mixed_results_keep_lower_ranked_matches() {
             &r,
             &format!(
                 "result:{}",
-                serde_json::to_string(outcome["kept"]["id"].as_str().unwrap()).unwrap()
+                serde_json::to_string(
+                    outcome["kept"]["result"]
+                        .as_str()
+                        .unwrap()
+                        .strip_prefix("result:")
+                        .unwrap()
+                )
+                .unwrap()
             ),
             None,
         );
