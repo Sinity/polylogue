@@ -398,19 +398,21 @@ fn no_sort_key_holds_bytes() {
             // The page's row limit.
             params.push(SqlValue::Int(i64::MAX));
             let rows = reader
-                .query(
-                    &format!(
-                        "SELECT count(*) AS n FROM ({}) WHERE {bytes}",
-                        program.statements.page(
-                            &program.order,
-                            program.params.len(),
-                            false,
-                            false,
-                            polylogue_store::query::PageColumns::All,
-                        )
-                    ),
-                    &params,
-                )
+                .with_clock(&program.clock, || {
+                    reader.query(
+                        &format!(
+                            "SELECT count(*) AS n FROM ({}) WHERE {bytes}",
+                            program.statements.page(
+                                &program.order,
+                                program.params.len(),
+                                false,
+                                false,
+                                polylogue_store::query::PageColumns::All,
+                            )
+                        ),
+                        &params,
+                    )
+                })
                 .unwrap_or_else(|e| panic!("{question}: {e}"));
             assert_eq!(rows[0]["n"], 0, "{question}");
             checked += 1;

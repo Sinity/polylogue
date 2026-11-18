@@ -263,3 +263,25 @@ fn sinex_local_reference_correction_reaches_selection_errors() {
         polylogue_model::Code::UnknownField,
     );
 }
+
+#[test]
+fn declared_annotation_request_field_precedes_request_object_refusal() {
+    let (id, _) = field("annotations where request:write-root");
+    assert_eq!(id, FieldId::AnnotationsRequest);
+    let operation_clock = clock();
+    let binder = Binder {
+        text: "request:write-root",
+        origins: &[],
+        clock: &operation_clock,
+        provider_catalog: None,
+    };
+    assert!(matches!(
+        binder.field(
+            Unit::Sessions,
+            "request",
+            Comparison::Match(Value::scalar("write-root")),
+            Span::default()
+        ),
+        Err(QueryError::NotBuilt { .. })
+    ));
+}

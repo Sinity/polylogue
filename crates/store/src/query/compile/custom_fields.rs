@@ -345,16 +345,14 @@ pub(crate) fn repo(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
         let tail = c.text_param(&format!("%/{}", like_escape(&v)));
         let tail_git = c.text_param(&format!("%/{}.git", like_escape(&v)));
         parts.push(format!(
-            "COALESCE(lower(rtrim({s}.repo, '/')) = {p} OR lower(rtrim({s}.repo, '/')) LIKE {tail} ESCAPE '\\' \
-             OR lower({s}.repo) LIKE {tail_git} ESCAPE '\\', 0) OR COALESCE({s}.repo_root = {p}, 0)"
+            "CASE WHEN {s}.repo IS NOT NULL OR {s}.repo_root IS NOT NULL THEN \
+             (COALESCE(lower(rtrim({s}.repo, '/')) = {p} OR lower(rtrim({s}.repo, '/')) LIKE {tail} ESCAPE '\\' \
+             OR lower({s}.repo) LIKE {tail_git} ESCAPE '\\', 0) OR COALESCE({s}.repo_root = {p}, 0)) END"
         ));
     }
-    // Unknown only when neither the repository nor its identity is known,
-    // as `repo:unknown` says; a known one that differs is a plain no.
-    Ok(format!(
-        "CASE WHEN {s}.repo IS NOT NULL OR {s}.repo_root IS NOT NULL THEN {} END",
-        any_of(x, parts)?
-    ))
+    // Ordinary repository names remain unknown without repository metadata.
+    // `here` also has indexed working-directory evidence and stands on its own.
+    any_of(x, parts)
 }
 
 pub(crate) fn live(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
@@ -895,7 +893,7 @@ pub(crate) fn here(
     if !cwd_only {
         for root in scope.repo_roots {
             let p = c.text_param(&root);
-            parts.push(format!("{}.repo_root={p}", x.s()));
+            parts.push(format!("coalesce({}.repo_root={p},0)", x.s()));
         }
     }
     any_of(x, parts)

@@ -160,8 +160,11 @@ fn answered_and_open_follow_links() {
             AssertionKind::Note,
             "because",
             &[
-                (LinkRole::About, format!("assertion:{question}")),
-                (LinkRole::Answers, format!("assertion:{question}")),
+                (LinkRole::About, format!("assertion:{question}@{question}")),
+                (
+                    LinkRole::Answers,
+                    format!("assertion:{question}@{question}"),
+                ),
             ],
         )],
     })
@@ -178,7 +181,8 @@ fn answered_and_open_follow_links() {
                 "blocked",
                 &[
                     (LinkRole::About, "session:test:work".into()),
-                    (LinkRole::Blocks, format!("assertion:{question}")),
+                    (LinkRole::About, format!("assertion:{question}@{question}")),
+                    (LinkRole::Blocks, format!("assertion:{question}@{question}")),
                 ],
             )],
         })
@@ -293,7 +297,14 @@ fn ends_open_each_fact() {
 fn triage_score_sums_named_facts() {
     let d = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(d.path()).unwrap();
-    let pk = session(&mut f, "test:work");
+    let pk = f
+        .session(SessionFacts {
+            id: "test:work",
+            kind: "main",
+            last: Some(0),
+            ..Default::default()
+        })
+        .unwrap();
     let m = f
         .message(
             pk,
@@ -352,6 +363,17 @@ fn triage_score_sums_named_facts() {
     assert_eq!(
         rows(&f, "sessions where id:test:work", &["triage_score"])[0]["triage_score"],
         0
+    );
+    f.message_time(
+        m,
+        Some(polylogue_model::Timestamp::from_unix_ms(1000).unwrap()),
+        polylogue_model::TimeEvidence::intrinsic(polylogue_model::Precision::Instant),
+    )
+    .unwrap();
+    assert_eq!(
+        rows(&f, "sessions where id:test:work", &["triage_score"])[0]["triage_score"],
+        4,
+        "activity after triage exposes the remaining work again"
     );
 }
 
@@ -441,53 +463,80 @@ fn cost_with_parents_includes_prefix() {
 
 #[test]
 fn alternate_true_admits_alternate_text() {
-    use polylogue_model::{BlobHash, NewVariant, NewVariantPart, VariantKind, VariantRelation};
-    let d = tempfile::tempdir().unwrap();
-    let mut f = Fixture::new(d.path()).unwrap();
-    let pk = session(&mut f, "test:work");
-    f.message(
-        pk,
-        MessageFacts {
-            id: "test:original",
-            role: "assistant",
-            written_by: "model",
-            text: Some("original text"),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    f.user(UserWrite::Variant {
-        variant: NewVariant {
-            base: None,
-            source: "message:test:original".into(),
-            source_hash: BlobHash([1; 32]),
-            kind: VariantKind::Translation,
-            from_lang: Some("en".into()),
-            to_lang: Some("pl".into()),
-            method: None,
-            parts: vec![NewVariantPart {
-                of: "block:test:original#0".into(),
-                of_hash: BlobHash([2; 32]),
-                relation: VariantRelation::Translates,
-                body: "unikalny".into(),
+    use crate::fixture::{
+        authored::operator_request,
+        writer::{WriterArchive, message},
+    };
+    use polylogue_model::{Block, NewVariant, NewVariantPart, Role, VariantKind, VariantRelation};
+    let mut archive = WriterArchive::new();
+    archive.write(
+        "work",
+        vec![message(
+            "original",
+            "work",
+            Role::Assistant,
+            1,
+            vec![Block::Text {
+                text: "original text".into(),
             }],
-        },
-    })
-    .unwrap();
-    assert!(rows(&f, "messages where unikalny", &["id"]).is_empty());
+        )],
+    );
+    let source = "message:claude-code:work-original";
+    let part = "block:claude-code:work-original#0";
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let source_hash = reader
+        .reference_hash(&Reference::parse(source).unwrap())
+        .unwrap()
+        .unwrap();
+    let of_hash = reader
+        .reference_hash(&Reference::parse(part).unwrap())
+        .unwrap()
+        .unwrap();
+    drop(reader);
+    drop(pool);
+    archive
+        .writer
+        .user(operator_request(
+            "translated".into(),
+            UserWrite::Variant {
+                variant: NewVariant {
+                    base: None,
+                    source: source.into(),
+                    source_hash,
+                    kind: VariantKind::Translation,
+                    from_lang: Some("en".into()),
+                    to_lang: Some("pl".into()),
+                    method: None,
+                    parts: vec![NewVariantPart {
+                        of: part.into(),
+                        of_hash,
+                        relation: VariantRelation::Translates,
+                        body: "unikalny".into(),
+                    }],
+                },
+            },
+        ))
+        .unwrap();
+    let read = |text: &str| {
+        let mut opts = all_columns_options();
+        opts.origins = vec!["claude-code".into()];
+        opts.fields = vec!["id".into()];
+        let program = crate::query::compile(text, &opts).unwrap();
+        let pool = crate::ReadPool::open(&archive.archive).unwrap();
+        pool.reader().unwrap().query_rows(&program).unwrap()
+    };
+    assert!(read("messages where unikalny").is_empty());
     assert_eq!(
-        rows(&f, "messages where alternate:true unikalny", &["id"])[0]["id"],
-        "test:original"
+        read("messages where alternate:true unikalny")[0]["id"],
+        "claude-code:work-original"
     );
     assert_eq!(
-        rows(&f, "messages where lang:pl unikalny", &["id"])[0]["id"],
-        "test:original"
+        read("messages where lang:pl unikalny")[0]["id"],
+        "claude-code:work-original"
     );
-    assert!(rows(&f, "messages where lang:de unikalny", &["id"]).is_empty());
-    assert_eq!(
-        rows(&f, "alternates where lang:pl unikalny", &["to_lang"])[0]["to_lang"],
-        "pl"
-    );
+    assert!(read("messages where lang:de unikalny").is_empty());
+    assert_eq!(read("alternates where to_lang:pl").len(), 1);
 }
 
 #[test]
@@ -691,6 +740,7 @@ fn here_matches_worktrees_and_repo_root() {
             vec!["test:clone", "test:main", "test:worktree"],
         ),
         ("cwd:here | sort by id", vec!["test:main", "test:worktree"]),
+        ("NOT repo:here | sort by id", vec!["test:other"]),
     ] {
         let p = crate::query::compile(text, &opts).unwrap();
         let got = reader.query_rows(&p).unwrap();
@@ -738,8 +788,8 @@ fn goal_stays_open_until_a_current_reply_is_accepted() {
                 AssertionKind::Note,
                 "done",
                 &[
-                    (LinkRole::About, format!("assertion:{goal}")),
-                    (LinkRole::Answers, format!("assertion:{goal}")),
+                    (LinkRole::About, format!("assertion:{goal}@{goal}")),
+                    (LinkRole::Answers, format!("assertion:{goal}@{goal}")),
                 ],
             )],
         })

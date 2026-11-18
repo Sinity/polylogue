@@ -318,7 +318,7 @@ impl Binder<'_> {
                 message: error,
                 position: span.start,
             };
-            if lower == "request" {
+            if lower == "request" && fields::lookup(unit, &lower).is_none() {
                 polylogue_model::Reference::parse(&format!("request:{text}"))
                     .map_err(|error| invalid(error.to_string()))?;
                 return Err(not_built(
