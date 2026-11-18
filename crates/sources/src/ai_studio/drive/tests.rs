@@ -395,11 +395,11 @@ fn legacy_token_does_not_authorize_new_collector_or_advance_pending_bytes() {
     };
     assert!(COLLECTOR.setting.is_none());
     let messages = (COLLECTOR.sync)(&paths, &std::sync::atomic::AtomicBool::new(false));
-    assert_eq!(messages.len(), 1);
     assert!(
-        messages[0].contains("polylogue install drive"),
-        "{messages:?}"
+        messages.is_empty(),
+        "not signing in is not a collector fault: {messages:?}"
     );
+    assert!(needs_authorization(&archive));
     (COLLECTOR.advance.unwrap())(&paths, &mut |_, _, _| {
         panic!("unauthorized collector must not publish pending bytes")
     })
@@ -407,4 +407,19 @@ fn legacy_token_does_not_authorize_new_collector_or_advance_pending_bytes() {
     assert_eq!(std::fs::read(legacy).unwrap(), bytes);
     assert_eq!(std::fs::read(pending).unwrap(), b"retained pending body");
     assert!(!token_path(&archive).exists());
+}
+
+#[test]
+fn invalid_present_credentials_are_reported_instead_of_treated_as_unauthorized() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(token_path(dir.path()), b"not a credential record").unwrap();
+    assert!(!needs_authorization(dir.path()));
+    let paths = crate::origin::CollectorPaths {
+        home: dir.path(),
+        archive: dir.path(),
+        spool: &dir.path().join("spool"),
+    };
+    let errors = (COLLECTOR.sync)(&paths, &std::sync::atomic::AtomicBool::new(false));
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0].contains("Drive token"), "{errors:?}");
 }

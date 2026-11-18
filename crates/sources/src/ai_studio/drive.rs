@@ -19,6 +19,12 @@ use std::path::{Path, PathBuf};
 pub fn token_path(archive: &Path) -> PathBuf {
     archive.join("drive-token.json")
 }
+/// No archive credential has been published. Present but unreadable or invalid
+/// credentials still reach the collector and report their actual error.
+pub fn needs_authorization(archive: &Path) -> bool {
+    std::fs::symlink_metadata(token_path(archive))
+        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+}
 pub const SCOPE: &str = "https://www.googleapis.com/auth/drive.readonly";
 const FOLDER: &str = "Google AI Studio";
 const FOLDER_MIME: &str = "application/vnd.google-apps.folder";
@@ -591,6 +597,9 @@ pub const COLLECTOR: crate::origin::Collector = crate::origin::Collector {
     }),
     setting: None,
     sync: |paths, _stop| {
+        if needs_authorization(paths.archive) {
+            return Vec::new();
+        }
         Drive {
             endpoints: Endpoints::default(),
             token_path: token_path(paths.archive),

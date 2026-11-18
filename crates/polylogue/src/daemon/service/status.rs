@@ -80,11 +80,21 @@ pub(super) fn answer(
         primary: primary(d, reader),
     };
     let super::ModeState::Blocked { path, error, .. } = &d.mode else {
-        return crate::protocol::read(status, &freshness);
+        return capture_note(d, crate::protocol::read(status, &freshness));
     };
     let mut missing: Vec<String> = freshness.notes().into_iter().map(str::to_owned).collect();
     missing.push(format!("{}: {error}", path.display()));
-    command_surface::Answer::degraded(status, missing)
+    capture_note(d, command_surface::Answer::degraded(status, missing))
+}
+
+fn capture_note(
+    d: &Daemon,
+    mut answer: command_surface::Answer<crate::protocol::status::Answer>,
+) -> command_surface::Answer<crate::protocol::status::Answer> {
+    if polylogue_sources::ai_studio::drive::needs_authorization(&d.archive.root) {
+        answer.envelope.notes.push("AI Studio through Drive is not authorized; run `polylogue install drive` to collect it".into());
+    }
+    answer
 }
 
 /// Status while `index.db` is being built and no index can be read: the
@@ -144,7 +154,7 @@ pub(super) fn building(
         #[cfg(feature = "sinex")]
         primary: None,
     };
-    crate::protocol::read(status, &freshness)
+    capture_note(d, crate::protocol::read(status, &freshness))
 }
 
 #[cfg(feature = "sinex")]

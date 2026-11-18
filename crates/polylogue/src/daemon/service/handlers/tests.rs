@@ -69,3 +69,28 @@ fn historical_drive_setting_reads_with_hint_and_public_writes_name_install_remov
         assert!(text.contains("polylogue install drive --remove"), "{text}");
     }
 }
+
+#[test]
+fn absent_drive_authorization_is_a_status_note_without_a_pass_fault() {
+    let daemon = crate::test_daemon::start("Unsigned Drive status specimen");
+    let answer = crate::test_daemon::call(&daemon.daemon, "status", json!({}));
+    assert!(answer.value().is_some(), "{answer:?}");
+    assert!(
+        answer
+            .envelope
+            .notes
+            .iter()
+            .any(|note| note.contains("polylogue install drive")),
+        "{answer:?}"
+    );
+    assert!(
+        daemon
+            .daemon
+            .status
+            .lock()
+            .unwrap()
+            .last_pass
+            .errors
+            .is_empty()
+    );
+}
