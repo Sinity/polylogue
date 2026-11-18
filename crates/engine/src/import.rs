@@ -78,22 +78,58 @@ impl Engine {
                     path: path.clone(),
                     ..Default::default()
                 };
-                let found = python_archive::visit(path, &archive, |member| {
-                    if member.origin.is_some() {
-                        ids.push(member.bytes.hash().to_string());
+                let mut pending = Vec::new();
+                let mut pending_bytes = 0_u64;
+                let flush = |engine: &mut Self,
+                             pending: &mut Vec<package::Member>,
+                             report: &mut ImportReport,
+                             package: &mut ImportPackage|
+                 -> std::io::Result<()> {
+                    if pending.is_empty() {
+                        return Ok(());
                     }
                     let errors_before = report.pass.errors.len();
-                    self.import_members(path, vec![member], options, &mut report)
+                    engine
+                        .import_members(path, std::mem::take(pending), options, report)
                         .map_err(std::io::Error::other)?;
                     if report.pass.errors.len() > errors_before {
                         return Err(std::io::Error::other(
                             report.pass.errors[errors_before..].join("; "),
                         ));
                     }
-                    let member_package = report.packages.pop().expect("imported member package");
-                    package.assets += member_package.assets;
+                    package.assets += report
+                        .packages
+                        .pop()
+                        .expect("imported member package")
+                        .assets;
                     Ok(())
-                })?;
+                };
+                const PYTHON_MEMBERS: usize = 64;
+                const PYTHON_BYTES: u64 = 64 << 20;
+                let found = python_archive::visit(path, &archive, |member| {
+                    let length = member.bytes.len();
+                    if pending.len() == PYTHON_MEMBERS
+                        || pending_bytes.saturating_add(length) > PYTHON_BYTES
+                    {
+                        flush(self, &mut pending, &mut report, &mut package)?;
+                        pending_bytes = 0;
+                    }
+                    if member.origin.is_some() {
+                        ids.push(member.bytes.hash().to_string());
+                    }
+                    pending.push(member);
+                    pending_bytes += length;
+                    // Submit an oversize member alone; primary admissions retain
+                    // their existing one-member acknowledgement boundary.
+                    if pending_bytes >= PYTHON_BYTES || archive.is_primary() {
+                        flush(self, &mut pending, &mut report, &mut package)?;
+                        pending_bytes = 0;
+                    }
+                    Ok(())
+                });
+                // A later unreadable source must not discard the verified prefix.
+                flush(self, &mut pending, &mut report, &mut package)?;
+                let found = found?;
                 if !found {
                     recognition::refuse(
                         &mut report,
@@ -147,6 +183,7 @@ impl Engine {
         let mut authored_records = Vec::new();
         let mut items = Vec::new();
         let mut hashes = std::collections::BTreeMap::new();
+        let python_archive = options.format.as_deref() == Some(python_polylogue::ARCHIVE);
         let import_id = import_identity(
             &self.config.machine,
             path,
@@ -186,6 +223,16 @@ impl Engine {
             if options.explain {
                 continue;
             }
+            let import_id = if python_archive {
+                import_identity(
+                    &self.config.machine,
+                    path,
+                    options.authorship.as_ref(),
+                    std::iter::once((member.path.as_path(), member.bytes.hash())),
+                )
+            } else {
+                import_id.clone()
+            };
             let authored_bytes = (origin.name == "polylogue-bundle").then(|| member.bytes.clone());
             let mut captured = Captured {
                 prepared: member.bytes,
@@ -198,7 +245,7 @@ impl Engine {
             hashes.insert(index, captured.prepared.hash().to_string());
             captured.member = Some(polylogue_store::ImportMember {
                 version: 1,
-                import_id: import_id.clone(),
+                import_id,
                 authorship: Some(options.authorship.clone().unwrap_or_else(|| {
                     polylogue_model::authorship::Authorship {
                         author: polylogue_model::Author::Script("polylogue-import".into()),
@@ -262,9 +309,11 @@ impl Engine {
                     self.restore_bundle_authored(&at, &mut bytes.reader()?, report)?;
                 }
             }
-            let counts = self.reads.reader()?.import_counts(&ids)?;
-            package.sessions = counts.sessions;
-            package.documents = counts.documents;
+            if !python_archive {
+                let counts = self.reads.reader()?.import_counts(&ids)?;
+                package.sessions = counts.sessions;
+                package.documents = counts.documents;
+            }
         }
         report.packages.push(package);
         Ok(())

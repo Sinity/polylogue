@@ -183,7 +183,29 @@ fn older_archive_import_parses_original_sessions() {
             .unwrap();
         assert!(report.refused.is_empty(), "{report:?}");
         assert!(report.pass.errors.is_empty(), "{report:?}");
+        assert_eq!(report.packages[0].sessions, 1);
         assert_eq!(w.texts("python"), ["one", "two"]);
+
+        let expected: BTreeSet<_> = stage(&old, &engine.archive)
+            .unwrap()
+            .unwrap()
+            .iter()
+            .map(|member| {
+                super::super::import_identity(
+                    &engine.config.machine,
+                    &old,
+                    None,
+                    std::iter::once((member.path.as_path(), member.bytes.hash())),
+                )
+            })
+            .collect();
+        let stored: BTreeSet<_> = w
+            .read(|reader| reader.query("SELECT DISTINCT import_id FROM import_member", &[]))
+            .iter()
+            .map(|row| row["import_id"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(stored, expected);
+
         let id = polylogue_model::BlobHash::of(APPEND).to_string();
         let reader = engine.reads.reader().unwrap();
         let progress = reader.input_progress(&id).unwrap().unwrap();
