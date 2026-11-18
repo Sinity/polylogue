@@ -17,7 +17,11 @@ pub(crate) async fn wait_for_socket(
     path: &Path,
     until: Option<std::time::Instant>,
 ) -> io::Result<()> {
-    let watch = tokio::io::unix::AsyncFd::new(crate::socket::Watch::new(path)?)?;
+    let watch = crate::socket::Watch::new(path)?;
+    // SAFETY: the watch privately owns its inotify descriptor, which stays
+    // open and unchanged until AsyncFd is dropped.
+    #[allow(unsafe_code)]
+    let watch = unsafe { tokio::io::unix::AsyncFd::register(watch) }.map_err(io::Error::from)?;
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
