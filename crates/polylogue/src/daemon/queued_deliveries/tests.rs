@@ -132,6 +132,7 @@ fn captured_advice_remains_pending_until_current_history_confirms_application() 
             },
             save: None,
             written: Vec::new(),
+            already: Vec::new(),
         }))
         .unwrap();
     let first = queued.pending_advice("codex:recipient").unwrap();

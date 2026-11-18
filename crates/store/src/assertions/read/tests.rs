@@ -570,3 +570,100 @@ fn expiry_check_does_not_load_the_assertion_body() {
             .unwrap()
     );
 }
+
+#[test]
+fn tagged_reads_current_name_and_value_with_confidence_outside_identity() {
+    let (_dir, _archive, _lock, writer, reads) = setup();
+    let first = Reference::parse("session:codex:first").unwrap();
+    let second = Reference::parse("session:codex:second").unwrap();
+    let mut tag = statement(AssertionKind::Tag, "session:codex:first", "unused");
+    tag.key = Some("status".into());
+    tag.value = Some(serde_json::json!({"value":"ready", "confidence":0.9}));
+    let saved = writer
+        .user(crate::fixture::authored::operator_request(
+            "tag-valued".into(),
+            UserWrite::Assert {
+                assertions: vec![tag],
+            },
+        ))
+        .unwrap();
+    let mut bare = statement(AssertionKind::Tag, "session:codex:second", "unused");
+    bare.key = Some("status".into());
+    bare.value = None;
+    writer
+        .user(crate::fixture::authored::operator_request(
+            "tag-bare".into(),
+            UserWrite::Assert {
+                assertions: vec![bare],
+            },
+        ))
+        .unwrap();
+    let targets = vec![first.clone(), second.clone()];
+    {
+        let reader = reads.reader().unwrap();
+        assert_eq!(
+            reader
+                .tagged(
+                    &targets,
+                    "status",
+                    Some(&serde_json::json!("ready")),
+                    &polylogue_model::Author::Agent(None)
+                )
+                .unwrap(),
+            [first].into_iter().collect()
+        );
+        assert_eq!(
+            reader
+                .tagged(&targets, "status", None, &polylogue_model::Author::Operator)
+                .unwrap(),
+            [second].into_iter().collect()
+        );
+        assert!(
+            reader
+                .tagged(
+                    &targets,
+                    "status",
+                    Some(&serde_json::json!("other")),
+                    &polylogue_model::Author::Operator
+                )
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            reader
+                .tagged(
+                    &targets,
+                    "another",
+                    Some(&serde_json::json!("ready")),
+                    &polylogue_model::Author::Operator
+                )
+                .unwrap()
+                .is_empty()
+        );
+    }
+    writer
+        .user(crate::fixture::authored::operator_request(
+            "withdraw-valued-tag".into(),
+            UserWrite::WithdrawAssertions {
+                targets: vec![Reference::Assertion(RevisionReference::exact(
+                    saved.id.clone(),
+                    saved.id,
+                ))],
+                reason: None,
+            },
+        ))
+        .unwrap();
+    assert!(
+        reads
+            .reader()
+            .unwrap()
+            .tagged(
+                &targets,
+                "status",
+                Some(&serde_json::json!("ready")),
+                &polylogue_model::Author::Operator
+            )
+            .unwrap()
+            .is_empty()
+    );
+}

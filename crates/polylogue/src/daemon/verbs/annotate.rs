@@ -144,10 +144,10 @@ impl Verb for Tag {
 /// A tag's key and value split at the first `:`.
 fn tag(step: &TagStep) -> Result<NewAssertion, Failure> {
     let (key, value) = match step.name.split_once(':') {
-        Some((key, value)) => (key, Some(Value::String(value.to_owned()))),
+        Some((key, value)) => (key, Some(serde_json::json!({"value": value}))),
         None => (step.name.as_str(), None),
     };
-    if key.is_empty() {
+    if key.trim().is_empty() {
         return Err(Failure::bad_request(
             "tag needs a name: tag NAME or NAME:VALUE",
         ));
@@ -173,22 +173,66 @@ fn each(
     let resolved = selection.references()?.to_vec();
     let targets = resolved.len();
     let reader = call.call.reader()?;
+    let all_tagged = if assertion.kind == AssertionKind::Tag {
+        let value = assertion
+            .value
+            .as_ref()
+            .and_then(|value| value.get("value"));
+        reader
+            .tagged(
+                &resolved,
+                assertion.key.as_deref().expect("tag key checked"),
+                value,
+                &call.call.invocation.authorship.author,
+            )?
+            .len()
+            == targets
+    } else {
+        false
+    };
     let scope = reader.scope_token();
     drop(reader);
+    let write = UserWrite::AssertQuery {
+        query,
+        assertion,
+        resolved,
+    };
+    // The original accepted or pending write owns a retry, even when all
+    // of its targets are tagged now.
+    if all_tagged && crate::daemon::service::accepted_write(&write, &call.call)?.is_none() {
+        let UserWrite::AssertQuery { resolved, .. } = write else {
+            return Err(Failure::internal(
+                "an assertion step constructed another write",
+            ));
+        };
+        return Ok(StepDone {
+            reply: StepAnswer::WroteEach(polylogue_model::user::AssertQueryOutcome::all_tagged(
+                resolved,
+            )),
+            undo: Vec::new(),
+            envelope: Default::default(),
+            outcome: if targets == 0 {
+                command_surface::Outcome::Empty(())
+            } else {
+                command_surface::Outcome::Ok(())
+            },
+        });
+    }
     let mut committed = Vec::new();
     let answer = crate::daemon::service::submit_receipt(
         call.call.daemon,
         call.call.invocation,
         call.call.request_id.into(),
-        polylogue_model::user::UserWrite::AssertQuery {
-            query,
-            assertion,
-            resolved,
-        },
+        write,
         Some(scope),
         |receipt| {
             committed = receipt.written;
-            polylogue_model::user::AssertQueryOutcome::new(receipt.outcome, targets)
+            polylogue_model::user::AssertQueryOutcome::new(
+                receipt.outcome,
+                targets,
+                committed.len(),
+                receipt.already,
+            )
         },
     );
     let answer = if targets == 0 {

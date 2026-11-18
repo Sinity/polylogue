@@ -213,7 +213,18 @@ Undo is the safety for named rows; a query matching several rows also needs `--a
 
 ### tag
 
-`tag NAME` or `tag NAME:VALUE` writes the `tag` kind on each selected row. A tag the row already has with that value is skipped and the reply says "already tagged". Completion after `tag` lists the tags in use with counts, so tags converge. A uniform label over a query is one line: `polylogue 'sessions where repo:sinex ends_open:true' tag needs-look --all`.
+`tag NAME` or `tag NAME:VALUE` writes the `tag` kind on each selected row.
+The first colon separates the name from a text value, including any later
+colons; without a colon the value is absent.
+
+A tag the row already has with that value is skipped and the reply says
+"already tagged". If every row is already tagged, no annotation write request
+is created. A retry returns its original written and skipped rows, even if
+the current tags have since changed.
+
+Completion after `tag` lists the tags in use with counts, so tags converge.
+A uniform label over a query is one line:
+`polylogue 'sessions where repo:sinex ends_open:true' tag needs-look --all`.
 
 ### edit
 

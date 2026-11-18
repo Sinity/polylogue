@@ -166,3 +166,28 @@ fn continue_plan_prints_the_harness_command_line() {
          with context:       polylogue codex:print-test brief\n"
     );
 }
+
+#[test]
+fn tag_reports_show_skips_and_escape_row_references() {
+    use crate::protocol::line::{LineAnswer, StepAnswer, StepOutcome, StepReport, StepsAnswer};
+    let report = polylogue_model::user::AssertQueryOutcome::all_tagged(vec![
+        polylogue_model::Reference::Url(HOSTILE.into()),
+    ]);
+    let answer = LineAnswer::Steps(StepsAnswer {
+        resolved: None,
+        steps: vec![StepReport {
+            verb: "tag".into(),
+            request_id: None,
+            outcome: StepOutcome::Done {
+                reply: StepAnswer::WroteEach(report),
+                undo: vec![],
+            },
+        }],
+    });
+    let text = line(&answer, TextStyle::Plain);
+    escaped(&text);
+    assert!(
+        text.starts_with("tagged 0 rows\nalready tagged: url:"),
+        "{text}"
+    );
+}

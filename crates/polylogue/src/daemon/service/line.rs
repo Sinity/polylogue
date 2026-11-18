@@ -376,7 +376,7 @@ fn prepare(rows: &Rows, given: Given, call: &Call<'_>) -> Result<Selection, Fail
         retained: None,
     };
     let original = if durable {
-        accepted_line(&intended, call)?
+        answers::accepted_write(&intended, call)?
     } else {
         None
     };
@@ -431,7 +431,7 @@ fn prepare(rows: &Rows, given: Given, call: &Call<'_>) -> Result<Selection, Fail
         // Read back the journal's body rather than keeping our speculative rows.
         if let Some(UserWrite::ResolveLine {
             resolved, retained, ..
-        }) = accepted_line(
+        }) = answers::accepted_write(
             &UserWrite::ResolveLine {
                 request: serde_json::to_value(repeated(rows, call)?).map_err(Failure::internal)?,
                 resolved: None,
@@ -450,21 +450,6 @@ fn prepare(rows: &Rows, given: Given, call: &Call<'_>) -> Result<Selection, Fail
         ));
     }
     Ok(selection)
-}
-
-fn accepted_line(intended: &UserWrite, call: &Call<'_>) -> Result<Option<UserWrite>, Failure> {
-    let request = call
-        .invocation
-        .request(call.request_id.into(), intended.clone());
-    #[cfg(feature = "sinex")]
-    if let super::state::ModeState::Primary { connection } = &call.daemon.mode
-        && let Some(original) =
-            polylogue_store::primary::authored::pending_request(connection.as_ref(), &request)?
-    {
-        return Ok(Some(original.write));
-    }
-    let reader = call.reader()?;
-    answers::repeated_request(&reader, &request.id, intended, call.invocation)
 }
 
 /// Resolves the rows when the line has two or more steps, a step that

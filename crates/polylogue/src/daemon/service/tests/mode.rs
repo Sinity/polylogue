@@ -434,3 +434,166 @@ fn offline_setting_and_chat_writes_keep_own_results() {
         "unconfirmed actions must not be presented as queued current rows"
     );
 }
+
+#[test]
+fn an_offline_tag_retry_keeps_its_pending_intent_when_another_tag_is_confirmed() {
+    use polylogue_model::{
+        Reference,
+        assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink},
+        user::UserWrite,
+    };
+    use polylogue_store::primary::{Confirmed, ConfirmedChange, Product, ReplayControl};
+    let home = ClaudeHome::new();
+    let runtime = launch(primary(&home)).unwrap();
+    let arguments = serde_json::json!({"references":["session:codex:tag-target"], "steps":[{"verb":"tag","name":"status:ready"}]});
+    let refused = primary_table_call(&runtime, "rows", arguments.clone(), "offline-tag");
+    assert!(
+        matches!(refused.outcome, command_surface::Outcome::Error(error)
+        if matches!(error.code.as_deref(), Some("primary_context_missing" | "primary_context_unavailable")))
+    );
+    assert!(pending_requests(&runtime).is_empty());
+
+    // The ordinary line must wait for Sinex context before resolving rows.
+    // Exercise the actual verb with an already-resolved selection to isolate
+    // pending-intent ownership from that independent context barrier.
+    let tag = |runtime: &Runtime| {
+        use crate::daemon::verbs::{Given, Selection, StepCall, Verb, annotate::Tag};
+        let caller = crate::commands::Caller {
+            surface: crate::commands::Surface::Cli,
+            cwd: None,
+        };
+        let invocation = runtime
+            .daemon
+            .invocation(&polylogue_model::authorship::Authorship {
+                author: polylogue_model::Author::Operator,
+                via: polylogue_model::authorship::Channel::Cli,
+            });
+        let acquired = std::sync::atomic::AtomicBool::new(false);
+        let call = crate::daemon::handler::Call {
+            daemon: &runtime.daemon,
+            row: crate::commands::command("rows").unwrap(),
+            invocation: &invocation,
+            caller: &caller,
+            request_id: "offline-tag",
+            cursor: None,
+            budget: Default::default(),
+            reader_acquired: &acquired,
+        };
+        let reference = Reference::parse("session:codex:tag-target").unwrap();
+        let selection = Selection {
+            given: Given::Reference(reference.clone()),
+            resolved: Some(vec![reference]),
+            question: None,
+            retained: None,
+        };
+        let done = Tag::run(
+            crate::protocol::steps::TagStep {
+                name: "status:ready".into(),
+            },
+            &selection,
+            &StepCall::new(&call, "offline-tag-1"),
+        )
+        .unwrap();
+        let crate::protocol::line::StepAnswer::WroteEach(report) = done.reply else {
+            panic!("expected a tag result")
+        };
+        report
+    };
+    let original = tag(&runtime);
+    assert!(original.pending);
+    assert!(!original.repeat);
+    assert_eq!(original.written, 1);
+    let pending_before = pending_requests(&runtime);
+    assert!(
+        pending_before
+            .iter()
+            .any(|record| record.request.id == "offline-tag-1")
+    );
+    let ModeState::Primary { connection } = &runtime.daemon.mode else {
+        panic!("primary required")
+    };
+    let connection = connection.clone();
+    drop(runtime);
+
+    // A separate real writer makes a different accepted request for the same
+    // value. Its confirmed effect must not erase the original offline intent.
+    let seed = polylogue_store::fixture::writer::WriterArchive::new();
+    seed.writer
+        .user(polylogue_store::fixture::authored::operator_request(
+            "separate-confirmed-tag".into(),
+            UserWrite::Assert {
+                assertions: vec![NewAssertion {
+                    kind: AssertionKind::Tag,
+                    key: Some("status".into()),
+                    value: Some(serde_json::json!({"value":"ready"})),
+                    valid_until: None,
+                    links: vec![NewAssertionLink {
+                        role: LinkRole::About,
+                        reference: Reference::parse("session:codex:tag-target").unwrap(),
+                    }],
+                }],
+            },
+        ))
+        .unwrap();
+    let pool = polylogue_store::ReadPool::open(&seed.archive).unwrap();
+    let mut records = Vec::new();
+    pool.reader()
+        .unwrap()
+        .visit_authored(&mut |record| {
+            records.push(record.clone());
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(records.len(), 1);
+    let prepared = records.remove(0);
+    {
+        let (archive, _lock) =
+            Archive::open_primary(&home.root, &home.dir.path().join("sinex-store")).unwrap();
+        let writer = polylogue_store::writer::Writer::start_on_sinex(&archive, connection).unwrap();
+        writer
+            .apply_confirmed(vec![
+                Confirmed {
+                    sinex_context: None,
+                    position: 1,
+                    output_index: 0,
+                    event: "synthetic-confirmed-tag".into(),
+                    change: ConfirmedChange::Live(Box::new(Product::Request(prepared))),
+                },
+                Confirmed {
+                    sinex_context: None,
+                    position: 1,
+                    output_index: 0,
+                    event: String::new(),
+                    change: ConfirmedChange::Control(Box::new(ReplayControl::Completion {
+                        position: 1,
+                        delivery: None,
+                    })),
+                },
+            ])
+            .unwrap();
+    }
+    let runtime = launch(primary(&home)).unwrap();
+    {
+        let reader = runtime.daemon.reads.reader().unwrap();
+        assert!(reader.user_request("offline-tag-1").unwrap().is_none());
+        assert_eq!(
+            reader
+                .tagged(
+                    &[Reference::parse("session:codex:tag-target").unwrap()],
+                    "status",
+                    Some(&serde_json::json!("ready")),
+                    &polylogue_model::Author::Operator
+                )
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+    assert_eq!(pending_requests(&runtime), pending_before);
+    let repeated = tag(&runtime);
+    assert!(repeated.pending && repeated.repeat);
+    assert_eq!(repeated.id, original.id);
+    assert_eq!(repeated.written, original.written);
+    assert!(repeated.already.is_empty());
+    assert_eq!(pending_requests(&runtime), pending_before);
+}

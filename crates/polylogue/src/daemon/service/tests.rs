@@ -654,3 +654,5 @@ mod read_saved_queries;
 mod read_failures;
 
 mod read_trace;
+
+mod tags;

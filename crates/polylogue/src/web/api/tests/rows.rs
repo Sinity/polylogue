@@ -212,7 +212,7 @@ fn http_html_renders_listing_brief_and_partial_steps() {
             (
                 json!({"selection":"session:claude-code:s1","steps":[{"verb":"note","text":"Synthetic completed write"},{"verb":"read","budget":0}]}),
                 StatusCode::BAD_REQUEST,
-                vec!["wrote_each", "undo:", "read failed:"],
+                vec!["wrote 1 annotation", "undo:", "read failed:"],
             ),
         ] {
             let response = super::super::super::router(web(&daemon))
