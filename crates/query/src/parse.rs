@@ -16,6 +16,14 @@ pub fn with_catalog(
     let mut query = query_language::parse::parse(text, catalog).map_err(|mut error| {
         if error.kind == query_language::ErrorKind::UnknownField
             && text
+                .get(error.position..error.position + error.length)
+                .is_some_and(|kind| polylogue_model::SINEX_LOCAL_KINDS.contains(&kind))
+            && let Some(correction) = sinex_local_error(text, catalog, error.position)
+        {
+            return correction;
+        }
+        if error.kind == query_language::ErrorKind::UnknownField
+            && text
                 .get(error.position..error.position + 5)
                 .is_some_and(|field| field.eq_ignore_ascii_case("near:"))
         {
@@ -33,6 +41,35 @@ pub fn with_catalog(
     })?;
     bind_lone_reference(&mut query);
     Ok(query)
+}
+
+/// A diagnostic-only catalog leaves accepted queries and captured bindings unchanged.
+fn sinex_local_error(
+    text: &str,
+    catalog: &query_language::catalog::Catalog,
+    position: usize,
+) -> Option<QueryError> {
+    let mut diagnostic = catalog.clone();
+    diagnostic.references.extend(
+        polylogue_model::SINEX_LOCAL_KINDS
+            .into_iter()
+            .map(|kind| query_language::catalog::ReferenceForm::prefix(format!("{kind}:"))),
+    );
+    let mut query = query_language::parse::parse(text, &diagnostic).ok()?;
+    crate::ast::walk(&mut query, &mut |_| Ok(()), &mut |condition| {
+        if condition.span.start == position
+            && let ConditionKind::Reference { reference } = &condition.kind
+            && let Err(error @ polylogue_model::ReferenceError::SinexLocal { .. }) =
+                polylogue_model::Reference::parse(reference)
+        {
+            return Err(QueryError::Invalid {
+                message: error.to_string(),
+                position,
+            });
+        }
+        Ok(())
+    })
+    .err()
 }
 
 /// A query that is only an exact assertion revision (`assertion:R@X`) reads

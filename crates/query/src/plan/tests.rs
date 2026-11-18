@@ -379,3 +379,42 @@ fn the_catalog_fingerprint_is_computed_once_per_process() {
     let bytes = serde_json::to_vec(&*crate::catalog::catalog(&[])).unwrap();
     assert_eq!(first, blake3::hash(&bytes).to_hex().as_str());
 }
+
+#[test]
+fn sinex_diagnostics_preserve_an_original_catalog_and_authored_binding() {
+    use polylogue_model::{query_objects::ExecutionBinding, user::UserRequest};
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("tests/pre-sinex-binding.json")).unwrap();
+    let original: serde_json::Value =
+        serde_json::from_str(fixture["original_request"].as_str().unwrap()).unwrap();
+    let request: UserRequest = serde_json::from_value(original.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&request).unwrap(), original);
+    let intent = canonical_json::canonical_json(&(
+        &request.machine,
+        &request.authorship,
+        request.write.intent(),
+    ))
+    .unwrap();
+    assert_eq!(
+        blake3::hash(&intent).to_hex().as_str(),
+        fixture["request_hash"].as_str().unwrap(),
+    );
+    let execution: ExecutionBinding =
+        serde_json::from_value(original["write"]["retained"]["binding"].clone()).unwrap();
+    assert_eq!(
+        catalog_fingerprint(),
+        execution.replay.context.versions["catalog"],
+    );
+    let object: polylogue_model::query_objects::QueryObject =
+        serde_json::from_str(fixture["original_object"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        object.id.to_string(),
+        fixture["question_hash"].as_str().unwrap()
+    );
+    let restored = replay_binding(&execution.replay).unwrap();
+    assert_eq!(restored.query_object().unwrap(), object);
+    assert_eq!(
+        serde_json::to_value(&execution).unwrap(),
+        original["write"]["retained"]["binding"],
+    );
+}

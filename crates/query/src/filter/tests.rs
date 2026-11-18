@@ -232,6 +232,14 @@ fn sinex_local_reference_correction_reaches_selection_errors() {
             },
         );
     }
+    let combined = "sessions where repo:morrow ev:opaque";
+    assert_eq!(
+        filter(combined).unwrap_err(),
+        QueryError::Invalid {
+            message: "ev:opaque is a Sinex reference; write sinex:ev/opaque".into(),
+            position: combined.find("ev:").unwrap(),
+        },
+    );
     assert!(matches!(
         filter(&format!("{} where key:opaque", Unit::Assertions.name())).unwrap(),
         Filter::Field(FieldTest {

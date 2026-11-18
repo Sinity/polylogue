@@ -236,14 +236,6 @@ impl Binder<'_> {
     }
 
     fn reference(&self, reference: &str, unit: Unit, span: Span) -> Result<Filter, QueryError> {
-        if let Err(error @ polylogue_model::ReferenceError::SinexLocal { .. }) =
-            polylogue_model::Reference::parse(reference)
-        {
-            return Err(QueryError::Invalid {
-                message: error.to_string(),
-                position: span.start,
-            });
-        }
         let kind = reference.split_once(':').map(|(kind, _)| kind);
         if matches!(
             kind,
