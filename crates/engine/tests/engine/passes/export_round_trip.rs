@@ -290,7 +290,7 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
     write_note(
         AssertionKind::Judgment,
         Author::Operator,
-        &format!("assertion:{finding}@{finding}"),
+        &format!("annotation:{finding}@{finding}"),
         None,
     );
     let withdrawn = write_note(AssertionKind::Lesson, agent, "repo:synthetic", None);

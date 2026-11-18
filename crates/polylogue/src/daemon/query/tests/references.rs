@@ -126,11 +126,11 @@ fn an_assertion_reference_names_the_current_revision_or_one_revision() {
     let first = q(&w, "annotations where kind:decision");
     let id = first["rows"][0]["id"].as_str().unwrap().to_owned();
     let root = first["rows"][0]["root"].as_str().unwrap().to_owned();
-    let by_root = q(&w, &format!("annotations where assertion:{root}"));
+    let by_root = q(&w, &format!("annotations where annotation:{root}"));
     assert_eq!(by_root["rows"][0]["id"], id, "{by_root}");
-    let by_revision = q(&w, &format!("annotations where assertion:{root}@{id}"));
+    let by_revision = q(&w, &format!("annotations where annotation:{root}@{id}"));
     assert_eq!(by_revision["count"], 1);
-    let elsewhere = run_q(&w, ask(&format!("assertion:{root}"))).unwrap_err();
+    let elsewhere = run_q(&w, ask(&format!("annotation:{root}"))).unwrap_err();
     assert_eq!(elsewhere.code(), "not_built");
     assert_eq!(
         elsewhere.message,

@@ -445,17 +445,17 @@ fn assertion_reference_keeps_its_family_and_revision() {
         rows,
         vec![
             (
-                format!("assertion:{first}@{first}"),
+                format!("annotation:{first}@{first}"),
                 serde_json::json!({"value":"first"})
             ),
             (
-                format!("assertion:{first}@{second}"),
+                format!("annotation:{first}@{second}"),
                 serde_json::json!({"value":"second"})
             )
         ]
     );
     let exact = reader
-        .prepare_selection(&format!("assertion:{first}@{first}"), &options)
+        .prepare_selection(&format!("annotation:{first}@{first}"), &options)
         .unwrap();
     let mut exact_values = vec![];
     reader
@@ -467,7 +467,7 @@ fn assertion_reference_keeps_its_family_and_revision() {
     assert_eq!(exact_values, vec![serde_json::json!({"value":"first"})]);
     assert_eq!(
         reader
-            .prepare_selection(&format!("assertion:{first}"), &options)
+            .prepare_selection(&format!("annotation:{first}"), &options)
             .err()
             .unwrap()
             .code(),
@@ -475,7 +475,7 @@ fn assertion_reference_keeps_its_family_and_revision() {
     );
     let family = reader
         .prepare_selection(
-            &format!("annotations where assertion:{first} | sort by id"),
+            &format!("annotations where annotation:{first} | sort by id"),
             &options,
         )
         .unwrap();
@@ -664,7 +664,7 @@ fn direct_authored_reference_uses_family_revision_membership() {
         .unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let reference = format!("assertion:{first}@{first}");
+    let reference = format!("annotation:{first}@{first}");
     let prepared = reader.prepare_selection(&reference, &options()).unwrap();
     let mut selected = Vec::new();
     reader
@@ -674,7 +674,7 @@ fn direct_authored_reference_uses_family_revision_membership() {
         })
         .unwrap();
     assert_eq!(selected, [reference]);
-    let missing = format!("assertion:{first}@{second}");
+    let missing = format!("annotation:{first}@{second}");
     assert!(
         matches!(reader.prepare_selection(&missing, &options()), Err(SelectionError::Invalid { kind, .. }) if kind == polylogue_model::Code::NotFound)
     );

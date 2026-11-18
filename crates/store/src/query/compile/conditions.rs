@@ -595,11 +595,12 @@ impl<'a> Compiler<'a> {
         scope: &RowContext,
         span: Span,
     ) -> Result<String, QueryError> {
-        let reference =
-            polylogue_model::Reference::parse(text).map_err(|error| QueryError::Invalid {
+        let reference = polylogue_model::Reference::parse_stored(text).map_err(|error| {
+            QueryError::Invalid {
                 message: error.to_string(),
                 position: span.start,
-            })?;
+            }
+        })?;
         let key = scope.a.expand(units::spec(scope.unit).key);
         let members = crate::query::references::membership(scope.unit, &reference, &mut |value| {
             self.text_param(&value)

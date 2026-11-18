@@ -304,7 +304,7 @@ impl Record {
                 Ok(())
             }
             Self::Assertion(r) => {
-                if r.reference != format!("assertion:{}@{}", r.assertion.root, r.assertion.id) {
+                if r.reference != r.assertion.reference().stored_form() {
                     return Err(BundleError::ReferenceMismatch);
                 }
                 r.assertion

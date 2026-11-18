@@ -800,7 +800,8 @@ impl Fixture {
         self.commit_seq += 1;
         let id = format!("n{}", self.commit_seq);
         let kind = AssertionKind::from_name(kind).or_invalid("unknown fixture assertion kind")?;
-        let target = Reference::parse(target).or_invalid("invalid fixture assertion target")?;
+        let target =
+            Reference::parse_stored(target).or_invalid("invalid fixture assertion target")?;
         let fact = AssertionFact {
             id: id.clone(),
             root: id.clone(),

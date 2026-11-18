@@ -3,18 +3,25 @@
 //! before the question has an identity, is saved, or runs.
 use crate::{QueryError, ast::*, fields::Kind};
 use query_language::{
-    bind::BoundQuery,
     catalog::FieldKind,
     scope::{NodePath, Origin, Typing},
 };
 
-pub(super) fn check(bound: &BoundQuery) -> Result<(), QueryError> {
-    query(bound.query(), bound.typing(), NodePath::default())
+pub(super) fn normalize(query: &mut Query, typing: &Typing) -> Result<(), QueryError> {
+    visit(query, typing, NodePath::default(), true)
+}
+pub(super) fn check(query: &mut Query, typing: &Typing) -> Result<(), QueryError> {
+    visit(query, typing, NodePath::default(), false)
 }
 
-fn query(node: &Query, typing: &Typing, path: NodePath) -> Result<(), QueryError> {
+fn visit(
+    node: &mut Query,
+    typing: &Typing,
+    path: NodePath,
+    normalize: bool,
+) -> Result<(), QueryError> {
     query_language::depth::deeper(|| {
-        match &node.source {
+        match &mut node.source {
             Source::Unit {
                 condition: Some(c), ..
             }
@@ -23,29 +30,41 @@ fn query(node: &Query, typing: &Typing, path: NodePath) -> Result<(), QueryError
             }
             | Source::Result {
                 condition: Some(c), ..
-            } => condition(c, typing, path.field("source").field("condition"))?,
+            } => condition(
+                c,
+                typing,
+                path.field("source").field("condition"),
+                normalize,
+            )?,
             _ => {}
         }
-        for (index, attachment) in node.attach.iter().enumerate() {
+        for (index, attachment) in node.attach.iter_mut().enumerate() {
             let at = path.field("attach").index(index);
-            for (index, window) in attachment.windows.iter().enumerate() {
+            for (index, window) in attachment.windows.iter_mut().enumerate() {
                 if let Window::Where(c) = window {
-                    condition(c, typing, at.field("windows").index(index).field("where"))?;
+                    condition(
+                        c,
+                        typing,
+                        at.field("windows").index(index).field("where"),
+                        normalize,
+                    )?;
                 }
             }
         }
-        for (index, stage) in node.transforms.iter().enumerate() {
+        for (index, stage) in node.transforms.iter_mut().enumerate() {
             let at = path.field("transforms").index(index).field("kind");
-            match &stage.kind {
+            match &mut stage.kind {
                 TransformKind::Where { condition: c }
                 | TransformKind::Scope {
                     condition: Some(c), ..
-                } => condition(c, typing, at.field("condition"))?,
+                } => condition(c, typing, at.field("condition"), normalize)?,
                 TransformKind::Combine { query: q, .. }
                 | TransformKind::Join { query: q, .. }
-                | TransformKind::Diff { query: q } => query(q, typing, at.field("query"))?,
+                | TransformKind::Diff { query: q } => {
+                    visit(q, typing, at.field("query"), normalize)?
+                }
                 TransformKind::Extension { arguments, .. } => {
-                    extension(arguments, typing, at.field("arguments"))?
+                    extension(arguments, typing, at.field("arguments"), normalize)?
                 }
                 _ => {}
             }
@@ -54,55 +73,62 @@ fn query(node: &Query, typing: &Typing, path: NodePath) -> Result<(), QueryError
     })
 }
 
-fn condition(c: &Condition, typing: &Typing, path: NodePath) -> Result<(), QueryError> {
+fn condition(
+    c: &mut Condition,
+    typing: &Typing,
+    path: NodePath,
+    normalize: bool,
+) -> Result<(), QueryError> {
     query_language::depth::deeper(|| {
         let at = path.field("kind");
         let position = c.span.start;
-        match &c.kind {
+        match &mut c.kind {
             ConditionKind::And { conditions } | ConditionKind::Or { conditions } => {
-                for (index, c) in conditions.iter().enumerate() {
-                    condition(c, typing, at.field("conditions").index(index))?;
+                for (index, c) in conditions.iter_mut().enumerate() {
+                    condition(c, typing, at.field("conditions").index(index), normalize)?;
                 }
             }
-            ConditionKind::Not { condition: c } => condition(c, typing, at.field("condition"))?,
+            ConditionKind::Not { condition: c } => {
+                condition(c, typing, at.field("condition"), normalize)?
+            }
             ConditionKind::Match { value, .. } => {
-                values(typing, &at.field("field"), value, position)?;
+                values(typing, &at.field("field"), value, position, normalize)?;
             }
             ConditionKind::Compare {
                 left: Expression::Field { .. },
                 right: Expression::Value { value },
                 ..
-            } => values(typing, &at.field("left"), value, position)?,
+            } => values(typing, &at.field("left"), value, position, normalize)?,
             ConditionKind::Compare {
                 left: Expression::Value { value },
                 right: Expression::Field { .. },
                 ..
-            } => values(typing, &at.field("right"), value, position)?,
+            } => values(typing, &at.field("right"), value, position, normalize)?,
             ConditionKind::Between {
                 left: Expression::Field { .. },
                 from,
                 to,
                 ..
             } => {
-                values(typing, &at.field("left"), from, position)?;
-                values(typing, &at.field("left"), to, position)?;
+                values(typing, &at.field("left"), from, position, normalize)?;
+                values(typing, &at.field("left"), to, position, normalize)?;
             }
             ConditionKind::In { query: q, .. } | ConditionKind::Order { query: q, .. } => {
-                query(q, typing, at.field("query"))?
+                visit(q, typing, at.field("query"), normalize)?
             }
             ConditionKind::Exists {
                 condition: Some(c), ..
             }
             | ConditionKind::Count {
                 condition: Some(c), ..
-            } => condition(c, typing, at.field("condition"))?,
+            } => condition(c, typing, at.field("condition"), normalize)?,
             ConditionKind::Sequence { steps, .. } => {
-                for (index, c) in steps.iter().enumerate() {
-                    condition(c, typing, at.field("steps").index(index))?;
+                for (index, c) in steps.iter_mut().enumerate() {
+                    condition(c, typing, at.field("steps").index(index), normalize)?;
                 }
             }
             ConditionKind::Extension { arguments, .. } => {
-                extension(arguments, typing, at.field("arguments"))?
+                extension(arguments, typing, at.field("arguments"), normalize)?
             }
             _ => {}
         }
@@ -111,21 +137,24 @@ fn condition(c: &Condition, typing: &Typing, path: NodePath) -> Result<(), Query
 }
 
 fn extension(
-    arguments: &[ExtensionArgument],
+    arguments: &mut [ExtensionArgument],
     typing: &Typing,
     path: NodePath,
+    normalize: bool,
 ) -> Result<(), QueryError> {
     query_language::depth::deeper(|| {
-        for (index, argument) in arguments.iter().enumerate() {
+        for (index, argument) in arguments.iter_mut().enumerate() {
             let at = path.index(index);
             match argument {
-                ExtensionArgument::Condition(c) => condition(c, typing, at.field("condition"))?,
-                ExtensionArgument::Query(q) => query(q, typing, at.field("query"))?,
+                ExtensionArgument::Condition(c) => {
+                    condition(c, typing, at.field("condition"), normalize)?
+                }
+                ExtensionArgument::Query(q) => visit(q, typing, at.field("query"), normalize)?,
                 ExtensionArgument::Optional(arguments) => {
-                    extension(arguments, typing, at.field("optional"))?
+                    extension(arguments, typing, at.field("optional"), normalize)?
                 }
                 ExtensionArgument::List(arguments) => {
-                    extension(arguments, typing, at.field("list"))?
+                    extension(arguments, typing, at.field("list"), normalize)?
                 }
                 _ => {}
             }
@@ -134,18 +163,29 @@ fn extension(
     })
 }
 
-/// Checks a value compared with a catalog field of a numeric kind. Other
-/// kinds (times, words, references) and output columns keep their own rules.
+/// Reference values normalize before binding an identity; numeric values are
+/// checked against the declared field. Other kinds retain their own rules.
 fn values(
     typing: &Typing,
     operand: &NodePath,
-    value: &Value,
+    value: &mut Value,
     position: usize,
+    normalize: bool,
 ) -> Result<(), QueryError> {
     query_language::depth::deeper(|| {
         let Some(typed) = typing.operand(operand) else {
             return Ok(());
         };
+        if normalize {
+            if let Origin::Catalog { unit, field } = &typed.result.origin
+                && let Some(unit) = Unit::from_bound_name(unit)
+                && crate::fields::lookup(unit, field)
+                    .is_some_and(|field| field.declaration().reference_argument)
+            {
+                return reference_values(value, position);
+            }
+            return Ok(());
+        }
         if !matches!(typed.result.origin, Origin::Catalog { .. }) {
             return Ok(());
         }
@@ -169,11 +209,34 @@ fn values(
             }
             Value::Set { values: members } => {
                 for member in members {
-                    values(typing, operand, member, position)?;
+                    values(typing, operand, member, position, normalize)?;
                 }
                 Ok(())
             }
             _ => Ok(()),
         }
     })
+}
+
+/// Reference fields keep their storage identity while the query uses human names.
+fn reference_values(value: &mut Value, position: usize) -> Result<(), QueryError> {
+    match value {
+        Value::Scalar { text, .. } => match polylogue_model::Reference::parse(text) {
+            Ok(reference) => *text = reference.stored_form(),
+            Err(error @ polylogue_model::ReferenceError::StoredSpelling { .. }) => {
+                return Err(QueryError::Invalid {
+                    message: error.to_string(),
+                    position,
+                });
+            }
+            _ => {}
+        },
+        Value::Set { values } => {
+            for value in values {
+                reference_values(value, position)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }

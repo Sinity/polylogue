@@ -66,9 +66,10 @@ fn later_item(
     next: Option<&str>,
 ) -> Result<bool> {
     let Some(next) = next else { return Ok(false) };
-    let next = Reference::parse(next).map_err(|error| StoreError::invalid(error.to_string()))?;
+    let next =
+        Reference::parse_stored(next).map_err(|error| StoreError::invalid(error.to_string()))?;
     let target =
-        Reference::parse(target).map_err(|error| StoreError::invalid(error.to_string()))?;
+        Reference::parse_stored(target).map_err(|error| StoreError::invalid(error.to_string()))?;
     if let (Reference::Session(session), Some((next_message, next_block))) =
         (&target, message_item(&next))
     {
@@ -76,8 +77,8 @@ fn later_item(
             crate::read::compare_session_messages(conn, session, next_message, next_message)?;
             return Ok(true);
         };
-        let previous =
-            Reference::parse(previous).map_err(|error| StoreError::invalid(error.to_string()))?;
+        let previous = Reference::parse_stored(previous)
+            .map_err(|error| StoreError::invalid(error.to_string()))?;
         let Some((previous_message, previous_block)) = message_item(&previous) else {
             return Ok(false);
         };
@@ -88,8 +89,8 @@ fn later_item(
     let Some(previous) = previous else {
         return Ok(true);
     };
-    let previous =
-        Reference::parse(previous).map_err(|error| StoreError::invalid(error.to_string()))?;
+    let previous = Reference::parse_stored(previous)
+        .map_err(|error| StoreError::invalid(error.to_string()))?;
     if let (Some((previous, previous_block)), Some((next, next_block))) =
         (message_item(&previous), message_item(&next))
     {
@@ -173,15 +174,15 @@ pub(crate) fn advancing(
     let proposed = proposed
         .iter()
         .map(|mark| {
-            let target = Reference::parse(&mark.target)
+            let target = Reference::parse_stored(&mark.target)
                 .map_err(|error| StoreError::invalid(error.to_string()))?
-                .to_string();
+                .stored_form();
             let item = mark
                 .item
                 .as_deref()
                 .map(|item| {
-                    Reference::parse(item)
-                        .map(|item| item.to_string())
+                    Reference::parse_stored(item)
+                        .map(|item| item.stored_form())
                         .map_err(|error| StoreError::invalid(error.to_string()))
                 })
                 .transpose()?;
@@ -210,9 +211,11 @@ pub(crate) fn advancing(
         if ChangePosition::parse(&mark.at.to_string()).is_none() {
             return Err(StoreError::invalid("invalid seen change position"));
         }
-        Reference::parse(&mark.target).map_err(|error| StoreError::invalid(error.to_string()))?;
+        Reference::parse_stored(&mark.target)
+            .map_err(|error| StoreError::invalid(error.to_string()))?;
         if let Some(item) = &mark.item {
-            Reference::parse(item).map_err(|error| StoreError::invalid(error.to_string()))?;
+            Reference::parse_stored(item)
+                .map_err(|error| StoreError::invalid(error.to_string()))?;
         }
         if !current.contains_key(&mark.target) {
             later_item(index, &mark.target, None, mark.item.as_deref())?;

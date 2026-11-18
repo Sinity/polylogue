@@ -764,3 +764,11 @@ fn seen_values_require_a_reference_and_a_valid_change_position() {
     }
     assert!(super::decode(AssertionKind::Seen, Some("not a reference"), Some(&valid)).is_err());
 }
+
+#[test]
+fn comparison_verdicts_keep_their_stored_reference_spelling() {
+    let verdict = Verdict::Prefer(crate::Reference::parse("annotation:choice@revision").unwrap());
+    let stored = serde_json::json!("prefer:assertion:choice@revision");
+    assert_eq!(serde_json::to_value(&verdict).unwrap(), stored);
+    assert_eq!(serde_json::from_value::<Verdict>(stored).unwrap(), verdict);
+}

@@ -53,7 +53,7 @@ impl PresentationMap {
         if self.0.contains_key(&original) {
             return Err(ReadError::invalid("multiple renditions for one original"));
         }
-        if variant.mark.original != original.to_string() {
+        if variant.mark.original != original.stored_form() {
             return Err(ReadError::invalid(
                 "variant mark and original reference disagree",
             ));
@@ -80,7 +80,7 @@ impl PresentationMap {
                 ));
             }
             pending
-                .entry(body_key(&Source::record(original.to_string())))
+                .entry(body_key(&Source::record(original.stored_form())))
                 .or_default()
                 .push(Patch {
                     original: original.clone(),
@@ -90,7 +90,7 @@ impl PresentationMap {
                 });
         } else {
             for (n, range) in variant.alignment.iter().enumerate() {
-                Reference::parse(&range.source.reference)
+                Reference::parse_stored(&range.source.reference)
                     .map_err(|e| ReadError::invalid(e.to_string()))?;
                 if range.start > range.end {
                     return Err(ReadError::invalid("reversed variant body range"));
@@ -217,7 +217,7 @@ fn active(variant: &VariantText, options: &ReadOptions) -> bool {
     !variant.mark.stale || options.variants.contains(&variant.mark.key)
 }
 fn body_key(source: &Source) -> BodyKey {
-    let block = match Reference::parse(&source.reference) {
+    let block = match Reference::parse_stored(&source.reference) {
         Ok(Reference::Block { n, .. }) => Some(n),
         _ => source.block,
     };

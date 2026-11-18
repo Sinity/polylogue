@@ -56,7 +56,7 @@ pub(crate) fn heads(conn: &Connection, root: &str) -> Result<Vec<Variant>> {
         .collect()
 }
 fn reference_string(root: &str, id: &str) -> String {
-    format!("variant:{root}@{id}")
+    format!("alternate:{root}@{id}")
 }
 pub(crate) use rows::{get as get_record, parts_while};
 
@@ -66,8 +66,8 @@ pub(crate) fn write(
     new: &NewVariant,
     counter: i64,
 ) -> Result<UserOutcome> {
-    let source =
-        polylogue_model::Reference::parse(&new.source).map_err(crate::StoreError::invalid)?;
+    let source = polylogue_model::Reference::parse_stored(&new.source)
+        .map_err(crate::StoreError::invalid)?;
     if !matches!(
         source,
         polylogue_model::Reference::Session(_)
@@ -97,7 +97,7 @@ pub(crate) fn write(
         ));
     }
     for part in &new.parts {
-        polylogue_model::Reference::parse(&part.of).map_err(crate::StoreError::invalid)?;
+        polylogue_model::Reference::parse_stored(&part.of).map_err(crate::StoreError::invalid)?;
     }
     let root = if let Some(base) = &new.base {
         let previous = rows::get(conn, base)?
@@ -105,10 +105,10 @@ pub(crate) fn write(
         let current = heads(conn, &previous.root)?;
         if !current.iter().any(|v| v.id == *base) {
             return Err(StoreError::Stale {
-                reference: format!("variant:{}@{base}", previous.root),
+                reference: format!("alternate:{}@{base}", previous.root),
                 current: current
                     .iter()
-                    .map(|v| format!("variant:{}@{}", v.root, v.id))
+                    .map(|v| format!("alternate:{}@{}", v.root, v.id))
                     .collect(),
             });
         }
@@ -248,7 +248,7 @@ impl Reader<'_> {
                     reference: preference.clone(),
                     candidates: matched
                         .iter()
-                        .map(|v| format!("variant:{}@{}", v.root, v.id))
+                        .map(|v| format!("alternate:{}@{}", v.root, v.id))
                         .collect(),
                 });
             }

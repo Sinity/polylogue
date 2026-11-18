@@ -25,7 +25,7 @@ const ASKED: &[(&str, &[&str])] = &[
     ("rows", &["session:claude-code:s1", "read"]),
     ("rows", &["session:claude-code:missing", "read"]),
     ("attachment", &["claude-code:missing", "0"]),
-    ("rows", &["assertion:missing", "read"]),
+    ("rows", &["annotation:missing", "read"]),
     ("rows", &["session:claude-code:s1", "resume"]),
     ("rows", &["brief", "--cwd", "/synthetic"]),
     ("rows", &["session:claude-code:s1", "brief"]),

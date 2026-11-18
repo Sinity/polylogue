@@ -321,7 +321,7 @@ fn delivery_filters_read_string_refs_and_structured_omissions_without_reparsing_
     let mut options = options();
     options.fields = vec!["id".into()];
     for (query, expected) in [
-        (r#"deliveries where refs:"assertion:subject@revision""#, 1),
+        (r#"deliveries where refs:"annotation:subject@revision""#, 1),
         (r#"deliveries where refs:"src/parser.rs""#, 1),
         (r#"deliveries where refs:"quote""#, 1),
         (r#"deliveries where refs:"missing""#, 0),

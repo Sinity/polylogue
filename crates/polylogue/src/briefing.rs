@@ -422,12 +422,11 @@ fn note_line(n: &Assertion, zone: &jiff::tz::TimeZone) -> String {
         String::new()
     };
     format!(
-        "- [{label}] {} ({}, {}{by})  assertion:{}@{}",
+        "- [{label}] {} ({}, {}{by})  {}",
         n.fact.text().unwrap_or(""),
         targets.join(", "),
         day(n.fact.created_at, zone),
-        n.fact.root,
-        n.fact.id
+        n.fact.reference()
     )
 }
 
@@ -437,8 +436,7 @@ fn assertion_item(
     context: &std::sync::Arc<polylogue_reading::operation::Context>,
 ) -> Result<Item, StoreError> {
     use polylogue_model::assertion::LinkRole;
-    let reference = Reference::parse(&format!("assertion:{}@{}", note.fact.root, note.fact.id))
-        .map_err(|error| StoreError::Invalid(error.to_string()))?;
+    let reference = note.fact.reference();
     let mut contrary = Vec::new();
     let _ = reader.visit_assertion_references_linked(
         &reference,
@@ -480,17 +478,16 @@ fn assertion_item(
             continue;
         }
         let Some(correction) = eligible_note(reader, &revision, context)? else {
-            let reference = format!("assertion:{revision}");
-            refs.push(reference.clone());
-            not_inlined.push(reference);
+            let reference = Reference::Assertion(revision);
+            refs.push(reference.stored_form());
+            not_inlined.push(reference.to_string());
             continue;
         };
         let state = judgment(&correction)?;
         let _ = write!(
             attribution,
-            "; contrary assertion:{}@{} author:{} via:{} judgment:{}",
-            correction.fact.root,
-            correction.fact.id,
+            "; contrary {} author:{} via:{} judgment:{}",
+            correction.fact.reference(),
             correction.fact.author,
             correction.fact.via.as_str(),
             state
@@ -502,10 +499,7 @@ fn assertion_item(
             correction.fact.via.as_str(),
             note_line(&correction, context.clock.day.zone())
         );
-        refs.push(format!(
-            "assertion:{}@{}",
-            correction.fact.root, correction.fact.id
-        ));
+        refs.push(correction.fact.reference().stored_form());
     }
     if !not_inlined.is_empty() {
         let _ = write!(
@@ -520,7 +514,7 @@ fn assertion_item(
         );
     }
     text.push_str(&note_line(note, context.clock.day.zone()));
-    refs.push(reference.to_string());
+    refs.push(reference.stored_form());
     Ok(Item {
         expansion: None,
         attribution: Some(attribution),
@@ -602,7 +596,7 @@ fn entry(item: &Item, bytes: usize) -> String {
     format!(
         "┃ {}\n",
         archive_json(&serde_json::json!({
-            "refs": item.refs,
+            "refs": item.refs.iter().map(|reference| Reference::display_stored(reference)).collect::<Vec<_>>(),
             "attribution": item.attribution.as_deref().unwrap_or("archived record; author unknown"),
             "source": prefix(&item.text, bytes),
         }))
@@ -1238,7 +1232,7 @@ fn session_start(
         "Notes from the operator:",
         notes.into_iter().map(|reference| Item {
             text: format!("Scoped assertion {reference}; content not expanded"),
-            refs: vec![format!("assertion:{reference}")],
+            refs: vec![Reference::Assertion(reference.clone()).stored_form()],
             expansion: Some(Expansion::Assertion(reference)),
             attribution: Some("selected as operator/accepted assertion; exact revision; content not expanded; recheck before use".into()),
         }).collect(),

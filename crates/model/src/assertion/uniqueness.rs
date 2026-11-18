@@ -44,7 +44,7 @@ pub fn unique<'a>(
         links
             .iter()
             .filter(|(link, _)| *link == role)
-            .map(|(_, reference)| reference.to_string())
+            .map(|(_, reference)| reference.stored_form())
             .collect()
     };
     let mut parts = Vec::with_capacity(uniqueness.components.len());
@@ -68,7 +68,7 @@ pub fn unique<'a>(
                     rubric @ Reference::Assertion(RevisionReference {
                         revision: Some(_), ..
                     }),
-                ) => Part::One(rubric.to_string()),
+                ) => Part::One(rubric.stored_form()),
                 _ => return Err(Error::Rubric),
             },
             "machine" => {

@@ -128,8 +128,8 @@ fn matches_file(
 fn already_given(
     reader: &Reader<'_>,
     session: &SessionId,
-    reference: &str,
-    target: &str,
+    reference: &Reference,
+    target: &Reference,
     context: &Arc<polylogue_reading::operation::Context>,
 ) -> Result<bool, StoreError> {
     // This recipient is a typed identity supplied by the hook, not an
@@ -137,9 +137,11 @@ fn already_given(
     let text = format!(
         "deliveries where event:advice bytes > 0 text(recipient) = {} refs:{} refs:{}",
         query::assertions::quoted(&session.to_string()),
-        query::assertions::quoted(reference),
-        query::assertions::quoted(target)
+        query::assertions::quoted(&reference.to_string()),
+        query::assertions::quoted(&target.to_string())
     );
+    let reference = reference.stored_form();
+    let target = target.stored_form();
     let mut cursor = None;
     loop {
         let page = query::run(
@@ -174,8 +176,8 @@ fn already_given(
             let refs = reader.delivery_refs(id)?.ok_or_else(|| {
                 StoreError::Invalid("advisory history changed while reading".into())
             })?;
-            if refs.iter().any(|found| found == reference)
-                && refs.iter().any(|found| found == target)
+            if refs.iter().any(|found| found == &reference)
+                && refs.iter().any(|found| found == &target)
             {
                 return Ok(true);
             }
@@ -238,7 +240,8 @@ pub fn prepare(
             continue;
         }
         reader.check()?;
-        let reference = Reference::Assertion(reference).to_string();
+        let reference = Reference::Assertion(reference);
+        let stored_reference = reference.stored_form();
         let mut selected = None;
         for link in &note.fact.links {
             if link.role != LinkRole::About {
@@ -249,15 +252,9 @@ pub fn prepare(
             };
             if matches_file(path, &tokens, &cwd, &note.fact.links, &repos)
                 && !pending.iter().any(|refs| {
-                    refs.contains(&reference) && refs.contains(&link.reference.to_string())
+                    refs.contains(&stored_reference) && refs.contains(&link.reference.stored_form())
                 })
-                && !already_given(
-                    reader,
-                    session,
-                    &reference,
-                    &link.reference.to_string(),
-                    context,
-                )?
+                && !already_given(reader, session, &reference, &link.reference, context)?
             {
                 selected = Some(&link.reference);
                 break;
@@ -266,7 +263,7 @@ pub fn prepare(
         let Some(target) = selected else {
             continue;
         };
-        let pointer = serde_json::json!({"target": target.to_string(), "read": format!("polylogue {} read", polylogue_render::shell_quote(&reference))});
+        let pointer = serde_json::json!({"target": target.to_string(), "read": format!("polylogue {} read", polylogue_render::shell_quote(&reference.to_string()))});
         let text = format!(
             "[polylogue advice delivery:{}] Operator-judged {}: {}\n",
             polylogue_render::terminal::escape(delivery),
@@ -276,7 +273,7 @@ pub fn prepare(
         return Ok(Prepared {
             event: polylogue_model::DeliveryEvent::Advice.as_str().into(),
             text,
-            refs: vec![reference, target.to_string()],
+            refs: vec![stored_reference, target.stored_form()],
             left_out: Vec::new(),
             search_summary: None,
             empty: false,

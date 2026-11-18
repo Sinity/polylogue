@@ -1,5 +1,5 @@
 use crate::{Format, html, terminal};
-use polylogue_model::read::*;
+use polylogue_model::{Reference, read::*};
 use serde::Serialize;
 use std::{
     fmt::Display,
@@ -284,7 +284,7 @@ impl<'a> Encoder<'a> {
                 } else {
                     self.line(&format!("\n{text}"))?;
                 }
-                self.line(&item.source.reference)?;
+                self.line(&Reference::display_stored(&item.source.reference))?;
                 for assertion in &header.assertions {
                     self.line(&annotation_text(assertion, self.format))?;
                 }
@@ -393,7 +393,9 @@ impl<'a> Encoder<'a> {
                 let fragment = &record.fragment;
                 self.line(&format!(
                     "Selected source text · {} · bytes {}..{}",
-                    record.reference, fragment.coverage.start, fragment.coverage.end
+                    Reference::display_stored(&record.reference),
+                    fragment.coverage.start,
+                    fragment.coverage.end
                 ))?;
                 self.line(&format!(
                     "Source classification: {} · recorded source length: {}",
@@ -437,7 +439,9 @@ impl<'a> Encoder<'a> {
             ItemKind::Raw { record } => {
                 self.line(&format!(
                     "{} · {} · {}",
-                    record.reference, record.input, record.media_type
+                    Reference::display_stored(&record.reference),
+                    record.input,
+                    record.media_type
                 ))?;
                 match std::str::from_utf8(&record.bytes) {
                     Ok(text) => self.literal(text, "")?,
@@ -461,7 +465,8 @@ impl<'a> Encoder<'a> {
                 self.literal(text, "json-fragment")?;
                 self.line(&format!(
                     "… encoded characters {}..{until} of {total} · {}",
-                    position.character, item.source.reference
+                    position.character,
+                    Reference::display_stored(&item.source.reference)
                 ))?;
             }
         }

@@ -793,11 +793,11 @@ pub(crate) fn assertion_about(
 ) -> Result<String, QueryError> {
     let input = x.value()?;
     let reference =
-        polylogue_model::Reference::parse(&input).map_err(|error| QueryError::Invalid {
+        polylogue_model::Reference::parse_stored(&input).map_err(|error| QueryError::Invalid {
             message: error.to_string(),
             position: x.span.start,
         })?;
-    let p = c.text_param(&reference.to_string());
+    let p = c.text_param(&reference.stored_form());
     Ok(format!(
         "EXISTS(SELECT 1 FROM source_link nt WHERE nt.record={r}.id AND nt.role='about' AND nt.ref={p})",
         r = x.row()
@@ -849,9 +849,9 @@ pub(crate) fn event_text(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<Strin
 pub(crate) fn links_to(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
     let mut clauses = Vec::new();
     for value in x.values() {
-        let reference = polylogue_model::Reference::parse(&value)
+        let reference = polylogue_model::Reference::parse_stored(&value)
             .map_err(|error| x.bad(value.clone(), error.to_string()))?;
-        let p = c.text_param(&reference.to_string());
+        let p = c.text_param(&reference.stored_form());
         clauses.push(format!("EXISTS(SELECT 1 FROM source_link l WHERE l.record={}.id AND l.role<>'about' AND (l.ref={p} OR (l.ref>{p}||'@' AND l.ref<{p}||'A')))",x.row()));
     }
     any_of(x, clauses)

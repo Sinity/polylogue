@@ -2,7 +2,7 @@ use super::*;
 use polylogue_model::{Json, Variant, VariantEffect, VariantKind};
 
 fn r(text: &str) -> Reference {
-    Reference::parse(text).unwrap()
+    Reference::parse_stored(text).unwrap()
 }
 fn assertion(
     root: &str,
@@ -318,4 +318,32 @@ fn an_annotation_applied_before_its_rubric_takes_the_rubric_it_was_derived_from(
         )
         .unwrap();
     assert_eq!(slots, 1);
+}
+
+#[test]
+fn surface_references_keep_canonical_sql_links_and_typed_reads() {
+    let conn = archive();
+    let mut fact = assertion("note", "note", AssertionKind::Note, &[]);
+    fact.links = vec![AssertionLink {
+        role: LinkRole::About,
+        reference: Reference::parse("annotation:target@revision").unwrap(),
+        seen_hash: None,
+        quote: None,
+    }];
+    apply(&conn, &[fact], 1).unwrap();
+    let stored: String = conn
+        .query_row("SELECT ref FROM link WHERE record='note'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(stored, "assertion:target@revision");
+    let read = get(&conn, "note").unwrap().unwrap();
+    assert_eq!(
+        read.fact.links[0].reference.to_string(),
+        "annotation:target@revision"
+    );
+    assert_eq!(
+        serde_json::to_value(&read.fact.links[0].reference).unwrap(),
+        serde_json::json!(stored)
+    );
 }

@@ -70,9 +70,16 @@ pub struct Field {
     /// The entity named by this value (or each member of an ID list).
     /// Opaque provider IDs and mixed-reference fields have no fixed target.
     pub reference_target: Option<Unit>,
+    /// This matcher takes a complete natural reference, rather than an opaque ID.
+    pub reference_argument: bool,
 }
 
 impl Field {
+    const fn reference_argument(mut self) -> Self {
+        self.reference_argument = true;
+        self
+    }
+
     const fn reference(mut self, target: Unit) -> Self {
         self.reference_target = Some(target);
         self
@@ -130,6 +137,7 @@ const fn f(unit: Unit, name: &'static str, kind: Kind, help: &'static str) -> Fi
         help,
         value_kind: None,
         reference_target: None,
+        reference_argument: false,
     }
 }
 
@@ -144,6 +152,7 @@ const fn sp(unit: Unit, name: &'static str, help: &'static str) -> Field {
         help,
         value_kind: None,
         reference_target: None,
+        reference_argument: false,
     }
 }
 
@@ -162,6 +171,7 @@ const fn v(
         help,
         value_kind: None,
         reference_target: None,
+        reference_argument: false,
     }
 }
 
@@ -249,7 +259,7 @@ fields! {
     MessagesAlternate = f(Messages,"alternate",Bool,"A current alternate holds text for this message"),
     AnnotationsAt = f(Annotations,"at",Time,"When this annotation was authored"),
     AnnotationsRequest = f(Annotations,"request",Prefix,""),
-    AnnotationsLinksTo = f(Annotations,"links_to",Special,""),
+    AnnotationsLinksTo = f(Annotations,"links_to",Special,"").reference_argument(),
     AnnotationsAnswered = f(Annotations,"answered",Bool,""),
     AnnotationsOpen = f(Annotations,"open",Bool,""),
     SessionsMonthDay = f(Sessions,"month_day",Match,"Logical month and day in the request day zone"),
@@ -270,7 +280,7 @@ fields! {
     AlternatesId = f(Alternates,"id",Prefix,""),
     AlternatesRoot = f(Alternates,"root",Prefix,""),
     AlternatesBase = f(Alternates,"base",Prefix,""),
-    AlternatesSource = f(Alternates,"source",Match,""),
+    AlternatesSource = f(Alternates,"source",Match,"").reference_argument(),
     AlternatesKind = f(Alternates,"kind",Match,""),
     AlternatesFromLang = f(Alternates,"from_lang",Match,""),
     AlternatesToLang = f(Alternates,"to_lang",Match,""),
@@ -1100,7 +1110,7 @@ fields! {
         Match,
         "the natural reference",
     )
-    .reference(Annotations),
+    .reference(Annotations).reference_argument(),
     AnnotationsKind = f(
         Annotations,
         "kind",
@@ -1126,7 +1136,7 @@ fields! {
         Annotations,
         "about",
         "a reference it is about: session:ID, repo:NAME, cwd:PATH, …",
-    ),
+    ).reference_argument(),
     AnnotationsWriteCounter = f(
         Annotations,
         "write_counter",
@@ -1191,8 +1201,8 @@ fields! {
         "the latest event's detail: a failure's reason, or what used it",
     ),
     DeliveriesText = f(Deliveries, "text", Substring, "the delivered text"),
-    DeliveriesRefs = sp(Deliveries, "refs", "a reference the delivery included"),
-    DeliveriesLeftOut = sp(Deliveries, "left_out", "a reference left out for budget"),
+    DeliveriesRefs = sp(Deliveries, "refs", "a reference the delivery included").reference_argument(),
+    DeliveriesLeftOut = sp(Deliveries, "left_out", "a reference left out for budget").reference_argument(),
     DeliveriesAt = f(Deliveries, "at", Time, ""),
     DeliveriesBytes = f(Deliveries, "bytes", Number, ""),
     LiveIntervalsSession = sp(
@@ -1278,7 +1288,7 @@ fields! {
         &["session", "removed", "assertion"],
         "what changed",
     ),
-    FeedRef = f(Feed, "ref", Prefix, "the session or annotation ID"),
+    FeedRef = f(Feed, "ref", Prefix, "the session or annotation ID").reference_argument(),
     FeedSeq = f(
         Feed,
         "seq",

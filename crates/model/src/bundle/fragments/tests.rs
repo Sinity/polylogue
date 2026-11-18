@@ -174,7 +174,7 @@ fn text_fragment_separator_coverage_uses_the_existing_document_recipe() {
     }
     check.finish().unwrap();
     let record = TextFragmentRecord {
-        reference: value.reference().to_string(),
+        reference: value.reference().stored_form(),
         commit: 99,
         fragment: value,
     };
@@ -232,7 +232,7 @@ fn text_fragment_exact_revision_never_resolves_a_current_root() {
 fn portable_fragment_keeps_versioned_identity() {
     let selected = fragment(1, "😀");
     let record = crate::bundle::Record::TextFragment(Box::new(TextFragmentRecord {
-        reference: selected.reference().to_string(),
+        reference: selected.reference().stored_form(),
         commit: 17,
         fragment: selected.clone(),
     }));

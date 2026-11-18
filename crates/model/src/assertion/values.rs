@@ -305,7 +305,9 @@ enum VerdictWire {
 impl Serialize for Verdict {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
-            Self::Prefer(reference) => serializer.serialize_str(&format!("prefer:{reference}")),
+            Self::Prefer(reference) => {
+                serializer.serialize_str(&format!("prefer:{}", reference.stored_form()))
+            }
             Self::Ranking(ranking) => {
                 use serde::ser::SerializeMap;
                 let mut map = serializer.serialize_map(Some(1))?;
@@ -329,7 +331,7 @@ impl<'de> Deserialize<'de> for Verdict {
                 "abstain" => Self::Abstain,
                 "insufficient_evidence" => Self::InsufficientEvidence,
                 _ => Self::Prefer(
-                    Reference::parse(text.strip_prefix("prefer:").ok_or_else(|| {
+                    Reference::parse_stored(text.strip_prefix("prefer:").ok_or_else(|| {
                         serde::de::Error::custom("expected a comparison verdict")
                     })?)
                     .map_err(serde::de::Error::custom)?,
@@ -756,7 +758,7 @@ pub fn decode(
             ValueShape::SavedQuery => {
                 let saved: Structured<SavedQuery> = parse(required()?)?;
                 if saved.fields.denominator.as_ref().is_some_and(|reference| {
-                    Reference::parse(reference)
+                    Reference::parse_stored(reference)
                         .ok()
                         .and_then(|reference| reference.question_id())
                         .is_none()
@@ -789,11 +791,11 @@ pub fn decode(
                 crate::ChangePosition::parse(&seen.fields.position.at)
                     .ok_or_else(|| "seen position needs GENERATION:INDEX:ARCHIVE".to_string())?;
                 if let Some(item) = &seen.fields.position.item {
-                    Reference::parse(item).map_err(|error| error.to_string())?;
+                    Reference::parse_stored(item).map_err(|error| error.to_string())?;
                 }
                 let target =
                     key.ok_or_else(|| "seen mark needs its target reference".to_string())?;
-                Reference::parse(target).map_err(|error| error.to_string())?;
+                Reference::parse_stored(target).map_err(|error| error.to_string())?;
                 Value::Seen(Box::new(seen))
             }
         })

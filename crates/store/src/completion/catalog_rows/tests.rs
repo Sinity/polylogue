@@ -241,7 +241,7 @@ fn authored_deltas_follow_only_affected_families_and_setting_keys() {
     write(
         "withdraw-a",
         UserWrite::WithdrawAssertions {
-            targets: vec![Reference::parse("assertion:saved-a").unwrap()],
+            targets: vec![Reference::parse_stored("assertion:saved-a").unwrap()],
             reason: None,
         },
     );
@@ -261,7 +261,7 @@ fn authored_deltas_follow_only_affected_families_and_setting_keys() {
     write(
         "reinstate-a",
         UserWrite::WithdrawAssertions {
-            targets: vec![Reference::parse("assertion:withdraw-a").unwrap()],
+            targets: vec![Reference::parse_stored("assertion:withdraw-a").unwrap()],
             reason: None,
         },
     );

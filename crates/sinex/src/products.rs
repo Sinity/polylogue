@@ -258,7 +258,7 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
             "machine": prepared.request.machine
         }),
         Product::RestoredAssertion { fact, .. } => json!({
-            "assertion": format!("assertion:{}@{}", fact.root, fact.id),
+            "assertion": fact.reference().stored_form(),
             "at": fact.created_at,
             "machine": fact.machine
         }),

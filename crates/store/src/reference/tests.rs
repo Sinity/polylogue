@@ -6,7 +6,7 @@ fn source(id: &str, blocks: Vec<Block>) -> polylogue_model::Message {
     message(id, "s", Role::User, 1, blocks)
 }
 fn r(text: &str) -> Reference {
-    Reference::parse(text).unwrap()
+    Reference::parse_stored(text).unwrap()
 }
 fn text(reader: &Reader<'_>, reference: &str) -> Option<String> {
     let mut text = String::new();

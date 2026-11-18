@@ -240,7 +240,7 @@ fn partial_fragment_has_its_own_kind_and_retains_the_receiving_record_range() {
         end: 10,
     });
     let record = TextFragmentRecord {
-        reference: fragment.reference().to_string(),
+        reference: fragment.reference().stored_form(),
         commit: 9000,
         fragment,
     };

@@ -1,6 +1,6 @@
 use super::*;
 fn r(text: &str) -> Reference {
-    Reference::parse(text).unwrap()
+    Reference::parse_stored(text).unwrap()
 }
 fn check(kind: AssertionKind, key: Option<&str>, links: &[(LinkRole, &str)]) -> Result<()> {
     let links: Vec<_> = links

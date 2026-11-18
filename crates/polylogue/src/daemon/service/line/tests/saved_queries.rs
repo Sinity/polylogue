@@ -88,7 +88,7 @@ fn shipped_query_resolves_and_withdrawing_an_authored_override_restores_it() {
         &d,
         "withdraw-recent",
         json!({
-            "references":[format!("assertion:{}@{}", definition.id, definition.id)],
+            "references":[format!("annotation:{}@{}", definition.id, definition.id)],
             "steps":[{"verb":"withdraw"}]
         }),
     ));
@@ -127,7 +127,7 @@ fn resaving_the_same_question_keeps_new_rows_without_a_definition_revision() {
     assert_eq!(history.revisions.len(), 1);
     assert_eq!(
         history.revisions[0].reference,
-        format!("assertion:{}@{}", first_saved.id, first_saved.id)
+        format!("annotation:{}@{}", first_saved.id, first_saved.id)
     );
     assert_eq!(
         history
@@ -195,7 +195,7 @@ fn changing_a_saved_question_moves_its_existing_watch_to_the_exact_new_revision(
         &d,
         "withdraw-watched",
         json!({
-            "references":[format!("assertion:{root}")],
+            "references":[format!("annotation:{root}")],
             "steps":[{"verb":"withdraw"}]
         }),
     ));
@@ -311,7 +311,7 @@ fn recreating_a_withdrawn_figure_keeps_its_watch_on_the_new_family_and_denominat
         &d,
         "withdraw-old-family",
         json!({
-            "references":[format!("assertion:{}@{}",first_saved.id,first_saved.id)],
+            "references":[format!("annotation:{}@{}",first_saved.id,first_saved.id)],
             "steps":[{"verb":"withdraw"}]
         }),
     ));

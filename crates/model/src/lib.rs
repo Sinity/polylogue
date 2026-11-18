@@ -45,9 +45,9 @@ mod quota;
 mod reference;
 pub mod saved_queries;
 pub use reference::{
-    Reference, ReferenceError, RevisionReference, SINEX_LOCAL_KINDS, SpanBounds, SpanError,
-    SpanUnit, TEXT_BODY_SEPARATOR, TextBodyError, TextBodyOffsets, TextSpanPiece,
-    assertion_revisions, span_bodies, text_body,
+    AUTHORED_REFERENCE_SPELLINGS, Reference, ReferenceError, RevisionReference, SINEX_LOCAL_KINDS,
+    SpanBounds, SpanError, SpanUnit, TEXT_BODY_SEPARATOR, TextBodyError, TextBodyOffsets,
+    TextSpanPiece, assertion_revisions, span_bodies, text_body,
 };
 pub mod read;
 mod route;

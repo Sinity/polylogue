@@ -906,7 +906,7 @@ fn tight_fitting_keeps_later_candidates_and_lossless_bounded_prefixes() {
             },
         ],
         "notes",
-        "polylogue assertion:current@v2 read",
+        "polylogue annotation:current@v2 read",
     );
     let (text, refs, left_out) = fit.finish("", |_| Ok(None)).unwrap();
     assert!(text.len() <= 1600);
@@ -917,6 +917,10 @@ fn tight_fitting_keeps_later_candidates_and_lossless_bounded_prefixes() {
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(entries.len(), 2);
+    assert_eq!(
+        entries[1]["refs"],
+        serde_json::json!(["annotation:current@v2"])
+    );
     let current = entries[1]["source"].as_str().unwrap();
     assert!(
         current.starts_with("Correction: use the current checked source."),
@@ -925,7 +929,7 @@ fn tight_fitting_keeps_later_candidates_and_lossless_bounded_prefixes() {
     assert!(correction.starts_with(current));
     assert!(first.starts_with(entries[0]["source"].as_str().unwrap()));
     assert!(text.contains("2 shortened / 0 omitted"));
-    assert!(text.contains("expand: `polylogue assertion:current@v2 read`"));
+    assert!(text.contains("expand: `polylogue annotation:current@v2 read`"));
     assert_eq!(left_out.len(), 1);
 }
 
@@ -1077,13 +1081,13 @@ fn contrary_note_comes_before_the_claim_under_a_tight_budget() {
         vec![
             AssertionLink {
                 role: LinkRole::About,
-                reference: Reference::parse("assertion:original@original-v1").unwrap(),
+                reference: Reference::parse_stored("assertion:original@original-v1").unwrap(),
                 seen_hash: None,
                 quote: None,
             },
             AssertionLink {
                 role: LinkRole::Corrects,
-                reference: Reference::parse("assertion:original@original-v1").unwrap(),
+                reference: Reference::parse_stored("assertion:original@original-v1").unwrap(),
                 seen_hash: None,
                 quote: None,
             },
@@ -1110,7 +1114,7 @@ fn contrary_note_comes_before_the_claim_under_a_tight_budget() {
         "Notes:",
         vec![item],
         "notes",
-        "polylogue assertion:original@original-v1 read",
+        "polylogue annotation:original@original-v1 read",
     );
     let (text, refs, _) = fit.finish("", |_| Ok(None)).unwrap();
     assert!(text.len() <= 1600);
@@ -1119,7 +1123,7 @@ fn contrary_note_comes_before_the_claim_under_a_tight_budget() {
     assert!(!source.contains("CLAIM THAT MUST NOT APPEAR UNQUALIFIED"));
     assert!(refs.contains(&"assertion:correction@correction-v1".into()));
     assert!(text.contains("judgment:operator-authored"));
-    assert!(text.contains("expand: `polylogue assertion:original@original-v1 read`"));
+    assert!(text.contains("expand: `polylogue annotation:original@original-v1 read`"));
 }
 
 #[test]
@@ -1297,7 +1301,7 @@ fn unjudged_contrary_bodies_are_counted_without_hiding_the_eligible_claim() {
         .chain(links)
         .collect(),
     };
-    let subject = Reference::parse("assertion:subject@subject-v1").unwrap();
+    let subject = Reference::parse_stored("assertion:subject@subject-v1").unwrap();
     let link = |role| {
         vec![
             AssertionLink {
@@ -1370,8 +1374,10 @@ fn unjudged_contrary_bodies_are_counted_without_hiding_the_eligible_claim() {
                 valid_until: None,
                 links: vec![NewAssertionLink {
                     role: LinkRole::About,
-                    reference: Reference::parse("assertion:accepted-agent@accepted-agent-v1")
-                        .unwrap(),
+                    reference: Reference::parse_stored(
+                        "assertion:accepted-agent@accepted-agent-v1",
+                    )
+                    .unwrap(),
                 }],
             }],
         },
@@ -1399,7 +1405,7 @@ fn unjudged_contrary_bodies_are_counted_without_hiding_the_eligible_claim() {
         "Notes:",
         vec![item],
         "notes",
-        "polylogue assertion:subject@subject-v1 read",
+        "polylogue annotation:subject@subject-v1 read",
     );
     let (text, refs, _) = fit.finish("", |_| Ok(None)).unwrap();
     let visible = visible_context(&text);
@@ -1408,7 +1414,7 @@ fn unjudged_contrary_bodies_are_counted_without_hiding_the_eligible_claim() {
     assert!(visible.find(agent_correction).unwrap() < visible.find(claim).unwrap());
     assert!(!text.contains("UNJUDGED_BODY_MUST_NOT_BE_INLINED"));
     assert!(text.contains("contrary assertions not inlined: 1"));
-    assert!(text.contains("polylogue assertion:unjudged-agent@unjudged-agent-v1 read"));
+    assert!(text.contains("polylogue annotation:unjudged-agent@unjudged-agent-v1 read"));
     assert!(text.contains("accepted by operator"));
     assert!(refs.contains(&"assertion:unjudged-agent@unjudged-agent-v1".into()));
     assert!(text.len() <= 4000);

@@ -383,7 +383,7 @@ fn ping_text_names_the_assert_tool() {
     assert!(text.contains("`rows`"), "{text}");
     assert!(text.contains("`polylogue_write`"), "{text}");
     assert!(
-        text.contains("`selection` and `replies_to` both name `assertion:p1@p1`"),
+        text.contains("`selection` and `replies_to` both name `annotation:p1@p1`"),
         "{text}"
     );
     assert!(!text.contains("::finding"), "{text}");
@@ -412,7 +412,7 @@ fn an_authored_finding_answers_the_ping() {
     let reader = d.daemon.reads.reader().unwrap();
     let (_, text) = reader.delivery(delivery).unwrap().unwrap();
     drop(reader);
-    let instruction = format!("`selection` and `replies_to` both name `assertion:{ping}@{ping}`");
+    let instruction = format!("`selection` and `replies_to` both name `annotation:{ping}@{ping}`");
     assert!(text.contains(&instruction), "{text}");
     let answer = NewAssertion {
         kind: AssertionKind::Finding,
@@ -423,8 +423,10 @@ fn an_authored_finding_answers_the_ping() {
             .into_iter()
             .map(|role| NewAssertionLink {
                 role,
-                reference: polylogue_model::Reference::parse(&format!("assertion:{ping}@{ping}"))
-                    .unwrap(),
+                reference: polylogue_model::Reference::parse_stored(&format!(
+                    "assertion:{ping}@{ping}"
+                ))
+                .unwrap(),
             })
             .collect(),
     };

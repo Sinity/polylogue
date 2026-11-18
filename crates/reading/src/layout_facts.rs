@@ -48,7 +48,7 @@ pub(super) fn annotate(
         record,
         polylogue_model::bundle::Record::Session(_) | polylogue_model::bundle::Record::Message(_)
     ) {
-        let reference = polylogue_model::Reference::parse(
+        let reference = polylogue_model::Reference::parse_stored(
             record.reference().expect("selected record has a reference"),
         )
         .map_err(Error::internal)?;

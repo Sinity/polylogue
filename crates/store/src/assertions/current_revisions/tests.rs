@@ -17,7 +17,7 @@ use proptest::prelude::*;
 use rusqlite::Connection;
 
 fn r(text: &str) -> Reference {
-    Reference::parse(text).unwrap()
+    Reference::parse_stored(text).unwrap()
 }
 
 fn statement(kind: AssertionKind, key: Option<&str>, value: serde_json::Value) -> NewAssertion {
@@ -151,8 +151,8 @@ fn a_command_on_a_stale_base_is_refused_and_a_forking_channel_makes_a_visible_co
     let before = world.count("assertion");
     match world.revise(&r1, &r1, "stale") {
         Err(StoreError::Stale { reference, current }) => {
-            assert_eq!(reference, format!("assertion:{r1}@{r1}"));
-            assert_eq!(current, vec![format!("assertion:{r1}@{r2}")]);
+            assert_eq!(reference, format!("annotation:{r1}@{r1}"));
+            assert_eq!(current, vec![format!("annotation:{r1}@{r2}")]);
         }
         other => panic!("expected a stale refusal, got {other:?}"),
     }

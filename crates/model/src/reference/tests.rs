@@ -35,11 +35,11 @@ fn reference_full_forms_round_trip_without_losing_source_names() {
         "event:origin:event:1",
         "run:019a2f20-1234-7000-8000-0123456789ab",
         "attachment:blob:1",
-        "assertion:root",
-        "assertion:root@revision",
-        "variant:root",
-        "variant:root@revision",
-        "variant:root@revision#3",
+        "annotation:root",
+        "annotation:root@revision",
+        "alternate:root",
+        "alternate:root@revision",
+        "alternate:root@revision#3",
         "page:name",
         "page:root@revision",
         "role:reviewer",
@@ -57,8 +57,8 @@ fn reference_full_forms_round_trip_without_losing_source_names() {
         "span:message:codex:message#b=0-4",
         "span:document:claude-ai:document#u16=1-5",
         "span:block:codex:message#2#c=0-3",
-        "span:assertion:root@revision#u16=0-5",
-        "span:variant:root@revision#3#b=0-4",
+        "span:annotation:root@revision#u16=0-5",
+        "span:alternate:root@revision#3#b=0-4",
     ] {
         let reference = Reference::parse(text).unwrap_or_else(|error| panic!("{text}: {error}"));
         assert_eq!(reference.to_string(), text);
@@ -73,15 +73,15 @@ fn malformed_references_are_typed_errors() {
     for text in [
         "work:7",
         "note:old",
-        "variant:root#-1",
-        "variant:root@",
+        "alternate:root#-1",
+        "alternate:root@",
         "role:",
         "role:root@",
         "result:id#x",
         "block:codex:m#18446744073709551616",
         "span:session:codex:s#b=0-2",
-        "span:assertion:root#b=0-2",
-        "span:variant:root@revision#b=0-2",
+        "span:annotation:root#b=0-2",
+        "span:alternate:root@revision#b=0-2",
         "span:message:codex:m#b=5-1",
         "span:message:codex:m#bytes=1-2",
         "file:path",
@@ -106,13 +106,13 @@ fn containers_preserve_identity_without_guessing_message_sessions() {
             "span:document:claude-ai:document#b=1-2",
             "document:claude-ai:document",
         ),
-        ("variant:root@revision#3", "variant:root@revision"),
+        ("alternate:root@revision#3", "alternate:root@revision"),
         ("result:kept#0", "result:kept"),
         ("tool:codex:session#call", "session:codex:session"),
     ] {
         assert_eq!(parse(child).container(), Some(parse(parent)));
     }
-    assert_eq!(parse("assertion:root@revision").container(), None);
+    assert_eq!(parse("annotation:root@revision").container(), None);
 }
 
 #[test]
@@ -146,7 +146,7 @@ fn authored_link_reference_forms_preserve_their_opaque_source_names() {
         "message:codex:m:1",
         "tool:claude-code:abc#toolu_01",
         "result:018f",
-        "assertion:018f.1",
+        "annotation:018f.1",
         "repo:polylogue",
         "cwd:/workspace/project",
     ] {
@@ -259,4 +259,67 @@ fn unknown_reference_prefix_is_refused() {
         Reference::parse(text),
         Err(ReferenceError::UnknownKind(text.into()))
     );
+}
+
+#[test]
+fn surface_names_leave_stored_references_and_serialization_unchanged() {
+    for (surface, stored) in [
+        ("annotation:root", "assertion:root"),
+        ("annotation:root@revision", "assertion:root@revision"),
+        ("alternate:root@revision#2", "variant:root@revision#2"),
+        (
+            "span:annotation:root@revision#c=0-3",
+            "span:assertion:root@revision#c=0-3",
+        ),
+        (
+            "span:alternate:root@revision#2#b=0-3",
+            "span:variant:root@revision#2#b=0-3",
+        ),
+        (
+            "url:https://example.test/assertion:kept",
+            "url:https://example.test/assertion:kept",
+        ),
+    ] {
+        let reference = Reference::parse(surface).unwrap();
+        assert_eq!(reference.to_string(), surface);
+        assert_eq!(reference.stored_form(), stored);
+        assert_eq!(Reference::display_stored(stored), surface);
+        assert_eq!(Reference::parse_stored(stored).unwrap(), reference);
+        assert_eq!(
+            serde_json::to_value(&reference).unwrap(),
+            serde_json::json!(stored)
+        );
+        assert_eq!(
+            serde_json::from_value::<Reference>(serde_json::json!(stored)).unwrap(),
+            reference
+        );
+        if surface != stored {
+            assert!(Reference::parse_stored(surface).is_err());
+            assert!(serde_json::from_value::<Reference>(serde_json::json!(surface)).is_err());
+        }
+    }
+}
+
+#[test]
+fn stored_spellings_report_the_complete_surface_correction() {
+    for (written, corrected) in [
+        ("assertion:root@revision", "annotation:root@revision"),
+        ("variant:root@revision#2", "alternate:root@revision#2"),
+        (
+            "span:assertion:root@revision#c=0-3",
+            "span:annotation:root@revision#c=0-3",
+        ),
+        (
+            "span:variant:root@revision#2#b=0-3",
+            "span:alternate:root@revision#2#b=0-3",
+        ),
+    ] {
+        assert_eq!(
+            Reference::parse(written).unwrap_err(),
+            ReferenceError::StoredSpelling {
+                written: written.into(),
+                corrected: corrected.into(),
+            }
+        );
+    }
 }

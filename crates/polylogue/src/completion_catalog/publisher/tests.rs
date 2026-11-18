@@ -259,7 +259,8 @@ fn saved_metadata_follows_committed_families_and_late_query_bodies() {
             "withdraw-collision".into(),
             UserWrite::WithdrawAssertions {
                 targets: vec![
-                    polylogue_model::Reference::parse("assertion:colliding-definition").unwrap(),
+                    polylogue_model::Reference::parse_stored("assertion:colliding-definition")
+                        .unwrap(),
                 ],
                 reason: None,
             },
@@ -281,7 +282,8 @@ fn saved_metadata_follows_committed_families_and_late_query_bodies() {
             "withdraw-historical".into(),
             UserWrite::WithdrawAssertions {
                 targets: vec![
-                    polylogue_model::Reference::parse("assertion:historical-definition").unwrap(),
+                    polylogue_model::Reference::parse_stored("assertion:historical-definition")
+                        .unwrap(),
                 ],
                 reason: None,
             },

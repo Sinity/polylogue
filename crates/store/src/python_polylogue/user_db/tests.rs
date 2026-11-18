@@ -65,7 +65,7 @@ fn every_python_form_maps_with_author_and_history() {
     assert_eq!(accepted_revision.kind, AssertionKind::Question);
     assert_eq!(accepted_revision.root, fixture::ACCEPTED);
     assert_eq!(accepted_revision.author, Author::Unattributed);
-    let accepted = format!("assertion:{0}@{0}", fixture::ACCEPTED);
+    let accepted = format!("annotation:{0}@{0}", fixture::ACCEPTED);
     assert_eq!(
         links(accepted_revision, LinkRole::Revises),
         [accepted.as_str()]
@@ -85,7 +85,7 @@ fn every_python_form_maps_with_author_and_history() {
         // Links are stored in reference order.
         [
             format!(
-                "assertion:{}@{}",
+                "annotation:{}@{}",
                 fixture::ACCEPTED,
                 fixture::ACCEPTED_REVISION
             ),
@@ -100,7 +100,7 @@ fn every_python_form_maps_with_author_and_history() {
     assert_eq!(reject.key.as_deref(), Some("rejected"));
     assert_eq!(
         links(reject, LinkRole::About),
-        [format!("assertion:{0}@{0}", fixture::REJECTED)]
+        [format!("annotation:{0}@{0}", fixture::REJECTED)]
     );
 
     let blocker = fact(&facts, fixture::BLOCKER);

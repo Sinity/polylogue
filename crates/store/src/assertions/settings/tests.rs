@@ -5,7 +5,7 @@ fn date(n: i64) -> Timestamp {
     Timestamp::from_unix_ms(n * 1000).unwrap()
 }
 fn reference(value: &str) -> Reference {
-    Reference::parse(value).unwrap()
+    Reference::parse_stored(value).unwrap()
 }
 fn db() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
@@ -142,8 +142,8 @@ fn setting_history_forks_never_choose_the_latest_writer_clock() {
         &(
             date(3),
             SettingAt::Conflict(vec![
-                "assertion:setting@left".into(),
-                "assertion:setting@right".into()
+                "annotation:setting@left".into(),
+                "annotation:setting@right".into()
             ])
         )
     );
@@ -198,8 +198,8 @@ fn history_reports_conflict_interval_as_unknown() {
             (
                 date(2),
                 SettingAt::Conflict(vec![
-                    "assertion:desktop@desktop".into(),
-                    "assertion:laptop@laptop".into()
+                    "annotation:desktop@desktop".into(),
+                    "annotation:laptop@laptop".into()
                 ])
             ),
             (date(3), known(false)),

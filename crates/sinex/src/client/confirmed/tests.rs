@@ -62,7 +62,7 @@ fn fragment(progress: StepProgress) -> Product {
         end: 3,
     });
     let record = TextFragmentRecord {
-        reference: fragment.reference().to_string(),
+        reference: fragment.reference().stored_form(),
         commit: 9000,
         fragment,
     };
