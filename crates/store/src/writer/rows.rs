@@ -877,11 +877,30 @@ impl RowWriter<'_, '_> {
     ) -> Result<(i64, bool)> {
         let m = &row.message;
         let id = m.id.to_string();
-        let source_pk = self.keys.get(resolve::Kind::Message, id.as_bytes())?.pk;
-        let new = !self
-            .tx
-            .prepare_cached("SELECT pk FROM message WHERE pk=?1")?
-            .exists([source_pk])?;
+        let key = self.keys.get(resolve::Kind::Message, id.as_bytes())?;
+        let source_pk = key.pk;
+        let write = self.messages.get(&source_pk);
+        let choice = write.and_then(|write| write.choice.filter(|choice| choice.changed));
+        // An ordinary reservation can try the insert directly. A split retry
+        // may already have installed it in another index transaction, so the
+        // insert itself still checks its primary key.
+        let try_insert = self.upkeep.at_build_end()
+            && !key.existing
+            && !self.changes.has_message_change(source_pk)
+            && self.keys.identities.shown_message(&id).as_ref() == id
+            && choice.is_none_or(|choice| {
+                matches!(
+                    choice.value.as_ref(),
+                    Some(resolve::membership::SelectedMessage::Version { .. })
+                ) && write.and_then(|write| write.value).is_some_and(|value| {
+                    value.message.id == m.id && value.message.session == m.session
+                })
+            });
+        let missing = try_insert
+            || !self
+                .tx
+                .prepare_cached("SELECT pk FROM message WHERE pk=?1")?
+                .exists([source_pk])?;
         let route = row.route(self.route);
         let completion = Completion::of(m, route);
         let at = ms(row.message.at);
@@ -893,27 +912,29 @@ impl RowWriter<'_, '_> {
             end: row.end.max(row.offset) as i64,
             in_progress: completion == Completion::InProgress,
         };
-        let pk = if new {
-            self.changes.new_message(source_pk);
-            let write = self
-                .messages
-                .get(&source_pk)
-                .or_invalid("unresolved message version")?;
+        let (pk, new) = if missing {
+            if !try_insert {
+                self.changes.new_message(source_pk);
+            }
+            let write = write.or_invalid("unresolved message version")?;
             let reserved = Some((&m.id, source_pk));
-            let pk = if let Some(choice) = write.choice.filter(|choice| choice.changed) {
+            let (pk, inserted) = if let Some(choice) = choice {
                 let selected = write.value.map(|value| &value.message).ok_or_else(|| {
                     StoreError::Invalid("a changed version has no prepared message".into())
                 })?;
                 self.session_pk(sessions, &selected.session)?;
-                let pk = self.insert_message(
+                let inserted = self.insert_message(
                     selected,
                     choice.session,
                     &selected_version(choice, write.value),
                     &choice.order,
                     reserved,
+                    try_insert,
                 )?;
-                write.created.set(Some(CreatedMessage));
-                pk
+                if inserted.1 {
+                    write.created.set(Some(CreatedMessage));
+                }
+                inserted
             } else {
                 let order = crate::encoding::session_order(
                     order_time,
@@ -921,13 +942,16 @@ impl RowWriter<'_, '_> {
                     position.0,
                     position.1,
                 );
-                self.insert_message(m, session_pk, &v, &order, reserved)?
+                self.insert_message(m, session_pk, &v, &order, reserved, try_insert)?
             };
-            self.upkeep
-                .remember_message(&self.keys.identities.shown_message(&id), pk)?;
-            pk
+            // Resolution already recorded the reserved key in the build map.
+            if inserted && pk != source_pk {
+                self.upkeep
+                    .remember_message(&self.keys.identities.shown_message(&id), pk)?;
+            }
+            (pk, inserted)
         } else {
-            source_pk
+            (source_pk, false)
         };
         let id_kind = row.id_kind.as_str();
         let (route, completion) = (route.as_str(), completion.as_str());
@@ -1040,13 +1064,13 @@ impl RowWriter<'_, '_> {
                 .query_row([pk], |r| r.get::<_, bool>(0))?
             {
                 self.clear_blocks(pk)?;
-                self.set_message(pk, None, m, session_pk, &v, order)?;
+                self.set_message(pk, None, m, session_pk, &v, order, false)?;
                 self.tx
                     .prepare_cached("DELETE FROM message_route WHERE message_pk=?1")?
                     .execute([pk])?;
             } else {
                 // A copy joining its session can first materialize here.
-                self.insert_message(m, session_pk, &v, order, None)?;
+                self.insert_message(m, session_pk, &v, order, None, false)?;
             }
         }
         self.insert_blocks(pk, session_pk, m, prepared)?;
@@ -1060,6 +1084,7 @@ impl RowWriter<'_, '_> {
         Ok(true)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn insert_message(
         &self,
         m: &Message,
@@ -1067,7 +1092,8 @@ impl RowWriter<'_, '_> {
         v: &Version,
         order: &str,
         reserved: Option<(&polylogue_model::MessageId, i64)>,
-    ) -> Result<i64> {
+        try_insert: bool,
+    ) -> Result<(i64, bool)> {
         let native = m.id.to_string();
         let shown = self.keys.identities.shown_message(&native);
         // A copy moving in this transaction can still have its own source key.
@@ -1075,12 +1101,21 @@ impl RowWriter<'_, '_> {
             Some((id, pk)) if id == &m.id && shown.as_ref() == native => pk,
             _ => self.keys.get(resolve::Kind::Message, shown.as_bytes())?.pk,
         };
-        self.set_message(pk, Some(shown.as_ref()), m, session_pk, v, order)?;
-        Ok(pk)
+        let inserted = self.set_message(
+            pk,
+            Some(shown.as_ref()),
+            m,
+            session_pk,
+            v,
+            order,
+            try_insert,
+        )?;
+        Ok((pk, inserted))
     }
 
     /// Writes every column of the shown version in one statement: an
     /// insert for a new message, an update when another version won.
+    #[allow(clippy::too_many_arguments)]
     fn set_message(
         &self,
         pk: i64,
@@ -1089,7 +1124,8 @@ impl RowWriter<'_, '_> {
         session_pk: i64,
         v: &Version,
         order: &str,
-    ) -> Result<()> {
+        try_insert: bool,
+    ) -> Result<bool> {
         self.changes.session(self.tx, session_pk)?;
         let author = polylogue_model::WrittenBy::of(m);
         let written_by = author.as_str();
@@ -1143,13 +1179,14 @@ impl RowWriter<'_, '_> {
                  cache_write_5m_tokens, cache_write_1h_tokens, speed,
                  cost_nusd, at_time)
              VALUES (?30, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?24, ?13, ?14,
-                 ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?25, ?26, ?27, ?28, ?29, ?31)"
+                 ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?25, ?26, ?27, ?28, ?29, ?31)
+             ON CONFLICT(pk) DO NOTHING"
         };
         let first: &dyn rusqlite::ToSql = match &id {
             Some(id) => id,
             None => &pk,
         };
-        self.tx.prepare_cached(sql)?.execute(params![
+        let written = self.tx.prepare_cached(sql)?.execute(params![
             first,
             session_pk,
             order,
@@ -1188,12 +1225,22 @@ impl RowWriter<'_, '_> {
             v.time,
         ])?;
         if id.is_some() {
+            if written == 0 {
+                return if try_insert {
+                    Ok(false)
+                } else {
+                    Err(StoreError::Invalid("message row already exists".into()))
+                };
+            }
+            if try_insert {
+                self.changes.new_message(pk);
+            }
             self.changes
                 .installed_message(pk, session_pk, parent, m, words, author)?;
         } else {
             self.changes.replaced_message(pk)?;
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Sources and selected rows now agree. Events need only their final

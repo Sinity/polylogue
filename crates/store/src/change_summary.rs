@@ -191,6 +191,10 @@ impl ChangeSummary {
         Ok(())
     }
 
+    pub(crate) fn has_message_change(&self, pk: i64) -> bool {
+        self.changed.borrow().messages.contains_key(&pk)
+    }
+
     pub(crate) fn new_message(&self, pk: i64) {
         let mut changed = self.changed.borrow_mut();
         changed.messages.entry(pk).or_insert(MessageChange {
