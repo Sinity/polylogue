@@ -1,5 +1,5 @@
-//! Local rows come from parsing confirmed original bytes. The lifecycle of
-//! Polylogue's own parsed events in Sinex does not change them.
+//! Local rows come from confirmed original bytes and respect the lifecycle
+//! of their matching Sinex facts.
 use super::*;
 use crate::primary::{Confirmed, ConfirmedChange, Product, ReplayControl};
 
@@ -126,7 +126,7 @@ fn shown_text(archive: &Archive, message: &polylogue_model::MessageId) -> Option
 }
 
 #[test]
-fn archiving_a_parsed_sinex_event_leaves_the_local_message_shown() {
+fn confirmed_lifecycle_controls_visibility_when_original_bytes_are_reparsed() {
     let directory = tempfile::tempdir().unwrap();
     let archive = Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
     let mut index = Connection::open(archive.index_db()).unwrap();
@@ -183,17 +183,22 @@ fn archiving_a_parsed_sinex_event_leaves_the_local_message_shown() {
         (13, ConfirmedChange::Archived),
         (14, ConfirmedChange::Tombstoned),
     ] {
+        let visible = matches!(change, ConfirmedChange::Restored);
         apply_position(
             &mut index,
             &archive,
             position,
             vec![(message_event.clone(), change)],
         );
+        write_local(&mut index, &archive, original.clone());
         assert_eq!(
             shown_text(&archive, &message).as_deref(),
-            Some("locally parsed original"),
+            visible.then_some("locally parsed original"),
             "position {position}"
         );
-        assert_eq!(committed(), Some(fixture_commit().sequence as u64));
+        assert_eq!(
+            committed(),
+            visible.then_some(fixture_commit().sequence as u64)
+        );
     }
 }
