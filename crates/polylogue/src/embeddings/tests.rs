@@ -106,6 +106,7 @@ fn embedding_selection_refuses_aggregate_and_incomplete_session_results() {
 }
 
 mod batch;
+mod command;
 
 #[test]
 fn only_voyages_own_origin_counts_as_voyage() {

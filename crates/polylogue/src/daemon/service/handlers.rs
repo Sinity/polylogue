@@ -876,44 +876,25 @@ impl Handler for Embed {
         }
     }
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
-        let what = if arguments.yes { "build" } else { "preview" };
-        embed(
-            call,
-            what,
-            Some(arguments.query.unwrap_or_default()),
-            arguments.limit,
+        let reader = call.reader()?;
+        let context = call.context()?;
+        let d = call.daemon;
+        let settings = match reader.settings_snapshot(d.config.requests.machine()) {
+            Ok(settings) => settings,
+            Err(e) => return Ok(store_error(&e)),
+        };
+        Ok(crate::embeddings::handle(
+            &reader,
+            arguments.query.as_deref(),
             arguments.yes,
-        )
+            crate::embeddings::Context {
+                clock: &d.clock,
+                settings: &settings,
+                credentials: &d.config.embedding_credentials,
+                operation: &context,
+            },
+        ))
     }
-}
-
-fn embed(
-    call: &Call<'_>,
-    what: &str,
-    query: Option<String>,
-    limit: Option<u64>,
-    yes: bool,
-) -> Result<Answer<crate::embeddings::Answer>, Failure> {
-    let reader = call.reader()?;
-    let context = call.context()?;
-    let d = call.daemon;
-    let settings = match reader.settings_snapshot(d.config.requests.machine()) {
-        Ok(settings) => settings,
-        Err(e) => return Ok(store_error(&e)),
-    };
-    Ok(crate::embeddings::handle(
-        &reader,
-        what,
-        query.as_deref(),
-        limit,
-        yes,
-        crate::embeddings::Context {
-            clock: &d.clock,
-            settings: &settings,
-            credentials: &d.config.embedding_credentials,
-            operation: &context,
-        },
-    ))
 }
 
 /// The context rows: a request with a sender is recorded as a delivery.

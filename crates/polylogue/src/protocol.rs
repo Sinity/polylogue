@@ -61,11 +61,9 @@ pub mod embed {
     #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
     #[serde(deny_unknown_fields)]
     pub struct Arguments {
-        /// A sessions query limiting the texts (default: every prose text)
+        /// A sessions query selecting the work; use | limit N to bound its rows
         pub query: Option<String>,
-        /// At most this many texts
-        pub limit: Option<u64>,
-        /// Confirm a build with a paid provider
+        /// Confirm a build; without this, only preview
         #[serde(default)]
         pub yes: bool,
     }

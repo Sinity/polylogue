@@ -466,11 +466,11 @@ pub struct Built {
     pub texts_per_second: f64,
 }
 
-/// Every selected prose page; `f` returns false to stop.
+/// Every selected prose page, stopping on a read or provider failure.
 fn each_prose_page(
     reader: &Reader<'_>,
     sessions: Option<&[String]>,
-    mut f: impl FnMut(Vec<polylogue_store::vectors::ProseText>) -> Result<bool, EmbedError>,
+    mut f: impl FnMut(Vec<polylogue_store::vectors::ProseText>) -> Result<(), EmbedError>,
 ) -> Result<(), EmbedError> {
     let mut after = 0;
     loop {
@@ -479,9 +479,7 @@ fn each_prose_page(
             return Ok(());
         };
         after = last.id;
-        if !f(page)? {
-            return Ok(());
-        }
+        f(page)?;
     }
 }
 
@@ -546,7 +544,6 @@ pub fn preview(
     reader: &Reader<'_>,
     provider: &Provider,
     sessions: Option<&[String]>,
-    limit: Option<u64>,
 ) -> Result<Preview, EmbedError> {
     let vectors = reader.vectors()?;
     let key = vectors.key_with_prefix(&provider.key_prefix())?;
@@ -573,11 +570,8 @@ pub fn preview(
                 .map(|(_, text)| text.chars().count() as u64)
                 .sum::<u64>();
             p.chunks += pending.len() as u64;
-            if limit.is_some_and(|limit| p.texts >= limit) {
-                return Ok(false);
-            }
         }
-        Ok(true)
+        Ok(())
     })?;
     p.tokens_estimate = p.characters.div_ceil(4);
     p.cost_estimate = provider
@@ -602,7 +596,6 @@ pub fn build(
     reader: &Reader<'_>,
     provider: &Provider,
     sessions: Option<&[String]>,
-    limit: Option<u64>,
 ) -> Result<Built, EmbedError> {
     let started = Instant::now();
     let mut vectors = reader.vectors_writer()?;
@@ -699,11 +692,8 @@ pub fn build(
                 }
             }
             out.texts += 1;
-            if limit.is_some_and(|limit| out.texts >= limit) {
-                return Ok(false);
-            }
         }
-        Ok(true)
+        Ok(())
     })?;
     flush(&mut batch, &mut out, &mut vectors, &mut key)?;
     out.seconds = started.elapsed().as_secs_f64();
@@ -789,9 +779,7 @@ fn query_sessions(
 /// Embedding cost preview and build ([`crate::embeddings`]).
 pub fn handle(
     reader: &polylogue_store::Reader<'_>,
-    what: &str,
     query: Option<&str>,
-    limit: Option<u64>,
     yes: bool,
     context: Context<'_>,
 ) -> Answered<Answer> {
@@ -813,30 +801,17 @@ pub fn handle(
             Err(failure) => return failure.answer(),
         },
     };
-    if what == "build" && !provider.calls {
+    if yes && !provider.calls {
         return error(
             polylogue_model::Code::ModelCallsOff,
             "model calls are off, so no text is sent to the provider; \
              `polylogue set embed.calls on` turns them on",
         );
     }
-    let result = match what {
-        "preview" => preview(reader, &provider, sessions.as_deref(), limit).map(Answer::Preview),
-        "build" => {
-            if provider.kind == ProviderKind::Voyage && !yes {
-                return error(
-                    polylogue_model::Code::Confirm,
-                    "Voyage is paid: `polylogue embed` shows the cost; build with --yes",
-                );
-            }
-            build(context.clock, reader, &provider, sessions.as_deref(), limit).map(Answer::Built)
-        }
-        other => {
-            return error(
-                polylogue_model::Code::BadRequest,
-                format!("embed {other}: status, preview or build"),
-            );
-        }
+    let result = if yes {
+        build(context.clock, reader, &provider, sessions.as_deref()).map(Answer::Built)
+    } else {
+        preview(reader, &provider, sessions.as_deref()).map(Answer::Preview)
     };
     match result {
         Ok(answer) => Answered::ok(answer),
