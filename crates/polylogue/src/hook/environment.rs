@@ -1,11 +1,9 @@
 //! Process, terminal and Git observations the hook command makes and states in its spool line.
+use crate::config::Paths;
 use polylogue_model::JsonExt as _;
 use serde_json::{Value, json};
 use std::path::Path;
-use std::time::Duration;
-
-/// A shared budget for optional Git observation at session start.
-const GIT_BUDGET: Duration = Duration::from_millis(50);
+use std::time::Instant;
 
 pub(super) struct Environment {
     host: String,
@@ -27,7 +25,13 @@ impl Environment {
     }
 }
 
-pub(super) fn snapshot(event: &str, payload: &Value, environment: &Environment) -> Value {
+pub(super) fn snapshot(
+    event: &str,
+    payload: &Value,
+    environment: &Environment,
+    paths: &Paths,
+    deadline: Instant,
+) -> Value {
     let mut result = json!({});
     if let Some(boot) = &environment.boot {
         result["boot_id"] = json!(boot);
@@ -49,7 +53,7 @@ pub(super) fn snapshot(event: &str, payload: &Value, environment: &Environment) 
                 == Some(true));
     if starting {
         if let Some(cwd) = payload.str("cwd") {
-            match git_identity(Path::new(cwd), GIT_BUDGET) {
+            match git_identity(Path::new(cwd), paths, deadline) {
                 Ok((identity, repository, unavailable)) => {
                     result["git_identity"] = identity;
                     if !unavailable.is_empty() {
@@ -83,10 +87,23 @@ fn parent(pid: u32) -> Option<u32> {
 /// boundaries, the `origin` remote without credentials.
 fn git_identity(
     cwd: &Path,
-    budget: Duration,
+    paths: &Paths,
+    deadline: Instant,
 ) -> Result<(Value, Option<String>, Vec<String>), String> {
-    let identity = ::git_identity::observe_within(cwd, budget)
+    let cache = ::git_identity::repository_of(cwd).map(|repository| paths.git_roots(&repository));
+    let known: Option<::git_identity::KnownRoots> = cache
+        .as_ref()
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+    let (identity, next) = ::git_identity::observe_reusing(cwd, deadline, known.as_ref())
         .map_err(|reason| format!("git identity: {reason}"))?;
+    // This is disposable derived state. An unwritable cache never discards a
+    // successful observation, and concurrent hooks publish complete tuples.
+    if known.as_ref() != Some(&next)
+        && let Some(path) = cache
+    {
+        let _ = save_roots(&path, &next);
+    }
     if identity.root_commits.is_empty() {
         return Err("git identity: history reaches no root commit".to_owned());
     }
@@ -107,6 +124,15 @@ fn git_identity(
         identity.remote,
         unavailable,
     ))
+}
+
+fn save_roots(path: &Path, roots: &::git_identity::KnownRoots) -> std::io::Result<()> {
+    let parent = path.parent().expect("Git roots path has a parent");
+    std::fs::create_dir_all(parent)?;
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    serde_json::to_writer(file.as_file_mut(), roots)?;
+    file.persist(path).map_err(|error| error.error)?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -103,7 +103,13 @@ fn gemini_start_and_prompt_events_request_context_through_respond() {
                     .as_str()
                     .is_some_and(|id| !id.is_empty())
             );
-            assert_eq!(request["deadline"], 1500);
+            // Capture and preparation spend the same entry deadline as this request.
+            assert!(
+                request["deadline"]
+                    .as_u64()
+                    .is_some_and(|milliseconds| (1..1_500).contains(&milliseconds)),
+                "{request}"
+            );
             assert!(request.get("op").is_none());
             let delivery = format!("{}-1", request["request_id"].as_str().unwrap());
             let prepared = json!({
