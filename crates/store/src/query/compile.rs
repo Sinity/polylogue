@@ -73,6 +73,8 @@ pub struct Attach {
 /// One top-level condition counted alone, for `--why`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct WhyClause {
+    /// A population-changing default can have its own kept-row count.
+    pub matches_sql: Option<String>,
     pub clause: String,
     pub sql: String,
 }

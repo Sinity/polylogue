@@ -29,10 +29,18 @@ pub fn json<T: Serialize>(answer: &T, _style: TextStyle) -> String {
 pub fn query(answer: &protocol::query::Answer, style: TextStyle) -> String {
     use protocol::query::Answer;
     match answer {
-        Answer::PagedMeasure(measure) => {
-            measurement(&measure.measure, &measure.data, measure.next.as_deref())
-        }
-        Answer::Measure(measure) => measurement(&measure.measure, &measure.data, None),
+        Answer::PagedMeasure(measure) => measurement(
+            &measure.measure,
+            &measure.data,
+            measure.next.as_deref(),
+            &measure.resolved.context.clock.day.zone,
+        ),
+        Answer::Measure(measure) => measurement(
+            &measure.measure,
+            &measure.data,
+            None,
+            &measure.resolved.context.clock.day.zone,
+        ),
         Answer::Rows(found) => rows(found, style),
     }
 }
@@ -61,12 +69,12 @@ pub fn query_plain(answer: &protocol::query::Answer) -> String {
 
 /// A measurement in its measure's text view, with the continuation line.
 /// Measure data is JSON: each measure declares its own shape.
-fn measurement(what: &str, data: &Value, next: Option<&str>) -> String {
-    let text = crate::daemon::measure::find(what)
-        .map_or(polylogue_render::measures::json as fn(&_) -> _, |(m, _)| {
-            m.text
-        });
-    let mut out = text(data);
+fn measurement(what: &str, data: &Value, next: Option<&str>, zone: &str) -> String {
+    let zone = jiff::tz::TimeZone::get(zone).unwrap_or(jiff::tz::TimeZone::UTC);
+    let mut out = crate::daemon::measure::find(what).map_or_else(
+        || polylogue_render::measures::json(data),
+        |(measure, _)| (measure.text)(data, &zone),
+    );
     if let Some(next) = next {
         if !out.ends_with('\n') {
             out.push('\n');

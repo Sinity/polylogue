@@ -828,7 +828,7 @@ impl<'a> Compiler<'a> {
             Test::Subtree(values) => {
                 let mut parts = vec![];
                 for x in values {
-                    parts.push(self.subtree(expr, x));
+                    parts.push(self.path_subtree(expr, x));
                 }
                 format!("({})", parts.join(" OR "))
             }
@@ -910,7 +910,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// `path` and the directories below it, by whole components, exactly.
-    pub(super) fn subtree(&mut self, expr: &str, path: &str) -> String {
+    pub(super) fn path_subtree(&mut self, expr: &str, path: &str) -> String {
         let path = path.trim_end_matches('/');
         let path = if path.is_empty() { "/" } else { path };
         let exact = self.text_param(path);

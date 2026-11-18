@@ -34,6 +34,7 @@ impl<'a> Compiler<'a> {
                 if let Some(cond) = &cond {
                     parts.push(self.cond(cond, scope, false)?);
                 }
+                self.fold_bound_sessions(scope, &top, &mut parts, cond.is_some())?;
                 Ok::<_, QueryError>(parts)
             })();
             self.saved_stack.pop();

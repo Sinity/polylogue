@@ -24,6 +24,7 @@ pub mod survival;
 pub mod time;
 pub mod tool_calls;
 mod usage;
+use crate::query::fields::STRUCTURAL_KINDS;
 pub(crate) use usage::{RESPONSE_ROWS, cost_of, own_responses_sum, unpriced_in};
 
 pub use usage::{
@@ -47,9 +48,8 @@ pub struct Selection {
     pub undated: bool,
     /// Only sessions of these origins (`claude-code`, `codex`, …).
     pub origins: Option<Vec<String>>,
-    /// The selected sessions include the subagent sessions they spawned, at
-    /// any depth: a logical session's work is all of its sessions' work.
-    pub subagents: bool,
+    /// A selected session's figures include its whole logical session.
+    pub logical: bool,
 }
 
 impl Selection {
@@ -120,12 +120,12 @@ impl Selection {
             // query selected.
             params.push(serde_json::Value::from(pks.clone()).to_string().into());
             let n = params.len();
-            clauses.push(if self.subagents {
+            clauses.push(if self.logical {
                 format!(
                     "{column} IN (WITH RECURSIVE logical(pk) AS (SELECT value FROM json_each(?{n}) \
                      UNION SELECT l.child_pk FROM session_link l JOIN session lp ON lp.id = l.parent_id \
                      JOIN logical ON logical.pk = lp.pk \
-                     WHERE l.kind = 'spawn' AND l.child_pk IS NOT NULL) SELECT pk FROM logical)"
+                     WHERE l.kind IN ({STRUCTURAL_KINDS}) AND l.child_pk IS NOT NULL) SELECT pk FROM logical)"
                 )
             } else {
                 format!("{column} IN (SELECT value FROM json_each(?{n}))")

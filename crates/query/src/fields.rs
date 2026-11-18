@@ -443,6 +443,12 @@ fields! {
     ),
     SessionsId = f(Sessions, "id", Prefix, "session ID or a unique prefix").reference(Sessions),
     SessionsOrigin = f(Sessions, "origin", Match, "claude-code, codex, chatgpt, …"),
+    SessionsPhysical = f(
+        Sessions,
+        "physical",
+        Bool,
+        "list physical sessions one by one instead of logical sessions",
+    ),
     SessionsKind = v(
         Sessions,
         "kind",

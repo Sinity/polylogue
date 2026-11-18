@@ -33,7 +33,10 @@ fn hermes_query_read_export_keep_compression_parents() {
     });
     let query = cli(
         &env,
-        &["--json", "sessions where origin:hermes | sort by id"],
+        &[
+            "--json",
+            "sessions where physical:true origin:hermes | sort by id",
+        ],
     );
     assert!(query.status.success(), "{query:?}");
     let query = listing(json(&query));

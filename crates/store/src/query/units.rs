@@ -11,9 +11,9 @@
 //! aliases with an `n` prefix (`{ns}`, `{nt}`, `{nr}`, …), its FROM clause as
 //! `{from}` and the condition on it as `{cond}`.
 
+use super::fields::STRUCTURAL_KINDS;
 use crate::query::compile::ColKind;
 use crate::query::fields::{self, Aliases, Expr};
-use polylogue_model::SessionKind;
 pub use polylogue_query::defaults::DefaultId;
 pub use polylogue_query::units::Unit;
 
@@ -186,7 +186,7 @@ fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
              ancestors(hit_session,block,at,message,rank) AS (\
                SELECT hit_session,block,at,message,rank FROM owned UNION \
                SELECT parent.pk,child.block,child.at,child.message,child.rank FROM ancestors child \
-               CROSS JOIN session_link l ON l.child_pk=child.hit_session AND l.kind='spawn' \
+               CROSS JOIN session_link l ON l.child_pk=child.hit_session AND l.kind IN ({STRUCTURAL_KINDS}) \
                CROSS JOIN session parent ON parent.id=l.parent_id) \
              SELECT hit_session AS session_pk,block,at,rank FROM ({inherited}))",
             h.block_kind("xb"),
@@ -204,7 +204,7 @@ fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
          ancestors(session_pk, rank) AS (\
            SELECT session_pk, rank FROM matched UNION \
            SELECT parent.pk, child.rank FROM ancestors child \
-           CROSS JOIN session_link l ON l.child_pk=child.session_pk AND l.kind='spawn' \
+           CROSS JOIN session_link l ON l.child_pk=child.session_pk AND l.kind IN ({STRUCTURAL_KINDS}) \
            CROSS JOIN session parent ON parent.id=l.parent_id) \
          SELECT session_pk, min(rank) AS rank FROM ancestors GROUP BY session_pk)",
             h.block_kind("xb"),
@@ -437,12 +437,6 @@ fn turns_from(a: &Aliases) -> String {
         r = a.row,
         s = a.s
     )
-}
-
-/// Sessions another session spawned (subagents, sidechains, compactions)
-/// stay out of a sessions list unless a condition asks about structure.
-fn main_sessions(a: &Aliases) -> String {
-    format!("{}.kind = '{}'", a.s, SessionKind::Main.as_str())
 }
 
 /// Adjacent counted calls use the same complete session order as `seq`.
@@ -1019,7 +1013,7 @@ mod tests;
 /// The SQL of a default filter over a unit's aliases.
 pub fn default_sql(id: DefaultId, a: &Aliases) -> String {
     match id {
-        DefaultId::MainSessions => main_sessions(a),
+        DefaultId::LogicalSessions => "1".into(),
         DefaultId::NotStub => a.expand("{s}.stub = 0"),
         DefaultId::SessionsVisible | DefaultId::Visible => not_hidden(a),
         DefaultId::NotDuplicate => a.expand("{m}.duplicate_of IS NULL"),

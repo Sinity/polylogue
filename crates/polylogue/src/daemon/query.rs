@@ -1110,7 +1110,7 @@ pub(crate) fn select_usage(
         sessions,
         since: m.since,
         until: m.until,
-        subagents: true,
+        logical: true,
         ..Default::default()
     })
 }

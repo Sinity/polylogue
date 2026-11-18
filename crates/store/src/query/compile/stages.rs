@@ -131,11 +131,12 @@ impl<'a> Compiler<'a> {
                 let partial = match field {
                     "cost" => Some(unpriced(&format!("SELECT {s}.pk"))),
                     "tree_cost" => {
-                        let tree = fields::subtree(s);
+                        let tree = fields::descendants(s);
                         Some(format!(
                             "({} OR EXISTS (SELECT 1 FROM session_link xl JOIN session xs ON xs.id = xl.parent_id \
-                         WHERE xl.kind = 'spawn' AND xl.child_pk IS NULL AND xs.pk IN ({tree})))",
-                            unpriced(&tree)
+                         WHERE xl.kind IN ({}) AND xl.child_pk IS NULL AND xs.pk IN ({tree})))",
+                            unpriced(&tree),
+                            fields::STRUCTURAL_KINDS
                         ))
                     }
                     _ => None,
@@ -332,6 +333,7 @@ impl<'a> Compiler<'a> {
         };
         let parent_link = self.under_parent(parent.unit, &sc, "_parents.value", session)?;
         w.push(parent_link);
+        self.fold_bound_sessions(&sc, &top, &mut w, true)?;
         let ctes = if self.ctes.is_empty() {
             String::new()
         } else {

@@ -27,9 +27,10 @@ fn names_are_unique_per_unit() {
 /// from its SQL, except one whose displayed value adds a read-time value
 /// to a stored column (`tool_calls.outcome` adds `pending`): its rule
 /// compares the stored column so the column's index serves the condition.
+/// `physical` is a Boolean listing control whose false form is refused.
 #[test]
 fn special_fields_and_read_time_values_have_a_compile_rule() {
-    let read_time = [FieldId::ToolCallsOutcome];
+    let read_time = [FieldId::ToolCallsOutcome, FieldId::SessionsPhysical];
     for &id in FieldId::ALL {
         assert_eq!(
             id.declaration().kind == Kind::Special || read_time.contains(&id),

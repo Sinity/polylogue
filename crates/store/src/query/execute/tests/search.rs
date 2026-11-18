@@ -16,7 +16,7 @@ const DOWNWARD: &str = "WITH hits AS MATERIALIZED (
         AND m.session_pk IN (WITH RECURSIVE tree(pk) AS (
           SELECT s.pk UNION SELECT l.child_pk FROM link l
           JOIN session parent ON parent.id=l.parent_id JOIN tree ON tree.pk=parent.pk
-          WHERE l.kind='spawn' AND l.child_pk IS NOT NULL
+          WHERE l.kind IN ('spawn','fork','continuation','resume') AND l.child_pk IS NOT NULL
         ) SELECT pk FROM tree)) AS rank
     FROM session s WHERE s.origin='test' AND s.kind='main'
 ) WHERE rank IS NOT NULL ORDER BY rank,last_activity_at DESC,id";
@@ -1219,7 +1219,8 @@ fn ranking_reuses_one_score_for_the_rank_field() {
             "the score is one stored value, reused by ordering and presentation: {row}"
         );
     }
-    let expected = reader.query_rows(&program).unwrap();
+    let mut expected = result(&reader.query_rows(&program).unwrap());
+    expected.sort_by(|left, right| left.0.cmp(&right.0));
     for query in [
         "needle",
         "needle | sort by id",
@@ -1230,7 +1231,11 @@ fn ranking_reuses_one_score_for_the_rank_field() {
         for row in &mut actual {
             present(&projected, row).unwrap();
         }
-        assert_eq!(result(&actual), result(&expected), "{query}");
+        // Explicit sort keys can change row order when scores tie. Every
+        // identity must retain the same single stored score under each sort.
+        let mut scores = result(&actual);
+        scores.sort_by(|left, right| left.0.cmp(&right.0));
+        assert_eq!(scores, expected, "{query}");
     }
 }
 

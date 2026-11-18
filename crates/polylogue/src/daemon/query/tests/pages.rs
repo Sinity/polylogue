@@ -2,6 +2,45 @@ use super::*;
 use polylogue_testkit::{ClaudeHome, claude_user};
 
 #[test]
+fn continuation_refuses_the_pre_logical_session_compiler() {
+    let w = morrow();
+    let text = "sessions | sort by id";
+    let mut request = ask(text);
+    request.page_size = Some(1);
+    let first = run_q(&w, request).unwrap();
+    let pool = w.fx.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let request = ask(text);
+    let opts = options(&reader, &request, 1).unwrap();
+    let question = page::identity(text, &opts).unwrap();
+    let seal = CursorSeal::new(reader.cursor_key().unwrap());
+    let mut cursor = page::open(
+        first["next"].as_str().unwrap(),
+        &seal,
+        question,
+        &reader.change_position().unwrap(),
+        reader.index_identity().unwrap(),
+        &opts,
+    )
+    .unwrap();
+    let mut current = ask(text);
+    current.page_size = Some(1);
+    current.cursor = first["next"].as_str();
+    assert!(run_q(&w, current).is_ok());
+
+    // This is an authentic predecessor cursor, not an invalid signature.
+    cursor
+        .context
+        .versions
+        .insert("compiler".into(), "shared-query-v3".into());
+    let legacy = seal.seal(&cursor).unwrap().as_str().to_owned();
+    let mut resumed = ask(text);
+    resumed.page_size = Some(1);
+    resumed.cursor = Some(&legacy);
+    assert_eq!(run_q(&w, resumed).unwrap_err().code(), "stale_cursor");
+}
+
+#[test]
 fn counting_ranked_rows_does_not_sort_or_project_the_answer() {
     let w = morrow();
     let pool = w.fx.reads().unwrap();

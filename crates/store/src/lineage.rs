@@ -1,5 +1,5 @@
 //! One indexed ancestry walk for derived products, current reads and queries.
-use crate::Result;
+use crate::{Result, query::fields::STRUCTURAL_KINDS};
 use polylogue_model::{
     SessionId,
     read::{LineageIssue, SessionLineage},
@@ -57,13 +57,13 @@ fn walk(session: &str) -> String {
         instr(a.path,printf('/%d/',p.pk))>0
       FROM ancestry a JOIN session p ON p.id=(
         SELECT min(l.parent_id) FROM session_link_identity l
-        WHERE l.child_id=a.id AND l.kind IN ('spawn','fork','continuation','resume')
+        WHERE l.child_id=a.id AND l.kind IN ({STRUCTURAL_KINDS})
         HAVING count(DISTINCT l.parent_id)=1)
       WHERE a.cycle=0 AND p.stub=0
     ), terminal AS (SELECT * FROM ancestry ORDER BY depth DESC LIMIT 1),
     observed AS (SELECT t.*, (SELECT json_group_array(parent_id) FROM (
       SELECT DISTINCT l.parent_id FROM session_link_identity l
-      WHERE l.child_id=t.id AND l.kind IN ('spawn','fork','continuation','resume')
+      WHERE l.child_id=t.id AND l.kind IN ({STRUCTURAL_KINDS})
       ORDER BY l.parent_id)) AS parents FROM terminal t)"
     )
 }

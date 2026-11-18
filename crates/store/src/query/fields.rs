@@ -2,6 +2,9 @@
 use super::ast::Unit;
 use super::compile::custom_fields::{self as custom, Custom};
 use Unit::*;
+
+/// Link kinds that join a logical session; `reference` never does.
+pub(crate) const STRUCTURAL_KINDS: &str = "'spawn','fork','continuation','resume'";
 pub use polylogue_query::fields::{FIELDS, Field, FieldId};
 pub use polylogue_query::fields::{
     Kind, SESSION_OUTCOMES, construct, has_session, names, relation,
@@ -311,6 +314,7 @@ pub fn rule(id: FieldId) -> Rule {
         DocumentsVersions => Rule::NONE.sql("(SELECT count(DISTINCT ds.version_hash) FROM document_source ds WHERE ds.document_pk={r}.pk)"),
         SessionsId => Rule::NONE.sql("{s}.id"),
         SessionsOrigin => Rule::NONE.sql("{s}.origin"),
+        SessionsPhysical => Rule::NONE.sql("1").custom(custom::physical),
         SessionsKind => Rule::NONE.sql("{s}.kind"),
         SessionsTitle => Rule::NONE.sql_fn(sessions_title),
         SessionsRepo => Rule::NONE.custom(custom::repo).sql("{s}.repo"),
@@ -723,7 +727,7 @@ fn sessions_cost(a: &Aliases) -> String {
 }
 
 fn sessions_tree_cost(a: &Aliases) -> String {
-    crate::measure::cost_of(&subtree(&a.s))
+    crate::measure::cost_of(&descendants(&a.s))
 }
 
 fn sessions_live(a: &Aliases, now: i64) -> String {
@@ -866,12 +870,20 @@ pub fn hidden(s: &str) -> String {
     )
 }
 
-/// The session and every session below it in its subagent tree.
-pub fn subtree(s: &str) -> String {
+/// The session and every session below it through structural links.
+pub fn descendants(s: &str) -> String {
     format!(
         "WITH RECURSIVE tr(pk) AS (SELECT {s}.pk UNION SELECT l.child_pk FROM session_link l \
          JOIN session lp ON lp.id = l.parent_id JOIN tr ON tr.pk = lp.pk \
-         WHERE l.kind = 'spawn' AND l.child_pk IS NOT NULL) SELECT pk FROM tr"
+         WHERE l.kind IN ({STRUCTURAL_KINDS}) AND l.child_pk IS NOT NULL) SELECT pk FROM tr"
+    )
+}
+
+/// The known logical root, or the session itself when its ancestry is unresolved.
+pub fn logical_root(s: &str) -> String {
+    format!(
+        "(SELECT r.pk FROM session r WHERE r.id = coalesce({}, {s}.id))",
+        crate::lineage::value_sql(&format!("{s}.pk"), "root")
     )
 }
 

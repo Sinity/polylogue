@@ -855,7 +855,10 @@ pub fn why(
         let defaults = program.why_defaults.iter().map(|w| {
             Ok(Explanation {
                 clause: w.clause.clone(),
-                matches: of,
+                matches: match &w.matches_sql {
+                    Some(sql) => count(sql)?,
+                    None => of,
+                },
                 of: count(&w.sql)?,
             })
         });

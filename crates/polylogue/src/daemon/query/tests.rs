@@ -544,33 +544,33 @@ fn groups(v: &Value, key: &str) -> Vec<(String, u64)> {
 fn session_queries_follow_the_morrow_examples() {
     let w = morrow();
     // 1: subagent #3 excluded by default, newest activity first.
-    assert_eq!(ids(&q(&w, "origin:claude-code")), ["#4", "#2", "#1"]);
+    assert_eq!(ids(&q(&w, "origin:claude-code")), ["#2", "#1"]);
     // 2: naming kind drops the default.
     assert_eq!(ids(&q(&w, "origin:claude-code kind:subagent")), ["#3"]);
     // 5: repo by name matches name, owner/name and URL.
-    assert_eq!(ids(&q(&w, "repo:morrow")), ["#6", "#5"]);
+    assert_eq!(ids(&q(&w, "repo:morrow")), ["#5"]);
     // 8: unknown cost never matches a comparison.
     let v = q(&w, "sessions where cost > 1");
-    assert_eq!(ids(&v), ["#4", "#2", "#1"]);
-    assert_eq!(v["rows"][1]["cost"], 2.85);
+    assert_eq!(ids(&v), ["#2", "#1"]);
+    assert_eq!(v["rows"][0]["cost"], 2.85);
     // 9: cost:unknown.
-    assert_eq!(ids(&q(&w, "cost:unknown")), ["#8", "#6", "#5", "#7"]);
+    assert_eq!(ids(&q(&w, "cost:unknown")), ["#8", "#5", "#7"]);
     // 11: own messages only.
     let v = q(&w, "sessions where messages >= 6");
     assert_eq!(ids(&v), ["#1"]);
     // 12.
     assert_eq!(ids(&q(&w, "sessions where tool_calls > 2")), ["#2", "#1"]);
     // 26: since a date.
-    assert_eq!(ids(&q(&w, "since:2026-10-05")), ["#8", "#6", "#5"]);
+    assert_eq!(ids(&q(&w, "since:2026-10-05")), ["#8", "#5"]);
     // 27: whole logical days, inclusive.
     assert_eq!(
         ids(&q(&w, "started between 2026-10-02 and 2026-10-03")),
-        ["#4", "#2"]
+        ["#2"]
     );
     // 28.
-    assert_eq!(ids(&q(&w, "has:compaction")), ["#4"]);
+    assert_eq!(ids(&q(&w, "has:compaction")), ["#2"]);
     // 29: only the subagent used the model.
-    assert_eq!(q(&w, "model:claude-opus-5-5")["outcome"], "empty");
+    assert_eq!(ids(&q(&w, "model:claude-opus-5-5")), ["#2"]);
     assert_eq!(ids(&q(&w, "model:claude-opus-5-5 kind:*")), ["#3"]);
     // 30.
     assert_eq!(ids(&q(&w, "origin:(chatgpt|claude-ai)")), ["#8", "#7"]);
@@ -595,18 +595,15 @@ fn aggregates_count_unknowns_apart() {
     assert_eq!(
         groups(&v, "origin"),
         [
-            ("claude-code".into(), 3),
-            ("codex".into(), 2),
+            ("claude-code".into(), 2),
             ("chatgpt".into(), 1),
-            ("claude-ai".into(), 1)
+            ("claude-ai".into(), 1),
+            ("codex".into(), 1)
         ]
     );
     // After grouping, `| where` filters groups.
     let v = q(&w, "sessions | group by origin | count | where count >= 2");
-    assert_eq!(
-        groups(&v, "origin"),
-        [("claude-code".into(), 3), ("codex".into(), 2)]
-    );
+    assert_eq!(groups(&v, "origin"), [("claude-code".into(), 2)]);
 }
 
 #[test]
@@ -679,7 +676,7 @@ fn exists_and_seq_match_one_call_and_an_order() {
             &w,
             "sessions where exists tool_calls(action:shell AND outcome:error)"
         )),
-        ["#4", "#2"]
+        ["#2"]
     );
     // 21: fail, edit, pass, in that order.
     let v = q(
@@ -885,7 +882,7 @@ fn kept_results_read_back_as_they_were_kept() {
         &w,
         "sessions where exists tool_calls(action:shell AND outcome:error)",
     );
-    assert_eq!(ids(&kept), ["#4", "#2"]);
+    assert_eq!(ids(&kept), ["#2"]);
     assert!(kept["match_columns"].is_array(), "match rows kept too");
     w.fx.kept_result(
         "0199-kept",
@@ -895,9 +892,9 @@ fn kept_results_read_back_as_they_were_kept() {
     .unwrap();
     let v = q(&w, "result:0199-kept");
     assert_eq!(v["unit"], "sessions");
-    assert_eq!(ids(&v), ["#4", "#2"]);
+    assert_eq!(ids(&v), ["#2"]);
     let v = q(&w, "result:0199-kept | count");
-    assert_eq!(v["rows"][0]["count"], 2);
+    assert_eq!(v["rows"][0]["count"], 1);
     let v = q(&w, "result:0199-kept.matches | agg count");
     assert_eq!(
         v["rows"][0]["count"].as_u64(),
@@ -1078,22 +1075,25 @@ fn why_names_default_kind() {
     let mut a = ask("origin:claude-code");
     a.why = true;
     let v = run_q(&w, a).unwrap();
-    assert_eq!(ids(&v), ["#4", "#2", "#1"]);
-    let main = v["why"]
+    assert_eq!(ids(&v), ["#2", "#1"]);
+    let logical = v["why"]
         .as_array()
         .unwrap()
         .iter()
         .find(|w| w["clause"].as_str().unwrap().contains("kind:"))
-        .expect("the main-session default is named");
-    assert!(main["clause"].as_str().unwrap().contains("id:"), "{main}");
-    assert_eq!(main["matches"], 7);
-    assert_eq!(main["of"], 8);
+        .expect("the logical-session default is named");
+    assert!(
+        logical["clause"].as_str().unwrap().contains("id:"),
+        "{logical}"
+    );
+    assert_eq!(logical["matches"], 5);
+    assert_eq!(logical["of"], 8);
 }
 
 #[test]
 fn id_condition_finds_subagent_or_names_filter() {
     let w = morrow();
-    // An exact id names its row: the main-session default does not hide
+    // An exact id names its physical row: the logical default does not fold
     // subagent #3.
     let v = q(
         &w,
@@ -1117,20 +1117,20 @@ fn an_empty_result_explains_itself() {
         .partition(|w| w["clause"].as_str().unwrap().starts_with("default"));
     assert_same_question(clauses[0]["clause"].as_str().unwrap(), "repo:other");
     assert_eq!(clauses[0]["matches"], 0);
-    assert_eq!(clauses[0]["of"], 7);
-    // The defaults come first and name what they hid: the main-session
-    // default keeps 7 of the 8 sessions (subagent #3 is out).
+    assert_eq!(clauses[0]["of"], 8);
+    // The defaults name the five logical roots of eight physical sessions:
+    // #3 and resume #4 fold into #2, and fork #6 folds into #5.
     assert!(why[0]["clause"].as_str().unwrap().starts_with("default"));
-    let main = defaults
+    let logical = defaults
         .iter()
         .find(|w| w["clause"].as_str().unwrap().contains("kind:"))
-        .expect("the main-session default is named");
-    assert_eq!(main["matches"], 7);
-    assert_eq!(main["of"], 8);
+        .expect("the logical-session default is named");
+    assert_eq!(logical["matches"], 5);
+    assert_eq!(logical["of"], 8);
     // 33: semantic search is not enabled.
     let v = q(&w, "similar:\"ambiguous date formats\"");
     assert_eq!(v["outcome"], "incomplete");
-    assert_eq!(v["count"], 7);
+    assert_eq!(v["count"], 5);
 }
 
 /// Similarities for `similar:` computed from stored vectors: the texts of the
@@ -1191,7 +1191,7 @@ fn near_ranks_every_row_by_similarity() {
     assert_eq!(v["outcome"], "rows", "{v}");
     assert_eq!(v["ranked"], true);
     // Ranking keeps every row; the nearest comes first.
-    assert_eq!(v["count"], 7);
+    assert_eq!(v["count"], 5);
     assert_eq!(ids(&v)[0], "#2");
 }
 
@@ -1202,11 +1202,11 @@ fn near_applies_its_conditions_before_ranking() {
     // excludes #2 still ranks what it keeps instead of finding nothing.
     let s = similarity(&w, "%0002-4000%");
     let near = |_: &str| Ok(std::sync::Arc::clone(&s));
-    let mut a = ask("similar:x -id:claude-code:7f3a2c10-0002");
+    let mut a = ask("physical:true similar:x -id:claude-code:7f3a2c10-0002");
     a.embeddings = true;
     a.near = Some(&near);
     let v = run_q(&w, a).unwrap();
-    assert_eq!(v["count"], 6, "{v}");
+    assert_eq!(v["count"], 7, "{v}");
     assert!(!ids(&v).contains(&"#2".to_owned()));
     assert!(
         v["rows"]
@@ -1333,7 +1333,7 @@ fn attached_rows_follow_each_session() {
         assert_eq!(m.len(), 1, "{row}");
         assert_eq!(m[0]["role"], "assistant");
     }
-    assert_eq!(v["rows"][1]["messages"][0]["id"], "claude-code:m2a0");
+    assert_eq!(v["rows"][0]["messages"][0]["id"], "claude-code:m2a0");
 }
 
 /// `[first:n, last:k]` keeps the last k of each parent's first n children,
@@ -1650,7 +1650,7 @@ mod metadata;
 fn a_query_document_carries_its_kind_in_its_fields_and_no_outcome() {
     let mut w = morrow();
     w.fx.derive().unwrap();
-    let empty = document(&w, "model:claude-opus-5-5");
+    let empty = document(&w, "origin:absent");
     assert!(empty.get("outcome").is_none(), "{empty}");
     let typed: crate::protocol::query::Answer = serde_json::from_value(empty).unwrap();
     assert_eq!(typed.rows().unwrap().len(), 0);
@@ -1752,4 +1752,245 @@ fn optional_count_timeout_preserves_a_completed_query_answer() {
         }
         other => panic!("completed rows lost to optional count: {other:?}"),
     }
+}
+
+/// Related sessions have different directories and dates. Logical listings must
+/// find the work where it occurred, not just where the root began.
+fn logical_work() -> TestArchive {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fx = Fixture::new(&dir.path().join("archive")).unwrap();
+    for (id, kind, cwd, day) in [
+        ("codex:work-root", "main", "/w/a", 1),
+        ("codex:work-child", "subagent", "/w/b", 2),
+        ("codex:work-continuation", "main", "/w/c", 3),
+        ("codex:work-resume", "main", "/w/d", 4),
+        ("codex:work-fork", "subagent", "/w/e", 5),
+        ("codex:work-reference", "main", "/w/f", 6),
+    ] {
+        let pk = fx
+            .session(SessionFacts {
+                id,
+                kind,
+                cwd: Some(cwd),
+                started: at(day, 9),
+                last: at(day, 10),
+                ..Default::default()
+            })
+            .unwrap();
+        fx.message(
+            pk,
+            MessageFacts {
+                cost_nusd: Some(100),
+                ..msg(
+                    &scoped(id, &format!("response-{day}")),
+                    "assistant",
+                    "model",
+                    if day == 5 {
+                        "forkneedle completed"
+                    } else {
+                        "work completed"
+                    },
+                    at(day, 10),
+                )
+            },
+        )
+        .unwrap();
+    }
+    for (parent, child, kind) in [
+        ("codex:work-root", "codex:work-child", "spawn"),
+        (
+            "codex:work-child",
+            "codex:work-continuation",
+            "continuation",
+        ),
+        ("codex:work-continuation", "codex:work-resume", "resume"),
+        ("codex:work-resume", "codex:work-fork", "fork"),
+        ("codex:work-root", "codex:work-reference", "reference"),
+    ] {
+        fx.link(parent, child, kind, None).unwrap();
+    }
+    TestArchive { _dir: dir, fx }
+}
+
+#[test]
+fn subagent_in_other_directory_folds_into_its_session() {
+    let w = logical_work();
+    let v = q(
+        &w,
+        "sessions where cwd:/w/b since:2026-10-02 until:2026-10-02",
+    );
+    assert_eq!(ids(&v), ["codex:work-root"]);
+    assert_eq!(v["count"], 1);
+}
+
+#[test]
+fn continuation_folds_into_its_root() {
+    let mut w = logical_work();
+    for derived in [false, true] {
+        if derived {
+            w.fx.derive().unwrap();
+        }
+        for cwd in ["/w/c", "/w/d", "/w/e"] {
+            assert_eq!(
+                ids(&q(&w, &format!("sessions where cwd:{cwd}"))),
+                ["codex:work-root"]
+            );
+        }
+        // A reference is evidence of a relation, not structural ownership.
+        assert_eq!(
+            ids(&q(&w, "sessions where cwd:/w/f")),
+            ["codex:work-reference"]
+        );
+    }
+}
+
+#[test]
+fn physical_true_lists_each_session() {
+    let w = logical_work();
+    assert_eq!(q(&w, "sessions where physical:true")["count"], 6);
+    assert_eq!(q(&w, "sessions")["count"], 2);
+    assert_eq!(
+        ids(&q(&w, "sessions where physical:true cwd:/w/c")),
+        ["codex:work-continuation"]
+    );
+    assert_eq!(
+        ids(&q(&w, "sessions where id:codex:work-continuation")),
+        ["codex:work-continuation"]
+    );
+    assert_eq!(q(&w, "sessions where kind:main")["count"], 4);
+    // Naming kind under OR does not lift the source's logical default.
+    assert_eq!(
+        q(&w, "sessions where (kind:main OR kind:subagent)")["count"],
+        2
+    );
+}
+
+#[test]
+fn physical_false_refused() {
+    let w = logical_work();
+    let failure = run_q(&w, ask("sessions where physical:false")).unwrap_err();
+    assert!(
+        failure
+            .message
+            .contains("physical:false is the default listing"),
+        "{failure:?}"
+    );
+}
+
+#[test]
+fn physical_complements_can_share_a_logical_root() {
+    let w = logical_work();
+    for condition in ["cwd:/w/a", "NOT cwd:/w/a"] {
+        assert!(
+            ids(&q(&w, &format!("sessions where {condition}")))
+                .contains(&"codex:work-root".to_owned()),
+            "{condition}"
+        );
+    }
+}
+
+#[test]
+fn matching_fork_work_keeps_its_root_rank_and_source_snippet() {
+    let w = logical_work();
+    let answer = q(&w, "sessions where cwd:/w/e forkneedle");
+    assert_eq!(ids(&answer), ["codex:work-root"]);
+    assert!(answer["rows"][0]["rank"].is_number());
+    assert!(
+        answer["rows"][0]["snippet"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("forkneedle")
+    );
+    assert_eq!(
+        ids(&q(&w, "sessions where physical:true cwd:/w/e forkneedle")),
+        ["codex:work-fork"]
+    );
+}
+
+#[test]
+fn unresolved_ancestry_stays_separate_and_does_not_use_a_stale_root() {
+    let mut w = logical_work();
+    w.fx.derive().unwrap();
+    // A second recorded parent makes the old, previously derived root invalid.
+    w.fx.link(
+        "codex:work-reference",
+        "codex:work-continuation",
+        "spawn",
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        ids(&q(&w, "sessions where cwd:/w/c")),
+        ["codex:work-continuation"]
+    );
+    assert_eq!(
+        ids(&q(&w, "sessions where cwd:/w/d")),
+        ["codex:work-resume"]
+    );
+    // A cycle likewise never chooses an arbitrary logical root.
+    w.fx.link("codex:work-child", "codex:work-root", "resume", None)
+        .unwrap();
+    assert_eq!(ids(&q(&w, "sessions where cwd:/w/b")), ["codex:work-child"]);
+}
+
+#[test]
+fn why_counts_folded_sessions() {
+    let w = logical_work();
+    let mut request = ask("sessions where cwd:/w/b");
+    request.why = true;
+    let answer = run_q(&w, request).unwrap();
+    let clauses = answer["why"].as_array().unwrap();
+    let logical = clauses
+        .iter()
+        .find(|row| row["clause"].as_str().unwrap().contains("fold into"))
+        .unwrap();
+    assert_eq!(logical["matches"], 2);
+    assert_eq!(logical["of"], 6);
+    let cwd = clauses
+        .iter()
+        .find(|row| row["clause"].as_str().unwrap().starts_with("cwd:"))
+        .unwrap();
+    assert_eq!(cwd["matches"], 1);
+    assert_eq!(cwd["of"], 6);
+}
+
+#[test]
+fn saved_sessions_fold_their_own_matches() {
+    let mut w = logical_work();
+    save_definition(&mut w, "other_directory", "sessions where cwd:/w/c");
+    assert_eq!(
+        ids(&q(&w, "sessions where query:other_directory")),
+        ["codex:work-root"]
+    );
+    save_definition(
+        &mut w,
+        "physical_directory",
+        "sessions where physical:true cwd:/w/c",
+    );
+    assert_eq!(
+        ids(&q(&w, "sessions where query:physical_directory")),
+        ["codex:work-continuation"]
+    );
+}
+
+#[test]
+fn hidden_logical_root_hides_listing_but_not_measurement() {
+    let mut w = logical_work();
+    w.fx.note(
+        "hidden",
+        None,
+        Some("hidden work"),
+        "session:codex:work-root",
+    )
+    .unwrap();
+    let bare = ids(&q(&w, "sessions"));
+    let matched = ids(&q(&w, "sessions where (kind:main OR kind:subagent)"));
+    assert_eq!(bare, ["codex:work-reference"]);
+    assert_eq!(
+        matched, bare,
+        "outer root visibility applies to both access paths"
+    );
+    assert!(ids(&q(&w, "sessions where cwd:/w/c")).is_empty());
+    let usage = q(&w, "sessions where cwd:/w/c | measure usage");
+    assert_eq!(usage["data"]["known_response_messages"], 5);
 }

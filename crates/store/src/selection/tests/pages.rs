@@ -217,6 +217,10 @@ fn a_row_written_between_pages_skips_and_repeats_nothing() {
                     ..Default::default()
                 })
                 .unwrap();
+            // Recorded ownership folds this newly written child into a root
+            // already present in the answer. An unlinked child is a new root.
+            f.link("test:many-0", "test:spawned", "spawn", None)
+                .unwrap();
             f.message(
                 session,
                 MessageFacts {

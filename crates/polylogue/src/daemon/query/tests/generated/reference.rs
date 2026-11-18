@@ -491,16 +491,15 @@ impl Leaf {
 /// conditions, in the unit's default order.
 fn source(rows: &Rows, unit: Unit, cond: Option<&Cond>) -> Vec<Row> {
     let top = cond.map(Cond::top_level).unwrap_or_default();
-    let names_kind = top.iter().any(|l| matches!(l, Leaf::Subagent(_)));
     let names_active = top
         .iter()
         .any(|l| matches!(l, Leaf::Abandoned | Leaf::PathUnknown));
     let sessions = rows.sessions.iter().enumerate();
     match unit {
         Unit::Sessions => {
-            let mut out: Vec<(usize, &SessionRow)> = sessions
-                .filter(|(_, s)| names_kind || !s.subagent)
-                .collect();
+            // These generated sessions have no relationship evidence. Each
+            // is its own logical root, including an unlinked subagent.
+            let mut out: Vec<(usize, &SessionRow)> = sessions.collect();
             // Newest activity first, unknown last, then the ID, highest first.
             out.sort_by_key(|(i, s)| {
                 (

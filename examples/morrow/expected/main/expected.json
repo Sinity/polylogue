@@ -1,5 +1,5 @@
 {
-  "_about": "Expected results of the spec's main-archive examples on the Morrow archive (examples/archive/): query.md examples 1-38, the overview, search chrono, and the by-model and by-day reports. Sessions are named by their FACTS.md number; rows are in result order (newest activity first) unless the query has no order, where they are sorted. Times are local (Europe/Warsaw, CEST); costs cover sessions with known totals in exact USD. Codex token columns are recorded observation subsets, not complete session usage. The real-loop Morrow query tests check these examples against current parsers and list remaining gaps. Edit the checked expectations with their source story and tests.",
+  "_about": "Expected results of the spec's main-archive examples on the Morrow archive (examples/archive/): query.md examples 1-38, the overview, search chrono, and the by-model and by-day reports. Sessions are named by their FACTS.md number; rows are in result order (newest activity first) unless the query has no order, where they are sorted. Times are local (Europe/Warsaw, CEST); costs cover sessions with known totals in exact USD. Codex token columns are recorded observation subsets, not complete session usage. The real-loop Morrow query tests check these examples against current parsers and list remaining gaps. Edit the checked expectations with their source story and tests. Session query expectations follow logical roots: fork #6 folds into #5; explicit structure and physical-row queries retain each original session.",
   "queries": {
     "1 origin:claude-code": [
       "#4",
@@ -17,16 +17,14 @@
     },
     "4 sessions | group by origin | count": {
       "claude-code": 3,
-      "codex": 2,
+      "codex": 1,
       "chatgpt": 1,
       "claude-ai": 1
     },
     "5 repo:morrow": [
-      "#6",
       "#5"
     ],
     "6 tag:project:morrow": [
-      "#6",
       "#5",
       "#4",
       "#2",
@@ -42,7 +40,6 @@
     ],
     "9 cost:unknown": [
       "#8",
-      "#6",
       "#5",
       "#7"
     ],
@@ -53,7 +50,6 @@
       "#1"
     ],
     "11 sessions where messages >= 10": [
-      "#6",
       "#5",
       "#4",
       "#2",
@@ -140,7 +136,6 @@
     ],
     "26 since:2026-10-05": [
       "#8",
-      "#6",
       "#5"
     ],
     "27 started between 2026-10-02 and 2026-10-03": [
@@ -151,7 +146,9 @@
       "#4"
     ],
     "29 model:claude-opus-5-5": {
-      "default": [],
+      "default": [
+        "#2"
+      ],
       "kind:*": [
         "#3"
       ],
@@ -172,10 +169,6 @@
     ],
     "32 origin:codex with messages(id, role)[role:assistant, last:1]": [
       [
-        "#6",
-        "Strict mode is in: Options { strict: true } rejects same-day weekday phrases. Tests and clippy pass."
-      ],
-      [
         "#5",
         "Noted on the message above: next friday bug in weekday_offset()."
       ]
@@ -184,7 +177,6 @@
       "outcome": "incomplete",
       "rows": [
         "#8",
-        "#6",
         "#5",
         "#7",
         "#4",
