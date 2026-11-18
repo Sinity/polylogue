@@ -834,10 +834,20 @@ fn terminal_resume_without_recorded_directory_is_refused() {
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("directory_unknown"), "{stderr}");
+    let fallback = stderr
+        .lines()
+        .find_map(|line| {
+            line.split_once("continue with context instead: ")
+                .map(|(_, command)| command)
+        })
+        .expect("a usable context-assisted command");
+    let continued = printed_cli(&env, fallback);
+    assert!(continued.status.success(), "{continued:?}");
     assert!(
-        stderr.contains("polylogue claude-code:s1 brief"),
-        "{stderr}"
+        String::from_utf8_lossy(&continued.stdout).contains("no directory"),
+        "{continued:?}"
     );
+    assert_eq!(fallback, "polylogue session:claude-code:s1 brief");
 }
 
 #[test]

@@ -677,8 +677,8 @@ fn run_plan(
             print::diagnostic(
                 "",
                 &format!(
-                    "this session has no harness resume; continue with context instead: polylogue {} brief",
-                    plan.session
+                    "this session has no harness resume; continue with context instead: {}",
+                    print::command_line(&plan.context_assisted)
                 ),
                 None,
                 output.stderr_color()
@@ -701,8 +701,8 @@ fn run_plan(
                 print::diagnostic(
                     "",
                     &format!(
-                        "{reason}; continue with context instead: polylogue {} brief",
-                        plan.session
+                        "{reason}; continue with context instead: {}",
+                        print::command_line(&plan.context_assisted)
                     ),
                     None,
                     output.stderr_color()

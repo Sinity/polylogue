@@ -388,15 +388,75 @@ fn every_client_answers_the_same_request_identically() {
         let (c, values) = parse_line(&argv).unwrap();
         let cli_position = (args.last() == Some(&"read")).then(|| read_position(&w));
         let (cli, cli_exit) = cli_answer(&w, &argv, &request_id);
+        let owned = c
+            .registration()
+            .unwrap()
+            .tool_access(&values.request.arguments, c)
+            .unwrap()
+            > crate::commands::ToolAccess::Read;
+        let stored = |id: &str| w.daemon.reads.reader().unwrap().user_request(id).unwrap();
+        let original =
+            owned.then(|| stored(&request_id).expect("the owned line retains its accepted intent"));
         let mcp_position = (args.last() == Some(&"read")).then(|| read_position(&w));
         let mcp = mcp_answer(&w, c, &values, &request_id);
+        if let Some(original) = &original {
+            assert_eq!(original.authorship, socket_author);
+            assert_eq!(
+                stored(&request_id).as_ref(),
+                Some(original),
+                "same-author replay preserves the exact accepted body"
+            );
+            let (same, exit) = cli_answer(&w, &argv, &request_id);
+            assert_eq!((&same, exit), (&cli, cli_exit));
+            assert_eq!(stored(&request_id).as_ref(), Some(original));
+        }
         let http_position = (args.last() == Some(&"read")).then(|| read_position(&w));
-        let (http, http_exit) = http_answer(&web, c, &values, &request_id);
+        let http_id = if owned {
+            let (refused, _) = http_answer(&web, c, &values, &request_id);
+            assert_eq!(
+                refused,
+                Err(format!(
+                    "conflict: request {request_id} was already used for different content"
+                )),
+                "a different author cannot take over an accepted request"
+            );
+            assert_eq!(stored(&request_id), original);
+            format!("{request_id}-web")
+        } else {
+            request_id.clone()
+        };
+        let (http, http_exit) = http_answer(&web, c, &values, &http_id);
+        if let Some(original) = &original {
+            let independent = stored(&http_id).expect("the web action owns its own request");
+            assert_eq!(independent.machine, original.machine);
+            assert_eq!(independent.authorship, web_author);
+            for (accepted, id) in [(original, &request_id), (&independent, &http_id)] {
+                let polylogue_model::user::UserWrite::ResolveLine { request, .. } = &accepted.write
+                else {
+                    panic!("the accepted line")
+                };
+                let request: command_surface::RunnableRequest =
+                    serde_json::from_value(request.clone()).unwrap();
+                assert_eq!(&request.request_id, id);
+                assert_eq!(
+                    serde_json::from_value::<crate::protocol::line::Rows>(request.arguments)
+                        .unwrap(),
+                    serde_json::from_value::<crate::protocol::line::Rows>(
+                        values.request.arguments.clone()
+                    )
+                    .unwrap(),
+                    "each channel accepted the same semantic line"
+                );
+            }
+            let (again, exit) = http_answer(&web, c, &values, &http_id);
+            assert_eq!((&again, exit), (&http, http_exit));
+            assert_eq!(stored(&http_id).as_ref(), Some(&independent));
+        }
         if cli_exit.is_some() {
             assert_eq!(
                 cli_exit,
                 http_exit,
-                "`{}`: the command line and HTTP name different outcomes",
+                "`{}`: the command line and HTTP name different outcomes; CLI: {cli:?}; HTTP: {http:?}",
                 argv.join(" ")
             );
         }
@@ -443,8 +503,17 @@ fn every_client_answers_the_same_request_identically() {
             "`{}`: the command line and MCP differ",
             argv.join(" ")
         );
+        let mut expected_http = expected_transport_answer(&cli, name, &web_author);
+        if owned {
+            let value = expected_http.as_mut().expect("the independent resume plan");
+            assert_eq!(
+                value["reply"]["steps"][0]["request_id"],
+                format!("{request_id}-1")
+            );
+            value["reply"]["steps"][0]["request_id"] = serde_json::json!(format!("{http_id}-1"));
+        }
         assert_eq!(
-            expected_transport_answer(&cli, name, &web_author),
+            expected_http,
             http,
             "`{}`: the command line and HTTP differ",
             argv.join(" ")
