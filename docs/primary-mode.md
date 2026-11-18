@@ -347,7 +347,7 @@ The Polylogue daemon evaluates queries that mix Polylogue and Sinex data, becaus
 - Names are bound from the parsed query with the `pl.` and `sx.` prefixes, never from strings; namespace binding is defined by the shared language in common's [query-language](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/query-language/README.md).
 - Sinex parts are compiled for and run by Sinex through its API; results join on references and time.
 - Every reply reports the positions it read in each product and their lag, so a mixed reply is reproducible and its staleness visible.
-- `sx:` references are a form whose grammar Sinex owns ([references.md#forms](references.md#forms)).
+- `sinex:<kind>/<id>` references are a form whose grammar Sinex owns ([references.md#forms](references.md#forms)).
 
 Query objects, execution begins and execution completions keep their logical IDs when their recorded format changes. Their named producer frames include the current Polylogue source version, so a current begin or completion never reuses a predecessor's immutable frame bytes. The ordinary writer, pending-product reader and preserved-record reconstruction use this same identity rule. A completion's kind version changes with the binding hashes it carries. A preserved cache is strictly an extraction input: its converted query products are published and confirmed before the normal fresh cache reconstruction. Its old derived tables are never retagged as current. A standalone register can be converted to the current register format. Original register, spool and paid output bytes remain preserved.
 

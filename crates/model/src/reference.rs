@@ -87,7 +87,8 @@ pub enum Reference {
     Repo(String),
     Cwd(String),
     Url(String),
-    Sinex(String),
+    /// A whole Sinex object; Sinex owns its kinds and identities.
+    Sinex(references::Object),
     Span {
         container: Box<Reference>,
         unit: SpanUnit,
@@ -99,6 +100,8 @@ pub enum Reference {
 pub enum ReferenceError {
     #[error("reference {0:?} has no kind prefix")]
     NoKind(String),
+    #[error("{text} is a Sinex reference; write {global}")]
+    SinexLocal { text: String, global: String },
     #[error("reference {0:?} has an unknown kind")]
     UnknownKind(String),
     #[error("reference {0:?}: {1}")]
@@ -108,6 +111,9 @@ pub enum ReferenceError {
     #[error("reference {0:?}: {1}")]
     Invalid(String, &'static str),
 }
+// Sinex citation kinds are local only inside Sinex.
+const SINEX_KINDS: [&str; 5] = ["ev", "record", "key", "at", "window"];
+
 impl Reference {
     /// An exact question identity has canonical lowercase hexadecimal spelling
     /// and no parameters. Named queries remain names until Store resolves them.
@@ -258,7 +264,13 @@ impl Reference {
                 }
                 Self::Url(nonempty(rest)?)
             }
-            "sx" => Self::Sinex(nonempty(rest)?),
+            "sinex" => sinex_reference(text)?,
+            kind if SINEX_KINDS.contains(&kind) => {
+                return Err(ReferenceError::SinexLocal {
+                    text: text.into(),
+                    global: format!("sinex:{kind}/{rest}"),
+                });
+            }
             "span" => {
                 let (container, range) = rest
                     .rsplit_once('#')
@@ -384,7 +396,7 @@ impl fmt::Display for Reference {
             Self::Repo(value) => write!(f, "repo:{value}"),
             Self::Cwd(value) => write!(f, "cwd:{value}"),
             Self::Url(value) => write!(f, "url:{value}"),
-            Self::Sinex(value) => write!(f, "sx:{value}"),
+            Self::Sinex(object) => references::Reference::object(object.clone()).fmt(f),
             Self::Span {
                 container,
                 unit,
@@ -394,6 +406,28 @@ impl fmt::Display for Reference {
         }
     }
 }
+/// Whole objects leave revisions and positions for the Sinex reader to resolve.
+fn sinex_reference(text: &str) -> Result<Reference, ReferenceError> {
+    let parsed = references::Reference::parse(text)
+        .map_err(|_| ReferenceError::Invalid(text.into(), "not a shared Sinex reference"))?;
+    let references::Target::Object(object) = parsed.target() else {
+        return Err(ReferenceError::Invalid(
+            text.into(),
+            "a Sinex reference names an object",
+        ));
+    };
+    if object.product() != references::Product::Sinex {
+        return Err(ReferenceError::UnknownKind(text.into()));
+    }
+    if object.revision().is_some() || parsed.selector().is_some() {
+        return Err(ReferenceError::Invalid(
+            text.into(),
+            "a Sinex reference names a whole object; cite its text with a quote",
+        ));
+    }
+    Ok(Reference::Sinex(object.clone()))
+}
+
 impl std::str::FromStr for Reference {
     type Err = ReferenceError;
     fn from_str(text: &str) -> Result<Self, Self::Err> {
