@@ -33,7 +33,9 @@ A reference names one thing in the archive, or one thing outside it, in a form e
 | `file:<path>#L<n>` | line n of a file as the archive's captured edits left it; a relative path is under `here`. `read --view trace` names the tool call that last wrote it ([reading.md](reading.md#views)) |
 | `repo:<name>`, `cwd:<path>` | a repository, a working directory; used as scopes |
 | `url:<absolute URL>` | an outside page, stored as text; reading the reference never fetches it |
-| `sx:<sinex reference>` | a Sinex object. Sinex owns the grammar of the string ([Sinex query](https://github.com/Sinity/sinex/blob/master/docs/query.md)); Polylogue resolves it through Sinex's API when Sinex is reachable and shows it `unavailable` otherwise |
+| `sinex:<kind>/<id>` | a Sinex object in the shared global form, for example `sinex:ev/<event id>`. Sinex owns its kinds and identities ([Sinex query](https://github.com/Sinity/sinex/blob/master/docs/query.md)); Polylogue resolves it through Sinex's API when Sinex is reachable and shows it `unavailable` otherwise |
+
+Sinex local forms (`ev:`, `record:`, `key:`, `at:`, `window:`) are refused in Polylogue with the corresponding global form as the correction. A Sinex reference here names a whole object; Sinex resolves revisions and places inside it.
 
 Surfaces also accept shorter forms that resolve to one of the above before anything is stored or sent: the reserved words below, a bare native ID or a unique prefix of at least eight hexadecimal characters and dashes, and a pasted provider URL. Replies print the shortest unique prefix on a terminal and over MCP, and full references in `--json` and bundles; writes always store full references.
 

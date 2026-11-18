@@ -13,6 +13,7 @@ fixture = []
 command-surface.workspace = true
 shared-signals.workspace = true
 query-language.workspace = true
+references.workspace = true
 schemars.workspace = true
 tempfile.workspace = true
 serde.workspace = true

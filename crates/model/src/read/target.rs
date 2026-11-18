@@ -57,6 +57,12 @@ impl TryFrom<Reference> for ReadTarget {
                     "an assertion family is read through its current revision",
                 ));
             }
+            Reference::Sinex(_) => {
+                return Err(refuse(
+                    &reference,
+                    "reading a Sinex object needs the Sinex reader",
+                ));
+            }
             Reference::Span { .. } => {
                 return Err(refuse(
                     &reference,
@@ -75,8 +81,7 @@ impl TryFrom<Reference> for ReadTarget {
             | Reference::File { .. }
             | Reference::Repo(_)
             | Reference::Cwd(_)
-            | Reference::Url(_)
-            | Reference::Sinex(_) => {
+            | Reference::Url(_) => {
                 return Err(refuse(&reference, "it has no selected-row reading"));
             }
         })

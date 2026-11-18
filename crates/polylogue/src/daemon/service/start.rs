@@ -23,7 +23,7 @@ pub struct Runtime {
     completion: Option<crate::completion_catalog::publisher::Publisher>,
     scope: Option<crate::daemon::scope::ScopeWorker>,
     completion_scope: Option<polylogue_store::ScopeInvalidation>,
-    pub(super) engine: Option<JoinHandle<std::io::Result<()>>>,
+    pub(super) engine: Option<JoinHandle<(std::io::Result<()>, Engine)>>,
     lock: Option<polylogue_store::ArchiveLock>,
     pub(super) worker_events: tokio::sync::watch::Sender<Option<&'static str>>,
     /// Set once by a loop run until idle, when it ends.
@@ -198,9 +198,21 @@ impl Runtime {
             let started = Instant::now();
             eprintln!("polylogue: shutdown engine drain started");
             match engine.join() {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    failure.get_or_insert(error);
+                Ok((result, engine)) => {
+                    if let Err(error) = result {
+                        failure.get_or_insert(error);
+                    }
+                    if let Some(writes) = &self.daemon.writes
+                        && let Err(error) = self.daemon.queued_deliveries.drain(writes)
+                    {
+                        let error = format!("delivery outcome drain: {error}");
+                        failure = Some(std::io::Error::other(match failure.take() {
+                            Some(previous) => format!("{previous}; {error}"),
+                            None => error,
+                        }));
+                    }
+                    // Engine owns the writer. Its final acknowledgments precede close.
+                    drop(engine);
                 }
                 Err(_) => {
                     failure.get_or_insert_with(|| std::io::Error::other("loop thread panicked"));
@@ -472,7 +484,7 @@ pub fn start(
         let result = engine.run(tx, rx, &status, lifetime, || {
             let _ = started.send(Ok(()));
         });
-        match result {
+        let result = match result {
             Ok(summary) => {
                 // Stopping a service loop is the runtime's own shutdown;
                 // an idle loop's end is the run's end.
@@ -486,7 +498,9 @@ pub fn start(
                 let _ = ready.try_send(Err(error.to_string()));
                 Err(std::io::Error::other(error.to_string()))
             }
-        }
+        };
+        // Keep the writer alive until Runtime has joined the outcome producers.
+        (result, engine)
     })?);
     wait.recv()
         .map_err(|_| std::io::Error::other("loop thread exited during startup"))?

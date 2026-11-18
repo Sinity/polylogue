@@ -18,6 +18,7 @@ mod embeddings;
 mod explain;
 mod hook;
 mod hosting;
+mod installation;
 mod live_acts;
 mod live_events;
 mod mailbox;

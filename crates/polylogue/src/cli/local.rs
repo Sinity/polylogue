@@ -208,16 +208,18 @@ fn install_with_output(
             ),
         };
     }
-    if arguments.dry_run {
-        return not_built("--dry-run");
-    }
     if target == "chrome" {
         return install_chrome(
             startup,
             json,
             arguments.extension_id.as_deref(),
             arguments.remove,
+            arguments.dry_run,
+            output,
         );
+    }
+    if arguments.dry_run {
+        return not_built("--dry-run");
     }
     let Some(harness) = crate::hook::Harness::parse(target) else {
         return not_built(target);
@@ -344,76 +346,149 @@ fn install_chrome(
     json: bool,
     extension_id: Option<&str>,
     remove: bool,
+    dry_run: bool,
+    output: &mut dyn std::io::Write,
 ) -> ExitCode {
-    let config = startup.config.paths.config.clone();
-    let file = format!("{}.json", crate::browser::HOST_NAME);
-    let mut changed = Vec::new();
-    for dir in host_manifest_dirs(&config) {
-        let path = dir.join(&file);
-        let result = if remove {
-            match std::fs::remove_file(&path) {
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                other => other,
-            }
-        } else {
-            let Some(id) = extension_id
-                .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_lowercase()))
-            else {
-                return fail(
-                    startup.output,
-                    json,
-                    polylogue_model::Code::BadRequest,
-                    "`--extension-id` (the ID chrome://extensions shows) is required",
-                    2,
-                );
-            };
-            let binary = std::env::current_exe().and_then(std::fs::canonicalize);
-            let Ok(binary) = binary else {
+    let manifest = if remove {
+        None
+    } else {
+        let Some(id) =
+            extension_id.filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_lowercase()))
+        else {
+            return fail(
+                startup.output,
+                json,
+                polylogue_model::Code::BadRequest,
+                "`--extension-id` (the ID chrome://extensions shows) is required",
+                2,
+            );
+        };
+        let binary = match std::env::current_exe().and_then(std::fs::canonicalize) {
+            Ok(binary) => binary,
+            Err(error) => {
                 return fail(
                     startup.output,
                     json,
                     polylogue_model::Code::Io,
-                    "cannot resolve this binary's path",
+                    &error.to_string(),
                     1,
                 );
-            };
-            let manifest = crate::browser::native::manifest(&binary, id);
-            std::fs::create_dir_all(&dir).and_then(|()| {
-                std::fs::write(
-                    &path,
-                    serde_json::to_vec_pretty(&manifest).unwrap_or_default(),
-                )
-            })
+            }
         };
-        if let Err(e) = result {
-            return fail(
-                startup.output,
-                json,
-                polylogue_model::Code::Io,
-                &format!("{}: {e}", path.display()),
-                1,
-            );
+        match serde_json::to_vec_pretty(&crate::browser::native::manifest(&binary, id)) {
+            Ok(bytes) => Some(bytes),
+            Err(error) => {
+                return fail(
+                    startup.output,
+                    json,
+                    polylogue_model::Code::Io,
+                    &error.to_string(),
+                    1,
+                );
+            }
         }
-        changed.push(path);
+    };
+    let result = (|| -> std::io::Result<()> {
+        if dry_run && !remove {
+            return output.write_all(manifest.as_deref().expect("an install has a manifest"));
+        }
+        let mut changed = Vec::new();
+        let name = format!("{}.json", crate::browser::HOST_NAME);
+        for directory in host_manifest_dirs(&startup.config.paths.config) {
+            let path = directory.join(&name);
+            let file = crate::installation::File::read(&path).map_err(|error| {
+                if path.is_symlink() {
+                    std::io::Error::other(format!(
+                        "{error}; print the managed manifest with `polylogue install chrome --extension-id ID --dry-run`"
+                    ))
+                } else {
+                    error
+                }
+            })?;
+            if remove {
+                let installed = file.current().is_some_and(installed_chrome_manifest);
+                if !installed && file.backup().is_none() {
+                    continue;
+                }
+                let restored = file.current().is_some() && file.current() == file.backup();
+                if file.current().is_some() && !installed && !restored {
+                    return Err(std::io::Error::other(format!(
+                        "{} changed after installation; its original bytes remain in {}",
+                        path.display(),
+                        crate::installation::backup_path(&path).display()
+                    )));
+                }
+                if !dry_run {
+                    eprintln!("uninstalling {}", path.display());
+                    file.restore()?;
+                }
+            } else {
+                eprintln!("installing {}", path.display());
+                file.write(manifest.as_deref().expect("an install has a manifest"))?;
+            }
+            changed.push(path);
+        }
+        if json {
+            let mut report = serde_json::json!({"removed":remove,"files":changed});
+            if dry_run {
+                report["dry_run"] = true.into();
+            }
+            writeln!(output, "{report}")?;
+        } else {
+            let action = match (remove, dry_run) {
+                (true, true) => "would uninstall",
+                (true, false) => "uninstalled",
+                (false, _) => "installed",
+            };
+            for path in &changed {
+                writeln!(output, "{action} {}", path.display())?;
+            }
+            if changed.is_empty() {
+                writeln!(output, "nothing to remove")?;
+            }
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => fail(
+            startup.output,
+            json,
+            polylogue_model::Code::Io,
+            &error.to_string(),
+            1,
+        ),
     }
-    if json {
-        println!(
-            "{}",
-            serde_json::json!({ "removed": remove, "files": changed })
-        );
-    } else {
-        for p in &changed {
-            println!(
-                "{} {}",
-                if remove { "removed" } else { "wrote" },
-                p.display()
-            );
-        }
-        if changed.is_empty() {
-            println!("nothing to remove");
-        }
+}
+
+fn installed_chrome_manifest(bytes: &[u8]) -> bool {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return false;
+    };
+    let Some(binary) = value.get("path").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let Some(origins) = value
+        .get("allowed_origins")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return false;
+    };
+    if origins.len() != 1 {
+        return false;
     }
-    ExitCode::SUCCESS
+    let Some(extension) = origins[0]
+        .as_str()
+        .and_then(|origin| origin.strip_prefix("chrome-extension://"))
+        .and_then(|origin| origin.strip_suffix('/'))
+    else {
+        return false;
+    };
+    serde_json::to_vec_pretty(&crate::browser::native::manifest(
+        std::path::Path::new(binary),
+        extension,
+    ))
+    .is_ok_and(|expected| expected == bytes)
 }
 
 /// Opens the web reader: reads the running daemon's port and token, checks

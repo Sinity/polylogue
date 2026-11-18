@@ -220,3 +220,113 @@ fn append_update_equals_full_recompute() {
     seen.dedup();
     assert!(seen.len() >= 6, "{seen:?}");
 }
+
+#[test]
+fn recomputing_counts_reuses_queries_and_binds_each_session() {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(directory.path()).unwrap();
+    let first = fixture
+        .session(SessionFacts {
+            id: "codex:first",
+            ..Default::default()
+        })
+        .unwrap();
+    let second = fixture
+        .session(SessionFacts {
+            id: "codex:second",
+            ..Default::default()
+        })
+        .unwrap();
+    for (session, id, author, text) in [
+        (first, "first-human", "human", "one two"),
+        (second, "second-human", "human", "one two three"),
+        (second, "second-model", "model", "four five six seven"),
+    ] {
+        let message = fixture
+            .message(
+                session,
+                MessageFacts {
+                    id,
+                    role: if author == "human" {
+                        "user"
+                    } else {
+                        "assistant"
+                    },
+                    written_by: author,
+                    prompt_kind: (author == "human").then_some("prose"),
+                    text: Some(text),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        if author == "model" {
+            fixture
+                .tool_call(
+                    session,
+                    message,
+                    CallFacts {
+                        tool: "Bash",
+                        action: "shell",
+                        command: Some("false"),
+                        outcome: "error",
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+        }
+    }
+    fixture.event(second, "compaction", None).unwrap();
+    let connection = crate::archive::open_write(&fixture.archive.index_db(), 64).unwrap();
+    connection.flush_prepared_statement_cache();
+    let preparations = Arc::new(AtomicU64::new(0));
+    let observed = preparations.clone();
+    // SQLite authorizes a query while compiling it, not on cached execution.
+    connection
+        .authorizer(Some(move |context: AuthContext<'_>| {
+            if matches!(context.action, AuthAction::Select) {
+                observed.fetch_add(1, Ordering::Relaxed);
+            }
+            Authorization::Allow
+        }))
+        .unwrap();
+    assert_eq!(
+        compute(&connection, first).unwrap(),
+        Counts {
+            messages: 1,
+            human_prompts: 1,
+            words: 2,
+            human_words: 2,
+            ..Default::default()
+        }
+    );
+    let cold = preparations.load(Ordering::Relaxed);
+    assert!(cold > 0, "the authorizer must observe a cold query");
+    assert_eq!(
+        compute(&connection, second).unwrap(),
+        Counts {
+            messages: 2,
+            human_prompts: 1,
+            words: 7,
+            human_words: 3,
+            model_words: 4,
+            compactions: 1,
+            tool_calls: 1,
+            errors: 1,
+            ..Default::default()
+        }
+    );
+    assert_eq!(compute(&connection, first).unwrap().messages, 1);
+    assert_eq!(
+        preparations.load(Ordering::Relaxed),
+        cold,
+        "recomputing another session prepared the same SQL again"
+    );
+    connection
+        .authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
+        .unwrap();
+}

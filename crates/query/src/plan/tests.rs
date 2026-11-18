@@ -417,3 +417,45 @@ fn recorded_definitions_do_not_reinterpret_live_search_words() {
     }
     assert!(loaded.catalog().unit("assertions").is_none());
 }
+
+#[test]
+fn an_original_authored_binding_keeps_identity_across_catalog_changes() {
+    use polylogue_model::{query_objects::ExecutionBinding, user::UserRequest};
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("tests/pre-sinex-binding.json")).unwrap();
+    let original: serde_json::Value =
+        serde_json::from_str(fixture["original_request"].as_str().unwrap()).unwrap();
+    let request: UserRequest = serde_json::from_value(original.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&request).unwrap(), original);
+    let intent = canonical_json::canonical_json(&(
+        &request.machine,
+        &request.authorship,
+        request.write.intent(),
+    ))
+    .unwrap();
+    assert_eq!(
+        blake3::hash(&intent).to_hex().as_str(),
+        fixture["request_hash"].as_str().unwrap(),
+    );
+    let execution: ExecutionBinding =
+        serde_json::from_value(original["write"]["retained"]["binding"].clone()).unwrap();
+    assert_ne!(
+        catalog_fingerprint(),
+        execution.replay.context.versions["catalog"],
+        "F4 changes live unit and field declarations, not the original binding",
+    );
+    let object: polylogue_model::query_objects::QueryObject =
+        serde_json::from_str(fixture["original_object"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        object.id.to_string(),
+        fixture["question_hash"].as_str().unwrap()
+    );
+    let stale = replay_binding(&execution.replay).unwrap_err();
+    assert!(stale.to_string().contains("catalog"), "{stale}");
+    let restored = replay(&object, catalog_fingerprint()).unwrap();
+    assert_eq!(restored.query_object().unwrap(), object);
+    assert_eq!(
+        serde_json::to_value(&execution).unwrap(),
+        original["write"]["retained"]["binding"],
+    );
+}

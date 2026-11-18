@@ -1,5 +1,5 @@
 use super::*;
-use crate::hook::settings::backup_path;
+use crate::installation::backup_path;
 use std::os::unix::fs::PermissionsExt;
 
 #[test]

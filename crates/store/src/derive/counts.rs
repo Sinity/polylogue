@@ -2,7 +2,6 @@
 //! change summary applies changed contributions once per session. [`compute`]
 //! is the independent full recompute, also run when the derivation version moves.
 use super::{Class, Derivation, Output, Version};
-use crate::ConnExt as _;
 use crate::Result;
 use crate::session_sql::{counts_as_action, own_messages};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -186,10 +185,9 @@ pub(crate) fn compute(conn: &Connection, pk: i64) -> Result<Counts> {
         .map(|(_, expr)| *expr)
         .collect::<Vec<_>>()
         .join(",");
-    let mut counts = conn.query_row(
-        &format!("SELECT {aggregates} FROM message m WHERE {own}"),
-        [pk],
-        |r| {
+    let mut counts = conn
+        .prepare_cached(&format!("SELECT {aggregates} FROM message m WHERE {own}"))?
+        .query_row([pk], |r| {
             Ok(Counts {
                 messages: r.get(0)?,
                 human_prompts: r.get(1)?,
@@ -202,13 +200,11 @@ pub(crate) fn compute(conn: &Connection, pk: i64) -> Result<Counts> {
                 tool_calls: 0,
                 errors: 0,
             })
-        },
-    )?;
-    counts.compactions = conn.scalar(
-        "SELECT count(*) FROM event WHERE session_pk=?1 AND kind='compaction'",
-        [pk],
-    )?;
-    (counts.tool_calls, counts.errors) = conn.query_row(&format!("SELECT count(*),coalesce(sum(t.outcome='error'),0) FROM tool_call t JOIN block b ON b.pk=t.call_block_pk JOIN message m ON m.pk=b.message_pk WHERE {own} AND {}",counts_as_action("t")),[pk],|r| <(_, _)>::try_from(r))?;
+        })?;
+    counts.compactions = conn
+        .prepare_cached("SELECT count(*) FROM event WHERE session_pk=?1 AND kind='compaction'")?
+        .query_row([pk], |row| row.get(0))?;
+    (counts.tool_calls, counts.errors) = conn.prepare_cached(&format!("SELECT count(*),coalesce(sum(t.outcome='error'),0) FROM tool_call t JOIN block b ON b.pk=t.call_block_pk JOIN message m ON m.pk=b.message_pk WHERE {own} AND {}",counts_as_action("t")))?.query_row([pk],|r| <(_, _)>::try_from(r))?;
     Ok(counts)
 }
 
