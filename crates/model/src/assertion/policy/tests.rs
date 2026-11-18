@@ -29,12 +29,26 @@ fn saved_names_do_not_occupy_the_query_hash_namespace() {
 
 #[test]
 fn a_new_saved_query_name_is_one_query_name_can_say() {
-    for name in ["research", "cost-30d", "v1.2_final", "A-b.c_9"] {
+    for name in [
+        "research",
+        "cost-30d",
+        "v1-2-final",
+        "a-b-c9",
+        "a",
+        "a0",
+        "a-",
+    ] {
         assert!(sayable_query_name(name), "{name}");
     }
     for name in [
         "",
         "two words",
+        "v1.2_final",
+        "A-b.c_9",
+        "Research",
+        "-leading",
+        "1query",
+        "a_underscore",
         "a(b)",
         "a,b",
         "a:b",

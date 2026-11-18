@@ -584,6 +584,7 @@ pub fn open_write(path: &Path, cache_mib: i64) -> Result<Connection> {
             | OpenFlags::SQLITE_OPEN_URI,
     )?;
     tune(&conn)?;
+    crate::sql_functions::register_source_alias(&conn)?;
     writer_settings(&conn, cache_mib)?;
     conn.pragma_update(None, "wal_autocheckpoint", WAL_AUTOCHECKPOINT)?;
     Ok(conn)
