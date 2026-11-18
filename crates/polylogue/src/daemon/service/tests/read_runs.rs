@@ -8,13 +8,26 @@ use polylogue_model::{
 use serde_json::json;
 
 fn captured(d: &Daemon, selection: &str) -> (QueryRun, QueryRunOutcome) {
+    crate::test_answers::read(
+        Call::new(
+            "rows",
+            json!({
+                "selection":selection,"steps":[{"verb":"read","budget":100_000}]
+            }),
+        )
+        .answer(d),
+    );
+    d.writes.as_ref().unwrap().flush_rows().unwrap();
     let reply =
-        crate::test_answers::listing(Call::new("rows", json!({"selection":selection})).answer(d));
-    let value = reply.value().unwrap();
-    let Reference::Run(id) = Reference::parse(value["run"].as_str().unwrap()).unwrap() else {
+        crate::test_answers::listing(Call::new("rows", json!({"selection":"runs"})).answer(d));
+    let value = reply
+        .value()
+        .unwrap_or_else(|| panic!("recorded runs: {reply:?}"));
+    assert_eq!(value["count"], 1, "one actual query read: {value}");
+    let Reference::Run(id) = Reference::parse(value["rows"][0]["id"].as_str().unwrap()).unwrap()
+    else {
         panic!("recorded run")
     };
-    d.writes.as_ref().unwrap().flush_rows().unwrap();
     let reader = d.reads.reader().unwrap();
     (
         reader.query_run(&id, None).unwrap().unwrap(),
@@ -85,10 +98,7 @@ fn run_card_reads_the_selected_record_and_offers_an_executable_question() {
     );
     let rerun = crate::test_answers::listing(Call::from_request(&next.request).answer(&d.daemon));
     assert_eq!(rerun.value().unwrap()["count"], 1);
-    assert_eq!(
-        rerun.value().unwrap()["query"],
-        next.request.arguments["selection"]
-    );
+    assert_eq!(rerun.value().unwrap()["unit"], "sessions");
     let Reference::Run(read_id) = Reference::parse(&page.snapshot.query).unwrap() else {
         panic!("read's own run")
     };
@@ -217,7 +227,7 @@ fn run_card_suppresses_an_unresolved_question_until_its_object_arrives() {
 fn raw_run_pages_replay_after_restart_and_reject_changed_completion() {
     let mut d = test_daemon::start("raw run paging");
     d.pause_signals();
-    let selection = format!("sessions where kind:* OR '{}'", "neutral ".repeat(256));
+    let selection = format!("sessions where title:'{}'", "neutral ".repeat(256));
     let (mut run, _) = captured(&d.daemon, &selection);
     run.id = RunId::parse("018f0000-0000-7000-8000-000000000024").unwrap();
     d.daemon
