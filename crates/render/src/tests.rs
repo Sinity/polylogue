@@ -3307,12 +3307,12 @@ fn visible_reference_names_leave_structured_source_records_unchanged() {
         let doc = document(vec![ReadItem {
             source: Source::record(stored),
             kind: ItemKind::Raw {
-                record: RawRecord {
+                record: Box::new(RawRecord {
                     reference: stored.into(),
                     input: "synthetic-source".into(),
                     media_type: "text/plain".into(),
                     bytes: b"exact source bytes".to_vec(),
-                },
+                }),
             },
         }]);
         for format in [Format::Terminal, Format::Markdown, Format::Html] {
