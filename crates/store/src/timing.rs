@@ -20,6 +20,10 @@ pub enum Stage {
     Parse,
     /// Writing a group of batches' rows (writer thread).
     Rows,
+    Checkpoint,
+    BuildClose,
+    BuildReopen,
+    ChainProgress,
     /// All writer work between receiving a message and returning to its queue.
     Writer,
     /// Committing a replacement transaction, including its SQLite sync wait.
@@ -36,12 +40,16 @@ pub enum Stage {
     Derive,
 }
 
-const STAGES: [Stage; 12] = [
+const STAGES: [Stage; 16] = [
     Stage::Read,
     Stage::Database,
     Stage::Store,
     Stage::Parse,
     Stage::Rows,
+    Stage::Checkpoint,
+    Stage::BuildClose,
+    Stage::BuildReopen,
+    Stage::ChainProgress,
     Stage::Writer,
     Stage::Commit,
     Stage::SearchIndex,
@@ -51,7 +59,7 @@ const STAGES: [Stage; 12] = [
     Stage::Derive,
 ];
 
-static NANOS: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
+static NANOS: [AtomicU64; STAGES.len()] = [const { AtomicU64::new(0) }; STAGES.len()];
 
 impl Stage {
     pub fn name(self) -> &'static str {
@@ -61,6 +69,10 @@ impl Stage {
             Stage::Store => "store",
             Stage::Parse => "parse",
             Stage::Rows => "rows",
+            Stage::Checkpoint => "checkpoint",
+            Stage::BuildClose => "build_close",
+            Stage::BuildReopen => "build_reopen",
+            Stage::ChainProgress => "chain_progress",
             Stage::Writer => "writer",
             Stage::Commit => "commit",
             Stage::SearchIndex => "search_index",

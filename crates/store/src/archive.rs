@@ -570,7 +570,9 @@ pub(crate) fn restart_full_log(
         return Ok(false);
     }
     conn.busy_timeout(wait)?;
-    let busy = conn.scalar::<i64>("PRAGMA main.wal_checkpoint(TRUNCATE)", []);
+    let busy = crate::timing::time(crate::timing::Stage::Checkpoint, || {
+        conn.scalar::<i64>("PRAGMA main.wal_checkpoint(TRUNCATE)", [])
+    });
     conn.busy_timeout(BUSY_TIMEOUT)?;
     Ok(busy? == 0)
 }

@@ -1302,12 +1302,14 @@ impl Inner {
             for (source, reply) in snapshots.drain(..) {
                 let _ = reply.send(self.source_snapshot(source));
             }
-            if let Err(error) = self.refresh_chain_progress() {
-                self.report.errors.push(format!("chain progress: {error}"));
-            }
-            if let Err(error) = record_build_progress(&self.location, &self.index) {
-                self.report.errors.push(format!("build progress: {error}"));
-            }
+            crate::timing::time(crate::timing::Stage::ChainProgress, || {
+                if let Err(error) = self.refresh_chain_progress() {
+                    self.report.errors.push(format!("chain progress: {error}"));
+                }
+                if let Err(error) = record_build_progress(&self.location, &self.index) {
+                    self.report.errors.push(format!("build progress: {error}"));
+                }
+            });
             if let Some(reply) = primary_finish.take() {
                 let _ = reply.send(self.finish_primary_rebuild());
             }
@@ -1601,12 +1603,15 @@ impl Inner {
     fn install_build(&mut self) -> Result<()> {
         self.index.flush_prepared_statement_cache();
         let built = std::mem::replace(&mut self.index, Connection::open_in_memory()?);
-        built.close().map_err(|(_, error)| error)?;
+        crate::timing::time(crate::timing::Stage::BuildClose, || built.close())
+            .map_err(|(_, error)| error)?;
         let synced = std::time::Instant::now();
         let installed = crate::archive::index_build::finish(&self.location);
         crate::timing::add(crate::timing::Stage::Sync, synced.elapsed());
-        self.index = open_index_writer(&self.location, self.location.index_build.building())?;
-        crate::chain_progress::install_triggers(&self.index, false)?;
+        crate::timing::time(crate::timing::Stage::BuildReopen, || -> Result<()> {
+            self.index = open_index_writer(&self.location, self.location.index_build.building())?;
+            crate::chain_progress::install_triggers(&self.index, false)
+        })?;
         installed
     }
 
