@@ -908,8 +908,19 @@ fn set_mcp_keeps_typed_write_repeat_and_read_results() {
     assert_eq!(shown["result"]["isError"], false, "{shown}");
     let current: crate::protocol::setting::Answer =
         serde_json::from_value(shown["result"]["structuredContent"]["value"].clone()).unwrap();
-    assert!(
-        matches!(current, crate::protocol::setting::Answer::Current(value) if value.key=="reading.variants")
+    let crate::protocol::setting::Answer::Current(current) = current else {
+        panic!("MCP returns setting details");
+    };
+    assert_eq!(current.current.key, "reading.variants");
+    assert!(current.allowed_values.is_empty());
+    assert_eq!(current.history.len(), 1);
+    assert_eq!(
+        current.history[0].value,
+        polylogue_model::settings::Value::Variants(vec![])
+    );
+    assert_eq!(
+        current.current.authored.as_ref().unwrap().reference,
+        current.history[0].authored.reference
     );
 }
 

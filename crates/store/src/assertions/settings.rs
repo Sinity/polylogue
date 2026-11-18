@@ -184,6 +184,67 @@ impl crate::Reader<'_> {
         })
     }
 
+    /// Setting history is a display order; only revision links choose the current value.
+    pub fn setting_details(&self, key: &str, machine: &str) -> Result<settings::Details> {
+        let spec = settings::declaration(key)
+            .map_err(|error| crate::StoreError::invalid(error.to_string()))?;
+        let target = settings::target_machine(key, None, machine)
+            .map_err(|error| crate::StoreError::invalid(error.to_string()))?;
+        let current = self.setting_current(key, machine)?;
+        let conn = self.conn()?;
+        let source = Source::reading(conn)?;
+        let ids = conn.prepare_cached(&source.sql(
+            "SELECT id FROM @source.assertion WHERE kind='setting' AND key=?1 ORDER BY created_at DESC,id DESC"
+        ))?.query_map([key], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut history = Vec::new();
+        for id in ids {
+            self.check()?;
+            let assertion = get(conn, &id)?.ok_or_else(|| StoreError::NotFound(id.clone()))?;
+            let values::Value::Setting(value) = assertion
+                .fact
+                .validate()
+                .map_err(|error| crate::StoreError::invalid(error.to_string()))?
+            else {
+                return Err(crate::StoreError::invalid(
+                    "setting revision has another value shape",
+                ));
+            };
+            // A record's machine says who wrote it; the value's machine is
+            // the host the setting applies to, including remote writes.
+            if value.fields.machine != target {
+                continue;
+            }
+            let revision = RevisionReference::exact(assertion.fact.root.clone(), id.clone());
+            let state = self.assertion_revision_state(&revision)?.ok_or_else(|| {
+                crate::StoreError::invalid("setting revision has no current-revision state")
+            })?;
+            history.push(settings::HistoryEntry {
+                authored: settings::Authored {
+                    reference: Reference::Assertion(revision),
+                    machine: assertion.fact.machine,
+                    author: assertion.fact.author,
+                    via: assertion.fact.via,
+                    at: assertion.fact.created_at,
+                },
+                value: value.fields.value,
+                current: state.current,
+                withdrawn: state.withdrawn,
+            });
+        }
+        self.check()?;
+        Ok(settings::Details {
+            current,
+            machine: target,
+            allowed_values: spec
+                .choices()
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect(),
+            history,
+        })
+    }
+
     /// Archive settings as they stood over time, by the writer's clock.
     pub(crate) fn archive_setting_history(
         &self,
@@ -255,3 +316,7 @@ fn history(conn: &Connection, key: &str, until: Timestamp) -> Result<Vec<(Timest
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "settings/details_tests.rs"]
+mod details_tests;
