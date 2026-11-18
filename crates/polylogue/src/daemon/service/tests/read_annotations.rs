@@ -49,11 +49,7 @@ fn annotations(page: &ReadPage, message: &str) -> Vec<Annotation> {
         .items
         .iter()
         .filter_map(|item| {
-            if item
-                .source
-                .message
-                .as_ref()
-                .is_some_and(|id| id.to_string() == message)
+            if item.source.reference == format!("message:{message}")
                 && let ItemKind::MessageHeader { header } = &item.kind
             {
                 Some(header.assertions.clone())
