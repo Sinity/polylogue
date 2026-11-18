@@ -34,7 +34,7 @@ pub enum Filter {
     Not(Box<Filter>),
     /// A search word, a quoted phrase or a prefix (`retr*`).
     Word(Word),
-    /// A word naming a session: `last`, `latest`, `self`, or a pasted ID.
+    /// A word naming the caller repository, `latest`, `self`, or a pasted ID.
     SessionWord {
         word: String,
         span: Span,
@@ -318,7 +318,7 @@ impl Binder<'_> {
                 message: error,
                 position: span.start,
             };
-            if lower == "request" {
+            if lower == "request" && fields::lookup(unit, &lower).is_none() {
                 polylogue_model::Reference::parse(&format!("request:{text}"))
                     .map_err(|error| invalid(error.to_string()))?;
                 return Err(not_built(
@@ -387,6 +387,20 @@ impl Binder<'_> {
             Comparison::Match(Value::Any) => Test::Any,
             comparison if def.kind != Kind::Special => {
                 self.test(def, def.kind, &comparison, span)?
+            }
+            comparison
+                if def.name == "since"
+                    && matches!(&comparison, Comparison::Match(Value::Scalar {text,..}) if text == "seen") =>
+            {
+                if !matches!(unit, Unit::Sessions | Unit::Annotations) {
+                    return Err(QueryError::BadValue {
+                        field: "since".into(),
+                        value: "seen".into(),
+                        position: span.start,
+                        message: "since:seen applies to sessions and annotations".into(),
+                    });
+                }
+                Test::Written(comparison)
             }
             comparison if matches!(def.name, "since" | "until" | "seen_by") => {
                 let Comparison::Match(Value::Scalar { text, .. }) = &comparison else {
@@ -597,7 +611,7 @@ pub fn value_text(value: &Value) -> Result<&str, QueryError> {
 }
 
 pub fn bind_unit(name: &str) -> Result<Unit, QueryError> {
-    Unit::from_name(name.strip_prefix("pl.").unwrap_or(name))
+    Unit::from_bound_name(name.strip_prefix("pl.").unwrap_or(name))
         .ok_or_else(|| not_built(&format!("unit {name}")))
 }
 

@@ -381,7 +381,45 @@ fn the_catalog_fingerprint_is_computed_once_per_process() {
 }
 
 #[test]
-fn sinex_diagnostics_preserve_an_original_catalog_and_authored_binding() {
+fn recorded_unit_names_are_not_live_units() {
+    let live = crate::catalog::catalog(&[]);
+    for retired in ["assertions", "links", "changes"] {
+        assert!(live.unit(retired).is_none());
+        assert!(crate::units::Unit::from_name(retired).is_none());
+        let parsed = crate::parse(retired).unwrap();
+        assert!(!matches!(parsed.source,Source::Unit{ref unit,..} if unit==retired));
+    }
+}
+
+#[test]
+fn recorded_definitions_do_not_reinterpret_live_search_words() {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("tests/fixtures/recorded-unit-objects.json")).unwrap();
+    let object: polylogue_model::query_objects::QueryObject =
+        serde_json::from_str(fixture["objects"][2]["original_json"].as_str().unwrap()).unwrap();
+    let old = replay(&object, catalog_fingerprint()).unwrap();
+    let mut loaded = Bindings::default();
+    loaded
+        .add_saved("recorded", &old, "revision", "root")
+        .unwrap();
+    for words in ["assertions", "\"assertions\"", "links", "changes"] {
+        let before = prepare(words, &Bindings::default(), |_| Ok(())).unwrap();
+        let after = prepare(words, &loaded, |_| Ok(())).unwrap();
+        assert_eq!(before.question_id(), after.question_id(), "{words}");
+        assert_eq!(
+            identity::normal_form(before.expanded_query().query(), before.catalog()).unwrap(),
+            identity::normal_form(after.expanded_query().query(), after.catalog()).unwrap(),
+            "{words}"
+        );
+        assert!(
+            matches!(after.expanded_query().query().source, Source::Unit{ref unit,..} if unit=="sessions")
+        );
+    }
+    assert!(loaded.catalog().unit("assertions").is_none());
+}
+
+#[test]
+fn an_original_authored_binding_keeps_identity_across_catalog_changes() {
     use polylogue_model::{query_objects::ExecutionBinding, user::UserRequest};
     let fixture: serde_json::Value =
         serde_json::from_str(include_str!("tests/pre-sinex-binding.json")).unwrap();
@@ -401,9 +439,10 @@ fn sinex_diagnostics_preserve_an_original_catalog_and_authored_binding() {
     );
     let execution: ExecutionBinding =
         serde_json::from_value(original["write"]["retained"]["binding"].clone()).unwrap();
-    assert_eq!(
+    assert_ne!(
         catalog_fingerprint(),
         execution.replay.context.versions["catalog"],
+        "F4 changes live unit and field declarations, not the original binding",
     );
     let object: polylogue_model::query_objects::QueryObject =
         serde_json::from_str(fixture["original_object"].as_str().unwrap()).unwrap();
@@ -411,7 +450,9 @@ fn sinex_diagnostics_preserve_an_original_catalog_and_authored_binding() {
         object.id.to_string(),
         fixture["question_hash"].as_str().unwrap()
     );
-    let restored = replay_binding(&execution.replay).unwrap();
+    let stale = replay_binding(&execution.replay).unwrap_err();
+    assert!(stale.to_string().contains("catalog"), "{stale}");
+    let restored = replay(&object, catalog_fingerprint()).unwrap();
     assert_eq!(restored.query_object().unwrap(), object);
     assert_eq!(
         serde_json::to_value(&execution).unwrap(),

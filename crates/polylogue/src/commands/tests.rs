@@ -227,10 +227,15 @@ fn mcp_schemas_follow_the_arguments() {
 }
 
 #[test]
-fn list_without_a_query_names_no_query() {
-    let (c, _, arguments) = cli(&["polylogue", "list", "--limit", "5"]);
-    assert_eq!(c.name, "list");
-    assert_eq!(arguments, json!({"limit": 5}));
+fn line_listing_carries_its_selection_and_page_size() {
+    let words = ["sessions", "--page-size", "5"].map(str::to_owned);
+    let parsed = crate::cli::line::parse(&words, &Default::default(), false).unwrap();
+    let request = crate::cli::run_line::request(&parsed).unwrap();
+    assert_eq!(request.operation, "rows");
+    let rows: crate::protocol::line::Rows = serde_json::from_value(request.arguments).unwrap();
+    assert_eq!(rows.selection.as_deref(), Some("sessions"));
+    assert_eq!(rows.page_size.unwrap().get(), 5);
+    assert!(rows.steps.is_empty());
 }
 
 #[test]
@@ -371,7 +376,7 @@ fn measure_options_build_the_same_query_as_the_query_surface() {
             metric,
             "sessions where origin:codex",
         ]);
-        let measure: crate::protocol::query_aliases::Measure =
+        let measure: crate::protocol::query::MeasureArguments =
             serde_json::from_value(arguments).unwrap();
         assert_eq!(
             crate::daemon::service::handlers::measure_query(command.name, &measure),
@@ -379,7 +384,7 @@ fn measure_options_build_the_same_query_as_the_query_surface() {
         );
     }
     let (command, _, arguments) = cli(&["polylogue", "measure", "daily", "--metric", "tokens"]);
-    let measure: crate::protocol::query_aliases::Measure =
+    let measure: crate::protocol::query::MeasureArguments =
         serde_json::from_value(arguments).unwrap();
     assert_eq!(
         crate::daemon::service::handlers::measure_query(command.name, &measure),

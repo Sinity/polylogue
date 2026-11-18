@@ -87,7 +87,7 @@ pub(crate) fn membership(
             };
             format!("SELECT pk FROM event WHERE id={}", bind(id.clone()))
         }
-        Unit::Assertions => {
+        Unit::Annotations => {
             let Reference::Assertion(revision) = reference else {
                 return None;
             };

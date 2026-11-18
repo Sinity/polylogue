@@ -663,7 +663,7 @@ fn row_units_and_their_defaults() {
         ]
     );
     // 31: assertions.
-    let v = q(&w, "assertions where kind:decision");
+    let v = q(&w, "annotations where kind:decision");
     assert_eq!(v["rows"][0]["value"], "decided: chrono, not time");
 }
 
@@ -904,15 +904,8 @@ fn kept_results_read_back_as_they_were_kept() {
     let err = run_q(&w, ask("result:0199-kept repo:morrow")).unwrap_err();
     assert_eq!(err.code(), "invalid_query");
     let err = run_q(&w, ask("result:nope")).unwrap_err();
-    let detail = query_failure_detail(&err, query_language::ErrorKind::BadValue, 0);
-    assert_eq!(
-        detail["message"],
-        "kept result \"result:nope\" has no bound output schema"
-    );
-    assert_eq!(
-        detail["hint"],
-        "Supply its actual typed output snapshot before execution"
-    );
+    assert_eq!(err.code(), "not_found");
+    assert_eq!(err.message, "no kept result named nope");
 }
 
 #[test]
@@ -935,8 +928,8 @@ fn links_and_parents() {
         ["#6", "#5"]
     );
     // 36.
-    assert_eq!(q(&w, "links where kind:fork")["count"], 1);
-    assert_eq!(q(&w, "links where kind:resume")["count"], 1);
+    assert_eq!(q(&w, "session_links where kind:fork")["count"], 1);
+    assert_eq!(q(&w, "session_links where kind:resume")["count"], 1);
     // 37.
     assert_eq!(ids(&q(&w, "link:fork")), ["#6"]);
     // 38: tree cost includes the subagent.
@@ -1497,15 +1490,22 @@ fn failed_saved_result_storage_is_not_an_empty_catalog() {
 }
 
 #[test]
-fn absent_saved_queries_and_results_are_a_valid_empty_catalog() {
+fn empty_catalogs_remain_valid_and_unknown_result_names_are_not_found() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
     let saved = reader.selection_definitions("query:none", &[]).unwrap();
     assert!(saved.saved.is_empty());
-    let kept = reader.selection_definitions("result:none", &[]).unwrap();
+    let kept = reader.selection_definitions("sessions", &[]).unwrap();
     assert!(kept.kept.is_empty());
+    let missing = reader
+        .selection_definitions("result:none", &[])
+        .unwrap_err();
+    assert!(
+        matches!(missing, polylogue_store::selection::SelectionError::Store(
+        polylogue_store::StoreError::Selection {code: polylogue_model::Code::NotFound, ref message}) if message == "no kept result named none")
+    );
     assert_eq!(run(&reader, ask("sessions")).unwrap()["count"], 0);
 }
 

@@ -56,6 +56,7 @@ pub use span::SpanSource;
 mod source_snapshot;
 use order::RecordOrder;
 
+pub(crate) use parents::compare_session_messages;
 pub use parents::{MessagePosition, MessageSelection, ParentIssue, Parents};
 
 /// Where a visit starts and which way it walks.
@@ -1065,13 +1066,7 @@ impl Reader<'_> {
 
     /// A session's own message keys and IDs in reading order.
     fn own_keys(&self, session_pk: i64) -> Result<Vec<(i64, String, i64)>> {
-        Ok(self
-            .conn()?
-            .prepare_cached(&format!("WITH record_ranks AS ({})
-                SELECT m.pk,m.id,c.record_order FROM record_ranks c JOIN message m ON m.pk=c.pk ORDER BY c.record_order",
-                order::session_record_rows("?1")))?
-            .query_map([session_pk], |r| <(_, _, _)>::try_from(r))?
-            .collect::<rusqlite::Result<_>>()?)
+        parents::own_keys(self.conn()?, session_pk)
     }
 
     /// A message's blocks; without `structured`, tool results lack their

@@ -140,3 +140,321 @@ pub(crate) fn saved_query_snapshot<'a>(
     }
     Ok(definitions)
 }
+
+/// Current named records, including every conflicting head.
+pub(crate) fn named_current(
+    conn: &Connection,
+    kind: AssertionKind,
+    name: &str,
+) -> Result<Vec<Assertion>> {
+    let source = Source::reading(conn)?;
+    let ids = conn
+        .prepare_cached(&source.sql(
+            "SELECT a.id FROM @source.assertion a JOIN @source.revision_state r ON r.id=a.id
+         WHERE a.kind=?1 AND a.key=?2 AND r.current=1 AND r.withdrawn=0 ORDER BY a.id",
+        ))?
+        .query_map(params![kind.as_str(), name], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    ids.into_iter()
+        .map(|id| get(conn, &id)?.ok_or_else(|| StoreError::NotFound(id)))
+        .collect()
+}
+
+fn revision_parents(row: &Assertion) -> Result<Vec<&RevisionReference>> {
+    row.fact
+        .links
+        .iter()
+        .filter(|link| link.role == LinkRole::Revises)
+        .map(|link| match &link.reference {
+            Reference::Assertion(parent) if parent.revision.is_some() => Ok(parent),
+            _ => Err(StoreError::invalid(format!(
+                "saved revision {} has a non-exact parent",
+                row.fact.id
+            ))),
+        })
+        .collect()
+}
+
+/// Original revision links define ordinals. Local commit counters and clocks do not.
+fn numbered_revisions(conn: &Connection, initial: Vec<Assertion>) -> Result<Vec<(u32, Assertion)>> {
+    let mut pending = initial
+        .iter()
+        .map(|row| row.fact.id.clone())
+        .collect::<Vec<_>>();
+    let mut rows = initial
+        .into_iter()
+        .map(|row| (row.fact.id.clone(), row))
+        .collect::<BTreeMap<_, _>>();
+    while let Some(id) = pending.pop() {
+        let parents = revision_parents(&rows[&id])?
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        for parent in parents {
+            let parent_id = parent.revision.as_ref().expect("exact parent checked");
+            if !rows.contains_key(parent_id) {
+                let row =
+                    get(conn, parent_id)?.ok_or_else(|| StoreError::ReferenceUnavailable {
+                        reference: Reference::Assertion(parent.clone()).to_string(),
+                        reason: "saved-query revision parent is not stored".into(),
+                    })?;
+                pending.push(parent_id.clone());
+                rows.insert(parent_id.clone(), row);
+            }
+            let row = &rows[parent_id];
+            if row.fact.root != parent.root || row.fact.kind != AssertionKind::SavedQuery {
+                return Err(StoreError::invalid(format!(
+                    "saved-query parent {} does not name its recorded saved revision",
+                    Reference::Assertion(parent)
+                )));
+            }
+        }
+    }
+    let mut remaining = BTreeMap::new();
+    let mut children = BTreeMap::<String, Vec<String>>::new();
+    let mut ready = std::collections::BTreeSet::new();
+    let mut levels = BTreeMap::<String, u32>::new();
+    for (id, row) in &rows {
+        let parents = revision_parents(row)?;
+        remaining.insert(id.clone(), parents.len());
+        if parents.is_empty() {
+            ready.insert(id.clone());
+            levels.insert(id.clone(), 1);
+        }
+        for parent in parents {
+            children
+                .entry(parent.revision.clone().expect("exact parent checked"))
+                .or_default()
+                .push(id.clone());
+        }
+    }
+    while let Some(id) = ready.pop_first() {
+        let next = levels[&id]
+            .checked_add(1)
+            .ok_or_else(|| StoreError::invalid("saved revision number is out of range"))?;
+        for child in children.get(&id).into_iter().flatten() {
+            let level = levels.entry(child.clone()).or_insert(1);
+            *level = (*level).max(next);
+            let parents_left = remaining.get_mut(child).expect("every child is loaded");
+            *parents_left -= 1;
+            if *parents_left == 0 {
+                ready.insert(child.clone());
+            }
+        }
+    }
+    if remaining.values().any(|count| *count != 0) {
+        let cycle = remaining
+            .iter()
+            .filter(|(_, count)| **count != 0)
+            .map(|(id, _)| {
+                Reference::Assertion(RevisionReference::exact(
+                    rows[id].fact.root.clone(),
+                    id.clone(),
+                ))
+                .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(StoreError::invalid(format!(
+            "saved-query revision links form a cycle: {cycle}"
+        )));
+    }
+    let mut ordered = rows
+        .into_iter()
+        .map(|(id, row)| (levels[&id], row))
+        .collect::<Vec<_>>();
+    ordered.sort_by(|(an, a), (bn, b)| {
+        (an, &a.fact.root, &a.fact.id).cmp(&(bn, &b.fact.root, &b.fact.id))
+    });
+    Ok(ordered)
+}
+
+fn numbered_named_revisions(conn: &Connection, name: &str) -> Result<Vec<(u32, Assertion)>> {
+    let source = Source::reading(conn)?;
+    let ids = conn
+        .prepare_cached(&source.sql(
+            "SELECT id FROM @source.assertion WHERE kind='saved_query' AND root IN
+         (SELECT root FROM @source.assertion WHERE kind='saved_query' AND key=?1) ORDER BY id",
+        ))?
+        .query_map([name], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let rows = ids
+        .into_iter()
+        .map(|id| get(conn, &id)?.ok_or_else(|| StoreError::NotFound(id)))
+        .collect::<Result<Vec<_>>>()?;
+    numbered_revisions(conn, rows)
+}
+
+pub(crate) fn saved_revision_number(
+    conn: &Connection,
+    reference: &RevisionReference,
+) -> Result<u32> {
+    let id = reference.revision.as_ref().ok_or_else(|| {
+        StoreError::invalid("saved revision numbering requires an exact revision")
+    })?;
+    let row = get(conn, id)?
+        .ok_or_else(|| StoreError::NotFound(Reference::Assertion(reference.clone()).to_string()))?;
+    if row.fact.root != reference.root || row.fact.kind != AssertionKind::SavedQuery {
+        return Err(StoreError::invalid(
+            "reference is not the recorded saved revision",
+        ));
+    }
+    numbered_revisions(conn, vec![row])?
+        .into_iter()
+        .find(|(_, row)| row.fact.id == *id)
+        .map(|(number, _)| number)
+        .ok_or_else(|| StoreError::NotFound(Reference::Assertion(reference.clone()).to_string()))
+}
+
+pub(crate) fn named_revision(
+    conn: &Connection,
+    name: &str,
+    number: u32,
+) -> Result<CurrentSavedDefinition> {
+    // A name with one current family binds its current heads and ancestors.
+    // Withdrawn siblings do not compete with a redo; active forks and explicit
+    // cross-family ancestors stay in the graph. Otherwise use all history.
+    let roots = named_current(conn, AssertionKind::SavedQuery, name)?
+        .into_iter()
+        .map(|row| row.fact.root)
+        .collect::<std::collections::BTreeSet<_>>();
+    let root = (roots.len() == 1).then(|| roots.first().expect("one current root").as_str());
+    let revisions = match root {
+        None => numbered_named_revisions(conn, name)?,
+        Some(root) => {
+            let source = Source::reading(conn)?;
+            let ids = conn.prepare_cached(&source.sql(
+                "SELECT a.id FROM @source.assertion a JOIN @source.revision_state r ON r.id=a.id
+                 WHERE a.kind='saved_query' AND a.root=?1 AND r.current=1 AND r.withdrawn=0 ORDER BY a.id",
+            ))?.query_map([root], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let rows = ids
+                .into_iter()
+                .map(|id| get(conn, &id)?.ok_or_else(|| StoreError::NotFound(id)))
+                .collect::<Result<Vec<_>>>()?;
+            numbered_revisions(conn, rows)?
+        }
+    };
+    let mut matching = revisions
+        .into_iter()
+        .filter(|(n, _)| *n == number)
+        .map(|(_, row)| row)
+        .collect::<Vec<_>>();
+    let row = match matching.len() {
+        0 => return Err(StoreError::NotFound(format!("query:{name}@{number}"))),
+        1 => matching.pop().expect("one matching revision"),
+        _ => {
+            return Err(StoreError::Ambiguous {
+                reference: format!("query:{name}@{number}"),
+                candidates: matching
+                    .iter()
+                    .map(|row| {
+                        Reference::Assertion(RevisionReference::exact(
+                            row.fact.root.clone(),
+                            row.fact.id.clone(),
+                        ))
+                        .to_string()
+                    })
+                    .collect(),
+            });
+        }
+    };
+    saved_definition(&row.fact, &[])?
+        .map(|(_, definition)| definition)
+        .ok_or_else(|| StoreError::invalid("numbered revision is not a saved query"))
+}
+
+impl crate::Reader<'_> {
+    /// Authored history retains original revisions, hashes, times and attribution.
+    pub fn saved_query_record(
+        &self,
+        name: &str,
+    ) -> Result<Option<polylogue_model::saved_queries::SavedQueryRecord>> {
+        use polylogue_model::saved_queries::{KeptSummary, SavedQueryRecord, SavedRevision};
+        let conn = self.conn()?;
+        let rows = numbered_named_revisions(conn, name)?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        let mut revisions = Vec::new();
+        let mut hashes = std::collections::BTreeSet::new();
+        for (number, row) in rows {
+            let (_, definition) = saved_definition(&row.fact, &[])?
+                .ok_or_else(|| StoreError::invalid("saved history contains another kind"))?;
+            hashes.insert(format!("query:{}", definition.value.hash));
+            revisions.push(SavedRevision {
+                revision: number,
+                reference: Reference::Assertion(definition.reference).to_string(),
+                text: definition.value.text,
+                hash: format!("query:{}", definition.value.hash),
+                saved_at: row.fact.created_at,
+                author: row.fact.author.to_string(),
+            });
+        }
+        let source = Source::reading(conn)?;
+        let mut kept_statement = conn.prepare_cached(&source.sql(
+            "SELECT id,json_array_length(rows_json,'$.rows'),ran_at FROM @source.kept_result WHERE name=?1 ORDER BY ran_at DESC,id DESC",
+        ))?;
+        let kept = kept_statement
+            .query_map([name], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<u64>>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })?
+            .map(|row| {
+                let (id, rows, at) = row?;
+                Ok(KeptSummary {
+                    result: format!("result:{id}"),
+                    rows: rows.ok_or_else(|| StoreError::invalid("kept result has no rows"))?,
+                    at: Timestamp::from_unix_ms(at)
+                        .ok_or_else(|| StoreError::invalid("kept time is out of range"))?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let watches = named_current(conn, AssertionKind::Signal, name)?;
+        let watch = match watches.as_slice() {
+            [] => None,
+            [watch] => Some(
+                Reference::Assertion(RevisionReference::exact(
+                    watch.fact.root.clone(),
+                    watch.fact.id.clone(),
+                ))
+                .to_string(),
+            ),
+            _ => {
+                return Err(StoreError::Ambiguous {
+                    reference: format!("watch:{name}"),
+                    candidates: watches
+                        .iter()
+                        .map(|row| {
+                            Reference::Assertion(RevisionReference::exact(
+                                row.fact.root.clone(),
+                                row.fact.id.clone(),
+                            ))
+                            .to_string()
+                        })
+                        .collect(),
+                });
+            }
+        };
+        let mut dependent_statement = conn.prepare_cached(&source.sql(
+            "SELECT DISTINCT query FROM @source.query_edge WHERE uses IN (SELECT value FROM json_each(?1)) ORDER BY query",
+        ))?;
+        let dependents = dependent_statement
+            .query_map([serde_json::to_string(&hashes)?], |row| {
+                row.get::<_, String>(0)
+            })?
+            .map(|row| row.map(|id| format!("query:{id}")))
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        self.check()?;
+        Ok(Some(SavedQueryRecord {
+            name: name.into(),
+            revisions,
+            kept,
+            watch,
+            dependents,
+        }))
+    }
+}

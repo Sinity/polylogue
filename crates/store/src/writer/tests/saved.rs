@@ -27,11 +27,15 @@ fn request(id: &str, write: UserWrite) -> UserRequest {
 fn save(id: &str, name: &str, text: &str) -> UserRequest {
     request(
         id,
-        UserWrite::SaveQuery {
-            name: name.into(),
-            text: text.into(),
+        UserWrite::Save(Box::new(polylogue_model::user::Save {
+            name: Some(name.into()),
+            query: text.into(),
             denominator: None,
-        },
+            rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
+            read_at: "{}".into(),
+            watch: None,
+            outcomes: None,
+        })),
     )
 }
 
@@ -223,11 +227,15 @@ fn saved_figure_keeps_its_denominator_as_a_separate_question() {
         .user(crate::writer::UserSubmission {
             request: request(
                 "figure",
-                UserWrite::SaveQuery {
-                    name: "total".into(),
-                    text: "sessions | count".into(),
+                UserWrite::Save(Box::new(polylogue_model::user::Save {
+                    name: Some("total".into()),
+                    query: "sessions | count".into(),
                     denominator: Some("sessions".into()),
-                },
+                    rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
+                    read_at: "{}".into(),
+                    watch: None,
+                    outcomes: None,
+                })),
             ),
             scope: None,
             preparation: Some(context()),
@@ -257,4 +265,86 @@ fn saved_figure_keeps_its_denominator_as_a_separate_question() {
                 .is_some()
         );
     }
+}
+
+#[test]
+fn kept_names_follow_run_time_and_exact_opaque_ids_stay_addressable() {
+    let archive = test_archive();
+    for (id, at, name) in [
+        ("z-older", 100, "example"),
+        ("a-newer", 200, "example"),
+        ("example", 50, "other"),
+    ] {
+        let mut request = save(id, name, "sessions");
+        request.at = polylogue_model::Timestamp::from_unix_ms(at).unwrap();
+        archive
+            .writer
+            .user(crate::writer::UserSubmission {
+                request,
+                scope: None,
+                preparation: Some(context()),
+                parent: None,
+            })
+            .unwrap();
+    }
+    let reads = ReadPool::open(&archive.archive).unwrap();
+    let reader = reads.reader().unwrap();
+    let prepare = |text| {
+        crate::selection::prepare_query_plan_on(
+            reader.conn().unwrap(),
+            reader.conn().unwrap(),
+            text,
+            &bindings(),
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+    };
+    let newest = prepare("result:other");
+    assert_eq!(
+        newest
+            .bindings()
+            .kept_names
+            .get("other")
+            .map(String::as_str),
+        Some("example")
+    );
+    // An exact ID wins over a colliding name, even when that name has newer runs.
+    let exact = prepare("result:example");
+    assert!(!exact.bindings().kept_names.contains_key("example"));
+    drop(reader);
+    // Use a separate name to exercise newest ordering without that collision.
+    for (id, at) in [("z-first", 100), ("a-last", 200)] {
+        let mut request = save(id, "chronological", "sessions");
+        request.at = polylogue_model::Timestamp::from_unix_ms(at).unwrap();
+        archive
+            .writer
+            .user(crate::writer::UserSubmission {
+                request,
+                scope: None,
+                preparation: Some(context()),
+                parent: None,
+            })
+            .unwrap();
+    }
+    let reader = reads.reader().unwrap();
+    let newest = crate::selection::prepare_query_plan_on(
+        reader.conn().unwrap(),
+        reader.conn().unwrap(),
+        "result:chronological",
+        &bindings(),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        newest
+            .bindings()
+            .kept_names
+            .get("chronological")
+            .map(String::as_str),
+        Some("a-last")
+    );
 }

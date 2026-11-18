@@ -30,8 +30,114 @@ fn catalog(outputs: &[SourceOutput]) -> Arc<Catalog> {
     if !outputs.is_empty() {
         Arc::make_mut(&mut catalog).source_outputs =
             outputs.iter().map(SourceOutput::catalog_output).collect();
+        for output in outputs {
+            if let Some(unit) = &output.schema.unit {
+                recorded_unit(&mut catalog, unit);
+            }
+            for unit in output.schema.match_units.iter().flatten() {
+                recorded_unit(&mut catalog, unit);
+            }
+            for field in &output.schema.fields {
+                if let Some(unit) = &field.unit {
+                    recorded_unit(&mut catalog, unit);
+                }
+            }
+        }
     }
     catalog
+}
+/// A sealed question retains its recorded source spelling. Its hash is
+/// validated by the immutable-object owner; the live parser never sees them.
+fn recorded_unit(catalog: &mut Arc<Catalog>, name: &str) {
+    if catalog.unit(name).is_some() {
+        return;
+    }
+    let Some(unit) = crate::units::Unit::from_bound_name(name) else {
+        return;
+    };
+    let Some(mut declaration) = catalog.unit(unit.name()).cloned() else {
+        return;
+    };
+    declaration.name = name.into();
+    if name == "changes" {
+        declaration.main_time = Some("seq".into());
+        declaration.default_order = vec!["seq".into()];
+    }
+    for field in &mut declaration.fields {
+        if field.unit.as_deref() == Some(unit.name()) {
+            field.unit = Some(name.into());
+        }
+    }
+    Arc::make_mut(catalog).units.push(declaration);
+}
+fn recorded_units(catalog: &mut Arc<Catalog>, query: &Query) -> Result<(), QueryError> {
+    let mut query = query.clone();
+    let names = std::cell::RefCell::new(Vec::new());
+    walk(
+        &mut query,
+        &mut |query| {
+            if let Source::Unit { unit, .. } = &query.source {
+                names.borrow_mut().push(unit.clone());
+            }
+            for stage in &query.transforms {
+                if let TransformKind::Scope { unit, .. } = &stage.kind {
+                    names.borrow_mut().push(unit.clone());
+                }
+            }
+            for attached in &query.attach {
+                names.borrow_mut().push(attached.unit.clone());
+            }
+            Ok(())
+        },
+        &mut |condition| {
+            match &condition.kind {
+                ConditionKind::Exists { unit, .. }
+                | ConditionKind::Count { unit, .. }
+                | ConditionKind::Sequence { unit, .. } => names.borrow_mut().push(unit.clone()),
+                _ => {}
+            }
+            Ok(())
+        },
+    )?;
+    for name in names.into_inner() {
+        recorded_unit(catalog, &name);
+    }
+    Ok(())
+}
+/// Declarations used only after live text has been parsed. The existing
+/// immutable-object validator still authenticates every selected definition.
+pub(crate) fn recorded_units_for_bindings(
+    catalog: &mut Arc<Catalog>,
+    bindings: &Bindings,
+) -> Result<(), QueryError> {
+    for definitions in bindings.saved.values() {
+        for definition in definitions {
+            if let crate::SavedQueryBody::Available {
+                object: Some(object),
+                ..
+            } = &definition.body
+            {
+                recorded_units(catalog, &object.query)?;
+                for node in &object.definitions {
+                    recorded_units(catalog, &node.query)?;
+                }
+            }
+        }
+    }
+    for kept in bindings.kept.values() {
+        for part in [ResultPart::Rows, ResultPart::Matches] {
+            let output = kept.output_schema(part);
+            if let Some(unit) = &output.unit {
+                recorded_unit(catalog, unit);
+            }
+            for field in &output.fields {
+                if let Some(unit) = &field.unit {
+                    recorded_unit(catalog, unit);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 fn parse_id(name: &str) -> Result<QuestionId, QueryError> {
     if name.len() != 64
@@ -393,7 +499,12 @@ pub(super) fn definition_with_dependencies(
 
 /// Bind only the declarations kept with this immutable set of definitions.
 fn runtime_catalog(object: &QueryObject) -> Result<Arc<Catalog>, QueryError> {
-    Ok(catalog(&all_outputs(object)?))
+    let mut declarations = catalog(&all_outputs(object)?);
+    recorded_units(&mut declarations, &object.query)?;
+    for node in &object.definitions {
+        recorded_units(&mut declarations, &node.query)?;
+    }
+    Ok(declarations)
 }
 fn replay_bindings(object: &QueryObject, catalog: &Catalog) -> Result<Bindings, QueryError> {
     let mut bindings = Bindings::default();
@@ -508,7 +619,8 @@ fn check_node(
     query: &Query,
     outputs: &[SourceOutput],
 ) -> Result<(), QueryError> {
-    let catalog = catalog(outputs);
+    let mut catalog = catalog(outputs);
+    recorded_units(&mut catalog, query)?;
     let actual = identity::question_id_from_normal_form(form, parameters).map_err(language)?;
     if actual != id || identity::normal_form(query, &catalog).map_err(language)? != *form {
         return Err(QueryError::invalid(
@@ -633,7 +745,11 @@ pub fn replay_binding(
             schema: output.schema.clone(),
         })
         .collect();
-    let catalog = catalog(&outputs);
+    let mut catalog = catalog(&outputs);
+    recorded_units(&mut catalog, &binding.bound_ast)?;
+    for definition in &binding.definitions {
+        recorded_units(&mut catalog, &definition.ast)?;
+    }
     let mut definitions = Vec::new();
     let mut queries = vec![binding.bound_ast.clone()];
     queries.extend(

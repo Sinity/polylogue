@@ -557,17 +557,34 @@ pub fn requests(
                         if name != row.name || query != row.query {
                             return Err("the request and the result it kept disagree".into());
                         }
+                        let rows = serde_json::from_str::<serde_json::Value>(&row.rows_json)
+                            .map_err(|error| format!("its kept rows are not JSON: {error}"))?["rows"]
+                            .as_array().ok_or("its kept body has no rows")?.len() as u64;
                         carried_kept.insert(row.id.clone());
                         Ok(Some(PreparedRequest {
                             request: self::request(
                                 &request.id,
                                 &body,
-                                UserWrite::KeepResult {
+                                UserWrite::Save(Box::new(polylogue_model::user::Save {
                                     name: name.clone(),
                                     query: query.clone(),
                                     rows_json: row.rows_json.clone(),
                                     read_at: row.read_at.clone(),
-                                },
+                                    denominator: None,
+                                    watch: None,
+                                    outcomes: Some(polylogue_model::user::SaveReport {
+                                        request: request.id.clone(),
+                                        saved: None,
+                                        kept: polylogue_model::user::KeptPart {
+                                            result: format!("result:{}", row.id),
+                                            rows,
+                                            at: time(row.ran_at)?,
+                                        },
+                                        watch: None,
+                                        repeat: false,
+                                        pending: false,
+                                    }),
+                                })),
                             ),
 
                             outcome: outcome(&request.id),

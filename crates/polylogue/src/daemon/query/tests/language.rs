@@ -23,6 +23,8 @@ fn options() -> Options {
         random_seed: Some(7),
         embeddings: false,
         self_session: None,
+        here: None,
+        seen_marks_of: None,
         saved: Default::default(),
         fields: vec![],
         kept: Default::default(),
@@ -257,7 +259,12 @@ fn a_value_outside_a_closed_set_is_refused() {
             Some("tool_calls"),
         ),
         ("messages where role:asistant", "messages", "role", None),
-        ("kind:continuation", "sessions", "kind", Some("links")),
+        (
+            "kind:continuation",
+            "sessions",
+            "kind",
+            Some("session_links"),
+        ),
         ("kind:mian", "sessions", "kind", None),
     ] {
         let f = run(&r, bad)
@@ -391,19 +398,21 @@ fn no_sort_key_holds_bytes() {
             // The page's row limit.
             params.push(SqlValue::Int(i64::MAX));
             let rows = reader
-                .query(
-                    &format!(
-                        "SELECT count(*) AS n FROM ({}) WHERE {bytes}",
-                        program.statements.page(
-                            &program.order,
-                            program.params.len(),
-                            false,
-                            false,
-                            polylogue_store::query::PageColumns::All,
-                        )
-                    ),
-                    &params,
-                )
+                .with_clock(&program.clock, || {
+                    reader.query(
+                        &format!(
+                            "SELECT count(*) AS n FROM ({}) WHERE {bytes}",
+                            program.statements.page(
+                                &program.order,
+                                program.params.len(),
+                                false,
+                                false,
+                                polylogue_store::query::PageColumns::All,
+                            )
+                        ),
+                        &params,
+                    )
+                })
                 .unwrap_or_else(|e| panic!("{question}: {e}"));
             assert_eq!(rows[0]["n"], 0, "{question}");
             checked += 1;

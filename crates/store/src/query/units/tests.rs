@@ -12,7 +12,16 @@ fn units_in_a_session_relate_to_it() {
 #[test]
 fn sessionless_units_keep_explicit_association_or_independence() {
     for unit in Unit::all().filter(|unit| {
-        !fields::has_session(*unit) && !matches!(unit, Unit::Sessions | Unit::Documents)
+        !fields::has_session(*unit)
+            && !matches!(
+                unit,
+                Unit::Sessions
+                    | Unit::Documents
+                    | Unit::Alternates
+                    | Unit::Queries
+                    | Unit::Runs
+                    | Unit::Results
+            )
     }) {
         assert!(spec(unit).session_scope.is_some(), "{unit:?}");
     }
@@ -60,7 +69,7 @@ fn the_grammar_names_every_unit() {
             q.source
         );
         // `exists UNIT(…)` names the row units by their one name.
-        if !matches!(u, Unit::Sessions | Unit::Changes) {
+        if !matches!(u, Unit::Sessions | Unit::Feed) {
             let text = format!("exists {name}(x)");
             crate::query::parse(&text).unwrap_or_else(|e| panic!("{text}: {e}"));
         }

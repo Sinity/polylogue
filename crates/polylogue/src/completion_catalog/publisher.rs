@@ -605,6 +605,7 @@ impl State {
                 .collect(),
             saved: change.queries.clone(),
             kept,
+            kept_names: Default::default(),
         };
         match current.executable_text().and_then(|syntax| {
             let parameters = bindings.definition_parameters(syntax)?;
@@ -675,6 +676,62 @@ impl State {
             } else {
                 writer.remove_saved(family)?;
             }
+        }
+        let origins = polylogue_sources::ORIGINS
+            .iter()
+            .map(|origin| origin.name.to_owned())
+            .collect::<Vec<_>>();
+        for shipped in polylogue_model::saved_queries::SHIPPED_QUERIES {
+            let changed = first
+                || update.replaced
+                || update.families.iter().any(|(id, family)| {
+                    family.names.contains_key(shipped.name)
+                        || self
+                            .vocabulary
+                            .families
+                            .get(id)
+                            .is_some_and(|old| old.names.contains_key(shipped.name))
+                });
+            if !changed {
+                continue;
+            }
+            let authored = (!update.replaced
+                && self
+                    .vocabulary
+                    .name_users
+                    .get(shipped.name)
+                    .is_some_and(|owners| {
+                        owners.iter().any(|id| !update.families.contains_key(id))
+                    }))
+                || update
+                    .families
+                    .values()
+                    .any(|family| family.names.contains_key(shipped.name));
+            let family = format!("shipped:{}", shipped.name);
+            if authored {
+                writer.remove_saved(&family)?;
+                continue;
+            }
+            let saved = polylogue_store::selection::shipped_bindings(&origins)
+                .map_err(|error| error.into_store_error())?;
+            let revision = saved[shipped.name][0].hash.to_string();
+            let bindings = polylogue_query::Bindings {
+                origins: origins.clone(),
+                saved,
+                ..Default::default()
+            };
+            let (schema, relation_scope) =
+                bindings.output_metadata(&format!("query:{}", shipped.name))?;
+            writer.put_saved(&completion::Saved {
+                family,
+                revision,
+                name: shipped.name.into(),
+                text: shipped.text.into(),
+                parameters: vec![],
+                help: shipped.help.into(),
+                schema: Some(schema),
+                relation_scope: Some(relation_scope),
+            })?;
         }
         for (kept, _) in update.kept.values() {
             writer.put_kept(kept)?;

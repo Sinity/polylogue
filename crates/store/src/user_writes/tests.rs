@@ -14,20 +14,27 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
     let w = crate::fixture::writer::WriterArchive::new();
     let kept = crate::fixture::authored::operator_request(
         "kept".into(),
-        UserWrite::KeepResult {
+        UserWrite::Save(Box::new(polylogue_model::user::Save {
             name: Some("example".into()),
             query: "sessions".into(),
             rows_json: "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}".into(),
             read_at: "{\"now\":1}".into(),
-        },
+            denominator: None,
+            watch: None,
+            outcomes: None,
+        })),
     );
     let saved = crate::fixture::authored::operator_request(
         "saved".into(),
-        UserWrite::SaveQuery {
-            name: "example".into(),
-            text: "sessions".into(),
+        UserWrite::Save(Box::new(polylogue_model::user::Save {
+            name: Some("example".into()),
+            query: "sessions".into(),
             denominator: None,
-        },
+            rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
+            read_at: "{}".into(),
+            watch: None,
+            outcomes: None,
+        })),
     );
     for request in [&kept, &saved] {
         w.writer
@@ -48,8 +55,8 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
             .unwrap();
     }
     let mut retry = saved.clone();
-    if let UserWrite::SaveQuery { text, .. } = &mut retry.write {
-        *text = "messages".into();
+    if let UserWrite::Save(save) = &mut retry.write {
+        save.query = "messages".into();
     }
     for request in [kept.clone(), retry] {
         assert!(matches!(
@@ -60,7 +67,11 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
     let reads = crate::ReadPool::open(&w.archive).unwrap();
     let reader = reads.reader().unwrap();
     for request in [kept, saved] {
-        assert_eq!(reader.user_request(&request.id).unwrap(), Some(request));
+        let mut recorded = reader.user_request(&request.id).unwrap().unwrap();
+        if let UserWrite::Save(save) = &mut recorded.write {
+            save.outcomes = None;
+        }
+        assert_eq!(recorded, request);
     }
     let stored = reader
         .query("SELECT rows_json FROM a.kept_result WHERE id='kept'", &[])
@@ -74,8 +85,8 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
     assert_eq!(
         reader
             .assertion(&polylogue_model::RevisionReference::exact(
-                "saved".into(),
-                "saved".into()
+                "kept".into(),
+                "kept".into()
             ))
             .unwrap()
             .unwrap()
@@ -102,12 +113,15 @@ fn a_kept_body_later_preparations_cannot_decode_is_refused_without_recording_a_r
     ] {
         let request = crate::fixture::authored::operator_request(
             id.into(),
-            UserWrite::KeepResult {
+            UserWrite::Save(Box::new(polylogue_model::user::Save {
                 name: None,
                 query: "sessions".into(),
                 rows_json: rows_json.into(),
                 read_at: "{\"now\":1}".into(),
-            },
+                denominator: None,
+                watch: None,
+                outcomes: None,
+            })),
         );
         let prefix = format!("kept result {id:?} field {field}: ");
         assert!(
@@ -129,11 +143,15 @@ fn a_kept_body_later_preparations_cannot_decode_is_refused_without_recording_a_r
     }
     let saved = crate::fixture::authored::operator_request(
         "saved-after-refusal".into(),
-        UserWrite::SaveQuery {
-            name: "after".into(),
-            text: "sessions".into(),
+        UserWrite::Save(Box::new(polylogue_model::user::Save {
+            name: Some("after".into()),
+            query: "sessions".into(),
             denominator: None,
-        },
+            rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
+            read_at: "{}".into(),
+            watch: None,
+            outcomes: None,
+        })),
     );
     w.writer
         .user(crate::writer::UserSubmission {
@@ -322,13 +340,16 @@ fn save_selection_rolls_back_every_effect_when_the_kept_insert_fails() {
     conn.execute_batch("CREATE TRIGGER reject_kept BEFORE INSERT ON kept_result BEGIN SELECT RAISE(ABORT,'synthetic kept insert failure'); END;").unwrap();
     let request = crate::fixture::authored::operator_request(
         "atomic-save".into(),
-        UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+        UserWrite::Save(Box::new(polylogue_model::user::Save {
             outcomes: Some(polylogue_model::user::SaveReport {
                 saved: None,
-                kept: UserOutcome {
-                    id: "caller-cannot-choose-this".into(),
-                    repeat: true,
-                    pending: true,
+                request: "forged-request".into(),
+                repeat: true,
+                pending: true,
+                kept: polylogue_model::user::KeptPart {
+                    result: "result:caller-cannot-choose-this".into(),
+                    rows: 0,
+                    at: Timestamp::from_unix_ms(1).unwrap(),
                 },
                 watch: None,
             }),
@@ -337,7 +358,7 @@ fn save_selection_rolls_back_every_effect_when_the_kept_insert_fails() {
             denominator: None,
             rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
             read_at: r#"{"now":1}"#.into(),
-            watch: Some(polylogue_model::user::SavedWatch {
+            watch: Some(polylogue_model::user::SaveWatch {
                 hold: Some("20m".into()),
                 notify: false,
             }),
@@ -368,10 +389,13 @@ fn save_selection_rolls_back_every_effect_when_the_kept_insert_fails() {
     let repeated = submitted().unwrap();
     assert!(repeated.outcome.repeat);
     assert_eq!(first.save, repeated.save);
-    assert_eq!(first.save.as_ref().unwrap().kept.id, "atomic-save-keep");
+    assert_eq!(
+        first.save.as_ref().unwrap().kept.result,
+        "result:atomic-save"
+    );
     assert_eq!(
         first.save.as_ref().unwrap().saved.as_ref().unwrap().id,
-        "atomic-save-save"
+        "atomic-save.1"
     );
     assert_eq!(first.outcome.id, "atomic-save");
     let ids: Vec<String> = conn
@@ -381,11 +405,11 @@ fn save_selection_rolls_back_every_effect_when_the_kept_insert_fails() {
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
-    assert_eq!(ids, ["atomic-save-save", "atomic-save-watch"]);
+    assert_eq!(ids, ["atomic-save.1", "atomic-save.2"]);
     let kept: String = conn
         .query_row("SELECT id FROM kept_result", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(kept, "atomic-save-keep");
+    assert_eq!(kept, "atomic-save");
     let journal: i64 = conn
         .query_row("SELECT count(*) FROM client_request", [], |r| r.get(0))
         .unwrap();

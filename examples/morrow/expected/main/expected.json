@@ -160,7 +160,7 @@
       "#8",
       "#7"
     ],
-    "31 assertions where kind:decision": [
+    "31 annotations where kind:decision": [
       [
         "decided: chrono, not time",
         "#2",
@@ -194,7 +194,7 @@
     "35 reop:morrow": {
       "outcome": "error"
     },
-    "36 links where kind:fork": [
+    "36 session_links where kind:fork": [
       [
         "#5",
         "#6",

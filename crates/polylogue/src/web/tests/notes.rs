@@ -271,7 +271,7 @@ fn operator_edits_and_judgments_keep_earlier_revisions() {
         // Judging the revision again revises the operator's judgment of it.
         let current = query(
             &f,
-            "assertions where kind:judgment about:\"assertion:agent-1@agent-1\"",
+            "annotations where kind:judgment about:\"assertion:agent-1@agent-1\"",
         )
         .await;
         assert_eq!(current["count"], 1, "{current}");
@@ -279,7 +279,7 @@ fn operator_edits_and_judgments_keep_earlier_revisions() {
         assert_eq!(
             query(
                 &f,
-                "assertions where kind:judgment current:* about:\"assertion:agent-1@agent-1\""
+                "annotations where kind:judgment current:* about:\"assertion:agent-1@agent-1\""
             )
             .await["count"],
             2
@@ -288,7 +288,7 @@ fn operator_edits_and_judgments_keep_earlier_revisions() {
             &f,
             crate::test_daemon::Call::new("rows", json!({"selection":"assertion:agent-1@agent-1", "steps":[{"verb":"edit","text":"new proposal"}]})).id("agent-new"),
         );
-        let pending = query(&f, "assertions where agent:true judged:unknown").await;
+        let pending = query(&f, "annotations where agent:true judged:unknown").await;
         assert_eq!(pending["count"], 1);
         assert_eq!(pending["rows"][0]["id"], "agent-new-1");
         let retry = command(&f,"rows","reject",json!({"selection":"assertion:agent-1@agent-1","steps":[{"verb":"judge","verdict":"reject","reason":"reconsidered"}]})).await;
@@ -296,7 +296,7 @@ fn operator_edits_and_judgments_keep_earlier_revisions() {
         assert_eq!(
             query(
                 &f,
-                "assertions where kind:judgment current:* about:\"assertion:agent-1@agent-1\""
+                "annotations where kind:judgment current:* about:\"assertion:agent-1@agent-1\""
             )
             .await["count"],
             2
@@ -309,7 +309,7 @@ fn operator_edits_and_judgments_keep_earlier_revisions() {
         )
         .await;
         assert_eq!(
-            query(&f, "assertions where agent:true judged:unknown").await["count"],
+            query(&f, "annotations where agent:true judged:unknown").await["count"],
             0
         );
         let revision = stored(&f, "agent-1", "agent-new-1").await;
@@ -330,13 +330,13 @@ fn selected_current_and_kept_rows_have_distinct_populations() {
                 &f,
                 "rows",
                 "kept",
-                json!({"selection":"assertions where kind:question","steps":[{"verb":"save"}]})
+                json!({"selection":"annotations where kind:question","steps":[{"verb":"save"}]})
             )
-            .await["kept"]["id"],
-            "kept-1-keep"
+            .await["kept"]["result"],
+            "result:kept-1"
         );
         assert_eq!(
-            query(&f, "assertions where kind:question").await["count"],
+            query(&f, "annotations where kind:question").await["count"],
             0
         );
         write_one(
@@ -350,7 +350,7 @@ fn selected_current_and_kept_rows_have_distinct_populations() {
             ),
         )
         .await;
-        let result=command(&f,"rows","bulk",json!({"selection":"assertions where kind:question","all":true,"steps":[{"verb":"note","text":"all when applied"}]})).await;
+        let result=command(&f,"rows","bulk",json!({"selection":"annotations where kind:question","all":true,"steps":[{"verb":"note","text":"all when applied"}]})).await;
         assert_eq!(result["targets"], 1);
         assert_eq!(
             about(&stored(&f, "bulk-1", "bulk-1").await),
@@ -370,17 +370,17 @@ fn selected_current_and_kept_rows_have_distinct_populations() {
         assert_eq!(
             query(
                 &f,
-                "assertions where about:\"assertion:question-1@question-1\""
+                "annotations where about:\"assertion:question-1@question-1\""
             )
             .await["count"],
             1
         );
-        assert_eq!(query(&f, "result:kept-1-keep").await["count"], 0);
+        assert_eq!(query(&f, "result:kept-1").await["count"], 0);
         command(
             &f,
             "rows",
             "kept-questions",
-            json!({"selection":"assertions where kind:question","steps":[{"verb":"save"}]}),
+            json!({"selection":"annotations where kind:question","steps":[{"verb":"save"}]}),
         )
         .await;
         write_one(
@@ -394,7 +394,7 @@ fn selected_current_and_kept_rows_have_distinct_populations() {
             ),
         )
         .await;
-        let args = json!({"selection":"result:kept-questions-1-keep","all":true,"steps":[{"verb":"note","text":"fixed reviewed population"}]});
+        let args = json!({"selection":"result:kept-questions-1","all":true,"steps":[{"verb":"note","text":"fixed reviewed population"}]});
         assert_eq!(
             command(&f, "rows", "fixed", args.clone()).await["targets"],
             1
@@ -596,7 +596,7 @@ fn bulk_retry_uses_committed_targets_after_the_query_becomes_empty() {
             note_line("question", None, json!("open"), &["repo:morrow".into()]),
         )
         .await;
-        let args = json!({"selection":"assertions where kind:question","all":true,"steps":[{"verb":"note","text":"reviewed"}]});
+        let args = json!({"selection":"annotations where kind:question","all":true,"steps":[{"verb":"note","text":"reviewed"}]});
         assert_eq!(
             command(&f, "rows", "bulk-retry", args.clone()).await["targets"],
             1
@@ -609,7 +609,7 @@ fn bulk_retry_uses_committed_targets_after_the_query_becomes_empty() {
         )
         .await;
         assert_eq!(
-            query(&f, "assertions where kind:question").await["count"],
+            query(&f, "annotations where kind:question").await["count"],
             0
         );
         let repeated = command(&f, "rows", "bulk-retry", args.clone()).await;
@@ -652,27 +652,22 @@ fn assertion_fields_and_saved_query_edits_keep_metadata() {
             json!({"selection":"sessions","steps":[{"verb":"save","name":"morrow"}]}),
         )
         .await;
-        let page=command(&f,"rows","projection",json!({"selection":"assertions where root = \"Saved:Case-1-save\" current:*","fields":["id","key","about","judged"]})).await;
+        let page=command(&f,"rows","projection",json!({"selection":"annotations where root = \"Saved:Case-1\" current:*","fields":["id","key","about","judged"]})).await;
         assert_eq!(page["count"], 2);
         assert_eq!(
-            query(
-                &f,
-                "assertions where root = \"saved:case-1-save\" current:*"
-            )
-            .await["count"],
+            query(&f, "annotations where root = \"saved:case-1\" current:*").await["count"],
             0
         );
-        let row = stored(&f, "Saved:Case-1-save", "Saved:Case:new-1-save").await;
+        let row = stored(&f, "Saved:Case-1", "Saved:Case:new-1").await;
         assert_eq!(row.fact.key.as_deref(), Some("morrow"));
-        assert_eq!(row.fact.root, "Saved:Case-1-save");
+        assert_eq!(row.fact.root, "Saved:Case-1");
         assert_eq!(row.fact.value.as_ref().unwrap()["text"], "sessions");
         assert!(
             row.fact
                 .links
                 .iter()
                 .any(|link| link.role == LinkRole::Revises
-                    && link.reference.to_string()
-                        == "assertion:Saved:Case-1-save@Saved:Case-1-save")
+                    && link.reference.to_string() == "assertion:Saved:Case-1@Saved:Case-1")
         );
         for field in ["derived_from", "valid_until"] {
             let mut invalid = note("invalid");

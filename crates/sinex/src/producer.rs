@@ -488,7 +488,10 @@ impl Sinex {
             };
             if source.as_ref().is_none_or(|source| {
                 source.name != "polylogue"
-                    || !matches!(source.version, 5 | 6 | 7 | 8 | 9 | crate::SOURCE_VERSION)
+                    || !matches!(
+                        source.version,
+                        5 | 6 | 7 | 8 | 9 | 10 | crate::SOURCE_VERSION
+                    )
             }) {
                 return Err(Error::invalid(
                     "named product intent has an unsupported source",
@@ -542,7 +545,7 @@ impl Sinex {
                 if material.source.name != "polylogue"
                     || !matches!(
                         material.source.version,
-                        5 | 6 | 7 | 8 | 9 | crate::SOURCE_VERSION
+                        5 | 6 | 7 | 8 | 9 | 10 | crate::SOURCE_VERSION
                     )
                 {
                     return Err(Error::invalid("observation has an unsupported source"));
@@ -723,7 +726,7 @@ impl Sinex {
             if material.source.name != "polylogue"
                 || !matches!(
                     material.source.version,
-                    5 | 6 | 7 | 8 | 9 | crate::SOURCE_VERSION
+                    5 | 6 | 7 | 8 | 9 | 10 | crate::SOURCE_VERSION
                 )
             {
                 return Err(Error::invalid(
@@ -893,7 +896,7 @@ impl Sinex {
             if material.source.name != "polylogue"
                 || !matches!(
                     material.source.version,
-                    5 | 6 | 7 | 8 | 9 | crate::SOURCE_VERSION
+                    5 | 6 | 7 | 8 | 9 | 10 | crate::SOURCE_VERSION
                 )
             {
                 return Err(Error::invalid(

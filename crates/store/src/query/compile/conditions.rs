@@ -104,12 +104,12 @@ impl<'a> Compiler<'a> {
         } else {
             conjuncts.extend(all);
         }
-        // `last` beside other session conditions is the newest session that
+        // `latest` beside other session conditions is the newest session that
         // also meets them.
         if scope.unit == Unit::Sessions
             && conjuncts.len() > 1
             && let Some(at) = conjuncts.iter().position(|x| {
-                matches!(x, Filter::SessionWord { word, .. } if matches!(word.as_str(), "last" | "latest"))
+                matches!(x, Filter::SessionWord { word, .. } if matches!(word.as_str(), "latest"))
             })
         {
             let rest = Filter::All(
@@ -291,7 +291,14 @@ impl<'a> Compiler<'a> {
             Index::Output => Some(polylogue_query::search::SnippetIndex::Output),
             Index::Thinking => None,
         };
-        let source = top && ranks.is_some() && ranks == self.rank_index && self.rank.is_none();
+        let alternate_languages = (scope.unit == Unit::Messages && index == Index::Prose)
+            .then(|| self.alternate_words.clone())
+            .flatten();
+        let source = alternate_languages.is_none()
+            && top
+            && ranks.is_some()
+            && ranks == self.rank_index
+            && self.rank.is_none();
         let scoped = source
             && self.answer
             && !self.measuring
@@ -318,18 +325,48 @@ impl<'a> Compiler<'a> {
             self.params.truncate(parameter_start);
             return Err(refuse(scope.unit));
         };
+        let alternate = if let Some(languages) = alternate_languages {
+            let variants = format!("{cte}_alternates");
+            self.ctes.push(format!("{variants} AS MATERIALIZED (SELECT vt.variant,vt.n,bm25(variant_fts) AS rank FROM variant_fts JOIN variant_text vt ON vt.rowid=variant_fts.rowid WHERE variant_fts MATCH {param})"));
+            let mut language = Vec::new();
+            for lang in languages {
+                language.push(self.text_param(&lang));
+            }
+            let language = if language.is_empty() {
+                String::new()
+            } else {
+                format!(" AND av.to_lang IN ({})", language.join(","))
+            };
+            let from = format!(
+                "FROM {variants} ah JOIN source_variant_part ap ON ap.variant=ah.variant AND ap.n=ah.n JOIN source_variant av ON av.id=ap.variant WHERE {} AND {}{language}",
+                crate::variants::current_sql("av"),
+                fields::message_variant_match("av", "ap", &a.m)
+            );
+            Some((
+                format!("EXISTS(SELECT 1 {from})"),
+                format!("(SELECT min(ah.rank) {from})"),
+            ))
+        } else {
+            None
+        };
         let mut prefix = String::new();
         if let Some(rank_index) = ranks
             && top
             && Some(rank_index) == self.rank_index
             && self.rank.is_none()
         {
-            self.rank = Some(hits.rank);
+            self.rank = Some(match &alternate {
+                Some((_, rank)) => {
+                    format!("min(coalesce({},1e30),coalesce({rank},1e30))", hits.rank)
+                }
+                None => hits.rank,
+            });
             self.rank_source = hits.source;
             if self.answer
                 && !self.measuring
                 && self.near_request.is_none()
                 && self.text_search.is_none()
+                && alternate.is_none()
             {
                 let limit = self.params.len() + 1;
                 let bound = self.bind(Param::Int(-1));
@@ -353,7 +390,10 @@ impl<'a> Compiler<'a> {
             "{cte} AS MATERIALIZED (SELECT rowid AS text_id, bm25({table}) AS rank FROM {table} WHERE {table} MATCH {param}{prefix})"
         ));
         self.ctes.extend(hits.ctes);
-        Ok(hits.condition)
+        Ok(match alternate {
+            Some((condition, _)) => format!("({} OR {condition})", hits.condition),
+            None => hits.condition,
+        })
     }
 
     /// A word that names something: `last`, `latest`, `self`, or a pasted
@@ -366,9 +406,28 @@ impl<'a> Compiler<'a> {
     ) -> Result<String, QueryError> {
         let s = self.session_alias(scope, span)?;
         Ok(match word {
-            "last" | "latest" => {
+            "latest" => {
                 let inner = self.fresh();
                 self.newest_session(&s, &inner, None)
+            }
+            "here" => {
+                return super::custom_fields::here(
+                    self,
+                    &super::custom_fields::Call {
+                        unit: scope.unit,
+                        name: "here",
+                        test: &Test::Written(polylogue_query::filter::Comparison::Match(
+                            Value::Scalar {
+                                text: "here".into(),
+                                quoted: false,
+                            },
+                        )),
+                        scope,
+                        span,
+                        top: true,
+                    },
+                    false,
+                );
             }
             "self" => {
                 let Some(me) = self.opts.self_session.clone() else {
@@ -552,7 +611,11 @@ impl<'a> Compiler<'a> {
         let def = t.field.declaration();
         // `F:*` names a field without restricting it, whatever its rule.
         if matches!(t.test, Test::Any) {
-            return Ok("1".into());
+            return Ok(if def.unit == Unit::Queries && def.name == "name" {
+                scope.a.expand("{r}.name IS NOT NULL")
+            } else {
+                "1".into()
+            });
         }
         let rule = fields::rule(t.field);
         let a = scope.a.clone();

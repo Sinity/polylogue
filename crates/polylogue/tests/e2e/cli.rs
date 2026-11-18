@@ -513,8 +513,8 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
         String::from_utf8_lossy(&out.stdout)
     );
 
-    let out = cli(&env, &["--json", "list"]);
-    let ids: Vec<String> = json(&out)["rows"]
+    let out = cli(&env, &["--json", "sessions"]);
+    let ids: Vec<String> = listing(json(&out))["rows"]
         .as_array()
         .unwrap()
         .iter()
@@ -896,7 +896,7 @@ fn failed_step_exits_with_its_code_and_prints_undo() {
         undo = Some(command.to_owned());
         let listed = cli(
             &env,
-            &["--json", "assertions where kind:tag", "--fields", "key"],
+            &["--json", "annotations where kind:tag", "--fields", "key"],
         );
         assert!(listed.status.success(), "{listed:?}");
         let listing = json(&listed);
@@ -908,7 +908,7 @@ fn failed_step_exits_with_its_code_and_prints_undo() {
     }
     let withdrawn = printed_cli(&env, undo.as_deref().unwrap());
     assert!(withdrawn.status.success(), "{withdrawn:?}");
-    let remaining = listing(json(&cli(&env, &["--json", "assertions where kind:tag"])));
+    let remaining = listing(json(&cli(&env, &["--json", "annotations where kind:tag"])));
     assert_eq!(remaining["count"], 0);
     let mut json_words = vec!["--json", "--request-id", "line-prefix-json"];
     json_words.extend_from_slice(&words[2..]);
@@ -1006,7 +1006,7 @@ fn explain_option_runs_nothing() {
     assert!(output.status.success(), "{output:?}");
     assert_eq!(json(&output)["kind"], "explained");
     assert_eq!(
-        listing(json(&cli(&env, &["--json", "assertions where kind:tag"])))["count"],
+        listing(json(&cli(&env, &["--json", "annotations where kind:tag"])))["count"],
         0
     );
 }
@@ -1077,7 +1077,7 @@ fn ordered_read_destinations_receive_their_own_steps() {
     let withdrawn = printed_cli(&env, undo[0]);
     assert!(withdrawn.status.success(), "{withdrawn:?}");
     assert_eq!(
-        listing(json(&cli(&env, &["--json", "assertions where kind:tag"])))["count"],
+        listing(json(&cli(&env, &["--json", "annotations where kind:tag"])))["count"],
         0
     );
 }
@@ -1282,7 +1282,7 @@ fn picker_prefix_suffix_retry_cancellation_and_complete_undo_set() {
         ],
     );
     assert!(explained.status.success(), "{explained:?}");
-    let empty = json(&cli(&env, &["--json", "assertions where kind:tag"]));
+    let empty = json(&cli(&env, &["--json", "annotations where kind:tag"]));
     assert_eq!(empty["reply"]["count"], 0, "{empty}");
     let simple = choose(
         &env,
@@ -1299,7 +1299,7 @@ fn picker_prefix_suffix_retry_cancellation_and_complete_undo_set() {
     assert!(simple.status.success(), "{simple:?}");
     let picked = json(&cli(
         &env,
-        &["--json", "assertions where id:simple-picker-pick-suffix-1"],
+        &["--json", "annotations where id:simple-picker-pick-suffix-1"],
     ));
     assert_eq!(picked["reply"]["count"], 1, "{picked}");
     for (id, count) in [("s1", 1), ("s2", 0)] {
@@ -1307,7 +1307,7 @@ fn picker_prefix_suffix_retry_cancellation_and_complete_undo_set() {
             &env,
             &[
                 "--json",
-                &format!("assertions where kind:note about:session:claude-code:{id}"),
+                &format!("annotations where kind:note about:session:claude-code:{id}"),
             ],
         ));
         assert_eq!(selected["reply"]["count"], count, "{selected}");
@@ -1339,7 +1339,7 @@ fn picker_prefix_suffix_retry_cancellation_and_complete_undo_set() {
         } else {
             assert_eq!(current, undo);
         }
-        let found = json(&cli(&env, &["--json", "assertions where kind:tag"]));
+        let found = json(&cli(&env, &["--json", "annotations where kind:tag"]));
         assert_eq!(found["reply"]["count"], 3, "{found}");
         let chosen = json(&cli(
             &env,
@@ -1355,7 +1355,7 @@ fn picker_prefix_suffix_retry_cancellation_and_complete_undo_set() {
         let output = printed_cli(&env, command);
         assert!(output.status.success(), "{output:?}");
     }
-    let found = json(&cli(&env, &["--json", "assertions where kind:tag"]));
+    let found = json(&cli(&env, &["--json", "annotations where kind:tag"]));
     assert_eq!(found["reply"]["count"], 0, "{found}");
     let cancelled = choose(
         &env,
@@ -1382,7 +1382,7 @@ fn picker_prefix_suffix_retry_cancellation_and_complete_undo_set() {
         1,
         "{stderr}"
     );
-    let found = json(&cli(&env, &["--json", "assertions where kind:tag"]));
+    let found = json(&cli(&env, &["--json", "annotations where kind:tag"]));
     assert_eq!(found["reply"]["count"], 2, "{found}");
     let suffix = json(&cli(&env, &["--json", "sessions where tag:suffix"]));
     assert_eq!(suffix["reply"]["count"], 0, "{suffix}");
@@ -1552,4 +1552,168 @@ fn printed_cli_continuation_and_previous_keep_the_accepted_options() {
     let returned: ReadDocument = serde_json::from_slice(&returned.stdout).unwrap();
     assert_eq!(returned.items, first.items);
     assert_eq!(returned.header, first.header);
+}
+
+#[test]
+fn saved_query_retry_and_printed_undo_keep_immutable_results() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let project = home.join(".claude/projects/-saved");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("s1.jsonl"),
+        line("u1", "s1", "a saved selection"),
+    )
+    .unwrap();
+    let env = crate::Fixture::new(
+        &dir.path().join("archive"),
+        &home,
+        &dir.path().join("config"),
+    );
+    let _daemon = start_daemon(&env);
+    wait_status(&env, |status| status["store"]["messages"] == 1);
+    let args = [
+        "--json",
+        "--request-id",
+        "save-cli",
+        "sessions",
+        "save",
+        "my-history",
+        "--watch",
+        "--hold",
+        "20m",
+    ];
+    let first = cli(&env, &args);
+    assert!(first.status.success(), "{first:?}");
+    let first = json(&first);
+    let step = &first["reply"]["steps"][0];
+    assert_eq!(step["outcome"]["status"], "done", "{first}");
+    let report = &step["outcome"]["reply"]["reply"];
+    assert_eq!(report["request"], "save-cli-1");
+    assert_eq!(report["saved"]["id"], "save-cli-1.1");
+    assert_eq!(report["saved"]["revision"], 1);
+    assert_eq!(report["watch"]["id"], "save-cli-1.2");
+    assert_eq!(report["kept"]["result"], "result:save-cli-1");
+    assert_eq!(report["kept"]["rows"], 1);
+    let undo = step["outcome"]["undo"].as_array().unwrap();
+    assert_eq!(undo.len(), 1, "{first}");
+    let retry = cli(&env, &args);
+    assert!(retry.status.success(), "{retry:?}");
+    let retry = json(&retry);
+    let retried = &retry["reply"]["steps"][0]["outcome"];
+    for field in ["saved", "kept", "watch"] {
+        assert_eq!(retried["reply"]["reply"][field], report[field]);
+    }
+    assert_eq!(retried["reply"]["reply"]["repeat"], true);
+    assert_eq!(retried["undo"], step["outcome"]["undo"]);
+    let plain = cli(
+        &env,
+        &[
+            "--request-id",
+            "save-plain",
+            "my-history",
+            "save",
+            "my-history",
+        ],
+    );
+    assert!(plain.status.success(), "{plain:?}");
+    let shown = format!(
+        "{}{}",
+        String::from_utf8_lossy(&plain.stdout),
+        String::from_utf8_lossy(&plain.stderr)
+    );
+    assert!(shown.contains("same question; no new revision"), "{shown}");
+    assert!(shown.contains("result:save-plain-1"), "{shown}");
+    assert!(!shown.contains("undo:"), "{shown}");
+    for _ in 0..2 {
+        let withdrawn = printed_cli(&env, undo[0].as_str().unwrap());
+        assert!(withdrawn.status.success(), "{withdrawn:?}");
+    }
+    for kind in ["saved_query", "signal"] {
+        let out = cli(&env, &["--json", &format!("annotations where kind:{kind}")]);
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "typed empty rows use exit 1: {out:?}"
+        );
+        assert_eq!(json(&out)["reply"]["count"], 0);
+    }
+    for reference in [
+        "result:save-cli-1",
+        "result:save-plain-1",
+        "result:my-history",
+    ] {
+        let out = cli(&env, &["--json", reference]);
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(json(&out)["reply"]["count"], 1, "{out:?}");
+    }
+}
+
+#[test]
+fn resume_without_rows_uses_unfinished_here_and_explicit_targets_still_work() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let sources = home.join(".claude/projects/-resume");
+    let here = dir.path().join("work");
+    let elsewhere = dir.path().join("elsewhere");
+    for path in [&sources, &here, &elsewhere] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    for (id, cwd, closed) in [
+        ("open", &here, false),
+        ("closed", &here, true),
+        ("elsewhere", &elsewhere, false),
+    ] {
+        let mut user: serde_json::Value =
+            serde_json::from_str(&line(id, id, "resume candidate")).unwrap();
+        user["cwd"] = serde_json::json!(cwd);
+        let mut input = format!("{user}\n");
+        if closed {
+            input.push_str(&format!(
+                "{}\n",
+                serde_json::json!({
+                    "type":"assistant", "uuid":"finished-reply", "sessionId":id,
+                    "timestamp":"2026-03-01T10:00:01Z", "cwd":cwd,
+                    "message":{"role":"assistant","content":[{"type":"text","text":"finished"}]}
+                })
+            ));
+        }
+        std::fs::write(sources.join(format!("{id}.jsonl")), input).unwrap();
+    }
+    let env = crate::Fixture::new(
+        &dir.path().join("archive"),
+        &home,
+        &dir.path().join("config"),
+    );
+    let _daemon = start_daemon(&env);
+    wait_status(&env, |status| status["store"]["messages"] == 4);
+    let run = |args: &[&str]| {
+        command(&env)
+            .current_dir(&here)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let automatic = run(&["--json", "--dry-run", "resume"]);
+    assert!(automatic.status.success(), "{automatic:?}");
+    let automatic = json(&automatic);
+    let would = automatic["reply"]["steps"][0]["outcome"]["would"]
+        .as_str()
+        .unwrap();
+    assert!(would.contains("claude-code:open"), "{automatic}");
+    assert!(!would.contains("claude-code:closed"), "{automatic}");
+    assert!(!would.contains("claude-code:elsewhere"), "{automatic}");
+    let explicit = run(&[
+        "--json",
+        "--dry-run",
+        "session:claude-code:closed",
+        "resume",
+    ]);
+    assert!(explicit.status.success(), "{explicit:?}");
+    let explicit = json(&explicit);
+    let would = explicit["reply"]["steps"][0]["outcome"]["would"]
+        .as_str()
+        .unwrap();
+    assert!(would.contains("claude-code:closed"), "{explicit}");
+    assert!(would.contains("--resume"), "{explicit}");
 }

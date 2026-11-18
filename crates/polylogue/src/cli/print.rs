@@ -121,6 +121,7 @@ pub fn line(answer: &protocol::line::LineAnswer, style: TextStyle) -> String {
                     StepAnswer::Streamed(_) | StepAnswer::Followed(_) => String::new(),
                     StepAnswer::Brief(prepared) => context(prepared, style),
                     StepAnswer::Resume(found) => resume(found, style),
+                    StepAnswer::Saved(report) => saved(report, style),
                     other => json(other, style),
                 });
                 undo.extend(lines);
@@ -143,6 +144,47 @@ pub fn line(answer: &protocol::line::LineAnswer, style: TextStyle) -> String {
         let _ = writeln!(out, "undo: {line}");
     }
     out
+}
+
+pub fn saved(report: &protocol::line::SaveReport, _style: TextStyle) -> String {
+    use std::fmt::Write as _;
+    let mut text = String::new();
+    if let Some(saved) = &report.saved {
+        let description = if saved.new_revision && !report.repeat {
+            "runs again each time you use it"
+        } else {
+            "same question; no new revision"
+        };
+        let _ = writeln!(
+            text,
+            "saved   query:{} (revision {}): {description}",
+            saved.name, saved.revision
+        );
+    }
+    let _ = write!(
+        text,
+        "kept    {} ({} rows, {})",
+        report.kept.result, report.kept.rows, report.kept.at
+    );
+    if let Some(saved) = &report.saved {
+        let _ = write!(text, ", now result:{}", saved.name);
+    }
+    text.push('\n');
+    if let Some(watch) = &report.watch {
+        if watch.new_rule && !report.repeat {
+            let _ = writeln!(
+                text,
+                "watch   notices when a row starts matching query:{}",
+                watch.name
+            );
+        } else {
+            let _ = writeln!(text, "watch   unchanged for query:{}", watch.name);
+        }
+    }
+    if report.pending {
+        text.push_str("pending Sinex confirmation\n");
+    }
+    polylogue_render::terminal::escape(&text)
 }
 
 /// A prepared brief, takeover or recall.

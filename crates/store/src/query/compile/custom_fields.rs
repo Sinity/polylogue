@@ -213,6 +213,9 @@ fn words_in(c: &mut Compiler<'_>, x: &Call<'_, '_>, index: Index) -> Result<Stri
 }
 
 pub(crate) fn since(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    if x.one().as_deref() == Some("seen") {
+        return since_seen(c, x);
+    }
     let t = x.time(c)?;
     if x.top && x.unit == Unit::Sessions {
         // Conditions joined by AND narrow: the latest start wins.
@@ -275,7 +278,7 @@ pub(crate) fn seen_by(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, 
             format!("{} < {end}", fields::first_seen_of(&a.m))
         }
         Unit::Events => format!("{} < {end}", fields::event_first_seen(a)),
-        Unit::Assertions => {
+        Unit::Annotations => {
             if !c.assertion_cutoffs.contains(&end) {
                 c.assertion_cutoffs.push(end);
             }
@@ -334,20 +337,22 @@ pub(crate) fn repo(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
     let mut parts = vec![];
     for v in x.values() {
         let v = v.to_lowercase().trim_end_matches('/').to_owned();
+        if v == "here" {
+            parts.push(here(c, x, false)?);
+            continue;
+        }
         let p = c.text_param(&v);
         let tail = c.text_param(&format!("%/{}", like_escape(&v)));
         let tail_git = c.text_param(&format!("%/{}.git", like_escape(&v)));
         parts.push(format!(
-            "COALESCE(lower(rtrim({s}.repo, '/')) = {p} OR lower(rtrim({s}.repo, '/')) LIKE {tail} ESCAPE '\\' \
-             OR lower({s}.repo) LIKE {tail_git} ESCAPE '\\', 0) OR COALESCE({s}.repo_root = {p}, 0)"
+            "CASE WHEN {s}.repo IS NOT NULL OR {s}.repo_root IS NOT NULL THEN \
+             (COALESCE(lower(rtrim({s}.repo, '/')) = {p} OR lower(rtrim({s}.repo, '/')) LIKE {tail} ESCAPE '\\' \
+             OR lower({s}.repo) LIKE {tail_git} ESCAPE '\\', 0) OR COALESCE({s}.repo_root = {p}, 0)) END"
         ));
     }
-    // Unknown only when neither the repository nor its identity is known,
-    // as `repo:unknown` says; a known one that differs is a plain no.
-    Ok(format!(
-        "CASE WHEN {s}.repo IS NOT NULL OR {s}.repo_root IS NOT NULL THEN {} END",
-        any_of(x, parts)?
-    ))
+    // Ordinary repository names remain unknown without repository metadata.
+    // `here` also has indexed working-directory evidence and stands on its own.
+    any_of(x, parts)
 }
 
 pub(crate) fn live(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
@@ -442,6 +447,10 @@ pub(crate) fn cwd(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Quer
     let s = x.s();
     let mut parts = vec![];
     for v in x.values() {
+        if v.eq_ignore_ascii_case("here") {
+            parts.push(here(c, x, true)?);
+            continue;
+        }
         // A key range over every directory the session recorded, its last
         // one included.
         let range = c.directory_range("session_cwd_member.cwd", &v);
@@ -833,5 +842,114 @@ pub(crate) fn event_text(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<Strin
         let parameter = c.text_param(&value);
         format!("EXISTS(SELECT 1 FROM json_tree(pl_block({}.data)) event_text_value WHERE event_text_value.type='text' AND instr(pl_key(event_text_value.atom),pl_key({parameter}))>0)",x.row())
     }).collect();
+    any_of(x, parts)
+}
+
+/// All references made by this annotation, excluding what it is about.
+pub(crate) fn links_to(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let mut clauses = Vec::new();
+    for value in x.values() {
+        let reference = polylogue_model::Reference::parse(&value)
+            .map_err(|error| x.bad(value.clone(), error.to_string()))?;
+        let p = c.text_param(&reference.to_string());
+        clauses.push(format!("EXISTS(SELECT 1 FROM source_link l WHERE l.record={}.id AND l.role<>'about' AND (l.ref={p} OR (l.ref>{p}||'@' AND l.ref<{p}||'A')))",x.row()));
+    }
+    any_of(x, clauses)
+}
+pub(crate) fn request(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let values = match x.test {
+        Test::Prefix(values) => values.clone(),
+        _ => return Err(x.need_value()),
+    };
+    let mut clauses = Vec::new();
+    for value in values {
+        let p = c.text_param(&value);
+        clauses.push(format!(
+            "({r}.id={p} OR ({r}.id>{p}||'.' AND {r}.id<{p}||'/'))",
+            r = x.row()
+        ));
+    }
+    any_of(x, clauses)
+}
+/// Repository scope is captured from the caller when execution starts.
+pub(crate) fn here(
+    c: &mut Compiler<'_>,
+    x: &Call<'_, '_>,
+    cwd_only: bool,
+) -> Result<String, QueryError> {
+    let scope = c.opts.here.clone().ok_or_else(|| QueryError::Invalid {
+        message: "here names the caller's repository, and this caller has no working directory"
+            .into(),
+        position: x.span.start,
+    })?;
+    let mut parts = Vec::new();
+    for path in scope.paths {
+        let range = c.directory_range("session_cwd_member.cwd", &path);
+        parts.push(format!(
+            "{}.pk IN (SELECT session_pk FROM session_cwd_member WHERE {range})",
+            x.s()
+        ));
+    }
+    if !cwd_only {
+        for root in scope.repo_roots {
+            let p = c.text_param(&root);
+            parts.push(format!("coalesce({}.repo_root={p},0)", x.s()));
+        }
+    }
+    any_of(x, parts)
+}
+fn since_seen(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let author = c.opts.seen_marks_of.clone().ok_or_else(|| {
+        x.bad(
+            "seen".into(),
+            "since:seen needs the computed request author".into(),
+        )
+    })?;
+    let author = c.text_param(&author);
+    let target = match x.unit {
+        Unit::Sessions => format!("'session:'||{}.id", x.s()),
+        Unit::Annotations => format!("'assertion:'||{}.root", x.row()),
+        _ => {
+            return Err(x.bad(
+                "seen".into(),
+                "since:seen applies to sessions and annotations".into(),
+            ));
+        }
+    };
+    let at = "json_extract(mark.value,'$.position.at')";
+    let index = format!(
+        "CAST(substr({at},instr({at},':')+1,instr(substr({at},instr({at},':')+1),':')-1) AS INTEGER)"
+    );
+    let archive = format!(
+        "CAST(substr(substr({at},instr({at},':')+1),instr(substr({at},instr({at},':')+1),':')+1) AS INTEGER)"
+    );
+    let unchanged = match x.unit {
+        Unit::Sessions => format!(
+            "substr({at},1,instr({at},':')-1)=(SELECT value FROM main.meta WHERE key='generation') AND {}.changed<={index}",
+            x.s()
+        ),
+        Unit::Annotations => format!("{}.commit_seq<={archive}", x.row()),
+        _ => unreachable!(),
+    };
+    Ok(format!(
+        "NOT EXISTS(SELECT 1 FROM source_assertion mark JOIN source_revision_state ms ON ms.id=mark.id AND ms.current=1 AND ms.withdrawn=0 WHERE mark.kind='seen' AND mark.author={author} AND mark.key={target} AND {unchanged})"
+    ))
+}
+
+pub(crate) fn alternate_lang(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let mut clauses = Vec::new();
+    for lang in x.values() {
+        let p = c.text_param(&lang);
+        clauses.push(format!("EXISTS(SELECT 1 FROM source_variant_part vp JOIN source_variant v ON v.id=vp.variant WHERE v.to_lang={p} AND {} AND {})",crate::variants::current_sql("v"),fields::message_variant_match("v","vp",&x.scope.a.m)));
+    }
+    any_of(x, clauses)
+}
+
+pub(crate) fn run_outcome(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    let mut parts = Vec::new();
+    for value in x.values() {
+        let p = c.text_param(&value);
+        parts.push(format!("json_extract({}.outcome,'$.state')={p}", x.row()));
+    }
     any_of(x, parts)
 }

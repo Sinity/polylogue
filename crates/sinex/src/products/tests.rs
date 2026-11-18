@@ -30,7 +30,7 @@ fn restored_assertion_keys_keep_each_import_source() {
 }
 
 #[test]
-fn line_writes_have_their_own_kinds_and_existing_authored_definitions_stay_exact() {
+fn the_save_transition_versions_changed_authored_kinds_and_keeps_the_old_manifest() {
     use polylogue_model::authored::{AuthoredEffect, PreparedRequest};
     use polylogue_model::user::UserOutcome;
     let prepared = |write| PreparedRequest {
@@ -48,10 +48,20 @@ fn line_writes_have_their_own_kinds_and_existing_authored_definitions_stay_exact
     let previous: sinex_model::SourceDeclaration =
         serde_json::from_str(include_str!("../../tests/rebuild/source7.json")).unwrap();
     let current = declarations("polylogue");
+    assert!(
+        previous
+            .kinds
+            .iter()
+            .any(|kind| kind.kind.name == "polylogue.kept_result")
+    );
+    assert!(
+        !current
+            .iter()
+            .any(|kind| kind.kind.name == "polylogue.kept_result")
+    );
     for name in [
         "polylogue.request",
         "polylogue.assertion",
-        "polylogue.kept_result",
         "polylogue.delivery",
         "polylogue.delivery_outcome",
         "polylogue.request_restore",
@@ -62,8 +72,9 @@ fn line_writes_have_their_own_kinds_and_existing_authored_definitions_stay_exact
             .find(|kind| kind.kind.name == name)
             .unwrap();
         let now = current.iter().find(|kind| kind.kind.name == name).unwrap();
-        assert_eq!(now.kind, old.kind);
-        assert_eq!(now.definition_hash(), old.definition_hash(), "{name}");
+        assert_eq!(now.kind.name, old.kind.name);
+        assert_eq!(now.kind.version, old.kind.version + 1, "{name}");
+        assert_ne!(now.definition_hash(), old.definition_hash(), "{name}");
     }
     let journal = prepared(UserWrite::ResolveLine {
         request: json!({"selection":"sessions", "steps":[{"verb":"read"}]}),
@@ -72,30 +83,31 @@ fn line_writes_have_their_own_kinds_and_existing_authored_definitions_stay_exact
         ]),
         retained: None,
     });
-    let mut saved = prepared(UserWrite::SaveSelection(Box::new(
-        polylogue_model::user::SaveSelection {
-            name: None,
-            query: "sessions".into(),
-            denominator: None,
-            rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
-            read_at: r#"{"now":1}"#.into(),
+    let mut saved = prepared(UserWrite::Save(Box::new(polylogue_model::user::Save {
+        name: None,
+        query: "sessions".into(),
+        denominator: None,
+        rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
+        read_at: r#"{"now":1}"#.into(),
+        watch: None,
+        outcomes: Some(polylogue_model::user::SaveReport {
+            saved: None,
+            request: "declared-line".into(),
+            repeat: false,
+            pending: false,
+            kept: polylogue_model::user::KeptPart {
+                result: "result:declared-line".into(),
+                rows: 0,
+                at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
+            },
             watch: None,
-            outcomes: Some(polylogue_model::user::SaveReport {
-                saved: None,
-                kept: UserOutcome {
-                    id: "declared-line-keep".into(),
-                    repeat: false,
-                    pending: false,
-                },
-                watch: None,
-            }),
-        },
-    )));
+        }),
+    })));
     saved
         .effect
         .kept_results
         .push(polylogue_model::authored::KeptResult {
-            id: "declared-line-keep".into(),
+            id: "declared-line".into(),
             name: None,
             query: "sessions".into(),
             ran_at: saved.request.at,
@@ -157,14 +169,32 @@ fn line_writes_have_their_own_kinds_and_existing_authored_definitions_stay_exact
             decode_source(&declaration.kind, &declaration.definition_hash(), payload).unwrap(),
             product
         );
-        assert_eq!(
+        assert!(
             decode_source(
                 &old.kind,
                 &old.definition_hash(),
                 super::payload(&old_product, 0).unwrap()
             )
-            .unwrap(),
-            old_product
+            .is_err(),
+            "an old declaration is not the new source format"
         );
+        if matches!(&product, Product::Request(prepared) | Product::RestoredRequest { prepared }
+            if matches!(prepared.request.write, UserWrite::Save(_)))
+        {
+            let accepted = current
+                .iter()
+                .filter(|kind| {
+                    jsonschema::validator_for(kind.payload_schema.as_ref().unwrap())
+                        .unwrap()
+                        .is_valid(&super::payload(&product, 0).unwrap())
+                })
+                .map(|kind| kind.kind.name.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                accepted,
+                vec![name],
+                "one living declaration owns a Save effect"
+            );
+        }
     }
 }

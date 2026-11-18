@@ -292,7 +292,7 @@ fn an_answer_from_another_protocol_is_refused_before_it_is_printed() {
     let older = Answer::ok(serde_json::json!({
         "outcome": "rows", "unit": "sessions", "rows": [], "count": 0
     }));
-    for name in ["rows", "list", "measure sessions"] {
+    for name in ["rows", "status", "measure sessions"] {
         let command = crate::commands::command(name).unwrap_or_else(|| panic!("{name}"));
         let refused = crate::commands::declarations()
             .validate_answer(command.name, &older)

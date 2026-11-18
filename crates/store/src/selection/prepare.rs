@@ -55,6 +55,38 @@ pub(crate) fn prepare_query_plan_on(
         }
         .into());
     }
+    if let Ok(Reference::Run(id)) = Reference::parse(text) {
+        let source = crate::source::Source::reading(original)?;
+        let run =
+            crate::query_objects::lookup_run(original, source, &id, pending)?.ok_or_else(|| {
+                SelectionError::invalid(
+                    polylogue_model::Code::NotFound,
+                    format!("no saved run {id}"),
+                )
+            })?;
+        let question = run.question.ok_or_else(|| {
+            SelectionError::invalid(
+                polylogue_model::Code::BadRequest,
+                "this run read an object and has no query question to run again",
+            )
+        })?;
+        let object = crate::query_objects::query_object_on(
+            original,
+            source,
+            &question.to_string(),
+            pending,
+        )?
+        .or_else(|| provisional.and_then(|prepared| prepared.object(question).cloned()))
+        .ok_or_else(|| QueryError::Unavailable {
+            what: format!("run:{id} question query:{question}"),
+        })?;
+        // Only the immutable question is reused. Lowering resolves time, here
+        // and private reading marks with this invocation's execution options.
+        return Ok(polylogue_query::plan::replay(
+            &object,
+            polylogue_query::plan::catalog_fingerprint(),
+        )?);
+    }
     let bindings = named_definitions(
         original,
         authored,
@@ -107,11 +139,8 @@ pub(crate) fn named_definitions(
     let parsed = match polylogue_query::parse::with_catalog(text, &bindings.catalog()) {
         Ok(parsed) => parsed,
         Err(_) => {
-            bindings.kept = kept_results_named(
-                authored,
-                crate::source::Source::reading(authored)?,
-                spelled_kept_results(text),
-            )?;
+            (bindings.kept, bindings.kept_names) =
+                named_kept_bindings(authored, spelled_kept_results(text))?;
             match polylogue_query::parse::with_catalog(text, &bindings.catalog()) {
                 Ok(parsed) => parsed,
                 Err(_) => return Ok(bindings),
@@ -121,10 +150,40 @@ pub(crate) fn named_definitions(
     let names: BTreeSet<String> = polylogue_query::plan::referenced_saved_names(&parsed)
         .into_iter()
         .collect();
-    let definitions =
+    let mut definitions =
         crate::assertions::saved_query_snapshot(authored, names.iter().map(String::as_str))?
             .definitions;
+    for name in &names {
+        if let Some((saved_name, revision)) = name.rsplit_once('@') {
+            let revision = revision
+                .parse::<u32>()
+                .ok()
+                .filter(|number| *number > 0)
+                .ok_or_else(|| QueryError::BadValue {
+                    field: "query".into(),
+                    value: name.clone(),
+                    position: 0,
+                    message: "a saved revision is a positive integer: query:NAME@N".into(),
+                })?;
+            let definition = crate::assertions::named_revision(authored, saved_name, revision)?;
+            definitions.insert(name.clone(), vec![definition]);
+        }
+    }
     bindings.saved = saved_queries_from(original, authored, pending, provisional, definitions)?;
+    let shipped = super::shipped_bindings(origins)?;
+    for name in &names {
+        if !bindings.saved.contains_key(name)
+            && let Some(definitions) = shipped.get(name)
+        {
+            bindings.saved.insert(name.clone(), definitions.clone());
+            for definition in definitions {
+                let hash = definition.hash.to_string();
+                if let Some(nodes) = shipped.get(&hash) {
+                    bindings.saved.entry(hash).or_insert_with(|| nodes.clone());
+                }
+            }
+        }
+    }
     // `query:<prefix>`: a unique prefix of 12 or more hex characters names the
     // saved question it starts. Saved names are never all hex, so a prefix
     // cannot shadow one.
@@ -189,12 +248,53 @@ pub(crate) fn named_definitions(
             }
         }
     }
-    bindings.kept = kept_results_named(
-        authored,
-        crate::source::Source::reading(authored)?,
-        kept.iter().map(String::as_str),
-    )?;
+    (bindings.kept, bindings.kept_names) =
+        named_kept_bindings(authored, kept.iter().map(String::as_str))?;
     Ok(bindings)
+}
+
+fn named_kept_bindings<'a>(
+    conn: &Connection,
+    ids: impl IntoIterator<Item = &'a str>,
+) -> crate::Result<(
+    BTreeMap<String, polylogue_query::Kept>,
+    BTreeMap<String, String>,
+)> {
+    use rusqlite::OptionalExtension;
+    let ids = ids.into_iter().collect::<BTreeSet<_>>();
+    let source = crate::source::Source::reading(conn)?;
+    let mut kept = kept_results_named(conn, source, ids.iter().copied())?;
+    let mut names = BTreeMap::new();
+    let mut lookup = conn.prepare_cached(&source.sql(
+        "SELECT id FROM @source.kept_result WHERE name=?1 ORDER BY ran_at DESC,id DESC LIMIT 1",
+    ))?;
+    for name in ids {
+        // Client request IDs are opaque. An exact existing ID always remains
+        // addressable, even when it could also be a saved name.
+        if kept.contains_key(name) {
+            continue;
+        }
+        let id = lookup
+            .query_row([name], |row| row.get::<_, String>(0))
+            .optional()?
+            .ok_or_else(|| StoreError::Selection {
+                code: polylogue_model::Code::NotFound,
+                message: format!("no kept result named {name}"),
+            })?;
+        names.insert(name.to_owned(), id);
+    }
+    kept.extend(kept_results_named(
+        conn,
+        source,
+        names.values().map(String::as_str),
+    )?);
+    for (name, id) in &names {
+        let value = kept
+            .get(id)
+            .ok_or_else(|| StoreError::NotFound(format!("result:{id}")))?;
+        kept.insert(name.clone(), value.clone());
+    }
+    Ok((kept, names))
 }
 
 pub(super) fn saved_queries_for_family(
@@ -313,8 +413,8 @@ pub(super) fn resolve_reference(
     condition: &mut ConditionKind,
     self_session: Option<&str>,
 ) -> Result<(), QueryError> {
-    // `last` and `latest` depend on the query's other conditions, so the
-    // compiler resolves them inside the query.
+    // `latest` depends on the query's other conditions, so the
+    // compiler resolves it inside the query.
     let is_self = match condition {
         ConditionKind::Reference { reference } => reference == "self",
         ConditionKind::Text {

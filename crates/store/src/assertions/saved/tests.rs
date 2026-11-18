@@ -1,5 +1,13 @@
 use super::*;
 
+/// History in graph-depth order; forks may occupy the same ordinal.
+fn named_revisions(conn: &Connection, name: &str) -> Result<Vec<Assertion>> {
+    Ok(numbered_named_revisions(conn, name)?
+        .into_iter()
+        .map(|(_, row)| row)
+        .collect())
+}
+
 fn r(value: &str) -> Reference {
     Reference::parse(value).unwrap()
 }
@@ -74,5 +82,373 @@ fn saved_loader_preserves_declared_hash_denominator_and_cross_name_family_confli
             definition.conflicts,
             [r("assertion:family@left"), r("assertion:family@right")]
         );
+    }
+}
+
+#[test]
+fn saved_revision_numbers_follow_original_links_not_restore_order_or_time() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+    let mut first = fact("first", "focus", 1, None);
+    first.created_at = None;
+    let second = fact("second", "focus", 2, Some("assertion:family@first"));
+    let third = fact("third", "focus", 3, Some("assertion:family@second"));
+    // Original effects may reach this host in the opposite order.
+    for (counter, row) in [(1, third), (3, second), (20, first)] {
+        super::super::apply(&conn, &[row], counter).unwrap();
+    }
+    let revisions = named_revisions(&conn, "focus").unwrap();
+    assert_eq!(
+        revisions
+            .iter()
+            .map(|row| row.fact.id.as_str())
+            .collect::<Vec<_>>(),
+        ["first", "second", "third"]
+    );
+    for (number, id, hash) in [(1, "first", 1), (2, "second", 2), (3, "third", 3)] {
+        let definition = named_revision(&conn, "focus", number).unwrap();
+        assert_eq!(
+            definition.reference,
+            RevisionReference::exact("family".into(), id.into())
+        );
+        assert_eq!(definition.value.hash, BlobHash([hash; 32]));
+        assert_eq!(
+            saved_revision_number(&conn, &definition.reference).unwrap(),
+            number
+        );
+    }
+    assert!(revisions[0].fact.created_at.is_none());
+}
+
+#[test]
+fn saved_revision_forks_are_ambiguous_and_merged_depth_is_exact() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+    let first = fact("first", "focus", 1, None);
+    let left = fact("left", "focus", 2, Some("assertion:family@first"));
+    let right = fact("right", "renamed", 3, Some("assertion:family@first"));
+    let mut merged = fact("merged", "focus", 4, Some("assertion:family@left"));
+    merged.links.push(AssertionLink {
+        role: LinkRole::Revises,
+        reference: r("assertion:family@right"),
+        seen_hash: None,
+        quote: None,
+    });
+    super::super::apply(&conn, &[merged, right, first, left], 2).unwrap();
+    match named_revision(&conn, "focus", 2).unwrap_err() {
+        StoreError::Ambiguous {
+            reference,
+            candidates,
+        } => {
+            assert_eq!(reference, "query:focus@2");
+            assert_eq!(
+                candidates,
+                ["assertion:family@left", "assertion:family@right"]
+            );
+        }
+        other => panic!("fork must be explicit: {other}"),
+    }
+    assert_eq!(
+        named_revision(&conn, "focus", 3).unwrap().reference,
+        RevisionReference::exact("family".into(), "merged".into())
+    );
+    assert_eq!(
+        saved_revision_number(
+            &conn,
+            &RevisionReference::exact("family".into(), "merged".into())
+        )
+        .unwrap(),
+        3
+    );
+    assert!(matches!(
+        named_revision(&conn, "focus", 4),
+        Err(StoreError::NotFound(_))
+    ));
+}
+
+#[test]
+fn saved_revision_history_diagnoses_missing_parents_and_cycles() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+    let child = fact(
+        "child",
+        "missing-parent",
+        2,
+        Some("assertion:family@missing"),
+    );
+    super::super::apply(&conn, &[child], 1).unwrap();
+    match named_revisions(&conn, "missing-parent").unwrap_err() {
+        StoreError::ReferenceUnavailable { reference, reason } => {
+            assert_eq!(reference, "assertion:family@missing");
+            assert!(reason.contains("parent"));
+        }
+        other => panic!("missing original must be explicit: {other}"),
+    }
+    let cycle = Connection::open_in_memory().unwrap();
+    cycle.execute_batch(crate::schema::ARCHIVE).unwrap();
+    super::super::apply(
+        &cycle,
+        &[
+            fact("cycle-a", "cycle", 1, Some("assertion:family@cycle-b")),
+            fact("cycle-b", "cycle", 2, Some("assertion:family@cycle-a")),
+        ],
+        1,
+    )
+    .unwrap();
+    assert!(
+        named_revisions(&cycle, "cycle")
+            .unwrap_err()
+            .to_string()
+            .contains("cycle")
+    );
+}
+
+#[test]
+fn saved_query_record_keeps_history_kept_watch_and_dependent_identities() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = crate::fixture::Fixture::new(directory.path()).unwrap();
+    let conn = crate::archive::open_archive_writer(&fixture.archive).unwrap();
+    let first_plan =
+        polylogue_query::plan::prepare("sessions", &polylogue_query::Bindings::default(), |_| {
+            Ok(())
+        })
+        .unwrap();
+    let first_object = first_plan.query_object().unwrap();
+    crate::query_objects::apply_object(&conn, &first_object, 1).unwrap();
+    let mut bindings = polylogue_query::Bindings::default();
+    bindings
+        .add_saved("focus", &first_plan, "first", "family")
+        .unwrap();
+    let dependent = polylogue_query::plan::prepare("query:focus | count", &bindings, |_| Ok(()))
+        .unwrap()
+        .query_object()
+        .unwrap();
+    crate::query_objects::apply_object(&conn, &dependent, 2).unwrap();
+    let mut first = fact("first", "focus", 1, None);
+    first.created_at = None;
+    first.value = Some(
+        serde_json::to_value(values::SavedQuery {
+            text: "sessions".into(),
+            hash: BlobHash(first_object.id.0),
+            denominator: None,
+        })
+        .unwrap(),
+    );
+    let mut watch = fact("watch", "focus", 1, None);
+    watch.root = "watch".into();
+    watch.kind = AssertionKind::Signal;
+    watch.value = Some(serde_json::json!({"name":"focus","query":"query:focus@1"}));
+    super::super::apply(&conn, &[first, watch], 5).unwrap();
+    crate::primary::authored::insert_kept(
+        &conn,
+        &polylogue_model::authored::KeptResult {
+            id: "kept-original".into(),
+            name: Some("focus".into()),
+            query: "sessions".into(),
+            ran_at: Timestamp::from_unix_ms(7).unwrap(),
+            read_at: "{}".into(),
+            rows_json: "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}".into(),
+        },
+    )
+    .unwrap();
+    drop(conn);
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let record = reader.saved_query_record("focus").unwrap().unwrap();
+    assert_eq!(record.name, "focus");
+    assert_eq!(record.revisions.len(), 1);
+    assert_eq!(record.revisions[0].revision, 1);
+    assert_eq!(record.revisions[0].reference, "assertion:family@first");
+    assert_eq!(
+        record.revisions[0].hash,
+        format!("query:{}", first_object.id)
+    );
+    assert!(record.revisions[0].saved_at.is_none());
+    assert_eq!(record.revisions[0].author, "unattributed");
+    assert_eq!(record.kept.len(), 1);
+    assert_eq!(record.kept[0].result, "result:kept-original");
+    assert_eq!(record.kept[0].rows, 0);
+    assert_eq!(record.kept[0].at, Timestamp::from_unix_ms(7).unwrap());
+    assert_eq!(record.watch.as_deref(), Some("assertion:watch@watch"));
+    assert_eq!(record.dependents, vec![format!("query:{}", dependent.id)]);
+    assert!(reader.saved_query_record("absent").unwrap().is_none());
+}
+
+#[test]
+fn saved_revision_number_follows_a_merge_of_two_original_families() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+    let first = fact("first", "focus", 1, None);
+    let mut other = fact("other-first", "focus", 2, None);
+    other.root = "other-family".into();
+    let mut merged = fact("merged", "focus", 3, Some("assertion:family@first"));
+    merged.links.push(AssertionLink {
+        role: LinkRole::Revises,
+        reference: r("assertion:other-family@other-first"),
+        seen_hash: None,
+        quote: None,
+    });
+    super::super::apply(&conn, &[merged, other, first], 1).unwrap();
+    assert_eq!(
+        saved_revision_number(
+            &conn,
+            &RevisionReference::exact("family".into(), "merged".into())
+        )
+        .unwrap(),
+        2
+    );
+    assert_eq!(
+        named_revision(&conn, "focus", 2).unwrap().reference,
+        RevisionReference::exact("family".into(), "merged".into())
+    );
+    assert!(matches!(
+        named_revision(&conn, "focus", 1),
+        Err(StoreError::Ambiguous { .. })
+    ));
+}
+
+fn withdrawal(id: &str, target: &str) -> AssertionFact {
+    let mut row = fact(id, "unused", 0, None);
+    row.root = id.into();
+    row.kind = AssertionKind::Withdrawal;
+    row.key = None;
+    row.value = None;
+    row.links = vec![AssertionLink {
+        role: LinkRole::Withdraws,
+        reference: r(target),
+        seen_hash: None,
+        quote: None,
+    }];
+    row
+}
+
+#[test]
+fn numeric_saved_revisions_bind_the_current_family_after_withdrawal_and_resave() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+    let original = fact("original", "focus", 1, None);
+    super::super::apply(&conn, std::slice::from_ref(&original), 1).unwrap();
+    super::super::apply(
+        &conn,
+        &[withdrawal("withdraw-original", "assertion:family@original")],
+        2,
+    )
+    .unwrap();
+    // With no current family, the one historical revision stays addressable.
+    assert_eq!(
+        named_revision(&conn, "focus", 1).unwrap().reference,
+        RevisionReference::exact("family".into(), "original".into())
+    );
+    let mut replacement = fact("replacement", "focus", 2, None);
+    replacement.root = "replacement".into();
+    super::super::apply(&conn, &[replacement], 3).unwrap();
+    let pinned = named_revision(&conn, "focus", 1).unwrap();
+    assert_eq!(
+        pinned.reference,
+        RevisionReference::exact("replacement".into(), "replacement".into())
+    );
+    assert_eq!(pinned.value.hash, BlobHash([2; 32]));
+    assert_eq!(named_revisions(&conn, "focus").unwrap().len(), 2);
+    assert_eq!(get(&conn, "original").unwrap().unwrap().fact, original);
+
+    let mut left = fact(
+        "left",
+        "focus",
+        3,
+        Some("assertion:replacement@replacement"),
+    );
+    left.root = "replacement".into();
+    let mut right = fact(
+        "right",
+        "focus",
+        4,
+        Some("assertion:replacement@replacement"),
+    );
+    right.root = "replacement".into();
+    super::super::apply(&conn, &[right, left], 4).unwrap();
+    // Two heads of one current root are one family: the root ordinal is
+    // unique, while its two original children really are ambiguous.
+    assert_eq!(
+        named_revision(&conn, "focus", 1).unwrap().reference,
+        RevisionReference::exact("replacement".into(), "replacement".into())
+    );
+    match named_revision(&conn, "focus", 2).unwrap_err() {
+        StoreError::Ambiguous { candidates, .. } => assert_eq!(
+            candidates,
+            ["assertion:replacement@left", "assertion:replacement@right"]
+        ),
+        other => panic!("same-family fork must remain explicit: {other}"),
+    }
+}
+
+#[test]
+fn numeric_saved_revisions_keep_independent_current_and_retired_histories_ambiguous() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+    let first = fact("first", "focus", 1, None);
+    let mut other = fact("other", "focus", 2, None);
+    other.root = "other-family".into();
+    super::super::apply(&conn, &[other, first], 1).unwrap();
+    let expect_ambiguous = || match named_revision(&conn, "focus", 1).unwrap_err() {
+        StoreError::Ambiguous { candidates, .. } => assert_eq!(
+            candidates,
+            ["assertion:family@first", "assertion:other-family@other"]
+        ),
+        error => panic!("independent originals must remain explicit: {error}"),
+    };
+    expect_ambiguous();
+    super::super::apply(
+        &conn,
+        &[
+            withdrawal("withdraw-first", "assertion:family"),
+            withdrawal("withdraw-other", "assertion:other-family"),
+        ],
+        2,
+    )
+    .unwrap();
+    assert!(
+        named_current(&conn, AssertionKind::SavedQuery, "focus")
+            .unwrap()
+            .is_empty()
+    );
+    expect_ambiguous();
+    assert!(get(&conn, "first").unwrap().is_some());
+    assert!(get(&conn, "other").unwrap().is_some());
+}
+
+#[test]
+fn numeric_saved_revisions_ignore_withdrawn_siblings_but_keep_active_redo_forks() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+    let first = fact("first", "focus", 1, None);
+    let undone = fact("undone", "focus", 2, Some("assertion:family@first"));
+    super::super::apply(&conn, &[first, undone.clone()], 1).unwrap();
+    super::super::apply(&conn, &[withdrawal("undo", "assertion:family@undone")], 2).unwrap();
+    assert_eq!(
+        named_revision(&conn, "focus", 1).unwrap().reference,
+        RevisionReference::exact("family".into(), "first".into())
+    );
+    assert!(matches!(
+        named_revision(&conn, "focus", 2),
+        Err(StoreError::NotFound(_))
+    ));
+    let redo = fact("redo", "focus", 3, Some("assertion:family@first"));
+    super::super::apply(&conn, &[redo], 3).unwrap();
+    let current = named_revision(&conn, "focus", 2).unwrap();
+    assert_eq!(
+        current.reference,
+        RevisionReference::exact("family".into(), "redo".into())
+    );
+    assert_eq!(current.value.hash, BlobHash([3; 32]));
+    assert_eq!(get(&conn, "undone").unwrap().unwrap().fact, undone);
+    assert_eq!(named_revisions(&conn, "focus").unwrap().len(), 3);
+    let parallel = fact("parallel", "focus", 4, Some("assertion:family@first"));
+    super::super::apply(&conn, &[parallel], 4).unwrap();
+    match named_revision(&conn, "focus", 2).unwrap_err() {
+        StoreError::Ambiguous { candidates, .. } => assert_eq!(
+            candidates,
+            ["assertion:family@parallel", "assertion:family@redo"]
+        ),
+        error => panic!("two active redo heads must remain ambiguous: {error}"),
     }
 }

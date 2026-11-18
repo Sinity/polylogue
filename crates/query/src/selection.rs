@@ -108,7 +108,7 @@ impl Selection {
         else {
             return Ok(None);
         };
-        let Some(unit) = Unit::from_name(unit.strip_prefix("pl.").unwrap_or(unit)) else {
+        let Some(unit) = Unit::from_bound_name(unit.strip_prefix("pl.").unwrap_or(unit)) else {
             return Err(QueryError::NotBuilt {
                 what: format!("unit {unit}"),
             });
@@ -200,7 +200,7 @@ impl Selection {
 /// How many `| where` stages directly after a unit source join its
 /// selection: the index of the first transform that stays a stage. A stage stays a stage when the conjunction would mean
 /// something else: an order condition (whose matching row the stage replaces),
-/// `last`/`latest` (the newest session meeting every condition beside it)
+/// `latest` (the newest session meeting every condition beside it)
 /// and `| matches` (which reads its pattern from the stage).
 pub fn stages_from(query: &Query) -> usize {
     let Source::Unit { condition, .. } = &query.source else {
@@ -399,14 +399,14 @@ pub fn contains_order(condition: &Condition) -> bool {
     })
 }
 
-/// `last` or `latest`: the newest session, resolved inside the query.
+/// `latest`: the newest session, resolved inside the query.
 pub fn newest_word(condition: &Condition) -> bool {
     match &condition.kind {
-        ConditionKind::Reference { reference } => matches!(reference.as_str(), "last" | "latest"),
+        ConditionKind::Reference { reference } => matches!(reference.as_str(), "latest"),
         ConditionKind::Text {
             text,
             mode: TextMode::Word,
-        } => matches!(text.as_str(), "last" | "latest"),
+        } => matches!(text.as_str(), "latest"),
         _ => false,
     }
 }

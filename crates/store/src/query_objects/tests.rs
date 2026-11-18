@@ -65,6 +65,8 @@ pub(super) fn run(object: &QueryObject, id: &str, at: i64, position: ChangePosit
                     references: None,
                     fields: vec![],
                     self_session: None,
+                    here: None,
+                    seen_marks_of: None,
                     embeddings: false,
                     why: false,
                     ranking_identity: None,
@@ -316,14 +318,22 @@ fn result_output_schemas_require_the_kept_columns() {
         kind: polylogue_query::ColKind::Text,
         reference: None,
     }];
-    archive.writer.user(polylogue_model::user::UserRequest {
-        id: "kept".into(), machine: "synthetic-machine".into(), at: Timestamp::from_unix_ms(1).unwrap(),
-        authorship:Authorship { author: Author::Unattributed, via: Channel::Cli },
-        write: polylogue_model::user::UserWrite::KeepResult {
-            name: None, query: "sessions | select title".into(), read_at: "synthetic-read".into(),
+    let request = polylogue_model::user::UserRequest {
+        id: "kept".into(),
+        machine: "synthetic-machine".into(),
+        at: Timestamp::from_unix_ms(1).unwrap(),
+        authorship: Authorship { author: Author::Unattributed, via: Channel::Cli },
+        write: polylogue_model::user::UserWrite::Save(Box::new(polylogue_model::user::Save {
+            name: None,
+            query: "sessions | select title".into(),
+            read_at: "synthetic-read".into(),
             rows_json: serde_json::json!({"unit":"sessions","columns":columns,"rows":[{"title":"synthetic"}]}).to_string(),
-        },
-    }).unwrap();
+            denominator: None,
+            watch: None,
+            outcomes: None,
+        })),
+    };
+    archive.writer.user(request).unwrap();
     let mut bindings = polylogue_query::Bindings::default();
     bindings.kept.insert(
         "kept".into(),
@@ -381,6 +391,8 @@ fn executed_selection_records_its_clock_resolution_and_read_context() {
             random_seed: Some(91),
             embeddings: false,
             self_session: None,
+            here: None,
+            seen_marks_of: None,
             saved: BTreeMap::new(),
             fields: vec![],
             kept: BTreeMap::new(),

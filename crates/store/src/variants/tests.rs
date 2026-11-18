@@ -90,6 +90,39 @@ fn variant_application_keeps_forks_and_restores_base() {
     let to = archive();
     apply(&to, &first_effect, 10).unwrap();
     apply(&to, &effect, 4).unwrap();
+    let sql_heads = |root: &str| {
+        let predicate = current_sql("v")
+            .replace("source_variant", "variant")
+            .replace("source_link", "link")
+            .replace("source_revision_state", "revision_state");
+        to.prepare(&format!(
+            "SELECT v.id FROM variant v WHERE v.root=?1 AND {predicate} ORDER BY v.id"
+        ))
+        .unwrap()
+        .query_map([root], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+    };
+    let graph_heads = |root: &str| {
+        heads(&to, root)
+            .unwrap()
+            .iter()
+            .map(|v| v.id.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(sql_heads("first"), graph_heads("first"));
+    // VariantLinks scopes incoming base edges by root, including restored rows.
+    let mut unrelated = effect.clone();
+    unrelated.variants.truncate(1);
+    unrelated.variant_parts.truncate(1);
+    unrelated.variants[0].id = "unrelated".into();
+    unrelated.variants[0].root = "another-root".into();
+    unrelated.variant_parts[0].variant = "unrelated".into();
+    apply(&to, &unrelated, 5).unwrap();
+    assert_eq!(sql_heads("first"), graph_heads("first"));
+    assert_eq!(sql_heads("another-root"), graph_heads("another-root"));
+
     assert_eq!(heads(&to, "first").unwrap().len(), 2);
     let withdraw = |id: &str, targets: &[&str], counter| {
         use polylogue_model::{
@@ -125,8 +158,10 @@ fn variant_application_keeps_forks_and_restores_base() {
         20,
     );
     assert_eq!(heads(&to, "first").unwrap()[0].id, "first");
+    assert_eq!(sql_heads("first"), graph_heads("first"));
     withdraw("restore", &["assertion:withdraw@withdraw"], 21);
     assert_eq!(heads(&to, "first").unwrap().len(), 2);
+    assert_eq!(sql_heads("first"), graph_heads("first"));
     let scratch = archive();
     copy(&to, &scratch).unwrap();
     assert_eq!(rows::get(&scratch, "fork").unwrap().unwrap().commit_seq, 0);

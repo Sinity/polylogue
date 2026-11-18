@@ -883,13 +883,13 @@ proptest! {
             ("messages", format!("messages where active:* model:{quoted}")),
             ("tool_calls", format!("tool_calls where action:* command:{quoted}")),
             ("tool_calls", format!("tool_calls where action:* output:{quoted}")),
-            ("assertions", format!("assertions where value:{quoted}")),
+            ("annotations", format!("annotations where value:{quoted}")),
         ] {
             let total = match unit {
                 "sessions" => all(&w, "kind:*")["count"].as_u64(),
                 "messages" => all(&w, "messages where active:*")["count"].as_u64(),
                 "tool_calls" => all(&w, "tool_calls where action:*")["count"].as_u64(),
-                _ => all(&w, "assertions")["count"].as_u64(),
+                _ => all(&w, "annotations")["count"].as_u64(),
             };
             match run_q(&w, ask(&text)) {
                 Ok(v) => prop_assert!(v["count"].as_u64() <= total, "{}: {}", text, v["count"]),

@@ -356,12 +356,12 @@ fn a_brief_fits_its_budget_and_names_what_it_left_out() {
                 })
                 .collect()
         };
-        fit.section("Notes:", items(40, 90), "notes", "polylogue assertions");
+        fit.section("Notes:", items(40, 90), "notes", "polylogue annotations");
         fit.section(
             "Sessions:",
             items(40, 300),
             "recent sessions",
-            "polylogue list",
+            "polylogue sessions",
         );
         let (text, refs, left_out) = fit
             .finish("Earlier work: `polylogue 'WORDS' brief`.", |_| Ok(None))
@@ -561,7 +561,7 @@ fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
             "Recent sessions here, and what they did:".to_owned(),
             format!("test:many-{newest}"),
             format!("{MESSAGES} messages"),
-            "omitted; expand: `polylogue list cwd:".to_owned(),
+            format!("omitted; expand: `polylogue 'cwd:\"{cwd}\"'"),
         ] {
             assert!(
                 p.text.contains(&expected),
@@ -1040,8 +1040,8 @@ fn omitted_candidates_never_read_their_deferred_bodies() {
     fit.section(
         "Candidates:",
         candidates,
-        "assertions",
-        "polylogue assertions",
+        "annotations",
+        "polylogue annotations",
     );
     let mut read = Vec::new();
     let (text, refs, _) = fit
@@ -1054,7 +1054,7 @@ fn omitted_candidates_never_read_their_deferred_bodies() {
     assert!(!read.is_empty());
     assert!(read.len() < 40);
     assert!(read.iter().all(|reference| refs.contains(reference)));
-    assert!(text.contains("omitted; expand: `polylogue assertions`"));
+    assert!(text.contains("omitted; expand: `polylogue annotations`"));
 }
 
 #[test]

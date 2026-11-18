@@ -253,7 +253,7 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
         "Read the note",
         "Notes can be retrieved independently of the conversation.",
         "rows",
-        json!({"selection":format!("assertions where about:\"session:{PARSER}\"")}),
+        json!({"selection":format!("annotations where about:\"session:{PARSER}\"")}),
     )?;
     step(
         "Prepare takeover context",

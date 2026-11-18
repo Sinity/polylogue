@@ -45,50 +45,75 @@ pub struct LineSelection {
 /// One Save step's accepted rows and optional named question and watch.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct SaveSelection {
+pub struct Save {
     pub name: Option<String>,
     pub query: String,
     pub denominator: Option<String>,
     pub rows_json: String,
     pub read_at: String,
-    pub watch: Option<SavedWatch>,
+    pub watch: Option<SaveWatch>,
     pub outcomes: Option<SaveReport>,
 }
 /// The exact objects the accepting Save wrote or reused.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SaveReport {
-    pub saved: Option<UserOutcome>,
-    pub kept: UserOutcome,
-    pub watch: Option<UserOutcome>,
+    pub request: String,
+    pub saved: Option<SavedPart>,
+    pub kept: KeptPart,
+    pub watch: Option<WatchPart>,
+    pub repeat: bool,
+    pub pending: bool,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct SavedWatch {
+pub struct SavedPart {
+    /// The actual accepted annotation revision, including a reused revision.
+    pub id: String,
+    pub name: String,
+    pub revision: u32,
+    pub new_revision: bool,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct KeptPart {
+    pub result: String,
+    pub rows: u64,
+    pub at: Timestamp,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WatchPart {
+    /// The actual accepted annotation revision, including a reused rule.
+    pub id: String,
+    pub name: String,
+    pub new_rule: bool,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SaveWatch {
     pub hold: Option<String>,
     pub notify: bool,
 }
-/// Object identities remain the same when the complete Save is retried.
-pub struct SaveIdentities {
-    pub saved: Option<String>,
-    pub kept: String,
-    pub watch: Option<String>,
-}
-impl SaveSelection {
-    pub fn identities(&self, request: &str) -> SaveIdentities {
-        SaveIdentities {
-            saved: self.name.as_ref().map(|_| format!("{request}-save")),
-            kept: format!("{request}-keep"),
-            watch: self.watch.as_ref().map(|_| format!("{request}-watch")),
-        }
-    }
+
+/// One reader's displayed position in a target, using the captured change position.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SeenMark {
+    pub target: String,
+    pub item: Option<String>,
+    pub at: crate::ChangePosition,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "write", rename_all = "snake_case", deny_unknown_fields)]
 pub enum UserWrite {
+    /// Advances only this computed author's displayed positions.
+    MarkSeen {
+        marks: Vec<SeenMark>,
+    },
     /// Names and keeps one accepted selection in one transaction.
-    SaveSelection(Box<SaveSelection>),
+    Save(Box<Save>),
     /// A line's accepted intent and fixed population, shared by every step and retry.
     ResolveLine {
         request: serde_json::Value,
@@ -118,12 +143,6 @@ pub enum UserWrite {
         targets: Vec<crate::Reference>,
         reason: Option<String>,
     },
-    /// A saved query whose previous revision is resolved by name.
-    SaveQuery {
-        name: String,
-        text: String,
-        denominator: Option<String>,
-    },
     /// Context prepared for a recipient, with its exact text.
     Deliver(Delivery),
     /// Advice already printed by a hook, recorded with its delivered outcome.
@@ -134,17 +153,6 @@ pub enum UserWrite {
         what: DeliveryOutcome,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
-    },
-    /// The exact rows a query returned, kept to be read back as
-    /// `result:<id>`.
-    KeepResult {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
-        query: String,
-        /// The stored rows, match rows and their columns, as JSON.
-        rows_json: String,
-        /// What the query read: its resolved time, as JSON.
-        read_at: String,
     },
     SetSetting {
         key: String,
@@ -226,7 +234,7 @@ impl UserWrite {
     /// The caller's content, without data resolved when the write runs.
     pub fn intent(&self) -> Self {
         let mut intent = match self {
-            Self::SaveSelection(save) => Self::SaveSelection(Box::new(SaveSelection {
+            Self::Save(save) => Self::Save(Box::new(Save {
                 name: save.name.clone(),
                 query: save.query.clone(),
                 denominator: save.denominator.clone(),
@@ -235,12 +243,6 @@ impl UserWrite {
                 watch: save.watch.clone(),
                 outcomes: None,
             })),
-            Self::KeepResult { name, query, .. } => Self::KeepResult {
-                name: name.clone(),
-                query: query.clone(),
-                rows_json: String::new(),
-                read_at: String::new(),
-            },
             _ => self.clone(),
         };
         match &mut intent {
@@ -250,12 +252,6 @@ impl UserWrite {
             } => {
                 *resolved = None;
                 *retained = None;
-            }
-            Self::KeepResult {
-                rows_json, read_at, ..
-            } => {
-                rows_json.clear();
-                read_at.clear();
             }
             _ => {}
         }

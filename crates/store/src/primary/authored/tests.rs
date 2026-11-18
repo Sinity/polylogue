@@ -159,11 +159,15 @@ fn saved_family_and_revision_stay_fixed_across_replay() {
         &request(
             "first",
             10,
-            UserWrite::SaveQuery {
-                name: "example".into(),
-                text: "sessions".into(),
+            UserWrite::Save(Box::new(polylogue_model::user::Save {
+                name: Some("example".into()),
+                query: "sessions".into(),
                 denominator: None,
-            },
+                rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
+                read_at: "{}".into(),
+                watch: None,
+                outcomes: None,
+            })),
         ),
         &[],
         &[],
@@ -174,11 +178,15 @@ fn saved_family_and_revision_stay_fixed_across_replay() {
         &request(
             "second",
             20,
-            UserWrite::SaveQuery {
-                name: "example".into(),
-                text: "messages".into(),
+            UserWrite::Save(Box::new(polylogue_model::user::Save {
+                name: Some("example".into()),
+                query: "messages".into(),
                 denominator: None,
-            },
+                rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
+                read_at: "{}".into(),
+                watch: None,
+                outcomes: None,
+            })),
         ),
         std::slice::from_ref(&first),
         &[],
@@ -189,11 +197,15 @@ fn saved_family_and_revision_stay_fixed_across_replay() {
         &request(
             "third",
             30,
-            UserWrite::SaveQuery {
-                name: "example".into(),
-                text: "events".into(),
+            UserWrite::Save(Box::new(polylogue_model::user::Save {
+                name: Some("example".into()),
+                query: "events".into(),
                 denominator: None,
-            },
+                rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
+                read_at: "{}".into(),
+                watch: None,
+                outcomes: None,
+            })),
         ),
         &[first.clone(), second.clone()],
         &[],
@@ -460,6 +472,18 @@ fn backfill_claim_replays_its_original_job_and_preserves_reports() {
 #[test]
 fn pending_authored_records_are_never_confirmed() {
     let mut conn = cache();
+    let object = polylogue_query::plan::prepare(
+        "sessions",
+        &polylogue_query::Bindings {
+            origins: vec!["codex".into()],
+            ..Default::default()
+        },
+        |_| Ok(()),
+    )
+    .unwrap()
+    .query_object()
+    .unwrap();
+    crate::query_objects::apply_object(&conn, &object, 1).unwrap();
     let writes = [
         request(
             "note",
@@ -480,12 +504,16 @@ fn pending_authored_records_are_never_confirmed() {
         request(
             "result",
             3,
-            UserWrite::KeepResult {
+            UserWrite::Save(Box::new(polylogue_model::user::Save {
                 name: Some("kept".into()),
                 query: "sessions".into(),
                 rows_json: "{\"unit\":\"sessions\",\"columns\":[{\"name\":\"id\",\"kind\":\"number\"}],\"rows\":[{\"id\":1}]}".into(),
                 read_at: "{\"now\":3}".into(),
-            },
+
+                denominator: None,
+                watch: None,
+                outcomes: None,
+            })),
         ),
         request(
             "delivery",
@@ -509,6 +537,7 @@ fn pending_authored_records_are_never_confirmed() {
         prepared.push(p);
     }
     let mut rebuilt = cache();
+    crate::query_objects::apply_object(&rebuilt, &object, 1).unwrap();
     for (n, p) in prepared.iter().enumerate() {
         let wire = serde_json::to_vec(p).unwrap();
         let restored: PreparedRequest = serde_json::from_slice(&wire).unwrap();
@@ -518,7 +547,7 @@ fn pending_authored_records_are_never_confirmed() {
             Some(p.clone())
         );
     }
-    assert_eq!(count(&rebuilt, "assertion"), 2);
+    assert_eq!(count(&rebuilt, "assertion"), 3);
     let kinds: Vec<(String, i64)> = rebuilt
         .prepare("SELECT kind,count(*) FROM source_assertion GROUP BY kind ORDER BY kind")
         .unwrap()
@@ -528,7 +557,11 @@ fn pending_authored_records_are_never_confirmed() {
         .unwrap();
     assert_eq!(
         kinds,
-        vec![("note".to_owned(), 1), ("setting".to_owned(), 1)]
+        vec![
+            ("note".to_owned(), 1),
+            ("saved_query".to_owned(), 1),
+            ("setting".to_owned(), 1)
+        ]
     );
     for request in &prepared {
         for fact in &request.effect.assertions {
@@ -558,16 +591,19 @@ fn a_kept_body_later_preparations_cannot_decode_is_refused_through_primary_apply
     let kept = request(
         "kept",
         1,
-        UserWrite::KeepResult {
+        UserWrite::Save(Box::new(polylogue_model::user::Save {
             name: None,
             query: "sessions".into(),
             rows_json: "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}".into(),
             read_at: "{\"now\":1}".into(),
-        },
+            denominator: None,
+            watch: None,
+            outcomes: None,
+        })),
     );
     let mut malformed = prepare_with(&conn, &kept, &[], &[]).unwrap();
-    if let UserWrite::KeepResult { rows_json, .. } = &mut malformed.request.write {
-        *rows_json = "[]".into();
+    if let UserWrite::Save(save) = &mut malformed.request.write {
+        save.rows_json = "[]".into();
     }
     malformed.effect.kept_results[0].rows_json = "[]".into();
     let mut fresh = cache();
@@ -1380,14 +1416,14 @@ fn save_selection_pending_and_effect_replay_keep_one_receipt_and_original_child_
     let r = request(
         "atomic-save",
         10,
-        UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+        UserWrite::Save(Box::new(polylogue_model::user::Save {
             outcomes: None,
             name: Some("atomic-example".into()),
             query: "sessions".into(),
             denominator: None,
             rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
             read_at: r#"{"now":1}"#.into(),
-            watch: Some(polylogue_model::user::SavedWatch {
+            watch: Some(polylogue_model::user::SaveWatch {
                 hold: Some("20m".into()),
                 notify: false,
             }),
@@ -1401,24 +1437,27 @@ fn save_selection_pending_and_effect_replay_keep_one_receipt_and_original_child_
         .iter()
         .map(|fact| fact.id.as_str())
         .collect();
-    assert_eq!(ids, ["atomic-save-save", "atomic-save-watch"]);
+    assert_eq!(ids, ["atomic-save.1", "atomic-save.2"]);
     assert_eq!(first.effect.kept_results.len(), 1);
-    assert_eq!(first.effect.kept_results[0].id, "atomic-save-keep");
+    assert_eq!(first.effect.kept_results[0].id, "atomic-save");
     for table in ["assertion", "kept_result", "client_request"] {
         assert_eq!(count(&conn, table), 0, "{table}");
     }
     let mut retried = r.clone();
-    let UserWrite::SaveSelection(save) = &mut retried.write else {
+    let UserWrite::Save(save) = &mut retried.write else {
         unreachable!()
     };
     save.rows_json = r#"{"unit":"sessions","columns":[],"rows":[{}]}"#.into();
     save.read_at = r#"{"now":999}"#.into();
     save.outcomes = Some(polylogue_model::user::SaveReport {
         saved: None,
-        kept: UserOutcome {
-            id: "forged-retry".into(),
-            repeat: true,
-            pending: true,
+        request: "forged-request".into(),
+        repeat: true,
+        pending: true,
+        kept: polylogue_model::user::KeptPart {
+            result: "result:forged-retry".into(),
+            rows: 0,
+            at: Timestamp::from_unix_ms(10).unwrap(),
         },
         watch: None,
     });
@@ -1427,7 +1466,7 @@ fn save_selection_pending_and_effect_replay_keep_one_receipt_and_original_child_
         first,
         "pending intent retains the accepted payload"
     );
-    let UserWrite::SaveSelection(save) = &mut retried.write else {
+    let UserWrite::Save(save) = &mut retried.write else {
         unreachable!()
     };
     save.query = "messages".into();
@@ -1454,8 +1493,8 @@ fn save_selection_pending_and_effect_replay_keep_one_receipt_and_original_child_
     }
     rebuilt.execute_batch("DROP TRIGGER reject_kept").unwrap();
     let mut malformed = first.clone();
-    if let UserWrite::SaveSelection(save) = &mut malformed.request.write {
-        save.outcomes.as_mut().unwrap().kept.id = "forged-confirmation".into();
+    if let UserWrite::Save(save) = &mut malformed.request.write {
+        save.outcomes.as_mut().unwrap().kept.result = "result:forged-confirmation".into();
     }
     assert!(validate(&malformed).is_err());
     commit(&mut rebuilt, &first, 2);
@@ -1464,6 +1503,96 @@ fn save_selection_pending_and_effect_replay_keep_one_receipt_and_original_child_
     assert_eq!(count(&rebuilt, "assertion"), 2);
     assert_eq!(count(&rebuilt, "kept_result"), 1);
     assert_eq!(known_request(&rebuilt, &r).unwrap(), Some(first));
+}
+
+#[test]
+fn a_legacy_named_kept_request_restores_exactly_but_cannot_enter_as_a_new_save() {
+    let directory = tempfile::tempdir().unwrap();
+    let legacy = crate::older_archive::fixture::standard(&directory.path().join("older"));
+    let scratch = tempfile::tempdir().unwrap();
+    let older = crate::older_archive::OlderArchive::open(&legacy.root, scratch.path()).unwrap();
+    let original = older
+        .kept_results()
+        .unwrap()
+        .into_iter()
+        .find(|row| row.id == "k1")
+        .unwrap();
+    let mapped = crate::older_archive::authored::requests(
+        &older.requests().unwrap(),
+        &older.deliveries().unwrap(),
+        &older.delivery_events().unwrap(),
+        &older.kept_results().unwrap(),
+    );
+    let prepared = mapped
+        .requests
+        .into_iter()
+        .find(|row| row.id == "k1")
+        .unwrap()
+        .request
+        .unwrap()
+        .unwrap();
+    let UserWrite::Save(save) = &prepared.request.write else {
+        panic!("current Save request")
+    };
+    assert_eq!(prepared.request.id, original.id);
+    assert_eq!(save.name, original.name);
+    assert_eq!(save.query, original.query);
+    assert_eq!(save.rows_json, original.rows_json);
+    assert_eq!(save.read_at, original.read_at);
+    let report = save.outcomes.as_ref().unwrap();
+    assert_eq!(report.request, original.id);
+    assert_eq!(report.kept.result, format!("result:{}", original.id));
+    assert_eq!(report.kept.rows, 0);
+    assert_eq!(report.kept.at.unix_ms(), original.ran_at);
+    assert!(report.saved.is_none() && report.watch.is_none());
+    assert!(!report.repeat && !report.pending);
+    assert!(prepared.effect.assertions.is_empty());
+    let [effect] = prepared.effect.kept_results.as_slice() else {
+        panic!("one original kept effect")
+    };
+    assert_eq!(effect.id, original.id);
+    assert_eq!(effect.name, original.name);
+    assert_eq!(effect.query, original.query);
+    assert_eq!(effect.rows_json, original.rows_json);
+    assert_eq!(effect.read_at, original.read_at);
+    assert_eq!(effect.ran_at.unix_ms(), original.ran_at);
+    validate(&prepared).unwrap();
+    let mut restored = cache();
+    {
+        let tx = restored.transaction().unwrap();
+        assert!(!restore(&tx, &prepared, 7).unwrap().repeat);
+        tx.commit().unwrap();
+    }
+    assert_eq!(
+        stored_request(&restored, &prepared.request.id).unwrap(),
+        Some(prepared.clone())
+    );
+    assert_eq!(count(&restored, "assertion"), 0);
+    assert_eq!(count(&restored, "kept_result"), 1);
+    {
+        let tx = restored.transaction().unwrap();
+        assert!(restore(&tx, &prepared, 8).unwrap().repeat);
+        tx.commit().unwrap();
+    }
+    assert_eq!(count(&restored, "kept_result"), 1);
+    let mut live = cache();
+    {
+        let tx = live.transaction().unwrap();
+        let error = apply(&tx, &prepared, 9).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("named Save accepts its question"),
+            "{error}"
+        );
+        for table in ["assertion", "kept_result", "client_request"] {
+            assert_eq!(count(&tx, table), 0, "{table}");
+        }
+        tx.rollback().unwrap();
+    }
+    for table in ["assertion", "kept_result", "client_request"] {
+        assert_eq!(count(&live, table), 0, "{table}");
+    }
 }
 
 #[test]

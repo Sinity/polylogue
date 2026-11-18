@@ -144,6 +144,12 @@ pub(crate) fn options(reader: &Reader<'_>, ask: &Ask<'_>, seed: u64) -> Result<O
             .session
             .clone()
             .or_else(|| ask.context.calling_session().map(str::to_owned)),
+        here: ask
+            .context
+            .working_directory()
+            .map(|cwd| super::here::scope(cwd, reader))
+            .transpose()?,
+        seen_marks_of: Some(ask.context.authorship.author.to_string()),
         saved: named.saved,
         kept: named.kept,
         fields: ask.fields.to_vec(),
@@ -332,10 +338,11 @@ pub(crate) fn capture_selection(
     let mut options = options(reader, ask, uuid::Uuid::now_v7().as_u128() as u64)?;
     options.page_size = None;
     let prepared = reader.prepare_query_selection(ask.text, &options)?;
-    let native = prepared.program().shape == Shape::Rows && prepared.program().measure.is_none();
     let measure = prepared.program().measure.is_some();
     let derived = measure || matches!(prepared.program().statements, Statements::Derived(_));
-    let mut references = Vec::new();
+    // The Store owns which rows have readable references. A row-shaped feed
+    // or query history is still a retainable relation, not a readable object.
+    let mut references = (prepared.program().shape == Shape::Rows && !measure).then(Vec::new);
     let mut rows = Vec::new();
     let mut identities =
         matches!(prepared.program().row_kind, RowKind::UnitRows { .. }).then(Vec::new);
@@ -345,23 +352,19 @@ pub(crate) fn capture_selection(
             polylogue_store::read::VisitFrom::First,
             ask.near,
             |row| {
-                if native {
-                    let target = row
-                        .target
-                        .ok_or_else(|| Failure::internal("a native row has no reference"))?;
-                    references.push(target.reference());
+                match (&mut references, row.target) {
+                    (Some(references), Some(target)) => references.push(target.reference()),
+                    _ => references = None,
                 }
-                if derived {
-                    if let Some(identities) = &mut identities {
-                        let Some(polylogue_store::selection::RowIdentity::Entity { key, .. }) =
-                            row.identity
-                        else {
-                            return Err(Failure::internal("a native result has no identity"));
-                        };
-                        identities.push(key);
-                    }
-                    rows.push(row.values);
+                if let Some(identities) = &mut identities {
+                    let Some(polylogue_store::selection::RowIdentity::Entity { key, .. }) =
+                        row.identity
+                    else {
+                        return Err(Failure::internal("a native result has no identity"));
+                    };
+                    identities.push(key);
                 }
+                rows.push(row.values);
                 Ok::<_, Failure>(std::ops::ControlFlow::Continue(()))
             },
         )?;
@@ -380,14 +383,14 @@ pub(crate) fn capture_selection(
         matches: None,
     };
     let value = keep_captured(reader, ask.clone(), &retained, rows, identities)?;
-    if derived {
+    if derived || references.as_ref().is_none_or(Vec::is_empty) {
         retained.relation = Some(value);
     } else if value.get("matches").is_some() {
         retained.matches = Some(
             serde_json::json!({"rows":value["matches"], "columns":value["match_columns"], "schema":value["output_metadata"]["matches"]}),
         );
     }
-    Ok((retained, native.then_some(references)))
+    Ok((retained, references))
 }
 
 /// The accepted population uses the same current hydration or retained

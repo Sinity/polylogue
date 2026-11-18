@@ -9,6 +9,7 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 mod objects;
 mod values;
+pub(crate) use objects::recorded_units_for_bindings;
 pub use objects::{
     catalog_fingerprint, question_id_from_reference, referenced_kept_results,
     referenced_question_ids, referenced_saved_names, replay, replay_binding, saved_query_bindings,
@@ -173,6 +174,21 @@ fn prepare_inner(
         }
         let mut catalog = options.catalog();
         let mut query = crate::parse::with_catalog(text, &catalog)?;
+        walk(
+            &mut query,
+            &mut |query| {
+                if let Source::Result { reference, .. } = &mut query.source {
+                    let name = reference.strip_prefix("result:").unwrap_or(reference);
+                    if let Some(id) = options.kept_names.get(name) {
+                        *reference = format!("result:{id}");
+                    }
+                }
+                Ok(())
+            },
+            &mut |_| Ok(()),
+        )?;
+        catalog = crate::compile::source::bound_catalog(options)?;
+        crate::compile::source::preserve_live_units(&mut query, &catalog)?;
         let mut definitions = Vec::new();
         let mut saved_definitions: Vec<polylogue_model::query_objects::FrozenQueryDefinition> =
             Vec::new();
@@ -350,6 +366,11 @@ fn prepare_inner(
 
         let expanded = query_language::bind::bind(&expanded, &catalog)
             .map_err(|e| QueryError::language(e, text))?;
+        let mut bindings = options.clone();
+        // Names are presentation bindings, never additional stored results.
+        // Every source in this plan now names the resolved immutable ID.
+        let aliases = &bindings.kept_names;
+        bindings.kept.retain(|name, _| !aliases.contains_key(name));
         Ok(Plan {
             saved_object: None,
             expanded,
@@ -358,7 +379,7 @@ fn prepare_inner(
             identity,
             catalog,
             definitions,
-            bindings: options.clone(),
+            bindings,
             saved_definitions,
             identity_catalog,
             question_id,

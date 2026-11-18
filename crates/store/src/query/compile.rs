@@ -140,8 +140,7 @@ pub struct Program {
     pub near: Option<Near>,
     /// The answer rows have their own semantic similarities to count.
     pub counts_near: bool,
-    /// The saved queries it ran, each at the revision its name resolved
-    /// to when it was compiled.
+    /// Saved-query revisions and result-name IDs resolved for this execution.
     pub definitions: Vec<Definition>,
     /// The instant and zone the times were resolved against.
     pub clock: query_language::time::Clock,
@@ -293,6 +292,15 @@ pub fn lower(plan: &polylogue_query::plan::Plan, opts: &Options) -> Result<Progr
             program.definitions.push(used);
         }
     }
+    for (name, id) in &plan.bindings().kept_names {
+        let used = Definition {
+            name: format!("result:{name}"),
+            revision: format!("result:{id}"),
+        };
+        if !program.definitions.contains(&used) {
+            program.definitions.push(used);
+        }
+    }
     program.query = plan.text().to_owned();
     Ok(program)
 }
@@ -366,6 +374,8 @@ pub(crate) struct Compiler<'a> {
     /// The index whose relevance ranks the rows, from the selection's
     /// search leg.
     rank_index: Option<polylogue_query::search::SnippetIndex>,
+    /// A top-level alternate or language condition admits this text source.
+    alternate_words: Option<Vec<String>>,
     source_near_allowed: bool,
     /// An unavailable semantic order affects the answer or an earlier selection.
     near_unavailable: bool,
@@ -422,6 +432,7 @@ impl<'a> Compiler<'a> {
             definitions: vec![],
             near_request: None,
             rank_index: None,
+            alternate_words: None,
             source_near_allowed: true,
             near_unavailable: false,
             measuring: false,

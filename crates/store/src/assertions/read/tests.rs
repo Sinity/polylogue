@@ -281,21 +281,30 @@ fn kept_result_retries_ignore_resolved_rows_and_time_but_preserve_intent() {
     let (_dir, _archive, _lock, writer, reads) = setup();
     let request = crate::fixture::authored::operator_request(
         "kept".into(),
-        UserWrite::KeepResult {
+        UserWrite::Save(Box::new(polylogue_model::user::Save {
             name: Some("before".into()),
-            query: "assertions".into(),
-            rows_json: "{\"unit\":\"assertions\",\"columns\":[],\"rows\":[]}".into(),
+            query: "annotations".into(),
+            rows_json: "{\"unit\":\"annotations\",\"columns\":[],\"rows\":[]}".into(),
             read_at: "{\"now\":1}".into(),
-        },
+            denominator: None,
+            watch: None,
+            outcomes: None,
+        })),
     );
-    writer.user(request.clone()).unwrap();
+    writer
+        .user(crate::writer::UserSubmission {
+            request: request.clone(),
+            scope: None,
+            preparation: Some(crate::user_writes::PreparationContext::new(vec![
+                "codex".into(),
+            ])),
+            parent: None,
+        })
+        .unwrap();
     let mut changed = request.clone();
-    if let UserWrite::KeepResult {
-        rows_json, read_at, ..
-    } = &mut changed.write
-    {
-        *rows_json = "[{\"id\":\"new\"}]".into();
-        *read_at = "{\"now\":2}".into();
+    if let UserWrite::Save(save) = &mut changed.write {
+        save.rows_json = "[{\"id\":\"new\"}]".into();
+        save.read_at = "{\"now\":2}".into();
     }
     assert!(writer.user(changed.clone()).unwrap().repeat);
     assert!(
@@ -306,8 +315,8 @@ fn kept_result_retries_ignore_resolved_rows_and_time_but_preserve_intent() {
             .unwrap()
             .is_some()
     );
-    if let UserWrite::KeepResult { query, .. } = &mut changed.write {
-        *query = "sessions".into();
+    if let UserWrite::Save(save) = &mut changed.write {
+        save.query = "sessions".into();
     }
     assert!(matches!(writer.user(changed), Err(StoreError::Conflict(_))));
 }
@@ -320,11 +329,15 @@ fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
     let save = |id: &str, text: &str| {
         crate::fixture::authored::operator_request(
             id.into(),
-            UserWrite::SaveQuery {
-                name: "everything".into(),
-                text: text.into(),
+            UserWrite::Save(Box::new(polylogue_model::user::Save {
+                name: Some("everything".into()),
+                query: text.into(),
                 denominator: None,
-            },
+                rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
+                read_at: "{}".into(),
+                watch: None,
+                outcomes: None,
+            })),
         )
     };
     writer
@@ -388,9 +401,30 @@ fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
         bases[0].revision = Some("first".into());
     }
     assert!(matches!(writer.user(changed), Err(StoreError::Conflict(_))));
+    let mut recorded = resolved;
+    let UserWrite::Save(save) = &mut recorded.write else {
+        unreachable!()
+    };
+    save.outcomes = Some(polylogue_model::user::SaveReport {
+        request: "resolved".into(),
+        saved: Some(polylogue_model::user::SavedPart {
+            id: "resolved".into(),
+            name: "everything".into(),
+            revision: 2,
+            new_revision: true,
+        }),
+        kept: polylogue_model::user::KeptPart {
+            result: "result:resolved".into(),
+            rows: 0,
+            at: recorded.at,
+        },
+        watch: None,
+        repeat: false,
+        pending: false,
+    });
     assert_eq!(
         reads.reader().unwrap().user_request("resolved").unwrap(),
-        Some(resolved)
+        Some(recorded)
     );
     assert_eq!(
         reads.reader().unwrap().user_request("explicit").unwrap(),

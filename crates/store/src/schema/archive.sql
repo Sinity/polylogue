@@ -116,6 +116,7 @@ CREATE TABLE kept_result (
   rows_json     TEXT NOT NULL            -- row references (notes pinned to a revision), the displayed values,
                                          -- and the match rows of each match
 ) STRICT;
+CREATE INDEX kept_result_name ON kept_result(name, ran_at, id) WHERE name IS NOT NULL;
 
 -- Exactly what was put into a model's context, kept because it cannot be
 -- recomputed. Prepared, delivered and used are

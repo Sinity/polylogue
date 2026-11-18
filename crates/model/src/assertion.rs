@@ -31,6 +31,8 @@ const ANNOTATION: Option<Uniqueness> = Some(Uniqueness::new(
 const JUDGMENT: Option<Uniqueness> = Some(Uniqueness::new(&["about", "author"], WhenHeld::Revise));
 /// One memory per path and scope.
 const MEMORY: Option<Uniqueness> = Some(Uniqueness::new(&["key", "scope"], WhenHeld::Revise));
+/// One displayed position per target and reader.
+const SEEN: Option<Uniqueness> = Some(Uniqueness::new(&["key", "author"], WhenHeld::Revise));
 /// One setting per name and target host.
 const SETTING: Option<Uniqueness> = Some(Uniqueness::new(&["key", "machine"], WhenHeld::Revise));
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +66,7 @@ pub enum ValueShape {
     Role,
     Ping,
     Setting,
+    Seen,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum About {
@@ -133,6 +136,7 @@ assertion_kinds! {
     Ping => ("ping",Ping,MANY,Session,None,false,false),
     Withdrawal => ("withdrawal",OptionalText,MANY,None,None,false,false),
     Setting => ("setting",Setting,SETTING,None,Required,false,false),
+    Seen => ("seen",Seen,SEEN,None,Required,false,false),
 }
 impl KindSpec {
     /// A single-valued mark (`title`, `outcome`, `hidden`): one value per

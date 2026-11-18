@@ -102,6 +102,32 @@ impl<'a> Compiler<'a> {
     ) -> Result<SelectionSql, QueryError> {
         self.measuring = selection.measured;
         self.rank_index = selection.search.rank;
+        self.alternate_words = if selection.unit == Unit::Messages {
+            let mut admitted = false;
+            let mut languages = Vec::new();
+            for condition in selection.top_level() {
+                if let polylogue_query::filter::Filter::Field(field) =
+                    self.binder().bind(&condition, selection.unit)?
+                {
+                    match (field.field.declaration().name, field.test) {
+                        ("alternate", polylogue_query::filter::Test::Bool(true)) => admitted = true,
+                        (
+                            "lang",
+                            polylogue_query::filter::Test::Written(
+                                polylogue_query::filter::Comparison::Match(value),
+                            ),
+                        ) => {
+                            admitted = true;
+                            languages.extend(alternatives(&value));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            admitted.then_some(languages)
+        } else {
+            None
+        };
         let scope = RowContext::plain(selection.unit);
         if let Some(semantic) = &selection.semantic {
             if !self.source_near_allowed {

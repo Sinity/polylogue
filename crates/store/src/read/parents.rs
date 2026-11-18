@@ -79,9 +79,10 @@ impl<'a> Reader<'a> {
                 |r| r.get::<_, bool>(0),
             )?;
         let (keys, issues) = match own.as_ref().filter(|_| has_parents) {
-            Some((pk, _)) => self.parent_keys(*pk, id)?,
+            Some((pk, _)) => parent_keys(self.conn()?, *pk, id)?,
             None => (Vec::new(), Vec::new()),
         };
+        self.check()?;
         Ok(MessageSelection {
             reader: self,
             own,
@@ -94,219 +95,281 @@ impl<'a> Reader<'a> {
             visibility: None,
         })
     }
+}
 
-    fn parent_frame(
-        &self,
-        pk: i64,
-        session: SessionId,
-        via: Option<(SessionId, Option<String>)>,
-    ) -> Result<Frame> {
-        let mut prefixes: VecDeque<Prefix> = self.conn()?
-            .prepare_cached("SELECT parent_id,branch_point,copies_prefix FROM session_prefix WHERE child_id=?1 ORDER BY parent_id,branch_point")?
-            .query_map([session.to_string()], |r| Ok(Prefix {
-                parent: r.get(0)?, branch_point: r.get(1)?, copies_prefix: r.get(2)?,
-            }))?.collect::<rusqlite::Result<_>>()?;
-        let forks: std::collections::BTreeSet<_> = prefixes
-            .iter()
-            .filter_map(|link| {
-                Some((
-                    SessionId::parse(&link.parent).ok()?,
-                    link.branch_point.as_ref()?.clone(),
-                ))
-            })
-            .collect();
-        let mut issues = Vec::new();
-        if forks.len() > 1 {
-            let mut recorded = forks.into_iter();
-            let (first, first_branch_point) = recorded.next().expect("conflicting recorded forks");
-            for (second, second_branch_point) in recorded {
-                issues.push(ParentIssue::ConflictingParents {
-                    child: session.clone(),
-                    first: first.clone(),
-                    first_branch_point: first_branch_point.clone(),
-                    second,
-                    second_branch_point,
+fn parent_frame(
+    conn: &Connection,
+    pk: i64,
+    session: SessionId,
+    via: Option<(SessionId, Option<String>)>,
+) -> Result<Frame> {
+    let mut prefixes: VecDeque<Prefix> = conn
+        .prepare_cached("SELECT parent_id,branch_point,copies_prefix FROM session_prefix WHERE child_id=?1 ORDER BY parent_id,branch_point")?
+        .query_map([session.to_string()], |r| Ok(Prefix {
+            parent: r.get(0)?, branch_point: r.get(1)?, copies_prefix: r.get(2)?,
+        }))?.collect::<rusqlite::Result<_>>()?;
+    let forks: std::collections::BTreeSet<_> = prefixes
+        .iter()
+        .filter_map(|link| {
+            Some((
+                SessionId::parse(&link.parent).ok()?,
+                link.branch_point.as_ref()?.clone(),
+            ))
+        })
+        .collect();
+    let mut issues = Vec::new();
+    if forks.len() > 1 {
+        let mut recorded = forks.into_iter();
+        let (first, first_branch_point) = recorded.next().expect("conflicting recorded forks");
+        for (second, second_branch_point) in recorded {
+            issues.push(ParentIssue::ConflictingParents {
+                child: session.clone(),
+                first: first.clone(),
+                first_branch_point: first_branch_point.clone(),
+                second,
+                second_branch_point,
+            });
+        }
+        // No branch is selected from incompatible recorded fork points.
+        prefixes.retain(|prefix| {
+            prefix.branch_point.is_none() || SessionId::parse(&prefix.parent).is_err()
+        });
+        // Conflicting provider branch points do not erase separately recorded
+        // byte copies. Their listed members choose no provider branch_point.
+        let copies=conn.prepare_cached("SELECT DISTINCT parent_id FROM prefix_copy WHERE child_id=?1 AND explicit_members=1 ORDER BY parent_id")?
+            .query_map([session.to_string()], |r| r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        for parent in copies {
+            if !prefixes
+                .iter()
+                .any(|prefix| prefix.parent == parent && prefix.branch_point.is_none())
+            {
+                prefixes.push_back(Prefix {
+                    parent,
+                    copies_prefix: true,
+                    branch_point: None,
                 });
             }
-            // No branch is selected from incompatible recorded fork points.
-            prefixes.retain(|prefix| {
-                prefix.branch_point.is_none() || SessionId::parse(&prefix.parent).is_err()
-            });
-            // Conflicting provider branch points do not erase separately recorded
-            // byte copies. Their listed members choose no provider branch_point.
-            let copies=self.conn()?.prepare_cached("SELECT DISTINCT parent_id FROM prefix_copy WHERE child_id=?1 AND explicit_members=1 ORDER BY parent_id")?
-                .query_map([session.to_string()], |r| r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-            for parent in copies {
-                if !prefixes
-                    .iter()
-                    .any(|prefix| prefix.parent == parent && prefix.branch_point.is_none())
-                {
-                    prefixes.push_back(Prefix {
-                        parent,
-                        copies_prefix: true,
-                        branch_point: None,
-                    });
-                }
-            }
         }
-        Ok(Frame {
-            pk,
-            session,
-            prefixes,
-            keys: Vec::new(),
-            copied: Vec::new(),
-            issues,
-            via,
-        })
     }
+    Ok(Frame {
+        pk,
+        session,
+        prefixes,
+        keys: Vec::new(),
+        copied: Vec::new(),
+        issues,
+        via,
+    })
+}
 
-    fn parent_keys(&self, pk: i64, id: &SessionId) -> Result<(Vec<Key>, Vec<ParentIssue>)> {
-        let mut frames = vec![self.parent_frame(pk, id.clone(), None)?];
-        let mut active = HashSet::from([pk]);
-        loop {
-            let frame = frames
-                .last_mut()
-                .expect("the root frame remains until return");
-            if let Some(link) = frame.prefixes.pop_front() {
-                let parent = match SessionId::parse(&link.parent) {
-                    Ok(parent) => parent,
-                    Err(_) => {
-                        frame.issues.push(ParentIssue::InvalidParent {
-                            child: frame.session.clone(),
-                            parent: link.parent,
-                        });
-                        continue;
-                    }
-                };
-                let parent_pk = self
-                    .conn()?
-                    .prepare_cached("SELECT pk FROM session WHERE id=?1 AND stub=0")?
-                    .query_row([parent.to_string()], |r| r.get::<_, i64>(0))
-                    .optional()?;
-                let Some(parent_pk) = parent_pk else {
-                    frame.issues.push(ParentIssue::MissingParent {
+fn parent_keys(conn: &Connection, pk: i64, id: &SessionId) -> Result<(Vec<Key>, Vec<ParentIssue>)> {
+    let mut frames = vec![parent_frame(conn, pk, id.clone(), None)?];
+    let mut active = HashSet::from([pk]);
+    loop {
+        let frame = frames
+            .last_mut()
+            .expect("the root frame remains until return");
+        if let Some(link) = frame.prefixes.pop_front() {
+            let parent = match SessionId::parse(&link.parent) {
+                Ok(parent) => parent,
+                Err(_) => {
+                    frame.issues.push(ParentIssue::InvalidParent {
                         child: frame.session.clone(),
-                        parent,
+                        parent: link.parent,
                     });
                     continue;
-                };
-                if active.contains(&parent_pk) {
-                    frame.issues.push(ParentIssue::Cycle { session: parent });
-                    continue;
                 }
-                let explicit: bool = self.conn()?.exists("SELECT EXISTS(SELECT 1 FROM prefix_copy WHERE parent_id=?1 AND child_id=?2 AND explicit_members=1)", params![parent.to_string(),frame.session.to_string()])?;
-                if explicit || link.copies_prefix && link.branch_point.is_none() {
-                    let copied = self
-                        .conn()?
-                        .prepare_cached(&format!(
-                            "WITH record_ranks AS ({}) SELECT DISTINCT m.pk,m.id,c.record_order,ir.id,s.chain,s.seq,s.record_position FROM message m
-                             JOIN record_ranks c ON c.pk=m.pk
-                             JOIN message_source s ON s.message_pk = m.pk
-                             JOIN input_ref ir ON ir.pk=s.input_pk
-                             WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL
-                               AND EXISTS(SELECT 1 FROM prefix_copy p WHERE p.input_pk=s.input_pk AND p.chain=s.chain AND p.child_id=?2 AND p.parent_id=?3 AND p.explicit_members=0)
-                               AND NOT EXISTS(SELECT 1 FROM prefix_copy p WHERE p.input_pk=s.input_pk AND p.chain=s.chain AND p.child_id=?2 AND p.parent_id=?3 AND p.explicit_members=1)
-                             ORDER BY m.session_order, m.id",
-                             order::session_record_rows("?1")))?
-                        .query_map(params![parent_pk, frame.session.to_string(), parent.to_string()], |r| {
-                            Ok(CopiedKey {
-                                source: r.get(3)?,
-                                chain: r.get(4)?,
-                                version: String::new(),
-                                sequence: r.get(5)?,
-                                position: r.get(6)?,
-                                key: Key {
-                                    session_pk: parent_pk,
-                                    session: parent.clone(),
-                                    message_pk: r.get(0)?,
-                                    id: r.get(1)?,
-                                    order: r.get(2)?,
-                                },
-                            })
-                        })?
-                        .collect::<rusqlite::Result<Vec<_>>>()?;
-                    frame.copied.extend(copied);
-                    let missing = self.conn()?.prepare_cached("SELECT DISTINCT p.message_id FROM prefix_member p WHERE p.child_id=?1 AND p.parent_id=?2 AND NOT EXISTS(SELECT 1 FROM message m WHERE m.id=p.message_id AND m.session_pk=?3 AND m.duplicate_of IS NULL) ORDER BY p.message_id")?
-                        .query_map(params![frame.session.to_string(),parent.to_string(),parent_pk], |r| r.id::<MessageId>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-                    frame.issues.extend(missing.into_iter().map(|message| {
-                        ParentIssue::MissingCopiedMessage {
-                            child: frame.session.clone(),
-                            parent: parent.clone(),
-                            message,
-                        }
-                    }));
-                    let explicit = self.conn()?.prepare_cached(&format!(
-                        "WITH record_ranks AS ({}) SELECT DISTINCT m.pk,m.id,c.record_order,p.source_input,p.source_chain,p.source_version,p.sequence,p.position FROM prefix_member p JOIN message m ON m.id=p.message_id JOIN record_ranks c ON c.pk=m.pk WHERE p.child_id=?2 AND p.parent_id=?3 AND m.session_pk=?1 AND m.duplicate_of IS NULL", order::session_record_rows("?1")))?
-                        .query_map(params![parent_pk,frame.session.to_string(),parent.to_string()], |r| {
-                            let coordinate = |index| -> rusqlite::Result<u64> {
-                                let value: String = r.get(index)?;
-                                value.parse().map_err(|error| rusqlite::Error::FromSqlConversionFailure(index, rusqlite::types::Type::Text, Box::new(error)))
-                            };
-                            Ok(CopiedKey { source:r.get(3)?,chain:r.get(4)?,version:r.get(5)?,sequence:coordinate(6)?,position:coordinate(7)?,key:Key {session_pk:parent_pk,session:parent.clone(),message_pk:r.get(0)?,id:r.get(1)?,order:r.get(2)?} })
-                        })?.collect::<rusqlite::Result<Vec<_>>>()?;
-                    frame.copied.extend(explicit);
-                } else if link.branch_point.is_none() {
-                    frame.issues.push(ParentIssue::MissingBranchPoint {
-                        child: frame.session.clone(),
-                        parent,
-                        branch_point: None,
-                    });
-                } else {
-                    let child = frame.session.clone();
-                    active.insert(parent_pk);
-                    frames.push(self.parent_frame(
-                        parent_pk,
-                        parent,
-                        Some((child, link.branch_point)),
-                    )?);
-                }
+            };
+            let parent_pk = conn
+                .prepare_cached("SELECT pk FROM session WHERE id=?1 AND stub=0")?
+                .query_row([parent.to_string()], |r| r.get::<_, i64>(0))
+                .optional()?;
+            let Some(parent_pk) = parent_pk else {
+                frame.issues.push(ParentIssue::MissingParent {
+                    child: frame.session.clone(),
+                    parent,
+                });
+                continue;
+            };
+            if active.contains(&parent_pk) {
+                frame.issues.push(ParentIssue::Cycle { session: parent });
                 continue;
             }
-            let mut done = frames.pop().expect("the current frame exists");
-            let (copied, issue) = copied_order(&done.session, std::mem::take(&mut done.copied))?;
-            done.keys.extend(copied);
-            done.issues.extend(issue);
-            for (message_pk, id, order) in self.own_keys(done.pk)? {
-                done.keys.push(Key {
-                    session_pk: done.pk,
-                    session: done.session.clone(),
-                    message_pk,
-                    id,
-                    order,
+            let explicit: bool = conn.exists("SELECT EXISTS(SELECT 1 FROM prefix_copy WHERE parent_id=?1 AND child_id=?2 AND explicit_members=1)", params![parent.to_string(),frame.session.to_string()])?;
+            if explicit || link.copies_prefix && link.branch_point.is_none() {
+                let copied = conn
+                    .prepare_cached(&format!(
+                        "WITH record_ranks AS ({}) SELECT DISTINCT m.pk,m.id,c.record_order,ir.id,s.chain,s.seq,s.record_position FROM message m
+                         JOIN record_ranks c ON c.pk=m.pk
+                         JOIN message_source s ON s.message_pk = m.pk
+                         JOIN input_ref ir ON ir.pk=s.input_pk
+                         WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL
+                           AND EXISTS(SELECT 1 FROM prefix_copy p WHERE p.input_pk=s.input_pk AND p.chain=s.chain AND p.child_id=?2 AND p.parent_id=?3 AND p.explicit_members=0)
+                           AND NOT EXISTS(SELECT 1 FROM prefix_copy p WHERE p.input_pk=s.input_pk AND p.chain=s.chain AND p.child_id=?2 AND p.parent_id=?3 AND p.explicit_members=1)
+                         ORDER BY m.session_order, m.id",
+                         order::session_record_rows("?1")))?
+                    .query_map(params![parent_pk, frame.session.to_string(), parent.to_string()], |r| {
+                        Ok(CopiedKey {
+                            source: r.get(3)?,
+                            chain: r.get(4)?,
+                            version: String::new(),
+                            sequence: r.get(5)?,
+                            position: r.get(6)?,
+                            key: Key {
+                                session_pk: parent_pk,
+                                session: parent.clone(),
+                                message_pk: r.get(0)?,
+                                id: r.get(1)?,
+                                order: r.get(2)?,
+                            },
+                        })
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                frame.copied.extend(copied);
+                let missing = conn.prepare_cached("SELECT DISTINCT p.message_id FROM prefix_member p WHERE p.child_id=?1 AND p.parent_id=?2 AND NOT EXISTS(SELECT 1 FROM message m WHERE m.id=p.message_id AND m.session_pk=?3 AND m.duplicate_of IS NULL) ORDER BY p.message_id")?
+                    .query_map(params![frame.session.to_string(),parent.to_string(),parent_pk], |r| r.id::<MessageId>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                frame.issues.extend(missing.into_iter().map(|message| {
+                    ParentIssue::MissingCopiedMessage {
+                        child: frame.session.clone(),
+                        parent: parent.clone(),
+                        message,
+                    }
+                }));
+                let explicit = conn.prepare_cached(&format!(
+                    "WITH record_ranks AS ({}) SELECT DISTINCT m.pk,m.id,c.record_order,p.source_input,p.source_chain,p.source_version,p.sequence,p.position FROM prefix_member p JOIN message m ON m.id=p.message_id JOIN record_ranks c ON c.pk=m.pk WHERE p.child_id=?2 AND p.parent_id=?3 AND m.session_pk=?1 AND m.duplicate_of IS NULL", order::session_record_rows("?1")))?
+                    .query_map(params![parent_pk,frame.session.to_string(),parent.to_string()], |r| {
+                        let coordinate = |index| -> rusqlite::Result<u64> {
+                            let value: String = r.get(index)?;
+                            value.parse().map_err(|error| rusqlite::Error::FromSqlConversionFailure(index, rusqlite::types::Type::Text, Box::new(error)))
+                        };
+                        Ok(CopiedKey { source:r.get(3)?,chain:r.get(4)?,version:r.get(5)?,sequence:coordinate(6)?,position:coordinate(7)?,key:Key {session_pk:parent_pk,session:parent.clone(),message_pk:r.get(0)?,id:r.get(1)?,order:r.get(2)?} })
+                    })?.collect::<rusqlite::Result<Vec<_>>>()?;
+                frame.copied.extend(explicit);
+            } else if link.branch_point.is_none() {
+                frame.issues.push(ParentIssue::MissingBranchPoint {
+                    child: frame.session.clone(),
+                    parent,
+                    branch_point: None,
+                });
+            } else {
+                let child = frame.session.clone();
+                active.insert(parent_pk);
+                frames.push(parent_frame(
+                    conn,
+                    parent_pk,
+                    parent,
+                    Some((child, link.branch_point)),
+                )?);
+            }
+            continue;
+        }
+        let mut done = frames.pop().expect("the current frame exists");
+        let (copied, issue) = copied_order(&done.session, std::mem::take(&mut done.copied))?;
+        done.keys.extend(copied);
+        done.issues.extend(issue);
+        for (message_pk, id, order) in own_keys(conn, done.pk)? {
+            done.keys.push(Key {
+                session_pk: done.pk,
+                session: done.session.clone(),
+                message_pk,
+                id,
+                order,
+            });
+        }
+        active.remove(&done.pk);
+        let Some(parent) = frames.last_mut() else {
+            let mut seen = HashSet::new();
+            done.keys.retain(|key| seen.insert(key.message_pk));
+            return Ok((done.keys, done.issues));
+        };
+        let (child, branch_point) = done.via.expect("only the root has no incoming fork");
+        match done
+            .keys
+            .iter()
+            .position(|key| Some(&key.id) == branch_point.as_ref())
+        {
+            Some(at) => done.keys.truncate(at + 1),
+            None => {
+                done.keys.clear();
+                done.issues.push(ParentIssue::MissingBranchPoint {
+                    child,
+                    parent: done.session,
+                    branch_point,
                 });
             }
-            active.remove(&done.pk);
-            let Some(parent) = frames.last_mut() else {
-                let mut seen = HashSet::new();
-                done.keys.retain(|key| seen.insert(key.message_pk));
-                return Ok((done.keys, done.issues));
-            };
-            let (child, branch_point) = done.via.expect("only the root has no incoming fork");
-            match done
-                .keys
-                .iter()
-                .position(|key| Some(&key.id) == branch_point.as_ref())
-            {
-                Some(at) => done.keys.truncate(at + 1),
-                None => {
-                    done.keys.clear();
-                    done.issues.push(ParentIssue::MissingBranchPoint {
-                        child,
-                        parent: done.session,
-                        branch_point,
-                    });
-                }
-            }
-            // Move the common single-parent prefix rather than copying it at
-            // every ancestor of a long chain.
-            if parent.keys.is_empty() {
-                parent.keys = done.keys;
-            } else {
-                parent.keys.extend(done.keys);
-            }
-            parent.issues.extend(done.issues);
         }
+        // Move the common single-parent prefix rather than copying it at
+        // every ancestor of a long chain.
+        if parent.keys.is_empty() {
+            parent.keys = done.keys;
+        } else {
+            parent.keys.extend(done.keys);
+        }
+        parent.issues.extend(done.issues);
     }
+}
+
+/// A session's own message keys and IDs in reading order.
+pub(super) fn own_keys(conn: &Connection, session_pk: i64) -> Result<Vec<(i64, String, i64)>> {
+    Ok(conn
+        .prepare_cached(&format!("WITH record_ranks AS ({})
+            SELECT m.pk,m.id,c.record_order FROM record_ranks c JOIN message m ON m.pk=c.pk ORDER BY c.record_order",
+            order::session_record_rows("?1")))?
+        .query_map([session_pk], |r| <(_, _, _)>::try_from(r))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+/// Compare messages in the same target view used by reading. Own-session
+/// coordinates are indexed; inherited items use that target lineage's metadata
+/// order, including branch truncation and copied-prefix ambiguity. The fallback
+/// costs O(messages in that lineage), and never loads message bodies.
+pub(crate) fn compare_session_messages(
+    conn: &Connection,
+    target: &SessionId,
+    left: &MessageId,
+    right: &MessageId,
+) -> Result<std::cmp::Ordering> {
+    let target_pk: i64 = conn
+        .query_row(
+            "SELECT pk FROM session WHERE id=?1 AND stub=0",
+            [target.to_string()],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| StoreError::NotFound(format!("session:{target}")))?;
+    let coordinate =
+        |id: &MessageId| -> Result<(String, i64, String)> {
+            let id = crate::parser_context::resolved_message(conn, id)?.to_string();
+            let (session, order) = conn.query_row(
+            "SELECT session_pk,session_order FROM message WHERE id=?1 AND duplicate_of IS NULL",
+            [&id], |row| <(i64, String)>::try_from(row),
+        ).optional()?.ok_or_else(|| StoreError::NotFound(format!("message:{id}")))?;
+            Ok((id, session, order))
+        };
+    let left = coordinate(left)?;
+    let right = coordinate(right)?;
+    if left.1 == target_pk && right.1 == target_pk {
+        return Ok((&left.2, &left.0).cmp(&(&right.2, &right.0)));
+    }
+    if !conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM session_prefix WHERE child_id=?1)",
+        [target.to_string()],
+        |row| row.get::<_, bool>(0),
+    )? {
+        return Err(StoreError::invalid(format!(
+            "seen items are not in session:{target}"
+        )));
+    }
+    let (keys, issues) = parent_keys(conn, target_pk, target)?;
+    let locate = |id: &str| -> Result<usize> {
+        keys.iter().position(|key| key.id == id).ok_or_else(|| {
+            issues.first().map_or_else(
+                || StoreError::invalid(format!("message:{id} is not in session:{target}")),
+                |issue| StoreError::IncompleteParents(Box::new(issue.clone())),
+            )
+        })
+    };
+    Ok(locate(&left.0)?.cmp(&locate(&right.0)?))
 }
 
 /// Each source contributes only its recorded ordering constraints. A unique

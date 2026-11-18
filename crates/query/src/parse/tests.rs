@@ -43,11 +43,11 @@ fn every_spec_example_parses_through_the_product_catalog() {
         "has:compaction",
         "model:claude-opus-5-5",
         "origin:(chatgpt|claude-ai)",
-        "assertions where kind:decision",
+        "annotations where kind:decision",
         "origin:codex with messages(id, role)[role:assistant, last:1]",
         "similar:\"ambiguous date formats\"",
         "repo:other",
-        "links where kind:continuation",
+        "session_links where kind:continuation",
         "link:fork",
         "tree_cost > 2.90",
     ] {
@@ -346,7 +346,7 @@ fn a_lone_exact_assertion_revision_reads_the_assertions_unit() {
         Source::Unit { unit, .. } => unit,
         other => panic!("{text}: {other:?}"),
     };
-    assert_eq!(unit("assertion:root@revision"), "assertions");
+    assert_eq!(unit("assertion:root@revision"), "annotations");
     assert_eq!(unit("assertion:root"), "sessions");
     assert_eq!(unit("block:test:message#0"), "sessions");
     assert_eq!(unit("sessions where assertion:root@revision"), "sessions");

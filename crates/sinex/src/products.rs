@@ -88,7 +88,7 @@ pub(crate) fn kind(product: &Product) -> &'static str {
         Product::ParseProgress { .. } => "polylogue.parse_progress",
         Product::RestoredRequest { prepared } => match &prepared.request.write {
             UserWrite::ResolveLine { .. } => "polylogue.line_resolution_restore",
-            UserWrite::SaveSelection(_) => "polylogue.line_save_restore",
+            UserWrite::Save(_) => "polylogue.line_save_restore",
             _ => "polylogue.request_restore",
         },
         Product::RestoredAssertion { .. } => "polylogue.assertion_restore",
@@ -98,14 +98,13 @@ pub(crate) fn kind(product: &Product) -> &'static str {
         Product::Coverage(_) => "polylogue.coverage",
         Product::Request(request) => match &request.request.write {
             UserWrite::ResolveLine { .. } => "polylogue.line_resolution",
-            UserWrite::SaveSelection(_) => "polylogue.line_save",
+            UserWrite::Save(_) => "polylogue.line_save",
             UserWrite::Assert { .. }
+            | UserWrite::MarkSeen { .. }
             | UserWrite::AssertQuery { .. }
             | UserWrite::ReviseAssertions { .. }
             | UserWrite::WithdrawAssertions { .. }
-            | UserWrite::SaveQuery { .. }
             | UserWrite::SetSetting { .. } => "polylogue.assertion",
-            UserWrite::KeepResult { .. } => "polylogue.kept_result",
             UserWrite::Deliver(_) | UserWrite::DeliveredAdvice(_) => "polylogue.delivery",
             UserWrite::DeliveryEvent { .. } => "polylogue.delivery_outcome",
             _ => "polylogue.request",
@@ -269,10 +268,10 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
                 json!({"request": request.id, "at": request.at, "machine": request.machine});
             match &request.write {
                 UserWrite::Assert { .. }
+                | UserWrite::MarkSeen { .. }
                 | UserWrite::AssertQuery { .. }
                 | UserWrite::ReviseAssertions { .. }
                 | UserWrite::WithdrawAssertions { .. }
-                | UserWrite::SaveQuery { .. }
                 | UserWrite::SetSetting { .. } => {
                     value["assertions"] = serde_json::to_value(&prepared.effect.assertions)?;
                 }
@@ -298,18 +297,6 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
                     value["delivery"] = delivery.clone().into();
                     value["what"] = what.as_str().into();
                     value["detail"] = serde_json::to_value(detail)?;
-                }
-                UserWrite::KeepResult {
-                    name,
-                    query,
-                    rows_json,
-                    read_at,
-                } => {
-                    value["result"] = request.id.clone().into();
-                    value["name"] = serde_json::to_value(name)?;
-                    value["query"] = query.clone().into();
-                    value["rows"] = serde_json::from_str(rows_json)?;
-                    value["read_at"] = serde_json::from_str(read_at)?;
                 }
                 _ => {}
             }
@@ -502,7 +489,6 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
         ("polylogue.repository", "repository"),
         ("polylogue.parse_progress", "parse_progress"),
         ("polylogue.assertion", "request"),
-        ("polylogue.kept_result", "request"),
         ("polylogue.delivery", "request"),
         ("polylogue.delivery_outcome", "request"),
         ("polylogue.request", "request"),
@@ -572,7 +558,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                     "polylogue.line_resolution" | "polylogue.line_resolution_restore" => {
                         Some("resolve_line")
                     }
-                    "polylogue.line_save" | "polylogue.line_save_restore" => Some("save_selection"),
+                    "polylogue.line_save" | "polylogue.line_save_restore" => Some("save"),
                     _ => None,
                 };
                 definitions
@@ -584,7 +570,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                         let variant = variant["properties"]["write"]["const"].as_str();
                         match write {
                             Some(write) => variant == Some(write),
-                            None => !matches!(variant, Some("resolve_line" | "save_selection")),
+                            None => !matches!(variant, Some("resolve_line" | "save")),
                         }
                     });
             }
@@ -721,26 +707,26 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                         *name,
                         "polylogue.line_save" | "polylogue.line_save_restore"
                     ) {
-                        1
+                        2
                     } else if matches!(
                         *name,
                         "polylogue.line_resolution" | "polylogue.line_resolution_restore"
                     ) {
-                        2
-                    } else if *name == "polylogue.assertion" {
                         3
+                    } else if *name == "polylogue.assertion" {
+                        4
                     } else {
                         match *product {
                             "message" => 8,
-                            "request" | "restored_request" => 7,
+                            "request" | "restored_request" => 8,
                             "session" => 7,
                             "document" | "event" | "link" | "background" | "repository" => 6,
                             "parse_progress" => 7,
                             // Input rows refuse fields outside their declared source shape.
                             "input" => 6,
                             "fragment" => 4,
-                            "query_run" => 5,
-                            "restored_assertion" => 2,
+                            "query_run" => 6,
+                            "restored_assertion" => 3,
                             "tool_call" | "prefix_copy" | "prefix_member" => 2,
                             "query_run_outcome" => 2,
                             "restored_history" | "attachment_binding" => 1,

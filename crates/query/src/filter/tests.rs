@@ -161,10 +161,10 @@ fn references_and_words_bind_apart_from_fields() {
         filter("messages where block:codex:abc/1").unwrap(),
         Filter::Rows { reference, .. } if reference == "block:codex:abc/1"
     ));
-    let Filter::All(parts) = filter("sessions where last retr*").unwrap() else {
+    let Filter::All(parts) = filter("sessions where latest retr*").unwrap() else {
         panic!("not a conjunction");
     };
-    assert!(matches!(&parts[0], Filter::SessionWord { word, .. } if word == "last"));
+    assert!(matches!(&parts[0], Filter::SessionWord { word, .. } if word == "latest"));
     assert!(matches!(&parts[1], Filter::Word(Word { text, phrase: false, .. }) if text == "retr*"));
 }
 
@@ -241,9 +241,9 @@ fn sinex_local_reference_correction_reaches_selection_errors() {
         },
     );
     assert!(matches!(
-        filter(&format!("{} where key:opaque", Unit::Assertions.name())).unwrap(),
+        filter(&format!("{} where key:opaque", Unit::Annotations.name())).unwrap(),
         Filter::Field(FieldTest {
-            field: FieldId::AssertionsKey,
+            field: FieldId::AnnotationsKey,
             ..
         }),
     ));
@@ -262,4 +262,26 @@ fn sinex_local_reference_correction_reaches_selection_errors() {
         filter("sessions where colour:red").unwrap_err().kind(),
         polylogue_model::Code::UnknownField,
     );
+}
+
+#[test]
+fn declared_annotation_request_field_precedes_request_object_refusal() {
+    let (id, _) = field("annotations where request:write-root");
+    assert_eq!(id, FieldId::AnnotationsRequest);
+    let operation_clock = clock();
+    let binder = Binder {
+        text: "request:write-root",
+        origins: &[],
+        clock: &operation_clock,
+        provider_catalog: None,
+    };
+    assert!(matches!(
+        binder.field(
+            Unit::Sessions,
+            "request",
+            Comparison::Match(Value::scalar("write-root")),
+            Span::default()
+        ),
+        Err(QueryError::NotBuilt { .. })
+    ));
 }

@@ -385,13 +385,17 @@ pub fn spec(unit: Unit) -> &'static UnitSpec {
         Unit::ToolCalls => &TOOL_CALLS,
         Unit::Files => &FILES,
         Unit::Events => &EVENTS,
-        Unit::Assertions => &ASSERTIONS,
-        Unit::Links => &LINKS,
+        Unit::Annotations => &ASSERTIONS,
+        Unit::SessionLinks => &LINKS,
         Unit::Turns => &TURNS,
         Unit::Deliveries => &DELIVERIES,
         Unit::LiveIntervals => &LIVE_INTERVALS,
         Unit::Processes => &PROCESSES,
-        Unit::Changes => &CHANGES,
+        Unit::Feed => &CHANGES,
+        Unit::Alternates => &ALTERNATES,
+        Unit::Queries => &QUERIES,
+        Unit::Runs => &RUNS,
+        Unit::Results => &RESULTS,
     }
 }
 
@@ -957,6 +961,134 @@ static CHANGES: UnitSpec = UnitSpec {
     parents: &[],
 };
 
+fn current_alternate(a: &Aliases) -> String {
+    crate::variants::current_sql(&a.row)
+}
+static ALTERNATES: UnitSpec = UnitSpec {
+    from: T("source_variant {r}"),
+    key: "{r}.rowid",
+    identity: &["{r}.id"],
+    columns: &[
+        ("id", T("{r}.id"), Text),
+        ("root", T("{r}.root"), Text),
+        ("base", T("{r}.base"), Text),
+        ("source", T("{r}.source"), Text),
+        ("kind", T("{r}.kind"), Text),
+        ("from_lang", T("{r}.from_lang"), Text),
+        ("to_lang", T("{r}.to_lang"), Text),
+        ("author", T("{r}.author"), Text),
+        ("via", T("{r}.via"), Text),
+        ("method", T("{r}.method"), Text),
+        (
+            "created_at",
+            T("CAST(unixepoch({r}.created_at,'subsec')*1000 AS INTEGER)"),
+            Time,
+        ),
+    ],
+    time: "CAST(unixepoch({r}.created_at,'subsec')*1000 AS INTEGER)",
+    newest_first: true,
+    session_order: false,
+    since: Some("CAST(unixepoch({r}.created_at,'subsec')*1000 AS INTEGER)>={v}"),
+    until: Some("CAST(unixepoch({r}.created_at,'subsec')*1000 AS INTEGER)<{v}"),
+    session_pk: "",
+    session_scope: None,
+    search: Search::Substring(
+        "(SELECT group_concat(vt.body,' ') FROM variant_text vt WHERE vt.variant={r}.id)",
+    ),
+    relations: &[],
+    parents: &[],
+};
+static QUERIES: UnitSpec = UnitSpec {
+    from: T(
+        "(SELECT q.hash,q.commit_seq,a.key AS name,CASE WHEN count(DISTINCT a.id)=1 THEN min(a.id) END AS revision,coalesce(min(json_extract(a.value,'$.text')),q.normal_form) AS text,CASE WHEN count(DISTINCT a.id)=1 THEN min(a.created_at) END AS saved_at FROM source_query q LEFT JOIN source_assertion a ON a.kind='saved_query' AND json_extract(a.value,'$.hash')=q.hash AND EXISTS(SELECT 1 FROM source_revision_state rs WHERE rs.id=a.id AND rs.current=1 AND rs.withdrawn=0) GROUP BY q.hash,a.key) {r}",
+    ),
+    key: "({r}.hash || ':' || coalesce({r}.name,''))",
+    identity: &["{r}.hash", "coalesce({r}.name,'')"],
+    columns: &[
+        ("query", T("'query:'||{r}.hash"), Text),
+        ("name", T("{r}.name"), Text),
+        ("revision", T("{r}.revision"), Text),
+        ("text", T("{r}.text"), Text),
+        ("saved_at", T("{r}.saved_at"), Time),
+        (
+            "kept",
+            T(
+                "(SELECT 'result:'||k.id FROM source_kept_result k WHERE k.name={r}.name ORDER BY k.id DESC LIMIT 1)",
+            ),
+            Text,
+        ),
+        (
+            "watched",
+            T(
+                "EXISTS(SELECT 1 FROM source_assertion w JOIN source_revision_state ws ON ws.id=w.id AND ws.current=1 AND ws.withdrawn=0 WHERE w.kind='signal' AND w.key={r}.name)",
+            ),
+            Bool,
+        ),
+    ],
+    time: "coalesce({r}.saved_at,{r}.commit_seq)",
+    newest_first: true,
+    session_order: false,
+    since: Some("{r}.saved_at>={v}"),
+    until: Some("{r}.saved_at<{v}"),
+    session_pk: "",
+    session_scope: None,
+    search: Search::Substring("{r}.text"),
+    relations: &[],
+    parents: &[],
+};
+static RUNS: UnitSpec = UnitSpec {
+    from: T("source_query_run {r}"),
+    key: "{r}.id",
+    identity: &["'run:'||{r}.id"],
+    columns: &[
+        ("id", T("'run:'||{r}.id"), Text),
+        ("query", T("'query:'||{r}.query"), Text),
+        ("at", T("(CAST({r}.at AS INTEGER)/1000000)"), Time),
+        ("read_at", T("{r}.read_at"), Text),
+        ("author", T("json_extract({r}.author,'$')"), Text),
+        ("via", T("{r}.via"), Text),
+        ("count", T("CAST({r}.count AS INTEGER)"), Number),
+        ("exact", T("{r}.exact"), Bool),
+        ("outcome", T("{r}.outcome"), Json),
+    ],
+    time: "(CAST({r}.at AS INTEGER)/1000000)",
+    newest_first: true,
+    session_order: false,
+    since: Some("(CAST({r}.at AS INTEGER)/1000000)>={v}"),
+    until: Some("(CAST({r}.at AS INTEGER)/1000000)<{v}"),
+    session_pk: "",
+    session_scope: None,
+    search: Search::None,
+    relations: &[],
+    parents: &[],
+};
+static RESULTS: UnitSpec = UnitSpec {
+    from: T("source_kept_result {r}"),
+    key: "{r}.rowid",
+    identity: &["{r}.id"],
+    columns: &[
+        ("id", T("'result:'||{r}.id"), Text),
+        ("name", T("{r}.name"), Text),
+        ("query", T("{r}.query"), Text),
+        ("ran_at", T("{r}.ran_at"), Time),
+        (
+            "rows",
+            T("coalesce(json_array_length({r}.rows_json,'$.rows'),0)"),
+            Number,
+        ),
+    ],
+    time: "{r}.ran_at",
+    newest_first: true,
+    session_order: false,
+    since: Some("{r}.ran_at>={v}"),
+    until: Some("{r}.ran_at<{v}"),
+    session_pk: "",
+    session_scope: None,
+    search: Search::None,
+    relations: &[],
+    parents: &[],
+};
+
 /// One row per turn: along the active path (or file
 /// order when it is unknown), a turn starts at a human prompt that does not
 /// follow another prompt, or at a typed command, and runs until the next
@@ -1019,7 +1151,9 @@ pub fn default_sql(id: DefaultId, a: &Aliases) -> String {
         DefaultId::NotDuplicate => a.expand("{m}.duplicate_of IS NULL"),
         DefaultId::OnActivePath => a.expand("COALESCE({m}.on_active_path, 1) = 1"),
         DefaultId::CountedCalls => counts_as_action(a),
-        DefaultId::NotWithdrawal => a.expand("{r}.kind <> 'withdrawal'"),
+        DefaultId::NotWithdrawalOrSeen => a.expand("{r}.kind NOT IN ('withdrawal','seen')"),
+        DefaultId::CurrentAlternate => current_alternate(a),
+        DefaultId::NotSeen => a.expand("coalesce({r}.assertion_kind,'') <> 'seen'"),
         DefaultId::CurrentAssertion => current_assertion(a),
         DefaultId::NotWithdrawn => not_withdrawn(a),
         DefaultId::VisibleIfSession => maybe_session_visible(a),

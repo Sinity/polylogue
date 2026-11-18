@@ -19,6 +19,8 @@ pub(super) fn options() -> Options {
         random_seed: Some(7),
         embeddings: false,
         self_session: None,
+        here: None,
+        seen_marks_of: None,
         saved: Default::default(),
         fields: vec![],
         kept: Default::default(),
@@ -124,35 +126,29 @@ fn latest_is_the_newest_session_and_its_identity_ignores_execution() {
     );
 }
 #[test]
-fn last_excludes_the_calling_session() {
+fn latest_excludes_the_calling_session() {
     let (_dir, f) = fixture();
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
     let mut caller = options();
     caller.self_session = Some("test:three".into());
-    for word in ["last", "latest"] {
-        assert_eq!(
-            targets(&reader, word, &caller),
-            ["session:test:two"],
-            "{word}"
-        );
-    }
+    assert_eq!(targets(&reader, "latest", &caller), ["session:test:two"]);
 }
 #[test]
-fn last_respects_scope() {
+fn latest_respects_scope() {
     let (_dir, f) = fixture();
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
     // The newest session that also meets the other conditions, not the
     // newest session overall.
     assert_eq!(
-        targets(&reader, "last AND NOT session:test:three", &options()),
+        targets(&reader, "latest AND NOT session:test:three", &options()),
         ["session:test:two"]
     );
     let mut caller = options();
     caller.self_session = Some("test:two".into());
     assert_eq!(
-        targets(&reader, "last AND NOT session:test:three", &caller),
+        targets(&reader, "latest AND NOT session:test:three", &caller),
         ["session:test:one"]
     );
 }
@@ -436,7 +432,7 @@ fn assertion_reference_keeps_its_family_and_revision() {
     let mut options = options();
     options.fields = vec!["value".into()];
     let selected = reader
-        .prepare_selection("assertions where current:* | sort by id", &options)
+        .prepare_selection("annotations where current:* | sort by id", &options)
         .unwrap();
     let mut rows = vec![];
     reader
@@ -479,7 +475,7 @@ fn assertion_reference_keeps_its_family_and_revision() {
     );
     let family = reader
         .prepare_selection(
-            &format!("assertions where assertion:{first} | sort by id"),
+            &format!("annotations where assertion:{first} | sort by id"),
             &options,
         )
         .unwrap();
@@ -775,7 +771,7 @@ fn assertion_values_are_decoded_once_and_predicates_match_recorded_text() {
     let mut opts = options();
     opts.fields = vec!["value".into()];
     let selected = reader
-        .prepare_query_selection("assertions | sort by id", &opts)
+        .prepare_query_selection("annotations | sort by id", &opts)
         .unwrap();
     let mut values = vec![];
     reader
@@ -792,7 +788,7 @@ fn assertion_values_are_decoded_once_and_predicates_match_recorded_text() {
         ]
     );
     let selected = reader
-        .prepare_query_selection("assertions where value:quoted", &opts)
+        .prepare_query_selection("annotations where value:quoted", &opts)
         .unwrap();
     let mut values = vec![];
     reader
@@ -1247,6 +1243,8 @@ fn fixed_populations_keep_zero_one_many_grains_and_cursor_order() {
                     references: None,
                     fields: vec![],
                     self_session: None,
+                    here: None,
+                    seen_marks_of: None,
                     embeddings: false,
                     why: false,
                     ranking_identity: None,

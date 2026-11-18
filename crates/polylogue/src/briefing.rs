@@ -1170,13 +1170,13 @@ fn session_start(
     let operator_notes_command = format!(
         "polylogue {}",
         polylogue_render::shell_quote(&format!(
-            "assertions where author:operator ({assertion_scope})"
+            "annotations where author:operator ({assertion_scope})"
         ))
     );
     let other_assertions_command = format!(
         "polylogue {}",
         polylogue_render::shell_quote(&format!(
-            "assertions where NOT author:operator judged:unknown ({assertion_scope})"
+            "annotations where NOT author:operator judged:unknown ({assertion_scope})"
         ))
     );
 
@@ -1254,7 +1254,7 @@ fn session_start(
             "Other agents working here now:",
             items,
             "live sessions",
-            "polylogue live",
+            "polylogue running",
         );
     }
     // Beads come from the scope index and read nothing.
@@ -1277,7 +1277,7 @@ fn session_start(
         "Bead claims last observed here, with no observed close or release:",
         beads,
         "open Beads",
-        "polylogue list task:",
+        "polylogue 'task:*'",
     );
     let sessions = recent
         .iter()
@@ -1287,7 +1287,10 @@ fn session_start(
         "Recent sessions here, and what they did:",
         sessions,
         "recent sessions",
-        &format!("polylogue list cwd:{here}"),
+        &format!(
+            "polylogue {}",
+            polylogue_render::shell_quote(&format!("cwd:{}", assertions::quoted(&here))),
+        ),
     );
     let notices = deadline.section(reader, "notices", || {
         reader.pending_notice_candidates(&dirs, me.as_deref())
@@ -1481,7 +1484,7 @@ fn takeover(
             text,
             "Assertions by other authors, not yet accepted: {other_assertions}; list them with `polylogue {}`.",
             polylogue_render::shell_quote(&format!(
-                "assertions where NOT author:operator judged:unknown about:{}",
+                "annotations where NOT author:operator judged:unknown about:{}",
                 serde_json::to_string(&session_reference.to_string())
                     .expect("reference serializes")
             ))

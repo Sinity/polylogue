@@ -403,6 +403,8 @@ fn restart_reopens_evicted_response_and_resolves_its_alias() {
         random_seed: Some(1),
         embeddings: false,
         self_session: None,
+        here: None,
+        seen_marks_of: None,
         saved: Default::default(),
         kept: Default::default(),
         fields: vec!["id".into()],

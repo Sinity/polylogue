@@ -7,6 +7,7 @@
 //! intent writes nothing and returns what the first write created; the
 //! same ID with other intent is refused as a conflict.
 
+mod save;
 use crate::{Result, StoreError};
 use rusqlite::{Transaction, params};
 
@@ -27,7 +28,7 @@ impl UserReceipt {
     ) -> Result<Self> {
         let save =
             match &prepared.request.write {
-                UserWrite::SaveSelection(save) => Some(save.outcomes.clone().ok_or_else(|| {
+                UserWrite::Save(save) => Some(save.outcomes.clone().ok_or_else(|| {
                     StoreError::invalid("accepted Save has no resolved outcomes")
                 })?),
                 _ => None,
@@ -35,7 +36,11 @@ impl UserReceipt {
         Ok(Self {
             outcome,
             save,
-            written: Self::references(&prepared.effect),
+            written: if matches!(prepared.request.write, UserWrite::MarkSeen { .. }) {
+                Vec::new()
+            } else {
+                Self::references(&prepared.effect)
+            },
         })
     }
     fn references(
@@ -211,6 +216,28 @@ pub(crate) fn apply_using(
         outcome.repeat = true;
         return UserReceipt::recorded(&known, outcome);
     }
+    let advancing_seen = if let UserWrite::MarkSeen { marks } = &r.write {
+        let marks = crate::assertions::seen::advancing(
+            tx,
+            original,
+            &r.authorship.author.to_string(),
+            marks,
+        )?;
+        if marks.is_empty() {
+            return Ok(UserReceipt {
+                outcome: UserOutcome {
+                    id: r.id.clone(),
+                    repeat: true,
+                    pending: false,
+                },
+                save: None,
+                written: Vec::new(),
+            });
+        }
+        Some(marks)
+    } else {
+        None
+    };
     if let Some(prepared) = prepare_delivery(r) {
         crate::primary::authored::require_new_delivery(tx, &r.id)?;
         crate::primary::authored::apply(tx, &prepared, seq)?;
@@ -274,119 +301,33 @@ pub(crate) fn apply_using(
     };
     let mut save_outcomes = None;
     let outcome = match &r.write {
-        UserWrite::SaveSelection(save) => {
-            use polylogue_model::assertion::{AssertionKind, NewAssertion};
-            if save.watch.is_some() && save.name.is_none() {
-                return Err(StoreError::invalid("a watch needs a saved query name"));
-            }
-            if let Some(watch) = &save.watch
-                && let Some(hold) = &watch.hold
-                && query_language::time::duration_ms(hold).is_none_or(|value| value < 0)
-            {
-                return Err(StoreError::invalid("a watch needs a duration such as 20m"));
-            }
-            let identities = save.identities(&r.id);
-            crate::kept::validate_body(&identities.kept, &save.rows_json)?;
-            crate::selection::check_kept_body(tx, &identities.kept, &save.rows_json)?;
-            let saved = if let Some(name) = &save.name {
-                if !polylogue_model::assertion::policy::sayable_query_name(name) {
-                    return Err(StoreError::invalid(format!(
-                        "{name:?} cannot follow `query:`"
-                    )));
-                }
-                let value = resolve_saved(crate::assertions::SavedInput::Text {
-                    text: &save.query,
-                    denominator: save.denominator.as_deref(),
-                })?;
-                let saved_request = UserRequest {
-                    id: identities.saved.clone().expect("named Save identity"),
-                    machine: r.machine.clone(),
-                    authorship: r.authorship.clone(),
-                    at: r.at,
-                    write: UserWrite::SaveQuery {
-                        name: name.clone(),
-                        text: save.query.clone(),
-                        denominator: save.denominator.clone(),
-                    },
-                };
-                let statement = NewAssertion {
-                    kind: AssertionKind::SavedQuery,
-                    key: Some(name.clone()),
-                    value: Some(serde_json::to_value(value)?),
-                    valid_until: None,
-                    links: Vec::new(),
-                };
-                Some(crate::assertions::write_preparing(
-                    tx,
-                    &[statement],
-                    crate::assertions::WriteContext {
-                        request: &saved_request,
-                        counter: seq,
-                        hash: &hash,
-                        quote: &quote,
-                        mode,
-                    },
-                    &mut resolve_saved,
-                )?)
-            } else {
-                None
-            };
-            crate::primary::authored::insert_kept(
-                tx,
-                &polylogue_model::authored::KeptResult {
-                    id: identities.kept.clone(),
-                    name: save.name.clone(),
-                    query: save.query.clone(),
-                    ran_at: r.at,
-                    read_at: save.read_at.clone(),
-                    rows_json: save.rows_json.clone(),
-                },
-            )?;
-            let watch = if let Some(watch) = &save.watch {
-                let mut rule = serde_json::json!({"name":save.name,"query":save.query,"fires":"on_new","deliver":"notice","interrupt":watch.notify});
-                if let Some(hold) = &watch.hold {
-                    rule["for"] = serde_json::json!(hold);
-                }
-                let assertion = NewAssertion {
-                    kind: AssertionKind::Signal,
-                    key: save.name.clone(),
-                    value: Some(rule),
-                    valid_until: None,
-                    links: Vec::new(),
-                };
-                let watched_request = UserRequest {
-                    id: identities.watch.expect("watch identity"),
-                    machine: r.machine.clone(),
-                    authorship: r.authorship.clone(),
-                    at: r.at,
-                    write: UserWrite::Assert {
-                        assertions: vec![assertion.clone()],
-                    },
-                };
-                Some(crate::assertions::write_preparing(
-                    tx,
-                    &[assertion],
-                    crate::assertions::WriteContext {
-                        request: &watched_request,
-                        counter: seq,
-                        hash: &hash,
-                        quote: &quote,
-                        mode,
-                    },
-                    &mut resolve_saved,
-                )?)
-            } else {
-                None
-            };
-            save_outcomes = Some(polylogue_model::user::SaveReport {
-                saved,
-                kept: UserOutcome {
-                    id: identities.kept.clone(),
-                    repeat: false,
-                    pending: false,
-                },
-                watch,
-            });
+        UserWrite::MarkSeen { .. } => {
+            let statements = advancing_seen
+                .as_ref()
+                .expect("seen marks prepared")
+                .iter()
+                .map(|mark| {
+                    Ok(polylogue_model::assertion::NewAssertion {
+                        kind: polylogue_model::assertion::AssertionKind::Seen,
+                        key: Some(mark.target.clone()),
+                        value: Some(serde_json::to_value(
+                            polylogue_model::assertion::values::Seen {
+                                position: polylogue_model::assertion::values::SeenPosition {
+                                    item: mark.item.clone(),
+                                    at: mark.at.to_string(),
+                                },
+                            },
+                        )?),
+                        valid_until: None,
+                        links: Vec::new(),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            crate::assertions::write_preparing(tx, &statements, context, &mut resolve_saved)
+        }
+
+        UserWrite::Save(selected) => {
+            save_outcomes = Some(save::apply(tx, selected, context, &mut resolve_saved)?);
             Ok(UserOutcome {
                 id: r.id.clone(),
                 repeat: false,
@@ -458,6 +399,7 @@ pub(crate) fn apply_using(
             use polylogue_model::assertion::{
                 AssertionKind, LinkRole, NewAssertion, NewAssertionLink,
             };
+            let targets = save::withdrawal_targets(tx, targets)?;
             let statement = NewAssertion {
                 kind: AssertionKind::Withdrawal,
                 key: None,
@@ -477,29 +419,6 @@ pub(crate) fn apply_using(
         }
         UserWrite::SignalCommit(commit) => crate::signals::write(tx, r, commit, seq),
         UserWrite::Variant { variant } => crate::variants::write(tx, r, variant, seq),
-        UserWrite::SaveQuery {
-            name,
-            text,
-            denominator,
-        } => {
-            if !polylogue_model::assertion::policy::sayable_query_name(name) {
-                return Err(StoreError::Invalid(format!(
-                    "{name:?} cannot follow `query:`; use letters, digits, `_`, `-` and `.`"
-                )));
-            }
-            let value = resolve_saved(crate::assertions::SavedInput::Text {
-                text,
-                denominator: denominator.as_deref(),
-            })?;
-            let statement = polylogue_model::assertion::NewAssertion {
-                kind: polylogue_model::assertion::AssertionKind::SavedQuery,
-                key: Some(name.clone()),
-                value: Some(serde_json::to_value(value)?),
-                valid_until: None,
-                links: Vec::new(),
-            };
-            crate::assertions::write_preparing(tx, &[statement], context, &mut resolve_saved)
-        }
         UserWrite::Deliver(_) | UserWrite::DeliveredAdvice(_) => {
             unreachable!("literal deliveries are applied before resolving other writes")
         }
@@ -522,29 +441,6 @@ pub(crate) fn apply_using(
             Ok(UserOutcome {
                 pending: false,
                 id: delivery.clone(),
-                repeat: false,
-            })
-        }
-        UserWrite::KeepResult {
-            name,
-            query,
-            rows_json,
-            read_at,
-        } => {
-            crate::primary::authored::insert_kept(
-                tx,
-                &polylogue_model::authored::KeptResult {
-                    id: r.id.clone(),
-                    name: name.clone(),
-                    query: query.clone(),
-                    ran_at: r.at,
-                    read_at: read_at.clone(),
-                    rows_json: rows_json.clone(),
-                },
-            )?;
-            Ok(UserOutcome {
-                pending: false,
-                id: r.id.clone(),
                 repeat: false,
             })
         }
@@ -662,7 +558,7 @@ pub(crate) fn apply_using(
     };
     let accepted = save_outcomes.as_ref().map(|outcomes| {
         let mut accepted = r.clone();
-        if let UserWrite::SaveSelection(save) = &mut accepted.write {
+        if let UserWrite::Save(save) = &mut accepted.write {
             save.outcomes = Some(outcomes.clone());
         }
         accepted
@@ -681,7 +577,11 @@ pub(crate) fn apply_using(
     Ok(UserReceipt {
         outcome,
         save: save_outcomes,
-        written: UserReceipt::references(&effect),
+        written: if matches!(r.write, UserWrite::MarkSeen { .. }) {
+            Vec::new()
+        } else {
+            UserReceipt::references(&effect)
+        },
     })
 }
 

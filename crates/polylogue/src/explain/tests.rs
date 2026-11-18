@@ -124,7 +124,7 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
         "tool_calls | union (outcome:error)".into(),
         "sessions | tool_calls | union (outcome:error)".into(),
         "query:mine".into(),
-        format!("result:{}", kept.kept.id.as_str()),
+        kept.kept.result.clone(),
     ] {
         let result = crate::test_answers::ok(
             (explain(Some(&expression))).answer_with(&w.daemon, &invocation),
@@ -219,11 +219,11 @@ fn capabilities_list_each_operation_with_unlisted_arguments_and_answer() {
     );
     assert!(read["arguments"]["properties"]["steps"].is_object());
     assert!(read["answer"].is_object());
-    let list = capabilities
+    let status = capabilities
         .iter()
-        .find(|entry| entry["kind"] == "command" && entry["name"] == "list")
+        .find(|entry| entry["kind"] == "command" && entry["name"] == "status")
         .unwrap();
-    assert_eq!(list["tool"], "polylogue_read");
+    assert_eq!(status["tool"], "polylogue_read");
     let envelope = capabilities
         .iter()
         .find(|entry| entry["kind"] == "answer")

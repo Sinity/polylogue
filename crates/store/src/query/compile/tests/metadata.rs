@@ -429,10 +429,15 @@ fn catalog_and_compiled_reference_targets_agree() {
         ("tool_calls", "session", ColumnReference::Session, true),
         ("events", "session", ColumnReference::Session, true),
         ("files", "session", ColumnReference::Session, true),
-        ("links", "parent", ColumnReference::Session, true),
-        ("links", "child", ColumnReference::Session, true),
-        ("links", "branch_point", ColumnReference::Message, false),
-        ("assertions", "reference", ColumnReference::Assertion, true),
+        ("session_links", "parent", ColumnReference::Session, true),
+        ("session_links", "child", ColumnReference::Session, true),
+        (
+            "session_links",
+            "branch_point",
+            ColumnReference::Message,
+            false,
+        ),
+        ("annotations", "reference", ColumnReference::Assertion, true),
         ("turns", "id", ColumnReference::Message, true),
         ("turns", "answer", ColumnReference::Message, true),
         ("turns", "session", ColumnReference::Session, true),
@@ -512,23 +517,23 @@ fn reference_containers_and_free_ids_keep_their_stored_shapes() {
     let options = opts(&[]);
     let catalog = options.catalog();
     for (name, target) in [("sessions", "sessions"), ("messages", "messages")] {
-        let field = catalog.field("changes", name).unwrap();
+        let field = catalog.field("feed", name).unwrap();
         assert_eq!(field.kind, FieldKind::List(Box::new(FieldKind::Reference)));
         assert_eq!(field.unit.as_deref(), Some(target));
-        let declaration = polylogue_query::fields::lookup(Unit::Changes, name)
+        let declaration = polylogue_query::fields::lookup(Unit::Feed, name)
             .unwrap()
             .declaration();
         assert_eq!(declaration.column_kind(), ColKind::Ids);
         assert_eq!(
-            polylogue_query::fields::column_reference(Unit::Changes, name),
+            polylogue_query::fields::column_reference(Unit::Feed, name),
             None
         );
     }
     for (unit, name) in [
-        (Unit::Assertions, "id"),
-        (Unit::Assertions, "root"),
+        (Unit::Annotations, "id"),
+        (Unit::Annotations, "root"),
         (Unit::Processes, "tool_call"),
-        (Unit::Changes, "ref"),
+        (Unit::Feed, "ref"),
     ] {
         assert_eq!(polylogue_query::fields::reference_target(unit, name), None);
         assert_eq!(polylogue_query::fields::column_reference(unit, name), None);

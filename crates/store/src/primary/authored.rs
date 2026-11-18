@@ -207,7 +207,7 @@ pub fn prepare(
                     crate::to_i64(attachment.size, "attachment size is out of range")?
                 ])?)
         };
-        crate::user_writes::apply_using(
+        let receipt = crate::user_writes::apply_using(
             tx,
             index,
             request,
@@ -215,7 +215,19 @@ pub fn prepare(
             &available,
             crate::user_writes::Preparation::plain(preparation, pending),
         )?;
-        known_request(tx, request)?.or_invalid("prepared request was not recorded")
+        match known_request(tx, request)? {
+            Some(prepared) => Ok(prepared),
+            None if matches!(request.write, UserWrite::MarkSeen { .. })
+                && receipt.outcome.repeat =>
+            {
+                Ok(PreparedRequest {
+                    request: request.clone(),
+                    outcome: receipt.outcome,
+                    effect: AuthoredEffect::default(),
+                })
+            }
+            None => Err(StoreError::invalid("prepared request was not recorded")),
+        }
     })
 }
 
@@ -262,24 +274,27 @@ pub(crate) fn with_overlay<T>(
 
 /// Checks a recorded request's internal consistency without applying it.
 pub fn validate(prepared: &PreparedRequest) -> Result<()> {
-    if let UserWrite::SaveSelection(save) = &prepared.request.write {
+    if let UserWrite::Save(save) = &prepared.request.write {
         let parts = save
             .outcomes
             .as_ref()
             .or_invalid("recorded Save has no resolved outcomes")?;
-        let identities = save.identities(&prepared.request.id);
         let [kept] = prepared.effect.kept_results.as_slice() else {
             return Err(StoreError::invalid(
                 "recorded Save must carry one kept effect",
             ));
         };
-        if parts.kept.id != identities.kept
-            || parts.kept.repeat
-            || parts.kept.pending
-            || parts.saved.is_some() != save.name.is_some()
-            || parts.watch.is_some() != save.watch.is_some()
+        crate::kept::validate_body(&kept.id, &save.rows_json)?;
+        let rows: serde_json::Value = serde_json::from_str(&save.rows_json)?;
+        if parts.request != prepared.request.id
+            || parts.repeat
+            || parts.pending
+            || parts.kept.result != format!("result:{}", kept.id)
+            || parts.kept.at != kept.ran_at
+            || Some(parts.kept.rows) != rows["rows"].as_array().map(|rows| rows.len() as u64)
+            || (save.watch.is_some() && parts.watch.is_none())
+            || (parts.watch.is_some() && save.name.is_none())
             || prepared.outcome.id != prepared.request.id
-            || kept.id != identities.kept
             || kept.name != save.name
             || kept.query != save.query
             || kept.ran_at != prepared.request.at
@@ -290,36 +305,40 @@ pub fn validate(prepared: &PreparedRequest) -> Result<()> {
                 "recorded Save outcomes differ from its kept effect",
             ));
         }
-        for (outcome, proposed, kind) in [
-            (
-                &parts.saved,
-                identities.saved,
-                polylogue_model::assertion::AssertionKind::SavedQuery,
-            ),
-            (
-                &parts.watch,
-                identities.watch,
-                polylogue_model::assertion::AssertionKind::Signal,
-            ),
-        ] {
-            if let Some(outcome) = outcome {
-                let new_fact = prepared
-                    .effect
-                    .assertions
-                    .iter()
-                    .find(|fact| fact.id == outcome.id);
-                if outcome.id.is_empty()
-                    || outcome.pending
-                    || (!outcome.repeat
-                        && (Some(&outcome.id) != proposed.as_ref()
-                            || new_fact
-                                .is_none_or(|fact| fact.kind != kind || fact.key != save.name)))
-                {
-                    return Err(StoreError::invalid(
-                        "recorded Save has inconsistent assertion outcomes",
-                    ));
-                }
+        for (id, name, created, kind) in parts
+            .saved
+            .iter()
+            .map(|part| {
+                (
+                    &part.id,
+                    &part.name,
+                    part.new_revision,
+                    polylogue_model::assertion::AssertionKind::SavedQuery,
+                )
+            })
+            .chain(parts.watch.iter().map(|part| {
+                (
+                    &part.id,
+                    &part.name,
+                    part.new_rule,
+                    polylogue_model::assertion::AssertionKind::Signal,
+                )
+            }))
+        {
+            if id.is_empty()
+                || Some(name) != save.name.as_ref()
+                || (created
+                    && !prepared.effect.assertions.iter().any(|fact| {
+                        fact.id == *id && fact.kind == kind && fact.key.as_ref() == Some(name)
+                    }))
+            {
+                return Err(StoreError::invalid(
+                    "recorded Save has inconsistent assertion outcomes",
+                ));
             }
+        }
+        if parts.saved.as_ref().is_some_and(|part| part.revision == 0) {
+            return Err(StoreError::invalid("saved revision numbers start at one"));
         }
     }
     // Restored records can include later events written by other requests.
@@ -395,6 +414,44 @@ pub fn validate(prepared: &PreparedRequest) -> Result<()> {
 
 fn validate_live(prepared: &PreparedRequest) -> Result<()> {
     validate(prepared)?;
+    if let UserWrite::Save(save) = &prepared.request.write {
+        let parts = save.outcomes.as_ref().expect("Save validated");
+        if parts.saved.is_some() != save.name.is_some() {
+            return Err(StoreError::invalid(
+                "a new named Save accepts its question as well as its rows",
+            ));
+        }
+        if parts.kept.result != format!("result:{}", prepared.request.id) {
+            return Err(StoreError::invalid(
+                "a new Save keeps rows under its request identity",
+            ));
+        }
+        let created = parts
+            .saved
+            .iter()
+            .filter(|part| part.new_revision)
+            .map(|part| &part.id)
+            .chain(
+                parts
+                    .watch
+                    .iter()
+                    .filter(|part| part.new_rule)
+                    .map(|part| &part.id),
+            )
+            .collect::<Vec<_>>();
+        for (index, id) in created.iter().enumerate() {
+            if **id != authored::write_id(&prepared.request.id, index + 1, created.len()) {
+                return Err(StoreError::invalid(
+                    "a new Save numbers its annotations within the request",
+                ));
+            }
+        }
+        if prepared.effect.assertions.len() != created.len() {
+            return Err(StoreError::invalid(
+                "a new Save carries exactly its accepted annotation parts",
+            ));
+        }
+    }
     if let Some(expected) = crate::user_writes::prepare_delivery(&prepared.request)
         && prepared.effect != expected.effect
     {

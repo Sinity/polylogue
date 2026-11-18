@@ -153,7 +153,6 @@ pub mod line;
 mod scope;
 pub(crate) use scope::{ReadScopes, answer as scope_answer};
 pub mod query;
-pub mod query_aliases;
 pub mod read;
 pub mod resume {
     //! Resuming a session through its tool's own command.

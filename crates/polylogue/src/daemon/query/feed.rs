@@ -133,7 +133,7 @@ pub(crate) fn prepare_with(
                 position.as_deref().expect("delta has a prior position")
             )
         };
-        let text = format!("changes where {condition}{after} | sort by seq, kind, ref");
+        let text = format!("feed where {condition}{after} | sort by seq, kind, ref");
         // This fixed internal query has neither saved sources nor kept
         // results, so compilation need not load either archive-wide catalog.
         let opts = Options {
@@ -143,6 +143,8 @@ pub(crate) fn prepare_with(
             random_seed: Some(0),
             embeddings: false,
             self_session: None,
+            here: None,
+            seen_marks_of: None,
             saved: Default::default(),
             fields: Vec::new(),
             kept: Default::default(),

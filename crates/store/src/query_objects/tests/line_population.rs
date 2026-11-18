@@ -214,7 +214,7 @@ fn preserved_register_conversion_keeps_source_bytes_and_publishes_once() {
     );
     let output = Connection::open(&target).unwrap();
     crate::schema::ensure_archive(&output).unwrap();
-    assert_eq!(crate::schema::version(&output).unwrap(), 4);
+    assert_eq!(crate::schema::version(&output).unwrap(), 5);
     assert_eq!(
         output
             .query_row(

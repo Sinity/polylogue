@@ -434,7 +434,7 @@ fn live_initial_queries_page_through_the_real_http_api() {
         let mut ids = Vec::new();
         loop {
             let mut params = vec![
-                ("selection".into(), "changes where kind:session".into()),
+                ("selection".into(), "feed where kind:session".into()),
                 ("page_size".into(), "1".into()),
             ];
             if let Some(cursor) = cursor {

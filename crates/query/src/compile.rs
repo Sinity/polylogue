@@ -21,6 +21,10 @@ pub struct Options {
     pub embeddings: bool,
     /// The calling session, for `self`.
     pub self_session: Option<String>,
+    /// The caller's repository scope, resolved when this execution starts.
+    pub here: Option<polylogue_model::query_objects::HereScope>,
+    /// The computed author whose private reading marks this execution uses.
+    pub seen_marks_of: Option<String>,
     /// Saved queries by name: the current revision of each `saved_query`
     /// assertion family with that name (`query:NAME`). Two families with one
     /// name are an ambiguity the query refuses.
@@ -82,7 +86,8 @@ impl SavedQuery {
     }
 }
 
-/// A saved query a program ran, by the revision its name resolved to.
+/// A name resolved for this execution: a saved-query revision, or a
+/// `result:NAME` with its immutable `result:<id>` in `revision`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Definition {
     pub name: String,
@@ -156,15 +161,15 @@ impl ColumnReference {
             Self::Session => "sessions",
             Self::Document => "documents",
             Self::Message => "messages",
-            Self::Assertion => "assertions",
+            Self::Assertion => "annotations",
         }
     }
     pub fn from_unit(unit: &str) -> Option<Self> {
-        match unit {
-            "sessions" => Some(Self::Session),
-            "documents" => Some(Self::Document),
-            "messages" => Some(Self::Message),
-            "assertions" => Some(Self::Assertion),
+        match crate::units::Unit::from_bound_name(unit)? {
+            crate::units::Unit::Sessions => Some(Self::Session),
+            crate::units::Unit::Documents => Some(Self::Document),
+            crate::units::Unit::Messages => Some(Self::Message),
+            crate::units::Unit::Annotations => Some(Self::Assertion),
             _ => None,
         }
     }
@@ -230,6 +235,8 @@ pub struct Bindings {
     pub origins: Vec<String>,
     pub saved: std::collections::BTreeMap<String, Vec<SavedQuery>>,
     pub kept: std::collections::BTreeMap<String, Kept>,
+    /// Names resolved in this snapshot, before the question is identified.
+    pub kept_names: std::collections::BTreeMap<String, String>,
 }
 impl Bindings {
     /// Add an accepted query object under a saved assertion's name.
@@ -276,8 +283,10 @@ impl Bindings {
         for kept in self.kept.values() {
             kept.validate_output_metadata()?;
         }
-        let (query, _) = source::expand(text, self)?;
-        schema::output_metadata(&query, &self.catalog())
+        let (mut query, _) = source::expand(text, self)?;
+        let catalog = source::bound_catalog(self)?;
+        source::preserve_live_units(&mut query, &catalog)?;
+        schema::output_metadata(&query, &catalog)
     }
     pub fn definition_parameters(&self, text: &str) -> Result<Vec<String>, QueryError> {
         definition_parameters(text, &self.catalog())
@@ -302,6 +311,7 @@ impl Options {
             origins: self.origins.clone(),
             saved: self.saved.clone(),
             kept: self.kept.clone(),
+            kept_names: Default::default(),
         }
     }
 }

@@ -197,7 +197,7 @@ impl Compiler<'_> {
                 position: 0,
             });
         }
-        let named_unit = Unit::all().find(|unit| unit.name() == kept.unit);
+        let named_unit = Unit::from_bound_name(&kept.unit);
         let unit = named_unit.unwrap_or(Unit::Sessions);
         let shape = if matched {
             Shape::Matches

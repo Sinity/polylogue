@@ -1,4 +1,4 @@
-//! SQL functions registered on read and schema connections, so compiled queries can
+//! SQL functions for read and schema connections, so compiled queries can
 //! read what the index stores compressed and group by the operator's
 //! logical day without a second pass in Rust:
 //!
@@ -31,8 +31,9 @@ use std::sync::{Arc, Mutex};
 
 const FLAGS: FunctionFlags = FunctionFlags::SQLITE_UTF8.union(FunctionFlags::SQLITE_DETERMINISTIC);
 
-pub fn register(conn: &Connection) -> rusqlite::Result<()> {
-    temporal::register(conn)?;
+/// Source identity lookup also runs inside write transactions, without the
+/// query renderer or operation-specific calendar functions.
+pub(crate) fn register_source_alias(conn: &Connection) -> rusqlite::Result<()> {
     conn.create_scalar_function("pl_source_alias", 2, FLAGS, |ctx| {
         let values: String = ctx.get(0)?;
         let fallback: String = ctx.get(1)?;
@@ -48,7 +49,12 @@ pub fn register(conn: &Connection) -> rusqlite::Result<()> {
             ));
         }
         Ok(targets.into_iter().next().unwrap_or(fallback))
-    })?;
+    })
+}
+
+pub fn register(conn: &Connection) -> rusqlite::Result<()> {
+    temporal::register(conn)?;
+    register_source_alias(conn)?;
     conn.create_scalar_function("pl_glob", 2, FLAGS, |ctx| {
         let text: Option<String> = ctx.get(0)?;
         let pattern: Option<String> = ctx.get(1)?;

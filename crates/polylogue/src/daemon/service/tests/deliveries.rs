@@ -300,12 +300,15 @@ fn a_brief_answers_while_the_writer_queue_is_full_and_its_delivery_commits_once_
     loop {
         let keep = invocation.request(
             polylogue_store::user_writes::new_request_id(),
-            UserWrite::KeepResult {
+            UserWrite::Save(Box::new(polylogue_model::user::Save {
                 name: None,
                 query: "sessions".into(),
                 rows_json: "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}".into(),
                 read_at: "{}".into(),
-            },
+                denominator: None,
+                watch: None,
+                outcomes: None,
+            })),
         );
         match writes
             .try_enqueue_user(polylogue_store::writer::UserSubmission {

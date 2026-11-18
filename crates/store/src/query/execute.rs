@@ -912,6 +912,8 @@ pub fn options_snapshot(
             .map_err(|error| {
                 SelectionError::invalid(polylogue_model::Code::BadRequest, error.to_string())
             })?,
+        here: options.here.clone(),
+        seen_marks_of: options.seen_marks_of.clone(),
         embeddings: options.embeddings,
         why,
         ranking_identity,
@@ -932,6 +934,8 @@ pub fn options_from_snapshot(
         origins: vec![],
         page_size,
         random_seed: Some(random_seed),
+        here: options.here.clone(),
+        seen_marks_of: options.seen_marks_of.clone(),
         embeddings: options.embeddings,
         self_session: options.self_session.as_ref().map(ToString::to_string),
         saved: Default::default(),

@@ -80,6 +80,7 @@ pub(super) fn value_shape(kind: AssertionKind, stored: bool) -> Json {
         ValueShape::Role => structured::<Role>(stored),
         ValueShape::Ping => structured::<Ping>(stored),
         ValueShape::Setting => structured::<Setting>(stored),
+        ValueShape::Seen => structured::<Seen>(stored),
     }
 }
 fn constrain(schema: &mut Schema, stored: bool) {

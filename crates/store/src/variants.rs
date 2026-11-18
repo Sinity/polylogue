@@ -4,7 +4,9 @@ mod imports;
 mod rows;
 pub use imports::declare_imports;
 mod search;
+mod sql;
 pub use search::{SCHEMA, VariantMatch, project};
+pub(crate) use sql::{current_sql, withdrawn_sql};
 #[cfg(test)]
 mod tests;
 

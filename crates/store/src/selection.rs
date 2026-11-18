@@ -19,6 +19,8 @@ use serde_json::Value;
 mod execution;
 mod prepare;
 pub(crate) use prepare::{ProvisionalQueries, prepare_query_plan_on};
+mod shipped;
+pub use shipped::shipped_bindings;
 
 mod keyed;
 use std::{collections::BTreeMap, ops::ControlFlow, sync::Arc};
@@ -237,6 +239,9 @@ impl Reader<'_> {
         target: &str,
         options: &Options,
     ) -> Result<PreparedSelection<'read>, SelectionError> {
+        if matches!(Reference::parse(target), Ok(Reference::Run(_))) {
+            return self.prepare_query_selection(target, options);
+        }
         self.check()?;
         let scope = self.scope_token();
         scope.check()?;
@@ -1051,7 +1056,7 @@ fn identity_target(unit: Unit, values: &[Value]) -> Option<ReadTarget> {
         Unit::Messages => MessageId::parse(text(0)?).ok().map(ReadTarget::Message),
         Unit::Documents => DocumentId::parse(text(0)?).ok().map(ReadTarget::Document),
         Unit::Events => Some(ReadTarget::Event(text(0)?.to_owned())),
-        Unit::Assertions => Some(ReadTarget::Assertion {
+        Unit::Annotations => Some(ReadTarget::Assertion {
             root: text(1)?.to_owned(),
             revision: text(0)?.to_owned(),
         }),

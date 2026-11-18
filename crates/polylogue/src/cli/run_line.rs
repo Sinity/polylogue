@@ -579,6 +579,13 @@ fn output(
                                 );
                                 Ok(())
                             }
+                            StepAnswer::Saved(report) => {
+                                eprint!(
+                                    "{}",
+                                    super::print::saved(report, super::style(startup.output))
+                                );
+                                Ok(())
+                            }
                             other => {
                                 eprintln!(
                                     "{}",

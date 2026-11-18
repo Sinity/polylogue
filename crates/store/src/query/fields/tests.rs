@@ -30,7 +30,11 @@ fn names_are_unique_per_unit() {
 /// `physical` is a Boolean listing control whose false form is refused.
 #[test]
 fn special_fields_and_read_time_values_have_a_compile_rule() {
-    let read_time = [FieldId::ToolCallsOutcome, FieldId::SessionsPhysical];
+    let read_time = [
+        FieldId::ToolCallsOutcome,
+        FieldId::SessionsPhysical,
+        FieldId::AnnotationsRequest,
+    ];
     for &id in FieldId::ALL {
         assert_eq!(
             id.declaration().kind == Kind::Special || read_time.contains(&id),

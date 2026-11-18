@@ -231,7 +231,7 @@ fn a_name_two_saved_queries_share_is_refused() {
     saved(&mut w, "twice", "origin:chatgpt");
     let f = error(&w, "query:twice");
     assert_eq!(f.code(), "ambiguous");
-    let expected = q(&w, "assertions where kind:saved_query key:twice");
+    let expected = q(&w, "annotations where kind:saved_query key:twice");
     let references: std::collections::BTreeSet<_> = expected["rows"]
         .as_array()
         .unwrap()

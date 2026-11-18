@@ -61,18 +61,18 @@ fn ids(fixture: &Fixture, text: &str) -> Vec<String> {
         .collect()
 }
 
-/// `last` is the newest session meeting the conditions beside it, so a later
+/// `latest` is the newest session meeting the conditions beside it, so a later
 /// stage narrows the newest session instead of choosing among its own rows.
 #[test]
 fn a_stage_after_last_narrows_the_newest_session() {
     let (_directory, fixture) = fixture();
     assert_eq!(
-        ids(&fixture, "sessions where last repo:east"),
+        ids(&fixture, "sessions where latest repo:east"),
         ["claude-code:older"]
     );
-    assert!(ids(&fixture, "sessions where last | where repo:east").is_empty());
+    assert!(ids(&fixture, "sessions where latest | where repo:east").is_empty());
     assert_eq!(
-        ids(&fixture, "sessions where last | where repo:west"),
+        ids(&fixture, "sessions where latest | where repo:west"),
         ["claude-code:newer"]
     );
 }

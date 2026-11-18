@@ -27,6 +27,8 @@ fn query_result(
         random_seed: Some(1),
         embeddings: false,
         self_session: None,
+        here: None,
+        seen_marks_of: None,
         saved: Default::default(),
         kept: Default::default(),
         fields: fields.iter().map(|field| (*field).into()).collect(),
@@ -315,15 +317,15 @@ fn time_companions_keep_missing_relations_distinct() {
     }
     for (text, expected) in [
         (
-            "links where child.started_at.time_quality:unknown",
+            "session_links where child.started_at.time_quality:unknown",
             vec!["claude-code:missing-child"],
         ),
         (
-            "links where child.started_at.time_quality:\"unknown\"",
+            "session_links where child.started_at.time_quality:\"unknown\"",
             vec!["claude-code:child-unknown"],
         ),
         (
-            "links where NOT child.started_at.time_quality:intrinsic",
+            "session_links where NOT child.started_at.time_quality:intrinsic",
             vec!["claude-code:child-unknown"],
         ),
     ] {
@@ -338,7 +340,7 @@ fn time_companions_keep_missing_relations_distinct() {
     }
     let groups = query(
         &reader,
-        "links | group by child.started_at.time_quality | count",
+        "session_links | group by child.started_at.time_quality | count",
         &[],
     );
     assert_eq!(groups.len(), 2, "{groups:?}");

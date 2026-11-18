@@ -76,8 +76,8 @@ fn a_reference_two_sessions_share_is_refused_listing_both() {
         "continued_by:claude-code:7f3a2c10-000",
         "connected:claude-code:7f3a2c10-000",
         "tool_calls where child:claude-code:7f3a2c10-000",
-        "links where parent:claude-code:7f3a2c10-000",
-        "links where child:claude-code:7f3a2c10-000",
+        "session_links where parent:claude-code:7f3a2c10-000",
+        "session_links where child:claude-code:7f3a2c10-000",
         "deliveries where recipient:claude-code:7f3a2c10-000",
     ] {
         let f = run_q(&w, ask(text))

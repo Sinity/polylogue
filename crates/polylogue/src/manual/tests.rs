@@ -24,6 +24,8 @@ fn the_manual_gives_working_example_queries() {
         random_seed: None,
         embeddings: true,
         self_session: None,
+        here: None,
+        seen_marks_of: None,
         saved: Default::default(),
         fields: Vec::new(),
         kept: Default::default(),

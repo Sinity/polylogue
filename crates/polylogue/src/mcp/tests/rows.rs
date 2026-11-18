@@ -50,7 +50,7 @@ fn mcp_retry_without_request_id_repeats() {
     let (_, notes, failed) = invoke(
         &daemon.daemon.archive,
         Tool::Read,
-        json!({"arguments":{"selection":"assertions where kind:note"}}),
+        json!({"arguments":{"selection":"annotations where kind:note"}}),
     );
     assert!(!failed, "{notes:?}");
     assert_eq!(notes.value().unwrap()["reply"]["count"], 1);

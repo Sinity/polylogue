@@ -319,7 +319,17 @@ pub(crate) fn write_preparing(
             expanded.push(statement.clone());
         }
     }
-    accept(conn, &expanded, true, context, saved)
+    accept(conn, &expanded, true, context, saved).map(|(outcome, _)| outcome)
+}
+
+/// Actual placements in statement order, including reused revision identities.
+pub(crate) fn write_parts_preparing(
+    conn: &Connection,
+    statements: &[NewAssertion],
+    context: WriteContext<'_>,
+    saved: &mut SavedResolver<'_>,
+) -> Result<Vec<UserOutcome>> {
+    accept(conn, statements, true, context, saved).map(|(_, parts)| parts)
 }
 
 /// Inserts one write of the request being checked, under the ID it will
@@ -382,7 +392,7 @@ fn accept(
     live_value: bool,
     context: WriteContext<'_>,
     saved: &mut SavedResolver<'_>,
-) -> Result<UserOutcome> {
+) -> Result<(UserOutcome, Vec<UserOutcome>)> {
     let WriteContext {
         request,
         counter,
@@ -476,6 +486,7 @@ fn accept(
         Plan::new(request.id.clone(), prepared.len(), arrival, &mut store);
     let mut first = None;
     let mut written = false;
+    let mut parts = Vec::with_capacity(statements.len());
     for Prepared { statement, unique } in prepared {
         let mut revises = Vec::new();
         let mut withdraws = Vec::new();
@@ -508,12 +519,22 @@ fn accept(
             .map_err(|refused| refusal(&statement, refused))?
         {
             Placed::Written { revision, .. } => {
-                first.get_or_insert(revision.rev);
+                first.get_or_insert_with(|| revision.rev.clone());
+                parts.push(UserOutcome {
+                    id: revision.rev,
+                    repeat: false,
+                    pending: false,
+                });
                 written = true;
             }
             Placed::Already { heads } => {
                 if let Some(head) = heads.first() {
                     first.get_or_insert(head.rev.clone());
+                    parts.push(UserOutcome {
+                        id: head.rev.clone(),
+                        repeat: true,
+                        pending: false,
+                    });
                 }
             }
         }
@@ -560,11 +581,14 @@ fn accept(
         insert(conn, source, &fact, &record.slots, counter)?;
     }
     current_revisions::recompute(conn, planned.affected_roots)?;
-    Ok(UserOutcome {
-        id: first.expect("a nonempty request places at least one write"),
-        repeat: !written,
-        pending: false,
-    })
+    Ok((
+        UserOutcome {
+            id: first.expect("a nonempty request places at least one write"),
+            repeat: !written,
+            pending: false,
+        },
+        parts,
+    ))
 }
 
 #[cfg(test)]
@@ -607,6 +631,7 @@ pub(crate) fn revise_preparing(
         context,
         saved,
     )
+    .map(|(outcome, _)| outcome)
 }
 
 /// A revision inherits its base's kind, key, value, expiry and links unless

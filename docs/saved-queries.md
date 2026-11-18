@@ -33,7 +33,7 @@ Composition edges are recorded at compile time in `query_edge(query, uses, how)`
 
 `save [NAME]` acts on the question as well as the rows: it names the selection's question and stores the rows this line resolved as a kept result, in one act.
 
-One Save step has one request and transaction. Its definition, kept result and optional watch commit together; a failure leaves none of those effects. A retry returns the original kept result and the actual definition and watch revisions accepted by that request, including revisions reused from earlier Saves. Undo names only revisions that the Save created.
+One Save step has one request and transaction. Its definition, kept result and optional watch commit together; a failure leaves none of those effects. A retry returns the original kept result and the actual definition and watch revisions accepted by that request, including revisions reused from earlier Saves. Undo names only revisions that the Save created. The kept result uses the request ID; new annotations use that ID when there is one, or its numbered parts when there are several. Reused revisions retain their original IDs.
 
 **What `save NAME` writes**, on any selection (a reference or row numbers become their references' query text, `session:a OR session:b`):
 
@@ -50,10 +50,9 @@ It prints every part, with the line that undoes it:
 ```console
 $ polylogue 'tool_calls where outcome:error command~"cargo test" since:7d' save failing --watch
 saved   query:failing (revision 1): runs again each time you use it
-kept    result:01JD7Q4M (34 rows, 16 Nov 14:02), now result:failing
+kept    result:01JD7Q4M (34 rows, 2026-11-16T14:02:00Z), now result:failing
 watch   notices when a row starts matching query:failing
-undo    polylogue assertion:01JD7Q4M-save@01JD7Q4M-save withdraw
-undo    polylogue assertion:01JD7Q4M-watch@01JD7Q4M-watch withdraw
+undo    polylogue 'assertion:01JD7Q4M.1@01JD7Q4M.1 OR assertion:01JD7Q4M.2@01JD7Q4M.2' withdraw --all --request-id 01JD7Q4M-undo
 ```
 
 Over MCP the same step is `polylogue_write {"arguments": {"selection": "tool_calls where outcome:error since:7d", "steps": [{"verb": "save", "name": "failing", "watch": true}]}}`.
@@ -73,6 +72,8 @@ Over MCP the same step is `polylogue_write {"arguments": {"selection": "tool_cal
 | `in:query:NAME`, `in:result:<id>` (conditions) | membership in the question now, or in the stored rows | as above |
 
 Inside a saved query's definition, `result:NAME` is fixed at save time to the `result:<id>` it meant then.
+
+`query:NAME@N` selects revision N in the uniquely current assertion family for NAME. A name recreated after withdrawal has a new family; older families remain addressable by their exact annotation references and question hashes. Without a unique current family, colliding historical revision numbers are ambiguous.
 
 **Listing.** `polylogue saved` (a [shipped saved query](#shipped-saved-queries)) lists saved queries with name, revision, text, newest kept result and whether each is watched. `polylogue 'results where name:failing'` lists every kept result of that name, newest first. `polylogue query:failing read` shows one saved query: its text, revisions, kept results, watch and dependents, with the line that re-saves each dependent.
 
@@ -117,11 +118,13 @@ Shipped saved queries are data in the code (`crates/model/src/saved_queries.rs`)
 | `questions` | `annotations where kind:question answered:false` |
 | `triage` | `sessions where triage_score > 0 \| sort by triage_score desc` |
 | `saved` | `queries where name:* \| sort by saved_at desc` |
-| `open` | `annotations where kind:(question goal problem) open:true \| group by page` (open items across pages) |
+| `open` | `annotations where kind:(question|goal|problem) open:true` (open questions, goals and problems) |
 | `edits` | `annotations where referenced_by:page:* \| sort by at desc` (changes to pages, their slots and the annotations they show, newest first, with author and page; what changed since you looked is `polylogue 'annotations where referenced_by:page:* since:seen \| sort by at desc'`) |
 | `wanted` | `links where target_kind:page target_state:waiting \| group by target \| count` (page names linked or placed that do not exist, with how many link to each) |
 | `changed-sources` | `links where role:cites target_state:(changed missing withdrawn) \| group by page` (citations whose source changed, went missing or was withdrawn) |
 | `uncited` | `annotations where referenced_by:page:* grounding:uncited` (text on pages written by anyone but the operator with no citation) |
+
+Pages add grouping by page to `open`; the page-specific questions below `open` join it when page links and slots are available.
 
 Shipped pages (`home`, `index`, `pinned`, `cost`) and page templates sit beside the shipped saved queries, built in and overridden the same way ([pages.md](pages.md#templates-and-shipped-pages)).
 
@@ -182,7 +185,7 @@ A run or kept result is **pre-registered** when a question naming its `query:<ha
 
 ## Watches
 
-A watch is a saved query that tells you when rows start matching: `save NAME --watch` writes a signal rule (an annotation of kind `signal`) on `query:NAME`, which puts a notice in `status`, in the next briefs and in `polylogue notices` for each row that starts matching, with the line's kept result as the baseline. `--hold 20m` means a row must go on matching that long before it counts; `--notify` also sends a desktop notification. A rule the options cannot state is written with `note --as signal` on the saved query ([annotations.md](annotations.md#note)). The rule schema, routing and the evaluator's behaviour (changes, baselines, cooldowns, thresholds, catching up, downtime) are [operations.md](operations.md#notices) and the common [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/signals/README.md) design. What the query side supplies:
+A watch is a saved query that tells you when rows start matching: `save NAME --watch` writes a signal rule (an annotation of kind `signal`) on `query:NAME`, which puts a notice in `status`, in the next briefs and in `polylogue notices` for each row that starts matching, with the line's kept result as the baseline. `--hold 20m` means a row must go on matching that long before it counts; `--notify` also sends a desktop notification. Both options require `--watch`. A rule the options cannot state is written with `note --as signal` on the saved query ([annotations.md](annotations.md#note)). The rule schema, routing and the evaluator's behaviour (changes, baselines, cooldowns, thresholds, catching up, downtime) are [operations.md](operations.md#notices) and the common [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/signals/README.md) design. What the query side supplies:
 
 - The watch evaluates `query:NAME` again as data arrives, resolving relative times each time, and follows re-saves of the name.
 - Changes are reported as `membership` (rows joined or left), `ranking` or `top_k`, never one for another.
