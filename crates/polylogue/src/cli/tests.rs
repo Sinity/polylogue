@@ -24,7 +24,7 @@ fn a_starting_daemon_is_waited_for() {
     let socket = archive.socket();
     let server = std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(300));
-        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let listener = crate::socket::bind(&socket).unwrap();
         loop {
             let (stream, _) = listener.accept().unwrap();
             let mut line = String::new();
