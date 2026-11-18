@@ -1,4 +1,3 @@
-use super::*;
 use std::process::{Command, ExitCode};
 
 fn fixture() -> (tempfile::TempDir, crate::config::Startup) {
