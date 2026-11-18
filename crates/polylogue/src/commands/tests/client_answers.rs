@@ -19,7 +19,9 @@ const ASKED: &[(&str, &[&str])] = &[
     ("dev sql", &["SELECT id FROM v1_sessions ORDER BY id"]),
     ("dev schema infer", &[]),
     ("dev schema unread", &[]),
-    ("list", &[]),
+    ("rows", &["query:running"]),
+    ("rows", &["query:waiting"]),
+    ("rows", &["query:notices"]),
     ("rows", &["session:claude-code:s1", "read"]),
     ("rows", &["session:claude-code:missing", "read"]),
     ("attachment", &["claude-code:missing", "0"]),
@@ -239,7 +241,6 @@ fn socket_authorship() -> Authorship {
 
 fn context_authorship_path(name: &str) -> Option<&'static str> {
     match name {
-        "list" => Some("/resolved/context/authorship"),
         "rows" => Some("/reply/resolved/context/authorship"),
         "timeline" | "cost" => Some("/context/authorship"),
         _ => None,

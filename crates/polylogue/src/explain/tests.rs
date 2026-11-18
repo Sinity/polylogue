@@ -219,11 +219,11 @@ fn capabilities_list_each_operation_with_unlisted_arguments_and_answer() {
     );
     assert!(read["arguments"]["properties"]["steps"].is_object());
     assert!(read["answer"].is_object());
-    let list = capabilities
+    let status = capabilities
         .iter()
-        .find(|entry| entry["kind"] == "command" && entry["name"] == "list")
+        .find(|entry| entry["kind"] == "command" && entry["name"] == "status")
         .unwrap();
-    assert_eq!(list["tool"], "polylogue_read");
+    assert_eq!(status["tool"], "polylogue_read");
     let envelope = capabilities
         .iter()
         .find(|entry| entry["kind"] == "answer")

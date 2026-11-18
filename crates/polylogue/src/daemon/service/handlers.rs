@@ -8,7 +8,7 @@ use super::{
 };
 use crate::briefing::Ask;
 use crate::cli::print;
-use crate::commands::{Caller, Command, LIVE, NOTICES, WAITING};
+use crate::commands::{Caller, Command};
 use crate::daemon::handler::{Call, Handler};
 use crate::protocol;
 use command_surface::{Access, Answer, TextStyle};
@@ -72,24 +72,6 @@ fn query_reply(
     ))
 }
 
-fn run_rows(
-    call: &Call<'_>,
-    input: QueryInput<'_>,
-) -> Result<Answer<protocol::query::Rows>, Failure> {
-    let answer = run_query(call, input)?;
-    let mut problem = None;
-    let rows = answer.map(|value| {
-        value
-            .into_rows()
-            .map_err(|error| problem = Some(error))
-            .ok()
-    });
-    Ok(match problem {
-        Some(failure) => failure.answer(),
-        None => rows.map(|value| value.expect("row query returned rows")),
-    })
-}
-
 pub(crate) struct Query;
 impl Handler for Query {
     type Arguments = protocol::query::Arguments;
@@ -134,112 +116,10 @@ pub(super) fn waiting_query(
     )
 }
 
-/// The query; without one, the `sessions` unit with its defaults.
-pub(crate) struct List;
-impl Handler for List {
-    type Arguments = protocol::query_aliases::List;
-    type Answer = protocol::query::Answer;
-    const PAGES: bool = true;
-    fn query_text(arguments: &Self::Arguments) -> Option<&str> {
-        arguments.query.as_deref()
-    }
-    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::query;
-    fn ranking_query(arguments: &Self::Arguments, _row: &Command) -> Option<String> {
-        Some(
-            arguments
-                .query
-                .as_deref()
-                .filter(|query| !query.trim().is_empty())
-                .unwrap_or("sessions")
-                .to_owned(),
-        )
-    }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
-        let text = arguments
-            .query
-            .as_deref()
-            .filter(|query| !query.trim().is_empty())
-            .unwrap_or("sessions");
-        run_query(
-            call,
-            QueryInput {
-                text,
-                page_size: arguments.limit,
-                why: arguments.why,
-                session: None,
-                fields: &arguments.fields,
-            },
-        )
-    }
-}
-
-/// The live view: the sessions running now.
-pub(crate) struct Live;
-impl Handler for Live {
-    type Arguments = protocol::query_aliases::Live;
-    type Answer = protocol::query::Rows;
-    const PAGES: bool = true;
-    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::rows;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
-        run_rows(
-            call,
-            QueryInput {
-                text: LIVE,
-                page_size: None,
-                why: arguments.why,
-                session: None,
-                fields: &arguments.fields,
-            },
-        )
-    }
-}
-
-/// The sessions waiting on the operator, the longest wait first.
-pub(crate) struct Waiting;
-impl Handler for Waiting {
-    type Arguments = protocol::query_aliases::Live;
-    type Answer = protocol::query::Rows;
-    const PAGES: bool = true;
-    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::rows;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
-        run_rows(
-            call,
-            QueryInput {
-                text: WAITING,
-                page_size: None,
-                why: arguments.why,
-                session: None,
-                fields: &arguments.fields,
-            },
-        )
-    }
-}
-
-/// Signal notices, the latest first.
-pub(crate) struct Notices;
-impl Handler for Notices {
-    type Arguments = protocol::query_aliases::Notices;
-    type Answer = protocol::query::Rows;
-    const PAGES: bool = true;
-    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::rows;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
-        run_rows(
-            call,
-            QueryInput {
-                text: NOTICES,
-                page_size: Some(arguments.limit),
-                why: arguments.why,
-                session: None,
-                fields: &arguments.fields,
-            },
-        )
-    }
-}
-
 /// `measure WHAT`: the query `QUERY | measure WHAT`, one row per measurement.
 pub(crate) struct Measure;
 impl Handler for Measure {
-    type Arguments = protocol::query_aliases::Measure;
+    type Arguments = protocol::query::MeasureArguments;
     type Answer = protocol::query::Answer;
     const PAGES: bool = true;
     fn query_text(arguments: &Self::Arguments) -> Option<&str> {
@@ -267,7 +147,7 @@ impl Handler for Measure {
 /// `measure NAME` for a whole-archive measure: `sessions | measure NAME`.
 pub(crate) struct MeasureArchive;
 impl Handler for MeasureArchive {
-    type Arguments = protocol::query_aliases::MeasureArchive;
+    type Arguments = protocol::query::MeasureArchiveArguments;
     type Answer = protocol::query::Answer;
     const PAGES: bool = true;
     const PRINT: fn(&Self::Answer, TextStyle) -> String = print::query;
@@ -280,7 +160,7 @@ impl Handler for MeasureArchive {
 }
 
 /// `measure NAME` with its options as the query `QUERY | measure NAME:OPTION`.
-pub(crate) fn measure_query(row: &str, arguments: &protocol::query_aliases::Measure) -> String {
+pub(crate) fn measure_query(row: &str, arguments: &protocol::query::MeasureArguments) -> String {
     let name = row.trim_start_matches("measure ");
     let what = match arguments.metric.as_deref().or(arguments.option.as_deref()) {
         Some(metric) => format!("{name}:{metric}"),
@@ -295,8 +175,8 @@ pub(crate) fn measure_query(row: &str, arguments: &protocol::query_aliases::Meas
 
 pub(crate) struct Sql;
 impl Handler for Sql {
-    type Arguments = protocol::query_aliases::Sql;
-    type Answer = protocol::query_aliases::SqlRows;
+    type Arguments = protocol::query::Sql;
+    type Answer = protocol::query::SqlRows;
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
         let reader = call.reader()?;
         Ok(

@@ -309,13 +309,6 @@ impl Caller {
     }
 }
 
-/// The live view as a query: what `polylogue live` runs.
-pub const LIVE: &str = "sessions where running:true | sort by live_rank, last_event_at desc";
-/// Sessions waiting on the operator, the longest wait first.
-pub const WAITING: &str = "sessions where waiting:true | sort by live_since";
-/// Signal notices as a query: what `polylogue notices` runs.
-pub const NOTICES: &str = "deliveries where sender:signal | sort by at desc";
-
 /// A command on the command line only, sent to the daemon unless its
 /// action is local.
 const CLI: Command = Command {
@@ -518,16 +511,6 @@ const WRITTEN: &[Command] = &[
         ..CLI
     },
     Command {
-        name: "list",
-        help: "Sessions matching a query, newest first",
-        reason: "List archive rows through the query language",
-        latency: command_surface::LatencyClass::Read,
-        run: Run::Daemon(daemon::<H::List>()),
-        http: true,
-        tool: Some(Tool::Read),
-        ..CLI
-    },
-    Command {
         name: "attachment",
         reason: "Retrieve the checked stored bytes behind an attachment descriptor",
         latency: command_surface::LatencyClass::Read,
@@ -563,24 +546,6 @@ const WRITTEN: &[Command] = &[
         ..CLI
     },
     Command {
-        name: "live",
-        help: "Sessions running now and what each is doing: the query `sessions where running:true | sort by live_rank, last_event_at desc`",
-        reason: "Show the current running-session view",
-        latency: command_surface::LatencyClass::Read,
-        run: Run::Daemon(daemon::<H::Live>()),
-        tool: Some(Tool::Read),
-        ..CLI
-    },
-    Command {
-        name: "waiting",
-        help: "Sessions waiting on you (a permission, a question, a plan or input), the longest wait first: the query `sessions where waiting:true | sort by live_since`",
-        reason: "Show what blocks an agent now",
-        latency: command_surface::LatencyClass::Read,
-        run: Run::Daemon(daemon::<H::Waiting>()),
-        tool: Some(Tool::Read),
-        ..CLI
-    },
-    Command {
         name: "dev feed",
         examples: &["polylogue dev feed"],
         help: "A finite JSON-lines change feed; persist its new position only after applying the complete batch",
@@ -602,15 +567,6 @@ const WRITTEN: &[Command] = &[
         tool: Some(Tool::Act),
         http: true,
         writes: true,
-        ..CLI
-    },
-    Command {
-        name: "notices",
-        help: "Signal notices and what happened to each: the query `deliveries where sender:signal | sort by at desc`",
-        reason: "Read recorded signal deliveries and their outcomes",
-        latency: command_surface::LatencyClass::Read,
-        run: Run::Daemon(daemon::<H::Notices>()),
-        tool: Some(Tool::Read),
         ..CLI
     },
     Command {

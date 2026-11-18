@@ -361,7 +361,7 @@ fn a_brief_fits_its_budget_and_names_what_it_left_out() {
             "Sessions:",
             items(40, 300),
             "recent sessions",
-            "polylogue list",
+            "polylogue sessions",
         );
         let (text, refs, left_out) = fit
             .finish("Earlier work: `polylogue 'WORDS' brief`.", |_| Ok(None))
@@ -561,7 +561,7 @@ fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
             "Recent sessions here, and what they did:".to_owned(),
             format!("test:many-{newest}"),
             format!("{MESSAGES} messages"),
-            "omitted; expand: `polylogue list cwd:".to_owned(),
+            format!("omitted; expand: `polylogue 'cwd:\"{cwd}\"'"),
         ] {
             assert!(
                 p.text.contains(&expected),

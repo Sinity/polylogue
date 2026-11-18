@@ -133,3 +133,63 @@ pub struct Measure {
     pub read_at: Position,
     pub resolved: Resolved,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Sql {
+    /// One SQL statement
+    #[schemars(extend("argument_form" = "positional"))]
+    pub statement: String,
+}
+/// SQL determines the columns while the wire always carries a list of rows.
+pub type SqlRows = Vec<Map<String, Value>>;
+
+/// `measure NAME`: a sessions query (none for a whole-archive measure).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MeasureArguments {
+    /// A sessions query (default: every session)
+    #[schemars(extend("argument_form" = "words"))]
+    pub query: Option<String>,
+    /// The series, for a measure with several
+    pub metric: Option<String>,
+    /// The measure's own option
+    pub option: Option<String>,
+    /// Rows per page
+    pub limit: Option<u64>,
+    /// Explain an empty result: how many rows each condition keeps
+    #[serde(default)]
+    pub why: bool,
+    /// The columns to show instead of the unit's defaults, comma-separated (`--fields id,cost,repo`)
+    #[serde(default)]
+    pub fields: Vec<String>,
+}
+
+/// `measure NAME` for a measure of the whole archive, which takes no query.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MeasureArchiveArguments {
+    /// The series, for a measure with several
+    pub metric: Option<String>,
+    /// The measure's own option
+    pub option: Option<String>,
+    /// Explain an empty result: how many rows each condition keeps
+    #[serde(default)]
+    pub why: bool,
+    /// The columns to show instead of the unit's defaults, comma-separated (`--fields id,cost,repo`)
+    #[serde(default)]
+    pub fields: Vec<String>,
+}
+
+impl From<MeasureArchiveArguments> for MeasureArguments {
+    fn from(archive: MeasureArchiveArguments) -> Self {
+        Self {
+            query: None,
+            metric: archive.metric,
+            option: archive.option,
+            limit: None,
+            why: archive.why,
+            fields: archive.fields,
+        }
+    }
+}

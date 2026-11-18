@@ -335,7 +335,7 @@ fn peers_are_symmetric() {
     }
     // The live view lists waiting before working before idle, and leaves
     // ended sessions out.
-    let live = run(&r, ask(crate::commands::LIVE, now)).unwrap();
+    let live = run(&r, ask("query:running", now)).unwrap();
     let order: Vec<&str> = live["rows"]
         .as_array()
         .unwrap()

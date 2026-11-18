@@ -513,8 +513,8 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
         String::from_utf8_lossy(&out.stdout)
     );
 
-    let out = cli(&env, &["--json", "list"]);
-    let ids: Vec<String> = json(&out)["rows"]
+    let out = cli(&env, &["--json", "sessions"]);
+    let ids: Vec<String> = listing(json(&out))["rows"]
         .as_array()
         .unwrap()
         .iter()
