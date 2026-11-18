@@ -217,6 +217,7 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_confirmed_removal(
     let mut running = real_sinex::RealSinex::start(
         &root.path().join("real_sinex"),
         vec![serde_json::to_value(crate::kinds::source_declaration()).unwrap()],
+        false, // cross-domain evidence producer
     );
     let initial = connect(&config(&running));
     let baseline = b"synthetic baseline bytes";

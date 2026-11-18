@@ -124,6 +124,7 @@ fn sinex(dir: &Path) -> Running {
     let real_sinex = real_sinex::RealSinex::start(
         dir,
         vec![serde_json::to_value(polylogue_sinex::kinds::source_declaration()).unwrap()],
+        true, // cross-domain evidence producer
     );
     Running {
         config: Config {
@@ -813,11 +814,23 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         .unwrap()
         .unwrap();
     assert!(fact > raw);
+    // The local reading is committed through its parsed prefix. The independent
+    // message fact can have an earlier commit than that source prefix.
+    let prefix = partial[0]["parsed_upto"].as_u64().unwrap();
+    let reading_commit = reader
+        .source_commit(
+            citation["input"].as_str().unwrap(),
+            citation["chain"].as_i64().unwrap(),
+            Some(prefix),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(reading_commit > raw);
     assert_eq!(
         reader
             .message_commit(&polylogue_model::MessageId::parse("claude-code:assistant-1").unwrap())
             .unwrap(),
-        Some(fact)
+        Some(reading_commit)
     );
     let material = sinex_model::MaterialId(citation["material"].as_str().unwrap().parse().unwrap());
     let mut offset = user.len() as u64;
