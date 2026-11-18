@@ -49,6 +49,225 @@ fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
     path
 }
 
+#[test]
+fn hosted_statuses_survive_a_failed_spool_and_are_written_once_after_recovery() {
+    let mut hosting = Hosting::start(
+        "claude-code",
+        HostProtocol::ClaudeStreamJson,
+        CLAUDE_AGENT,
+        Some("s1"),
+    );
+    std::fs::write(&hosting.config.spool, b"blocked").unwrap();
+    let client = HostedStdio::connect(
+        &hosting.config.socket,
+        HostProtocol::ClaudeStreamJson,
+        String::new(),
+    )
+    .unwrap();
+    client.send("synthetic turn", None).unwrap();
+    wait_until("the permission after failed status writes", || {
+        client.request().is_some()
+    });
+    assert!(status_lines(&hosting.config.spool).is_empty());
+    std::fs::remove_file(&hosting.config.spool).unwrap();
+    client.answer(true, None).unwrap();
+    wait_until("the recovered status writes", || {
+        status_lines(&hosting.config.spool)
+            .iter()
+            .any(|(_, word)| word.as_deref() == Some("idle"))
+    });
+    hosting.quit(&client);
+    let lines = status_lines(&hosting.config.spool);
+    let words: Vec<_> = lines
+        .iter()
+        .filter_map(|(_, word)| word.as_deref())
+        .collect();
+    assert_eq!(words, ["busy", "blocked", "busy", "idle"]);
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|(event, _)| event == "HostedEnded")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_host_reports_a_failed_final_spool_flush_after_stopping_its_producers() {
+    let mut hosting = Hosting::start(
+        "claude-code",
+        HostProtocol::ClaudeStreamJson,
+        CLAUDE_AGENT,
+        Some("s1"),
+    );
+    std::fs::write(&hosting.config.spool, b"blocked").unwrap();
+    let client = HostedStdio::connect(
+        &hosting.config.socket,
+        HostProtocol::ClaudeStreamJson,
+        String::new(),
+    )
+    .unwrap();
+    client.send("synthetic turn", None).unwrap();
+    wait_until("the permission after failed status writes", || {
+        client.request().is_some()
+    });
+    client
+        .state
+        .0
+        .locked()
+        .write(&json!({"method":"polylogue_test/quit"}))
+        .unwrap();
+    let error = hosting.server.take().unwrap().join().unwrap().unwrap_err();
+    assert!(
+        error.to_string().contains("host live event spool drain"),
+        "{error}"
+    );
+    assert!(status_lines(&hosting.config.spool).is_empty());
+    assert!(!hosting.config.socket.exists());
+}
+
+#[test]
+fn an_agent_descendant_holding_stdin_does_not_delay_the_hosts_final_status() {
+    struct Holder(i32);
+    impl Drop for Holder {
+        fn drop(&mut self) {
+            // SAFETY: this exact PID was returned by the synthetic agent below.
+            #[allow(unsafe_code)]
+            unsafe {
+                libc::kill(self.0, libc::SIGKILL);
+            }
+        }
+    }
+    let mut hosting = Hosting::start(
+        "claude-code",
+        HostProtocol::ClaudeStreamJson,
+        r#"#!/bin/sh
+sleep 60 <&0 >/dev/null 2>&1 &
+echo "$!" > "$1.holder"
+dd bs=1 count=1 of="$1.started" 2>/dev/null
+while [ ! -f "$1.exit" ]; do sleep 0.01; done
+"#,
+        Some("s1"),
+    );
+    let log = hosting.dir.path().join("log");
+    let holder_file = log.with_extension("holder");
+    wait_until("the agent's stdin holder", || {
+        std::fs::read_to_string(&holder_file).is_ok_and(|text| text.trim().parse::<i32>().is_ok())
+    });
+    let holder = Holder(
+        std::fs::read_to_string(holder_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap(),
+    );
+    let client = HostedStdio::connect(
+        &hosting.config.socket,
+        HostProtocol::ClaudeStreamJson,
+        String::new(),
+    )
+    .unwrap();
+    client.send(&"x".repeat(256 * 1024), None).unwrap();
+    // One byte read by the agent proves the producer has reached the pipe.
+    // Its remaining payload exceeds the pipe capacity; the holder reads none.
+    wait_until("the blocked pipe write", || {
+        std::fs::metadata(log.with_extension("started")).is_ok_and(|metadata| metadata.len() == 1)
+    });
+    std::fs::write(log.with_extension("exit"), b"exit").unwrap();
+    let server = hosting.server.take().unwrap();
+    let (finished, outcome) = std::sync::mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        let _ = finished.send(server.join());
+    });
+    let result = outcome.recv_timeout(crate::daemon::executor::STOP_WAIT);
+    // Release the pipe before asserting, including when the old joining path hung.
+    drop(holder);
+    waiter.join().unwrap();
+    result
+        .expect("host final status waited for a descendant's unrelated stdin pipe")
+        .unwrap()
+        .unwrap();
+    let lines = status_lines(&hosting.config.spool);
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|(event, _)| event == "HostedEnded")
+            .count(),
+        1
+    );
+    assert_eq!(lines.last().unwrap().0, "HostedEnded");
+    assert!(!hosting.config.socket.exists());
+    drop(client);
+}
+
+#[test]
+fn a_stopped_host_appends_neither_late_status_nor_a_late_retry() {
+    let directory = tempfile::tempdir().unwrap();
+    let config = HostConfig {
+        harness: "claude-code".into(),
+        protocol: HostProtocol::ClaudeStreamJson,
+        argv: vec![],
+        cwd: directory.path().into(),
+        socket: directory.path().join("host.sock"),
+        spool: directory.path().join("spool"),
+        session_id: Some("s1".into()),
+    };
+    let session = SessionId::parse("claude-code:s1").unwrap();
+    let relay = Mutex::new(Relay {
+        client: None,
+        backlog: VecDeque::new(),
+        tracker: Tracker::new(config.protocol),
+        session: Some(session.clone()),
+        spool: crate::live_events::PendingLines::new("registry", "host", Default::default()),
+        stopping: Arc::new(AtomicBool::new(false)),
+    });
+    std::fs::write(&config.spool, b"blocked").unwrap();
+    status_line(
+        &mut relay.locked(),
+        &config,
+        &session,
+        None,
+        "HostedStatus",
+        Some("busy"),
+    );
+    {
+        let relay = relay.locked();
+        relay.stopping.store(true, Ordering::Release);
+    }
+    std::fs::remove_file(&config.spool).unwrap();
+    retry_status(&mut relay.locked(), &config);
+    assert!(
+        !config.spool.exists(),
+        "a stopped producer retried after handing over final flush"
+    );
+    status_line(
+        &mut relay.locked(),
+        &config,
+        &session,
+        None,
+        "HostedEnded",
+        None,
+    );
+    let expected = status_lines(&config.spool);
+    assert_eq!(
+        expected,
+        [
+            ("HostedStatus".into(), Some("busy".into())),
+            ("HostedEnded".into(), None)
+        ]
+    );
+    status_line(
+        &mut relay.locked(),
+        &config,
+        &session,
+        None,
+        "HostedStatus",
+        Some("idle"),
+    );
+    retry_status(&mut relay.locked(), &config);
+    assert_eq!(status_lines(&config.spool), expected);
+}
+
 fn wait_until(what: &str, ok: impl Fn() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !ok() {

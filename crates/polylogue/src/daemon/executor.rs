@@ -360,7 +360,7 @@ impl Shared {
         let shared = Arc::clone(self);
         match polylogue_model::spawn_named("polylogue-request", move || shared.serve()) {
             Ok(_) => state.threads += 1,
-            Err(error) => eprintln!("polylogue: start a request thread: {error}"),
+            Err(error) => crate::log::log!(error, "start a request thread: {error}"),
         }
     }
 
@@ -408,7 +408,7 @@ impl Shared {
                 })
             });
             if std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).is_err() {
-                eprintln!("polylogue: a request panicked");
+                crate::log::log!(error, "a request panicked");
             }
             let held = HOLDING.with(|holding| holding.borrow_mut().take());
             let mut state = self.state.locked();

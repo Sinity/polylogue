@@ -144,7 +144,7 @@ pub(super) fn start_daemon(env: &crate::Fixture) -> Daemon {
         startup.extend_from_slice(&bytes[..count]);
         if startup
             .split_inclusive(|byte| *byte == b'\n')
-            .any(|line| line.ends_with(b"\n") && line.starts_with(b"polylogue: serving "))
+            .any(|line| line.ends_with(b"\n") && line.starts_with(b"<6>polylogue: serving "))
         {
             assert!(
                 daemon.0.try_wait().unwrap().is_none(),

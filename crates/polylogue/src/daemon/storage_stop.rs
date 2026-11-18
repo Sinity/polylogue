@@ -44,8 +44,9 @@ pub(crate) fn remember(paths: &crate::config::Paths, root: &Path, failure: &Stor
         .map_or(Ok(()), std::fs::create_dir_all)
         .and_then(|()| std::fs::write(&path, format!("{boot}\n{failure}")));
     if let Err(error) = written {
-        eprintln!(
-            "polylogue: record the storage failure at {}: {error}",
+        crate::log::log!(
+            error,
+            "record the storage failure at {}: {error}",
             path.display()
         );
     }

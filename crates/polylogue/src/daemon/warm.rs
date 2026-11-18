@@ -427,7 +427,7 @@ impl Warm {
                 )
             })
         {
-            eprintln!("polylogue: storing a query vector: {error}");
+            crate::log::log!(error, "storing a query vector: {error}");
         }
         Ok(vector)
     }

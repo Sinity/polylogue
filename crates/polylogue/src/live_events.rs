@@ -33,6 +33,9 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant, SystemTime};
 
+mod pending;
+pub(crate) use pending::{PendingLines, SharedStatus};
+
 #[cfg(test)]
 mod tests;
 
@@ -164,24 +167,6 @@ pub(crate) fn line(
     })
 }
 
-/// Appends lines to `<spool>/<route>/<boot>.ndjson` in one write.
-pub(crate) fn append(
-    spool: &Path,
-    route: &str,
-    boot: &str,
-    lines: &[Value],
-) -> std::io::Result<()> {
-    if lines.is_empty() {
-        return Ok(());
-    }
-    let mut bytes = Vec::new();
-    for l in lines {
-        serde_json::to_writer(&mut bytes, l)?;
-        bytes.push(b'\n');
-    }
-    spool_file(spool, route, boot)?.write_all(&bytes)
-}
-
 fn spool_file(spool: &Path, route: &str, boot: &str) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
     let dir = spool.join(route);
@@ -234,33 +219,30 @@ pub(crate) struct Watcher {
     /// the live events stop naming them.
     reported_gone: BTreeSet<(String, ProcessIdentity)>,
     /// Process observations not yet appended, including a partial line.
-    pending: Vec<u8>,
+    pending: PendingLines,
 }
 
 impl Watcher {
-    pub(crate) fn new(proc_root: PathBuf, boot: String, boot_time_ms: Option<i64>) -> Self {
+    pub(crate) fn new(
+        proc_root: PathBuf,
+        boot: String,
+        boot_time_ms: Option<i64>,
+        status: SharedStatus,
+    ) -> Self {
         Self {
             proc_root,
             boot,
             boot_time_ms,
             watched: BTreeMap::new(),
             reported_gone: BTreeSet::new(),
-            pending: Vec::new(),
+            pending: PendingLines::new("process", "process", status),
         }
     }
 
     /// The process spool has one writer. Failed appends keep the original
     /// bytes, so later samples retry without changing times or line identities.
     fn append_process(&mut self, spool: &Path, lines: &[Value]) -> std::io::Result<()> {
-        for line in lines {
-            serde_json::to_writer(&mut self.pending, line)?;
-            self.pending.push(b'\n');
-        }
-        if self.pending.is_empty() {
-            return Ok(());
-        }
-        let mut file = spool_file(spool, "process", &self.boot)?;
-        write_pending(&mut self.pending, &mut file)
+        self.pending.append(spool, &self.boot, lines)
     }
 
     /// Brings the watched set in line with the roots the live events name
@@ -1060,15 +1042,17 @@ fn run_codex(
     boot: String,
     clock: polylogue_model::WallClock,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
-) {
+    status: SharedStatus,
+) -> std::io::Result<()> {
     use std::sync::atomic::Ordering;
+    let mut pending = PendingLines::new("registry", "codex-status", status);
     while !stop.load(Ordering::Acquire) {
         let lines = codex.read(clock.now());
-        let _ = append(&spool, "registry", &boot, &lines);
+        let _ = pending.append(&spool, &boot, &lines);
         let deadline = Instant::now() + SAMPLE_OPEN_CALL;
         loop {
             if stop.load(Ordering::Acquire) {
-                return;
+                return pending.append(&spool, &boot, &[]);
             }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -1076,7 +1060,7 @@ fn run_codex(
             }
             match codex.next_change(left.min(SAMPLE_OPEN_CALL), clock.now()) {
                 Some(line) => {
-                    let _ = append(&spool, "registry", &boot, &[line]);
+                    let _ = pending.append(&spool, &boot, &[line]);
                 }
                 None if codex.connection.is_none() => {
                     std::thread::sleep(left.min(SAMPLE_OPEN_CALL));
@@ -1085,6 +1069,7 @@ fn run_codex(
             }
         }
     }
+    pending.append(&spool, &boot, &[])
 }
 
 /// Runs the writers and the live clock until `stop` fires.
@@ -1093,9 +1078,11 @@ pub(crate) fn run(
     paths: Paths,
     clock: polylogue_model::WallClock,
     stop: Receiver<()>,
-) {
+) -> std::io::Result<()> {
     let Some(boot) = boot_id() else {
-        return;
+        return Err(std::io::Error::other(
+            "cannot read boot identity for live event recording",
+        ));
     };
     let codex_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let codex = {
@@ -1106,13 +1093,24 @@ pub(crate) fn run(
             clock.clone(),
             std::sync::Arc::clone(&codex_stop),
         );
+        let status = std::sync::Arc::clone(&daemon.live_spool);
         polylogue_model::spawn_named("polylogue-codex-status", move || {
-            run_codex(reader, spool, boot, clock, stop)
-        })
-        .ok()
+            run_codex(reader, spool, boot, clock, stop, status)
+        })?
     };
-    let mut watcher = Watcher::new(PathBuf::from("/proc"), boot.clone(), boot_time_ms());
+    let mut watcher = Watcher::new(
+        PathBuf::from("/proc"),
+        boot.clone(),
+        boot_time_ms(),
+        std::sync::Arc::clone(&daemon.live_spool),
+    );
     let mut registry = Registry::new(paths.claude_sessions.clone());
+    let mut registry_lines = PendingLines::new(
+        "registry",
+        "claude-registry",
+        std::sync::Arc::clone(&daemon.live_spool),
+    );
+    let mut git_lines = PendingLines::new("git", "git", std::sync::Arc::clone(&daemon.live_spool));
     let mut live_clock = LiveClock::default();
     let mut commit_watcher = CommitWatcher::default();
     let commits = daemon.writes.as_ref().map(|w| w.completion_commits());
@@ -1150,18 +1148,10 @@ pub(crate) fn run(
         }
         let mut process_lines = watcher.update_roots(&roots, now);
         process_lines.extend(watcher.sample(now));
-        if let Err(error) = watcher.append_process(&paths.spool, &process_lines) {
-            eprintln!("polylogue: process spool append failed; kept for retry: {error}");
-        }
-        let _ = append(
+        let _ = watcher.append_process(&paths.spool, &process_lines);
+        let _ = registry_lines.append(&paths.spool, &boot, &registry.read(now, identity));
+        let _ = git_lines.append(
             &paths.spool,
-            "registry",
-            &boot,
-            &registry.read(now, identity),
-        );
-        let _ = append(
-            &paths.spool,
-            "git",
             &boot,
             &commit_watcher.read(&edited_files, now),
         );
@@ -1178,17 +1168,30 @@ pub(crate) fn run(
             BTreeSet::new()
         };
         let gone = watcher.exited(&ready, clock.now());
-        if let Err(error) = watcher.append_process(&paths.spool, &gone) {
-            eprintln!("polylogue: process spool append failed; kept for retry: {error}");
-        }
+        let _ = watcher.append_process(&paths.spool, &gone);
         match stop.recv_timeout(if polled { Duration::ZERO } else { wake }) {
             Err(RecvTimeoutError::Timeout) => {}
             Ok(()) | Err(RecvTimeoutError::Disconnected) => {
                 codex_stop.store(true, std::sync::atomic::Ordering::Release);
-                if let Some(codex) = codex {
-                    let _ = codex.join();
+                let mut failure = codex
+                    .join()
+                    .unwrap_or_else(|_| Err(std::io::Error::other("Codex status worker panicked")))
+                    .err();
+                let result = watcher.append_process(&paths.spool, &[]);
+                for result in [
+                    result,
+                    registry_lines.append(&paths.spool, &boot, &[]),
+                    git_lines.append(&paths.spool, &boot, &[]),
+                ] {
+                    if let Err(error) = result {
+                        failure.get_or_insert(error);
+                    }
                 }
-                return;
+                return failure.map_or(Ok(()), |error| {
+                    Err(std::io::Error::other(format!(
+                        "live event spool drain: {error}"
+                    )))
+                });
             }
         }
     }

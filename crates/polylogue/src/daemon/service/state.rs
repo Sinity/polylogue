@@ -24,6 +24,7 @@ pub struct Daemon {
     pub(crate) scope: crate::daemon::scope::SharedScopeIndex,
     /// Briefs answered whose delivery records are still queued.
     pub(crate) queued_deliveries: crate::daemon::queued_deliveries::QueuedDeliveries,
+    pub(crate) live_spool: crate::live_events::SharedStatus,
     pub(crate) advisories: crate::advisory::Cooldowns,
     /// User writes (notes, deliveries, settings) through the one writer.
     pub(crate) writes: Option<WriterSender>,
