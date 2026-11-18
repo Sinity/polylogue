@@ -24,6 +24,7 @@ mod object;
 mod output;
 mod records;
 mod rows;
+mod saved_query;
 mod session;
 mod trace;
 
@@ -226,7 +227,7 @@ fn prepared<T>(
                 notes: selection.program().notes.clone(),
                 incomplete: selection.program().incomplete.clone(),
             };
-            let (title, kind) = match selection.direct_target() {
+            let (title, mut kind) = match selection.direct_target() {
                 Some(ReadTarget::Session(id)) => {
                     let session = reader
                         .session(id)?
@@ -259,6 +260,9 @@ fn prepared<T>(
                     },
                 ),
             };
+            if let Some(saved) = saved_query::header(reader, &reading.target, &selection)? {
+                kind = HeaderKind::SavedQuery(Box::new(saved));
+            }
             let header = ReadHeader {
                 target: selection
                     .direct_target()

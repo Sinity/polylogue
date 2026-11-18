@@ -365,6 +365,38 @@ pub(crate) fn named_revision(
 }
 
 impl crate::Reader<'_> {
+    /// Current unambiguous names for these dependent question identities.
+    /// The authored text keeps the names a re-save must resolve again.
+    pub fn dependent_saved_queries(
+        &self,
+        queries: &[String],
+    ) -> Result<Vec<(String, values::SavedQuery)>> {
+        if queries.is_empty() {
+            return Ok(Vec::new());
+        }
+        let hashes: Vec<_> = queries
+            .iter()
+            .filter_map(|query| query.strip_prefix("query:"))
+            .collect();
+        let conn = self.conn()?;
+        let source = Source::reading(conn)?;
+        let names = conn.prepare_cached(&source.sql(
+            "SELECT DISTINCT a.key FROM @source.assertion a JOIN @source.revision_state r ON r.id=a.id WHERE a.kind='saved_query' AND r.current=1 AND r.withdrawn=0 AND json_extract(a.value,'$.hash') IN (SELECT value FROM json_each(?1)) ORDER BY a.key",
+        ))?.query_map([serde_json::to_string(&hashes)?], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut definitions = Vec::new();
+        for name in names {
+            let current = named_current(conn, AssertionKind::SavedQuery, &name)?;
+            if let [row] = current.as_slice() {
+                let (_, definition) = saved_definition(&row.fact, &[])?
+                    .ok_or_else(|| StoreError::invalid("dependent query has another kind"))?;
+                definitions.push((name, definition.value));
+            }
+        }
+        self.check()?;
+        Ok(definitions)
+    }
+
     /// Authored history retains original revisions, hashes, times and attribution.
     pub fn saved_query_record(
         &self,

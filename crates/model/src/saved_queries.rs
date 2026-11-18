@@ -64,7 +64,7 @@ pub fn shipped_query(name: &str) -> Option<&'static ShippedQuery> {
 }
 
 /// A named question's authored history and its immutable kept results.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct SavedQueryRecord {
     pub name: String,
     pub revisions: Vec<SavedRevision>,
@@ -73,7 +73,7 @@ pub struct SavedQueryRecord {
     pub dependents: Vec<String>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct SavedRevision {
     pub revision: u32,
     pub reference: String,
@@ -83,7 +83,7 @@ pub struct SavedRevision {
     pub author: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct KeptSummary {
     pub result: String,
     pub rows: u64,
