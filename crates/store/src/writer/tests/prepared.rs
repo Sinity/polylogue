@@ -333,7 +333,7 @@ fn complete_products_restore_prepared_structured_values_without_an_index_read() 
     let mut message = text_message("m", "s", Role::Assistant, "exact text", None);
     message.blocks.extend([
         Block::ToolCall {
-            written_text: None,
+            written_text: Some("synthetic written content\n".into()),
             call_id: Some("call".into()),
             tool: Some("Bash".into()),
             action: ToolAction::Shell,

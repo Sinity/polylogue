@@ -14,6 +14,48 @@ fn call(text: Option<&str>) -> Block {
 }
 
 #[test]
+fn changing_an_attachment_keeps_other_blocks_exact() {
+    let hash = BlobHash([7; 32]);
+    let written = "synthetic written content Łódź\n";
+    let mut message = text_message("a", "s", Role::Assistant, "ordinary prose", None);
+    message.blocks.extend([
+        call(Some(written)),
+        Block::File(polylogue_model::Attachment {
+            blob: Some(hash),
+            size: Some(1),
+            ..Default::default()
+        }),
+    ]);
+    let mut expected = message.clone();
+    let Some(Block::File(attachment)) = expected.blocks.last_mut() else {
+        unreachable!("the fixture ends with an attachment");
+    };
+    attachment.size = Some(19);
+
+    for replacement in [false, true] {
+        let mut batch = batch("i", Route::Live, 0, vec![row(0, message.clone())], &["s"]);
+        batch.parse[0].prepare();
+        if replacement {
+            attachments::normalize_known(&mut batch.parse[0], &HashMap::from([(hash, Some(19))]))
+                .unwrap();
+        } else {
+            let archive = Connection::open_in_memory().unwrap();
+            attachments::normalize(&mut batch, &archive, &HashMap::from([(hash, 19)])).unwrap();
+        }
+        let step = &batch.parse[0];
+        assert_eq!(step.output.messages[0].message, expected);
+        assert_eq!(
+            step.prepared.messages[0].hash,
+            expected.content_hash().unwrap().0
+        );
+        assert_eq!(
+            step.complete_output().unwrap().messages[0].message,
+            expected
+        );
+    }
+}
+
+#[test]
 fn written_tool_text_searches_output_and_snippets_and_retracts_without_losing_input() {
     for build in [true, false] {
         let w = test_archive();

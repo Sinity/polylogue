@@ -142,7 +142,20 @@ pub(super) fn restore_values(
 ) -> Result<()> {
     for (index, block) in blocks.iter_mut().enumerate() {
         match block {
-            Block::ToolCall { .. } | Block::Other { .. } => {
+            Block::ToolCall { input, .. } => {
+                let Block::ToolCall {
+                    input: restored, ..
+                } = unpack_block(&prepared.blocks[index])?
+                else {
+                    return Err(StoreError::invalid(
+                        "prepared tool call has a different block kind",
+                    ));
+                };
+                // The packed block holds the released input. Written text is
+                // still on the parsed block and is empty in the packed body.
+                *input = restored;
+            }
+            Block::Other { .. } => {
                 *block = unpack_block(&prepared.blocks[index])?;
             }
             Block::ToolResult { .. } => {
