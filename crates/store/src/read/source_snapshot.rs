@@ -3,6 +3,15 @@ use crate::Result;
 use crate::primary::{ConfirmedSource, SourceSelector, SourceStatus, SourceSubject};
 
 impl Reader<'_> {
+    /// A hint for whether an explicit import at this receiving location may
+    /// already be stored. The writer checks the verified bytes and membership.
+    pub fn has_import_at(&self, machine: &str, path: &[u8]) -> Result<bool> {
+        use crate::ConnExt as _;
+        self.conn()?.exists(
+            "SELECT EXISTS(SELECT 1 FROM source_observation WHERE machine=?1 AND path_bytes=?2 AND class='imported')",
+            rusqlite::params![machine, path],
+        )
+    }
     /// The source boundary this read snapshot already has, before provider I/O.
     /// Missing full primary coverage remains unknown.
     pub fn source_boundary(&self) -> Result<Option<crate::primary::SourceBoundary>> {

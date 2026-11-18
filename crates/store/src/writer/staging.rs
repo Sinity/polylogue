@@ -138,7 +138,7 @@ impl Inner {
                 return errors(&group, error);
             }
         }
-        match self.repeated_imports(&group) {
+        match self.repeated_imports(group.iter().map(|item| &item.batch)) {
             Ok(Some(stored)) => return stored.into_iter().map(Ok).collect(),
             Ok(None) => {}
             Err(error) => return errors(&group, error),
@@ -354,13 +354,39 @@ impl Inner {
         Ok(stored)
     }
 
+    pub(super) fn confirm_imports(&self, group: &[Batch]) -> Result<Option<Vec<StoredInput>>> {
+        if self.sinex.is_some() {
+            return Ok(None);
+        }
+        for batch in group {
+            let Some(member) = batch.observation.as_ref().and_then(|o| o.import.as_ref()) else {
+                return Ok(None);
+            };
+            if member.format.as_deref() != Some(batch.input.format.as_str())
+                || !matches!(batch.change, Change::First)
+                || batch.continues
+                || batch.new_blob.as_ref().is_none_or(|blob| {
+                    !blob.chunks.is_empty()
+                        || blob.hash.to_string() != batch.input.id
+                        || blob.size != batch.length
+                })
+            {
+                return Ok(None);
+            }
+            check_import_format(&self.archive, &batch.input.id, Some(member))?;
+        }
+        self.repeated_imports(group.iter())
+    }
+
     /// A retry of an unchanged import group has nothing new to write.
     /// Format validation has already run through `check_staged`; a new path,
     /// receiver or import membership is a new observation even for known bytes.
-    fn repeated_imports(&self, group: &[PreparedBatch]) -> Result<Option<Vec<StoredInput>>> {
+    fn repeated_imports<'a>(
+        &self,
+        group: impl ExactSizeIterator<Item = &'a Batch>,
+    ) -> Result<Option<Vec<StoredInput>>> {
         let mut stored = Vec::with_capacity(group.len());
-        for item in group {
-            let b = &item.batch;
+        for b in group {
             let (Some(observation), Some(blob)) = (&b.observation, &b.new_blob) else {
                 return Ok(None);
             };

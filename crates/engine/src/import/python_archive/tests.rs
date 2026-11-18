@@ -276,6 +276,177 @@ fn older_archive_import_parses_original_sessions() {
     assert_eq!(w.texts("python"), ["one", "two"]);
 }
 
+#[test]
+fn a_repeat_confirms_members_without_staging_and_a_new_author_needs_admission() {
+    use polylogue_store::fault::{self, Action};
+    let home = polylogue_testkit::ClaudeHome::new();
+    let old = home.dir.path().join("catalog");
+    fixture(&old);
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 64);
+    let root = std::slice::from_ref(&old);
+    let first = engine.import_with_options(root, &archive_format()).unwrap();
+    assert_eq!(first.imported.len(), 4);
+    let commits = || home.count("SELECT max(commit_seq) AS n FROM a.observation");
+    let before = commits();
+    fault::arm(
+        "python_archive.prepare_raw",
+        &format!("{}!/raw_sessions/", old.display()),
+        Action::Fail,
+        0,
+        1,
+    );
+    let repeat = engine.import_with_options(root, &archive_format()).unwrap();
+    assert_eq!(repeat.already_stored, first.imported);
+    assert_eq!(repeat.pass.bytes_stored, 0);
+    assert_eq!(commits(), before);
+    let options = ImportOptions {
+        authorship: Some(polylogue_model::authorship::Authorship {
+            author: polylogue_model::Author::Script("second-importer".into()),
+            via: polylogue_model::authorship::Channel::Import,
+        }),
+        ..archive_format()
+    };
+    let error = engine.import_with_options(root, &options).unwrap_err();
+    assert!(
+        error.to_string().contains("python_archive.prepare_raw"),
+        "{error}"
+    );
+    let second = engine.import_with_options(root, &options).unwrap();
+    assert_eq!(second.already_stored, first.imported);
+    assert!(commits() > before);
+    assert_eq!(home.count("SELECT count(*) AS n FROM a.revision"), 4);
+    assert_eq!(home.count("SELECT count(*) AS n FROM import_member"), 8);
+    let moved = home.dir.path().join("second-path");
+    std::fs::rename(&old, &moved).unwrap();
+    let relocated = engine
+        .import_with_options(&[moved], &archive_format())
+        .unwrap();
+    assert_eq!(relocated.already_stored.len(), 4);
+    assert_eq!(home.count("SELECT count(*) AS n FROM import_member"), 12);
+}
+
+#[test]
+fn a_changed_append_parent_is_read_again_and_a_conflicting_format_is_refused() {
+    let home = polylogue_testkit::ClaudeHome::new();
+    let old = home.dir.path().join("catalog");
+    fixture(&old);
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 64);
+    let run = |engine: &mut Engine| {
+        engine.import_with_options(std::slice::from_ref(&old), &archive_format())
+    };
+    run(&mut engine).unwrap();
+    let other = String::from_utf8(FULL.to_vec())
+        .unwrap()
+        .replace("u1", "u2")
+        .replace("one", "new");
+    blob(&old, other.as_bytes());
+    let db = rusqlite::Connection::open(old.join("source.db")).unwrap();
+    db.execute(
+        "INSERT INTO raw_sessions SELECT 'other',origin,source_path,?1,blob_size,capture_mode,revision_kind,NULL,NULL,NULL FROM raw_sessions WHERE raw_id='full'",
+        [Sha256::digest(other.as_bytes()).as_slice()],
+    ).unwrap();
+    db.execute(
+        "UPDATE raw_sessions SET predecessor_raw_id='other' WHERE raw_id='next'",
+        [],
+    )
+    .unwrap();
+    let changed = run(&mut engine).unwrap();
+    assert!(
+        changed
+            .imported
+            .iter()
+            .any(|path| path.ends_with("raw_sessions/next/python.jsonl")),
+        "{changed:?}"
+    );
+    {
+        let reader = engine.reads.reader().unwrap();
+        for bytes in [
+            [FULL, APPEND].concat(),
+            [other.as_bytes(), APPEND].concat(),
+            APPEND.to_vec(),
+        ] {
+            let input = polylogue_model::BlobHash::of(&bytes).to_string();
+            let progress = reader.input_progress(&input).unwrap().unwrap();
+            assert_eq!(
+                reader
+                    .stored_range(&input, progress.chain, 0, progress.length, &engine.blobs)
+                    .unwrap(),
+                bytes
+            );
+        }
+    }
+    db.execute(
+        "UPDATE raw_sessions SET append_start_offset=0 WHERE raw_id='next'",
+        [],
+    )
+    .unwrap();
+    let refused = run(&mut engine).unwrap();
+    assert_eq!(refused.refused.len(), 1);
+    assert!(refused.refused[0].reason.contains("offsets"));
+    assert!(
+        refused
+            .already_stored
+            .iter()
+            .any(|path| path.ends_with("raw_sessions/next/fragment"))
+    );
+    db.execute(
+        "UPDATE raw_sessions SET origin='codex-session' WHERE raw_id='full'",
+        [],
+    )
+    .unwrap();
+    let error = run(&mut engine).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("already parsed as another origin"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_writer_miss_checks_the_source_again_before_admitting_it() {
+    let home = polylogue_testkit::ClaudeHome::new();
+    let root = home.dir.path().join("catalog");
+    fixture(&root);
+    let name = format!("{:x}", Sha256::digest(FULL));
+    let raw = RawMember {
+        path: PathBuf::from(format!(
+            "{}!/raw_sessions/full/python.jsonl",
+            root.display()
+        )),
+        parts: vec![Blob {
+            hash: Sha256::digest(FULL).into(),
+            size: FULL.len() as u64,
+        }],
+        origin: polylogue_sources::origin::by_name("claude-code"),
+    };
+    let checked = raw.check(&root).unwrap();
+    std::fs::write(
+        root.join("blob").join(&name[..2]).join(&name[2..]),
+        vec![b'x'; FULL.len()],
+    )
+    .unwrap();
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 64);
+    let mut pending = vec![Pending::Checked(checked)];
+    let error = engine
+        .flush_python_members(
+            &root,
+            &mut pending,
+            &archive_format(),
+            &mut ImportReport::default(),
+            &mut ImportPackage::default(),
+        )
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("differs from its catalog hash or size"),
+        "{error}"
+    );
+    assert_eq!(home.count("SELECT count(*) AS n FROM a.revision"), 0);
+    assert_eq!(home.count("SELECT count(*) AS n FROM a.observation"), 0);
+}
+
 fn blob(root: &Path, bytes: &[u8]) -> String {
     let name = format!("{:x}", Sha256::digest(bytes));
     std::fs::create_dir_all(root.join("blob").join(&name[..2])).unwrap();
