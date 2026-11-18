@@ -227,7 +227,10 @@ fn run_card_suppresses_an_unresolved_question_until_its_object_arrives() {
 fn raw_run_pages_replay_after_restart_and_reject_changed_completion() {
     let mut d = test_daemon::start("raw run paging");
     d.pause_signals();
-    let selection = format!("sessions where title:'{}'", "neutral ".repeat(256));
+    let selection = format!(
+        "sessions where title:{} OR kind:*",
+        serde_json::to_string(&"neutral ".repeat(256)).unwrap()
+    );
     let (mut run, _) = captured(&d.daemon, &selection);
     run.id = RunId::parse("018f0000-0000-7000-8000-000000000024").unwrap();
     d.daemon
