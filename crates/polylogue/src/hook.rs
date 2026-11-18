@@ -406,15 +406,6 @@ fn context(
     until: Instant,
 ) -> Option<(String, String)> {
     let advisory = matches!(&ask, Ask::Advisory { .. });
-    let remaining = until.saturating_duration_since(Instant::now());
-    if remaining.is_zero() {
-        return (!advisory).then(|| (String::new(), TIMEOUT_NOTICE.into()));
-    }
-    let allowance = if advisory {
-        remaining.min(crate::advisory::BUDGET)
-    } else {
-        remaining
-    };
     let request_id = request_id(startup.clock.now()).ok()?;
     let (operation, arguments, cursor) = match ask {
         Ask::SessionStart {
@@ -453,6 +444,15 @@ fn context(
             json!({"selection": text, "steps": [{"verb": "brief", "cwd": cwd, "for": for_session, "cursor": cursor}]}),
             None,
         ),
+    };
+    let remaining = until.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return (!advisory).then(|| (String::new(), TIMEOUT_NOTICE.into()));
+    }
+    let allowance = if advisory {
+        remaining.min(crate::advisory::BUDGET)
+    } else {
+        remaining
     };
     let request = command_surface::Request {
         operation: operation.into(),
