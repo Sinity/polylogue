@@ -1576,31 +1576,27 @@ impl Inner {
         installed
     }
 
-    /// Builds search beside the file while the writer creates its secondary
-    /// indexes. Unique keys are checked before the completed file is installed.
+    /// Finishes search and secondary indexes before installing the build file.
     fn build_deferred(&mut self) -> Result<()> {
         use crate::timing::{Stage, add};
         self.index.flush_prepared_statement_cache();
-        let stop = self.stop.clone();
-        let root = self.location.root.clone();
-        crate::text_rows::build_search_indexes(&self.index, |index| {
-            let started = std::time::Instant::now();
-            index.execute(
-                "INSERT INTO tool_call_trigram(tool_call_trigram) VALUES ('rebuild')",
-                [],
-            )?;
-            add(Stage::TrigramIndex, started.elapsed());
-            let started = std::time::Instant::now();
-            for sql in crate::schema::built_at_end_sql()? {
-                if stop.is_cancelled() {
-                    return Err(StoreError::Stopped);
-                }
-                index.execute(&sql, [])?;
-                crate::fault::check("index.deferred", &root.to_string_lossy())?;
+        crate::text_rows::build_search_indexes(&self.index)?;
+        let started = std::time::Instant::now();
+        self.index.execute(
+            "INSERT INTO tool_call_trigram(tool_call_trigram) VALUES ('rebuild')",
+            [],
+        )?;
+        add(Stage::TrigramIndex, started.elapsed());
+        let started = std::time::Instant::now();
+        for sql in crate::schema::built_at_end_sql()? {
+            if self.stop.is_cancelled() {
+                return Err(StoreError::Stopped);
             }
-            add(Stage::SecondaryIndexes, started.elapsed());
-            Ok(())
-        })
+            self.index.execute(&sql, [])?;
+            crate::fault::check("index.deferred", &self.location.root.to_string_lossy())?;
+        }
+        add(Stage::SecondaryIndexes, started.elapsed());
+        Ok(())
     }
 
     /// Writes a group in one transaction per database. If it fails, each

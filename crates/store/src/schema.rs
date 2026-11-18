@@ -213,30 +213,6 @@ pub(crate) fn built_at_end_sql() -> Result<Vec<String>> {
         .collect()
 }
 
-/// The same table declaration and configuration statements the installed
-/// schema uses, for a search table built in a private database.
-pub(crate) fn search_index_sql(table: &str) -> Result<Vec<String>> {
-    let expected = Connection::open_in_memory()?;
-    let mut batch = rusqlite::Batch::new(&expected, INDEX);
-    let create = format!("CREATE VIRTUAL TABLE {table} ");
-    let configure = format!("INSERT INTO {table}(");
-    let mut selected = Vec::new();
-    while let Some(mut prepared) = batch.next()? {
-        let sql = prepared
-            .expanded_sql()
-            .ok_or_else(|| StoreError::Invalid("a search schema statement has no SQL".into()))?;
-        let normalized = statement(&sql);
-        if normalized.starts_with(&create) || normalized.starts_with(&configure) {
-            selected.push(sql);
-        }
-        prepared.execute([])?;
-    }
-    if selected.is_empty() {
-        return Err(StoreError::Invalid("search table is not declared".into()));
-    }
-    Ok(selected)
-}
-
 pub fn create_index(conn: &Connection) -> Result<()> {
     create_index_in(conn, false, false)
 }
