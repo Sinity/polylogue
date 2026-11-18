@@ -268,6 +268,8 @@ pub(crate) fn finish(archive: &Archive, index: &Connection) -> Result<bool> {
             Ok((row.get(1)?, row.get(2)?))
         })?;
     if frames < 0 || frames != on_disk {
+        #[cfg(test)]
+        eprintln!("primary rebuild waiting for its WAL: {on_disk} of {frames} frames checkpointed");
         return Ok(false);
     }
     let paths = Paths::of(&archive.root);

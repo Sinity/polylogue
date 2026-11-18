@@ -228,7 +228,7 @@ pub(in crate::writer) fn crash_test_at(test: &str, point: &str) -> tempfile::Tem
         .env("POLYLOGUE_PRIVATE_BUILD_ROOT", directory.path())
         .env("POLYLOGUE_PRIVATE_BUILD_POINT", point)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
         .spawn()
         .unwrap();
     let pid = child.id() as libc::pid_t;

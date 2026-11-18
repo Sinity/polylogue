@@ -329,10 +329,13 @@ fn primary_rebuild_recovers_on_each_side_of_publication() {
             }
             assert!(writer.flush().unwrap().errors.is_empty(), "{point}");
         }
+        let current = reads.reader().unwrap();
         assert_eq!(
-            ids(&reads.reader().unwrap()),
+            ids(&current),
             ["new", "retained"],
-            "{point}"
+            "{point} served position {:?}. {}",
+            current.confirmed_checkpoint().unwrap(),
+            recovery_state(&archive),
         );
         assert_eq!(
             reads.reader().unwrap().confirmed_checkpoint().unwrap(),
@@ -344,4 +347,25 @@ fn primary_rebuild_recovers_on_each_side_of_publication() {
             b"unacknowledged authored bytes"
         );
     }
+}
+
+#[cfg(feature = "faults")]
+fn recovery_state(archive: &Archive) -> String {
+    let index = crate::archive::open_read(&archive.index_db()).unwrap();
+    let state = crate::primary::confirmed::replay_state(&index).unwrap();
+    let parsed = crate::archive::index_rebuild::built(&index).unwrap();
+    let derived = crate::derive::caught_up(&index).unwrap();
+    let (pending, complete, search): (i64, i64, i64) = index
+        .query_row(
+            "SELECT (SELECT count(*) FROM primary_pending),
+                (SELECT count(*) FROM primary_complete),
+                (SELECT count(*) FROM search_pending)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    format!(
+        "Candidate {state:?}, parser ready {parsed}, derivations ready {derived}, pending deliveries {pending}, completions {complete}, pending search {search}, build {:?}",
+        archive.index_build()
+    )
 }

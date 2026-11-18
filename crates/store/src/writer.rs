@@ -160,6 +160,8 @@ enum Msg {
     Wake,
     Batch(Box<Batch>),
     Flush(SyncSender<Result<WriteReport>>, bool),
+    /// Sent once a requested derive pass on the replacement has released its read.
+    FinishPrimaryRebuild(SyncSender<Result<()>>),
     /// Run the derive step over sessions whose derived rows are stale;
     /// answered with the number of sessions derived.
     Derive(SyncSender<Result<u64>>),
@@ -508,6 +510,8 @@ impl Writer {
             derive: derive_thread::DeriveThread::start(
                 installed,
                 queue.clone(),
+                (archive.is_primary() && archive.index_build.building())
+                    .then(|| archive.index_build.clone()),
                 stop.child(),
                 archive.memory_budget().search_cache_mib(),
             )?,
@@ -957,6 +961,7 @@ impl Inner {
     fn run(&mut self, rx: &Receiver<Msg>) {
         let _worker = crate::timing::worker();
         let mut flushes = Vec::new();
+        let mut primary_finish = None;
         let mut derives = Vec::new();
         let mut derive_writes = Vec::new();
         let mut single_files = Vec::new();
@@ -1095,6 +1100,10 @@ impl Inner {
                         *bytes += input_bytes(&b);
                         group.push(b);
                         true
+                    }
+                    Msg::FinishPrimaryRebuild(reply) => {
+                        primary_finish = Some(reply);
+                        false
                     }
                     Msg::Flush(reply, derive) => {
                         flushes.push((reply, derive));
@@ -1265,8 +1274,15 @@ impl Inner {
             if let Err(error) = record_build_progress(&self.location, &self.index) {
                 self.report.errors.push(format!("build progress: {error}"));
             }
-            if !flushes.is_empty()
-                && self.location.is_primary()
+            if let Some(reply) = primary_finish.take() {
+                let _ = reply.send(self.finish_primary_rebuild());
+            }
+            // A full flush checks the replacement after its derivations have committed.
+            // A row-only flush can publish if earlier passes already finished.
+            if self.location.is_primary()
+                && flushes
+                    .iter()
+                    .any(|(_, derive)| !derive || !self.location.index_build.building())
                 && let Err(error) = self.finish_primary_rebuild()
             {
                 self.report
