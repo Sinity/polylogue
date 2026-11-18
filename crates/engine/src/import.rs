@@ -309,7 +309,22 @@ impl Engine {
             return Ok(executed);
         }
         let outcomes = self.writer.store_group(group, Arc::clone(&self.blobs))?;
+        // Historical hook files are independent line streams. Retain the whole
+        // raw group first, then feed bounded batches through the existing pool.
+        // A repeated input or path must observe the preceding parse checkpoint;
+        // other origins retain their authored/array execution order.
+        const HOOK_PLANS: usize = 128;
+        let mut hooks: Vec<Plan> = Vec::with_capacity(HOOK_PLANS);
         for ((at, origin, facts, input), outcome) in metadata.into_iter().zip(outcomes) {
+            if origin.name != "hook-spool"
+                || outcome.is_err()
+                || hooks.len() == HOOK_PLANS
+                || hooks
+                    .iter()
+                    .any(|plan| plan.input.id == input.id || plan.path == at)
+            {
+                self.execute(std::mem::take(&mut hooks), &mut report.pass)?;
+            }
             let stored = match outcome {
                 Ok(stored) => stored,
                 Err(polylogue_store::StoreError::PrimaryPending { .. }) => {
@@ -329,9 +344,14 @@ impl Engine {
             }
             if let Some(plan) = self.stored_import_plan(&at, origin, input, &stored, facts)? {
                 executed.insert(plan.input.id.clone());
-                self.execute(vec![plan], &mut report.pass)?;
+                if origin.name == "hook-spool" {
+                    hooks.push(plan);
+                } else {
+                    self.execute(vec![plan], &mut report.pass)?;
+                }
             }
         }
+        self.execute(hooks, &mut report.pass)?;
         Ok(executed)
     }
 

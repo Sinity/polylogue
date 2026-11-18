@@ -365,3 +365,5 @@ fn repeated_explicit_import_keeps_a_stopped_attempt_until_its_executable_changes
     drop(engine);
     drop(lock);
 }
+
+mod hook_batches;
