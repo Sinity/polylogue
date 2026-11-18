@@ -277,6 +277,138 @@ fn older_archive_import_parses_original_sessions() {
 }
 
 #[test]
+fn wrapped_messages_keep_wire_sessions_ranges_and_receipts_through_cold_replay() {
+    use polylogue_testkit::{ClaudeHome, claude_user, delete_index};
+    let w = ClaudeHome::new();
+    let root = w.dir.path().join("old");
+    let name = "wrapper.jsonl.txt.json";
+    let first = claude_user("u1", "wire-one", "first wrapped record");
+    let second = claude_user("u2", "wire-two", "second wrapped record");
+    let body = format!("{first}{second}");
+    fixture_with_parts(&root, name, body.as_bytes(), APPEND);
+    rusqlite::Connection::open(root.join("source.db"))
+        .unwrap()
+        .execute("DELETE FROM raw_sessions WHERE raw_id='next'", [])
+        .unwrap();
+    let member = format!("{}!/raw_sessions/full/{name}", root.display());
+    let input = polylogue_model::BlobHash::of(body.as_bytes()).to_string();
+    let assert_reading = || {
+        assert_eq!(w.texts("wire-one"), ["first wrapped record"]);
+        assert_eq!(w.texts("wire-two"), ["second wrapped record"]);
+        assert_eq!(w.count("SELECT count(*) AS n FROM prefix_copy"), 0);
+        assert_eq!(
+            w.count("SELECT count(*) AS n FROM session WHERE id='claude-code:wrapper'"),
+            0
+        );
+        let rows = w.read(|r| {
+            r.query(
+                "SELECT m.id,s.source_start,s.source_end FROM message_source s
+             JOIN message m ON m.pk=s.message_pk JOIN input_ref i ON i.pk=s.input_pk
+             WHERE i.id=?1 ORDER BY s.source_start",
+                &[polylogue_store::SqlValue::Text(input.clone())],
+            )
+        });
+        assert_eq!(
+            rows,
+            [
+                serde_json::json!({"id":"claude-code:u1","source_start":0,"source_end":first.len()-1}),
+                serde_json::json!({"id":"claude-code:u2","source_start":first.len(),"source_end":body.len()-1})
+            ]
+        );
+    };
+    {
+        let (mut engine, _lock) = crate::import::tests::engine(&w, 64);
+        let report = engine
+            .import_with_options(std::slice::from_ref(&root), &archive_format())
+            .unwrap();
+        assert!(report.pass.errors.is_empty(), "{report:?}");
+        assert!(report.imported.contains(&PathBuf::from(&member)));
+        assert_reading();
+        let sibling = w.dir.path().join("wire-one.jsonl");
+        std::fs::write(&sibling, &first).unwrap();
+        let duplicate = engine.import(&[sibling]).unwrap();
+        assert!(duplicate.pass.errors.is_empty(), "{duplicate:?}");
+        assert_reading();
+        let reader = engine.reads.reader().unwrap();
+        let state = reader.input_progress(&input).unwrap().unwrap();
+        assert_eq!(
+            reader
+                .stored_range(&input, state.chain, 0, state.length, &engine.blobs)
+                .unwrap(),
+            body.as_bytes()
+        );
+        assert!(
+            reader
+                .import_receipts(&input, &member, "claude-code", &member)
+                .unwrap()
+                .iter()
+                .any(|(_, r)| r.member == member)
+        );
+        drop(reader);
+        let repeat = engine
+            .import_with_options(std::slice::from_ref(&root), &archive_format())
+            .unwrap();
+        assert!(repeat.pass.errors.is_empty(), "{repeat:?}");
+        assert_eq!(repeat.pass.bytes_stored, 0);
+        assert!(repeat.already_stored.contains(&PathBuf::from(&member)));
+    }
+    std::fs::remove_dir_all(&root).unwrap();
+    std::fs::remove_file(w.dir.path().join("wire-one.jsonl")).unwrap();
+    delete_index(&w.root);
+    let (mut engine, _lock) = crate::import::tests::engine(&w, 64);
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert_reading();
+}
+
+#[test]
+fn wrapped_names_and_non_message_members_cannot_authorize_a_reading() {
+    use polylogue_testkit::ClaudeHome;
+    let w = ClaudeHome::new();
+    let root = w.dir.path().join("old");
+    let name = "wrapper.jsonl.txt.json";
+    fixture_with_parts(
+        &root,
+        name,
+        FULL,
+        b"{\"type\":\"summary\",\"leafUuid\":\"leaf\",\"summary\":\"summary\"}\n",
+    );
+    let (mut engine, _lock) = crate::import::tests::engine(&w, 64);
+    // The full member is valid. The joined reading ends with an unidentified
+    // summary, so none of its records may become a message source.
+    let _ = engine.import_with_options(std::slice::from_ref(&root), &archive_format());
+    let valid = polylogue_model::BlobHash::of(FULL).to_string();
+    let fake = w.dir.path().join("mimic!/raw_sessions/full").join(name);
+    std::fs::create_dir_all(fake.parent().unwrap()).unwrap();
+    std::fs::write(&fake, FULL).unwrap();
+    let bare = engine
+        .import_with_options(
+            std::slice::from_ref(&fake),
+            &ImportOptions {
+                format: Some("claude-code".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(bare.refused.len(), 1);
+    assert!(bare.imported.is_empty());
+    let origin = polylogue_sources::origin::by_name("claude-code").unwrap();
+    let reader = engine.reads.reader().unwrap();
+    let stored = reader.input_progress(&valid).unwrap().unwrap();
+    let selected = engine
+        .stored_import_origin(
+            Some(&reader),
+            &fake,
+            origin,
+            &valid,
+            stored.chain,
+            stored.length,
+        )
+        .unwrap();
+    assert!((selected.open)(&fake).is_none());
+    assert_eq!(w.count("SELECT count(*) AS n FROM message_source"), 1);
+}
+#[test]
 fn a_repeat_confirms_members_without_staging_and_a_new_author_needs_admission() {
     use polylogue_store::fault::{self, Action};
     let home = polylogue_testkit::ClaudeHome::new();

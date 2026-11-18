@@ -1265,6 +1265,20 @@ impl Engine {
                 } else {
                     source.path.clone().map(PathBuf::from)
                 };
+                let origin = if state.imported
+                    && let Some(path) = &recorded_path
+                {
+                    self.stored_import_origin(
+                        None,
+                        path,
+                        origin,
+                        &c.input,
+                        state.chain,
+                        state.length,
+                    )?
+                } else {
+                    origin
+                };
                 let path = match recorded_path {
                     None => Err((
                         PathBuf::new(),

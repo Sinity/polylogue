@@ -30,6 +30,53 @@ impl Pending {
 }
 
 impl Engine {
+    /// Only a complete native message stream from a receiver-verified catalog
+    /// member can be read independently of its wrapping filename.
+    pub(crate) fn stored_import_origin(
+        &self,
+        reader: Option<&polylogue_store::Reader<'_>>,
+        path: &Path,
+        origin: &'static OriginSpec,
+        input: &str,
+        chain: i64,
+        length: u64,
+    ) -> Result<&'static OriginSpec, EngineError> {
+        if origin.name != "claude-code" {
+            return Ok(origin);
+        }
+        let Some((root, path_text)) = wrapped_transcript(path) else {
+            return Ok(origin);
+        };
+        let Ok(hash) = polylogue_model::BlobHash::parse(input) else {
+            return Ok(origin);
+        };
+        let acquired;
+        let reader = match reader {
+            Some(reader) => reader,
+            None => {
+                acquired = self.reads.reader()?;
+                &acquired
+            }
+        };
+        let receipts = reader.import_receipts(input, path_text, origin.name, path_text)?;
+        let verified = receipts.into_iter().any(|(machine, receipt)| {
+            let identity =
+                |author| import_identity(&machine, root, author, std::iter::once((path, hash)));
+            receipt.version == 1
+                && (receipt.import_id == identity(receipt.authorship.as_ref())
+                    || receipt.authorship == Some(default_import_authorship())
+                        && receipt.import_id == identity(None))
+        });
+        if verified {
+            let stored = reader.stored_chain(input, chain, length)?;
+            let body = stored.reader(Arc::clone(&self.blobs));
+            if polylogue_sources::claude_code::wire_messages(std::io::BufReader::new(body))? {
+                return Ok(&polylogue_sources::origin::CLAUDE_CODE_WIRE_MESSAGES);
+            }
+        }
+        Ok(origin)
+    }
+
     pub(super) fn import_python_archive(
         &mut self,
         root: &Path,
@@ -209,6 +256,18 @@ impl Engine {
         self.finish_import_group(metadata, stored.into_iter().map(Ok).collect(), report)?;
         Ok(true)
     }
+}
+
+fn wrapped_transcript(path: &Path) -> Option<(&Path, &str)> {
+    let at = path.to_str()?;
+    let prefix = at.strip_suffix(".jsonl.txt.json")?;
+    let (root, member) = prefix.rsplit_once("!/raw_sessions/")?;
+    let (raw_id, name) = member.split_once('/')?;
+    if root.is_empty() || matches!(raw_id, "" | "." | "..") || name.is_empty() || name.contains('/')
+    {
+        return None;
+    }
+    Some((Path::new(root), at))
 }
 
 /// Visit the native catalog, each fragment and its declared joined reading in
