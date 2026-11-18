@@ -74,7 +74,7 @@ pub(super) fn visit(
                     input.raw_id
                 )),
                 bytes: archive
-                    .prepare_write(|out| copy_blob(root, input, out))
+                    .prepare_write(|out| copy_blob(root, input, |bytes| out.write_all(bytes)))
                     .map(|(bytes, ())| bytes)
                     .map_err(std::io::Error::other)?,
                 container: false,
@@ -110,20 +110,22 @@ pub(super) fn visit(
                 continue;
             }
         };
-        let (combined, ()) = archive
+        let (combined, head) = archive
             .prepare_write(|output| {
+                let mut head = Vec::with_capacity(64);
                 for part in &chain {
-                    copy_blob(root, part, output)?;
+                    copy_blob(root, part, |bytes| {
+                        let take = bytes.len().min(64 - head.len());
+                        head.extend_from_slice(&bytes[..take]);
+                        output.write_all(bytes)
+                    })?;
                 }
-                Ok(())
+                Ok(head)
             })
             .map_err(std::io::Error::other)?;
-        let mut reader = combined.reader().map_err(std::io::Error::other)?;
-        let mut head = [0; 64];
-        let n = reader.read(&mut head)?;
         // An origin Python Polylogue could not name ("unknown-export") is
         // read by the declared structure its bytes have, or kept unparsed.
-        let spec = if polylogue_sources::browser_capture::recognize(&at, &head[..n]) {
+        let spec = if polylogue_sources::browser_capture::recognize(&at, &head) {
             polylogue_sources::origin::by_name("browser-capture")
         } else if let Some(name) = polylogue_store::python_polylogue::origin(&input.origin) {
             polylogue_sources::origin::by_name(name)
@@ -209,7 +211,7 @@ pub(super) fn visit(
 fn copy_blob(
     root: &Path,
     input: &Input,
-    output: &mut dyn std::io::Write,
+    mut write: impl FnMut(&[u8]) -> std::io::Result<()>,
 ) -> polylogue_store::Result<()> {
     let hash: String = polylogue_model::hex(&input.blob_hash);
     let path = root.join("blob").join(&hash[..2]).join(&hash[2..]);
@@ -228,7 +230,7 @@ fn copy_blob(
             break;
         }
         actual.update(&buffer[..n]);
-        output.write_all(&buffer[..n])?;
+        write(&buffer[..n])?;
         length += n as u64;
     }
     let actual: [u8; 32] = actual.finalize().into();

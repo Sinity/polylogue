@@ -12,18 +12,35 @@ fn decoded(member: &package::Member) -> Vec<u8> {
 const FULL:&[u8]=b"{\"type\":\"user\",\"uuid\":\"u1\",\"sessionId\":\"python\",\"message\":{\"role\":\"user\",\"content\":\"one\"}}\n";
 const APPEND:&[u8]=b"{\"type\":\"assistant\",\"uuid\":\"a1\",\"sessionId\":\"python\",\"message\":{\"role\":\"assistant\",\"content\":\"two\"}}\n";
 fn fixture(root: &Path) {
+    fixture_with_parts(root, "/home/op/gone/python.jsonl", FULL, APPEND);
+}
+
+fn fixture_with_parts(root: &Path, source_path: &str, base: &[u8], tail: &[u8]) {
     std::fs::create_dir_all(root.join("blob")).unwrap();
     let db = rusqlite::Connection::open(root.join("source.db")).unwrap();
     db.execute_batch("CREATE TABLE raw_sessions(raw_id TEXT PRIMARY KEY,origin TEXT,source_path TEXT,blob_hash BLOB,blob_size INTEGER,capture_mode TEXT,revision_kind TEXT,predecessor_raw_id TEXT,append_start_offset INTEGER,append_end_offset INTEGER)").unwrap();
     for (id, bytes, previous, start) in [
-        ("full", FULL, None, None),
-        ("next", APPEND, Some("full"), Some(FULL.len() as i64)),
+        ("full", base, None, None),
+        ("next", tail, Some("full"), Some(base.len() as i64)),
     ] {
         let hash = Sha256::digest(bytes);
         let name = format!("{hash:x}");
         std::fs::create_dir_all(root.join("blob").join(&name[..2])).unwrap();
         std::fs::write(root.join("blob").join(&name[..2]).join(&name[2..]), bytes).unwrap();
-        db.execute("INSERT INTO raw_sessions VALUES (?1,'claude-code-session','/home/op/gone/python.jsonl',?2,?3,NULL,?4,?5,?6,?7)",rusqlite::params![id,hash.as_slice(),bytes.len() as i64,if previous.is_some(){"append"}else{"full"},previous,start,start.map(|n|n+bytes.len() as i64)]).unwrap();
+        db.execute(
+            "INSERT INTO raw_sessions VALUES (?1,'claude-code-session',?2,?3,?4,NULL,?5,?6,?7,?8)",
+            rusqlite::params![
+                id,
+                source_path,
+                hash.as_slice(),
+                bytes.len() as i64,
+                if previous.is_some() { "append" } else { "full" },
+                previous,
+                start,
+                start.map(|n| n + bytes.len() as i64)
+            ],
+        )
+        .unwrap();
     }
 }
 fn archive_format() -> ImportOptions {
@@ -95,6 +112,26 @@ fn python_blobs_join_only_at_recorded_append_offsets() {
         refused.refusal
     );
     assert_eq!(decoded(&members[2]), APPEND);
+}
+
+#[test]
+fn browser_capture_header_can_cross_an_append_boundary() {
+    let root = tempfile::tempdir().unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let base = br#"{"capture_"#;
+    let tail = br#"id":"synthetic","turns":[]}"#;
+    fixture_with_parts(root.path(), "capture.json", base, tail);
+    let members = stage(root.path(), &Archive::at(scratch.path()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(members[1].origin.unwrap().name, "claude-code");
+    assert_eq!(decoded(&members[1]), base);
+    assert_eq!(decoded(&members[2]), tail);
+    assert_eq!(members[3].origin.unwrap().name, "browser-capture");
+    assert_eq!(
+        decoded(&members[3]),
+        br#"{"capture_id":"synthetic","turns":[]}"#
+    );
 }
 
 #[test]
@@ -206,6 +243,21 @@ fn older_archive_import_parses_original_sessions() {
             .collect();
         assert_eq!(stored, expected);
 
+        let hash = format!("{:x}", Sha256::digest(APPEND));
+        std::fs::write(
+            old.join("blob").join(&hash[..2]).join(&hash[2..]),
+            vec![b'x'; APPEND.len()],
+        )
+        .unwrap();
+        let error = engine
+            .import_with_options(std::slice::from_ref(&old), &archive_format())
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("differs from its catalog hash or size"),
+            "{error}"
+        );
         let id = polylogue_model::BlobHash::of(APPEND).to_string();
         let reader = engine.reads.reader().unwrap();
         let progress = reader.input_progress(&id).unwrap().unwrap();
