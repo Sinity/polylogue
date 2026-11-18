@@ -33,6 +33,7 @@ mod id;
 pub mod injection;
 pub mod kept;
 pub mod live;
+pub mod markdown;
 pub mod parser_context;
 pub mod sinex_event;
 pub use injection::{HookContextEmission, HookFieldClaim};

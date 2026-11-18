@@ -2116,6 +2116,7 @@ dependencies = [
  "canonical-json",
  "command-surface",
  "jiff",
+ "pulldown-cmark",
  "query-language",
  "references",
  "schemars",

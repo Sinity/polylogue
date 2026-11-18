@@ -177,8 +177,11 @@ pub enum LinkRole {
     SlotOf,
     MemberOf,
     RoleOf,
+    Mentions,
+    Cites,
+    Embeds,
 }
-stored_names!(LinkRole {About=>"about",Evidence=>"evidence",Scope=>"scope",Origin=>"origin",Revises=>"revises",Withdraws=>"withdraws",Answers=>"answers",Challenges=>"challenges",Supports=>"supports",Qualifies=>"qualifies",Corrects=>"corrects",DerivedFrom=>"derived_from",Blocks=>"blocks",SlotOf=>"slot_of",MemberOf=>"member_of",RoleOf=>"role_of"});
+stored_names!(LinkRole {About=>"about",Evidence=>"evidence",Scope=>"scope",Origin=>"origin",Revises=>"revises",Withdraws=>"withdraws",Answers=>"answers",Challenges=>"challenges",Supports=>"supports",Qualifies=>"qualifies",Corrects=>"corrects",DerivedFrom=>"derived_from",Blocks=>"blocks",SlotOf=>"slot_of",MemberOf=>"member_of",RoleOf=>"role_of",Mentions=>"mentions",Cites=>"cites",Embeds=>"embeds"});
 impl LinkRole {
     /// Identity-only graph operations do not bind a text reading. Other roles
     /// record a hash when the addressed source supplies recorded text.
@@ -419,12 +422,16 @@ impl AssertionFact {
             .map(|link| &link.reference)
     }
     pub fn text(&self) -> Option<&str> {
-        let value = self.value.as_ref()?;
-        match self.kind.spec().value {
-            ValueShape::Rubric | ValueShape::Role => value.str("instructions"),
-            ValueShape::Judgment => value.as_str().or_else(|| value.str("reason")),
-            _ => values::text(value),
-        }
+        statement_text(self.kind, self.value.as_ref())
+    }
+}
+
+fn statement_text(kind: AssertionKind, value: Option<&Json>) -> Option<&str> {
+    let value = value?;
+    match kind.spec().value {
+        ValueShape::Rubric | ValueShape::Role => value.str("instructions"),
+        ValueShape::Judgment => value.as_str().or_else(|| value.str("reason")),
+        _ => values::text(value),
     }
 }
 
@@ -446,6 +453,12 @@ pub struct NewAssertion {
     pub value: Option<Json>,
     pub valid_until: Option<Timestamp>,
     pub links: Vec<NewAssertionLink>,
+}
+
+impl NewAssertion {
+    pub fn text(&self) -> Option<&str> {
+        statement_text(self.kind, self.value.as_ref())
+    }
 }
 
 /// A writer resolves text hashes against its accepting read snapshot.

@@ -550,3 +550,169 @@ fn normal_revision_of_an_undated_rubric_uses_its_own_request_time_and_slot() {
         ))]
     );
 }
+
+#[test]
+fn text_links_written_with_note_keep_other_links_and_source_hashes() {
+    let conn = db();
+    let text = "See [one](message:codex:one) and [again](message:codex:one).\n\
+        ![detail](message:codex:three \"card\")\n\
+        Source[^source].\n\n[^source]: \"Quoted words\" [source](message:codex:two)";
+    let mut note = statement(
+        AssertionKind::Note,
+        None,
+        json!(text),
+        Some("session:codex:s"),
+    );
+    note.links.extend([
+        NewAssertionLink {
+            role: LinkRole::Evidence,
+            reference: reference("message:codex:recorded"),
+        },
+        NewAssertionLink {
+            role: LinkRole::Mentions,
+            reference: reference("message:codex:stale"),
+        },
+    ]);
+    write_one(&conn, "linked-note", note, 1);
+    let stored = get(&conn, "linked-note").unwrap().unwrap().fact;
+    let links: BTreeSet<_> = stored
+        .links
+        .iter()
+        .map(|link| (link.role, link.reference.to_string()))
+        .collect();
+    assert_eq!(
+        links,
+        BTreeSet::from([
+            (LinkRole::About, "session:codex:s".into()),
+            (LinkRole::Evidence, "message:codex:recorded".into()),
+            (LinkRole::Mentions, "message:codex:one".into()),
+            (LinkRole::Cites, "message:codex:two".into()),
+            (LinkRole::Embeds, "message:codex:three".into()),
+        ])
+    );
+    assert_eq!(stored.links.len(), 5);
+    assert!(
+        stored
+            .links
+            .iter()
+            .all(|link| link.seen_hash == Some(BlobHash([5; 32])))
+    );
+    assert_eq!(stored.value, Some(json!(text)));
+}
+
+#[test]
+fn edit_rewrites_text_links_and_clearing_text_keeps_other_roles() {
+    let conn = db();
+    let mut note = statement(
+        AssertionKind::Note,
+        None,
+        json!("[first](message:codex:first)"),
+        Some("session:codex:s"),
+    );
+    note.links.push(NewAssertionLink {
+        role: LinkRole::Evidence,
+        reference: reference("message:codex:recorded"),
+    });
+    write_one(&conn, "text-note", note, 1);
+    for (counter, id, base, text, expected) in [
+        (
+            2,
+            "text-edit",
+            "text-note",
+            "[next](message:codex:next)",
+            vec!["message:codex:next"],
+        ),
+        (
+            3,
+            "text-clear",
+            "text-edit",
+            "No links in this revision.",
+            vec![],
+        ),
+    ] {
+        revise(
+            &conn,
+            &request(id),
+            &[RevisionReference {
+                root: "text-note".into(),
+                revision: Some(base.into()),
+            }],
+            &AssertionPatch {
+                value: Change::Set(json!(text)),
+                ..Default::default()
+            },
+            counter,
+            &|_| Ok(Some(BlobHash([5; 32]))),
+            SettingMode::Standalone,
+        )
+        .unwrap();
+        let stored = get(&conn, id).unwrap().unwrap().fact;
+        let mentions: Vec<_> = stored
+            .links
+            .iter()
+            .filter(|link| link.role == LinkRole::Mentions)
+            .map(|link| link.reference.to_string())
+            .collect();
+        assert_eq!(mentions, expected);
+        for (role, target) in [
+            (LinkRole::About, "session:codex:s"),
+            (LinkRole::Evidence, "message:codex:recorded"),
+        ] {
+            assert!(
+                stored
+                    .links
+                    .iter()
+                    .any(|link| link.role == role && link.reference == reference(target))
+            );
+        }
+        assert_eq!(stored.value, Some(json!(text)));
+    }
+}
+
+#[test]
+fn invalid_text_links_refuse_the_whole_write_with_their_typed_reason() {
+    for (id, text, expected) in [
+        (
+            "bad-reference",
+            "[invalid](message:)",
+            polylogue_model::Code::BadValue,
+        ),
+        (
+            "session-citation",
+            "Source[^source].\n\n[^source]: [session](session:codex:s)",
+            polylogue_model::Code::NotBuilt,
+        ),
+    ] {
+        let conn = db();
+        let assertions = [
+            statement(
+                AssertionKind::Note,
+                None,
+                json!("A valid first statement."),
+                Some("session:codex:s"),
+            ),
+            statement(
+                AssertionKind::Note,
+                None,
+                json!(text),
+                Some("session:codex:s"),
+            ),
+        ];
+        let result = write(
+            &conn,
+            &request(id),
+            &assertions,
+            1,
+            &|_| Ok(None),
+            SettingMode::Standalone,
+        );
+        match result {
+            Err(StoreError::Selection { code, .. }) => assert_eq!(code, expected),
+            other => panic!("the Markdown refusal must retain its code: {other:?}"),
+        }
+        assert!(
+            get(&conn, &format!("{id}.1")).unwrap().is_none(),
+            "the earlier preview must be removed"
+        );
+    }
+}

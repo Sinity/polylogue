@@ -415,3 +415,63 @@ fn save_selection_rolls_back_every_effect_when_the_kept_insert_fails() {
         .unwrap();
     assert_eq!(journal, 1, "one Save step has one receipt");
 }
+
+#[test]
+fn authored_text_links_live_in_the_effect_without_rewriting_the_request() {
+    use polylogue_model::assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink};
+    use polylogue_model::{Reference, RevisionReference};
+    let archive = crate::fixture::writer::WriterArchive::new();
+    let text = "Read [the source](https://example.test/source).";
+    let request = crate::fixture::authored::operator_request(
+        "live-text-note".into(),
+        UserWrite::Assert {
+            assertions: vec![NewAssertion {
+                kind: AssertionKind::Note,
+                key: None,
+                value: Some(serde_json::json!(text)),
+                valid_until: None,
+                links: vec![NewAssertionLink {
+                    role: LinkRole::About,
+                    reference: Reference::parse("session:codex:fixture").unwrap(),
+                }],
+            }],
+        },
+    );
+    let first = archive.writer.user(request.clone()).unwrap();
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let before_repeat = pool.reader().unwrap().change_position().unwrap();
+    assert!(archive.writer.user(request.clone()).unwrap().repeat);
+    let reader = pool.reader().unwrap();
+    assert_eq!(reader.change_position().unwrap(), before_repeat);
+    assert_eq!(reader.user_request(&request.id).unwrap().unwrap(), request);
+    let stored = reader
+        .assertion(&RevisionReference {
+            root: first.id.clone(),
+            revision: Some(first.id),
+        })
+        .unwrap()
+        .unwrap()
+        .fact;
+    assert_eq!(stored.value, Some(serde_json::json!(text)));
+    assert_eq!(
+        stored
+            .links
+            .iter()
+            .map(|link| (link.role, link.reference.to_string()))
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from([
+            (LinkRole::About, "session:codex:fixture".into()),
+            (LinkRole::Mentions, "url:https://example.test/source".into()),
+        ])
+    );
+    let mut prepared = vec![];
+    reader
+        .visit_authored(&mut |record| {
+            prepared.push(record.clone());
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(prepared.len(), 1);
+    assert_eq!(prepared[0].request, request);
+    assert_eq!(prepared[0].effect.assertions, vec![stored]);
+}
