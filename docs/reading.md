@@ -163,7 +163,13 @@ A format encodes a reading or a row table. It never selects content, and it esca
 
 ### Writing out
 
-Writing out a selection is reading it to a directory: `polylogue 'repo:sinex since:30d' read --to ~/out/sinex --format json` writes a bundle, and `read --to FILE` writes one document. Annotations are written out the same way: `polylogue annotations read --to ~/out/notes`. Pages written out as a static site or a folder of Markdown files are [page-working-copy.md](page-working-copy.md#writing-pages-out).
+Writing out a selection is reading it to a directory:
+
+```sh
+polylogue 'repo:sinex since:30d' read --to ~/out/sinex/ --format json
+```
+
+This writes a bundle; `read --to FILE` writes one document. Annotations are written out the same way: `polylogue annotations read --to ~/out/notes`. Pages written out as a static site or a folder of Markdown files are [page-working-copy.md](page-working-copy.md#writing-pages-out).
 
 **The bundle** is a typed record stream, `polylogue-bundle` version 3:
 

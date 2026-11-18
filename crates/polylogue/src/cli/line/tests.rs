@@ -57,6 +57,18 @@ fn options_belong_to_the_verb_before_them() {
     assert!(line.line.json);
 }
 #[test]
+fn read_keeps_its_directory_and_format() {
+    let line = parsed(&["sessions", "read", "--to", "out/", "--format", "jsonl"]);
+    assert_eq!(line.steps[0].to, Some(Destination::Dir("out/".into())));
+    let request = super::super::run_line::request(&line).unwrap();
+    let rows: crate::protocol::line::Rows = serde_json::from_value(request.arguments).unwrap();
+    let [crate::protocol::line::Step::Read(step)] = rows.steps.as_slice() else {
+        panic!("one read")
+    };
+    assert_eq!(step.format.as_deref(), Some("jsonl"));
+}
+
+#[test]
 fn undeclared_option_refused() {
     let error = parse(
         &[
