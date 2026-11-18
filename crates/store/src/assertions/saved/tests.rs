@@ -306,3 +306,112 @@ fn saved_revision_number_follows_a_merge_of_two_original_families() {
         Err(StoreError::Ambiguous { .. })
     ));
 }
+
+fn withdrawal(id: &str, target: &str) -> AssertionFact {
+    let mut row = fact(id, "unused", 0, None);
+    row.root = id.into();
+    row.kind = AssertionKind::Withdrawal;
+    row.key = None;
+    row.value = None;
+    row.links = vec![AssertionLink {
+        role: LinkRole::Withdraws,
+        reference: r(target),
+        seen_hash: None,
+        quote: None,
+    }];
+    row
+}
+
+#[test]
+fn numeric_saved_revisions_bind_the_current_family_after_withdrawal_and_resave() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+    let original = fact("original", "focus", 1, None);
+    super::super::apply(&conn, std::slice::from_ref(&original), 1).unwrap();
+    super::super::apply(
+        &conn,
+        &[withdrawal("withdraw-original", "assertion:family@original")],
+        2,
+    )
+    .unwrap();
+    // With no current family, the one historical revision stays addressable.
+    assert_eq!(
+        named_revision(&conn, "focus", 1).unwrap().reference,
+        RevisionReference::exact("family".into(), "original".into())
+    );
+    let mut replacement = fact("replacement", "focus", 2, None);
+    replacement.root = "replacement".into();
+    super::super::apply(&conn, &[replacement], 3).unwrap();
+    let pinned = named_revision(&conn, "focus", 1).unwrap();
+    assert_eq!(
+        pinned.reference,
+        RevisionReference::exact("replacement".into(), "replacement".into())
+    );
+    assert_eq!(pinned.value.hash, BlobHash([2; 32]));
+    assert_eq!(named_revisions(&conn, "focus").unwrap().len(), 2);
+    assert_eq!(get(&conn, "original").unwrap().unwrap().fact, original);
+
+    let mut left = fact(
+        "left",
+        "focus",
+        3,
+        Some("assertion:replacement@replacement"),
+    );
+    left.root = "replacement".into();
+    let mut right = fact(
+        "right",
+        "focus",
+        4,
+        Some("assertion:replacement@replacement"),
+    );
+    right.root = "replacement".into();
+    super::super::apply(&conn, &[right, left], 4).unwrap();
+    // Two heads of one current root are one family: the root ordinal is
+    // unique, while its two original children really are ambiguous.
+    assert_eq!(
+        named_revision(&conn, "focus", 1).unwrap().reference,
+        RevisionReference::exact("replacement".into(), "replacement".into())
+    );
+    match named_revision(&conn, "focus", 2).unwrap_err() {
+        StoreError::Ambiguous { candidates, .. } => assert_eq!(
+            candidates,
+            ["assertion:replacement@left", "assertion:replacement@right"]
+        ),
+        other => panic!("same-family fork must remain explicit: {other}"),
+    }
+}
+
+#[test]
+fn numeric_saved_revisions_keep_independent_current_and_retired_histories_ambiguous() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+    let first = fact("first", "focus", 1, None);
+    let mut other = fact("other", "focus", 2, None);
+    other.root = "other-family".into();
+    super::super::apply(&conn, &[other, first], 1).unwrap();
+    let expect_ambiguous = || match named_revision(&conn, "focus", 1).unwrap_err() {
+        StoreError::Ambiguous { candidates, .. } => assert_eq!(
+            candidates,
+            ["assertion:family@first", "assertion:other-family@other"]
+        ),
+        error => panic!("independent originals must remain explicit: {error}"),
+    };
+    expect_ambiguous();
+    super::super::apply(
+        &conn,
+        &[
+            withdrawal("withdraw-first", "assertion:family"),
+            withdrawal("withdraw-other", "assertion:other-family"),
+        ],
+        2,
+    )
+    .unwrap();
+    assert!(
+        named_current(&conn, AssertionKind::SavedQuery, "focus")
+            .unwrap()
+            .is_empty()
+    );
+    expect_ambiguous();
+    assert!(get(&conn, "first").unwrap().is_some());
+    assert!(get(&conn, "other").unwrap().is_some());
+}

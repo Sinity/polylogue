@@ -311,7 +311,30 @@ pub(crate) fn named_revision(
     name: &str,
     number: u32,
 ) -> Result<CurrentSavedDefinition> {
-    let mut matching = numbered_named_revisions(conn, name)?
+    // A name with one current family binds that family's history. Forks
+    // within it remain forks, and explicit cross-family ancestors stay in the
+    // graph. Without one current root, historical ambiguity remains visible.
+    let roots = named_current(conn, AssertionKind::SavedQuery, name)?
+        .into_iter()
+        .map(|row| row.fact.root)
+        .collect::<std::collections::BTreeSet<_>>();
+    let root = (roots.len() == 1).then(|| roots.first().expect("one current root").as_str());
+    let revisions = match root {
+        None => numbered_named_revisions(conn, name)?,
+        Some(root) => {
+            let source = Source::reading(conn)?;
+            let ids = conn.prepare_cached(&source.sql(
+                "SELECT id FROM @source.assertion WHERE kind='saved_query' AND root=?1 ORDER BY id",
+            ))?.query_map([root], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let rows = ids
+                .into_iter()
+                .map(|id| get(conn, &id)?.ok_or_else(|| StoreError::NotFound(id)))
+                .collect::<Result<Vec<_>>>()?;
+            numbered_revisions(conn, rows)?
+        }
+    };
+    let mut matching = revisions
         .into_iter()
         .filter(|(n, _)| *n == number)
         .map(|(_, row)| row)
