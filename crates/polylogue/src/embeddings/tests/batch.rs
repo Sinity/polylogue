@@ -171,7 +171,6 @@ fn a_malformed_success_response_never_stores_its_valid_prefix() {
         &reader,
         &provider,
         None,
-        None,
     );
     let requests = server.join().unwrap();
     assert_eq!(requests[0]["input"].as_array().unwrap().len(), 2);
@@ -196,7 +195,6 @@ fn a_partial_purchase_resumes_only_the_missing_final_chunk() {
             &polylogue_model::WallClock::new(jiff::Timestamp::now),
             &reader,
             &provider,
-            None,
             None
         ),
         Err(EmbedError::Transport(_))
@@ -208,7 +206,7 @@ fn a_partial_purchase_resumes_only_the_missing_final_chunk() {
     assert_eq!(vectors.load(&key).unwrap().vectors(), 32);
     let revision = vectors.revision(&key).unwrap();
     drop(vectors);
-    let remaining = preview(&reader, &provider, None, None).unwrap();
+    let remaining = preview(&reader, &provider, None).unwrap();
     assert_eq!(
         (
             remaining.texts,
@@ -223,7 +221,6 @@ fn a_partial_purchase_resumes_only_the_missing_final_chunk() {
         &polylogue_model::WallClock::new(jiff::Timestamp::now),
         &reader,
         &provider,
-        None,
         None,
     )
     .unwrap();
@@ -240,9 +237,7 @@ fn a_partial_purchase_resumes_only_the_missing_final_chunk() {
     assert_eq!(vectors.revision(&key).unwrap(), revision + 1);
     drop(vectors);
     assert_eq!(
-        preview(&reader, &provider, None, None)
-            .unwrap()
-            .already_embedded,
+        preview(&reader, &provider, None).unwrap().already_embedded,
         1
     );
 }
@@ -260,7 +255,6 @@ fn singleton_fallback_dimensions_are_checked_before_any_put() {
         &polylogue_model::WallClock::new(jiff::Timestamp::now),
         &reader,
         &provider,
-        None,
         None,
     );
     let requests = server.join().unwrap();
@@ -311,7 +305,6 @@ fn resumed_provider_dimensions_cannot_relabel_purchased_chunks() {
         &polylogue_model::WallClock::new(jiff::Timestamp::now),
         &reader,
         &provider,
-        None,
         None,
     );
     let requests = server.join().unwrap();

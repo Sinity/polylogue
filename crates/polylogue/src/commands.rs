@@ -391,9 +391,12 @@ const WRITTEN: &[Command] = &[
     },
     Command {
         name: "embed",
-        examples: &["polylogue embed"],
+        examples: &[
+            "polylogue embed",
+            "polylogue embed --query 'sessions where physical:true | limit 5'",
+        ],
         reason: "Preview embedding work and build it only after confirmation",
-        help: "Preview the texts and cost; --yes builds their embedding vectors",
+        help: "Preview selected texts and cost; --query selects sessions (including | limit N), --yes builds their embedding vectors",
         run: Run::Daemon(daemon::<H::Embed>()),
         tool: Some(Tool::Act),
         http: true,

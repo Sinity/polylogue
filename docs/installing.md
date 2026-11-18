@@ -79,6 +79,8 @@ A setting is an annotation of kind `setting` ([annotations.md#kinds](annotations
 
 `polylogue embed [--query 'QUERY'] [--yes]` buys vectors for semantic ranking ([search.md#semantic-ranking](search.md#semantic-ranking)). It is a command because spending money is an explicit act.
 
+Use a bound in the query to select a finite set, for example `polylogue embed --query 'sessions where physical:true | sort by id | limit 5'`. These bounds apply to session rows, rather than a separate number of texts or chunks. The command has no separate text-count limit.
+
 - **Without `--yes`** it spends nothing: it reports what would be embedded (texts and chunks without a vector for the configured model, over the whole archive or the rows `--query` selects), the tokens, the price and the cost against this month's budget.
 - **With `--yes`** it embeds them through the configured provider, reporting progress and what was bought; a retry requests only what is still missing. With model calls off it is refused with the setting that turns them on (`polylogue set embed.calls on`).
 - Once model calls are on, the daemon embeds new text in the background at idle priority within the monthly budget; `embed --yes` is for what came before.
