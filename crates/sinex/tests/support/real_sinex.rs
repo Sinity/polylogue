@@ -21,7 +21,11 @@ pub struct RealSinex {
     daemon: Option<Daemon>,
 }
 impl RealSinex {
-    pub fn start(root: &Path, declarations: Vec<serde_json::Value>) -> Self {
+    pub fn start(
+        root: &Path,
+        declarations: Vec<serde_json::Value>,
+        cross_domain_evidence: bool,
+    ) -> Self {
         fs::create_dir_all(root).unwrap();
         let pg = devkit::pg::Server::start(&devkit::pg::ClusterOptions {
             required_extensions: vec!["timescaledb".into(), "vector".into()],
@@ -56,7 +60,7 @@ impl RealSinex {
                 sinex_model::event_types::work::WorkAct::declaration(),
             ],
         };
-        let grants = serde_json::json!({"polylogue":{
+        let mut grants = serde_json::json!({"polylogue":{
             "kind_prefixes":["polylogue"],"classes":["open","guarded"],"public_context":true,
             "write":{"family":"polylogue","host":"fixture-host","source_prefixes":["polylogue"],
                 "source_declarations":declarations,"kind_prefixes":["polylogue"],
@@ -68,6 +72,17 @@ impl RealSinex {
                 "kind_prefixes":["terminal","file","work"],
                 "canonical_prefixes":["terminal","file","work"],"classes":["open"]}
         }});
+        if !cross_domain_evidence {
+            // Backup requires a pause responder for each granted producer.
+            grants.as_object_mut().unwrap().remove("evidence");
+            // The restored broker starts at a snapshot origin. Give the reader
+            // the same kind definitions that this fixture's producer writes.
+            grants["polylogue"]["indexed_catalog"] = serde_json::json!({
+                "name": "polylogue-backup-fixture",
+                "version": 1,
+                "kinds": declarations[0]["kinds"],
+            });
+        }
         fs::write(
             root.join("grants.json"),
             serde_json::to_vec(&grants).unwrap(),

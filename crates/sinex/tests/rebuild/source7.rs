@@ -37,6 +37,7 @@ fn running(home: &polylogue_testkit::ClaudeHome) -> Running {
             serde_json::to_value(declaration()).unwrap(),
             serde_json::to_value(polylogue_sinex::kinds::source_declaration()).unwrap(),
         ],
+        true, // cross-domain evidence producer
     );
     Running {
         config: Config {
