@@ -12,6 +12,31 @@ impl Reader<'_> {
             rusqlite::params![machine, path],
         )
     }
+    /// Receiver-authored receipts whose selected input, path, format and member
+    /// agree on the same observation. Uses the confirmed source in primary mode.
+    pub fn import_receipts(
+        &self,
+        input: &str,
+        path: &str,
+        format: &str,
+        member: &str,
+    ) -> Result<Vec<(String, crate::ImportMember)>> {
+        let mut statement = self.conn()?.prepare_cached(
+            "SELECT DISTINCT machine,json_extract(details_json,'$.import') FROM source_observation
+             WHERE input=?1 AND path=?2 AND class='imported' AND json_valid(details_json)
+               AND json_extract(details_json,'$.import_format')=?3
+               AND json_extract(details_json,'$.import.member')=?4",
+        )?;
+        let rows = statement.query_map(rusqlite::params![input, path, format, member], |row| {
+            <(String, String)>::try_from(row)
+        })?;
+        rows.map(|row| {
+            let (machine, receipt) = row?;
+            Ok((machine, serde_json::from_str(&receipt)?))
+        })
+        .collect()
+    }
+
     /// The source boundary this read snapshot already has, before provider I/O.
     /// Missing full primary coverage remains unknown.
     pub fn source_boundary(&self) -> Result<Option<crate::primary::SourceBoundary>> {

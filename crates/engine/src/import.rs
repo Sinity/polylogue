@@ -499,6 +499,8 @@ impl Engine {
         {
             return Ok(None);
         }
+        let origin =
+            self.stored_import_origin(Some(&reader), path, origin, &input.id, stored.chain, size)?;
         let parser = (origin.open)(path);
         let interrupted_lines = matches!(parser.as_ref(), Some(polylogue_sources::Parse::Lines(_)))
             && reading.as_ref().is_some_and(|reading| {
@@ -557,12 +559,12 @@ fn import_member(
     polylogue_store::ImportMember {
         version: 1,
         import_id,
-        authorship: Some(options.authorship.clone().unwrap_or_else(|| {
-            polylogue_model::authorship::Authorship {
-                author: polylogue_model::Author::Script("polylogue-import".into()),
-                via: polylogue_model::authorship::Channel::Import,
-            }
-        })),
+        authorship: Some(
+            options
+                .authorship
+                .clone()
+                .unwrap_or_else(default_import_authorship),
+        ),
         member: if nested {
             at.to_string_lossy()
                 .rsplit("!/")
@@ -581,6 +583,13 @@ fn import_member(
                 .into_owned()
         },
         format: None,
+    }
+}
+
+fn default_import_authorship() -> polylogue_model::authorship::Authorship {
+    polylogue_model::authorship::Authorship {
+        author: polylogue_model::Author::Script("polylogue-import".into()),
+        via: polylogue_model::authorship::Channel::Import,
     }
 }
 
