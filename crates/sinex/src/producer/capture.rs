@@ -200,7 +200,24 @@ impl Sinex {
                                         .is_some_and(|group| group.identity == identity)
                             })
                         });
-                    if compared_fields(&input, plan.mode)? == compared_fields(&original, plan.mode)?
+                    let mut offered = compared_fields(&input, plan.mode)?;
+                    let original_fields = compared_fields(&original, plan.mode)?;
+                    if plan.mode == CaptureMode::Mutable
+                        && matches!(
+                            (&input.generation, &original.generation),
+                            (
+                                Some(polylogue_store::primary::SourceGeneration::Database { .. }),
+                                Some(polylogue_store::primary::SourceGeneration::Database { .. })
+                            )
+                        )
+                    {
+                        // A consistent read after restart has a fresh custody nonce.
+                        // An authorized retry keeps the original read, including
+                        // its nonce; stream, window and byte identity still match.
+                        offered["generation"]["snapshot"] =
+                            original_fields["generation"]["snapshot"].clone();
+                    }
+                    if offered == original_fields
                         && (same_base || retry_self || plan.mode == CaptureMode::Immutable)
                     {
                         input = *original;
@@ -428,3 +445,6 @@ mod continuation;
 mod byte_range_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod database_retry_tests;

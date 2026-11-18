@@ -53,7 +53,7 @@ pub(super) fn capture_bytes(
     }
 }
 
-fn accepted(result: CaptureResult) -> PreparedWrite {
+pub(super) fn accepted(result: CaptureResult) -> PreparedWrite {
     let CaptureResult::Accepted { write } = result else {
         panic!("accepted preparation required")
     };
