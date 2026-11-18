@@ -9,8 +9,8 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 
-/// Stages and delivers one member at a time. The consumer commits and parses
-/// it before another member is prepared, so a stopped import keeps its progress.
+/// Stages and validates one member at a time. The consumer sets the bounds
+/// on verified members retained for each write.
 pub(super) fn visit(
     root: &Path,
     archive: &Archive,
