@@ -276,6 +276,98 @@ fn wait_until(what: &str, ok: impl Fn() -> bool) {
     }
 }
 
+#[test]
+fn host_startup_reports_a_child_exit_before_socket_publication() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut command = std::process::Command::new("sh");
+    command.args(["-c", "exit 7"]);
+    let error = start_host(
+        &mut command,
+        &dir.path().join("host.sock"),
+        Instant::now() + Duration::from_secs(10),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "polylogue internal host exited at start (exit status: 7)"
+    );
+}
+
+#[test]
+fn host_startup_returns_after_publication_and_keeps_the_child_running() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("host.sock");
+    let entered = dir.path().join("child.pid");
+    let starting = {
+        let socket = socket.clone();
+        let entered = entered.clone();
+        std::thread::spawn(move || {
+            let mut command = std::process::Command::new("sh");
+            command
+                .args([
+                    "-c",
+                    "printf '%s' $$ > \"$1.pending\"; mv \"$1.pending\" \"$1\"; exec sleep 60",
+                    "synthetic-host",
+                ])
+                .arg(entered);
+            start_host(
+                &mut command,
+                &socket,
+                Instant::now() + Duration::from_secs(10),
+            )
+        })
+    };
+    wait_until("the child starting", || entered.exists());
+    let _listener = crate::socket::bind(&socket).unwrap();
+    let result = starting.join().unwrap();
+    let pid: u32 = std::fs::read_to_string(entered).unwrap().parse().unwrap();
+    let running = crate::live_events::identity(pid).is_some();
+    stop_host(pid);
+    assert_eq!(result.unwrap(), pid);
+    assert!(
+        running,
+        "socket readiness must keep the hosted process alive"
+    );
+}
+
+#[test]
+fn host_startup_observes_reaper_pipe_exit_without_a_pidfd() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("host.sock");
+    let watch = crate::socket::Watch::new(&socket).unwrap();
+    let (exited, notify_exit) = UnixStream::pair().unwrap();
+    let mut child = std::process::Command::new("sh")
+        .args(["-c", "exit 9"])
+        .spawn()
+        .unwrap();
+    let reaper = std::thread::spawn(move || {
+        let status = child.wait().unwrap();
+        drop(notify_exit);
+        status
+    });
+    let status = reaper.join().unwrap();
+    let _listener = crate::socket::bind(&socket).unwrap();
+    let outcome = wait_for_host_socket(
+        &watch,
+        &socket,
+        &exited.into(),
+        Instant::now() + Duration::from_secs(10),
+    )
+    .unwrap();
+    assert_eq!(outcome, HostSocket::Exited);
+    assert_eq!(status.code(), Some(9));
+}
+
+#[test]
+fn host_socket_wait_honours_its_deadline() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("host.sock");
+    let watch = crate::socket::Watch::new(&socket).unwrap();
+    let (exited, _running) = UnixStream::pair().unwrap();
+    let error = wait_for_host_socket(&watch, &socket, &exited.into(), Instant::now()).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+}
+
 /// The registry lines the host wrote: (event, status word).
 fn status_lines(spool: &Path) -> Vec<(String, Option<String>)> {
     let Ok(entries) = std::fs::read_dir(spool.join("registry")) else {

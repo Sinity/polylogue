@@ -649,11 +649,7 @@ impl Drop for Server {
 /// from a stopped daemon; the archive lock held by `daemon` proves no
 /// other daemon owns this archive.
 pub fn bind(daemon: &Daemon) -> std::io::Result<UnixListener> {
-    let socket = daemon.archive.socket();
-    if socket.exists() {
-        std::fs::remove_file(&socket)?;
-    }
-    UnixListener::bind(&socket)
+    crate::socket::bind(&daemon.archive.socket())
 }
 
 /// The listener and the stop signal the accept thread blocks on.

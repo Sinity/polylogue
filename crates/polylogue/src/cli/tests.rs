@@ -25,14 +25,23 @@ fn a_starting_daemon_is_waited_for() {
     let server = std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(300));
         let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-        let (stream, _) = listener.accept().unwrap();
-        let mut line = String::new();
-        std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut line).unwrap();
-        let reply = serde_json::to_string(&command_surface::Answer::ok(
-            serde_json::json!({"ready": true}),
-        ))
-        .unwrap();
-        std::io::Write::write_all(&mut &stream, format!("{reply}\n").as_bytes()).unwrap();
+        loop {
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            if std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut line)
+                .unwrap()
+                == 0
+            {
+                // The readiness connection checks listening without a request.
+                continue;
+            }
+            let reply = serde_json::to_string(&command_surface::Answer::ok(
+                serde_json::json!({"ready": true}),
+            ))
+            .unwrap();
+            std::io::Write::write_all(&mut &stream, format!("{reply}\n").as_bytes()).unwrap();
+            break;
+        }
         drop(lock);
     });
     // A deadline longer than the start; the status class's own is shorter.

@@ -10,6 +10,57 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
+/// Wait for a listening daemon or the end of the archive owner's startup.
+/// Register before connecting, so publication between the first failed
+/// connection and this wait cannot be lost.
+pub(crate) async fn wait_for_socket(
+    path: &Path,
+    until: Option<std::time::Instant>,
+) -> io::Result<()> {
+    let watch = tokio::io::unix::AsyncFd::new(crate::socket::Watch::new(path)?)?;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let archive = Archive::at(parent);
+    let wait = async {
+        loop {
+            match tokio::net::UnixStream::connect(path).await {
+                Ok(_) => return Ok(()),
+                Err(error) if crate::cli::is_down(&error) && archive.lock_held() => {}
+                Err(error) => return Err(error),
+            }
+            loop {
+                let mut ready = watch.readable().await?;
+                match ready.try_io(|watch| {
+                    if watch.get_ref().changed()? {
+                        Ok(())
+                    } else {
+                        Err(io::ErrorKind::WouldBlock.into())
+                    }
+                }) {
+                    Ok(result) => {
+                        result?;
+                        break;
+                    }
+                    Err(_) => continue,
+                }
+            }
+        }
+    };
+    match until {
+        Some(until) => tokio::time::timeout_at(until.into(), wait)
+            .await
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "the daemon did not start before the deadline",
+                )
+            })?,
+        None => wait.await,
+    }
+}
+
 fn runtime() -> io::Result<&'static tokio::runtime::Runtime> {
     static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
     RUNTIME
