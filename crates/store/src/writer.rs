@@ -1737,6 +1737,7 @@ impl Inner {
         batches: impl Iterator<Item = &'a Batch> + Clone,
     ) -> Result<()> {
         let upkeep = self.resolver.upkeep();
+        let applying = crate::timing::build_row_step(upkeep.at_build_end(), "apply");
         let primary = self.sinex.is_some();
         if primary {
             for batch in batches.clone() {
@@ -1878,6 +1879,7 @@ impl Inner {
             }
             stats.0 += 1;
         }
+        drop(applying);
         self.report.item_units_read += rows::finish(&itx, &changes, &upkeep, &self.texts, counter)?;
         let source_changed = if !primary {
             let changed = crate::chain_progress::recorded(&self.archive)?;

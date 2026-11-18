@@ -155,6 +155,7 @@ fn apply_rows(
             })
             .transpose()?
     };
+    let registering = crate::timing::build_row_step(upkeep.at_build_end(), "versions");
     let membership = crate::text_rows::NewMembership {
         bits: &rows.current_texts(),
         at_build_end: upkeep.at_build_end(),
@@ -176,6 +177,8 @@ fn apply_rows(
         rows.versions
             .insert(version.value.prepared.hash, registered);
     }
+    drop(registering);
+    let selecting = crate::timing::build_row_step(upkeep.at_build_end(), "selected-rows");
     let mut sessions: HashMap<String, i64> = HashMap::new();
     for s in &p.output.sessions {
         let (pk, _) = rows.upsert_session(s, rows.source_committed)?;
@@ -480,6 +483,7 @@ fn apply_rows(
         )?
         .execute(params![input_pk, chain, pk])?;
     }
+    drop(selecting);
     let source_commit = source_commit.or(p.source_commit.as_ref());
     if retraction && source_commit.is_none() {
         crate::wire_shapes::unobserved(tx, input_pk, chain)?;
@@ -510,8 +514,11 @@ fn apply_rows(
         },
         p,
     )?;
-    if !crate::parser_context::apply(tx, input_pk, chain, p, &rows.versions, upkeep)? {
-        rows.checkpoint.forget_context();
+    {
+        let _context = crate::timing::build_row_step(upkeep.at_build_end(), "parser-context");
+        if !crate::parser_context::apply(tx, input_pk, chain, p, &rows.versions, upkeep)? {
+            rows.checkpoint.forget_context();
+        }
     }
     rows.write_parse_state(b, p)?;
     Ok(written)
