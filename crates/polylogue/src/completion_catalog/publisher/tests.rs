@@ -572,12 +572,29 @@ fn a_commit_without_catalog_changes_writes_nothing() {
 fn historical_drive_intent_is_removed_from_initial_and_incremental_completions() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("catalog");
-    let mut fixture =
-        polylogue_store::fixture::Fixture::new(&directory.path().join("archive")).unwrap();
-    fixture.setting("drive.ai-studio", "off").unwrap();
-    let mut state = State::new(false, super::super::tests::request_metadata());
+    let archive = polylogue_store::fixture::writer::WriterArchive::new();
+    let requests = super::super::tests::request_metadata();
+    let set = |id: &str, value: &str| {
+        archive
+            .writer
+            .user(requests.request(
+                id.into(),
+                polylogue_model::user::UserWrite::SetSetting {
+                    key: "drive.ai-studio".into(),
+                    value: value.into(),
+                    machine: None,
+                },
+                polylogue_model::authorship::Authorship {
+                    author: polylogue_model::Author::Operator,
+                    via: polylogue_model::authorship::Channel::Cli,
+                },
+            ))
+            .unwrap();
+    };
+    set("old-off", "off");
+    let mut state = State::new(false, requests.clone());
     {
-        let reads = fixture.reads().unwrap();
+        let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
         let reader = reads.reader().unwrap();
         state.refresh(&reader, &path, "synthetic").unwrap();
         let cache = completion::CatalogReader::open(&path, "synthetic")
@@ -611,9 +628,10 @@ fn historical_drive_intent_is_removed_from_initial_and_incremental_completions()
             .len(),
         1
     );
-    fixture.setting("drive.ai-studio", "on").unwrap();
-    let reads = fixture.reads().unwrap();
+    set("old-on", "on");
+    let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
     let reader = reads.reader().unwrap();
+    assert!(reader.change_position().unwrap().archive > state.position.as_ref().unwrap().archive);
     state.refresh(&reader, &path, "synthetic").unwrap();
     let cache = completion::CatalogReader::open(&path, "synthetic")
         .unwrap()
