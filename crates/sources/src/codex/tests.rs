@@ -815,3 +815,162 @@ fn copied_history_branch_point_survives_split_appends() {
         );
     }
 }
+
+#[test]
+fn verified_answers_keep_their_payload_and_actual_call_across_appends() {
+    for native_id in [None, Some("question-message")] {
+        let mut call = json!({"type":"function_call", "name":"request_user_input",
+            "call_id":"question-call", "arguments":"{\"questions\":[{\"question\":\"Which colour?\"}]}"});
+        if let Some(native_id) = native_id {
+            call["id"] = json!(native_id);
+            call["namespace"] = json!("functions");
+        }
+        let first_bytes = jsonl(&[meta(json!({})), env(2, "response_item", call)]);
+        let payload = json!({"type":"verified_answer", "call_id":"question-call", "turn_id":"t1",
+            "acceptance_order":2, "questions":[{"question":"Which colour?", "answer":"Blue",
+                "future_answer_detail":{"value":7}}], "future_field":["retained"]});
+        let second_bytes = jsonl(&[
+            user(3, "An intervening message is not the answer's call."),
+            env(4, "retained_context", payload.clone()),
+        ]);
+        let mut state = ParserState::default();
+        let first = run(&rollout(), &mut state, &first_bytes, 0).unwrap();
+        let actual_call = first.output.messages[0].message.id.clone();
+        let context = state.context.clone();
+        let mut state: ParserState =
+            serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
+        state.bind(context);
+        let second = run(&rollout(), &mut state, &second_bytes, first.consumed).unwrap();
+        let answer = second
+            .output
+            .events
+            .iter()
+            .find(|e| e.kind == "verified_answer")
+            .unwrap();
+        assert_eq!(answer.data, payload);
+        assert_eq!(answer.after, Some(actual_call));
+        assert_eq!(answer.session, session_id(THREAD));
+        let written = serde_json::to_value(answer).unwrap();
+        assert_eq!(written["at"], "2026-03-01T10:00:04Z");
+        assert_eq!(written["at_quality"], "intrinsic");
+        assert_eq!(written["at_precision"], "instant");
+        assert_eq!(second.output.messages.len(), 1);
+        assert_eq!(second.counts.used["retained_context"], 1);
+        assert_eq!(
+            answer.range.unwrap().1,
+            first.consumed + second.consumed - 1
+        );
+    }
+}
+
+#[test]
+fn realtime_markers_keep_their_time_and_payload_without_a_message_anchor() {
+    let started = json!({"type":"realtime_session_started", "id":"marker-start",
+        "realtime_session_id":"realtime-one", "future_field":{"value":1}});
+    let closed = json!({"type":"realtime_session_closed", "id":"marker-close",
+        "realtime_session_id":"realtime-one", "outcome":"ended",
+        "timestamp":"2026-03-01T10:00:09.125Z"});
+    let mut closing = env(4, "realtime_item", closed.clone());
+    closing["timestamp"] = Json::Null;
+    let step = run(
+        &rollout(),
+        &mut ParserState::default(),
+        &jsonl(&[
+            meta(json!({})),
+            user(2, "A message before the realtime activity."),
+            env(3, "realtime_item", started.clone()),
+            closing,
+        ]),
+        0,
+    )
+    .unwrap();
+    let events: Vec<_> = step
+        .output
+        .events
+        .iter()
+        .filter(|e| e.kind.starts_with("realtime_session_"))
+        .collect();
+    assert_eq!(events.len(), 2);
+    for (event, payload, time) in [
+        (events[0], started, "2026-03-01T10:00:03Z"),
+        (events[1], closed, "2026-03-01T10:00:09.125Z"),
+    ] {
+        assert_eq!(event.data, payload);
+        assert_eq!(event.after, None);
+        assert_eq!(event.session, session_id(THREAD));
+        assert_eq!(serde_json::to_value(event).unwrap()["at"], time);
+    }
+    assert_eq!(step.output.messages.len(), 1);
+    assert_eq!(step.counts.used["realtime_item"], 2);
+}
+
+#[test]
+fn verified_answers_with_no_known_call_keep_an_unknown_anchor_and_time() {
+    let payload = json!({"type":"verified_answer", "call_id":"unseen-call", "questions":[]});
+    let mut answer = env(3, "retained_context", payload.clone());
+    answer["timestamp"] = Json::Null;
+    let step = run(
+        &rollout(),
+        &mut ParserState::default(),
+        &jsonl(&[
+            meta(json!({})),
+            user(2, "An unrelated previous message."),
+            answer,
+        ]),
+        0,
+    )
+    .unwrap();
+    let answer = step
+        .output
+        .events
+        .iter()
+        .find(|e| e.kind == "verified_answer")
+        .unwrap();
+    assert_eq!(answer.data, payload);
+    assert_eq!(answer.after, None);
+    assert_eq!(answer.at, None);
+    assert_eq!(
+        serde_json::to_value(answer).unwrap()["at_quality"],
+        "unknown"
+    );
+}
+
+#[test]
+fn unknown_retained_and_realtime_payloads_name_what_could_not_be_read() {
+    let records = [
+        env(1, "retained_context", json!({"type":"future_context"})),
+        env(2, "realtime_item", json!({"type":"future_realtime"})),
+        env(3, "retained_context", json!({})),
+        env(4, "realtime_item", Json::Null),
+        env(
+            5,
+            "unknown_context",
+            json!({"type":"verified_answer", "call_id":"unseen"}),
+        ),
+    ];
+    let step = run(&rollout(), &mut ParserState::default(), &jsonl(&records), 0).unwrap();
+    assert_eq!(
+        step.counts.skipped,
+        BTreeMap::from([
+            (
+                "retained_context: retained_context payload type future_context has no reader"
+                    .into(),
+                1
+            ),
+            (
+                "realtime_item: realtime_item payload type future_realtime has no reader".into(),
+                1
+            ),
+            (
+                "retained_context: retained_context payload type missing has no reader".into(),
+                1
+            ),
+            (
+                "realtime_item: realtime_item payload type missing has no reader".into(),
+                1
+            ),
+            ("unknown_context: unrecognized record type".into(), 1),
+        ])
+    );
+    assert_eq!(step.counts.records, 5);
+}

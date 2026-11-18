@@ -17,7 +17,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 7;
+pub const VERSION: u32 = 8;
 
 pub mod database;
 mod fields;
@@ -177,6 +177,9 @@ pub struct Rollout {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Call {
     tool: String,
+    /// A question call's message can have a different ID from its call ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    message: Option<MessageId>,
     /// The handle a `write_stdin` or `wait` call continues.
     continues: Option<String>,
     answered: bool,
@@ -278,7 +281,9 @@ const BARE_ITEMS: &[&str] = &[
 fn unwrap(v: &Json) -> Rec<'_> {
     let at = v.get("timestamp").and_then(time::rfc3339);
     let ordinal = v.u64("ordinal");
-    if let Some(payload) = v.get("payload").filter(|p| p.is_object()) {
+    if let Some(payload) = v.get("payload").filter(|p| p.is_object()).or_else(|| {
+        matches!(v.str("type"), Some("retained_context" | "realtime_item")).then_some(v)
+    }) {
         return Rec {
             ty: v.str("type").filter(|s| !s.is_empty()).unwrap_or("?"),
             payload,
@@ -599,6 +604,34 @@ impl Rollout {
         let Some(id) = id else {
             return RecordOutcome::unreadable("item ID is empty");
         };
+        if matches!(
+            ty,
+            "function_call" | "custom_tool_call" | "local_shell_call" | "tool_search_call"
+        ) && let Some(Block::ToolCall {
+            call_id: Some(call_id),
+            tool: Some(tool),
+            input,
+            ..
+        }) = blocks.first()
+        {
+            let continues = match tool.as_str() {
+                "write_stdin" => input
+                    .get("session_id")
+                    .map(|s| format!("process {}", unquote(s))),
+                "wait" => input.get("cell_id").map(|s| format!("cell {}", unquote(s))),
+                _ => None,
+            };
+            parser_state.calls.insert(
+                call_id.clone(),
+                Call {
+                    tool: tool.clone(),
+                    message: (tool.rsplit('.').next() == Some("request_user_input"))
+                        .then(|| id.clone()),
+                    continues,
+                    ..Call::default()
+                },
+            );
+        }
         let message = {
             let (at, time_evidence) = crate::time::parts(at);
             Message {
@@ -717,24 +750,7 @@ impl Rollout {
                 let tool = items::tool_name(item)
                     .unwrap_or_else(|| ty.trim_end_matches("_call").to_owned());
                 let input = items::call_input(item);
-                let continues = match tool.as_str() {
-                    "write_stdin" => input
-                        .get("session_id")
-                        .map(|s| format!("process {}", unquote(s))),
-                    "wait" => input.get("cell_id").map(|s| format!("cell {}", unquote(s))),
-                    _ => None,
-                };
                 let id = call_id();
-                if let Some(id) = &id {
-                    parser_state.calls.insert(
-                        id.clone(),
-                        Call {
-                            tool: tool.clone(),
-                            continues,
-                            ..Call::default()
-                        },
-                    );
-                }
                 let block = Block::ToolCall {
                     written_text: items::written_text(&tool, &input),
                     run_by_script: false,
@@ -1365,6 +1381,38 @@ impl Parser for Rollout {
                 self.response_item(parser_state, record, p, rec.at, rec.ordinal, out)
             }
             "event_msg" => self.event_msg(parser_state, record, p, rec.at, out, records),
+            "retained_context" | "realtime_item" => {
+                let kind = v
+                    .get("payload")
+                    .and_then(|payload| payload.str("type"))
+                    .filter(|kind| !kind.is_empty())
+                    .unwrap_or("missing");
+                if !matches!(
+                    (rec.ty, kind),
+                    ("retained_context", "verified_answer")
+                        | (
+                            "realtime_item",
+                            "realtime_session_started" | "realtime_session_closed"
+                        )
+                ) {
+                    return RecordOutcome::skipped(format!(
+                        "{} payload type {kind} has no reader",
+                        rec.ty
+                    ));
+                }
+                let after = (kind == "verified_answer")
+                    .then(|| {
+                        p.str("call_id")
+                            .and_then(|call_id| parser_state.calls.get(call_id))
+                            .and_then(|call| call.message)
+                    })
+                    .flatten();
+                let outcome = self.event_by_time(parser_state, p, kind, rec.at, out);
+                if outcome == RecordOutcome::Used {
+                    out.events.last_mut().expect("new event").after = after;
+                }
+                outcome
+            }
             "turn_context" => {
                 if let Some(model) = p.str("model").filter(|s| !s.is_empty()) {
                     parser_state.model = Some(model.to_owned());

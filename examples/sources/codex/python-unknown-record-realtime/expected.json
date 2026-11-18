@@ -1,25 +1,20 @@
 {
   "counts": {
-    "records": 8,
+    "records": 9,
     "used": {
       "response_item/function_call": 1,
       "response_item/function_call_output": 1,
       "response_item/message": 2,
-      "session_meta": 1
+      "session_meta": 1,
+      "realtime_item": 2,
+      "retained_context": 1
     },
     "unreadable": {},
     "skipped": {
-      "realtime_item: unrecognized record type": 2,
       "unknown_context: unrecognized record type": 1
     },
     "unread_fields": {
       "realtime_item.ordinal": 2,
-      "realtime_item.payload.id": 2,
-      "realtime_item.payload.outcome": 1,
-      "realtime_item.payload.realtime_session_id": 2,
-      "realtime_item.payload.type": 2,
-      "realtime_item.timestamp": 2,
-      "realtime_item.type": 2,
       "session_meta.ordinal": 1,
       "unknown_context.ordinal": 1,
       "unknown_context.payload.acceptance_order": 1,
@@ -29,7 +24,8 @@
       "unknown_context.payload.turn_id": 1,
       "unknown_context.payload.type": 1,
       "unknown_context.timestamp": 1,
-      "unknown_context.type": 1
+      "unknown_context.type": 1,
+      "retained_context.ordinal": 1
     }
   },
   "output": {
@@ -51,6 +47,63 @@
         },
         "at_quality": "intrinsic",
         "at_precision": "instant"
+      },
+      {
+        "session": "codex:unknown-context-session",
+        "kind": "realtime_session_started",
+        "at": "2026-09-01T10:00:06Z",
+        "range": [
+          1129,
+          1323
+        ],
+        "data": {
+          "type": "realtime_session_started",
+          "id": "realtime-marker-1",
+          "realtime_session_id": "realtime-session-sample"
+        },
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
+      },
+      {
+        "session": "codex:unknown-context-session",
+        "kind": "realtime_session_closed",
+        "at": "2026-09-01T10:00:09Z",
+        "range": [
+          1324,
+          1535
+        ],
+        "data": {
+          "type": "realtime_session_closed",
+          "id": "realtime-marker-2",
+          "realtime_session_id": "realtime-session-sample",
+          "outcome": "ended"
+        },
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
+      },
+      {
+        "session": "codex:unknown-context-session",
+        "kind": "verified_answer",
+        "at": "2026-09-01T10:00:11Z",
+        "range": [
+          1730,
+          2007
+        ],
+        "data": {
+          "type": "verified_answer",
+          "call_id": "call_sample_question",
+          "turn_id": "turn-sample-1",
+          "acceptance_order": 1,
+          "questions": [
+            {
+              "question": "Which colour should the banner use?",
+              "answer": "Green"
+            }
+          ]
+        },
+        "at_quality": "intrinsic",
+        "at_precision": "instant",
+        "after": "codex:unknown-context-session~assistant-5f56c99e763696b8-0"
       },
       {
         "data": {},
