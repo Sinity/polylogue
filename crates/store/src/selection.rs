@@ -1053,7 +1053,7 @@ fn identity_target(unit: Unit, values: &[Value]) -> Option<ReadTarget> {
         Unit::Messages => MessageId::parse(text(0)?).ok().map(ReadTarget::Message),
         Unit::Documents => DocumentId::parse(text(0)?).ok().map(ReadTarget::Document),
         Unit::Events => Some(ReadTarget::Event(text(0)?.to_owned())),
-        Unit::Assertions => Some(ReadTarget::Assertion {
+        Unit::Annotations => Some(ReadTarget::Assertion {
             root: text(1)?.to_owned(),
             revision: text(0)?.to_owned(),
         }),

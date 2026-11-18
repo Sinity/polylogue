@@ -60,15 +60,13 @@ fn withdrawal_target(reference: &Reference) -> bool {
     )
 }
 
-/// A saved-query name that `query:NAME` can say: ASCII letters, digits, `_`,
-/// `-` and `.`. A new save is refused under any other name; names are also
-/// never entirely hexadecimal, which [`validate_links`] checks for every
-/// `saved_query` key.
+/// New saved names start with a lowercase letter and contain lowercase
+/// letters, digits and hyphens. Product vocabulary is checked by the verb.
 pub fn sayable_query_name(name: &str) -> bool {
-    !name.is_empty()
+    name.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
         && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
 }
 
 /// Checks the kind declaration and relation address shapes without changing

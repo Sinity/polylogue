@@ -313,17 +313,15 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
         value: "on".into(),
         machine: None,
     });
-    write(UserWrite::SaveSelection(Box::new(
-        polylogue_model::user::SaveSelection {
-            name: Some("kept".into()),
-            query: "sessions".into(),
-            rows_json: "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}".into(),
-            read_at: "{}".into(),
-            denominator: None,
-            watch: None,
-            outcomes: None,
-        },
-    )));
+    write(UserWrite::Save(Box::new(polylogue_model::user::Save {
+        name: Some("kept".into()),
+        query: "sessions".into(),
+        rows_json: "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}".into(),
+        read_at: "{}".into(),
+        denominator: None,
+        watch: None,
+        outcomes: None,
+    })));
     let delivery = write(UserWrite::Deliver(Delivery {
         recipient_kind: "session".into(),
         recipient_id: Some("claude-code:s1".into()),

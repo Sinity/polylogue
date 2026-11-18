@@ -71,6 +71,8 @@ fn written_tool_text_searches_output_and_snippets_and_retracts_without_losing_in
                 random_seed: None,
                 embeddings: false,
                 self_session: None,
+                here: None,
+                seen_marks_of: None,
                 saved: Default::default(),
                 kept: Default::default(),
                 fields: vec![],

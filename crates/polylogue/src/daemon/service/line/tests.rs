@@ -1106,7 +1106,7 @@ fn an_owned_save_finishes_atomically_after_deadline_then_stops_later_steps() {
     assert_eq!(reports[2]["outcome"]["status"], "not_run", "{value}");
     let reader = d.daemon.reads.reader().unwrap();
     let accepted = reader.user_request("owned-save-1").unwrap().unwrap();
-    let polylogue_model::user::UserWrite::SaveSelection(save) = accepted.write else {
+    let polylogue_model::user::UserWrite::Save(save) = accepted.write else {
         panic!("one atomic Save request")
     };
     assert_eq!(

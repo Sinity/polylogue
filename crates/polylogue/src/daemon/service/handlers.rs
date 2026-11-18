@@ -635,33 +635,26 @@ pub(crate) fn save_selection(
     let request_id: String = call.request_id.into();
     let reader = call.reader()?;
     let selected_scope = reader.scope_token();
-    let mut save = polylogue_model::user::SaveSelection {
+    let mut save = polylogue_model::user::Save {
         name: step.name,
         query,
         denominator: step.denominator,
         rows_json: String::new(),
         read_at: String::new(),
         outcomes: None,
-        watch: step.watch.then_some(polylogue_model::user::SavedWatch {
+        watch: step.watch.then_some(polylogue_model::user::SaveWatch {
             hold: step.hold,
             notify: step.notify,
         }),
     };
-    let intended = UserWrite::SaveSelection(Box::new(save.clone()));
+    let intended = UserWrite::Save(Box::new(save.clone()));
     let present = |receipt: polylogue_store::user_writes::UserReceipt| {
         let mut report = receipt
             .save
             .expect("Save transaction returns its resolved outcomes");
         let written = receipt.written;
-        for outcome in report
-            .saved
-            .iter_mut()
-            .chain(std::iter::once(&mut report.kept))
-            .chain(report.watch.iter_mut())
-        {
-            outcome.pending = receipt.outcome.pending;
-            outcome.repeat |= receipt.outcome.repeat;
-        }
+        report.pending = receipt.outcome.pending;
+        report.repeat |= receipt.outcome.repeat;
         (report, written)
     };
     match repeated_request(&reader, &request_id, &intended, invocation) {
@@ -717,7 +710,7 @@ pub(crate) fn save_selection(
         d,
         invocation,
         request_id,
-        UserWrite::SaveSelection(Box::new(save)),
+        UserWrite::Save(Box::new(save)),
         Some(selected_scope),
         present,
     ))

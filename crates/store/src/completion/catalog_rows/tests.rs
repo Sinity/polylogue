@@ -191,7 +191,7 @@ fn authored_deltas_follow_only_affected_families_and_setting_keys() {
     for (id, name) in [("saved-a", "alpha"), ("saved-b", "beta")] {
         write(
             id,
-            UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+            UserWrite::Save(Box::new(polylogue_model::user::Save {
                 name: Some(name.into()),
                 query: "sessions | group by origin | count".into(),
                 denominator: Some("sessions".into()),
@@ -281,7 +281,7 @@ fn authored_deltas_follow_only_affected_families_and_setting_keys() {
     let after = reads.reader().unwrap().change_position().unwrap();
     write(
         "replace-a",
-        UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+        UserWrite::Save(Box::new(polylogue_model::user::Save {
             name: Some("alpha".into()),
             query: "messages | group by role | count".into(),
             denominator: Some("messages".into()),

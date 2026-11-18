@@ -17,6 +17,8 @@ fn matched(home: &ClaudeHome, text: &str) -> u64 {
         random_seed: Some(7),
         embeddings: false,
         self_session: None,
+        here: None,
+        seen_marks_of: None,
         saved: Default::default(),
         fields: vec!["id".into()],
         kept: Default::default(),

@@ -92,6 +92,8 @@ fn options() -> Options {
         random_seed: Some(7),
         embeddings: false,
         self_session: None,
+        here: None,
+        seen_marks_of: None,
         saved: Default::default(),
         fields: vec![],
         kept: Default::default(),

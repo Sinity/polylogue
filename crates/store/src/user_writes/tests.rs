@@ -14,7 +14,7 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
     let w = crate::fixture::writer::WriterArchive::new();
     let kept = crate::fixture::authored::operator_request(
         "kept".into(),
-        UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+        UserWrite::Save(Box::new(polylogue_model::user::Save {
             name: Some("example".into()),
             query: "sessions".into(),
             rows_json: "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}".into(),
@@ -26,7 +26,7 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
     );
     let saved = crate::fixture::authored::operator_request(
         "saved".into(),
-        UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+        UserWrite::Save(Box::new(polylogue_model::user::Save {
             name: Some("example".into()),
             query: "sessions".into(),
             denominator: None,
@@ -55,7 +55,7 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
             .unwrap();
     }
     let mut retry = saved.clone();
-    if let UserWrite::SaveSelection(save) = &mut retry.write {
+    if let UserWrite::Save(save) = &mut retry.write {
         save.query = "messages".into();
     }
     for request in [kept.clone(), retry] {
@@ -68,7 +68,7 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
     let reader = reads.reader().unwrap();
     for request in [kept, saved] {
         let mut recorded = reader.user_request(&request.id).unwrap().unwrap();
-        if let UserWrite::SaveSelection(save) = &mut recorded.write {
+        if let UserWrite::Save(save) = &mut recorded.write {
             save.outcomes = None;
         }
         assert_eq!(recorded, request);
@@ -113,7 +113,7 @@ fn a_kept_body_later_preparations_cannot_decode_is_refused_without_recording_a_r
     ] {
         let request = crate::fixture::authored::operator_request(
             id.into(),
-            UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+            UserWrite::Save(Box::new(polylogue_model::user::Save {
                 name: None,
                 query: "sessions".into(),
                 rows_json: rows_json.into(),
@@ -143,7 +143,7 @@ fn a_kept_body_later_preparations_cannot_decode_is_refused_without_recording_a_r
     }
     let saved = crate::fixture::authored::operator_request(
         "saved-after-refusal".into(),
-        UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+        UserWrite::Save(Box::new(polylogue_model::user::Save {
             name: Some("after".into()),
             query: "sessions".into(),
             denominator: None,
@@ -340,7 +340,7 @@ fn save_selection_rolls_back_every_effect_when_the_kept_insert_fails() {
     conn.execute_batch("CREATE TRIGGER reject_kept BEFORE INSERT ON kept_result BEGIN SELECT RAISE(ABORT,'synthetic kept insert failure'); END;").unwrap();
     let request = crate::fixture::authored::operator_request(
         "atomic-save".into(),
-        UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+        UserWrite::Save(Box::new(polylogue_model::user::Save {
             outcomes: Some(polylogue_model::user::SaveReport {
                 saved: None,
                 request: "forged-request".into(),
@@ -358,7 +358,7 @@ fn save_selection_rolls_back_every_effect_when_the_kept_insert_fails() {
             denominator: None,
             rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
             read_at: r#"{"now":1}"#.into(),
-            watch: Some(polylogue_model::user::SavedWatch {
+            watch: Some(polylogue_model::user::SaveWatch {
                 hold: Some("20m".into()),
                 notify: false,
             }),

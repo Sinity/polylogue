@@ -47,6 +47,8 @@ fn selected(reader: &crate::Reader<'_>, text: &str) -> Vec<String> {
         random_seed: None,
         embeddings: false,
         self_session: None,
+        here: None,
+        seen_marks_of: None,
         saved: Default::default(),
         fields: vec![],
         kept: Default::default(),

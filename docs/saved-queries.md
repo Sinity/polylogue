@@ -33,7 +33,7 @@ Composition edges are recorded at compile time in `query_edge(query, uses, how)`
 
 `save [NAME]` acts on the question as well as the rows: it names the selection's question and stores the rows this line resolved as a kept result, in one act.
 
-One Save step has one request and transaction. Its definition, kept result and optional watch commit together; a failure leaves none of those effects. A retry returns the original kept result and the actual definition and watch revisions accepted by that request, including revisions reused from earlier Saves. Undo names only revisions that the Save created.
+One Save step has one request and transaction. Its definition, kept result and optional watch commit together; a failure leaves none of those effects. A retry returns the original kept result and the actual definition and watch revisions accepted by that request, including revisions reused from earlier Saves. Undo names only revisions that the Save created. The kept result uses the request ID; new annotations use that ID when there is one, or its numbered parts when there are several. Reused revisions retain their original IDs.
 
 **What `save NAME` writes**, on any selection (a reference or row numbers become their references' query text, `session:a OR session:b`):
 
@@ -50,10 +50,9 @@ It prints every part, with the line that undoes it:
 ```console
 $ polylogue 'tool_calls where outcome:error command~"cargo test" since:7d' save failing --watch
 saved   query:failing (revision 1): runs again each time you use it
-kept    result:01JD7Q4M (34 rows, 16 Nov 14:02), now result:failing
+kept    result:01JD7Q4M (34 rows, 2026-11-16T14:02:00Z), now result:failing
 watch   notices when a row starts matching query:failing
-undo    polylogue assertion:01JD7Q4M-save@01JD7Q4M-save withdraw
-undo    polylogue assertion:01JD7Q4M-watch@01JD7Q4M-watch withdraw
+undo    polylogue 'assertion:01JD7Q4M.1@01JD7Q4M.1 OR assertion:01JD7Q4M.2@01JD7Q4M.2' withdraw --all --request-id 01JD7Q4M-undo
 ```
 
 Over MCP the same step is `polylogue_write {"arguments": {"selection": "tool_calls where outcome:error since:7d", "steps": [{"verb": "save", "name": "failing", "watch": true}]}}`.
@@ -117,11 +116,13 @@ Shipped saved queries are data in the code (`crates/model/src/saved_queries.rs`)
 | `questions` | `annotations where kind:question answered:false` |
 | `triage` | `sessions where triage_score > 0 \| sort by triage_score desc` |
 | `saved` | `queries where name:* \| sort by saved_at desc` |
-| `open` | `annotations where kind:(question goal problem) open:true \| group by page` (open items across pages) |
+| `open` | `annotations where kind:(question goal problem) open:true` (open questions, goals and problems) |
 | `edits` | `annotations where referenced_by:page:* \| sort by at desc` (changes to pages, their slots and the annotations they show, newest first, with author and page; what changed since you looked is `polylogue 'annotations where referenced_by:page:* since:seen \| sort by at desc'`) |
 | `wanted` | `links where target_kind:page target_state:waiting \| group by target \| count` (page names linked or placed that do not exist, with how many link to each) |
 | `changed-sources` | `links where role:cites target_state:(changed missing withdrawn) \| group by page` (citations whose source changed, went missing or was withdrawn) |
 | `uncited` | `annotations where referenced_by:page:* grounding:uncited` (text on pages written by anyone but the operator with no citation) |
+
+Pages add grouping by page to `open`; the page-specific questions below `open` join it when page links and slots are available.
 
 Shipped pages (`home`, `index`, `pinned`, `cost`) and page templates sit beside the shipped saved queries, built in and overridden the same way ([pages.md](pages.md#templates-and-shipped-pages)).
 

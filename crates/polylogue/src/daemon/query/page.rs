@@ -10,7 +10,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-const COMPILER_VERSION: &str = "shared-query-v4";
+const COMPILER_VERSION: &str = "shared-query-v5";
 
 fn stale(message: &str) -> Failure {
     Failure::stale_cursor(format!("{message}; run the query again without its cursor"))

@@ -459,6 +459,8 @@ fn ranked_options() -> crate::query::Options {
         random_seed: Some(7),
         embeddings: true,
         self_session: None,
+        here: None,
+        seen_marks_of: None,
         saved: Default::default(),
         fields: vec![],
         kept: Default::default(),

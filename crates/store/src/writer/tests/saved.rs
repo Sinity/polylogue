@@ -27,7 +27,7 @@ fn request(id: &str, write: UserWrite) -> UserRequest {
 fn save(id: &str, name: &str, text: &str) -> UserRequest {
     request(
         id,
-        UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+        UserWrite::Save(Box::new(polylogue_model::user::Save {
             name: Some(name.into()),
             query: text.into(),
             denominator: None,
@@ -227,7 +227,7 @@ fn saved_figure_keeps_its_denominator_as_a_separate_question() {
         .user(crate::writer::UserSubmission {
             request: request(
                 "figure",
-                UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+                UserWrite::Save(Box::new(polylogue_model::user::Save {
                     name: Some("total".into()),
                     query: "sessions | count".into(),
                     denominator: Some("sessions".into()),

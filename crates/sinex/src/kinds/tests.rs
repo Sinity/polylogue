@@ -158,28 +158,26 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
                 | "polylogue.delivery"
                 | "polylogue.delivery_outcome"
                 | "polylogue.request"
-                | "polylogue.request_restore" => 7,
+                | "polylogue.request_restore" => 8,
                 "polylogue.session" => 7,
                 "polylogue.document"
                 | "polylogue.event"
                 | "polylogue.link"
                 | "polylogue.background"
                 | "polylogue.repository" => 6,
-                "polylogue.assertion_restore" => 2,
+                "polylogue.assertion_restore" => 3,
                 "polylogue.parse_progress" => 7,
                 "polylogue.input_observation" => 6,
-                "polylogue.query_run" => 5,
+                "polylogue.query_run" => 6,
                 "polylogue.query_run_outcome" => 2,
                 "polylogue.blob" | "polylogue.coverage" => 3,
                 "polylogue.fragment" => 4,
-                "polylogue.assertion" => 3,
+                "polylogue.assertion" => 4,
                 "polylogue.query" => 2,
                 "polylogue.tool_call" | "polylogue.prefix_copy" | "polylogue.prefix_member" => 2,
-                "polylogue.line_resolution" | "polylogue.line_resolution_restore" => 2,
-                "polylogue.historical_restore"
-                | "polylogue.attachment_binding"
-                | "polylogue.line_save"
-                | "polylogue.line_save_restore" => 1,
+                "polylogue.line_resolution" | "polylogue.line_resolution_restore" => 3,
+                "polylogue.line_save" | "polylogue.line_save_restore" => 2,
+                "polylogue.historical_restore" | "polylogue.attachment_binding" => 1,
                 other => panic!("undeclared successor kind/version expectation: {other}"),
             }
         );

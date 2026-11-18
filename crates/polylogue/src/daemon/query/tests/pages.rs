@@ -32,7 +32,7 @@ fn continuation_refuses_the_pre_logical_session_compiler() {
     cursor
         .context
         .versions
-        .insert("compiler".into(), "shared-query-v3".into());
+        .insert("compiler".into(), "shared-query-v4".into());
     let legacy = seal.seal(&cursor).unwrap().as_str().to_owned();
     let mut resumed = ask(text);
     resumed.page_size = Some(1);

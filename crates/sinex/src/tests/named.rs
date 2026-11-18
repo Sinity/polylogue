@@ -70,6 +70,8 @@ pub(crate) fn phases() -> Vec<(String, Product)> {
                     references: None,
                     fields: vec![],
                     self_session: None,
+                    here: None,
+                    seen_marks_of: None,
                     embeddings: false,
                     why: false,
                     ranking_identity: None,
@@ -307,14 +309,17 @@ fn old_incomplete_query_run_and_current_completion_use_one_publisher_identity() 
         output_index: 0,
     };
     let current = sinex.prepare_named_products(name, &[write(begin)]).unwrap();
-    assert_eq!(current.identity, format!("polylogue-source-10:{name}"));
+    assert_eq!(
+        current.identity,
+        format!("polylogue-source-{}:{name}", crate::SOURCE_VERSION)
+    );
     assert_eq!(sinex.queue().unwrap().decode_frame(name).unwrap(), old);
     let completed = sinex
         .prepare_named_products(&phases[2].0, &[write(outcome)])
         .unwrap();
     assert_eq!(
         completed.identity,
-        format!("polylogue-source-10:{}", phases[2].0)
+        format!("polylogue-source-{}:{}", crate::SOURCE_VERSION, phases[2].0)
     );
     let queued = sinex.status().unwrap();
     for _ in 0..2 {

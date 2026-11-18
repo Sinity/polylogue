@@ -565,7 +565,7 @@ pub fn requests(
                             request: self::request(
                                 &request.id,
                                 &body,
-                                UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+                                UserWrite::Save(Box::new(polylogue_model::user::Save {
                                     name: name.clone(),
                                     query: query.clone(),
                                     rows_json: row.rows_json.clone(),

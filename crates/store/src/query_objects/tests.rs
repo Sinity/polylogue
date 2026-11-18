@@ -65,6 +65,8 @@ pub(super) fn run(object: &QueryObject, id: &str, at: i64, position: ChangePosit
                     references: None,
                     fields: vec![],
                     self_session: None,
+                    here: None,
+                    seen_marks_of: None,
                     embeddings: false,
                     why: false,
                     ranking_identity: None,
@@ -321,7 +323,7 @@ fn result_output_schemas_require_the_kept_columns() {
         machine: "synthetic-machine".into(),
         at: Timestamp::from_unix_ms(1).unwrap(),
         authorship: Authorship { author: Author::Unattributed, via: Channel::Cli },
-        write: polylogue_model::user::UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+        write: polylogue_model::user::UserWrite::Save(Box::new(polylogue_model::user::Save {
             name: None,
             query: "sessions | select title".into(),
             read_at: "synthetic-read".into(),
@@ -389,6 +391,8 @@ fn executed_selection_records_its_clock_resolution_and_read_context() {
             random_seed: Some(91),
             embeddings: false,
             self_session: None,
+            here: None,
+            seen_marks_of: None,
             saved: BTreeMap::new(),
             fields: vec![],
             kept: BTreeMap::new(),

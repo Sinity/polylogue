@@ -16,7 +16,7 @@ impl Verb for Save {
         selection: &Selection,
         call: &StepCall<'_>,
     ) -> Result<StepDone, Failure> {
-        check(&step)?;
+        check(&step, selection)?;
         let rows = selection
             .query_text()
             .ok_or_else(|| Failure::bad_request("save needs rows"))?;
@@ -31,9 +31,22 @@ impl Verb for Save {
                 .iter()
                 .find(|definition| definition.name == *name)
         {
-            let plan = polylogue_query::plan::replay_binding(&retained.binding.replay)?;
-            question = query_language::format::format_query(&definition.ast, plan.catalog())
-                .map_err(Failure::bad_value)?;
+            let reader = call.call.reader()?;
+            let reference = polylogue_model::RevisionReference {
+                root: definition.root.clone(),
+                revision: Some(definition.revision.clone()),
+            };
+            let saved = reader
+                .assertion(&reference)?
+                .ok_or_else(|| Failure::not_found(format!("query:{name} accepted revision")))?;
+            let value: polylogue_model::assertion::values::SavedQuery = serde_json::from_value(
+                saved
+                    .fact
+                    .value
+                    .ok_or_else(|| Failure::internal("saved question has no value"))?,
+            )
+            .map_err(|error| Failure::internal(error.to_string()))?;
+            question = value.text;
         }
         let mut undo = Vec::new();
         let mut done = super::delegated(
@@ -43,15 +56,13 @@ impl Verb for Save {
                 StepAnswer::Saved(report)
             },
         )?;
-        for reference in undo {
-            done.undo
-                .extend(super::undo_line(&reference.to_string(), &[reference])?);
-        }
+        done.undo
+            .extend(super::undo_line(call.call.request_id, &undo)?);
         Ok(done)
     }
 
     fn would(step: &SaveStep, selection: &Selection, _: &StepCall<'_>) -> Result<String, Failure> {
-        check(step)?;
+        check(step, selection)?;
         Ok(match &step.name {
             Some(name) if step.watch => {
                 format!(
@@ -65,8 +76,9 @@ impl Verb for Save {
     }
 }
 
-fn check(step: &SaveStep) -> Result<(), Failure> {
+fn check(step: &SaveStep, selection: &Selection) -> Result<(), Failure> {
     if let Some(name) = &step.name {
+        let catalog = polylogue_query::catalog::catalog(&[]);
         let captured = if crate::commands::is_cli_command(name) {
             Some("command")
         } else if crate::protocol::steps::declarations()
@@ -75,6 +87,20 @@ fn check(step: &SaveStep) -> Result<(), Failure> {
             .any(|verb| verb.verb() == name)
         {
             Some("verb")
+        } else if catalog.units.iter().any(|unit| unit.name == *name) {
+            Some("unit")
+        } else if ["latest", "self", "here"].contains(&name.as_str()) {
+            Some("reserved word")
+        } else if ["query", "result"].contains(&name.as_str())
+            || catalog.references.iter().any(|reference| {
+                matches!(reference,
+                query_language::catalog::ReferenceForm::Prefix { prefix, .. }
+                    if prefix.strip_suffix(':') == Some(name.as_str()))
+            })
+        {
+            Some("reference prefix")
+        } else if !name.is_empty() && name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            Some("hexadecimal identifier")
         } else {
             None
         };
@@ -96,7 +122,7 @@ fn check(step: &SaveStep) -> Result<(), Failure> {
         && !polylogue_model::assertion::policy::sayable_query_name(name)
     {
         return Err(Failure::bad_value(format!(
-            "{name:?} cannot follow `query:`"
+            "{name:?} is not a saved query name: use lowercase letters, digits and hyphens, starting with a letter"
         )));
     }
     for (given, option) in [
@@ -117,13 +143,23 @@ fn check(step: &SaveStep) -> Result<(), Failure> {
         && crate::signals::duration(hold).is_none()
     {
         return Err(Failure::invalid(format!(
-            "--for {hold:?} is not a duration such as 20m"
+            "--hold {hold:?} is not a duration such as 20m"
         )));
     }
     if step.watch && step.name.is_none() {
-        return Err(Failure::bad_request(
-            "a watch needs a name: save NAME --watch",
-        ));
+        let query = selection
+            .question
+            .clone()
+            .or_else(|| selection.query_text())
+            .unwrap_or_else(|| "QUERY".into());
+        let line =
+            crate::cli::line::shell_line(&[query, "save".into(), "NAME".into(), "--watch".into()]);
+        return Err(Failure::bad_request(format!(
+            "a watch needs a name: {line}"
+        )));
+    }
+    if step.denominator.is_some() && step.name.is_none() {
+        return Err(Failure::bad_request("a figure is a named question"));
     }
     Ok(())
 }

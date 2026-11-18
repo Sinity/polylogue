@@ -143,6 +143,8 @@ pub(crate) fn prepare_with(
             random_seed: Some(0),
             embeddings: false,
             self_session: None,
+            here: None,
+            seen_marks_of: None,
             saved: Default::default(),
             fields: Vec::new(),
             kept: Default::default(),

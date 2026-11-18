@@ -72,28 +72,26 @@ fn line_writes_have_their_own_kinds_and_existing_authored_definitions_stay_exact
         ]),
         retained: None,
     });
-    let mut saved = prepared(UserWrite::SaveSelection(Box::new(
-        polylogue_model::user::SaveSelection {
-            name: None,
-            query: "sessions".into(),
-            denominator: None,
-            rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
-            read_at: r#"{"now":1}"#.into(),
+    let mut saved = prepared(UserWrite::Save(Box::new(polylogue_model::user::Save {
+        name: None,
+        query: "sessions".into(),
+        denominator: None,
+        rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
+        read_at: r#"{"now":1}"#.into(),
+        watch: None,
+        outcomes: Some(polylogue_model::user::SaveReport {
+            saved: None,
+            request: "declared-line".into(),
+            repeat: false,
+            pending: false,
+            kept: polylogue_model::user::KeptPart {
+                result: "result:declared-line".into(),
+                rows: 0,
+                at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
+            },
             watch: None,
-            outcomes: Some(polylogue_model::user::SaveReport {
-                saved: None,
-                request: "declared-line".into(),
-                repeat: false,
-                pending: false,
-                kept: polylogue_model::user::KeptPart {
-                    result: "result:declared-line".into(),
-                    rows: 0,
-                    at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
-                },
-                watch: None,
-            }),
-        },
-    )));
+        }),
+    })));
     saved
         .effect
         .kept_results

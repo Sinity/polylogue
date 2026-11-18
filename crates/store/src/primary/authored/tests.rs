@@ -159,7 +159,7 @@ fn saved_family_and_revision_stay_fixed_across_replay() {
         &request(
             "first",
             10,
-            UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+            UserWrite::Save(Box::new(polylogue_model::user::Save {
                 name: Some("example".into()),
                 query: "sessions".into(),
                 denominator: None,
@@ -178,7 +178,7 @@ fn saved_family_and_revision_stay_fixed_across_replay() {
         &request(
             "second",
             20,
-            UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+            UserWrite::Save(Box::new(polylogue_model::user::Save {
                 name: Some("example".into()),
                 query: "messages".into(),
                 denominator: None,
@@ -197,7 +197,7 @@ fn saved_family_and_revision_stay_fixed_across_replay() {
         &request(
             "third",
             30,
-            UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+            UserWrite::Save(Box::new(polylogue_model::user::Save {
                 name: Some("example".into()),
                 query: "events".into(),
                 denominator: None,
@@ -492,7 +492,7 @@ fn pending_authored_records_are_never_confirmed() {
         request(
             "result",
             3,
-            UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+            UserWrite::Save(Box::new(polylogue_model::user::Save {
                 name: Some("kept".into()),
                 query: "sessions".into(),
                 rows_json: "{\"unit\":\"sessions\",\"columns\":[{\"name\":\"id\",\"kind\":\"number\"}],\"rows\":[{\"id\":1}]}".into(),
@@ -578,7 +578,7 @@ fn a_kept_body_later_preparations_cannot_decode_is_refused_through_primary_apply
     let kept = request(
         "kept",
         1,
-        UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+        UserWrite::Save(Box::new(polylogue_model::user::Save {
             name: None,
             query: "sessions".into(),
             rows_json: "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}".into(),
@@ -589,7 +589,7 @@ fn a_kept_body_later_preparations_cannot_decode_is_refused_through_primary_apply
         })),
     );
     let mut malformed = prepare_with(&conn, &kept, &[], &[]).unwrap();
-    if let UserWrite::SaveSelection(save) = &mut malformed.request.write {
+    if let UserWrite::Save(save) = &mut malformed.request.write {
         save.rows_json = "[]".into();
     }
     malformed.effect.kept_results[0].rows_json = "[]".into();
@@ -1403,14 +1403,14 @@ fn save_selection_pending_and_effect_replay_keep_one_receipt_and_original_child_
     let r = request(
         "atomic-save",
         10,
-        UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+        UserWrite::Save(Box::new(polylogue_model::user::Save {
             outcomes: None,
             name: Some("atomic-example".into()),
             query: "sessions".into(),
             denominator: None,
             rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
             read_at: r#"{"now":1}"#.into(),
-            watch: Some(polylogue_model::user::SavedWatch {
+            watch: Some(polylogue_model::user::SaveWatch {
                 hold: Some("20m".into()),
                 notify: false,
             }),
@@ -1431,7 +1431,7 @@ fn save_selection_pending_and_effect_replay_keep_one_receipt_and_original_child_
         assert_eq!(count(&conn, table), 0, "{table}");
     }
     let mut retried = r.clone();
-    let UserWrite::SaveSelection(save) = &mut retried.write else {
+    let UserWrite::Save(save) = &mut retried.write else {
         unreachable!()
     };
     save.rows_json = r#"{"unit":"sessions","columns":[],"rows":[{}]}"#.into();
@@ -1453,7 +1453,7 @@ fn save_selection_pending_and_effect_replay_keep_one_receipt_and_original_child_
         first,
         "pending intent retains the accepted payload"
     );
-    let UserWrite::SaveSelection(save) = &mut retried.write else {
+    let UserWrite::Save(save) = &mut retried.write else {
         unreachable!()
     };
     save.query = "messages".into();
@@ -1480,7 +1480,7 @@ fn save_selection_pending_and_effect_replay_keep_one_receipt_and_original_child_
     }
     rebuilt.execute_batch("DROP TRIGGER reject_kept").unwrap();
     let mut malformed = first.clone();
-    if let UserWrite::SaveSelection(save) = &mut malformed.request.write {
+    if let UserWrite::Save(save) = &mut malformed.request.write {
         save.outcomes.as_mut().unwrap().kept.result = "result:forged-confirmation".into();
     }
     assert!(validate(&malformed).is_err());
@@ -1518,7 +1518,7 @@ fn a_legacy_named_kept_request_restores_exactly_but_cannot_enter_as_a_new_save()
         .request
         .unwrap()
         .unwrap();
-    let UserWrite::SaveSelection(save) = &prepared.request.write else {
+    let UserWrite::Save(save) = &prepared.request.write else {
         panic!("current Save request")
     };
     assert_eq!(prepared.request.id, original.id);

@@ -27,6 +27,8 @@ fn query_result(
         random_seed: Some(1),
         embeddings: false,
         self_session: None,
+        here: None,
+        seen_marks_of: None,
         saved: Default::default(),
         kept: Default::default(),
         fields: fields.iter().map(|field| (*field).into()).collect(),

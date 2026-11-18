@@ -1499,3 +1499,94 @@ fn printed_cli_continuation_and_previous_keep_the_accepted_options() {
     assert_eq!(returned.items, first.items);
     assert_eq!(returned.header, first.header);
 }
+
+#[test]
+fn saved_query_retry_and_printed_undo_keep_immutable_results() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let project = home.join(".claude/projects/-saved");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("s1.jsonl"),
+        line("u1", "s1", "a saved selection"),
+    )
+    .unwrap();
+    let env = crate::Fixture::new(
+        &dir.path().join("archive"),
+        &home,
+        &dir.path().join("config"),
+    );
+    let _daemon = start_daemon(&env);
+    wait_status(&env, |status| status["store"]["messages"] == 1);
+    let args = [
+        "--json",
+        "--request-id",
+        "save-cli",
+        "sessions",
+        "save",
+        "my-history",
+        "--watch",
+        "--hold",
+        "20m",
+    ];
+    let first = cli(&env, &args);
+    assert!(first.status.success(), "{first:?}");
+    let first = json(&first);
+    let step = &first["reply"]["steps"][0];
+    assert_eq!(step["outcome"]["status"], "done", "{first}");
+    let report = &step["outcome"]["reply"]["reply"];
+    assert_eq!(report["request"], "save-cli-1");
+    assert_eq!(report["saved"]["id"], "save-cli-1.1");
+    assert_eq!(report["saved"]["revision"], 1);
+    assert_eq!(report["watch"]["id"], "save-cli-1.2");
+    assert_eq!(report["kept"]["result"], "result:save-cli-1");
+    assert_eq!(report["kept"]["rows"], 1);
+    let undo = step["outcome"]["undo"].as_array().unwrap();
+    assert_eq!(undo.len(), 1, "{first}");
+    let retry = cli(&env, &args);
+    assert!(retry.status.success(), "{retry:?}");
+    let retry = json(&retry);
+    let retried = &retry["reply"]["steps"][0]["outcome"];
+    for field in ["saved", "kept", "watch"] {
+        assert_eq!(retried["reply"]["reply"][field], report[field]);
+    }
+    assert_eq!(retried["reply"]["reply"]["repeat"], true);
+    assert_eq!(retried["undo"], step["outcome"]["undo"]);
+    let plain = cli(
+        &env,
+        &[
+            "--request-id",
+            "save-plain",
+            "my-history",
+            "save",
+            "my-history",
+        ],
+    );
+    assert!(plain.status.success(), "{plain:?}");
+    let shown = format!(
+        "{}{}",
+        String::from_utf8_lossy(&plain.stdout),
+        String::from_utf8_lossy(&plain.stderr)
+    );
+    assert!(shown.contains("same question; no new revision"), "{shown}");
+    assert!(shown.contains("result:save-plain-1"), "{shown}");
+    assert!(!shown.contains("undo:"), "{shown}");
+    for _ in 0..2 {
+        let withdrawn = printed_cli(&env, undo[0].as_str().unwrap());
+        assert!(withdrawn.status.success(), "{withdrawn:?}");
+    }
+    for kind in ["saved_query", "signal"] {
+        let out = cli(&env, &["--json", &format!("annotations where kind:{kind}")]);
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(json(&out)["reply"]["count"], 0);
+    }
+    for reference in [
+        "result:save-cli-1",
+        "result:save-plain-1",
+        "result:my-history",
+    ] {
+        let out = cli(&env, &["--json", reference]);
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(json(&out)["reply"]["count"], 1, "{out:?}");
+    }
+}

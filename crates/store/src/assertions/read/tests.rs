@@ -281,7 +281,7 @@ fn kept_result_retries_ignore_resolved_rows_and_time_but_preserve_intent() {
     let (_dir, _archive, _lock, writer, reads) = setup();
     let request = crate::fixture::authored::operator_request(
         "kept".into(),
-        UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+        UserWrite::Save(Box::new(polylogue_model::user::Save {
             name: Some("before".into()),
             query: "annotations".into(),
             rows_json: "{\"unit\":\"annotations\",\"columns\":[],\"rows\":[]}".into(),
@@ -302,7 +302,7 @@ fn kept_result_retries_ignore_resolved_rows_and_time_but_preserve_intent() {
         })
         .unwrap();
     let mut changed = request.clone();
-    if let UserWrite::SaveSelection(save) = &mut changed.write {
+    if let UserWrite::Save(save) = &mut changed.write {
         save.rows_json = "[{\"id\":\"new\"}]".into();
         save.read_at = "{\"now\":2}".into();
     }
@@ -315,7 +315,7 @@ fn kept_result_retries_ignore_resolved_rows_and_time_but_preserve_intent() {
             .unwrap()
             .is_some()
     );
-    if let UserWrite::SaveSelection(save) = &mut changed.write {
+    if let UserWrite::Save(save) = &mut changed.write {
         save.query = "sessions".into();
     }
     assert!(matches!(writer.user(changed), Err(StoreError::Conflict(_))));
@@ -329,7 +329,7 @@ fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
     let save = |id: &str, text: &str| {
         crate::fixture::authored::operator_request(
             id.into(),
-            UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+            UserWrite::Save(Box::new(polylogue_model::user::Save {
                 name: Some("everything".into()),
                 query: text.into(),
                 denominator: None,

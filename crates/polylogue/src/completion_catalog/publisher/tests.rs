@@ -153,6 +153,8 @@ fn saved_metadata_follows_committed_families_and_late_query_bodies() {
             random_seed: None,
             embeddings: false,
             self_session: None,
+            here: None,
+            seen_marks_of: None,
             saved: Default::default(),
             fields: vec![],
             kept: Default::default(),
@@ -312,7 +314,7 @@ fn failed_catalog_transaction_retries_the_same_committed_definition_delta() {
             .user(polylogue_store::writer::UserSubmission {
                 request: polylogue_store::fixture::authored::operator_request(
                     id.into(),
-                    UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+                    UserWrite::Save(Box::new(polylogue_model::user::Save {
                         name: Some(name.into()),
                         query: "sessions | group by origin | count".into(),
                         denominator: Some("sessions".into()),
@@ -375,7 +377,7 @@ fn late_kept_result_refreshes_inline_dependency() {
     let keep = || {
         polylogue_store::fixture::authored::operator_request(
             "late-kept".into(),
-            UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+            UserWrite::Save(Box::new(polylogue_model::user::Save {
                 name: None,
                 query: "sessions".into(),
                 rows_json: rows.clone(),

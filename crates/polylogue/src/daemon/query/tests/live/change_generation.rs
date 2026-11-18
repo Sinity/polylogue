@@ -31,7 +31,7 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
                 id: "saved-feed".into(),
                 machine: "synthetic".into(),
                 at: Timestamp::from_unix_ms(T0).unwrap(),
-                write: UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+                write: UserWrite::Save(Box::new(polylogue_model::user::Save {
                     name: Some("old-feed".into()),
                     query: format!("feed where after:{cursor}"),
                     denominator: None,
