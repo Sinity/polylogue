@@ -458,7 +458,10 @@ fn an_offline_tag_retry_keeps_its_pending_intent_when_another_tag_is_confirmed()
     // pending-intent ownership from that independent context barrier.
     let tag = |runtime: &Runtime| {
         use crate::daemon::verbs::{Given, Selection, StepCall, Verb, annotate::Tag};
-        let caller = crate::commands::Caller::default();
+        let caller = crate::commands::Caller {
+            surface: crate::commands::Surface::Cli,
+            cwd: None,
+        };
         let invocation = runtime
             .daemon
             .invocation(&polylogue_model::authorship::Authorship {
