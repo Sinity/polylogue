@@ -524,7 +524,11 @@ fn alternate_true_admits_alternate_text() {
         opts.fields = vec!["id".into()];
         let program = crate::query::compile(text, &opts).unwrap();
         let pool = crate::ReadPool::open(&archive.archive).unwrap();
-        pool.reader().unwrap().query_rows(&program).unwrap()
+        let mut rows = pool.reader().unwrap().query_rows(&program).unwrap();
+        for row in &mut rows {
+            present(&program, row).unwrap();
+        }
+        rows
     };
     assert!(read("messages where unikalny").is_empty());
     assert_eq!(

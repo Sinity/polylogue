@@ -1504,7 +1504,7 @@ fn empty_catalogs_remain_valid_and_unknown_result_names_are_not_found() {
         .unwrap_err();
     assert!(
         matches!(missing, polylogue_store::selection::SelectionError::Store(
-        polylogue_store::StoreError::NotFound(ref message)) if message == "no kept result named none")
+        polylogue_store::StoreError::Selection {code: polylogue_model::Code::NotFound, ref message}) if message == "no kept result named none")
     );
     assert_eq!(run(&reader, ask("sessions")).unwrap()["count"], 0);
 }

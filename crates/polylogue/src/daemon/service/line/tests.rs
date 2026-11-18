@@ -1157,11 +1157,11 @@ fn unnamed_save_keeps_only_rows_and_named_only_options_explain_the_refusal() {
         &d,
         "nameless-watch",
         json!({
-            "selection":"sessions where text:'a quoted question'", "steps":[{"verb":"save","watch":true}]
+            "selection":"sessions where 'a quoted question'", "steps":[{"verb":"save","watch":true}]
         }),
     ));
     assert_eq!(watch.code.as_deref(), Some("bad_request"));
-    let query = "sessions where text:'a quoted question'";
+    let query = "sessions where 'a quoted question'";
     let suggested = crate::cli::line::shell_line(&[
         query.into(),
         "save".into(),

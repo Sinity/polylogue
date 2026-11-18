@@ -277,7 +277,10 @@ fn named_kept_bindings<'a>(
         let id = lookup
             .query_row([name], |row| row.get::<_, String>(0))
             .optional()?
-            .ok_or_else(|| StoreError::NotFound(format!("no kept result named {name}")))?;
+            .ok_or_else(|| StoreError::Selection {
+                code: polylogue_model::Code::NotFound,
+                message: format!("no kept result named {name}"),
+            })?;
         names.insert(name.to_owned(), id);
     }
     kept.extend(kept_results_named(
