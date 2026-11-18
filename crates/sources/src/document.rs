@@ -49,6 +49,11 @@ pub fn message_id(origin: &str, native: &str) -> Option<MessageId> {
     ))
 }
 
+/// The first non-whitespace byte of a document.
+pub(crate) fn first_byte(head: &[u8]) -> Option<u8> {
+    head.iter().copied().find(|b| !b.is_ascii_whitespace())
+}
+
 /// The first key of the first object in a document's first bytes: in
 /// `[{"uuid": …` it is `uuid`, in `{"source": …` it is `source`. Exports
 /// that share a file name (`conversations.json`) are told apart by it.

@@ -32,6 +32,18 @@
         "at_quality": "unknown"
       },
       {
+        "data": {
+          "web_url": "https://chatgpt.com/c/origin-matrix-chatgpt"
+        },
+        "kind": "conversation_facts",
+        "range": [
+          3,
+          543
+        ],
+        "session": "chatgpt:origin-matrix-chatgpt",
+        "at_quality": "unknown"
+      },
+      {
         "after": "chatgpt:matrix-message",
         "data": null,
         "kind": "active_leaf",

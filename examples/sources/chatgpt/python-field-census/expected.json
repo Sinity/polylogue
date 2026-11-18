@@ -64,6 +64,22 @@
         "at_precision": "instant"
       },
       {
+        "data": {
+          "gpt": "synthetic-gizmo_id",
+          "template": "synthetic-conversation_template_id",
+          "web_url": "https://chatgpt.com/g/synthetic-gizmo_id/c/field-census-v1"
+        },
+        "kind": "conversation_facts",
+        "at": "1970-01-01T00:00:01Z",
+        "range": [
+          3,
+          3623
+        ],
+        "session": "chatgpt:field-census-v1",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
+      },
+      {
         "after": "chatgpt:node-1",
         "data": null,
         "kind": "active_leaf",
@@ -88,6 +104,15 @@
               "input": "Synthetic assistant turn.",
               "tool": "synthetic-recipient",
               "type": "tool_call"
+            },
+            {
+              "data": {
+                "id": "synthetic-async_task_id",
+                "kind": "synthetic-async_task_type",
+                "title": "synthetic-async_task_title"
+              },
+              "type": "other",
+              "type_name": "research_task"
             }
           ],
           "duration_ms": 1000,

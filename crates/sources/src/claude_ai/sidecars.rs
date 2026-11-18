@@ -36,7 +36,7 @@ fn shape(path: &Path) -> Option<Shape> {
 pub(super) fn recognize(path: &Path, head: &[u8]) -> bool {
     shape(path).is_some_and(|shape| {
         matches!(
-            (shape, crate::chatgpt::first_byte(head)),
+            (shape, crate::document::first_byte(head)),
             (Shape::Memories | Shape::Projects, Some(b'[')) | (Shape::Project, Some(b'{'))
         )
     })

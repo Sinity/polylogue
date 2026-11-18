@@ -15,9 +15,10 @@
 //! ancestors (the Python rule). Images and files the export stores
 //! separately are referred to by their asset pointer and file ID.
 
+use crate::document::first_byte;
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 use crate::fields::ExpectedType as T;
 pub mod assets;
@@ -58,11 +59,9 @@ const CONVERSATION_KEYS: &[&str] = &[
     "update_time",
     "mapping",
     "current_node",
+    "gizmo_id",
+    "conversation_template_id",
 ];
-
-pub(crate) fn first_byte(head: &[u8]) -> Option<u8> {
-    head.iter().copied().find(|b| !b.is_ascii_whitespace())
-}
 
 pub fn open(path: &Path) -> Option<Parse> {
     path.extension()
@@ -155,6 +154,13 @@ static MESSAGE_FIELDS: Fields = Fields::new(
         ("content.parts[].size_bytes", Rule::Read(T::Number)),
         ("content.parts[].text", Rule::Read(T::String)),
         ("content.text", Rule::Read(T::String)),
+        ("content.url", Rule::Read(T::String)),
+        ("content.title", Rule::Read(T::String)),
+        ("content.domain", Rule::Read(T::String)),
+        ("content.snippet", Rule::Read(T::String)),
+        ("content.result", Rule::Read(T::String)),
+        ("content.tether_id", Rule::Read(T::String)),
+        ("content.ref_id", Rule::Read(T::String)),
         ("content.language", Rule::Read(T::String)),
         ("content.thoughts", Rule::Read(T::Array)),
         ("content.thoughts[].summary", Rule::Read(T::String)),
@@ -169,6 +175,9 @@ static MESSAGE_FIELDS: Fields = Fields::new(
         ),
         ("weight", Rule::Kept("message attrs weight")),
         ("metadata", Rule::Kept("provider metadata in message attrs")),
+        ("metadata.async_task_id", Rule::Read(T::String)),
+        ("metadata.async_task_title", Rule::Read(T::String)),
+        ("metadata.async_task_type", Rule::Read(T::String)),
         ("recipient", Rule::Read(T::String)),
         ("channel", Rule::Kept("message attrs channel")),
     ],
@@ -190,6 +199,9 @@ static MESSAGE_FIELDS: Fields = Fields::new(
                 "user_editable_context",
                 "code",
                 "execution_output",
+                "tether_quote",
+                "tether_browsing_display",
+                "sonic_webpage",
             ],
         },
     ],
@@ -202,6 +214,8 @@ static CONVERSATION_FIELDS: Fields = Fields::new(
         ("id", Rule::Read(T::String)),
         ("conversation_id", Rule::Read(T::String)),
         ("title", Rule::Read(T::String)),
+        ("gizmo_id", Rule::Read(T::String)),
+        ("conversation_template_id", Rule::Read(T::String)),
         ("create_time", Rule::Read(T::StringOrNumber)),
         ("update_time", Rule::Read(T::StringOrNumber)),
         ("mapping", Rule::Read(T::Object)),
@@ -279,20 +293,23 @@ fn conversation_with_sessions(
         .filter(|(k, _)| k.as_str() != "mapping")
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    sink.out.events.push({
+    for (kind, data) in [
+        ("conversation_settings", Json::Object(settings)),
+        ("conversation_facts", conversation_facts(conv, native)),
+    ] {
         let (at, time_evidence) = crate::time::parts(conv.get("update_time").and_then(time_of));
-        Event {
+        sink.out.events.push(Event {
             session: Some(sid.clone()),
-            kind: "conversation_settings".into(),
+            kind: kind.into(),
             at,
             at_quality: time_evidence.quality,
             at_precision: time_evidence.precision,
             at_until: time_evidence.until,
             after: None,
             range: None,
-            data: Json::Object(settings),
-        }
-    });
+            data,
+        });
+    }
 
     sink.records.fields(
         "conversation",
@@ -627,6 +644,10 @@ fn message(
         }
     }
 
+    if let Some(task) = research_task(meta) {
+        blocks.push(task);
+    }
+
     // The model that answered, else the message's default, else the
     // conversation's.
     let model = meta
@@ -677,6 +698,76 @@ fn message(
             production: production(meta),
         }
     })
+}
+
+fn conversation_facts(conv: &Json, native: &str) -> Json {
+    let mut facts = serde_json::Map::new();
+    let gizmo = conv.str("gizmo_id").filter(|value| !value.is_empty());
+    let web_url = if let Some(gizmo) = gizmo {
+        let kind = if gizmo.starts_with("g-p-") {
+            "project"
+        } else {
+            "gpt"
+        };
+        facts.insert(kind.into(), Json::String(gizmo.into()));
+        format!("https://chatgpt.com/g/{gizmo}/c/{native}")
+    } else {
+        format!("https://chatgpt.com/c/{native}")
+    };
+    facts.insert("web_url".into(), Json::String(web_url));
+    if let Some(template) = conv
+        .str("conversation_template_id")
+        .filter(|value| !value.is_empty())
+    {
+        facts.insert("template".into(), Json::String(template.into()));
+    }
+    Json::Object(facts)
+}
+
+fn research_task(meta: &Json) -> Option<Block> {
+    let mut data = serde_json::Map::new();
+    for (name, key) in [
+        ("id", "async_task_id"),
+        ("title", "async_task_title"),
+        ("kind", "async_task_type"),
+    ] {
+        if let Some(value) = meta.str(key).filter(|value| !value.is_empty()) {
+            data.insert(name.into(), Json::String(value.into()));
+        }
+    }
+    if data.is_empty() {
+        return None;
+    }
+    Some(Block::Other {
+        type_name: "research_task".into(),
+        data: Json::Object(data),
+    })
+}
+
+/// Browsing content uses the same fields in a message and in a tool result.
+fn web_result(kind: &str, content: &Json) -> Option<Json> {
+    if !matches!(
+        kind,
+        "tether_quote" | "tether_browsing_display" | "sonic_webpage"
+    ) {
+        return None;
+    }
+    let mut data = serde_json::Map::new();
+    data.insert("content_type".into(), Json::String(kind.into()));
+    for (name, keys) in [
+        ("url", &["url"][..]),
+        ("title", &["title", "domain"][..]),
+        ("text", &["text", "snippet", "result"][..]),
+        ("source_id", &["tether_id", "ref_id"][..]),
+    ] {
+        if let Some(value) = keys
+            .iter()
+            .find_map(|key| content.str(key).filter(|value| !value.is_empty()))
+        {
+            data.insert(name.into(), Json::String(value.into()));
+        }
+    }
+    Some(Json::Object(data))
 }
 
 /// Provider metadata keeps the original nested references, groups and canvas
@@ -733,8 +824,15 @@ fn content_type(content: &Json) -> &str {
 
 /// The blocks of a message that is neither a tool call nor a result.
 fn content_blocks(content: &Json, direction: AttachmentDirection) -> Vec<Block> {
+    let kind = content_type(content);
+    if let Some(data) = web_result(kind, content) {
+        return vec![Block::Other {
+            type_name: "web_result".into(),
+            data,
+        }];
+    }
     let mut blocks = Vec::new();
-    match content_type(content) {
+    match kind {
         "text" => {
             if let Some(text) = content_text(content) {
                 blocks.push(Block::Text { text });
@@ -978,11 +1076,15 @@ fn tool_result(
             attachments.push(a);
         }
     }
-    let output = content_text(content);
-    let data = match kind {
+    let browsing = web_result(kind, content);
+    let output = match &browsing {
+        Some(data) => data.str("text").map(str::to_owned),
+        None => content_text(content),
+    };
+    let data = browsing.or_else(|| match kind {
         "text" | "execution_output" | "multimodal_text" => None,
         _ => Some(content.clone()),
-    };
+    });
     Block::ToolResult {
         reported_duration_ms: None,
         call_id,

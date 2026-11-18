@@ -432,11 +432,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "gemini-cli",
         harness_prefixes: &[],
-        modules: modules!(
-            crate::chatgpt::VERSION,
-            crate::export::VERSION,
-            crate::gemini_cli::VERSION
-        ),
+        modules: modules!(crate::export::VERSION, crate::gemini_cli::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Live,
         route: Route::Live,
@@ -863,7 +859,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "claude-ai",
         harness_prefixes: &[],
-        modules: modules!(crate::chatgpt::VERSION, crate::claude_ai::VERSION),
+        modules: modules!(crate::claude_ai::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
         route: Route::Export,
@@ -891,7 +887,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: "claude-design",
         harness_prefixes: &[],
-        modules: modules!(crate::chatgpt::VERSION, crate::claude_ai::VERSION),
+        modules: modules!(crate::claude_ai::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
         route: Route::Export,
@@ -912,11 +908,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::ai_studio::ORIGIN,
         harness_prefixes: &[],
-        modules: modules!(
-            crate::ai_studio::VERSION,
-            crate::chatgpt::VERSION,
-            crate::export::VERSION
-        ),
+        modules: modules!(crate::ai_studio::VERSION, crate::export::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Spool,
         route: Route::Capture,
@@ -1006,11 +998,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::otel_genai::ORIGIN,
         harness_prefixes: &[],
-        modules: modules!(
-            crate::chatgpt::VERSION,
-            crate::export::VERSION,
-            crate::otel_genai::VERSION
-        ),
+        modules: modules!(crate::export::VERSION, crate::otel_genai::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
         route: Route::Export,
@@ -1031,11 +1019,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::openrouter::ORIGIN,
         harness_prefixes: &[],
-        modules: modules!(
-            crate::chatgpt::VERSION,
-            crate::export::VERSION,
-            crate::openrouter::VERSION
-        ),
+        modules: modules!(crate::export::VERSION, crate::openrouter::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
         route: Route::Export,
@@ -1058,11 +1042,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::openai_chat::ORIGIN,
         harness_prefixes: &[],
-        modules: modules!(
-            crate::chatgpt::VERSION,
-            crate::export::VERSION,
-            crate::openai_chat::VERSION
-        ),
+        modules: modules!(crate::export::VERSION, crate::openai_chat::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
         route: Route::Export,

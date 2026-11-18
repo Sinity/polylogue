@@ -9,7 +9,7 @@ use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 1;
 
-use crate::chatgpt::first_byte;
+use crate::document::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, time_of};
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
 use crate::fields::ExpectedType as T;

@@ -29,6 +29,18 @@
         ],
         "session": "chatgpt:native-occurrences",
         "at_quality": "unknown"
+      },
+      {
+        "data": {
+          "web_url": "https://chatgpt.com/c/native-occurrences"
+        },
+        "kind": "conversation_facts",
+        "range": [
+          3,
+          1234
+        ],
+        "session": "chatgpt:native-occurrences",
+        "at_quality": "unknown"
       }
     ],
     "links": [],

@@ -36,6 +36,20 @@
         "at_precision": "instant"
       },
       {
+        "data": {
+          "web_url": "https://chatgpt.com/c/neutral-empty-native"
+        },
+        "kind": "conversation_facts",
+        "at": "2023-11-14T22:13:23Z",
+        "range": [
+          3,
+          2417
+        ],
+        "session": "chatgpt:neutral-empty-native",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
+      },
+      {
         "after": "chatgpt:tool-message",
         "data": null,
         "kind": "active_leaf",
