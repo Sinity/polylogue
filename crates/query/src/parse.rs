@@ -56,11 +56,11 @@ fn sinex_local_error(
             .map(|kind| query_language::catalog::ReferenceForm::prefix(format!("{kind}:"))),
     );
     let mut query = query_language::parse::parse(text, &diagnostic).ok()?;
-    crate::ast::walk(&mut query, &mut |_| Ok(()), &mut |condition| {
+    crate::plan::walk(&mut query, &mut |_| Ok(()), &mut |condition| {
         if condition.span.start == position
             && let ConditionKind::Reference { reference } = &condition.kind
             && let Err(error @ polylogue_model::ReferenceError::SinexLocal { .. }) =
-                polylogue_model::Reference::parse(reference)
+                polylogue_model::Reference::parse(reference.as_str())
         {
             return Err(QueryError::Invalid {
                 message: error.to_string(),
