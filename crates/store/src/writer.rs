@@ -367,7 +367,7 @@ const BYTES_PER_TRANSACTION: u64 = 128 << 20;
 /// Records how many stored chains a build has read, from the counts the
 /// writer keeps with each change ([`crate::chain_progress`]).
 fn record_build_progress(archive: &Archive, index: &Connection) -> Result<()> {
-    if archive.is_primary() || !archive.index_build.building() {
+    if !archive.index_build.building() {
         return Ok(());
     }
     let (mut chains, mut read) = (0, 0);
@@ -437,7 +437,13 @@ impl Writer {
         // A standalone build writes its private file ([`crate::archive::index_build`]).
         let building = !archive.is_primary() && archive.index_build.building();
         let index = open_index_writer(archive, building)?;
-        let installed = archive.root.join("index.db");
+        // Primary search and derivation use the same physical file as the
+        // follower, even while another generation serves readers.
+        let installed = if archive.is_primary() {
+            archive.index_db()
+        } else {
+            archive.root.join("index.db")
+        };
         let archive_conn = if archive.is_primary() {
             crate::archive::open_read(&archive.index_db())?
         } else {
@@ -926,8 +932,8 @@ impl Inner {
     fn stream_followed(&mut self, error: Option<String>) {
         let result = match error {
             Some(error) => Err(error),
-            None => self
-                .complete_ready_captures()
+            None => crate::archive::index_build::primary::observe(&self.location, &self.index)
+                .and_then(|()| self.complete_ready_captures())
                 .map(|()| {
                     self.request_derive(derive_thread::Waiting::Nobody);
                 })
@@ -1117,7 +1123,14 @@ impl Inner {
                 }
             }
             for reply in read_denials.drain(..) {
-                let _ = reply.send(crate::primary::scope::deny(&mut self.index, &self.location));
+                let old = crate::archive::index_build::primary::withdraw(
+                    &self.location,
+                    None,
+                    None,
+                    true,
+                );
+                let denied = crate::primary::scope::deny(&mut self.index, &self.location);
+                let _ = reply.send(old.and(denied));
             }
             for (events, reply) in confirmations.drain(..) {
                 let _ = reply.send(self.stage_confirmed(&events));
@@ -1254,10 +1267,7 @@ impl Inner {
             }
             if !flushes.is_empty()
                 && self.location.is_primary()
-                && let Err(error) = crate::archive::index_rebuild::remove_when_built(
-                    &self.index,
-                    &self.location.index_db(),
-                )
+                && let Err(error) = self.finish_primary_rebuild()
             {
                 self.report
                     .errors
@@ -1500,6 +1510,16 @@ impl Inner {
             }
             Err(error) => Err(error),
         }
+    }
+
+    fn finish_primary_rebuild(&mut self) -> Result<()> {
+        if self.location.index_build.building() {
+            if crate::archive::index_build::primary::finish(&self.location, &self.index)? {
+                self.commits.committed(crate::completion::Committed::EVERY);
+            }
+            return Ok(());
+        }
+        crate::archive::index_rebuild::remove_when_built(&self.index, &self.location.index_db())
     }
 
     /// Ends a build once every deferred index has committed: the build file

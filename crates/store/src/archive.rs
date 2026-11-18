@@ -185,15 +185,18 @@ impl Archive {
     }
 
     pub fn blob_reader(&self) -> Result<crate::blobs::Blobs> {
-        let root = self.byte_root()?;
-        let (catalog, layout) = if self.is_primary() {
-            (self.index_db(), crate::blobs::BlobCatalog::PrimaryCache)
+        self.blob_reader_at(&self.archive_db())
+    }
+
+    pub(crate) fn blob_reader_at(&self, catalog: &Path) -> Result<crate::blobs::Blobs> {
+        let layout = if self.is_primary() {
+            crate::blobs::BlobCatalog::PrimaryCache
         } else {
-            (self.archive_db(), crate::blobs::BlobCatalog::Archive)
+            crate::blobs::BlobCatalog::Archive
         };
         Ok(crate::blobs::Blobs::new(
-            root.to_path_buf(),
-            catalog,
+            self.byte_root()?.to_path_buf(),
+            catalog.to_path_buf(),
             layout,
         ))
     }
@@ -425,6 +428,9 @@ impl Archive {
     pub(crate) fn prepare_index(&self) -> Result<()> {
         if !self.is_primary() {
             return index_build::prepare(self);
+        }
+        if index_build::primary::prepare(self)? {
+            return Ok(());
         }
         let path = self.index_db();
         let mut index = open_runtime_writer(&path, cache::SETUP)?;
