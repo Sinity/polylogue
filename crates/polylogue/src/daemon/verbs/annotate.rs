@@ -211,7 +211,11 @@ fn each(
             )),
             undo: Vec::new(),
             envelope: Default::default(),
-            outcome: command_surface::Outcome::Ok(()),
+            outcome: if targets == 0 {
+                command_surface::Outcome::Empty(())
+            } else {
+                command_surface::Outcome::Ok(())
+            },
         });
     }
     let mut committed = Vec::new();

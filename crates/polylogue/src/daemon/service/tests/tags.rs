@@ -214,3 +214,39 @@ fn tag_skips_rows_already_tagged_and_reports_the_accepted_population() {
         Some("conflict")
     );
 }
+
+#[test]
+fn a_tag_over_no_matching_rows_keeps_the_empty_outcome_without_a_step_write() {
+    let d = test_daemon::start("synthetic tag target");
+    let answer = Call::new(
+        "rows",
+        json!({"selection":"sessions where 0 = 1", "all":true,
+            "steps":[{"verb":"tag","name":"status:ready"}]}),
+    )
+    .id("tag-no-matches")
+    .answer(&d.daemon);
+    assert_eq!(answer.exit_code(), 1, "{answer:?}");
+    let line: LineAnswer = serde_json::from_value(crate::test_answers::empty(answer)).unwrap();
+    let LineAnswer::Steps(steps) = line else {
+        panic!("expected steps")
+    };
+    let StepOutcome::Done {
+        reply: StepAnswer::WroteEach(report),
+        undo,
+    } = &steps.steps[0].outcome
+    else {
+        panic!("expected successful empty tag")
+    };
+    assert_eq!((report.targets, report.written), (0, 0));
+    assert_eq!(report.id, None);
+    assert!(report.already.is_empty() && undo.is_empty());
+    assert!(
+        d.daemon
+            .reads
+            .reader()
+            .unwrap()
+            .user_request("tag-no-matches-1")
+            .unwrap()
+            .is_none()
+    );
+}
