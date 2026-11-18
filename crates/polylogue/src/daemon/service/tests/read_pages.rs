@@ -191,6 +191,48 @@ fn all(d: &Daemon, target: &str, inherited: bool, view: View) -> String {
     );
     text.value
 }
+
+#[test]
+fn read_without_budget_pages_with_next() {
+    let original = format!("{}🙂 end", "λ ".repeat(4200));
+    assert!(polylogue_model::read::estimate_tokens(&original) > 4000);
+    let d = test_daemon::start(&original);
+    let mut call = test_daemon::Call::new(
+        "rows",
+        serde_json::json!({
+            "selection": "session:claude-code:s1",
+            "steps": [{"verb": "read"}]
+        }),
+    );
+    let mut text = Text::default();
+    let mut first = None;
+    let mut pages = 0;
+    loop {
+        let page = crate::test_answers::read(call.answer(&d.daemon));
+        assert!(!page.document.items.is_empty());
+        if pages == 1 {
+            let previous = page.document.footer.previous.as_ref().unwrap();
+            let before = crate::test_answers::read(
+                test_daemon::Call::from_request(&previous.request).answer(&d.daemon),
+            );
+            assert_eq!(Some(before.document.items), first);
+        }
+        if pages == 0 {
+            assert!(page.document.footer.next.is_some());
+            first = Some(page.document.items.clone());
+        }
+        text.page(&page);
+        pages += 1;
+        let Some(next) = page.document.footer.next else {
+            break;
+        };
+        call = test_daemon::Call::from_request(&next.request);
+    }
+    assert!(pages > 1);
+    assert!(text.item.is_empty());
+    assert_eq!(text.value, original);
+}
+
 /// The session's rewrite version: what a cursor binds.
 fn selected_fingerprint(d: &test_daemon::TestDaemon, session: &str) -> String {
     let reader = d.daemon.reads.reader().unwrap();
