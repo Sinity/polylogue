@@ -73,17 +73,25 @@ use bytes::*;
 use rows::*;
 use search::*;
 
+enum StoreGroup {
+    Prepared(
+        Vec<crate::staging::PreparedBatch>,
+        Arc<crate::blobs::Blobs>,
+        SyncSender<Vec<Result<crate::staging::StoredInput>>>,
+    ),
+    ConfirmImports(
+        Vec<Batch>,
+        SyncSender<Result<Option<Vec<crate::staging::StoredInput>>>>,
+    ),
+}
+
 enum Msg {
     StoreBytes(
         Box<crate::staging::PreparedBytes>,
         Box<Batch>,
         SyncSender<Result<crate::staging::StoredInput>>,
     ),
-    StoreGroup(
-        Vec<crate::staging::PreparedBatch>,
-        std::sync::Arc<crate::blobs::Blobs>,
-        SyncSender<Vec<Result<crate::staging::StoredInput>>>,
-    ),
+    StoreGroup(StoreGroup),
     Assets(
         Box<crate::export_items::ExportItems>,
         SyncSender<Result<()>>,
@@ -616,6 +624,23 @@ impl WriterSender {
             .map_err(|_| StoreError::WriterGone)
     }
 
+    /// Confirm previously stored standalone imports after the caller has hashed
+    /// their current source bytes. A miss makes no writes and needs ordinary
+    /// prepared admission for the whole group.
+    pub fn confirm_imports(
+        &self,
+        group: Vec<Batch>,
+    ) -> Result<Option<Vec<crate::staging::StoredInput>>> {
+        if self.0.resolver.location().is_primary() {
+            return Ok(None);
+        }
+        let (reply, wait) = sync_channel(1);
+        self.0
+            .send(Msg::StoreGroup(StoreGroup::ConfirmImports(group, reply)))
+            .map_err(|_| StoreError::WriterGone)?;
+        wait.recv().map_err(|_| StoreError::WriterGone)?
+    }
+
     /// Queue a group; parsing can continue while the writer commits it.
     pub fn enqueue_group(
         &self,
@@ -657,7 +682,7 @@ impl WriterSender {
         self.0.resolver.batches(&mut batches)?;
         let (reply, wait) = sync_channel(1);
         self.0
-            .send(Msg::StoreGroup(group, store, reply))
+            .send(Msg::StoreGroup(StoreGroup::Prepared(group, store, reply)))
             .map_err(|_| StoreError::WriterGone)?;
         Ok(wait)
     }
@@ -966,6 +991,7 @@ impl Inner {
         let mut derive_writes = Vec::new();
         let mut single_files = Vec::new();
         let mut file_groups = Vec::new();
+        let mut import_checks = Vec::new();
         let mut assets = Vec::new();
         let mut coverage = Vec::new();
         let mut live_clock = Vec::new();
@@ -1004,13 +1030,18 @@ impl Inner {
                         single_files.push((prepared, batch, reply));
                         false
                     }
-                    Msg::StoreGroup(items, store, reply) => {
+                    Msg::StoreGroup(StoreGroup::Prepared(items, store, reply)) => {
                         crate::timing::queue(crate::timing::Queue::Writer, -1);
                         for item in &items {
                             *rows += weight(&item.batch);
                             *bytes += input_bytes(&item.batch);
                         }
                         file_groups.push((items, store, reply));
+                        true
+                    }
+                    Msg::StoreGroup(StoreGroup::ConfirmImports(items, reply)) => {
+                        crate::timing::queue(crate::timing::Queue::Writer, -1);
+                        import_checks.push((items, reply));
                         true
                     }
                     Msg::Assets(staged, reply) => {
@@ -1171,6 +1202,9 @@ impl Inner {
                 let _ = reply.send(self.store_bytes(*prepared, *batch));
             }
             self.store_groups(std::mem::take(&mut file_groups));
+            for (items, reply) in import_checks.drain(..) {
+                let _ = reply.send(self.confirm_imports(&items));
+            }
             for (input, chain, length, reading, reply) in replacements.drain(..) {
                 let _ = reply.send(crate::timing::time(crate::timing::Stage::Rows, || {
                     self.replace_chain(input, chain, length, reading)

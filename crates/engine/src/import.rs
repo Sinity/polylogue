@@ -72,78 +72,7 @@ impl Engine {
         }
         for path in paths {
             if options.format.as_deref() == Some(python_polylogue::ARCHIVE) {
-                let archive = self.archive.clone();
-                let mut ids = Vec::new();
-                let mut package = ImportPackage {
-                    path: path.clone(),
-                    ..Default::default()
-                };
-                let mut pending = Vec::new();
-                let mut pending_bytes = 0_u64;
-                let flush = |engine: &mut Self,
-                             pending: &mut Vec<package::Member>,
-                             report: &mut ImportReport,
-                             package: &mut ImportPackage|
-                 -> std::io::Result<()> {
-                    if pending.is_empty() {
-                        return Ok(());
-                    }
-                    let errors_before = report.pass.errors.len();
-                    engine
-                        .import_members(path, std::mem::take(pending), options, report)
-                        .map_err(std::io::Error::other)?;
-                    if report.pass.errors.len() > errors_before {
-                        return Err(std::io::Error::other(
-                            report.pass.errors[errors_before..].join("; "),
-                        ));
-                    }
-                    package.assets += report
-                        .packages
-                        .pop()
-                        .expect("imported member package")
-                        .assets;
-                    Ok(())
-                };
-                const PYTHON_MEMBERS: usize = 64;
-                const PYTHON_BYTES: u64 = 64 << 20;
-                let found = python_archive::visit(path, &archive, |member| {
-                    let length = member.bytes.len();
-                    if pending.len() == PYTHON_MEMBERS
-                        || pending_bytes.saturating_add(length) > PYTHON_BYTES
-                    {
-                        flush(self, &mut pending, &mut report, &mut package)?;
-                        pending_bytes = 0;
-                    }
-                    if member.origin.is_some() {
-                        ids.push(member.bytes.hash().to_string());
-                    }
-                    pending.push(member);
-                    pending_bytes += length;
-                    // Submit an oversize member alone; primary admissions retain
-                    // their existing one-member acknowledgement boundary.
-                    if pending_bytes >= PYTHON_BYTES || archive.is_primary() {
-                        flush(self, &mut pending, &mut report, &mut package)?;
-                        pending_bytes = 0;
-                    }
-                    Ok(())
-                });
-                // A later unreadable source must not discard the verified prefix.
-                flush(self, &mut pending, &mut report, &mut package)?;
-                let found = found?;
-                if !found {
-                    recognition::refuse(
-                        &mut report,
-                        path,
-                        "not Python Polylogue's archive: it needs source.db and blob/",
-                    );
-                } else {
-                    if !options.explain {
-                        let counts = self.reads.reader()?.import_counts(&ids)?;
-                        package.sessions = counts.sessions;
-                        package.documents = counts.documents;
-                    }
-                    report.packages.push(package);
-                }
+                self.import_python_archive(path, options, &mut report)?;
                 continue;
             }
             let members = match package::stage(path, &self.archive, options.format.as_deref()) {
@@ -206,20 +135,7 @@ impl Engine {
                 });
                 continue;
             };
-            report.members.push(ImportClassification {
-                path: member.path.clone(),
-                origin: Some(origin.name.into()),
-                class: if origin.support == Support::Parsed {
-                    "parsed"
-                } else {
-                    "asset"
-                }
-                .into(),
-                reason: None,
-            });
-            if origin.support != Support::Parsed && !member.container {
-                package.assets += 1;
-            }
+            classify_accepted(report, &mut package, &member.path, origin, member.container);
             if options.explain {
                 continue;
             }
@@ -243,40 +159,13 @@ impl Engine {
             };
             ids.push(captured.prepared.hash().to_string());
             hashes.insert(index, captured.prepared.hash().to_string());
-            captured.member = Some(polylogue_store::ImportMember {
-                version: 1,
+            captured.member = Some(import_member(
+                path,
+                &member.path,
+                member.parent.is_some(),
                 import_id,
-                authorship: Some(options.authorship.clone().unwrap_or_else(|| {
-                    polylogue_model::authorship::Authorship {
-                        author: polylogue_model::Author::Script("polylogue-import".into()),
-                        via: polylogue_model::authorship::Channel::Import,
-                    }
-                })),
-                member: if member.parent.is_some() {
-                    member
-                        .path
-                        .to_string_lossy()
-                        .rsplit("!/")
-                        .next()
-                        .expect("member name")
-                        .to_owned()
-                } else if member.path == *path {
-                    member
-                        .path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned()
-                } else {
-                    member
-                        .path
-                        .strip_prefix(path)
-                        .unwrap_or(&member.path)
-                        .to_string_lossy()
-                        .into_owned()
-                },
-                format: None,
-            });
+                options,
+            ));
             captured.container = member.parent.and_then(|(parent, member_index)| {
                 hashes
                     .get(&parent)
@@ -324,7 +213,6 @@ impl Engine {
         items: Vec<(PathBuf, &'static OriginSpec, Option<FileFacts>, Captured)>,
         report: &mut ImportReport,
     ) -> Result<BTreeSet<String>, EngineError> {
-        let mut executed = BTreeSet::new();
         // Every explicit import reaches the writer, including stored bytes:
         // it checks the format and records this receiver's observation.
         // The blob writer deduplicates bytes within the same transaction.
@@ -355,9 +243,19 @@ impl Engine {
             });
         }
         if group.is_empty() {
-            return Ok(executed);
+            return Ok(BTreeSet::new());
         }
         let outcomes = self.writer.store_group(group, Arc::clone(&self.blobs))?;
+        self.finish_import_group(metadata, outcomes, report)
+    }
+
+    fn finish_import_group(
+        &mut self,
+        metadata: Vec<(PathBuf, &'static OriginSpec, Option<FileFacts>, InputKey)>,
+        outcomes: Vec<polylogue_store::Result<polylogue_store::staging::StoredInput>>,
+        report: &mut ImportReport,
+    ) -> Result<BTreeSet<String>, EngineError> {
+        let mut executed = BTreeSet::new();
         // Historical hook files are independent line streams. Retain the whole
         // raw group first, then feed bounded batches through the existing pool.
         // A repeated input or path must observe the preceding parse checkpoint;
@@ -646,6 +544,66 @@ impl Engine {
         // The operator is waiting on an import.
         plan.priority = Priority::Live;
         Ok(Some(plan))
+    }
+}
+
+fn import_member(
+    path: &Path,
+    at: &Path,
+    nested: bool,
+    import_id: String,
+    options: &ImportOptions,
+) -> polylogue_store::ImportMember {
+    polylogue_store::ImportMember {
+        version: 1,
+        import_id,
+        authorship: Some(options.authorship.clone().unwrap_or_else(|| {
+            polylogue_model::authorship::Authorship {
+                author: polylogue_model::Author::Script("polylogue-import".into()),
+                via: polylogue_model::authorship::Channel::Import,
+            }
+        })),
+        member: if nested {
+            at.to_string_lossy()
+                .rsplit("!/")
+                .next()
+                .expect("member name")
+                .to_owned()
+        } else if at == path {
+            at.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            at.strip_prefix(path)
+                .unwrap_or(at)
+                .to_string_lossy()
+                .into_owned()
+        },
+        format: None,
+    }
+}
+
+fn classify_accepted(
+    report: &mut ImportReport,
+    package: &mut ImportPackage,
+    at: &Path,
+    origin: &OriginSpec,
+    container: bool,
+) {
+    report.members.push(ImportClassification {
+        path: at.to_path_buf(),
+        origin: Some(origin.name.into()),
+        class: if origin.support == Support::Parsed {
+            "parsed"
+        } else {
+            "asset"
+        }
+        .into(),
+        reason: None,
+    });
+    if origin.support != Support::Parsed && !container {
+        package.assets += 1;
     }
 }
 

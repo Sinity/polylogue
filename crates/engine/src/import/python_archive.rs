@@ -7,12 +7,216 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 
-/// Stages and validates one member at a time. The consumer sets the bounds
-/// on verified members retained for each write.
-pub(super) fn visit(
+enum Pending {
+    Staged(Box<package::Member>),
+    Checked(CheckedMember),
+}
+
+impl Pending {
+    fn checked(&self) -> bool {
+        matches!(self, Self::Checked(_))
+    }
+
+    fn bytes(&self) -> (polylogue_model::BlobHash, u64, bool) {
+        match self {
+            Self::Staged(member) => (
+                member.bytes.hash(),
+                member.bytes.len(),
+                member.origin.is_some(),
+            ),
+            Self::Checked(member) => (member.hash, member.length, true),
+        }
+    }
+}
+
+impl Engine {
+    pub(super) fn import_python_archive(
+        &mut self,
+        root: &Path,
+        options: &ImportOptions,
+        report: &mut ImportReport,
+    ) -> Result<(), EngineError> {
+        let archive = self.archive.clone();
+        let mut ids = Vec::new();
+        let mut package = ImportPackage {
+            path: root.to_path_buf(),
+            ..Default::default()
+        };
+        let mut pending: Vec<Pending> = Vec::new();
+        let mut pending_bytes = 0_u64;
+        const MEMBERS: usize = 64;
+        const BYTES: u64 = 64 << 20;
+        let found = visit(root, &archive, |item| {
+            let item = match item {
+                Member::Prepared(member) => Pending::Staged(member),
+                Member::Raw(raw) => {
+                    let eligible = !options.explain
+                        && !archive.is_primary()
+                        && raw
+                            .origin
+                            .is_some_and(|origin| origin.name != "polylogue-bundle");
+                    // A path match saves no verification and acknowledges no bytes.
+                    let predicted = eligible
+                        && match self.reads.reader() {
+                            Ok(reader) => reader
+                                .has_import_at(
+                                    &self.config.machine,
+                                    raw.path.as_os_str().as_encoded_bytes(),
+                                )
+                                .map_err(std::io::Error::other)?,
+                            Err(
+                                polylogue_store::StoreError::IndexBuilding(_)
+                                | polylogue_store::StoreError::ReadIndexReplaced,
+                            ) => false,
+                            Err(error) => return Err(std::io::Error::other(error)),
+                        };
+                    if predicted {
+                        Pending::Checked(raw.check(root)?)
+                    } else {
+                        Pending::Staged(Box::new(raw.prepare(root, &archive)?))
+                    }
+                }
+            };
+            let (hash, length, accepted) = item.bytes();
+            // Fresh bytes and predicted repeats use separate bounded groups.
+            // On a miss, the entire predicted group takes ordinary admission.
+            if pending.len() == MEMBERS
+                || pending_bytes.saturating_add(length) > BYTES
+                || pending
+                    .first()
+                    .is_some_and(|previous| previous.checked() != item.checked())
+            {
+                self.flush_python_members(root, &mut pending, options, report, &mut package)?;
+                pending_bytes = 0;
+            }
+            if accepted {
+                ids.push(hash.to_string());
+            }
+            pending.push(item);
+            pending_bytes += length;
+            if pending_bytes >= BYTES || archive.is_primary() {
+                self.flush_python_members(root, &mut pending, options, report, &mut package)?;
+                pending_bytes = 0;
+            }
+            Ok(())
+        });
+        // A later damaged source must not discard the verified prefix.
+        self.flush_python_members(root, &mut pending, options, report, &mut package)?;
+        if !found? {
+            recognition::refuse(
+                report,
+                root,
+                "not Python Polylogue's archive: it needs source.db and blob/",
+            );
+            return Ok(());
+        }
+        if !options.explain {
+            let counts = self.reads.reader()?.import_counts(&ids)?;
+            package.sessions = counts.sessions;
+            package.documents = counts.documents;
+        }
+        report.packages.push(package);
+        Ok(())
+    }
+
+    fn flush_python_members(
+        &mut self,
+        root: &Path,
+        pending: &mut Vec<Pending>,
+        options: &ImportOptions,
+        report: &mut ImportReport,
+        package: &mut ImportPackage,
+    ) -> std::io::Result<()> {
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let members = std::mem::take(pending);
+        let before = report.pass.errors.len();
+        let confirmed = if members[0].checked() {
+            self.confirm_python_members(root, &members, options, report, package)
+                .map_err(std::io::Error::other)?
+        } else {
+            false
+        };
+        if !confirmed {
+            let mut staged = Vec::with_capacity(members.len());
+            let prepared = members.into_iter().try_for_each(|member| {
+                staged.push(match member {
+                    Pending::Staged(member) => *member,
+                    Pending::Checked(member) => member.raw.prepare(root, &self.archive)?,
+                });
+                Ok::<(), std::io::Error>(())
+            });
+            if !staged.is_empty() {
+                self.import_members(root, staged, options, report)
+                    .map_err(std::io::Error::other)?;
+                package.assets += report
+                    .packages
+                    .pop()
+                    .expect("imported member package")
+                    .assets;
+            }
+            prepared?;
+        }
+        if report.pass.errors.len() > before {
+            return Err(std::io::Error::other(
+                report.pass.errors[before..].join("; "),
+            ));
+        }
+        Ok(())
+    }
+
+    fn confirm_python_members(
+        &mut self,
+        root: &Path,
+        group: &[Pending],
+        options: &ImportOptions,
+        report: &mut ImportReport,
+        package: &mut ImportPackage,
+    ) -> Result<bool, EngineError> {
+        let mut metadata = Vec::with_capacity(group.len());
+        let mut batches = Vec::with_capacity(group.len());
+        for member in group {
+            let Pending::Checked(member) = member else {
+                return Ok(false);
+            };
+            let path = &member.raw.path;
+            let id = import_identity(
+                &self.config.machine,
+                root,
+                options.authorship.as_ref(),
+                std::iter::once((path.as_path(), member.hash)),
+            );
+            let receipt = import_member(root, path, false, id, options);
+            let mut batch = self.import_batch(
+                path,
+                member.origin,
+                Some(receipt),
+                None,
+                member.hash,
+                member.length,
+            );
+            batch.new_blob = Some(polylogue_store::NewBlob::whole(member.hash, member.length));
+            metadata.push((path.clone(), member.origin, None, batch.input.clone()));
+            batches.push(batch);
+        }
+        let Some(stored) = self.writer.confirm_imports(batches)? else {
+            return Ok(false);
+        };
+        for (path, origin, _, _) in &metadata {
+            classify_accepted(report, package, path, origin, false);
+        }
+        self.finish_import_group(metadata, stored.into_iter().map(Ok).collect(), report)?;
+        Ok(true)
+    }
+}
+
+/// Visit the native catalog, each fragment and its declared joined reading in
+/// order. A rejected append still has its independent original fragment.
+fn visit(
     root: &Path,
     archive: &Archive,
-    mut accept: impl FnMut(package::Member) -> std::io::Result<()>,
+    mut accept: impl FnMut(Member) -> std::io::Result<()>,
 ) -> std::io::Result<bool> {
     let Some(polylogue_store::python_archive::Catalog {
         database,
@@ -50,7 +254,7 @@ pub(super) fn visit(
     for (name, bytes) in
         std::iter::once(("source.db", database)).chain(wal.map(|bytes| ("source.db-wal", bytes)))
     {
-        accept(package::Member {
+        accept(Member::Prepared(Box::new(package::Member {
             path: PathBuf::from(format!("{}!/catalog/{catalog}/{name}", root.display())),
             bytes,
             container: false,
@@ -59,7 +263,7 @@ pub(super) fn visit(
             container_kind: None,
             member_path_bytes: None,
             refusal: None,
-        })?;
+        })))?;
     }
     for input in &inputs {
         let name = Path::new(&input.source_path)
@@ -67,23 +271,15 @@ pub(super) fn visit(
             .and_then(|name| name.to_str())
             .unwrap_or("input");
         if input.revision_kind == "append" {
-            accept(package::Member {
+            accept(Member::Raw(RawMember {
                 path: PathBuf::from(format!(
                     "{}!/raw_sessions/{}/fragment",
                     root.display(),
                     input.raw_id
                 )),
-                bytes: archive
-                    .prepare_write(|out| copy_blob(root, input, |bytes| out.write_all(bytes)))
-                    .map(|(bytes, ())| bytes)
-                    .map_err(std::io::Error::other)?,
-                container: false,
+                parts: vec![Blob::from(input)],
                 origin: polylogue_sources::origin::by_name(KEPT),
-                parent: None,
-                container_kind: None,
-                member_path_bytes: None,
-                refusal: None,
-            })?;
+            }))?;
         }
         let at = PathBuf::from(format!(
             "{}!/raw_sessions/{}/{name}",
@@ -95,7 +291,7 @@ pub(super) fn visit(
             Err(reason) => {
                 // The fragment above keeps the bytes; only the joined
                 // reading is refused.
-                accept(package::Member {
+                accept(Member::Prepared(Box::new(package::Member {
                     path: at,
                     bytes: archive
                         .prepare_bytes(std::io::empty())
@@ -106,44 +302,16 @@ pub(super) fn visit(
                     container_kind: None,
                     member_path_bytes: None,
                     refusal: Some(reason),
-                })?;
+                })))?;
                 continue;
             }
         };
-        let (combined, head) = archive
-            .prepare_write(|output| {
-                let mut head = Vec::with_capacity(64);
-                for part in &chain {
-                    copy_blob(root, part, |bytes| {
-                        let take = bytes.len().min(64 - head.len());
-                        head.extend_from_slice(&bytes[..take]);
-                        output.write_all(bytes)
-                    })?;
-                }
-                Ok(head)
-            })
-            .map_err(std::io::Error::other)?;
-        // An origin Python Polylogue could not name ("unknown-export") is
-        // read by the declared structure its bytes have, or kept unparsed.
-        let spec = if polylogue_sources::browser_capture::recognize(&at, &head) {
-            polylogue_sources::origin::by_name("browser-capture")
-        } else if let Some(name) = polylogue_store::python_polylogue::origin(&input.origin) {
-            polylogue_sources::origin::by_name(name)
-        } else {
-            let mut bytes = combined.reader().map_err(std::io::Error::other)?;
-            super::recognition::declared(&at, &mut bytes, None)?
-        }
-        .or_else(|| polylogue_sources::origin::by_name(KEPT));
-        accept(package::Member {
+        accept(Member::Raw(RawMember {
             path: at,
-            bytes: combined,
-            container: false,
-            origin: spec,
-            parent: None,
-            container_kind: None,
-            member_path_bytes: None,
-            refusal: None,
-        })?;
+            parts: chain.into_iter().map(Blob::from).collect(),
+            origin: polylogue_store::python_polylogue::origin(&input.origin)
+                .and_then(polylogue_sources::origin::by_name),
+        }))?;
     }
     // Every blob no raw session cites, checked against its name.
     let cited: BTreeSet<String> = inputs
@@ -192,7 +360,7 @@ pub(super) fn visit(
                     Ok(())
                 })
                 .map_err(std::io::Error::other)?;
-            accept(package::Member {
+            accept(Member::Prepared(Box::new(package::Member {
                 path: PathBuf::from(format!("{}!/blob/{name}", root.display())),
                 bytes,
                 container: false,
@@ -201,19 +369,125 @@ pub(super) fn visit(
                 container_kind: None,
                 member_path_bytes: None,
                 refusal: None,
-            })?;
+            })))?;
         }
     }
     Ok(true)
 }
+enum Member {
+    Prepared(Box<package::Member>),
+    Raw(RawMember),
+}
+
+struct Blob {
+    hash: [u8; 32],
+    size: u64,
+}
+
+impl From<&Input> for Blob {
+    fn from(input: &Input) -> Self {
+        Self {
+            hash: input.blob_hash,
+            size: input.blob_size,
+        }
+    }
+}
+
+struct RawMember {
+    path: PathBuf,
+    parts: Vec<Blob>,
+    origin: Option<&'static OriginSpec>,
+}
+
+struct CheckedMember {
+    raw: RawMember,
+    hash: polylogue_model::BlobHash,
+    length: u64,
+    origin: &'static OriginSpec,
+}
+
+impl RawMember {
+    fn read(
+        &self,
+        root: &Path,
+        mut write: impl FnMut(&[u8]) -> std::io::Result<()>,
+    ) -> polylogue_store::Result<Vec<u8>> {
+        let mut head = Vec::with_capacity(64);
+        for part in &self.parts {
+            copy_blob(root, part, |bytes| {
+                let take = bytes.len().min(64 - head.len());
+                head.extend_from_slice(&bytes[..take]);
+                write(bytes)
+            })?;
+        }
+        Ok(head)
+    }
+
+    fn named_origin(&self, head: &[u8]) -> Option<&'static OriginSpec> {
+        if polylogue_sources::browser_capture::recognize(&self.path, head) {
+            polylogue_sources::origin::by_name("browser-capture")
+        } else {
+            self.origin
+        }
+    }
+
+    fn check(self, root: &Path) -> std::io::Result<CheckedMember> {
+        let mut hash = blake3::Hasher::new();
+        let mut length = 0;
+        let head = self
+            .read(root, |bytes| {
+                hash.update(bytes);
+                length += bytes.len() as u64;
+                Ok(())
+            })
+            .map_err(std::io::Error::other)?;
+        let origin = self
+            .named_origin(&head)
+            .expect("only named origins are checked for a repeat");
+        Ok(CheckedMember {
+            raw: self,
+            hash: polylogue_model::BlobHash(*hash.finalize().as_bytes()),
+            length,
+            origin,
+        })
+    }
+
+    fn prepare(self, root: &Path, archive: &Archive) -> std::io::Result<package::Member> {
+        #[cfg(test)]
+        polylogue_store::fault::check("python_archive.prepare_raw", &self.path.to_string_lossy())
+            .map_err(std::io::Error::other)?;
+        let (bytes, head) = archive
+            .prepare_write(|output| self.read(root, |part| output.write_all(part)))
+            .map_err(std::io::Error::other)?;
+        let origin = match self.named_origin(&head) {
+            Some(origin) => Some(origin),
+            None => {
+                let mut reader = bytes.reader().map_err(std::io::Error::other)?;
+                super::recognition::declared(&self.path, &mut reader, None)?
+                    .or_else(|| polylogue_sources::origin::by_name(KEPT))
+            }
+        };
+        Ok(package::Member {
+            path: self.path,
+            bytes,
+            container: false,
+            origin,
+            parent: None,
+            container_kind: None,
+            member_path_bytes: None,
+            refusal: None,
+        })
+    }
+}
+
 /// Validate the source bytes while producing this member. No staged
 /// copy of every source blob is kept alongside the joined readings.
 fn copy_blob(
     root: &Path,
-    input: &Input,
+    blob: &Blob,
     mut write: impl FnMut(&[u8]) -> std::io::Result<()>,
 ) -> polylogue_store::Result<()> {
-    let hash: String = polylogue_model::hex(&input.blob_hash);
+    let hash: String = polylogue_model::hex(&blob.hash);
     let path = root.join("blob").join(&hash[..2]).join(&hash[2..]);
     if !std::fs::symlink_metadata(&path)?.is_file() {
         return Err(polylogue_store::StoreError::invalid(format!(
@@ -234,7 +508,7 @@ fn copy_blob(
         length += n as u64;
     }
     let actual: [u8; 32] = actual.finalize().into();
-    if length != input.blob_size || actual != input.blob_hash {
+    if length != blob.size || actual != blob.hash {
         return Err(polylogue_store::StoreError::invalid(format!(
             "Python Polylogue blob {hash} differs from its catalog hash or size"
         )));
@@ -246,7 +520,10 @@ fn copy_blob(
 fn stage(root: &Path, archive: &Archive) -> std::io::Result<Option<Vec<package::Member>>> {
     let mut members = Vec::new();
     let found = visit(root, archive, |member| {
-        members.push(member);
+        members.push(match member {
+            Member::Prepared(member) => *member,
+            Member::Raw(raw) => raw.prepare(root, archive)?,
+        });
         Ok(())
     })?;
     Ok(found.then_some(members))
