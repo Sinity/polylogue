@@ -1,5 +1,9 @@
 //! One selection followed by declared verbs. Shell arguments retain their boundaries.
-use command_surface::{ArgumentForm, StepDeclaration};
+pub(crate) use command_surface::line::FirstWord;
+use command_surface::{
+    ArgumentForm,
+    line::{SelectionRules, SplitError},
+};
 use polylogue_model::Code;
 use serde_json::Value;
 use std::{ops::Range, path::PathBuf};
@@ -12,21 +16,11 @@ pub(crate) struct ParsedLine {
     pub steps: Vec<ParsedStep>,
     pub line: LineOptions,
 }
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum FirstWord {
-    Nothing,
-    Stdin,
-    Command,
-    Verb,
-    SavedQuery { name: String },
-    Unit,
-    Reference,
-    RowNumbers,
-    QueryText,
-    SearchWord,
+pub(crate) trait FirstWordRule {
+    fn rule(&self) -> u8;
 }
-impl FirstWord {
-    pub fn rule(&self) -> u8 {
+impl FirstWordRule for FirstWord {
+    fn rule(&self) -> u8 {
         match self {
             Self::Nothing => 1,
             Self::Stdin => 2,
@@ -37,6 +31,7 @@ impl FirstWord {
             Self::Reference | Self::RowNumbers => 7,
             Self::QueryText => 8,
             Self::SearchWord => 9,
+            Self::Additional(never) => match *never {},
         }
     }
 }
@@ -149,55 +144,41 @@ pub(crate) fn shell_line(words: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
-fn first(word: Option<&str>, catalog: &FirstWordCatalog, verbs: &[StepDeclaration]) -> FirstWord {
-    let Some(word) = word else {
-        return FirstWord::Nothing;
-    };
-    if word == "-" {
-        return FirstWord::Stdin;
+impl SelectionRules for FirstWordCatalog {
+    type Additional = std::convert::Infallible;
+    fn is_command(&self, word: &str) -> bool {
+        matches!(word, "--help" | "-h") || crate::commands::is_cli_command(word)
     }
-    if matches!(word, "--help" | "-h") || crate::commands::is_cli_command(word) {
-        return FirstWord::Command;
+    fn saved_name(&self, word: &str) -> Option<String> {
+        self.saved
+            .iter()
+            .chain(&self.shipped)
+            .any(|name| name == word)
+            .then(|| word.into())
     }
-    if verbs.iter().any(|verb| verb.verb() == word) {
-        return FirstWord::Verb;
+    fn is_unit(&self, word: &str) -> bool {
+        polylogue_query::ast::Unit::all().any(|unit| unit.name() == word)
     }
-    if catalog
-        .saved
-        .iter()
-        .chain(&catalog.shipped)
-        .any(|name| name == word)
-    {
-        return FirstWord::SavedQuery { name: word.into() };
+    fn is_row_numbers(&self, word: &str) -> bool {
+        crate::row_numbers::is_selection(word)
     }
-    if polylogue_query::ast::Unit::all().any(|unit| unit.name() == word) {
-        return FirstWord::Unit;
+    fn is_reference(&self, word: &str) -> bool {
+        polylogue_model::Reference::parse(word).is_ok()
+            || word.starts_with("https://")
+            || word.starts_with("http://")
+            || matches!(word, "latest" | "self" | "here")
+            || (word.len() >= 8 && word.chars().all(|c| c.is_ascii_hexdigit() || c == '-'))
+            || word
+                .strip_prefix('@')
+                .is_some_and(|name| name.starts_with(char::is_alphabetic))
     }
-    if crate::row_numbers::is_selection(word) {
-        return FirstWord::RowNumbers;
+    fn additional(&self, _: &str) -> Option<Self::Additional> {
+        None
     }
-    if polylogue_model::Reference::parse(word).is_ok()
-        || word.starts_with("https://")
-        || word.starts_with("http://")
-        || matches!(word, "latest" | "self" | "here")
-        || (word.len() >= 8 && word.chars().all(|c| c.is_ascii_hexdigit() || c == '-'))
-        || word
-            .strip_prefix('@')
-            .is_some_and(|name| name.starts_with(char::is_alphabetic))
-    {
-        return FirstWord::Reference;
+    fn is_query(&self, word: &str) -> bool {
+        word.chars()
+            .any(|c| c.is_whitespace() || " :|\"()~*,".contains(c))
     }
-    if word
-        .chars()
-        .any(|c| c.is_whitespace() || " :|\"()~*,".contains(c))
-    {
-        FirstWord::QueryText
-    } else {
-        FirstWord::SearchWord
-    }
-}
-fn takes_word(argument: &command_surface::ArgumentSpec) -> bool {
-    argument.form != ArgumentForm::Flag
 }
 fn value(args: &[String], index: &mut usize) -> Result<String, Refusal> {
     *index += 1;
@@ -290,10 +271,10 @@ pub(crate) fn parse(
     if literal_selection {
         index += 1;
     }
-    parsed.first = first(
+    parsed.first = command_surface::line::classify_first(
         args.get(index).map(String::as_str),
         catalog,
-        declarations.verbs(),
+        declarations,
     );
     if literal_selection {
         if index == args.len() {
@@ -384,92 +365,56 @@ pub(crate) fn parse(
             return Err(Refusal::new(Code::NotAVerb, message).at(index, &corrected));
         };
         let start = index;
-        index += 1;
-        let positionals: Vec<_> = declaration
-            .arguments()
-            .iter()
-            .filter(|field| field.form == ArgumentForm::Positional)
-            .collect();
-        let mut owed = positionals.len();
-        let optional = matches!(declaration.verb(), "save" | "edit");
-        let mut words = vec![];
         let mut to = None;
-        let mut stdin = None;
-        while index < args.len() {
-            if line_option(args, &mut index, &mut parsed.line)? {
-                index += 1;
-                continue;
-            }
-            if args[index] == "--" && owed > 0 {
-                words.push("--".into());
-                let forced = value(args, &mut index)?;
-                words.push(forced);
-                owed -= 1;
-                index += 1;
-                continue;
-            }
-            let word = &args[index];
-            if word.starts_with('-') && word != "-" {
-                if word == "--to" && matches!(declaration.verb(), "read" | "brief") {
-                    to = Some(Destination::parse(&value(args, &mut index)?));
-                    index += 1;
-                    continue;
+        let split = declarations
+            .split_step(args, start, |verb, args, index| {
+                if line_option(args, index, &mut parsed.line)? {
+                    return Ok(true);
                 }
-                let name = word.trim_start_matches('-').replace('-', "_");
-                let Some(field) = declaration.arguments().iter().find(|field| {
-                    field.name == name && field.form != ArgumentForm::Positional && field.listed
-                }) else {
-                    return Err(Refusal::new(
-                        Code::BadRequest,
-                        format!("{}: unknown option {word}", declaration.verb()),
-                    ));
-                };
-                words.push(word.clone());
-                if takes_word(field) {
-                    let text = value(args, &mut index)?;
-                    if field.name == "parts" && text == "-" {
-                        stdin_count += 1;
-                        stdin = Some(field.name.clone());
-                    }
-                    words.push(text);
+                if args[*index] == "--to" && matches!(verb, "read" | "brief") {
+                    to = Some(Destination::parse(&value(args, index)?));
+                    return Ok(true);
                 }
-                index += 1;
-                continue;
-            }
-            let verb = declarations.verbs().iter().any(|verb| verb.verb() == word);
-            if owed > 0 && !(optional && verb) {
-                if word == "-" {
-                    stdin_count += 1;
-                    stdin = Some(positionals[positionals.len() - owed].name.clone());
-                }
-                words.push(word.clone());
-                owed -= 1;
-                index += 1;
-            } else {
-                break;
-            }
-        }
-        if owed > 0 && !optional {
-            let name = positionals[positionals.len() - owed].name.to_uppercase();
-            let mut corrected = args[..index].to_vec();
-            corrected.push(name);
-            return Err(Refusal::new(
-                Code::BadRequest,
-                format!(
-                    "{} needs {}",
-                    declaration.verb(),
-                    if declaration.verb() == "tag" {
-                        "a name"
-                    } else {
-                        "a word"
-                    }
+                Ok(false)
+            })
+            .map_err(|error| match error {
+                SplitError::Local(error) => error,
+                SplitError::UnknownOption { index } => Refusal::new(
+                    Code::BadRequest,
+                    format!("{}: unknown option {}", declaration.verb(), args[index]),
                 ),
-            )
-            .at(index, &corrected));
+                SplitError::MissingValue { .. } => {
+                    Refusal::new(Code::BadRequest, "option needs a value")
+                }
+                SplitError::MissingArgument { index, name } => {
+                    let mut corrected = args[..index].to_vec();
+                    corrected.push(name.to_uppercase());
+                    Refusal::new(
+                        Code::BadRequest,
+                        format!(
+                            "{} needs {}",
+                            declaration.verb(),
+                            if declaration.verb() == "tag" {
+                                "a name"
+                            } else {
+                                "a word"
+                            }
+                        ),
+                    )
+                    .at(index, &corrected)
+                }
+                SplitError::Arguments(failure) => Refusal::new(Code::BadRequest, failure.message),
+                SplitError::UnknownVerb { .. } => unreachable!("the selected verb is declared"),
+            })?;
+        index = split.end;
+        let mut stdin = None;
+        for word in &split.argument_words {
+            if args[word.index] == "-" && (word.positional || word.field == "parts") {
+                stdin_count += 1;
+                stdin = Some(word.field.clone());
+            }
         }
-        let step = declarations
-            .parse_step(declaration.verb(), &words)
-            .map_err(|failure| Refusal::new(Code::BadRequest, failure.message))?;
+        let step = split.step;
         let typed: crate::protocol::line::Step = serde_json::from_value(step.clone())
             .map_err(|error| Refusal::new(Code::BadRequest, error.to_string()))?;
         parsed.steps.push(ParsedStep {
