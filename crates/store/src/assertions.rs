@@ -17,14 +17,14 @@ pub(crate) mod current_revisions;
 mod saved;
 pub(crate) mod sql;
 pub(crate) use saved::{
-    CurrentSavedDefinition, SavedInput, SavedPreparation, SavedResolver, saved_definition,
-    saved_family, saved_query_snapshot,
+    CurrentSavedDefinition, SavedInput, SavedPreparation, SavedResolver, named_current,
+    named_revisions, saved_definition, saved_family, saved_query_snapshot,
 };
 pub(crate) mod imports;
 mod read;
 pub(crate) mod settings;
 mod write;
-pub(crate) use write::{WriteContext, revise_preparing, write_preparing};
+pub(crate) use write::{WriteContext, revise_preparing, write_parts_preparing, write_preparing};
 
 pub const SCHEMA: &str = include_str!("schema/assertions.sql");
 const COLUMNS: &str = "id,root,kind,key,value,author,via,machine,created_at,valid_until,commit_seq";

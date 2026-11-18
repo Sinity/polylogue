@@ -140,3 +140,107 @@ pub(crate) fn saved_query_snapshot<'a>(
     }
     Ok(definitions)
 }
+
+/// Current named records, including every conflicting head.
+pub(crate) fn named_current(
+    conn: &Connection,
+    kind: AssertionKind,
+    name: &str,
+) -> Result<Vec<Assertion>> {
+    let source = Source::reading(conn)?;
+    let ids = conn.prepare_cached(&source.sql(
+        "SELECT a.id FROM @source.assertion a JOIN @source.revision_state r ON r.id=a.id WHERE a.kind=?1 AND a.key=?2 AND r.current=1 ORDER BY a.id",
+    ))?.query_map(params![kind.as_str(), name], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    ids.into_iter()
+        .map(|id| get(conn, &id)?.ok_or_else(|| StoreError::NotFound(id)))
+        .collect()
+}
+
+pub(crate) fn named_revisions(conn: &Connection, name: &str) -> Result<Vec<Assertion>> {
+    let source = Source::reading(conn)?;
+    let ids = conn.prepare_cached(&source.sql(
+        "SELECT id FROM @source.assertion WHERE kind='saved_query' AND root IN (SELECT root FROM @source.assertion WHERE kind='saved_query' AND key=?1) ORDER BY commit_seq,id",
+    ))?.query_map([name], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    ids.into_iter()
+        .map(|id| get(conn, &id)?.ok_or_else(|| StoreError::NotFound(id)))
+        .collect()
+}
+
+impl crate::Reader<'_> {
+    pub fn saved_query_record(
+        &self,
+        name: &str,
+    ) -> Result<Option<polylogue_model::saved_queries::SavedQueryRecord>> {
+        use polylogue_model::saved_queries::{KeptSummary, SavedQueryRecord, SavedRevision};
+        let conn = self.conn()?;
+        let rows = named_revisions(conn, name)?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        let mut revisions = Vec::new();
+        let mut hashes = Vec::new();
+        for (index, row) in rows.into_iter().enumerate() {
+            let value: values::SavedQuery = serde_json::from_value(
+                row.fact
+                    .value
+                    .ok_or_else(|| StoreError::invalid("saved question has no value"))?,
+            )?;
+            hashes.push(value.hash.to_string());
+            revisions.push(SavedRevision {
+                revision: u32::try_from(index + 1)
+                    .map_err(|_| StoreError::invalid("saved revision number is out of range"))?,
+                reference: Reference::Assertion(RevisionReference {
+                    root: row.fact.root,
+                    revision: Some(row.fact.id),
+                })
+                .to_string(),
+                text: value.text,
+                hash: format!("query:{}", value.hash),
+                saved_at: row.fact.created_at,
+                author: row.fact.author.to_string(),
+            });
+        }
+        let source = Source::reading(conn)?;
+        let kept = conn.prepare_cached(&source.sql(
+            "SELECT id,json_array_length(rows_json,'$.rows'),ran_at FROM @source.kept_result WHERE name=?1 ORDER BY id DESC",
+        ))?.query_map([name], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<u64>>(1)?, row.get::<_, i64>(2)?)))?
+            .map(|row| {
+                let (id, rows, at) = row?;
+                Ok(KeptSummary { result: format!("result:{id}"), rows: rows.ok_or_else(|| StoreError::invalid("kept result has no rows"))?, at: Timestamp::from_unix_ms(at).ok_or_else(|| StoreError::invalid("kept time is out of range"))? })
+            }).collect::<Result<Vec<_>>>()?;
+        let watches = named_current(conn, AssertionKind::Signal, name)?;
+        let watch = match watches.as_slice() {
+            [] => None,
+            [watch] => Some(
+                Reference::Assertion(RevisionReference {
+                    root: watch.fact.root.clone(),
+                    revision: Some(watch.fact.id.clone()),
+                })
+                .to_string(),
+            ),
+            _ => {
+                return Err(StoreError::Ambiguous {
+                    reference: format!("watch:{name}"),
+                    candidates: watches
+                        .iter()
+                        .map(|row| format!("assertion:{}@{}", row.fact.root, row.fact.id))
+                        .collect(),
+                });
+            }
+        };
+        let dependents = conn.prepare_cached(&source.sql(
+            "SELECT DISTINCT query FROM @source.query_edge WHERE uses IN (SELECT value FROM json_each(?1)) ORDER BY query",
+        ))?.query_map([serde_json::to_string(&hashes)?], |row| row.get::<_, String>(0))?
+            .map(|row| row.map(|id| format!("query:{id}"))).collect::<rusqlite::Result<Vec<_>>>()?;
+        self.conn()?;
+        Ok(Some(SavedQueryRecord {
+            name: name.into(),
+            revisions,
+            kept,
+            watch,
+            dependents,
+        }))
+    }
+}

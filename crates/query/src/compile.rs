@@ -230,6 +230,8 @@ pub struct Bindings {
     pub origins: Vec<String>,
     pub saved: std::collections::BTreeMap<String, Vec<SavedQuery>>,
     pub kept: std::collections::BTreeMap<String, Kept>,
+    /// Names resolved in this snapshot, before the question is identified.
+    pub kept_names: std::collections::BTreeMap<String, String>,
 }
 impl Bindings {
     /// Add an accepted query object under a saved assertion's name.
@@ -302,6 +304,7 @@ impl Options {
             origins: self.origins.clone(),
             saved: self.saved.clone(),
             kept: self.kept.clone(),
+            kept_names: Default::default(),
         }
     }
 }

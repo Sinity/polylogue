@@ -173,6 +173,19 @@ fn prepare_inner(
         }
         let mut catalog = options.catalog();
         let mut query = crate::parse::with_catalog(text, &catalog)?;
+        walk(
+            &mut query,
+            &mut |query| {
+                if let Source::Result { reference, .. } = &mut query.source {
+                    let name = reference.strip_prefix("result:").unwrap_or(reference);
+                    if let Some(id) = options.kept_names.get(name) {
+                        *reference = format!("result:{id}");
+                    }
+                }
+                Ok(())
+            },
+            &mut |_| Ok(()),
+        )?;
         let mut definitions = Vec::new();
         let mut saved_definitions: Vec<polylogue_model::query_objects::FrozenQueryDefinition> =
             Vec::new();

@@ -178,6 +178,12 @@ fn cache_lock<T>(lock: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, String
 
 impl Warm {
     pub fn new(archive: &polylogue_store::Archive, clock: polylogue_model::WallClock) -> Self {
+        let origins = polylogue_sources::ORIGINS
+            .iter()
+            .map(|origin| origin.name.to_owned())
+            .collect::<Vec<_>>();
+        polylogue_store::selection::shipped_bindings(&origins)
+            .expect("shipped query declarations prepare");
         Self {
             archive: archive.clone(),
             clock,

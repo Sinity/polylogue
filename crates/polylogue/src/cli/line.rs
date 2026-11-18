@@ -139,7 +139,10 @@ impl FirstWordCatalog {
         .collect();
         Self {
             saved,
-            shipped: vec![],
+            shipped: polylogue_model::saved_queries::SHIPPED_QUERIES
+                .iter()
+                .map(|query| query.name.to_owned())
+                .collect(),
         }
     }
 }

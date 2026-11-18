@@ -19,6 +19,8 @@ use serde_json::Value;
 mod execution;
 mod prepare;
 pub(crate) use prepare::{ProvisionalQueries, prepare_query_plan_on};
+mod shipped;
+pub use shipped::shipped_bindings;
 
 mod keyed;
 use std::{collections::BTreeMap, ops::ControlFlow, sync::Arc};

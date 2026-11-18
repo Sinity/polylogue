@@ -42,6 +42,7 @@ pub mod price;
 pub mod query_objects;
 mod quota;
 mod reference;
+pub mod saved_queries;
 pub use reference::{
     Reference, ReferenceError, RevisionReference, SpanBounds, SpanError, SpanUnit,
     TEXT_BODY_SEPARATOR, TextBodyError, TextBodyOffsets, TextSpanPiece, assertion_revisions,
