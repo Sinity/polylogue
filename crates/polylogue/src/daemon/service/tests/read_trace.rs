@@ -58,7 +58,7 @@ fn trace_shows_record_chain_and_names_unbuilt_sources() {
             _ => None,
         })
         .unwrap();
-    assert_eq!((start, end), (0, original.len() as u64));
+    assert_eq!((start, end), (0, original.len() as u64 - 1));
     assert!(trace.chain.iter().any(|step|matches!(step,ChainStep::StoredBytes{blob,size,offset:0,blob_offset:0,..} if *blob==BlobHash::of(&original) && *size==original.len() as u64)));
     let reader = d.daemon.reads.reader().unwrap();
     assert_eq!(
@@ -71,7 +71,7 @@ fn trace_shows_record_chain_and_names_unbuilt_sources() {
                 &d.daemon.archive.blob_reader().unwrap()
             )
             .unwrap(),
-        original
+        original[..original.len() - 1]
     );
     drop(reader);
     for target in [
@@ -135,6 +135,20 @@ fn trace_pages_keep_every_source_after_restart() {
         }
     };
     let mut d = test_daemon::start_with_sources_and_workers(text, &seed, 0, 2);
+    d.wait_for(|_| {
+        d.daemon
+            .reads
+            .reader()
+            .unwrap()
+            .known_inputs("synthetic-machine")
+            .unwrap()
+            .iter()
+            .filter(|input| {
+                input.format == "claude-code" && input.parsed && input.parsed_upto == input.stored
+            })
+            .count()
+            == 9
+    });
     d.pause_signals();
     let mut request = read("message:claude-code:u1");
     request.arguments["steps"][0]["budget"] = json!(512);

@@ -710,10 +710,10 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                         3
                     } else if matches!(
                         *name,
-                        "polylogue.line_resolution" | "polylogue.line_resolution_restore"
+                        "polylogue.line_resolution"
+                            | "polylogue.line_resolution_restore"
+                            | "polylogue.assertion"
                     ) {
-                        5
-                    } else if *name == "polylogue.assertion" {
                         5
                     } else {
                         match *product {

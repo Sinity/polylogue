@@ -148,6 +148,7 @@ impl Reader<'_> {
             }
             if let (Some(reading_version), Some(status), Some(parsed_upto)) =
                 (version, status, parsed_upto)
+                && !reading_version.is_empty()
             {
                 if end > start && parsed_upto < end {
                     card.chain.push(ChainStep::Unavailable{reason:"the current reader checkpoint does not cover this record; its original reader version is unavailable".into()});

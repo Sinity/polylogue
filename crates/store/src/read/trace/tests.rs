@@ -76,6 +76,7 @@ fn trace_preserves_missing_range_and_checks_block_span_and_call_identity() {
     }
     let index = Connection::open(archive.archive.index_db()).unwrap();
     index.execute("UPDATE message_source SET source_end=source_start WHERE message_pk=(SELECT pk FROM message WHERE id='claude-code:trace-p1')",[]).unwrap();
+    index.execute("UPDATE parse_state SET reading_version='' WHERE input_pk=(SELECT pk FROM input_ref WHERE id='input-trace')",[]).unwrap();
     let reader = pool.reader().unwrap();
     let card = reader
         .record_chain(&Reference::parse("message:claude-code:trace-p1").unwrap())
@@ -88,6 +89,13 @@ fn trace_preserves_missing_range_and_checks_block_span_and_call_identity() {
             .any(|step| matches!(step, ChainStep::StoredBytes { .. }))
     );
     assert!(card.chain.iter().any(|step|matches!(step,ChainStep::Unavailable{reason} if reason.contains("byte end is not recorded"))));
+    assert!(
+        !card
+            .chain
+            .iter()
+            .any(|step| matches!(step, ChainStep::ReaderVersion { .. }))
+    );
+    assert!(card.chain.iter().any(|step| matches!(step,ChainStep::Unavailable{reason} if reason.contains("reader version is unavailable"))));
     assert_eq!(
         card.missing,
         ["quote origins", "paste origins", "file-line lineage"]
