@@ -1,4 +1,5 @@
 use super::*;
+use crate::writer::attachments::{normalize, normalize_known};
 
 fn call(text: Option<&str>) -> Block {
     Block::ToolCall {
@@ -36,11 +37,10 @@ fn changing_an_attachment_keeps_other_blocks_exact() {
         let mut batch = batch("i", Route::Live, 0, vec![row(0, message.clone())], &["s"]);
         batch.parse[0].prepare();
         if replacement {
-            attachments::normalize_known(&mut batch.parse[0], &HashMap::from([(hash, Some(19))]))
-                .unwrap();
+            normalize_known(&mut batch.parse[0], &HashMap::from([(hash, Some(19))])).unwrap();
         } else {
             let archive = Connection::open_in_memory().unwrap();
-            attachments::normalize(&mut batch, &archive, &HashMap::from([(hash, 19)])).unwrap();
+            normalize(&mut batch, &archive, &HashMap::from([(hash, 19)])).unwrap();
         }
         let step = &batch.parse[0];
         assert_eq!(step.output.messages[0].message, expected);
