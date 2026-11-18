@@ -80,13 +80,13 @@ fn request(d: &test_daemon::TestDaemon, id: &str) -> polylogue_model::authored::
 }
 fn command(d: &test_daemon::TestDaemon, text: &str) -> StepsAnswer {
     let (words, input) = crate::cli::line::tests::shell_arguments(text);
-    assert!(input.is_empty());
-    let parsed = crate::cli::line::parse(
+    let mut parsed = crate::cli::line::parse(
         &words,
         &crate::cli::line::FirstWordCatalog::default(),
         false,
     )
     .unwrap();
+    crate::cli::run_line::read_stdin(&mut parsed, &mut std::io::Cursor::new(input)).unwrap();
     let request = crate::cli::run_line::request(&parsed).unwrap();
     steps(
         crate::test_daemon::Call::from_request(&request)
@@ -252,46 +252,52 @@ fn withdrawal_retry_does_not_retarget_a_recreated_saved_name() {
 
 #[test]
 fn a_saved_query_expression_withdraws_results_instead_of_the_definition() {
-    let d = test_daemon::start("synthetic query target");
-    note(&d, "result-note");
-    let saved = save(
-        &d,
-        "result-query",
-        "selected-notes",
-        "annotations where kind:note",
-        false,
-    )
-    .saved
-    .unwrap();
-    steps(
-        call(
-            "withdraw-results",
-            json!({"selection":"query:selected-notes | sort by id", "all":true,
-        "steps":[{"verb":"withdraw"}]}),
+    for selection in [
+        "query:selected-notes | sort by id",
+        "query:selected-notes where kind:note",
+        "query:selected-notes@1",
+    ] {
+        let d = test_daemon::start("synthetic query target");
+        note(&d, "result-note");
+        let saved = save(
+            &d,
+            "result-query",
+            "selected-notes",
+            "annotations where kind:note",
+            false,
         )
-        .answer(&d.daemon),
-    );
-    let original = request(&d, "withdraw-results-1");
-    let note = Reference::Assertion(RevisionReference::exact(
-        "result-note-1".into(),
-        "result-note-1".into(),
-    ));
-    assert!(
-        matches!(&original.request.write, UserWrite::WithdrawAssertions { targets, .. } if targets == &vec![note])
-    );
-    assert_eq!(count(&d, "annotations where kind:note"), 0);
-    assert_eq!(
-        d.daemon
-            .reads
-            .reader()
-            .unwrap()
-            .saved_query_target("selected-notes")
-            .unwrap(),
-        Some(Reference::Assertion(RevisionReference {
-            root: saved.id,
-            revision: None
-        }))
-    );
+        .saved
+        .unwrap();
+        steps(
+            call(
+                "withdraw-results",
+                json!({"selection":selection, "all":true,
+        "steps":[{"verb":"withdraw"}]}),
+            )
+            .answer(&d.daemon),
+        );
+        let original = request(&d, "withdraw-results-1");
+        let note = Reference::Assertion(RevisionReference::exact(
+            "result-note-1".into(),
+            "result-note-1".into(),
+        ));
+        assert!(
+            matches!(&original.request.write, UserWrite::WithdrawAssertions { targets, .. } if targets == &vec![note])
+        );
+        assert_eq!(count(&d, "annotations where kind:note"), 0);
+        assert_eq!(
+            d.daemon
+                .reads
+                .reader()
+                .unwrap()
+                .saved_query_target("selected-notes")
+                .unwrap(),
+            Some(Reference::Assertion(RevisionReference {
+                root: saved.id,
+                revision: None
+            }))
+        );
+    }
 }
 
 #[test]
@@ -430,5 +436,65 @@ fn shipped_or_absent_saved_names_refuse_without_a_write() {
                 .unwrap()
                 .is_none()
         );
+    }
+}
+
+#[test]
+fn withdrawing_an_existing_literal_saved_key_does_not_run_its_results() {
+    use polylogue_model::assertion::{AssertionPatch, Change};
+    for name in ["legacy_focus", "Legacy Focus"] {
+        let d = test_daemon::start("synthetic query target");
+        note(&d, "result-note");
+        let saved = save(
+            &d,
+            "first-definition",
+            "initial-name",
+            "annotations where kind:note",
+            false,
+        )
+        .saved
+        .unwrap();
+        // Existing authored facts may carry names outside new Save's spelling
+        // rule. Use the ordinary revision writer rather than editing stored rows.
+        let invocation = d.daemon.invocation(&Authorship {
+            author: Author::Operator,
+            via: Channel::Cli,
+        });
+        crate::test_answers::ok(crate::daemon::service::write(
+            &d.daemon,
+            &invocation,
+            "rename-existing-definition".into(),
+            UserWrite::ReviseAssertions {
+                bases: vec![RevisionReference::exact(saved.id.clone(), saved.id.clone())],
+                patch: AssertionPatch {
+                    key: Change::Set(name.into()),
+                    ..Default::default()
+                },
+            },
+        ));
+        let selection = format!("query:{}", polylogue_query::quoted(name));
+        steps(
+            call(
+                "withdraw-existing",
+                json!({"selection":selection,
+            "steps":[{"verb":"withdraw"}]}),
+            )
+            .answer(&d.daemon),
+        );
+        let original = request(&d, "withdraw-existing-1");
+        assert!(
+            matches!(&original.request.write, UserWrite::WithdrawAssertions { targets, .. }
+            if targets == &vec![Reference::Assertion(RevisionReference { root:saved.id.clone(), revision:None })])
+        );
+        assert!(
+            d.daemon
+                .reads
+                .reader()
+                .unwrap()
+                .saved_query_target(name)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(count(&d, "annotations where kind:note"), 1);
     }
 }

@@ -465,14 +465,27 @@ fn resolve(
     // expressions (including parameters, revisions and pipelines) denote results.
     if steps.iter().any(|step| matches!(step, Step::Withdraw(_)))
         && let Given::Query(text) = &given
-        && let Ok(reference @ Reference::Query { .. }) = Reference::parse(text.trim())
-        && reference.question_id().is_none()
-        && let Reference::Query { key, parameters } = &reference
-        && parameters.is_empty()
-        && polylogue_model::assertion::policy::sayable_query_name(key)
+        && let Ok(query) = polylogue_query::parse::parse(text)
+        && query.attach.is_empty()
+        && query.transforms.is_empty()
+        && let polylogue_query::ast::Source::Saved {
+            name,
+            arguments,
+            condition,
+            ..
+        } = &query.source
+        && arguments.is_empty()
+        && condition.is_none()
+        && !name.contains('@')
+        && (Reference::Query {
+            key: name.clone(),
+            parameters: vec![],
+        })
+        .question_id()
+        .is_none()
     {
-        let target = call.reader()?.saved_query_target(key)?.ok_or_else(|| {
-            Failure::not_found(format!("no current authored saved query query:{key}"))
+        let target = call.reader()?.saved_query_target(name)?.ok_or_else(|| {
+            Failure::not_found(format!("no current authored saved query query:{name}"))
         })?;
         let mut selection = resolve(Given::Reference(target), steps, return_selection, call)?;
         selection.question = Some(text.clone());
