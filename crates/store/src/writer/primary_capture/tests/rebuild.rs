@@ -173,22 +173,10 @@ fn rebuild_swaps_only_when_caught_up() {
             delivery: None,
         })])
         .unwrap();
+    // A delivery can follow the sampled head before its closing marker arrives.
+    writer.apply_confirmed(vec![input("tail", 8)]).unwrap();
     assert!(writer.flush().unwrap().errors.is_empty());
-    assert!(
-        std::fs::symlink_metadata(cache.join("index.db"))
-            .unwrap()
-            .is_symlink()
-    );
-    let current = reads.reader().unwrap();
-    assert_eq!(ids(&current), ["new", "retained"]);
-    assert_eq!(bytes(&current), b"confirmed original");
-    assert_eq!(bytes(&old), b"confirmed original");
-    assert_eq!(current.confirmed_checkpoint().unwrap(), Some(7));
-    assert_eq!(ids(&old), ["retained"]);
-    assert_eq!(old.confirmed_checkpoint().unwrap(), Some(4));
-    drop(current);
-    drop(old);
-    // The follower still observes the writer's physical file after publication.
+    assert_eq!(ids(&reads.reader().unwrap()), ["retained"]);
     latest(&writer, 8);
     writer
         .apply_confirmed(vec![read_control(ReplayControl::Completion {
@@ -196,7 +184,30 @@ fn rebuild_swaps_only_when_caught_up() {
             delivery: None,
         })])
         .unwrap();
-    assert_eq!(writer.synchronize_primary().unwrap(), 8);
+    assert!(writer.flush().unwrap().errors.is_empty());
+    assert!(
+        std::fs::symlink_metadata(cache.join("index.db"))
+            .unwrap()
+            .is_symlink()
+    );
+    let current = reads.reader().unwrap();
+    assert_eq!(ids(&current), ["new", "retained", "tail"]);
+    assert_eq!(bytes(&current), b"confirmed original");
+    assert_eq!(bytes(&old), b"confirmed original");
+    assert_eq!(current.confirmed_checkpoint().unwrap(), Some(8));
+    assert_eq!(ids(&old), ["retained"]);
+    assert_eq!(old.confirmed_checkpoint().unwrap(), Some(4));
+    drop(current);
+    drop(old);
+    // The follower still observes the writer's physical file after publication.
+    latest(&writer, 9);
+    writer
+        .apply_confirmed(vec![read_control(ReplayControl::Completion {
+            position: 9,
+            delivery: None,
+        })])
+        .unwrap();
+    assert_eq!(writer.synchronize_primary().unwrap(), 9);
     drop(writer);
     drop(reads);
     drop(lock);
@@ -209,10 +220,10 @@ fn rebuild_swaps_only_when_caught_up() {
     );
     assert!(!cache.join("index-build").exists());
     let reads = serving(&archive);
-    assert_eq!(ids(&reads.reader().unwrap()), ["new", "retained"]);
+    assert_eq!(ids(&reads.reader().unwrap()), ["new", "retained", "tail"]);
     assert_eq!(
         reads.reader().unwrap().confirmed_checkpoint().unwrap(),
-        Some(8)
+        Some(9)
     );
     assert_eq!(
         std::fs::read(producer.root.join("pending")).unwrap(),

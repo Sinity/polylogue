@@ -254,7 +254,9 @@ pub(crate) fn finish(archive: &Archive, index: &Connection) -> Result<bool> {
         || stream(&state).is_none()
         || !matches!((state.applied_position, state.latest_position), (Some(applied), Some(latest)) if applied >= latest && previous_position.is_none_or(|previous| applied >= previous))
         || !crate::derive::caught_up(index)?
-        || index.exists("SELECT EXISTS(SELECT 1 FROM search_pending)", [])?
+        || index.exists(
+            "SELECT EXISTS(SELECT 1 FROM primary_pending) OR EXISTS(SELECT 1 FROM primary_complete) OR EXISTS(SELECT 1 FROM search_pending)", []
+        )?
         || !crate::archive::index_rebuild::built(index)?
     {
         return Ok(false);
