@@ -235,8 +235,30 @@ fn codex_checkpoint_retry(predecessor: bool) {
             .unwrap(),
         original.as_bytes()
     );
-    assert_eq!(home.count("SELECT COUNT(*) AS n FROM a.revision"), 1);
-    assert_eq!(home.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
+    let mut inputs = vec![input.to_string()];
+    if predecessor {
+        let catalog = std::fs::read(root.join("source.db")).unwrap();
+        let id = polylogue_model::BlobHash::of(&catalog).to_string();
+        let progress = reader.input_progress(&id).unwrap().unwrap();
+        assert_eq!(
+            reader
+                .stored_range(&id, progress.chain, 0, progress.length, &engine.blobs)
+                .unwrap(),
+            catalog
+        );
+        inputs.push(id);
+    }
+    inputs.sort();
+    let expected: Vec<_> = inputs
+        .iter()
+        .map(|id| serde_json::json!({"input":id}))
+        .collect();
+    for table in ["a.revision", "a.extent"] {
+        let rows = reader
+            .query(&format!("SELECT input FROM {table} ORDER BY input"), &[])
+            .unwrap();
+        assert_eq!(rows, expected, "{table}");
+    }
 }
 
 #[test]

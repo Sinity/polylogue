@@ -18,8 +18,8 @@ mod recognition;
 
 impl Engine {
     /// Imports immutable content identified by the BLAKE3 of its original
-    /// bytes. The bytes are hashed and compressed into a private file; the
-    /// writer commits their extents before they are parsed.
+    /// bytes. The writer confirms a matching stored extent or commits the
+    /// newly prepared bytes before they are parsed.
     /// Origins read as whole documents still parse one document in one job.
     pub fn import(&mut self, paths: &[PathBuf]) -> Result<ImportReport, EngineError> {
         self.import_with_options(paths, &ImportOptions::default())
