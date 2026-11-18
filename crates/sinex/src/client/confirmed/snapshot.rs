@@ -34,9 +34,7 @@ impl Client {
                 "the snapshot origin has an inconsistent stream identity",
             ));
         }
-        self.consumer = None;
-        self.consumer_cache = None;
-        self.consumer_instance = None;
+        self.release_consumer();
         let Some(progress) = state.snapshot_progress.as_ref().filter(|progress| {
             state.scope.as_deref() == Some(scope.as_str())
                 && progress.origin == origin

@@ -156,6 +156,13 @@ fn registration_acknowledgment_establishes_family() {
             assert_eq!(query,sinex_protocol::ConfirmedConsumer{completion:None,start:None,after:42,cache:"cache-test".into(),status_only:false});
             let reply=sinex_protocol::ConfirmedConsumerReply::Provisioned{position:50,stream:subjects.confirmed_stream(),stream_instance:Some("instance".into()),consumer:"consumer".into(),scope:"test-scope".into()};
             sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),reply,Duration::from_secs(5)).await.unwrap();
+            for scope in ["old-scope", "restored-scope"] {
+                let request = consumers.next().await.unwrap();
+                let query: sinex_protocol::ConfirmedConsumer = serde_json::from_slice(&request.payload).unwrap();
+                assert_eq!(query.after, 42);
+                let reply = sinex_protocol::ConfirmedConsumerReply::Gap { position: 3, scope: scope.into(), reason: "past restored history".into() };
+                sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),reply,Duration::from_secs(5)).await.unwrap();
+            }
             let request=consumers.next().await.unwrap();
             let query:sinex_protocol::ConfirmedConsumer=serde_json::from_slice(&request.payload).unwrap();
             assert_eq!(query.after,0,"an index that applied nothing reads the stream from its start");
@@ -313,6 +320,15 @@ fn registration_acknowledgment_establishes_family() {
     let freshness = sinex.freshness(Some(42), Some("old-scope".into())).unwrap();
     assert_eq!(freshness.scope(), Some("old-scope"));
     assert!(freshness.degraded());
+    let same_scope_gap = primary::Sinex::confirmed(&sinex, &state, "cache-test").unwrap_err();
+    assert!(
+        matches!(same_scope_gap, polylogue_store::StoreError::Invalid(message) if message.contains("past restored history"))
+    );
+    let changed_scope_gap = primary::Sinex::confirmed(&sinex, &state, "cache-test").unwrap();
+    assert!(
+        matches!(changed_scope_gap.as_slice(), [primary::Confirmed { change: ConfirmedChange::Control(control), .. }]
+        if matches!(control.as_ref(), ReplayControl::Reset { scope } if scope == "restored-scope"))
+    );
     let state = primary::ReplayState {
         applied_position: None,
         scope: Some("test-scope".into()),
