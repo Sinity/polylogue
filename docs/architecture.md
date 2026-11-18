@@ -258,10 +258,11 @@ Building the archive overlaps every stage:
   its own and written by the writer only if its inputs are unchanged), the
   request-log view and the completion catalog;
 - at the end of an index build, two threads build the full-text indexes in
-  private disk files from one ordered scan, with 64 MiB of queued text shared
-  between them. Their declarations and configuration are the installed
-  schema's own statements. Meanwhile the writer builds the trigram and
-  deferred secondary indexes. Once both search files are finished, their
+  private disk files from one ordered scan. The scan reads each referenced
+  text group once per bounded rowid window and sends its texts in rowid order.
+  The scan window and the two queues share 64 MiB. Their declarations and
+  configuration are the installed schema's own statements. Meanwhile the
+  writer builds the trigram and deferred secondary indexes. Once both search files are finished, their
   configuration is checked and both tables are copied into the main file in
   one transaction on a short-lived connection.
   That commit invalidates the existing writer's and readers' cached full-text
