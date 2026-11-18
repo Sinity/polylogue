@@ -88,9 +88,9 @@ fn query_and_typed_about_share_forks_and_withdrawal() {
     );
     let reads = ReadPool::open(&archive.archive).unwrap();
     let pinned = reads.reader().unwrap();
-    assert_eq!(selected(&pinned, "assertions"), ["left", "right"]);
+    assert_eq!(selected(&pinned, "annotations"), ["left", "right"]);
     assert_eq!(
-        selected(&pinned, "assertions where conflict:true"),
+        selected(&pinned, "annotations where conflict:true"),
         ["left", "right"]
     );
     let mut associated = Vec::new();
@@ -115,11 +115,11 @@ fn query_and_typed_about_share_forks_and_withdrawal() {
             &[(LinkRole::Withdraws, "assertion:family@left")],
         ),
     );
-    assert_eq!(selected(&pinned, "assertions"), ["left", "right"]);
+    assert_eq!(selected(&pinned, "annotations"), ["left", "right"]);
     drop(pinned);
     let fresh = reads.reader().unwrap();
-    assert_eq!(selected(&fresh, "assertions"), ["right"]);
-    assert!(selected(&fresh, "assertions where conflict:true").is_empty());
+    assert_eq!(selected(&fresh, "annotations"), ["right"]);
+    assert!(selected(&fresh, "annotations where conflict:true").is_empty());
     let exact = fresh
         .assertion(&polylogue_model::RevisionReference::exact(
             "family".into(),
@@ -249,13 +249,13 @@ fn unknown_authored_time_keeps_current_revision_queries() {
     assert!(archive.writer.restore_assertion(conflicting, None).is_err());
     let reads = ReadPool::open(&archive.archive).unwrap();
     let reader = reads.reader().unwrap();
-    assert_eq!(selected(&reader, "assertions"), ["dated", "undated"]);
+    assert_eq!(selected(&reader, "annotations"), ["dated", "undated"]);
     assert_eq!(
-        selected(&reader, "assertions where created_at:unknown"),
+        selected(&reader, "annotations where created_at:unknown"),
         ["undated"]
     );
     assert_eq!(
-        selected(&reader, "assertions where created_at:known"),
+        selected(&reader, "annotations where created_at:known"),
         ["dated"]
     );
     let reference = RevisionReference::exact("undated".into(), "undated".into());

@@ -311,9 +311,9 @@ pub(crate) fn named_revision(
     name: &str,
     number: u32,
 ) -> Result<CurrentSavedDefinition> {
-    // A name with one current family binds that family's history. Forks
-    // within it remain forks, and explicit cross-family ancestors stay in the
-    // graph. Without one current root, historical ambiguity remains visible.
+    // A name with one current family binds its current heads and ancestors.
+    // Withdrawn siblings do not compete with a redo; active forks and explicit
+    // cross-family ancestors stay in the graph. Otherwise use all history.
     let roots = named_current(conn, AssertionKind::SavedQuery, name)?
         .into_iter()
         .map(|row| row.fact.root)
@@ -324,7 +324,8 @@ pub(crate) fn named_revision(
         Some(root) => {
             let source = Source::reading(conn)?;
             let ids = conn.prepare_cached(&source.sql(
-                "SELECT id FROM @source.assertion WHERE kind='saved_query' AND root=?1 ORDER BY id",
+                "SELECT a.id FROM @source.assertion a JOIN @source.revision_state r ON r.id=a.id
+                 WHERE a.kind='saved_query' AND a.root=?1 AND r.current=1 AND r.withdrawn=0 ORDER BY a.id",
             ))?.query_map([root], |row| row.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             let rows = ids

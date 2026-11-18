@@ -340,7 +340,7 @@ fn time_companions_keep_missing_relations_distinct() {
     }
     let groups = query(
         &reader,
-        "links | group by child.started_at.time_quality | count",
+        "session_links | group by child.started_at.time_quality | count",
         &[],
     );
     assert_eq!(groups.len(), 2, "{groups:?}");

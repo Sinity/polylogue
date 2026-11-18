@@ -44,6 +44,7 @@ fn stored_attachment_metadata_keeps_the_original_descriptor() {
         let message = MessageId::parse(test_daemon::assets::seed_bytes(&daemon, &bytes)).unwrap();
         let reader = daemon.daemon.reads.reader().unwrap();
         let original = item(&reader, &message);
+        drop(reader);
         let prepared = prepared(&daemon, &message);
         assert_eq!(prepared.source, original.source);
         let (
@@ -76,6 +77,7 @@ fn stored_attachment_metadata_keeps_the_original_descriptor() {
             serde_json::from_value(request.arguments).unwrap();
         assert_eq!(arguments.message, message.to_string());
         assert_eq!((arguments.block, arguments.attachment), (0, 0));
+        let reader = daemon.daemon.reads.reader().unwrap();
         let resolution = reader.attachment(&message, 0, 0).unwrap();
         assert_eq!(
             arguments.input.as_deref(),
@@ -108,6 +110,7 @@ fn page_read_never_touches_blob_bodies() {
     file.seek(SeekFrom::Start(offset)).unwrap();
     file.write_all(&[byte[0] ^ 1]).unwrap();
     file.sync_all().unwrap();
+    drop(reader);
     let response = test_daemon::Call::new(
         "rows",
         serde_json::json!({"selection": format!("message:{message}"), "steps":[{"verb":"read"}]}),

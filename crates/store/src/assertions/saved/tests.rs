@@ -415,3 +415,40 @@ fn numeric_saved_revisions_keep_independent_current_and_retired_histories_ambigu
     assert!(get(&conn, "first").unwrap().is_some());
     assert!(get(&conn, "other").unwrap().is_some());
 }
+
+#[test]
+fn numeric_saved_revisions_ignore_withdrawn_siblings_but_keep_active_redo_forks() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+    let first = fact("first", "focus", 1, None);
+    let undone = fact("undone", "focus", 2, Some("assertion:family@first"));
+    super::super::apply(&conn, &[first, undone.clone()], 1).unwrap();
+    super::super::apply(&conn, &[withdrawal("undo", "assertion:family@undone")], 2).unwrap();
+    assert_eq!(
+        named_revision(&conn, "focus", 1).unwrap().reference,
+        RevisionReference::exact("family".into(), "first".into())
+    );
+    assert!(matches!(
+        named_revision(&conn, "focus", 2),
+        Err(StoreError::NotFound(_))
+    ));
+    let redo = fact("redo", "focus", 3, Some("assertion:family@first"));
+    super::super::apply(&conn, &[redo], 3).unwrap();
+    let current = named_revision(&conn, "focus", 2).unwrap();
+    assert_eq!(
+        current.reference,
+        RevisionReference::exact("family".into(), "redo".into())
+    );
+    assert_eq!(current.value.hash, BlobHash([3; 32]));
+    assert_eq!(get(&conn, "undone").unwrap().unwrap().fact, undone);
+    assert_eq!(named_revisions(&conn, "focus").unwrap().len(), 3);
+    let parallel = fact("parallel", "focus", 4, Some("assertion:family@first"));
+    super::super::apply(&conn, &[parallel], 4).unwrap();
+    match named_revision(&conn, "focus", 2).unwrap_err() {
+        StoreError::Ambiguous { candidates, .. } => assert_eq!(
+            candidates,
+            ["assertion:family@parallel", "assertion:family@redo"]
+        ),
+        error => panic!("two active redo heads must remain ambiguous: {error}"),
+    }
+}

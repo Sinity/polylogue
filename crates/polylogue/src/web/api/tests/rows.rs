@@ -45,7 +45,7 @@ fn http_post_rows_derives_request_id() {
                 id = Some(value["id"].clone());
             }
         }
-        let (status, listed) = response(&daemon, axum::http::Method::GET, "/api/v1/rows?selection=assertions%20where%20kind%3Anote", Value::Null).await;
+        let (status, listed) = response(&daemon, axum::http::Method::GET, "/api/v1/rows?selection=annotations%20where%20kind%3Anote", Value::Null).await;
         assert_eq!(status, StatusCode::OK, "{listed:?}");
         assert_eq!(listed.value().unwrap()["reply"]["rows"].as_array().unwrap().len(), 1);
     });
