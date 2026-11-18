@@ -104,6 +104,15 @@ impl<'a> Encoder<'a> {
                         "<p class=\"archive-notice\">{ARCHIVE_NOTICE}</p>"
                     )?;
                 }
+                for line in saved_query_lines(&header.kind) {
+                    write!(encoder.out, "<p>{}</p>", html::escape(&line))?;
+                }
+                if let HeaderKind::SavedQuery(saved) = &header.kind {
+                    for call in &saved.resave {
+                        let text = encoder.call_text(call)?;
+                        write!(encoder.out, "<pre>{}</pre>", html::escape(&text))?;
+                    }
+                }
             }
             Format::Terminal | Format::Markdown => {
                 if options.model_facing {
@@ -128,6 +137,15 @@ impl<'a> Encoder<'a> {
                 )?;
                 if let Some(line) = logical_line(&header.kind) {
                     encoder.line(&line)?;
+                }
+                for line in saved_query_lines(&header.kind) {
+                    encoder.line(&line)?;
+                }
+                if let HeaderKind::SavedQuery(saved) = &header.kind {
+                    for call in &saved.resave {
+                        let text = encoder.call_text(call)?;
+                        encoder.line(&text)?;
+                    }
                 }
                 for figure in &header.figures {
                     let text = format!(
@@ -979,4 +997,44 @@ pub(crate) fn annotation_text(assertion: &Annotation, format: Format) -> String 
         Format::Html => format!("◆ {}{key}{value} · {}", assertion.kind, assertion.author),
         _ => format!("◆ {}{key}{value} ({})", assertion.kind, assertion.author),
     }
+}
+
+fn saved_query_lines(kind: &HeaderKind) -> Vec<String> {
+    let HeaderKind::SavedQuery(saved) = kind else {
+        return vec![];
+    };
+    let query = &saved.query;
+    let mut lines = vec![format!(
+        "Saved query: {} · selected {}",
+        query.name, saved.selected_revision
+    )];
+    for revision in &query.revisions {
+        lines.push(format!(
+            "Revision {}: {} · {} · {} · {}",
+            revision.revision,
+            revision.reference,
+            revision.hash,
+            revision.author,
+            revision
+                .saved_at
+                .map_or_else(|| "time unknown".into(), |at| at.to_string())
+        ));
+        lines.push(revision.text.clone());
+    }
+    for kept in &query.kept {
+        lines.push(format!(
+            "Kept: {} · {} rows · {}",
+            kept.result, kept.rows, kept.at
+        ));
+    }
+    lines.push(
+        query
+            .watch
+            .as_ref()
+            .map_or_else(|| "Watch: none".into(), |watch| format!("Watch: {watch}")),
+    );
+    for reference in &query.dependents {
+        lines.push(format!("Dependent: {reference}"));
+    }
+    lines
 }

@@ -144,6 +144,7 @@ pub struct ReadHeader {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HeaderKind {
+    SavedQuery(Box<SavedQueryHeader>),
     Session {
         session: Box<Session>,
     },
@@ -167,6 +168,16 @@ pub enum HeaderKind {
     Query {
         query: String,
     },
+}
+
+/// Metadata for the named definition used by this reading, plus explicit
+/// re-save actions for its current named dependents. Reading invokes none.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SavedQueryHeader {
+    pub query: crate::saved_queries::SavedQueryRecord,
+    pub selected_revision: String,
+    pub resave: Vec<ReadyCall>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]

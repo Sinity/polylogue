@@ -163,7 +163,7 @@ fn stdin_intent_is_consumed_once_and_literal_hyphens_do_not_read_it() {
     assert_eq!(literal.selection, Some(SelectionWord::Text("-".into())));
 }
 
-fn shell_arguments(command: &str) -> (Vec<String>, Vec<u8>) {
+pub(crate) fn shell_arguments(command: &str) -> (Vec<String>, Vec<u8>) {
     let script = format!(
         r#"polylogue() {{ printf '%s\0' "$@"; printf '\0'; cat; }}
 {command}"#
