@@ -319,8 +319,8 @@ pub fn rule(id: FieldId) -> Rule {
         AlternatesVia => Rule::NONE.sql("{r}.via"),
         AlternatesMethod => Rule::NONE.sql("{r}.method"),
         AlternatesCreatedAt => Rule::NONE.sql("CAST(unixepoch({r}.created_at,'subsec')*1000 AS INTEGER)"),
-        AlternatesCurrent => Rule::NONE.sql("EXISTS(SELECT 1 FROM source_revision_state vr WHERE vr.id={r}.id AND vr.current=1)"),
-        AlternatesWithdrawn => Rule::NONE.sql("EXISTS(SELECT 1 FROM source_revision_state vr WHERE vr.id={r}.id AND vr.withdrawn=1)"),
+        AlternatesCurrent => Rule::NONE.sql_fn(|a| crate::variants::current_sql(&a.row)),
+        AlternatesWithdrawn => Rule::NONE.sql_fn(|a| crate::variants::withdrawn_sql(&a.row)),
         AlternatesSince => Rule::NONE.custom(custom::since),
         AlternatesUntil => Rule::NONE.custom(custom::until),
         QueriesQuery => Rule::NONE.sql("'query:'||{r}.hash"),
@@ -972,7 +972,8 @@ pub(crate) fn message_variant_match(variant: &str, part: &str, message: &str) ->
 }
 fn message_alternate(a: &Aliases) -> String {
     format!(
-        "EXISTS(SELECT 1 FROM source_variant_part vp JOIN source_variant v ON v.id=vp.variant JOIN source_revision_state vr ON vr.id=vp.variant AND vr.current=1 AND vr.withdrawn=0 WHERE {})",
+        "EXISTS(SELECT 1 FROM source_variant_part vp JOIN source_variant v ON v.id=vp.variant WHERE {} AND {})",
+        crate::variants::current_sql("v"),
         message_variant_match("v", "vp", &a.m)
     )
 }

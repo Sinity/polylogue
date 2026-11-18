@@ -962,7 +962,7 @@ static CHANGES: UnitSpec = UnitSpec {
 };
 
 fn current_alternate(a: &Aliases) -> String {
-    a.expand("EXISTS(SELECT 1 FROM source_revision_state vr WHERE vr.id={r}.id AND vr.current=1 AND vr.withdrawn=0)")
+    crate::variants::current_sql(&a.row)
 }
 static ALTERNATES: UnitSpec = UnitSpec {
     from: T("source_variant {r}"),

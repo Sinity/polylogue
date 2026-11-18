@@ -338,7 +338,8 @@ impl<'a> Compiler<'a> {
                 format!(" AND av.to_lang IN ({})", language.join(","))
             };
             let from = format!(
-                "FROM {variants} ah JOIN source_variant_part ap ON ap.variant=ah.variant AND ap.n=ah.n JOIN source_variant av ON av.id=ap.variant JOIN source_revision_state ars ON ars.id=av.id AND ars.current=1 AND ars.withdrawn=0 WHERE {}{language}",
+                "FROM {variants} ah JOIN source_variant_part ap ON ap.variant=ah.variant AND ap.n=ah.n JOIN source_variant av ON av.id=ap.variant WHERE {} AND {}{language}",
+                crate::variants::current_sql("av"),
                 fields::message_variant_match("av", "ap", &a.m)
             );
             Some((

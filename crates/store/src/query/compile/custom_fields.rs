@@ -940,7 +940,7 @@ pub(crate) fn alternate_lang(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<S
     let mut clauses = Vec::new();
     for lang in x.values() {
         let p = c.text_param(&lang);
-        clauses.push(format!("EXISTS(SELECT 1 FROM source_variant_part vp JOIN source_variant v ON v.id=vp.variant JOIN source_revision_state vs ON vs.id=v.id AND vs.current=1 AND vs.withdrawn=0 WHERE v.to_lang={p} AND {})",fields::message_variant_match("v","vp",&x.scope.a.m)));
+        clauses.push(format!("EXISTS(SELECT 1 FROM source_variant_part vp JOIN source_variant v ON v.id=vp.variant WHERE v.to_lang={p} AND {} AND {})",crate::variants::current_sql("v"),fields::message_variant_match("v","vp",&x.scope.a.m)));
     }
     any_of(x, clauses)
 }

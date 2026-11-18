@@ -537,6 +537,78 @@ fn alternate_true_admits_alternate_text() {
     );
     assert!(read("messages where lang:de unikalny").is_empty());
     assert_eq!(read("alternates where to_lang:pl").len(), 1);
+    let assert_head = |expected: Option<&str>| {
+        let pool = crate::ReadPool::open(&archive.archive).unwrap();
+        let reader = pool.reader().unwrap();
+        let chosen = reader
+            .selected_variant(source, source_hash, &["translation:pl".into()], false)
+            .unwrap();
+        assert_eq!(chosen.as_ref().map(|v| v.id.as_str()), expected);
+        let expected_rows = expected
+            .into_iter()
+            .map(|id| serde_json::json!({"id":id}))
+            .collect::<Vec<_>>();
+        assert_eq!(read("alternates where to_lang:pl"), expected_rows);
+    };
+    let revise = |id: &str, base: &str, body: &str| {
+        archive
+            .writer
+            .user(operator_request(
+                id.into(),
+                UserWrite::Variant {
+                    variant: NewVariant {
+                        base: Some(base.into()),
+                        source: source.into(),
+                        source_hash,
+                        kind: VariantKind::Translation,
+                        from_lang: Some("en".into()),
+                        to_lang: Some("pl".into()),
+                        method: None,
+                        parts: vec![NewVariantPart {
+                            of: part.into(),
+                            of_hash,
+                            relation: VariantRelation::Translates,
+                            body: body.into(),
+                        }],
+                    },
+                },
+            ))
+            .unwrap();
+    };
+    let withdraw = |id: &str, target: &str| {
+        archive
+            .writer
+            .user(operator_request(
+                id.into(),
+                UserWrite::WithdrawAssertions {
+                    targets: vec![Reference::parse(target).unwrap()],
+                    reason: None,
+                },
+            ))
+            .unwrap();
+    };
+    assert_head(Some("translated"));
+    revise("translated-next", "translated", "drugi");
+    revise("translated-last", "translated-next", "trzeci");
+    assert_head(Some("translated-last"));
+    assert!(read("messages where alternate:true unikalny").is_empty());
+    assert_eq!(read("messages where lang:pl trzeci").len(), 1);
+    assert_eq!(read("alternates where current:false to_lang:pl").len(), 2);
+    // A withdrawn intermediate revision remains transparent to its successor.
+    withdraw("withdraw-middle", "variant:translated@translated-next");
+    assert_head(Some("translated-last"));
+    assert!(read("messages where alternate:true unikalny").is_empty());
+    assert_eq!(read("alternates where withdrawn:true to_lang:pl").len(), 1);
+    withdraw("withdraw-last", "variant:translated@translated-last");
+    assert_head(Some("translated"));
+    assert_eq!(read("messages where lang:pl unikalny").len(), 1);
+    withdraw("withdraw-root", "variant:translated");
+    assert_head(None);
+    assert!(read("messages where alternate:true unikalny").is_empty());
+    assert!(read("messages where lang:pl unikalny").is_empty());
+    withdraw("restore-root", "assertion:withdraw-root@withdraw-root");
+    assert_head(Some("translated"));
+    assert_eq!(read("messages where alternate:true unikalny").len(), 1);
 }
 
 #[test]
