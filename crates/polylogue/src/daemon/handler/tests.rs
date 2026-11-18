@@ -2,6 +2,7 @@
 //! the same typed handler. Ported case by case from the tests of the
 //! typed adapters this module replaces.
 mod feeds;
+mod panics;
 use super::*;
 
 use serde_json::json;

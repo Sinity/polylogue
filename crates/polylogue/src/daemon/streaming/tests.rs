@@ -1,6 +1,52 @@
 use super::*;
 
 #[test]
+fn a_panicking_stream_answers_internal_before_or_after_its_first_bytes() {
+    let daemon = crate::test_daemon::start("stream panic fixture");
+    for prefix in [false, true] {
+        let invocation =
+            daemon
+                .daemon
+                .invocation(&polylogue_reading::operation::Context::worker_authorship(
+                    "stream-panic",
+                ));
+        let input = start(
+            &daemon.daemon,
+            Class::Ordinary,
+            ReadLimit::without_deadline(Default::default()),
+            invocation,
+            Box::new(move |_, _, _, output| {
+                if prefix {
+                    output.write_all(b"synthetic-prefix\n").unwrap();
+                }
+                panic!("synthetic stream panic");
+            }),
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        loop {
+            match input.next_blocking().unwrap() {
+                super::super::stream_buffer::Next::Bytes(next) => bytes.extend(next),
+                super::super::stream_buffer::Next::Failed(failure) => {
+                    assert!(!prefix);
+                    assert_eq!(failure.code(), "internal");
+                    assert!(failure.message.contains("synthetic stream panic"));
+                    break;
+                }
+                super::super::stream_buffer::Next::End => {
+                    assert!(prefix);
+                    let text = String::from_utf8(bytes).unwrap();
+                    assert!(text.starts_with("synthetic-prefix\n"));
+                    assert!(text.contains("internal"), "{text}");
+                    assert!(text.contains("synthetic stream panic"), "{text}");
+                    break;
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn a_stream_write_after_a_scope_change_is_refused_even_before_a_reader_binds_the_limit() {
     let daemon = crate::test_daemon::start("stream activation fence");
     let scope = daemon.daemon.reads.scope_token().unwrap();

@@ -63,6 +63,25 @@ impl Class {
 
 type Job = Box<dyn FnOnce() + Send>;
 
+#[derive(Debug)]
+pub(crate) struct Panicked {
+    pub message: String,
+}
+
+impl Panicked {
+    pub(crate) fn of(payload: Box<dyn std::any::Any + Send>) -> Self {
+        let message = match payload.downcast_ref::<String>() {
+            Some(message) => message.clone(),
+            None => payload
+                .downcast_ref::<&str>()
+                .copied()
+                .unwrap_or("non-text panic payload")
+                .to_owned(),
+        };
+        Self { message }
+    }
+}
+
 enum Work {
     Job(Job),
     /// A thread back from [`outside`] waiting for a place.
@@ -185,7 +204,7 @@ impl Executor {
 
     /// Runs `job` and returns its result; `None` when the executor stopped
     /// before running it.
-    pub(crate) async fn run<T: Send + 'static>(
+    pub(crate) async fn run<T: From<Panicked> + Send + 'static>(
         &self,
         class: Class,
         deadline: Option<Instant>,
@@ -193,7 +212,9 @@ impl Executor {
     ) -> Option<T> {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         if !self.submit(class, deadline, move || {
-            let _ = sender.send(job());
+            let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job))
+                .unwrap_or_else(|payload| T::from(Panicked::of(payload)));
+            let _ = sender.send(answer);
         }) {
             return None;
         }

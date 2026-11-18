@@ -151,17 +151,17 @@ fn outcome_event(
     what: DeliveryOutcome,
     detail: String,
 ) -> Result<(), Failure> {
-    author(
-        d,
-        invocation,
+    let request = invocation.request(
         polylogue_store::user_writes::new_request_id(),
         UserWrite::DeliveryEvent {
             delivery: delivery.to_owned(),
             what,
             detail: Some(detail),
         },
-    )
-    .map(drop)
+    );
+    d.queued_deliveries
+        .submit(writer(d)?, request, None, None)
+        .map_err(Failure::from)
 }
 
 /// Who an address names when it is sent.

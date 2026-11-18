@@ -60,6 +60,7 @@ pub(super) fn answer(
         Ok(freshness) => freshness,
         Err(error) => return store_error(&error),
     };
+    let (delivery_outcomes, last_error) = d.queued_deliveries.pending_outcomes();
     let status = crate::protocol::status::Answer {
         archive: Some(d.archive.root.clone()),
         pid: std::process::id(),
@@ -67,6 +68,10 @@ pub(super) fn answer(
         store,
         index_build: d.archive.index_build(),
         totals_error,
+        pending_writes: crate::protocol::status::PendingWrites {
+            delivery_outcomes,
+            last_error,
+        },
         loop_status,
         signals,
         notices,
@@ -122,6 +127,7 @@ pub(super) fn building(
         },
         sinex: IndexFreshness::Standalone,
     };
+    let (delivery_outcomes, last_error) = d.queued_deliveries.pending_outcomes();
     let status = crate::protocol::status::Answer {
         archive: Some(d.archive.root.clone()),
         pid: std::process::id(),
@@ -129,6 +135,10 @@ pub(super) fn building(
         store: None,
         index_build: Some(build),
         totals_error: Some(unread.clone()),
+        pending_writes: crate::protocol::status::PendingWrites {
+            delivery_outcomes,
+            last_error,
+        },
         loop_status,
         signals,
         notices: crate::protocol::status::Notices::Unavailable {

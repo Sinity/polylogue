@@ -1,4 +1,110 @@
 use super::*;
+mod shutdown;
+
+#[test]
+fn a_failed_outcome_write_is_retried_and_reported() {
+    use polylogue_model::user::{Delivery, UserWrite};
+    use polylogue_store::fault::{self, Action};
+    let daemon = crate::test_daemon::start("delivery retry fixture");
+    let writes = daemon.daemon.writes.as_ref().unwrap();
+    let invocation =
+        daemon
+            .daemon
+            .invocation(&polylogue_reading::operation::Context::worker_authorship(
+                "outcome-retry",
+            ));
+    let delivery = invocation.request(
+        "retry-delivery".into(),
+        UserWrite::Deliver(Delivery {
+            recipient_kind: "session".into(),
+            recipient_id: Some("claude-code:s1".into()),
+            sender: "hook".into(),
+            event: "session_start".into(),
+            cwd: None,
+            text: "synthetic brief".into(),
+            refs: vec![],
+            left_out: vec![],
+        }),
+    );
+    writes.user(delivery).unwrap();
+    let barrier = invocation.request(
+        "outcome-status-barrier".into(),
+        UserWrite::SetSetting {
+            key: "browser.actions".into(),
+            value: "on".into(),
+            machine: None,
+        },
+    );
+    writes.user(barrier.clone()).unwrap();
+    let outcome = invocation.request(
+        "retry-outcome".into(),
+        UserWrite::DeliveryEvent {
+            delivery: "retry-delivery".into(),
+            what: polylogue_model::DeliveryOutcome::Delivered,
+            detail: Some("the synthetic receiver accepted it".into()),
+        },
+    );
+    fault::arm("write.user", "retry-outcome", Action::Fail, 0, 1);
+    fault::arm("write.user", "outcome-status-barrier", Action::Hold, 0, 1);
+    // Keep the retry queue locked until the following writer request is queued.
+    // Its hold makes the failed acknowledgment observable before any retry can commit.
+    let held = {
+        let mut state = daemon.daemon.queued_deliveries.0.locked();
+        submit(&mut state, writes, outcome.clone(), None, None).unwrap();
+        let Queued::Committing(held) = writes.try_enqueue_user(barrier.clone()).unwrap() else {
+            panic!("the fixture writer queue has room")
+        };
+        held
+    };
+    let _release = daemon.daemon.archive.stop().on_cancel(fault::release);
+    daemon.wait_for(|_| fault::held());
+    let status = crate::protocol::into_value(
+        crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&daemon.daemon),
+    )
+    .unwrap();
+    assert_eq!(status["pending_writes"]["delivery_outcomes"], 1);
+    assert!(
+        status["pending_writes"]["last_error"]
+            .as_str()
+            .unwrap()
+            .contains("write.user")
+    );
+    fault::release();
+    held.recv_timeout(std::time::Duration::from_secs(10))
+        .unwrap()
+        .unwrap();
+    // A normal commit gives the scope worker its next bounded hand-over turn.
+    writes
+        .user(invocation.request(
+            "outcome-retry-wake".into(),
+            UserWrite::SetSetting {
+                key: "browser.actions".into(),
+                value: "on".into(),
+                machine: None,
+            },
+        ))
+        .unwrap();
+    daemon.wait_for(|status| status["pending_writes"]["delivery_outcomes"] == 0);
+    assert_eq!(
+        daemon.daemon.queued_deliveries.pending_outcomes(),
+        (0, None)
+    );
+    daemon
+        .daemon
+        .queued_deliveries
+        .submit(writes, outcome, None, None)
+        .unwrap();
+    writes.user(barrier).unwrap();
+    assert_eq!(
+        daemon.daemon.queued_deliveries.pending_outcomes(),
+        (0, None)
+    );
+    let reader = daemon.daemon.reads.reader().unwrap();
+    let (delivery, body) = reader.delivery("retry-delivery").unwrap().unwrap();
+    assert_eq!(delivery.events, vec!["delivered"]);
+    assert_eq!(body, "synthetic brief");
+    fault::clear();
+}
 
 #[test]
 fn captured_advice_remains_pending_until_current_history_confirms_application() {

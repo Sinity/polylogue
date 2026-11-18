@@ -25,6 +25,11 @@ struct Waiting {
     recipient: Option<String>,
 }
 
+struct PendingOutcome {
+    request: Waiting,
+    committed: Committed,
+}
+
 /// A recipient's latest brief and its record: waiting here (`None`) or in
 /// the writer's queue.
 struct Latest {
@@ -47,6 +52,8 @@ struct State {
     latest: HashMap<String, Latest>,
     waiting: VecDeque<Waiting>,
     advice: HashMap<String, PendingAdvice>,
+    outcomes: VecDeque<PendingOutcome>,
+    last_failure: Option<String>,
 }
 
 #[derive(Default)]
@@ -108,6 +115,45 @@ impl QueuedDeliveries {
     pub fn hand_over(&self, writes: &WriterSender) -> Result<(), StoreError> {
         let mut state = self.0.locked();
         hand_over(&mut state, writes)
+    }
+
+    /// Outcomes stay pending until the writer acknowledges their durable write.
+    pub fn pending_outcomes(&self) -> (u64, Option<String>) {
+        let mut state = self.0.locked();
+        prune(&mut state);
+        let waiting = state
+            .waiting
+            .iter()
+            .filter(|next| is_outcome(&next.request))
+            .count();
+        (
+            (waiting + state.outcomes.len()) as u64,
+            state.last_failure.clone(),
+        )
+    }
+
+    /// Producers have stopped. Finish accepted writes while the writer is alive;
+    /// a failed final attempt remains pending and is reported to shutdown.
+    pub fn drain(&self, writes: &WriterSender) -> Result<(), StoreError> {
+        loop {
+            {
+                let mut state = self.0.locked();
+                prune(&mut state);
+                if state.waiting.is_empty() && state.outcomes.is_empty() {
+                    return Ok(());
+                }
+            }
+            self.hand_over(writes)?;
+            // This existing writer barrier serves earlier user requests too.
+            writes.flush_rows()?;
+            let mut state = self.0.locked();
+            prune(&mut state);
+            if let Some(error) = &state.last_failure {
+                return Err(StoreError::Invalid(format!(
+                    "delivery outcomes remain unwritten after the final attempt: {error}"
+                )));
+            }
+        }
     }
 
     /// Only a true answer means anything: false says nothing about a preparation already
@@ -209,15 +255,40 @@ fn submit(
 /// Waiting requests go in their order; the first that finds the queue full
 /// stops the rest, so an outcome event never overtakes its delivery.
 fn hand_over(state: &mut State, writes: &WriterSender) -> Result<(), StoreError> {
-    while let Some(next) = state.waiting.pop_front() {
+    prune(state);
+    // A failed write is attempted at most once in this hand-over turn.
+    let waiting = state.waiting.len();
+    for _ in 0..waiting {
+        let Some(next) = state.waiting.pop_front() else {
+            break;
+        };
         let id = next.request.id.clone();
-        match writes.try_enqueue_user(polylogue_store::writer::UserSubmission {
+        let outcome = is_outcome(&next.request).then(|| Waiting {
+            request: next.request.clone(),
+            scope: next.scope.clone(),
+            recipient: None,
+        });
+        let queued = writes.try_enqueue_user(polylogue_store::writer::UserSubmission {
             request: next.request,
             scope: next.scope,
             preparation: None,
             parent: None,
-        })? {
-            Queued::Committing(committed) => {
+        });
+        match queued {
+            Err(error) => {
+                if let Some(outcome) = outcome {
+                    state.waiting.push_front(outcome);
+                    state.last_failure = Some(error.to_string());
+                }
+                return Err(error);
+            }
+            Ok(Queued::Committing(committed)) if outcome.is_some() => {
+                state.outcomes.push_back(PendingOutcome {
+                    request: outcome.expect("outcome submission retained"),
+                    committed,
+                });
+            }
+            Ok(Queued::Committing(committed)) => {
                 if let Some(advice) = state.advice.get_mut(&id) {
                     advice.committed = Some(committed);
                 } else if let Some(latest) = next
@@ -228,7 +299,7 @@ fn hand_over(state: &mut State, writes: &WriterSender) -> Result<(), StoreError>
                     latest.committed = Some(committed);
                 }
             }
-            Queued::Full(submission) => {
+            Ok(Queued::Full(submission)) => {
                 state.waiting.push_front(Waiting {
                     request: submission.request,
                     scope: submission.scope,
@@ -241,9 +312,35 @@ fn hand_over(state: &mut State, writes: &WriterSender) -> Result<(), StoreError>
     Ok(())
 }
 
+fn is_outcome(request: &UserRequest) -> bool {
+    matches!(
+        request.write,
+        polylogue_model::user::UserWrite::DeliveryEvent { .. }
+    )
+}
+
 /// Forgets every brief the writer has answered for: its record is committed
 /// (or failed, and the stored deliveries are what remains).
 fn prune(state: &mut State) {
+    let mut failed = VecDeque::new();
+    for pending in std::mem::take(&mut state.outcomes) {
+        let failure = match pending.committed.try_recv() {
+            Err(TryRecvError::Empty) => {
+                state.outcomes.push_back(pending);
+                continue;
+            }
+            Ok(Ok(_)) => continue,
+            Ok(Err(error)) => error.to_string(),
+            Err(TryRecvError::Disconnected) => StoreError::WriterGone.to_string(),
+        };
+        state.last_failure = Some(failure);
+        failed.push_back(pending.request);
+    }
+    failed.append(&mut state.waiting);
+    state.waiting = failed;
+    if state.outcomes.is_empty() && !state.waiting.iter().any(|next| is_outcome(&next.request)) {
+        state.last_failure = None;
+    }
     state.advice.retain(|_, advice| match &advice.committed {
         None => true,
         // A failed acknowledgment cannot establish stored history. Keep
