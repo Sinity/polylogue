@@ -274,7 +274,7 @@ pub(crate) fn parse(
     parsed.first = command_surface::line::classify_first(
         args.get(index).map(String::as_str),
         catalog,
-        declarations,
+        &declarations,
     );
     if literal_selection {
         if index == args.len() {
