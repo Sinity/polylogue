@@ -437,10 +437,9 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
                         }
                     }
                 });
-                if let Ok(client) = client {
-                    let mut clients = clients.locked();
-                    clients.retain(|client| !client.is_finished());
-                    clients.push(client);
+                match client {
+                    Ok(client) => clients.locked().push(client),
+                    Err(error) => crate::log::log!(error, "start a host client worker: {error}"),
                 }
             }
         })?
@@ -488,14 +487,19 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
     stopping.store(true, Ordering::SeqCst);
     // Wakes the accept loop so it sees it should stop.
     let _ = UnixStream::connect(&config.socket);
-    let _ = accept.join();
+    let mut failure = accept
+        .join()
+        .err()
+        .map(|_| std::io::Error::other("host accept worker panicked"));
     // The client reader holds another descriptor and an Arc to the relay.
     // Closing both directions releases that reader and lets the daemon see EOF.
     if let Some(client) = relay.locked().client.take() {
         let _ = client.shutdown(std::net::Shutdown::Both);
     }
     for client in std::mem::take(&mut *clients.locked()) {
-        let _ = client.join();
+        if client.join().is_err() {
+            failure.get_or_insert_with(|| std::io::Error::other("host client worker panicked"));
+        }
     }
     let session = relay.locked().session.clone();
     if let Some(session) = session {
@@ -515,10 +519,14 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
     {
         remove(dir, key);
     }
-    spool_result.map_err(|error| {
+    if let Err(error) = spool_result {
         crate::log::log!(error, "host live event spool drain: {error}");
-        std::io::Error::other(format!("host live event spool drain: {error}"))
-    })
+        failure = Some(std::io::Error::other(match failure.take() {
+            Some(previous) => format!("{previous}; host live event spool drain: {error}"),
+            None => format!("host live event spool drain: {error}"),
+        }));
+    }
+    failure.map_or(Ok(()), Err)
 }
 
 /// Whether a line from the agent is one a daemon acts on: a request, an
