@@ -426,7 +426,7 @@ fn derived_rows_between_pages_continue_the_pages_and_report_each_session_once() 
     );
     let changes = fixture_query(
         &fixture,
-        &format!("changes where after:{change_cursor}"),
+        &format!("feed where after:{change_cursor}"),
         None,
         100,
     )
@@ -445,10 +445,7 @@ fn derived_rows_between_pages_continue_the_pages_and_report_each_session_once() 
     assert_eq!(fixture.derive().unwrap(), 0);
     let after = fixture_query(
         &fixture,
-        &format!(
-            "changes where after:{}",
-            finished["cursor"].as_str().unwrap()
-        ),
+        &format!("feed where after:{}", finished["cursor"].as_str().unwrap()),
         None,
         100,
     )
@@ -473,7 +470,7 @@ fn search_text_committed_between_pages_continues_without_reporting_a_session_edi
     let changes = fixture_query(
         &fixture,
         &format!(
-            "changes where after:{}",
+            "feed where after:{}",
             first["read_at"]["cursor"].as_str().unwrap()
         ),
         None,
@@ -499,7 +496,7 @@ fn random_selection_count_rows_and_pages_use_one_resolved_seed() {
     for query in [
         "kind:* | sort by random | limit 6 | where origin:claude-code",
         "kind:* | group by origin | count | sort by random",
-        "changes | sort by random",
+        "feed | sort by random",
     ] {
         let w = morrow();
         let mut request = ask(query);

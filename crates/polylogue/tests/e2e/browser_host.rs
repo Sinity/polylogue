@@ -174,7 +174,7 @@ fn a_native_selection_note_is_readable_by_cli_after_daemon_restart() {
     let output = command()
         .args([
             "--json",
-            r#"assertions where about:"session:chatgpt:passage""#,
+            r#"annotations where about:"session:chatgpt:passage""#,
         ])
         .output()
         .unwrap();

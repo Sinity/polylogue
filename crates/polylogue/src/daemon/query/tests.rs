@@ -663,7 +663,7 @@ fn row_units_and_their_defaults() {
         ]
     );
     // 31: assertions.
-    let v = q(&w, "assertions where kind:decision");
+    let v = q(&w, "annotations where kind:decision");
     assert_eq!(v["rows"][0]["value"], "decided: chrono, not time");
 }
 
@@ -935,8 +935,8 @@ fn links_and_parents() {
         ["#6", "#5"]
     );
     // 36.
-    assert_eq!(q(&w, "links where kind:fork")["count"], 1);
-    assert_eq!(q(&w, "links where kind:resume")["count"], 1);
+    assert_eq!(q(&w, "session_links where kind:fork")["count"], 1);
+    assert_eq!(q(&w, "session_links where kind:resume")["count"], 1);
     // 37.
     assert_eq!(ids(&q(&w, "link:fork")), ["#6"]);
     // 38: tree cost includes the subagent.

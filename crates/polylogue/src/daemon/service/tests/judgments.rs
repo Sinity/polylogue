@@ -74,7 +74,7 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
         .id("r2"),
     );
     assert_eq!(
-        crate::test_answers::ok(query(&d, "assertions where agent:true judged:unknown"))["count"],
+        crate::test_answers::ok(query(&d, "annotations where agent:true judged:unknown"))["count"],
         1
     );
     // The operator's own notes are revised or withdrawn, not judged.
@@ -85,11 +85,11 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
         crate::test_daemon::Call::new("rows", serde_json::json!({"selection": agent_id.clone(), "steps":[{"verb":"judge", "verdict":"accept", "reason":"checked"}]})).id("r4"),
     );
     assert_eq!(
-        crate::test_answers::ok(query(&d, "assertions where judged:accepted"))["count"],
+        crate::test_answers::ok(query(&d, "annotations where judged:accepted"))["count"],
         1
     );
     assert_eq!(
-        crate::test_answers::empty(query(&d, "assertions where agent:true judged:unknown"))["count"],
+        crate::test_answers::empty(query(&d, "annotations where agent:true judged:unknown"))["count"],
         0
     );
     // The brief carries the operator's assertions and the agent assertions
@@ -139,11 +139,11 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
         .id("r5"),
     );
     assert_eq!(
-        crate::test_answers::ok(query(&d, "assertions where judged:rejected"))["count"],
+        crate::test_answers::ok(query(&d, "annotations where judged:rejected"))["count"],
         1
     );
     assert_eq!(
-        crate::test_answers::empty(query(&d, "assertions where judged:accepted"))["count"],
+        crate::test_answers::empty(query(&d, "annotations where judged:accepted"))["count"],
         0
     );
 }
@@ -175,7 +175,7 @@ fn a_note_applies_to_every_row_of_a_query() {
     };
     assert_eq!(resolved.len(), 1);
     assert_eq!(
-        crate::test_answers::ok(query(&d, "assertions where kind:tag key:reviewed"))["count"],
+        crate::test_answers::ok(query(&d, "annotations where kind:tag key:reviewed"))["count"],
         1
     );
     let refused = crate::test_daemon::Call::new("rows", serde_json::json!({"selection":"sessions where origin:codex", "all":true,"steps":[{"verb":"note","text":"x","as":"lesson"}]})).id("r2").answer(&d.daemon);
@@ -251,20 +251,20 @@ fn a_rejudged_revision_reads_its_latest_operator_judgment_everywhere() {
         );
     }
     assert_eq!(
-        crate::test_answers::ok(query(&d, "assertions where judged:accepted"))["count"],
+        crate::test_answers::ok(query(&d, "annotations where judged:accepted"))["count"],
         1
     );
     assert_eq!(
-        crate::test_answers::empty(query(&d, "assertions where judged:rejected"))["count"],
+        crate::test_answers::empty(query(&d, "annotations where judged:rejected"))["count"],
         0
     );
     assert_eq!(
-        crate::test_answers::empty(query(&d, "assertions where agent:true judged:unknown"))["count"],
+        crate::test_answers::empty(query(&d, "annotations where agent:true judged:unknown"))["count"],
         0
     );
     let grouped = crate::test_answers::ok(query(
         &d,
-        "assertions where agent:true | group by judged | count",
+        "annotations where agent:true | group by judged | count",
     ));
     assert_eq!(grouped["rows"][0]["judged"], "accepted", "{grouped}");
     assert_eq!(grouped["rows"][0]["count"], 1, "{grouped}");
@@ -278,12 +278,12 @@ fn changes_select_assertions_by_their_kind() {
         &d,
         crate::test_daemon::Call::new("rows", assertion(vec![session], "a lesson")).id("lesson"),
     );
-    let lessons = crate::test_answers::ok(query(&d, "changes where assertion_kind:lesson"));
+    let lessons = crate::test_answers::ok(query(&d, "feed where assertion_kind:lesson"));
     assert_eq!(lessons["count"], 1, "{lessons}");
     assert_eq!(lessons["rows"][0]["kind"], "assertion", "{lessons}");
     assert_eq!(lessons["rows"][0]["assertion_kind"], "lesson", "{lessons}");
     assert_eq!(
-        crate::test_answers::empty(query(&d, "changes where assertion_kind:tag"))["count"],
+        crate::test_answers::empty(query(&d, "feed where assertion_kind:tag"))["count"],
         0
     );
 }
@@ -298,11 +298,11 @@ fn a_structured_value_matches_by_its_text() {
             .id("lesson"),
     );
     assert_eq!(
-        crate::test_answers::ok(query(&d, "assertions where value:\"use the fast path\""))["count"],
+        crate::test_answers::ok(query(&d, "annotations where value:\"use the fast path\""))["count"],
         1
     );
     assert_eq!(
-        crate::test_answers::ok(query(&d, "assertions where value:\"the fast\""))["count"],
+        crate::test_answers::ok(query(&d, "annotations where value:\"the fast\""))["count"],
         1
     );
 }
@@ -345,19 +345,19 @@ fn second_judgment_by_same_author_revises_the_first_regardless_of_clock() {
         .id("j2"),
     );
     assert_eq!(
-        crate::test_answers::ok(query(&d, "assertions where judged:rejected"))["count"],
+        crate::test_answers::ok(query(&d, "annotations where judged:rejected"))["count"],
         1
     );
     assert_eq!(
-        crate::test_answers::empty(query(&d, "assertions where judged:accepted"))["count"],
+        crate::test_answers::empty(query(&d, "annotations where judged:accepted"))["count"],
         0
     );
     // One current judgment: the second revised the first.
-    let current = crate::test_answers::ok(query(&d, "assertions where kind:judgment"));
+    let current = crate::test_answers::ok(query(&d, "annotations where kind:judgment"));
     assert_eq!(current["count"], 1, "{current}");
     let revisions = crate::test_answers::ok(query(
         &d,
-        "assertions where kind:judgment current:* | fields id, root, current | sort by id",
+        "annotations where kind:judgment current:* | fields id, root, current | sort by id",
     ));
     assert_eq!(revisions["rows"][0]["root"], "j1-1", "{revisions}");
     assert_eq!(revisions["rows"][1]["root"], "j1-1", "{revisions}");
@@ -397,7 +397,7 @@ fn revising_a_withdrawal_is_refused() {
     );
     // The note stays withdrawn.
     assert_eq!(
-        crate::test_answers::empty(query(&d, "assertions where kind:lesson"))["count"],
+        crate::test_answers::empty(query(&d, "annotations where kind:lesson"))["count"],
         0
     );
 }

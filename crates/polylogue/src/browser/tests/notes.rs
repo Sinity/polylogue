@@ -6,7 +6,7 @@ fn notes(host: &BrowserHost) -> Vec<Value> {
     let Some(Ok(data)) = host
         .ask(
             "rows",
-            serde_json::json!({"selection": "assertions where kind:note"}),
+            serde_json::json!({"selection": "annotations where kind:note"}),
         )
         .map(crate::protocol::into_value)
     else {

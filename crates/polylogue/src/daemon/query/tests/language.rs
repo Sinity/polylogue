@@ -259,7 +259,12 @@ fn a_value_outside_a_closed_set_is_refused() {
             Some("tool_calls"),
         ),
         ("messages where role:asistant", "messages", "role", None),
-        ("kind:continuation", "sessions", "kind", Some("links")),
+        (
+            "kind:continuation",
+            "sessions",
+            "kind",
+            Some("session_links"),
+        ),
         ("kind:mian", "sessions", "kind", None),
     ] {
         let f = run(&r, bad)

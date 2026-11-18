@@ -5,7 +5,7 @@ use super::{Ask, run};
 use polylogue_model::{Reference, RevisionReference, assertion::Assertion};
 use polylogue_store::{Reader, StoreError};
 
-/// Every assertion `assertions where CONDITIONS` selects.
+/// Every assertion `annotations where CONDITIONS` selects.
 pub fn list(
     reader: &Reader<'_>,
     conditions: &str,
@@ -20,7 +20,7 @@ pub fn list(
     Ok(notes)
 }
 
-/// How many assertions `assertions where CONDITIONS` selects.
+/// How many assertions `annotations where CONDITIONS` selects.
 pub fn count(
     reader: &Reader<'_>,
     conditions: &str,
@@ -44,9 +44,9 @@ pub use polylogue_query::quoted;
 
 fn text(conditions: &str) -> String {
     if conditions.trim().is_empty() {
-        "assertions".into()
+        "annotations".into()
     } else {
-        format!("assertions where {conditions}")
+        format!("annotations where {conditions}")
     }
 }
 
@@ -95,7 +95,7 @@ fn page(
         },
     )
     .and_then(|answer| answer.value.into_rows())
-    .map_err(|f| StoreError::Invalid(format!("assertions query {text:?}: {}", f.message)))
+    .map_err(|f| StoreError::Invalid(format!("annotations query {text:?}: {}", f.message)))
 }
 
 #[cfg(test)]

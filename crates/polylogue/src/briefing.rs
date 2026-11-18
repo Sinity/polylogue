@@ -1170,13 +1170,13 @@ fn session_start(
     let operator_notes_command = format!(
         "polylogue {}",
         polylogue_render::shell_quote(&format!(
-            "assertions where author:operator ({assertion_scope})"
+            "annotations where author:operator ({assertion_scope})"
         ))
     );
     let other_assertions_command = format!(
         "polylogue {}",
         polylogue_render::shell_quote(&format!(
-            "assertions where NOT author:operator judged:unknown ({assertion_scope})"
+            "annotations where NOT author:operator judged:unknown ({assertion_scope})"
         ))
     );
 
@@ -1484,7 +1484,7 @@ fn takeover(
             text,
             "Assertions by other authors, not yet accepted: {other_assertions}; list them with `polylogue {}`.",
             polylogue_render::shell_quote(&format!(
-                "assertions where NOT author:operator judged:unknown about:{}",
+                "annotations where NOT author:operator judged:unknown about:{}",
                 serde_json::to_string(&session_reference.to_string())
                     .expect("reference serializes")
             ))

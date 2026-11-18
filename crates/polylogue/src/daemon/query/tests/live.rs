@@ -1,5 +1,5 @@
 //! The live view, the change feed and the signal notices as queries:
-//! `sessions` with live fields, the `changes` unit and `deliveries`.
+//! `sessions` with live fields, the `feed` unit and `deliveries`.
 
 use super::fixture_context;
 use super::{run, save_rows};
@@ -373,10 +373,10 @@ fn the_change_feed_continues_from_its_cursor() {
     };
     let pool = ReadPool::open(&w.archive).unwrap();
     let r = pool.reader().unwrap();
-    let all = run(&r, ask("changes", T0)).unwrap();
+    let all = run(&r, ask("feed", T0)).unwrap();
     assert_eq!(refs(&all), ["claude-code:a", "claude-code:b"]);
     let cursor = all["read_at"]["cursor"].as_str().unwrap().to_owned();
-    let after = format!("changes where after:{cursor}");
+    let after = format!("feed where after:{cursor}");
     assert!(refs(&run(&r, ask(&after, T0)).unwrap()).is_empty());
     drop(r);
     drop(pool);
@@ -387,7 +387,7 @@ fn the_change_feed_continues_from_its_cursor() {
     assert_eq!(refs(&later), ["claude-code:b"]);
     assert!(later["rows"][0]["live_changed"].is_i64());
     // A malformed cursor is refused, not read as "from the start".
-    assert!(run(&r, ask("changes where after:12", T0)).is_err());
+    assert!(run(&r, ask("feed where after:12", T0)).is_err());
 }
 
 mod change_generation;

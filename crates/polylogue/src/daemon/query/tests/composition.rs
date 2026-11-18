@@ -243,7 +243,7 @@ fn saved_relation_errors_reach_the_query_error_path() {
             let failure = run_q(&w, ask(&query)).unwrap_err();
             assert_eq!(failure.code(), kind, "{query}: {}", failure.message);
             if call == "twice" {
-                let rows = q(&w, "assertions where kind:saved_query key:twice");
+                let rows = q(&w, "annotations where kind:saved_query key:twice");
                 let expected: std::collections::BTreeSet<_> = rows["rows"]
                     .as_array()
                     .unwrap()
