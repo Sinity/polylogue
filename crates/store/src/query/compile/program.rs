@@ -988,11 +988,17 @@ fn folded_sessions(
     conditions: &[String],
     defaults: &[units::DefaultId],
 ) -> Vec<String> {
+    // Drive the fold from the paged root. A global IN (SELECT root ...)
+    // materializes every physical session before a keyset page can stop.
     let mut folded = vec![format!(
-        "{}.pk IN (SELECT {} FROM {from} WHERE {})",
-        scope.a.s,
-        fields::logical_root(&scope.a.s),
-        and_all(conditions)
+        "EXISTS (SELECT 1 FROM session logical_owner WHERE logical_owner.pk = {s}.pk \
+         AND logical_owner.pk = {root} AND EXISTS (SELECT 1 FROM {from} WHERE \
+         {s}.pk IN ({descendants}) AND {candidate_root} = logical_owner.pk AND {conditions}))",
+        s = scope.a.s,
+        root = fields::logical_root("logical_owner"),
+        descendants = fields::descendants("logical_owner"),
+        candidate_root = fields::logical_root(&scope.a.s),
+        conditions = and_all(conditions),
     )];
     folded.extend(
         defaults

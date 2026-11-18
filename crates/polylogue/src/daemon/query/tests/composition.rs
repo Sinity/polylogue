@@ -38,7 +38,7 @@ fn in_ignores_unknown_group_values_and_keeps_unknown_left_values_unknown() {
 #[test]
 fn a_scoped_query_keeps_the_session_selection_and_discards_its_ranking() {
     let w = morrow();
-    let expected = q(&w, "messages where session:claude-code:7f3a2c10-0004");
+    let expected = q(&w, "messages where session:claude-code:7f3a2c10-0002");
     for query in [
         "origin:claude-code | limit 1 | messages",
         "origin:claude-code | union (origin:codex) | sort by id | limit 1 | messages",
@@ -116,7 +116,7 @@ fn saved_relations_bind_defaults_before_the_caller_narrows_them() {
             &w,
             "sessions where (query:children OR origin:claude-code)"
         )),
-        ["#4", "#2", "#1"]
+        ["#2", "#1"]
     );
 }
 

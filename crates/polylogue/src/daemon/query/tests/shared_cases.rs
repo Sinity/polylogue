@@ -156,6 +156,27 @@ fn project_fixture_sources(
     } else {
         OUTER_FIELDS
     };
+    if unit == "sessions" {
+        // The abstract outer relation contains the installed main rows;
+        // subagent carriers exist only to store parentless abstract calls.
+        // Declare that population instead of relying on a product default.
+        let population = Condition {
+            span: Span::default(),
+            kind: ConditionKind::Match {
+                field: "kind".into(),
+                value: query_language::ast::Value::scalar("main"),
+            },
+        };
+        *source_condition = Some(match source_condition.take() {
+            Some(condition) => Condition {
+                span: condition.span,
+                kind: ConditionKind::And {
+                    conditions: vec![population, condition],
+                },
+            },
+            None => population,
+        });
+    }
     if let Some(value) = source_condition {
         condition(value, catalog)?;
     }

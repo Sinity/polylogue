@@ -108,6 +108,7 @@ Each unit binds its default filters once, when its source is bound (a unit, `que
 A reference drops the reachability defaults for its own match. A group or sort key naming a field leaves its default in place. Rows included because their path is unknown are counted in `notes`. No default concerns deletion, because Polylogue has none ([architecture.md](architecture.md#deletion)). A footer names every default that removed rows ([terminal.md](terminal.md#footers-and-next-lines)).
 
 Session conditions match physical sessions before their matches fold into logical roots. `why` counts each condition on that physical population; the logical-session default separately shows the logical count against the physical count. A root with unresolved ancestry stands on its own until its original relationship evidence resolves it.
+Different physical sessions can make one logical session match both `cwd:/a` and `NOT cwd:/a`. Use `physical:true` when comparing complementary populations of physical rows.
 
 ## Times
 

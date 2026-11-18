@@ -534,3 +534,22 @@ fn usage_includes_continuation_once() {
     );
     assert_eq!(day["data"]["known_response_messages"], 1);
 }
+
+#[test]
+fn failing_measure_keeps_array_data_and_prints_in_the_resolved_day_zone() {
+    let mut w = morrow();
+    w.fx.derive().unwrap();
+    let pool = w.fx.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let mut request = ask("sessions | measure failing");
+    request.context = fixture_context(OCT1 + 7 * DAY, "Europe/Warsaw", 0);
+    let answer = crate::daemon::query::run(&reader, request).unwrap();
+    let crate::protocol::query::Answer::Measure(measure) = &answer.value else {
+        panic!("expected a measurement");
+    };
+    assert!(measure.data.is_array());
+    assert!(!measure.data.as_array().unwrap().is_empty());
+    assert_eq!(measure.resolved.context.clock.day.zone, "Europe/Warsaw");
+    let text = crate::cli::print::query(&answer.value, command_surface::TextStyle::Plain);
+    assert!(text.contains("+02:00"), "{text}");
+}

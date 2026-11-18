@@ -1,6 +1,6 @@
-//! The filters each unit applies unless a query lifts them, declared once and
+//! The default view each unit applies unless a query lifts it, declared once and
 //! bound from a source's own top-level conditions (docs/query.md, Defaults).
-//! The store lowers each by an exhaustive match on its identity.
+//! The store lowers each identity to a predicate or a population fold.
 use crate::ast::{Condition, ConditionKind, Expression, TextMode, Unit};
 use std::collections::HashSet;
 

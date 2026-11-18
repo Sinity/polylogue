@@ -18,7 +18,7 @@ fn error(w: &TestArchive, text: &str) -> Failure {
 fn set_stages_select_what_their_conditions_would() {
     let w = morrow();
     let union = q(&w, "origin:claude-code | union (origin:codex)");
-    assert_eq!(ids(&union), ["#1", "#2", "#4", "#5"]);
+    assert_eq!(ids(&union), ["#1", "#2", "#5"]);
     assert_eq!(
         ids(&union),
         ids(&q(&w, "origin:(claude-code|codex) | sort by id"))
@@ -37,7 +37,7 @@ fn set_stages_select_what_their_conditions_would() {
     );
     assert_eq!(
         ids(&q(&w, "origin:claude-code | except (cost > 2)")),
-        ["#4", "#1"]
+        ["#1"]
     );
     // Conditions without a unit are on the rows they combine with.
     assert_eq!(
@@ -61,7 +61,7 @@ fn set_stages_select_what_their_conditions_would() {
     // Later stages see the combined rows.
     assert_eq!(
         q(&w, "origin:claude-code | union (origin:codex) | count")["rows"][0]["count"],
-        4
+        3
     );
 }
 
@@ -154,19 +154,21 @@ fn fused_pages_concatenate_to_the_whole_answer() {
 fn counted_conditions_count_related_rows() {
     let w = morrow();
     let failing = "sessions where count(tool_calls where outcome:error) >= 1";
-    assert_eq!(ids(&q(&w, failing)), ["#4", "#2"]);
+    assert_eq!(ids(&q(&w, failing)), ["#2"]);
     assert_eq!(
         ids(&q(&w, "sessions where count(tool_calls) > 2")),
         ids(&q(&w, "sessions where tool_calls > 2"))
     );
     // A count is known for every session: it and its NOT partition them.
-    let not = q(
-        &w,
-        "sessions where NOT count(tool_calls where outcome:error) >= 1",
-    );
     assert_eq!(
-        count(&q(&w, failing)) + count(&not),
-        count(&q(&w, "sessions"))
+        count(&q(
+            &w,
+            &failing.replace("sessions where", "sessions where physical:true")
+        )) + count(&q(
+            &w,
+            "sessions where physical:true NOT count(tool_calls where outcome:error) >= 1"
+        )),
+        count(&q(&w, "sessions where physical:true"))
     );
 }
 
