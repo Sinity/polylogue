@@ -25,6 +25,7 @@ mod output;
 mod records;
 mod rows;
 mod session;
+mod trace;
 
 #[derive(Debug, Clone)]
 pub struct ReadRequest {
@@ -78,6 +79,15 @@ pub fn with_variants(
     d: &impl ReadServices,
     mut request: ReadRequest,
 ) -> Result<ReadRequest, Error> {
+    if request.options.view == View::Trace {
+        if !request.options.variants.is_empty() && request.options.variants != ["none"] {
+            return Err(Error::bad_request(
+                "trace shows original source evidence; alternates are unsupported",
+            ));
+        }
+        request.options.variants.clear();
+        return Ok(request);
+    }
     if request.options.variants == ["none"] {
         request.options.variants.clear();
         return Ok(request);
@@ -477,6 +487,9 @@ pub fn page(
     if request.with_blobs {
         return Err(Error::bad_request("with_blobs requires streaming delivery"));
     }
+    if request.options.view == View::Trace {
+        return trace::page(reader, d, request, operation, history);
+    }
     if let Some(response) = object::page(reader, d, request, operation) {
         return response;
     }
@@ -728,6 +741,9 @@ pub fn stream(
         return Err(Error::bad_request(
             "streaming reads require stream delivery",
         ));
+    }
+    if request.options.view == View::Trace {
+        return trace::stream(reader, d, request, operation, output);
     }
     if let Some(result) = object::stream(reader, d, request, operation, output) {
         return result;

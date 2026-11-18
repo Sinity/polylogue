@@ -15,6 +15,7 @@ mod parents;
 mod presentation;
 mod target;
 mod tokens;
+mod trace;
 mod view_filter;
 pub use composition::*;
 pub use cursor::*;
@@ -31,6 +32,7 @@ pub use parents::*;
 pub use presentation::*;
 pub use target::*;
 pub use tokens::*;
+pub use trace::*;
 pub use view_filter::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

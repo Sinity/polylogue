@@ -482,6 +482,11 @@ impl<'a> Encoder<'a> {
     }
     fn card(&mut self, card: &Card) -> io::Result<()> {
         match card {
+            Card::Trace(card) => {
+                for line in trace_lines(card) {
+                    self.line(&line)?;
+                }
+            }
             Card::Run {
                 question,
                 read_at,
@@ -630,6 +635,24 @@ impl<'a> Encoder<'a> {
         Ok(())
     }
 }
+pub(crate) fn trace_lines(card: &polylogue_model::read::TraceCard) -> Vec<String> {
+    use polylogue_model::read::ChainStep;
+    let mut lines = vec![format!("Trace: {}", card.item)];
+    for step in &card.chain {
+        lines.push(match step {
+            ChainStep::Record{reference}=>format!("Record: {reference}"),
+            ChainStep::InputRecord{input,chain,start,end,route,shown}=>format!("Input: {input}, chain {chain}, bytes {start}..{end}, route {}{}",route.name(),if *shown {" (shown source)"}else{" (additional source)"}),
+            ChainStep::StoredBytes{blob,size,offset,length,blob_offset}=>format!("Stored bytes: b3:{blob}, {size} bytes; chain offset {offset}, length {length}, blob offset {blob_offset}"),
+            ChainStep::ReaderVersion{reading_version,status,parsed_upto}=>format!("Reader checkpoint: {reading_version}, {status}, parsed through byte {parsed_upto}"),
+            ChainStep::Unavailable{reason}=>format!("Unavailable: {reason}"),
+        });
+    }
+    for missing in &card.missing {
+        lines.push(format!("{missing}: not built yet"));
+    }
+    lines
+}
+
 pub(crate) fn run_lines(
     question: Option<&polylogue_model::Reference>,
     read_at: &polylogue_model::ChangePosition,
