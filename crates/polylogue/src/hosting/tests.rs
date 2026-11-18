@@ -363,8 +363,23 @@ fn host_socket_wait_honours_its_deadline() {
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("host.sock");
     let watch = crate::socket::Watch::new(&socket).unwrap();
-    let (exited, _running) = UnixStream::pair().unwrap();
-    let error = wait_for_host_socket(&watch, &socket, &exited.into(), Instant::now()).unwrap_err();
+    let (exited, running) = UnixStream::pair().unwrap();
+    let (answer, answered) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        answer
+            .send(wait_for_host_socket(
+                &watch,
+                &socket,
+                &exited.into(),
+                Instant::now(),
+            ))
+            .unwrap();
+    });
+    let result = answered.recv_timeout(Duration::from_secs(2));
+    // Release a broken deadline wait before asserting its observed result.
+    drop(running);
+    worker.join().unwrap();
+    let error = result.unwrap().unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
 }
 

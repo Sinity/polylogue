@@ -122,13 +122,21 @@ async fn socket_wait_observes_a_startup_failure_before_registration_and_its_dead
     let dir = tempfile::tempdir().unwrap();
     let (_archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     let path = dir.path().join("daemon.sock");
-    let error = crate::client::wait_for_socket(&path, Some(Instant::now()))
-        .await
-        .unwrap_err();
+    let error = tokio::time::timeout(
+        Duration::from_secs(2),
+        crate::client::wait_for_socket(&path, Some(Instant::now())),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     drop(lock);
-    let error = crate::client::wait_for_socket(&path, None)
-        .await
-        .unwrap_err();
+    let error = tokio::time::timeout(
+        Duration::from_secs(2),
+        crate::client::wait_for_socket(&path, None),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
     assert!(crate::cli::is_down(&error));
 }
