@@ -107,7 +107,7 @@ impl<'a> Compiler<'a> {
             let mut languages = Vec::new();
             for condition in selection.top_level() {
                 if let polylogue_query::filter::Filter::Field(field) =
-                    self.binder().bind(condition, selection.unit)?
+                    self.binder().bind(&condition, selection.unit)?
                 {
                     match (field.field.declaration().name, field.test) {
                         ("alternate", polylogue_query::filter::Test::Bool(true)) => admitted = true,

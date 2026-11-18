@@ -1006,7 +1006,9 @@ fn dry_run_picker_describes_steps_without_writing() {
 #[test]
 fn newly_saved_names_cannot_be_captured_by_commands_or_verbs() {
     let d = test_daemon::start("saved name grammar");
-    for name in ["status", "read"] {
+    for name in [
+        "status", "read", "sessions", "latest", "self", "here", "query", "result", "deadbeef",
+    ] {
         let failure = crate::test_answers::refusal(line(
             &d,
             &format!("reserved-{name}"),
@@ -1126,4 +1128,49 @@ fn an_owned_save_finishes_atomically_after_deadline_then_stops_later_steps() {
     assert_eq!(count(&d, "annotations where kind:signal"), 1);
     assert_eq!(count(&d, "annotations where kind:tag"), 0);
     assert_eq!(count(&d, "result:owned-save-1"), 1);
+}
+
+#[test]
+fn unnamed_save_keeps_only_rows_and_named_only_options_explain_the_refusal() {
+    let d = test_daemon::start("unnamed Save");
+    let kept = steps(
+        &d,
+        "only-rows",
+        json!({"selection":"sessions", "steps":[{"verb":"save"}]}),
+    );
+    let report = &kept[0]["outcome"]["reply"]["reply"];
+    assert!(
+        report["saved"].is_null() && report["watch"].is_null(),
+        "{report}"
+    );
+    assert_eq!(report["kept"]["rows"], 1);
+    assert_eq!(report["kept"]["result"], "result:only-rows-1");
+    assert!(kept[0]["outcome"]["undo"].as_array().unwrap().is_empty());
+    assert_eq!(count(&d, "annotations where kind:(saved_query signal)"), 0);
+    let watch = crate::test_answers::refusal(line(
+        &d,
+        "nameless-watch",
+        json!({
+            "selection":"sessions where text:'a quoted question'", "steps":[{"verb":"save","watch":true}]
+        }),
+    ));
+    assert_eq!(watch.code.as_deref(), Some("bad_request"));
+    let query = "sessions where text:'a quoted question'";
+    let suggested = crate::cli::line::shell_line(&[
+        query.into(),
+        "save".into(),
+        "NAME".into(),
+        "--watch".into(),
+    ]);
+    assert_eq!(watch.message, format!("a watch needs a name: {suggested}"));
+    let figure = crate::test_answers::refusal(line(
+        &d,
+        "nameless-figure",
+        json!({
+            "selection":"sessions | count", "steps":[{"verb":"save","denominator":"sessions"}]
+        }),
+    ));
+    assert_eq!(figure.code.as_deref(), Some("bad_request"));
+    assert_eq!(figure.message, "a figure is a named question");
+    assert_eq!(count(&d, "results"), 1);
 }

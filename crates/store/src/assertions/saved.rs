@@ -285,14 +285,6 @@ fn numbered_named_revisions(conn: &Connection, name: &str) -> Result<Vec<(u32, A
     numbered_revisions(conn, rows)
 }
 
-/// History in graph-depth order; forks may occupy the same ordinal.
-pub(crate) fn named_revisions(conn: &Connection, name: &str) -> Result<Vec<Assertion>> {
-    Ok(numbered_named_revisions(conn, name)?
-        .into_iter()
-        .map(|(_, row)| row)
-        .collect())
-}
-
 pub(crate) fn saved_revision_number(
     conn: &Connection,
     reference: &RevisionReference,

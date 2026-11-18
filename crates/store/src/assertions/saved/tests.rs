@@ -1,5 +1,13 @@
 use super::*;
 
+/// History in graph-depth order; forks may occupy the same ordinal.
+fn named_revisions(conn: &Connection, name: &str) -> Result<Vec<Assertion>> {
+    Ok(numbered_named_revisions(conn, name)?
+        .into_iter()
+        .map(|(_, row)| row)
+        .collect())
+}
+
 fn r(value: &str) -> Reference {
     Reference::parse(value).unwrap()
 }
