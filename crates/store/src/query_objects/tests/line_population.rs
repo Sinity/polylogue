@@ -175,6 +175,9 @@ fn preserved_register(path: &std::path::Path, corrupt: bool) -> (Value, QueryRun
     std::fs::write(path.parent().unwrap().join("lock"), b"").unwrap();
     let connection = rusqlite::Connection::open(path).unwrap();
     crate::schema::ensure_archive(&connection).unwrap();
+    connection
+        .execute_batch("DROP INDEX kept_result_name")
+        .unwrap();
     super::super::apply_object(&connection, &question("sessions"), 1).unwrap();
     let (body, completion) = old_body(Some(Reference::parse("session:codex:preserved").unwrap()));
     connection
@@ -324,6 +327,9 @@ fn wal_child() {
     let connection = Connection::open(path).unwrap();
     crate::schema::ensure_archive(&connection).unwrap();
     connection
+        .execute_batch("DROP INDEX kept_result_name")
+        .unwrap();
+    connection
         .pragma_update(None, "journal_mode", "WAL")
         .unwrap();
     connection
@@ -335,7 +341,7 @@ fn wal_child() {
             [],
         )
         .unwrap();
-    connection.pragma_update(None, "user_version", 3).unwrap();
+    connection.pragma_update(None, "user_version", 4).unwrap();
     // A stopped process may leave committed WAL frames. Conversion must read
     // their stable copied set without opening or checkpointing the originals.
     std::process::exit(0);
