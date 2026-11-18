@@ -37,3 +37,5 @@ fn test_process(root: &std::path::Path) -> std::process::Command {
     fixture.environment(&mut command);
     command
 }
+
+mod install_instructions;

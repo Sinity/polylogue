@@ -49,7 +49,7 @@ pub struct Install {
     /// Print what would be written
     #[serde(default)]
     pub dry_run: bool,
-    /// Also install the harness's instructions
+    /// Add the MCP guidance to Claude Code, Codex or Gemini CLI global instructions
     #[serde(default)]
     pub instructions: bool,
     /// The ID chrome://extensions shows
