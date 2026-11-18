@@ -170,14 +170,27 @@ pub enum HeaderKind {
     },
 }
 
-/// Metadata for the named definition used by this reading, plus explicit
-/// re-save actions for its current named dependents. Reading invokes none.
+/// Identity stays in every page; growing saved history is carried by items.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SavedQueryHeader {
-    pub query: crate::saved_queries::SavedQueryRecord,
+    pub name: String,
     pub selected_revision: String,
-    pub resave: Vec<ReadyCall>,
+    pub question: crate::Reference,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SavedQueryItem {
+    Revision(crate::saved_queries::SavedRevision),
+    Kept(crate::saved_queries::KeptSummary),
+    Watch {
+        reference: Option<String>,
+    },
+    Dependent {
+        reference: String,
+        resave: Vec<ReadyCall>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -422,6 +435,9 @@ pub struct EditView {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Card {
+    SavedQuery {
+        item: Box<SavedQueryItem>,
+    },
     Trace(Box<super::TraceCard>),
     Run {
         question: Option<crate::Reference>,

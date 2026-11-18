@@ -408,7 +408,7 @@ impl crate::Reader<'_> {
     pub fn dependent_saved_queries(
         &self,
         queries: &[String],
-    ) -> Result<Vec<(String, values::SavedQuery)>> {
+    ) -> Result<Vec<polylogue_model::saved_queries::DependentSavedQuery>> {
         if queries.is_empty() {
             return Ok(Vec::new());
         }
@@ -428,7 +428,11 @@ impl crate::Reader<'_> {
             if let [row] = current.as_slice() {
                 let (_, definition) = saved_definition(&row.fact, &[])?
                     .ok_or_else(|| StoreError::invalid("dependent query has another kind"))?;
-                definitions.push((name, definition.value));
+                definitions.push(polylogue_model::saved_queries::DependentSavedQuery {
+                    name,
+                    revision: definition.reference,
+                    value: definition.value,
+                });
             }
         }
         self.check()?;

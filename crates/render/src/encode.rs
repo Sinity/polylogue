@@ -104,14 +104,8 @@ impl<'a> Encoder<'a> {
                         "<p class=\"archive-notice\">{ARCHIVE_NOTICE}</p>"
                     )?;
                 }
-                for line in saved_query_lines(&header.kind) {
+                if let Some(line) = saved_query_header_line(&header.kind) {
                     write!(encoder.out, "<p>{}</p>", html::escape(&line))?;
-                }
-                if let HeaderKind::SavedQuery(saved) = &header.kind {
-                    for call in &saved.resave {
-                        let text = encoder.call_text(call)?;
-                        write!(encoder.out, "<pre>{}</pre>", html::escape(&text))?;
-                    }
                 }
             }
             Format::Terminal | Format::Markdown => {
@@ -138,14 +132,8 @@ impl<'a> Encoder<'a> {
                 if let Some(line) = logical_line(&header.kind) {
                     encoder.line(&line)?;
                 }
-                for line in saved_query_lines(&header.kind) {
+                if let Some(line) = saved_query_header_line(&header.kind) {
                     encoder.line(&line)?;
-                }
-                if let HeaderKind::SavedQuery(saved) = &header.kind {
-                    for call in &saved.resave {
-                        let text = encoder.call_text(call)?;
-                        encoder.line(&text)?;
-                    }
                 }
                 for figure in &header.figures {
                     let text = format!(
@@ -505,6 +493,17 @@ impl<'a> Encoder<'a> {
     }
     fn card(&mut self, card: &Card) -> io::Result<()> {
         match card {
+            Card::SavedQuery { item } => {
+                for line in saved_query_item_lines(item) {
+                    self.line(&line)?;
+                }
+                if let SavedQueryItem::Dependent { resave, .. } = item.as_ref() {
+                    for call in resave {
+                        let text = self.call_text(call)?;
+                        self.line(&text)?;
+                    }
+                }
+            }
             Card::Trace(card) => {
                 for line in trace_lines(card) {
                     self.line(&line)?;
@@ -999,42 +998,39 @@ pub(crate) fn annotation_text(assertion: &Annotation, format: Format) -> String 
     }
 }
 
-fn saved_query_lines(kind: &HeaderKind) -> Vec<String> {
+fn saved_query_header_line(kind: &HeaderKind) -> Option<String> {
     let HeaderKind::SavedQuery(saved) = kind else {
-        return vec![];
+        return None;
     };
-    let query = &saved.query;
-    let mut lines = vec![format!(
-        "Saved query: {} · selected {}",
-        query.name, saved.selected_revision
-    )];
-    for revision in &query.revisions {
-        lines.push(format!(
-            "Revision {}: {} · {} · {} · {}",
-            revision.revision,
-            revision.reference,
-            revision.hash,
-            revision.author,
-            revision
-                .saved_at
-                .map_or_else(|| "time unknown".into(), |at| at.to_string())
-        ));
-        lines.push(revision.text.clone());
-    }
-    for kept in &query.kept {
-        lines.push(format!(
+    Some(format!(
+        "Saved query: {} · selected {} · {}",
+        saved.name, saved.selected_revision, saved.question
+    ))
+}
+
+pub(crate) fn saved_query_item_lines(item: &SavedQueryItem) -> Vec<String> {
+    match item {
+        SavedQueryItem::Revision(revision) => vec![
+            format!(
+                "Revision {}: {} · {} · {} · {}",
+                revision.revision,
+                revision.reference,
+                revision.hash,
+                revision.author,
+                revision
+                    .saved_at
+                    .map_or_else(|| "time unknown".into(), |at| at.to_string())
+            ),
+            revision.text.clone(),
+        ],
+        SavedQueryItem::Kept(kept) => vec![format!(
             "Kept: {} · {} rows · {}",
             kept.result, kept.rows, kept.at
-        ));
+        )],
+        SavedQueryItem::Watch { reference } => vec![reference.as_ref().map_or_else(
+            || "Watch: none".into(),
+            |reference| format!("Watch: {reference}"),
+        )],
+        SavedQueryItem::Dependent { reference, .. } => vec![format!("Dependent: {reference}")],
     }
-    lines.push(
-        query
-            .watch
-            .as_ref()
-            .map_or_else(|| "Watch: none".into(), |watch| format!("Watch: {watch}")),
-    );
-    for reference in &query.dependents {
-        lines.push(format!("Dependent: {reference}"));
-    }
-    lines
 }
