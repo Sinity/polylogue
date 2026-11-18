@@ -110,6 +110,18 @@ fn compute(conn: &Connection, session_pk: i64) -> Result<Links> {
     links_of(conn, calls)
 }
 
+// Start both searches from the changed message's blocks. Keeping the two
+// lookups separate lets SQLite use the call and result block indexes.
+const FINISHED_CALLS_BY_MESSAGE: &str = "SELECT t.pk, t.command
+    FROM block b CROSS JOIN tool_call t ON t.call_block_pk = b.pk
+    WHERE b.message_pk = ?1 AND t.session_pk = ?2
+      AND t.outcome = 'ok' AND t.command IS NOT NULL
+    UNION ALL
+    SELECT t.pk, t.command
+    FROM block b CROSS JOIN tool_call t ON t.result_block_pk = b.pk
+    WHERE b.message_pk = ?1 AND t.session_pk = ?2
+      AND t.outcome = 'ok' AND t.command IS NOT NULL";
+
 /// Brings the links of every session the transaction changed (`sessions`)
 /// up to date in that transaction: the finished calls whose call or result
 /// block is in one of its new messages add their links. A session with a
@@ -135,12 +147,7 @@ pub(crate) fn add_finished_links(
             continue;
         }
         let mut calls = Vec::new();
-        let mut finished = tx.prepare_cached(
-            "SELECT t.pk, t.command FROM block b JOIN tool_call t
-                 ON t.call_block_pk = b.pk OR t.result_block_pk = b.pk
-             WHERE b.message_pk = ?1 AND t.session_pk = ?2
-               AND t.outcome = 'ok' AND t.command IS NOT NULL",
-        )?;
+        let mut finished = tx.prepare_cached(FINISHED_CALLS_BY_MESSAGE)?;
         for message_pk in &change.messages {
             for call in finished.query_map(rusqlite::params![message_pk, session_pk], |r| {
                 <(i64, String)>::try_from(r)
