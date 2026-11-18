@@ -333,7 +333,7 @@ impl<'a> Compiler<'a> {
         };
         let parent_link = self.under_parent(parent.unit, &sc, "_parents.value", session)?;
         w.push(parent_link);
-        self.fold_bound_sessions(&sc, &top, &mut w)?;
+        self.fold_bound_sessions(&sc, &top, &mut w, true)?;
         let ctes = if self.ctes.is_empty() {
             String::new()
         } else {

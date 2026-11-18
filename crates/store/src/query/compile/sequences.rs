@@ -15,7 +15,7 @@ impl<'a> Compiler<'a> {
         let top = cond.map(top_level).unwrap_or_default();
         let Some(cond) = cond else {
             let mut predicates = vec![rows];
-            self.fold_bound_sessions(&child, &top, &mut predicates)?;
+            self.fold_bound_sessions(&child, &top, &mut predicates, true)?;
             return Ok(format!(
                 "EXISTS (SELECT 1 FROM {from} WHERE {})",
                 and_all(&predicates)
@@ -23,9 +23,9 @@ impl<'a> Compiler<'a> {
         };
         let inner = self.cond(cond, &child, false)?;
         let mut matching = vec![rows.clone(), inner.clone()];
-        self.fold_bound_sessions(&child, &top, &mut matching)?;
+        self.fold_bound_sessions(&child, &top, &mut matching, true)?;
         let mut unknown = vec![rows, format!("({inner}) IS NULL")];
-        self.fold_bound_sessions(&child, &top, &mut unknown)?;
+        self.fold_bound_sessions(&child, &top, &mut unknown, true)?;
         let matching = and_all(&matching);
         let unknown = and_all(&unknown);
         // True when some child satisfies the condition, false when every
@@ -58,6 +58,7 @@ impl<'a> Compiler<'a> {
             &child,
             &cond.map(top_level).unwrap_or_default(),
             &mut predicates,
+            true,
         )?;
         let rows = and_all(&predicates);
         let n = i64::try_from(n).unwrap_or(i64::MAX);
@@ -186,7 +187,12 @@ impl<'a> Compiler<'a> {
         if let Some(cond) = cond {
             w.push(self.cond(cond, &child, false)?);
         }
-        self.fold_bound_sessions(&child, &cond.map(top_level).unwrap_or_default(), &mut w)?;
+        self.fold_bound_sessions(
+            &child,
+            &cond.map(top_level).unwrap_or_default(),
+            &mut w,
+            true,
+        )?;
         w.push(format!("({parent_rows})"));
         let parent_pk = parent.a.expand(units::spec(parent.unit).key);
         let (child_pk, child_cols) =

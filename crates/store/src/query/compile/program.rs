@@ -56,7 +56,13 @@ impl<'a> Compiler<'a> {
         let mut parts = self.selection_sql(selection, preset)?;
         let defaults: Vec<_> = parts.applied.iter().map(|(id, _)| *id).collect();
         if defaults.contains(&units::DefaultId::LogicalSessions) {
-            self.fold_into_logical_sessions(&parts.scope, &defaults, &mut parts.where_sql)?;
+            let filtered = parts.where_sql.len() > parts.defaults_only.len();
+            self.fold_into_logical_sessions(
+                &parts.scope,
+                &defaults,
+                &mut parts.where_sql,
+                filtered,
+            )?;
         }
         self.apply_stages(selection, stages, &mut parts)?;
         let count_relation = self.finish_conditions(selection, &mut parts)?;
@@ -272,7 +278,7 @@ impl<'a> Compiler<'a> {
             w.push(self.lower(&filter, &next, true)?);
             self.snippet_terms.extend(search.terms);
         }
-        self.fold_bound_sessions(&next, &ntop, &mut w)?;
+        self.fold_bound_sessions(&next, &ntop, &mut w, true)?;
         *scope = next;
         *top = ntop;
         *where_sql = w;
@@ -671,7 +677,8 @@ impl<'a> Compiler<'a> {
                 WhyClause {
                     matches_sql: (*describe == units::DefaultId::LogicalSessions).then(|| {
                         let ids: Vec<_> = applied.iter().map(|(id, _)| *id).collect();
-                        let folded = folded_sessions(&parts.scope, from, defaults_only, &ids);
+                        let folded =
+                            folded_sessions(&parts.scope, from, defaults_only, &ids, false);
                         format!(
                             "{ctes}SELECT count(*) FROM {from} WHERE {}",
                             and_all(&folded)
@@ -769,6 +776,7 @@ impl<'a> Compiler<'a> {
                     &base_from(parts.scope.unit, &parts.scope.a),
                     &parts.defaults_only,
                     &defaults,
+                    false,
                 )
             } else {
                 parts.defaults_only.clone()
@@ -892,8 +900,9 @@ impl<'a> Compiler<'a> {
         scope: &RowContext,
         defaults: &[units::DefaultId],
         conditions: &mut Vec<String>,
+        filtered: bool,
     ) -> Result<(), QueryError> {
-        *conditions = folded_sessions(scope, &self.from(scope)?, conditions, defaults);
+        *conditions = folded_sessions(scope, &self.from(scope)?, conditions, defaults, filtered);
         Ok(())
     }
 
@@ -903,11 +912,12 @@ impl<'a> Compiler<'a> {
         scope: &RowContext,
         top: &[Condition],
         conditions: &mut Vec<String>,
+        filtered: bool,
     ) -> Result<(), QueryError> {
         let defaults =
             polylogue_query::defaults::bind(scope.unit, top, &self.opts.origins, self.measuring);
         if defaults.contains(&units::DefaultId::LogicalSessions) {
-            self.fold_into_logical_sessions(scope, &defaults, conditions)?;
+            self.fold_into_logical_sessions(scope, &defaults, conditions, filtered)?;
         }
         Ok(())
     }
@@ -987,19 +997,23 @@ fn folded_sessions(
     from: &str,
     conditions: &[String],
     defaults: &[units::DefaultId],
+    filtered: bool,
 ) -> Vec<String> {
-    // Drive the fold from the paged root. A global IN (SELECT root ...)
-    // materializes every physical session before a keyset page can stop.
-    let mut folded = vec![format!(
-        "EXISTS (SELECT 1 FROM session logical_owner WHERE logical_owner.pk = {s}.pk \
-         AND logical_owner.pk = {root} AND EXISTS (SELECT 1 FROM {from} WHERE \
-         {s}.pk IN ({descendants}) AND {candidate_root} = logical_owner.pk AND {conditions}))",
-        s = scope.a.s,
-        root = fields::logical_root("logical_owner"),
-        descendants = fields::descendants("logical_owner"),
-        candidate_root = fields::logical_root(&scope.a.s),
-        conditions = and_all(conditions),
-    )];
+    let selection = if filtered {
+        // Keep the physical predicate's indexed access path (for example cwd)
+        // before mapping its matches to roots.
+        format!(
+            "{}.pk IN (SELECT {} FROM {from} WHERE {})",
+            scope.a.s,
+            fields::logical_root(&scope.a.s),
+            and_all(conditions)
+        )
+    } else {
+        // With only defaults, every eligible root matches its own physical
+        // row. Neither its descendants nor the complete archive need a scan.
+        format!("{}.pk = {}", scope.a.s, fields::logical_root(&scope.a.s))
+    };
+    let mut folded = vec![selection];
     folded.extend(
         defaults
             .iter()

@@ -1977,6 +1977,13 @@ fn hidden_logical_root_hides_listing_but_not_measurement() {
         "session:codex:work-root",
     )
     .unwrap();
+    let bare = ids(&q(&w, "sessions"));
+    let matched = ids(&q(&w, "sessions where (kind:main OR kind:subagent)"));
+    assert_eq!(bare, ["codex:work-reference"]);
+    assert_eq!(
+        matched, bare,
+        "outer root visibility applies to both access paths"
+    );
     assert!(ids(&q(&w, "sessions where cwd:/w/c")).is_empty());
     let usage = q(&w, "sessions where cwd:/w/c | measure usage");
     assert_eq!(usage["data"]["known_response_messages"], 5);
