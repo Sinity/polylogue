@@ -75,6 +75,13 @@ impl RealSinex {
         if !cross_domain_evidence {
             // Backup requires a pause responder for each granted producer.
             grants.as_object_mut().unwrap().remove("evidence");
+            // The restored broker starts at a snapshot origin. Give the reader
+            // the same kind definitions that this fixture's producer writes.
+            grants["polylogue"]["indexed_catalog"] = serde_json::json!({
+                "name": "polylogue-backup-fixture",
+                "version": 1,
+                "kinds": declarations[0]["kinds"],
+            });
         }
         fs::write(
             root.join("grants.json"),
