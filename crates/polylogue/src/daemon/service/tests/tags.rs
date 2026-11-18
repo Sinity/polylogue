@@ -21,6 +21,7 @@ fn command(id: &str, references: &[String], step: serde_json::Value) -> Call {
 
 fn wrote(d: &TestDaemon, request: Call) -> (AssertQueryOutcome, String) {
     let answer = request.answer(&d.daemon);
+    assert_eq!(answer.exit_code(), 0, "{answer:?}");
     let line: LineAnswer = serde_json::from_value(
         answer
             .value()

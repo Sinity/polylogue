@@ -446,11 +446,57 @@ fn an_offline_tag_retry_keeps_its_pending_intent_when_another_tag_is_confirmed()
     let home = ClaudeHome::new();
     let runtime = launch(primary(&home)).unwrap();
     let arguments = serde_json::json!({"references":["session:codex:tag-target"], "steps":[{"verb":"tag","name":"status:ready"}]});
-    let first = primary_table_call(&runtime, "rows", arguments.clone(), "offline-tag");
-    let crate::protocol::line::StepAnswer::WroteEach(original) = crate::test_answers::step(first)
-    else {
-        panic!("expected a tag result")
+    let refused = primary_table_call(&runtime, "rows", arguments.clone(), "offline-tag");
+    assert!(
+        matches!(refused.outcome, command_surface::Outcome::Error(error)
+        if matches!(error.code.as_deref(), Some("primary_context_missing" | "primary_context_unavailable")))
+    );
+    assert!(pending_requests(&runtime).is_empty());
+
+    // The ordinary line must wait for Sinex context before resolving rows.
+    // Exercise the actual verb with an already-resolved selection to isolate
+    // pending-intent ownership from that independent context barrier.
+    let tag = |runtime: &Runtime| {
+        use crate::daemon::verbs::{Given, Selection, StepCall, Verb, annotate::Tag};
+        let caller = crate::commands::Caller::default();
+        let invocation = runtime
+            .daemon
+            .invocation(&polylogue_model::authorship::Authorship {
+                author: polylogue_model::Author::Operator,
+                via: polylogue_model::authorship::Channel::Cli,
+            });
+        let acquired = std::sync::atomic::AtomicBool::new(false);
+        let call = crate::daemon::handler::Call {
+            daemon: &runtime.daemon,
+            row: crate::commands::command("rows").unwrap(),
+            invocation: &invocation,
+            caller: &caller,
+            request_id: "offline-tag",
+            cursor: None,
+            budget: Default::default(),
+            reader_acquired: &acquired,
+        };
+        let reference = Reference::parse("session:codex:tag-target").unwrap();
+        let selection = Selection {
+            given: Given::Reference(reference.clone()),
+            resolved: Some(vec![reference]),
+            question: None,
+            retained: None,
+        };
+        let done = Tag::run(
+            crate::protocol::steps::TagStep {
+                name: "status:ready".into(),
+            },
+            &selection,
+            &StepCall::new(&call, "offline-tag-1"),
+        )
+        .unwrap();
+        let crate::protocol::line::StepAnswer::WroteEach(report) = done.reply else {
+            panic!("expected a tag result")
+        };
+        report
     };
+    let original = tag(&runtime);
     assert!(original.pending);
     assert!(!original.repeat);
     assert_eq!(original.written, 1);
@@ -541,12 +587,7 @@ fn an_offline_tag_retry_keeps_its_pending_intent_when_another_tag_is_confirmed()
         );
     }
     assert_eq!(pending_requests(&runtime), pending_before);
-    let repeated = primary_table_call(&runtime, "rows", arguments, "offline-tag");
-    let crate::protocol::line::StepAnswer::WroteEach(repeated) =
-        crate::test_answers::step(repeated)
-    else {
-        panic!("expected a tag result")
-    };
+    let repeated = tag(&runtime);
     assert!(repeated.pending && repeated.repeat);
     assert_eq!(repeated.id, original.id);
     assert_eq!(repeated.written, original.written);
