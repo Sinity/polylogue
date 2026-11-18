@@ -1,4 +1,5 @@
 use super::*;
+use crate::writer::attachments::{normalize, normalize_known};
 
 fn call(text: Option<&str>) -> Block {
     Block::ToolCall {
@@ -10,6 +11,47 @@ fn call(text: Option<&str>) -> Block {
         command: None,
         path: Some("/home/op/needle-path".into()),
         run_by_script: false,
+    }
+}
+
+#[test]
+fn changing_an_attachment_keeps_other_blocks_exact() {
+    let hash = BlobHash([7; 32]);
+    let written = "synthetic written content Łódź\n";
+    let mut message = text_message("a", "s", Role::Assistant, "ordinary prose", None);
+    message.blocks.extend([
+        call(Some(written)),
+        Block::File(polylogue_model::Attachment {
+            blob: Some(hash),
+            size: Some(1),
+            ..Default::default()
+        }),
+    ]);
+    let mut expected = message.clone();
+    let Some(Block::File(attachment)) = expected.blocks.last_mut() else {
+        unreachable!("the fixture ends with an attachment");
+    };
+    attachment.size = Some(19);
+
+    for replacement in [false, true] {
+        let mut batch = batch("i", Route::Live, 0, vec![row(0, message.clone())], &["s"]);
+        batch.parse[0].prepare();
+        if replacement {
+            normalize_known(&mut batch.parse[0], &HashMap::from([(hash, Some(19))])).unwrap();
+        } else {
+            let archive = Connection::open_in_memory().unwrap();
+            normalize(&mut batch, &archive, &HashMap::from([(hash, 19)])).unwrap();
+        }
+        let step = &batch.parse[0];
+        assert_eq!(step.output.messages[0].message, expected);
+        assert_eq!(
+            step.prepared.messages[0].hash,
+            expected.content_hash().unwrap().0
+        );
+        assert_eq!(
+            step.complete_output().unwrap().messages[0].message,
+            expected
+        );
     }
 }
 
