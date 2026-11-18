@@ -1313,7 +1313,7 @@ fn hand_off(
     text.push_str(":\n");
     text.push_str(&prepared.text);
     let mut refs = vec![format!("session:{}", h.source)];
-    refs.extend(at.as_ref().map(Reference::stored_form));
+    refs.extend(at.as_ref().map(polylogue_model::Reference::stored_form));
     refs.extend(prepared.refs.iter().cloned());
     if h.print {
         return Ok(ok(json!({
