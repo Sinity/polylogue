@@ -6,8 +6,14 @@ use polylogue_model::{
     user::UserWrite,
 };
 
+fn all_columns_options() -> crate::query::Options {
+    let mut opts = super::options();
+    opts.fields.clear();
+    opts
+}
+
 fn rows(f: &Fixture, text: &str, fields: &[&str]) -> Vec<Value> {
-    let mut opts = options();
+    let mut opts = all_columns_options();
     opts.fields = fields.iter().map(|s| (*s).into()).collect();
     opts.page_size = Some(100);
     let program = crate::query::compile(text, &opts).unwrap_or_else(|e| panic!("{text}: {e}"));
@@ -79,13 +85,13 @@ fn request_field_matches_every_row_of_one_write() {
             .collect::<Vec<_>>(),
         ["first", "second"]
     );
-    assert_eq!(
+    assert!(
         rows(
             &f,
             &format!("annotations where request:{request}x"),
             &["id"]
-        ),
-        []
+        )
+        .is_empty()
     );
 }
 
@@ -595,13 +601,13 @@ fn recorded_unit_objects_execute_with_original_hash_and_body() {
         let restored_plan =
             polylogue_query::plan::replay(&restored, polylogue_query::plan::catalog_fingerprint())
                 .unwrap();
-        let program = crate::query::lower(&restored_plan, &options()).unwrap();
+        let program = crate::query::lower(&restored_plan, &all_columns_options()).unwrap();
         let mut got = reader.query_rows(&program).unwrap();
         for row in &mut got {
             present(&program, row).unwrap();
         }
         let named = reader
-            .prepare_query_plan(&format!("query:recorded-{n}"), &options())
+            .prepare_query_plan(&format!("query:recorded-{n}"), &all_columns_options())
             .unwrap();
         assert!(
             named
@@ -609,7 +615,7 @@ fn recorded_unit_objects_execute_with_original_hash_and_body() {
                 .iter()
                 .any(|d| d.question_id == object.id)
         );
-        let named_program = reader.lower_plan(&named, &options()).unwrap();
+        let named_program = reader.lower_plan(&named, &all_columns_options()).unwrap();
         let mut named_rows = reader.query_rows(&named_program).unwrap();
         for row in &mut named_rows {
             present(&named_program, row).unwrap();
@@ -666,7 +672,7 @@ fn here_matches_worktrees_and_repo_root() {
             f.live(pk, "session_start", 1, None, Some(root)).unwrap();
         }
     }
-    let mut opts = options();
+    let mut opts = all_columns_options();
     opts.page_size = Some(20);
     opts.fields = vec!["id".into()];
     opts.here = Some(polylogue_model::query_objects::HereScope {
@@ -701,7 +707,7 @@ fn here_matches_worktrees_and_repo_root() {
 #[test]
 fn here_without_cwd_refused() {
     for text in ["here", "repo:here", "cwd:here"] {
-        let error = crate::query::compile(text, &options())
+        let error = crate::query::compile(text, &all_columns_options())
             .unwrap_err()
             .to_string();
         assert!(
@@ -834,7 +840,7 @@ fn since_seen_tracks_the_computed_author_and_new_source_or_authored_work() {
         .unwrap()
         .id;
     let count = |archive: &WriterArchive, author: &str, query: &str| {
-        let mut opts = options();
+        let mut opts = all_columns_options();
         opts.origins = vec!["claude-code".into()];
         opts.seen_marks_of = Some(author.into());
         let program = crate::query::compile(query, &opts).unwrap();
@@ -883,7 +889,7 @@ fn since_seen_tracks_the_computed_author_and_new_source_or_authored_work() {
         count(&archive, "operator", "annotations where kind:seen"),
         2
     );
-    let feed_program = crate::query::compile("feed", &options()).unwrap();
+    let feed_program = crate::query::compile("feed", &all_columns_options()).unwrap();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let feed_reader = pool.reader().unwrap();
     let feed = feed_reader.query_rows(&feed_program).unwrap();
@@ -933,7 +939,7 @@ fn runs_lists_the_native_begin_completion_and_reopened_record() {
     };
     use std::collections::BTreeMap;
     let mut archive = WriterArchive::new();
-    let opts = options();
+    let opts = all_columns_options();
     let plan =
         polylogue_query::plan::prepare("sessions", &polylogue_query::Bindings::default(), |_| {
             Ok(())
@@ -947,7 +953,7 @@ fn runs_lists_the_native_begin_completion_and_reopened_record() {
     let expected = QueryRun {
         id: RunId::parse("018f0000-0000-7000-8000-000000000011").unwrap(),
         question: Some(object.id),
-        at: opts.clock.now().into(),
+        at: opts.clock.now.into(),
         read_at: position.clone(),
         machine: "synthetic-machine".into(),
         authorship: Authorship {
@@ -1091,7 +1097,7 @@ fn original_kept_bodies_retain_their_recorded_units_and_reference_columns() {
             record["rows_sha256"].as_str().unwrap()
         );
         let prepared = reader
-            .prepare_query_selection(&format!("result:{id}"), &options())
+            .prepare_query_selection(&format!("result:{id}"), &all_columns_options())
             .unwrap();
         let program = prepared.program();
         let mut values = reader.query_rows(program).unwrap();
@@ -1149,4 +1155,151 @@ fn original_kept_bodies_retain_their_recorded_units_and_reference_columns() {
             assert_eq!(values[0]["count"], 1);
         }
     }
+}
+
+/// The Store crate has no testkit dependency (testkit itself depends on Store).
+/// This demo population exercises the Reader on current live states, local and
+/// other repositories, open authored work, and a persisted saved question.
+#[test]
+fn every_shipped_query_runs_on_demo_archive() {
+    use polylogue_model::{query_objects::HereScope, saved_queries::SHIPPED_QUERIES};
+    use std::collections::{BTreeMap, BTreeSet};
+    let d = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(d.path()).unwrap();
+    let mut opts = all_columns_options();
+    opts.page_size = Some(100);
+    opts.here = Some(HereScope {
+        paths: vec!["/workspace/morrow".into()],
+        repo_roots: vec!["demo-root".into()],
+    });
+    let now = opts.clock.now.as_millisecond();
+    for (id, cwd, live, waiting) in [
+        ("test:running", "/workspace/morrow", true, None),
+        (
+            "test:waiting",
+            "/workspace/morrow",
+            true,
+            Some("permission"),
+        ),
+        ("test:unfinished", "/workspace/morrow/src", false, None),
+        ("test:elsewhere", "/workspace/other", false, None),
+    ] {
+        let pk = fixture
+            .session(SessionFacts {
+                id,
+                kind: "main",
+                cwd: Some(cwd),
+                started: Some(now - 1000),
+                last: Some(now),
+                ..Default::default()
+            })
+            .unwrap();
+        fixture
+            .message(
+                pk,
+                MessageFacts {
+                    id: &format!("{id}-message"),
+                    role: "user",
+                    written_by: "human",
+                    at: Some(now),
+                    text: Some("A synthetic open task"),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        if live {
+            fixture
+                .live(
+                    pk,
+                    "hook_user_prompt_submit",
+                    now,
+                    waiting,
+                    Some("demo-root"),
+                )
+                .unwrap();
+        }
+    }
+    fixture
+        .note(
+            "question",
+            None,
+            Some("What remains?"),
+            "session:test:unfinished",
+        )
+        .unwrap();
+    let saved = polylogue_query::plan::prepare(
+        "sessions where id:test:unfinished",
+        &polylogue_query::Bindings {
+            origins: vec!["test".into()],
+            ..Default::default()
+        },
+        |_| Ok(()),
+    )
+    .unwrap();
+    fixture.saved_query("demo-saved", &saved).unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let mut counts = BTreeMap::new();
+    for shipped in SHIPPED_QUERIES {
+        let selection = format!("query:{}", shipped.name);
+        let prepared = reader
+            .prepare_query_selection(&selection, &opts)
+            .unwrap_or_else(|e| panic!("{}: {e}", shipped.name));
+        assert!(
+            prepared
+                .plan()
+                .definitions()
+                .iter()
+                .any(|d| d.name == shipped.name),
+            "{} resolves through the current saved-name reader",
+            shipped.name
+        );
+        let mut values = reader
+            .query_rows(prepared.program())
+            .unwrap_or_else(|e| panic!("{}: {e}", shipped.name));
+        for row in &mut values {
+            present(prepared.program(), row).unwrap();
+        }
+        if shipped.name == "unfinished" {
+            assert!(values.iter().any(|row| row["id"] == "test:unfinished"));
+            assert!(
+                values.iter().all(|row| row["id"] != "test:elsewhere"),
+                "here excludes the other repository"
+            );
+        }
+        counts.insert(shipped.name, values.len());
+    }
+    assert_eq!(
+        counts.keys().copied().collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "running",
+            "waiting",
+            "recent",
+            "unfinished",
+            "notices",
+            "review",
+            "questions",
+            "triage",
+            "saved",
+            "open",
+        ])
+    );
+    for nonempty in [
+        "running",
+        "waiting",
+        "recent",
+        "unfinished",
+        "questions",
+        "triage",
+        "saved",
+        "open",
+    ] {
+        assert!(
+            counts[nonempty] > 0,
+            "{nonempty} must execute against matching facts"
+        );
+    }
+    // This fixture has neither signal deliveries nor non-operator annotations.
+    assert_eq!(counts["notices"], 0);
+    assert_eq!(counts["review"], 0);
 }
