@@ -235,8 +235,8 @@ fn prepare_inner(
         normalize_references(&mut query)?;
         let original = query_language::bind::bind(&query, &catalog)
             .map_err(|e| QueryError::language(e, text))?;
-        values::check(&mut query, original.typing())?;
         let mut identity = original.query().clone();
+        values::check(&mut identity, original.typing())?;
         let names = std::cell::RefCell::new(Vec::<String>::new());
         walk(
             &mut identity,

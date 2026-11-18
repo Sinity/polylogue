@@ -493,8 +493,8 @@ fn human_reference_spellings_bind_the_existing_stored_question_identity() {
             "deliveries where left_out:assertion:root@revision",
         ),
         (
-            "changes where ref:annotation:root@revision",
-            "changes where ref:assertion:root@revision",
+            "feed where ref:annotation:root@revision",
+            "feed where ref:assertion:root@revision",
         ),
     ] {
         let plan = prepare(surface, &Bindings::default(), |_| Ok(())).unwrap();
@@ -518,4 +518,21 @@ fn human_reference_spellings_bind_the_existing_stored_question_identity() {
         text.contains("alternate:opaque"),
         "opaque root IDs keep their bytes"
     );
+}
+
+#[test]
+fn comparison_values_use_the_normalized_conditions_binding() {
+    prepare(
+        "tool_calls where action:* NOT (exit_code != 0) AND at < 2026-10-01",
+        &Bindings::default(),
+        |_| Ok(()),
+    )
+    .unwrap();
+    let error = prepare(
+        "tool_calls where exit_code != invalid",
+        &Bindings::default(),
+        |_| Ok(()),
+    )
+    .unwrap_err();
+    assert!(matches!(error, QueryError::BadValue { field, .. } if field == "exit_code"));
 }

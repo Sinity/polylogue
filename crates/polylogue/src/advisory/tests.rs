@@ -152,7 +152,7 @@ fn advisory_selection_requires_a_current_operator_judgment_and_scoped_file() {
     assert!(
         prepared
             .refs
-            .contains(&Reference::Assertion(reference.clone()).to_string())
+            .contains(&Reference::Assertion(reference.clone()).stored_form())
     );
     assert!(!prepared.text.contains("ARCHIVED_BODY_NOT_INLINED"));
     assert!(
@@ -236,7 +236,7 @@ fn pending_pair_is_suppressed_without_assuming_history_application() {
         Some("cwd:/synthetic/repo"),
         true,
     );
-    let reference = Reference::Assertion(reference).to_string();
+    let reference = Reference::Assertion(reference).stored_form();
     let reader = w.daemon.reads.reader().unwrap();
     assert!(reader.delivery("unapplied-advice").unwrap().is_none());
     let pending = vec![vec![reference, "file:src/parser.rs@fixture-commit".into()]];
@@ -284,7 +284,7 @@ fn a_new_file_assertion_revision_requires_its_own_judgment_and_is_a_distinct_pai
         true,
     );
     let pending = vec![vec![
-        Reference::Assertion(old.clone()).to_string(),
+        Reference::Assertion(old.clone()).stored_form(),
         "file:src/parser.rs@fixture-commit".into(),
     ]];
     now.fetch_add(1, Ordering::SeqCst);
@@ -332,7 +332,7 @@ fn a_new_file_assertion_revision_requires_its_own_judgment_and_is_a_distinct_pai
     assert!(
         prepared
             .refs
-            .contains(&Reference::Assertion(revised).to_string())
+            .contains(&Reference::Assertion(revised).stored_form())
     );
     assert_eq!(prepared.text.lines().count(), 1);
 }
