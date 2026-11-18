@@ -1,0 +1,139 @@
+use super::*;
+use crate::fixture::writer::{WriterArchive, bash, prose};
+
+#[test]
+fn trace_maps_a_record_across_every_stored_extent() {
+    let mut archive = WriterArchive::new();
+    archive.write("trace", prose("trace", 1, 1, "first"));
+    archive.write("trace", prose("trace", 2, 2, "second"));
+    let index = Connection::open(archive.archive.index_db()).unwrap();
+    index.execute("UPDATE message_source SET source_start=1,source_end=3 WHERE message_pk=(SELECT pk FROM message WHERE id='claude-code:trace-p1')",[]).unwrap();
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let card = reader
+        .record_chain(&Reference::parse("message:claude-code:trace-p1").unwrap())
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(&card.chain[1],ChainStep::InputRecord{input,chain:1,start:1,end:3,route:Route::Live,shown:true} if input=="input-trace")
+    );
+    let extents: Vec<_> = card
+        .chain
+        .iter()
+        .filter_map(|step| match step {
+            ChainStep::StoredBytes {
+                blob,
+                size,
+                offset,
+                length,
+                blob_offset,
+            } => Some((*blob, *size, *offset, *length, *blob_offset)),
+            _ => None,
+        })
+        .collect();
+    let hash = polylogue_model::BlobHash::of(b"r\n");
+    assert_eq!(extents, vec![(hash, 2, 0, 2, 0), (hash, 2, 2, 2, 0)]);
+    assert!(card.chain.iter().any(|step|matches!(step,ChainStep::ReaderVersion{reading_version,..} if reading_version=="synthetic=1")));
+    assert_eq!(
+        reader
+            .stored_range(
+                "input-trace",
+                1,
+                1,
+                3,
+                &archive.archive.blob_reader().unwrap()
+            )
+            .unwrap(),
+        b"\nr"
+    );
+}
+
+#[test]
+fn trace_preserves_missing_range_and_checks_block_span_and_call_identity() {
+    let mut archive = WriterArchive::new();
+    archive.write("trace", prose("trace", 1, 1, "hello"));
+    archive.write("trace", bash("trace", 2, 2, "printf hi", true, "hi"));
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    {
+        let reader = pool.reader().unwrap();
+        let tool = reader
+            .record_chain(&Reference::parse("tool:claude-code:trace#t2").unwrap())
+            .unwrap()
+            .unwrap();
+        assert!(tool.chain.iter().any(|step|matches!(step,ChainStep::Record{reference:Reference::Message(id)} if id.to_string()=="claude-code:trace-c2")));
+        assert!(
+            matches!(reader.record_chain(&Reference::parse("block:claude-code:trace-p1#99").unwrap()),Err(StoreError::ReferenceUnavailable{reason,..}) if reason=="the original block is unavailable")
+        );
+        assert!(
+            matches!(reader.record_chain(&Reference::parse("span:message:claude-code:trace-p1#c=0-99").unwrap()),Err(StoreError::Invalid(reason)) if reason=="span bounds exceed the source text")
+        );
+        assert!(
+            reader
+                .record_chain(&Reference::parse("message:claude-code:absent").unwrap())
+                .unwrap()
+                .is_none()
+        );
+    }
+    let index = Connection::open(archive.archive.index_db()).unwrap();
+    index.execute("UPDATE message_source SET source_end=source_start WHERE message_pk=(SELECT pk FROM message WHERE id='claude-code:trace-p1')",[]).unwrap();
+    index.execute("UPDATE parse_state SET reading_version='' WHERE input_pk=(SELECT pk FROM input_ref WHERE id='input-trace')",[]).unwrap();
+    let reader = pool.reader().unwrap();
+    let card = reader
+        .record_chain(&Reference::parse("message:claude-code:trace-p1").unwrap())
+        .unwrap()
+        .unwrap();
+    assert!(
+        !card
+            .chain
+            .iter()
+            .any(|step| matches!(step, ChainStep::StoredBytes { .. }))
+    );
+    assert!(card.chain.iter().any(|step|matches!(step,ChainStep::Unavailable{reason} if reason.contains("byte end is not recorded"))));
+    assert!(
+        !card
+            .chain
+            .iter()
+            .any(|step| matches!(step, ChainStep::ReaderVersion { .. }))
+    );
+    assert!(card.chain.iter().any(|step| matches!(step,ChainStep::Unavailable{reason} if reason.contains("reader version is unavailable"))));
+    assert_eq!(
+        card.missing,
+        ["quote origins", "paste origins", "file-line lineage"]
+    );
+}
+
+#[test]
+fn trace_span_does_not_require_unknown_text_after_its_end() {
+    use polylogue_model::{Block, Role};
+    let mut archive = WriterArchive::new();
+    let original = crate::fixture::writer::message(
+        "prefix",
+        "trace",
+        Role::Assistant,
+        1,
+        vec![
+            Block::Text {
+                text: "hello".into(),
+            },
+            Block::Thinking {
+                text: None,
+                signature: Some("unavailable".into()),
+                redacted: true,
+            },
+            Block::Text {
+                text: "outside the selected span".into(),
+            },
+        ],
+    );
+    archive.write("trace", vec![original]);
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let span = Reference::parse("span:message:claude-code:trace-prefix#c=0-5").unwrap();
+    let card = reader.record_chain(&span).unwrap().unwrap();
+    assert_eq!(card.item, span);
+    assert!(
+        card.chain
+            .iter()
+            .any(|step| matches!(step, ChainStep::StoredBytes { .. }))
+    );
+}

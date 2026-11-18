@@ -240,4 +240,6 @@ $ polylogue 'file:crates/store/src/writer.rs#L120' read --view trace
 $ polylogue 'span:message:codex:019d0f2a:m42#c=120-380' read --view trace
 ```
 
+Record traces show the stored input chain and record byte range, every overlapping byte extent with its BLAKE3 address and offsets, and the current reader checkpoint (version, status and parsed position). The shown source route is identified separately from other recorded routes. Unknown record ends and unavailable checkpoint evidence are stated explicitly. These are source-byte coordinates; span coordinates continue to address the parsed text. Quote origins, paste origins and file-line lineage are not built yet and are named in the trace card. A file-line trace returns `not_built`.
+
 It reads three derived data sets: the quote and paste origin index, file-line lineage and the record-to-bytes chain ([archive.md](archive.md#trace-data)). Where one is behind, the reading is degraded and names it.

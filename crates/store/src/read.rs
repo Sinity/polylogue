@@ -40,6 +40,7 @@ mod import_counts;
 pub use import_counts::ImportCounts;
 mod parents;
 mod revisions;
+mod trace;
 pub use revisions::RevisionPoint;
 mod tool_outcomes;
 mod tool_pairs;
