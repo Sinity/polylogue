@@ -1,0 +1,45 @@
+{
+  "counts": {
+    "records": 1,
+    "used": {
+      "USER_INPUT": 1
+    },
+    "unreadable": {},
+    "skipped": {},
+    "unread_fields": {}
+  },
+  "output": {
+    "background": [],
+    "blobs": [],
+    "events": [],
+    "links": [],
+    "messages": [
+      {
+        "offset": 0,
+        "end": 142,
+        "message": {
+          "id": "antigravity:synthetic-cli:step-0",
+          "session": "antigravity:synthetic-cli",
+          "role": "user",
+          "at": "2026-03-05T04:21:34Z",
+          "at_quality": "intrinsic",
+          "at_precision": "second",
+          "prompt_kind": "prose",
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Read the example"
+            }
+          ]
+        }
+      }
+    ],
+    "sessions": [
+      {
+        "id": "antigravity:synthetic-cli",
+        "kind": "main",
+        "started_quality": "unknown"
+      }
+    ]
+  }
+}

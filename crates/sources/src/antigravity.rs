@@ -13,27 +13,32 @@ use polylogue_model::{
 use std::collections::HashMap;
 use std::path::Path;
 
+pub mod cli;
 pub mod database;
 pub mod server;
 
 pub const VERSION: u32 = 1;
 
 pub const ORIGIN: &str = "antigravity";
-pub const LOCATIONS: &[&str] = &[".gemini/antigravity/conversations/**/*.pb"];
+pub const LOCATIONS: &[&str] = &[".gemini/antigravity/conversations/**/*.pb", cli::LOCATION];
 
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
-    (path.extension().is_some_and(|e| e == "pb")
-        && path.ancestors().any(|p| {
-            p.file_name().is_some_and(|name| name == "conversations")
-                && p.parent()
-                    .is_some_and(|p| p.ends_with(".gemini/antigravity"))
-        }))
+    cli::recognize(path)
+        || (path.extension().is_some_and(|e| e == "pb")
+            && path.ancestors().any(|p| {
+                p.file_name().is_some_and(|name| name == "conversations")
+                    && p.parent()
+                        .is_some_and(|p| p.ends_with(".gemini/antigravity"))
+            }))
         || path.extension().is_some_and(|e| e == "json")
             && ((String::from_utf8_lossy(head).contains("\"antigravity_language_server\"")
                 || String::from_utf8_lossy(head).contains("\"antigravity_conversion\""))
                 || crate::document::first_key(head) == Some("cascadeId"))
 }
 pub fn open(path: &Path) -> Option<Parse> {
+    if cli::recognize(path) {
+        return cli::open(path);
+    }
     if path.extension().is_some_and(|e| e == "pb") {
         path.file_stem()
             .and_then(|name| name.to_str())
