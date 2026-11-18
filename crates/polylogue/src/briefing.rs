@@ -1546,7 +1546,10 @@ fn takeover(
         &pull,
     );
     fit.section(
-        "The operator's prompts in it, oldest first:",
+        &format!(
+            "Times are in {}.\nThe operator's prompts in it, oldest first:",
+            context.clock.day.zone_name()
+        ),
         prompts
             .iter()
             .map(|p| Item {

@@ -670,6 +670,99 @@ fn fixture_context(now: Timestamp) -> std::sync::Arc<polylogue_reading::operatio
 }
 
 #[test]
+fn takeover_prompt_times_match_records() {
+    use polylogue_store::fixture::{Fixture, MessageFacts, SessionFacts};
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(dir.path()).unwrap();
+    let session = fixture
+        .session(SessionFacts {
+            id: "codex:synthetic-takeover",
+            ..SessionFacts::default()
+        })
+        .unwrap();
+    // The instants share a local clock time but have different offsets.
+    // Stored session order is the reverse of timestamp order.
+    for (id, at, text) in [
+        ("later-clock", Some("2026-10-25T01:30:00Z"), "first prompt"),
+        (
+            "earlier-clock",
+            Some("2026-10-25T00:30:00Z"),
+            "second prompt",
+        ),
+        ("unknown-clock", None, "third prompt"),
+    ] {
+        fixture
+            .message(
+                session,
+                MessageFacts {
+                    id,
+                    role: "user",
+                    written_by: "human",
+                    at: at.map(|at| Timestamp::parse_rfc3339(at).unwrap().unix_ms()),
+                    text: Some(text),
+                    ..MessageFacts::default()
+                },
+            )
+            .unwrap();
+    }
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let day = query_language::time::DaySetting::new(
+        jiff::tz::TimeZone::get("Europe/Warsaw").unwrap(),
+        jiff::civil::Time::constant(4, 0, 0, 0),
+    )
+    .unwrap();
+    let context = std::sync::Arc::new(polylogue_reading::operation::Context::standalone(
+        fixture_context(Timestamp::parse_rfc3339("2030-01-01T12:00:00Z").unwrap()).invocation(),
+        day,
+    ));
+    let prepared = prepare(
+        BriefContext {
+            reader: &reader,
+            delivery_id: "synthetic-takeover-times",
+            context: &context,
+            ranking_identity: None,
+            near: None,
+        },
+        &SharedScopeIndex::default(),
+        None,
+        &[],
+        &Ask::Takeover {
+            session: SessionId::parse("codex:synthetic-takeover").unwrap(),
+            for_session: None,
+        },
+        Default::default(),
+    )
+    .unwrap();
+    assert!(
+        prepared
+            .text
+            .contains("Times are in Europe/Warsaw.\nThe operator's prompts in it, oldest first:")
+    );
+    let prompts: Vec<serde_json::Value> = prepared
+        .text
+        .lines()
+        .filter_map(|line| line.strip_prefix("┃ "))
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(prompts.len(), 3);
+    for (prompt, (id, at, text)) in prompts.iter().zip([
+        ("later-clock", "2026-10-25 02:30 +01:00", "first prompt"),
+        ("earlier-clock", "2026-10-25 02:30 +02:00", "second prompt"),
+        ("unknown-clock", "unknown time", "third prompt"),
+    ]) {
+        assert_eq!(prompt["refs"], serde_json::json!([format!("message:{id}")]));
+        assert!(
+            prompt["attribution"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("message:{id}; at:{at};"))
+        );
+        assert_eq!(prompt["source"].as_str().unwrap().trim(), text);
+    }
+}
+
+#[test]
 fn named_context_defaults_and_explicit_tight_budgets_share_one_fitter() {
     let (_dir, f) = worked_directory();
     let pool = f.reads().unwrap();

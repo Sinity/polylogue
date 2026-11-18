@@ -105,6 +105,7 @@ A prompt (`UserPromptSubmit`, Gemini `BeforeAgent`, Hermes `pre_llm_call`) that 
 
 - **Exact or nothing.** An ambiguous prefix injects its candidates, never a guess. Plain words never trigger a lookup. A session not in the archive injects "session <ref> is not in the archive (yet)"; a provider URL not yet captured also names `polylogue import chatgpt` (or the provider's name). A session never receives its own takeover.
 - **Lineage.** A resumed or continued session is taken over through its newest successor, and the brief says so.
+- **Prompt times.** The prompts section opens with `Times are in ZONE.`, naming the logical-day zone. Each prompt carries its stored message time with the offset at that instant, or `unknown time`, in session order even when the clock moves backward.
 
 **Content, in order:**
 1. **Goal:** the first prompt, verbatim, labelled with its `written_by`; a session an orchestrator started shows its first message as "written by <parent session>, not the operator".
