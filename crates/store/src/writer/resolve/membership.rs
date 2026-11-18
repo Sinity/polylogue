@@ -1009,12 +1009,6 @@ impl<'a> MembershipState<'a> {
             .zip(&step.prepared.messages)
             .enumerate()
         {
-            if hidden.contains(&i) {
-                choices.keep_messages.push(false);
-                choices.message_mains.push(false);
-                choices.message_order_times.push(None);
-                continue;
-            }
             let pk = self
                 .keys
                 .get(Kind::Message, row.message.id.to_string().as_bytes())?
@@ -1024,13 +1018,14 @@ impl<'a> MembershipState<'a> {
                 .get(Kind::Session, row.message.session.to_string().as_bytes())?
                 .pk;
             let previous = self.messages.find(pk, input, chain).map(|m| m.start);
-            let keep = !previous.is_some_and(|start| {
-                if step.repeats_whole_conversations {
-                    (row.offset as i64) < start
-                } else {
-                    (row.offset as i64) > start
-                }
-            });
+            let keep = !hidden.contains(&i)
+                && !previous.is_some_and(|start| {
+                    if step.repeats_whole_conversations {
+                        (row.offset as i64) < start
+                    } else {
+                        (row.offset as i64) > start
+                    }
+                });
             choices.keep_messages.push(keep);
             choices.message_order_times.push(None);
             // A non-selected source value still belongs to the archive. Keyed
