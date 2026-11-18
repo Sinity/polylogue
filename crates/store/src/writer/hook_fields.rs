@@ -62,7 +62,7 @@ pub(super) struct Source<'a> {
 pub(super) fn write(
     conn: &rusqlite::Connection,
     source: Source<'_>,
-    keys: &super::resolve::ResolvedKeys,
+    pk: i64,
     step: &super::ParseStep,
     index: usize,
     version_pk: i64,
@@ -70,13 +70,6 @@ pub(super) fn write(
 ) -> Result<()> {
     use polylogue_model::injection::NativeHookField;
     use rusqlite::params;
-    let row = &step.output.messages[index];
-    let pk = keys
-        .get(
-            super::resolve::Kind::Message,
-            row.message.id.to_string().as_bytes(),
-        )?
-        .pk;
     if !created {
         conn.prepare_cached(
             "DELETE FROM message_injection_field WHERE message_pk=?1 AND input_pk=?2 AND chain=?3 AND version_pk<>?4",
