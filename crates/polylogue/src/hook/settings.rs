@@ -368,16 +368,9 @@ pub(super) fn merge_hooks(
     serde_json::from_str(&text).map_err(io::Error::other)
 }
 
-/// The file the original settings bytes are kept in before the first edit.
-pub(super) fn backup_path(path: &Path) -> PathBuf {
-    let mut name = path.file_name().unwrap_or_default().to_owned();
-    name.push(".polylogue-backup");
-    path.with_file_name(name)
-}
-
 /// Installs or removes the hooks in a settings file, atomically, editing only
 /// Polylogue's entries. Before the first edit of an existing file its bytes
-/// are kept in [`backup_path`]; a removal restores them exactly when the file
+/// are kept in [`crate::installation::backup_path`]; a removal restores them exactly when the file
 /// is still what installing into them produced. A file that is a symlink
 /// (managed by Home Manager or similar) is refused: the hooks belong in the
 /// file's declared source. The version provider runs only for an install
@@ -388,69 +381,30 @@ pub fn install(
     version: impl FnOnce() -> Option<HarnessVersion>,
     install: bool,
 ) -> std::io::Result<()> {
-    if path.is_symlink() {
-        return Err(std::io::Error::other(format!(
-            "{} is a symlink to a managed file; add the hooks in its source instead",
-            path.display()
-        )));
-    }
-    let current = match std::fs::read_to_string(path) {
-        Ok(text) => Some(text),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(e),
-    };
+    let file = crate::installation::File::read(path)?;
+    let current = file
+        .current()
+        .map(std::str::from_utf8)
+        .transpose()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     if current.is_none() && !install {
         return Ok(());
     }
-    let text = current.as_deref().unwrap_or("{}\n");
+    let text = current.unwrap_or("{}\n");
     // Refuse the settings before consulting an external harness launcher.
     validate(&parse::settings(text)?)?;
-    let backup = backup_path(path);
-    let saved = match std::fs::read_to_string(&backup) {
-        Ok(saved) => Some(saved),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(e),
-    };
-    let restore = !install
-        && saved
-            .as_deref()
-            .is_some_and(|saved| installed_from(saved, harness, text));
-    let new = if restore {
-        saved.clone().expect("a restore has its backup")
-    } else {
-        let version = install.then(version).flatten();
-        edit(text, harness, version.as_ref(), install)?
-    };
-    if current.as_deref() == Some(new.as_str()) {
-        return Ok(());
-    }
-    let dir = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    std::fs::create_dir_all(dir)?;
-    use std::os::unix::fs::PermissionsExt;
-    let permissions = match std::fs::metadata(path) {
-        Ok(meta) => meta.permissions(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::Permissions::from_mode(0o600)
-        }
-        Err(e) => return Err(e),
-    };
-    if let Some(original) = &current
-        && saved.is_none()
-    {
-        polylogue_model::atomic_write::write_atomic(
-            &backup,
-            original.as_bytes(),
-            Some(permissions.clone()),
-        )?;
-    }
-    polylogue_model::atomic_write::write_atomic(path, new.as_bytes(), Some(permissions))?;
+    let saved = file
+        .backup()
+        .map(std::str::from_utf8)
+        .transpose()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let restore = !install && saved.is_some_and(|saved| installed_from(saved, harness, text));
     if restore {
-        std::fs::remove_file(&backup)?;
+        return file.restore();
     }
-    Ok(())
+    let version = install.then(version).flatten();
+    let new = edit(text, harness, version.as_ref(), install)?;
+    file.write(new.as_bytes())
 }
 
 /// Whether `current` is what an install into `saved` produces. The harness
