@@ -165,7 +165,7 @@ fn install_chrome_remove_preserves_changed_manifest_and_backup() {
     );
     let changed = b"manually changed browser configuration";
     std::fs::write(&path, changed).unwrap();
-    assert_eq!(chrome_install(&startup, &["--remove"]).0, ExitCode::FAILURE);
+    assert_eq!(chrome_install(&startup, &["--remove"]).0, ExitCode::from(4));
     assert_eq!(std::fs::read(&path).unwrap(), changed);
     assert_eq!(
         std::fs::read(crate::installation::backup_path(&path)).unwrap(),
@@ -191,9 +191,9 @@ fn install_chrome_refuses_symlinked_manifest() {
             &["--extension-id", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
         )
         .0,
-        ExitCode::FAILURE
+        ExitCode::from(4)
     );
-    assert_eq!(chrome_install(&startup, &["--remove"]).0, ExitCode::FAILURE);
+    assert_eq!(chrome_install(&startup, &["--remove"]).0, ExitCode::from(4));
     assert!(path.is_symlink());
     assert_eq!(std::fs::read(source).unwrap(), b"managed configuration");
     assert!(!crate::installation::backup_path(&path).exists());
