@@ -60,7 +60,7 @@ fn trace_preserves_missing_range_and_checks_block_span_and_call_identity() {
             .record_chain(&Reference::parse("tool:claude-code:trace#t2").unwrap())
             .unwrap()
             .unwrap();
-        assert!(tool.chain.iter().any(|step|matches!(step,ChainStep::Record{reference:Reference::Message(id)} if id.as_str()=="claude-code:trace-c2")));
+        assert!(tool.chain.iter().any(|step|matches!(step,ChainStep::Record{reference:Reference::Message(id)} if id.to_string()=="claude-code:trace-c2")));
         assert!(
             matches!(reader.record_chain(&Reference::parse("block:claude-code:trace-p1#99").unwrap()),Err(StoreError::ReferenceUnavailable{reason,..}) if reason=="the original block is unavailable")
         );

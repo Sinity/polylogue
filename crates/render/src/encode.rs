@@ -641,7 +641,7 @@ pub(crate) fn trace_lines(card: &polylogue_model::read::TraceCard) -> Vec<String
     for step in &card.chain {
         lines.push(match step {
             ChainStep::Record{reference}=>format!("Record: {reference}"),
-            ChainStep::InputRecord{input,chain,start,end,route,shown}=>format!("Input: {input}, chain {chain}, bytes {start}..{end}, route {}{}",route.name(),if *shown {" (shown source)"}else{" (additional source)"}),
+            ChainStep::InputRecord{input,chain,start,end,route,shown}=>format!("Input: {input}, chain {chain}, bytes {start}..{end}, route {}{}",route.as_str(),if *shown {" (shown source)"}else{" (additional source)"}),
             ChainStep::StoredBytes{blob,size,offset,length,blob_offset}=>format!("Stored bytes: b3:{blob}, {size} bytes; chain offset {offset}, length {length}, blob offset {blob_offset}"),
             ChainStep::ReaderVersion{reading_version,status,parsed_upto}=>format!("Reader checkpoint: {reading_version}, {status}, parsed through byte {parsed_upto}"),
             ChainStep::Unavailable{reason}=>format!("Unavailable: {reason}"),

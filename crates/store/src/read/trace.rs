@@ -118,8 +118,8 @@ impl Reader<'_> {
                     "record source byte end precedes its start",
                 ));
             }
-            let route =
-                Route::parse(&route).ok_or_else(|| StoreError::invalid("unknown source route"))?;
+            let route = Route::from_name(&route)
+                .ok_or_else(|| StoreError::invalid("unknown source route"))?;
             card.chain.push(ChainStep::InputRecord {
                 input: input.clone(),
                 chain,
