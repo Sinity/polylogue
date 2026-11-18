@@ -1028,8 +1028,12 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
     phase("built on Sinex");
     {
         let (archive, _lock) = Archive::open_primary(&example.root, &running.config.store).unwrap();
+        // The provider files have already been captured. This phase drains two
+        // explicit writes, so do not publish a new scan observation each turn.
+        let mut config = example.config();
+        config.reads_sources = false;
         let mut engine = Engine::on_sinex(
-            example.config(),
+            config,
             archive.clone(),
             sinex.clone(),
             polylogue_testkit::stopped_attempt(),
