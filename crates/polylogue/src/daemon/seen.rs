@@ -7,6 +7,10 @@ use polylogue_model::{
 use polylogue_reading::operation::Invocation;
 use polylogue_store::{Reader, writer::Queued};
 
+#[expect(
+    dead_code,
+    reason = "Reading completion will submit display acknowledgements"
+)]
 pub fn record(daemon: &Daemon, invocation: &Invocation, marks: Vec<SeenMark>) {
     if marks.is_empty() {
         return;
@@ -27,6 +31,10 @@ pub fn record(daemon: &Daemon, invocation: &Invocation, marks: Vec<SeenMark>) {
     }
 }
 
+#[expect(
+    dead_code,
+    reason = "Reading continuation will consult the last display acknowledgement"
+)]
 pub fn mark_of(
     reader: &Reader<'_>,
     author: &str,

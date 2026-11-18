@@ -241,9 +241,9 @@ fn sinex_local_reference_correction_reaches_selection_errors() {
         },
     );
     assert!(matches!(
-        filter(&format!("{} where key:opaque", Unit::Assertions.name())).unwrap(),
+        filter(&format!("{} where key:opaque", Unit::Annotations.name())).unwrap(),
         Filter::Field(FieldTest {
-            field: FieldId::AssertionsKey,
+            field: FieldId::AnnotationsKey,
             ..
         }),
     ));

@@ -896,7 +896,7 @@ fn failed_step_exits_with_its_code_and_prints_undo() {
         undo = Some(command.to_owned());
         let listed = cli(
             &env,
-            &["--json", "assertions where kind:tag", "--fields", "key"],
+            &["--json", "annotations where kind:tag", "--fields", "key"],
         );
         assert!(listed.status.success(), "{listed:?}");
         let listing = json(&listed);
@@ -908,7 +908,7 @@ fn failed_step_exits_with_its_code_and_prints_undo() {
     }
     let withdrawn = printed_cli(&env, undo.as_deref().unwrap());
     assert!(withdrawn.status.success(), "{withdrawn:?}");
-    let remaining = listing(json(&cli(&env, &["--json", "assertions where kind:tag"])));
+    let remaining = listing(json(&cli(&env, &["--json", "annotations where kind:tag"])));
     assert_eq!(remaining["count"], 0);
     let mut json_words = vec!["--json", "--request-id", "line-prefix-json"];
     json_words.extend_from_slice(&words[2..]);
@@ -1006,7 +1006,7 @@ fn explain_option_runs_nothing() {
     assert!(output.status.success(), "{output:?}");
     assert_eq!(json(&output)["kind"], "explained");
     assert_eq!(
-        listing(json(&cli(&env, &["--json", "assertions where kind:tag"])))["count"],
+        listing(json(&cli(&env, &["--json", "annotations where kind:tag"])))["count"],
         0
     );
 }
@@ -1077,7 +1077,7 @@ fn ordered_read_destinations_receive_their_own_steps() {
     let withdrawn = printed_cli(&env, undo[0]);
     assert!(withdrawn.status.success(), "{withdrawn:?}");
     assert_eq!(
-        listing(json(&cli(&env, &["--json", "assertions where kind:tag"])))["count"],
+        listing(json(&cli(&env, &["--json", "annotations where kind:tag"])))["count"],
         0
     );
 }
@@ -1228,7 +1228,7 @@ fn picker_prefix_suffix_retry_cancellation_and_complete_undo_set() {
         ],
     );
     assert!(explained.status.success(), "{explained:?}");
-    let empty = json(&cli(&env, &["--json", "assertions where kind:tag"]));
+    let empty = json(&cli(&env, &["--json", "annotations where kind:tag"]));
     assert_eq!(empty["reply"]["count"], 0, "{empty}");
     let simple = choose(
         &env,
@@ -1245,7 +1245,7 @@ fn picker_prefix_suffix_retry_cancellation_and_complete_undo_set() {
     assert!(simple.status.success(), "{simple:?}");
     let picked = json(&cli(
         &env,
-        &["--json", "assertions where id:simple-picker-pick-suffix-1"],
+        &["--json", "annotations where id:simple-picker-pick-suffix-1"],
     ));
     assert_eq!(picked["reply"]["count"], 1, "{picked}");
     for (id, count) in [("s1", 1), ("s2", 0)] {
@@ -1253,7 +1253,7 @@ fn picker_prefix_suffix_retry_cancellation_and_complete_undo_set() {
             &env,
             &[
                 "--json",
-                &format!("assertions where kind:note about:session:claude-code:{id}"),
+                &format!("annotations where kind:note about:session:claude-code:{id}"),
             ],
         ));
         assert_eq!(selected["reply"]["count"], count, "{selected}");
@@ -1285,7 +1285,7 @@ fn picker_prefix_suffix_retry_cancellation_and_complete_undo_set() {
         } else {
             assert_eq!(current, undo);
         }
-        let found = json(&cli(&env, &["--json", "assertions where kind:tag"]));
+        let found = json(&cli(&env, &["--json", "annotations where kind:tag"]));
         assert_eq!(found["reply"]["count"], 3, "{found}");
         let chosen = json(&cli(
             &env,
@@ -1301,7 +1301,7 @@ fn picker_prefix_suffix_retry_cancellation_and_complete_undo_set() {
         let output = printed_cli(&env, command);
         assert!(output.status.success(), "{output:?}");
     }
-    let found = json(&cli(&env, &["--json", "assertions where kind:tag"]));
+    let found = json(&cli(&env, &["--json", "annotations where kind:tag"]));
     assert_eq!(found["reply"]["count"], 0, "{found}");
     let cancelled = choose(
         &env,
@@ -1328,7 +1328,7 @@ fn picker_prefix_suffix_retry_cancellation_and_complete_undo_set() {
         1,
         "{stderr}"
     );
-    let found = json(&cli(&env, &["--json", "assertions where kind:tag"]));
+    let found = json(&cli(&env, &["--json", "annotations where kind:tag"]));
     assert_eq!(found["reply"]["count"], 2, "{found}");
     let suffix = json(&cli(&env, &["--json", "sessions where tag:suffix"]));
     assert_eq!(suffix["reply"]["count"], 0, "{suffix}");
