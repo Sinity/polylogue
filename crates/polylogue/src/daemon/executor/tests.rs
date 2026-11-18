@@ -3,6 +3,29 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 const WAIT: Duration = Duration::from_secs(10);
 
+#[test]
+fn a_panicking_job_answers_with_its_panic_and_the_next_job_runs() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let executor = Executor::new(1);
+    let answer: command_surface::Answer<String> = runtime
+        .block_on(executor.run(Class::Ordinary, None, || {
+            std::panic::panic_any("synthetic executor panic".to_owned())
+        }))
+        .unwrap();
+    let failure = answer.failure().unwrap();
+    assert_eq!(failure.code.as_deref(), Some("internal"));
+    assert!(failure.message.contains("synthetic executor panic"));
+    let next = runtime
+        .block_on(executor.run(Class::Ordinary, None, || {
+            command_surface::Answer::ok("next request".to_owned())
+        }))
+        .unwrap();
+    assert_eq!(next.value().map(String::as_str), Some("next request"));
+    assert_eq!(executor.stop(WAIT), 0);
+}
+
 /// Holds a place until `release` is sent.
 fn hold(executor: &Executor, class: Class) -> (Receiver<()>, Sender<()>) {
     let (started, on_start) = channel();

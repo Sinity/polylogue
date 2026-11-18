@@ -1669,6 +1669,7 @@ impl Inner {
         scope: Option<&crate::ReadScopeToken>,
         preparation: Option<&crate::user_writes::PreparationContext>,
     ) -> Result<crate::user_writes::UserReceipt> {
+        crate::fault::check("write.user", &request.id)?;
         scoped::require_current(&self.location, scope)?;
         let prepared_scope = self.preflight_saved(request, preparation, scope)?;
         let scope = scope.or(prepared_scope.as_ref());

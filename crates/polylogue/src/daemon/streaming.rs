@@ -30,16 +30,19 @@ pub(crate) fn start(
     let deadline = limit.deadline();
     let job = move || {
         let mut output = output;
-        let result = limit.scope(|| {
-            limit.check()?;
-            let context = worker.resolve_operation_context(invocation.clone())?;
-            let mut writer = GuardedWriter::new(&mut output, limit.clone(), scope);
-            let result = produce(&worker, &invocation, &context, &mut writer);
-            match writer.failure() {
-                Some(failure) => Err(failure),
-                None => result,
-            }
-        });
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            limit.scope(|| {
+                limit.check()?;
+                let context = worker.resolve_operation_context(invocation.clone())?;
+                let mut writer = GuardedWriter::new(&mut output, limit.clone(), scope);
+                let result = produce(&worker, &invocation, &context, &mut writer);
+                match writer.failure() {
+                    Some(failure) => Err(failure),
+                    None => result,
+                }
+            })
+        }))
+        .unwrap_or_else(|payload| Err(Failure::from(super::executor::Panicked::of(payload))));
         output.finish(result);
     };
     if daemon.executor.submit(class, deadline, job) {

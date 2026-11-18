@@ -104,6 +104,7 @@ fn a_ping_with_no_channel_is_refused_and_recorded() {
     assert_eq!(answer["deliveries"][0]["outcome"], "not_sent");
     assert_eq!(answer["deliveries"][0]["reason"], "session_not_live");
     let delivery = answer["deliveries"][0]["delivery"].as_str().unwrap();
+    ended.wait_for(|status| status["pending_writes"]["delivery_outcomes"] == 0);
     let reader = ended.daemon.reads.reader().unwrap();
     let (row, text) = reader.delivery(delivery).unwrap().unwrap();
     assert_eq!(row.events, ["not_sent"]);
@@ -252,6 +253,7 @@ fn a_hand_off_starts_a_new_session_briefed_from_the_source() {
     assert!(first[0].starts_with(&format!(
         "delivery:{delivery}\nHand-off from claude-code:s1"
     )));
+    d.wait_for(|status| status["pending_writes"]["delivery_outcomes"] == 0);
     let reader = d.daemon.reads.reader().unwrap();
     let (row, _) = reader.delivery(delivery).unwrap().unwrap();
     assert_eq!((row.event.as_str(), row.sender.as_str()), ("pack", "act"));
@@ -496,6 +498,7 @@ fn resume_with_missing_directory_is_refused_by_name() {
                 text: "rebase".into(),
             },
         );
+        d.wait_for(|status| status["pending_writes"]["delivery_outcomes"] == 0);
         let reader = d.daemon.reads.reader().unwrap();
         let rows = reader
             .query(

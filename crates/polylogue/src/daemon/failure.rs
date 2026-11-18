@@ -129,6 +129,21 @@ impl<T> From<Failure> for command_surface::Answer<T> {
     }
 }
 
+impl From<super::executor::Panicked> for Failure {
+    fn from(panic: super::executor::Panicked) -> Self {
+        Self::internal(format!(
+            "a Polylogue bug stopped this request: {}; report it with the request ID",
+            panic.message
+        ))
+    }
+}
+
+impl<T> From<super::executor::Panicked> for command_surface::Answer<T> {
+    fn from(panic: super::executor::Panicked) -> Self {
+        Failure::from(panic).answer()
+    }
+}
+
 impl From<polylogue_reading::Error> for Failure {
     fn from(error: polylogue_reading::Error) -> Self {
         use polylogue_reading::Error;

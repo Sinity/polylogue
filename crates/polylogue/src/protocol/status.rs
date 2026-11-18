@@ -29,6 +29,7 @@ pub struct Answer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index_build: Option<polylogue_store::archive::index_build::IndexBuild>,
     pub totals_error: Option<String>,
+    pub pending_writes: PendingWrites,
     #[serde(flatten)]
     pub loop_status: polylogue_engine::LoopStatus,
     pub signals: Option<Signals>,
@@ -39,6 +40,12 @@ pub struct Answer {
     pub freshness: polylogue_model::freshness::ReadFreshness,
     #[cfg(feature = "sinex")]
     pub primary: Option<Primary>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PendingWrites {
+    pub delivery_outcomes: u64,
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
