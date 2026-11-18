@@ -1,5 +1,4 @@
 //! Parsed events sent to Sinex, and authored records.
-use crate::ConnExt as _;
 use crate::input_rows::InputRows;
 use crate::writer::InputKey;
 use polylogue_model::authored::PreparedRequest;
@@ -392,6 +391,7 @@ pub(crate) fn hidden_messages(
     chain: i64,
     step: &crate::ParseStep,
 ) -> crate::Result<std::collections::BTreeSet<usize>> {
+    use crate::ConnExt as _;
     let mut hidden = std::collections::BTreeSet::new();
     if step.output.messages.is_empty() || step.delivery.is_some() {
         return Ok(hidden);
