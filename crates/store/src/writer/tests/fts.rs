@@ -152,12 +152,18 @@ fn signature(conn: &Connection) -> serde_json::Value {
             );
             hits.push((term, digest(conn, &sql)));
         }
+        let cutoff = digest(
+            conn,
+            &format!(
+                "SELECT rowid,rank FROM {table} WHERE {table} MATCH 'anchor' ORDER BY rank LIMIT 31"
+            ),
+        );
         let count: i64 = conn
             .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
             .unwrap();
         out.insert(
             table.into(),
-            serde_json::json!({"rows":count, "hits_bm25":hits,
+            serde_json::json!({"rows":count, "hits_bm25":hits, "rank_cutoff":cutoff,
             "vocabulary":digest(conn, &format!("SELECT term,doc,cnt FROM {vocab} ORDER BY term")),
             "docsize":digest(conn, &format!("SELECT id,sz FROM {table}_docsize ORDER BY id")),
             "settings":digest(conn, &format!("SELECT k,v FROM {table}_config ORDER BY k"))}),
@@ -205,7 +211,7 @@ fn corruption() -> serde_json::Value {
     let conn = open_write(&w.archive.index_db(), cache::INDEX_WRITER).unwrap();
     let before = parsed(&conn);
     crate::text_rows::replace_group_body(&conn, 1000 + ROWS as i64 - 2, b"\0");
-    let failed = crate::text_rows::build_search_indexes(&conn, |_| Ok(())).is_err();
+    let failed = crate::text_rows::build_search_indexes(&conn).is_err();
     let partial: i64 = conn
         .query_row("SELECT count(*) FROM text_fts", [], |r| r.get(0))
         .unwrap();
@@ -250,9 +256,9 @@ fn stopped() -> serde_json::Value {
     let stop = crate::cancellation::Cancellation::default();
     let stop_seen = stop.clone();
     let commits = Arc::new(AtomicU64::new(0));
-    let postings = Arc::new(AtomicU64::new(0));
+    let documents = Arc::new(AtomicU64::new(0));
     let committed = commits.clone();
-    let posted = postings.clone();
+    let indexed = documents.clone();
     let file = path.clone();
     let run = std::thread::spawn(move || {
         // A small page cache, so the one search transaction spills pages
@@ -260,10 +266,10 @@ fn stopped() -> serde_json::Value {
         let conn = open_write(&file, 8).unwrap();
         // SQLite owns the resolved filename used by the production fault point.
         crate::fault::arm(
-            "search.indexed",
+            "search.before_commit",
             conn.path().unwrap(),
             crate::fault::Action::Hold,
-            24_000,
+            0,
             1,
         );
         conn.commit_hook(Some(move || {
@@ -273,15 +279,18 @@ fn stopped() -> serde_json::Value {
         .unwrap();
         conn.update_hook(Some(
             move |_: rusqlite::hooks::Action, _: &str, table: &str, id: i64| {
-                if (table == "text_fts_data" || table == "output_fts_data") && id > 10 {
-                    posted.fetch_add(1, Ordering::Relaxed);
+                if matches!(table, "text_fts_docsize" | "output_fts_docsize") && id > 10 {
+                    indexed.fetch_add(1, Ordering::Relaxed);
                 }
             },
         ))
         .unwrap();
-        conn.progress_handler(1000, Some(move || stop_seen.is_cancelled()))
+        let progress = stop_seen.clone();
+        conn.progress_handler(1000, Some(move || progress.is_cancelled()))
             .unwrap();
-        let result = crate::text_rows::build_search_indexes(&conn, |_| Ok(()));
+        let result = crate::cancellation::under(&stop_seen, || {
+            crate::text_rows::build_search_indexes(&conn)
+        });
         conn.progress_handler(0, None::<fn() -> bool>).unwrap();
         result.map_err(|e| e.to_string())
     });
@@ -296,9 +305,9 @@ fn stopped() -> serde_json::Value {
             crate::fault::release();
             let result = run.join().unwrap();
             panic!(
-                "deferred search did not reach its stop boundary: result={result:?}, commits={}, postings={}, wal_bytes={}",
+                "deferred search did not reach its stop boundary: result={result:?}, commits={}, documents={}, wal_bytes={}",
                 commits.load(Ordering::Relaxed),
-                postings.load(Ordering::Relaxed),
+                documents.load(Ordering::Relaxed),
                 wal_bytes(&path)
             );
         }
@@ -306,7 +315,7 @@ fn stopped() -> serde_json::Value {
     }
     let wal_at_stop = wal_bytes(&path);
     let commits_at_stop = commits.load(Ordering::Relaxed);
-    let postings_at_stop = postings.load(Ordering::Relaxed);
+    let documents_at_stop = documents.load(Ordering::Relaxed);
     let not_ready_at_stop = w.archive.index_build().is_some();
     let started = Instant::now();
     stop.cancel();
@@ -328,7 +337,7 @@ fn stopped() -> serde_json::Value {
     drop(conn);
     drop(w);
     serde_json::json!({"interrupted":result.is_err(),"wal_at_stop":wal_at_stop,"stop_seconds":stop_seconds,
-        "commits_at_stop":commits_at_stop,"postings_at_stop":postings_at_stop,"not_ready_at_stop":not_ready_at_stop,
+        "commits_at_stop":commits_at_stop,"documents_at_stop":documents_at_stop,"not_ready_at_stop":not_ready_at_stop,
         "partial_fts_rows":partial,"parsed_preserved":preserved,
         "reopen_ok":resumed.is_ok(),"reopen_result":resumed,"ready":ready,"normal_pending_exact":recovered==pending_signature(TEXTS)})
 }
@@ -346,6 +355,7 @@ fn deferred_search_replay_matches_live_ranking_after_interruption() {
     // (docs/architecture.md, Pipeline): nothing of it has committed when the
     // stop arrives, and the stop leaves no partial index behind.
     assert_eq!(stopped["commits_at_stop"], 0);
+    assert!(stopped["documents_at_stop"].as_u64().unwrap() > 0);
     assert_eq!(stopped["partial_fts_rows"], 0);
     assert_eq!(stopped["not_ready_at_stop"], true);
     assert_eq!(stopped["parsed_preserved"], true);

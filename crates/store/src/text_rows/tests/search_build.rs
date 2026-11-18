@@ -1,4 +1,4 @@
-//! The final search copy keeps the same term frequencies as incremental writes.
+//! A first build has the same ranked search as incremental writes.
 use crate::archive::{cache, open_write};
 use crate::text_rows::{build_search_indexes, index_pending, insert_alone};
 use rusqlite::Connection;
@@ -84,7 +84,7 @@ fn built_search_vocabulary_matches_incremental_writes() {
     assert_eq!(visited, expected);
     index_pending(&incremental, || ()).unwrap();
     assert!(vocabulary(&built, "fts_vocab_output").is_empty());
-    build_search_indexes(&built, |_| Ok(())).unwrap();
+    build_search_indexes(&built).unwrap();
     for table in ["fts_vocab_text", "fts_vocab_output"] {
         assert_eq!(
             vocabulary(&built, table),
@@ -141,7 +141,7 @@ fn built_search_vocabulary_matches_incremental_writes() {
 }
 
 #[test]
-fn failed_search_copy_preserves_both_tables_before_a_successful_retry() {
+fn failed_search_rebuild_preserves_both_tables_and_reader_snapshots() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("search.db");
     let conn = open_write(&path, cache::SETUP).unwrap();
@@ -166,13 +166,13 @@ fn failed_search_copy_preserves_both_tables_before_a_successful_retry() {
         vocabulary(&conn, "fts_vocab_output"),
     ];
     crate::fault::arm(
-        "search.copied_table",
+        "search.before_commit",
         conn.path().unwrap(),
         crate::fault::Action::Fail,
         0,
         1,
     );
-    let result = build_search_indexes(&conn, |_| Ok(()));
+    let result = build_search_indexes(&conn);
     crate::fault::clear();
     assert!(result.is_err());
     let reopened = crate::archive::open_read(&path).unwrap();
@@ -180,7 +180,12 @@ fn failed_search_copy_preserves_both_tables_before_a_successful_retry() {
         assert_eq!(vocabulary(reader, "fts_vocab_text"), before[0]);
         assert_eq!(vocabulary(reader, "fts_vocab_output"), before[1]);
     }
-    build_search_indexes(&conn, |_| Ok(())).unwrap();
+    reopened.execute_batch("BEGIN").unwrap();
+    assert_eq!(vocabulary(&reopened, "fts_vocab_text"), before[0]);
+    build_search_indexes(&conn).unwrap();
+    assert_eq!(vocabulary(&reopened, "fts_vocab_text"), before[0]);
+    assert_eq!(vocabulary(&reopened, "fts_vocab_output"), before[1]);
+    reopened.execute_batch("COMMIT").unwrap();
     let expected = vec![
         ("amber".into(), 1, 1),
         ("birch".into(), 1, 1),
