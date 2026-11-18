@@ -536,7 +536,7 @@ pub(crate) fn stored_columns(conn: &Connection, session_pk: i64) -> Result<Store
 pub(crate) fn refresh(conn: &Connection, changes: &ChangeSummary) -> Result<u64> {
     let mut read = 0;
     let mut exists = conn.prepare_cached("SELECT EXISTS(SELECT 1 FROM session WHERE pk = ?1)")?;
-    for (session_pk, change) in changes.sessions(conn)? {
+    for (session_pk, change) in changes.item_sessions(conn)? {
         if exists.query_row([session_pk], |row| row.get::<_, bool>(0))? {
             read += refresh_session(conn, session_pk, &change, changes)?;
         }

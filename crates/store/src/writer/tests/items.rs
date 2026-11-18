@@ -954,6 +954,93 @@ fn long_session_append_visits_only_suffix() {
 }
 
 #[test]
+fn settling_an_old_call_does_not_revisit_its_session_items() {
+    for history in [64, 768u64] {
+        let w = test_archive();
+        let mut call = text_message("early-call", "s", Role::Assistant, "", None);
+        call.at = Timestamp::from_unix_ms(1_000);
+        call.blocks = vec![Block::ToolCall {
+            call_id: Some("original-call".into()),
+            tool: Some("exec_command".into()),
+            action: polylogue_model::ToolAction::Shell,
+            input: Json::Null,
+            written_text: None,
+            command: Some("sleep 1".into()),
+            path: None,
+            run_by_script: false,
+        }];
+        let rows = std::iter::once(row(0, call.clone()))
+            .chain((0..history).map(|n| {
+                let mut message = message(&format!("previous-{n}"), Role::Assistant, "work");
+                message.at = Timestamp::from_unix_ms(2_000 + n as i64 * 10);
+                row(1 + n * 96 / history, message)
+            }))
+            .collect();
+        w.store_reading(
+            batch("i1", Route::Live, 0, rows, &["s"]),
+            Some(&SOURCE_RECORD),
+        )
+        .unwrap();
+        let report = w.writer.flush().unwrap();
+        assert!(report.errors.is_empty(), "{report:?}");
+        let before = stored(&w, "s");
+
+        let settled = polylogue_model::batch::BackgroundUpdate {
+            result_at: Timestamp::from_unix_ms(99_000),
+            result_at_evidence: Default::default(),
+            reported_duration_ms: Some(25),
+            session: sid("s"),
+            task_id: "synthetic-process".into(),
+            call_id: Some("original-call".into()),
+            outcome: ToolOutcome::Error {
+                reason: Some(ErrorReason::ExitCode(1)),
+            },
+            output_file: None,
+        };
+        let mut next = message("next", Role::User, "new question");
+        next.at = Timestamp::from_unix_ms(100_000);
+        let mut append = batch("i1", Route::Live, 100, vec![row(110, next)], &["s"]);
+        append.parse[0].output.background.push(settled.clone());
+        w.store_reading(append, Some(&SOURCE_RECORD)).unwrap();
+        let report = w.writer.flush().unwrap();
+        assert!(report.errors.is_empty(), "{report:?}");
+        assert_eq!(report.item_units_read, 2, "{history}: {report:?}");
+        let after = stored(&w, "s");
+        assert_eq!(after.entries[..before.entries.len()], before.entries[..]);
+        assert_eq!(after.append_seq, before.append_seq + 1);
+        assert_eq!(after.rewrite_version, before.rewrite_version);
+        assert_matches_rows(&w, "s");
+        let pool = ReadPool::open(&w.archive).unwrap();
+        let reader = pool.reader().unwrap();
+        let facts: (String, i64, i64, i64, i64) = reader
+            .conn()
+            .unwrap()
+            .query_row(
+                "SELECT t.outcome,t.exit_code,t.result_at,t.reported_duration_ms,s.error_count
+                 FROM tool_call t JOIN session s ON s.pk=t.session_pk WHERE t.call_id='original-call'",
+                [],
+                |row| <(_, _, _, _, _)>::try_from(row),
+            )
+            .unwrap();
+        assert_eq!(facts, ("error".into(), 1, 99_000, 25, 1));
+        drop(reader);
+
+        call.stop_reason = Some("end_turn".into());
+        call.blocks.push(Block::Text {
+            text: "changed call message".into(),
+        });
+        let mut edit = batch("i1", Route::Live, 200, vec![row(0, call)], &["s"]);
+        edit.parse[0].output.background.push(settled);
+        w.store_reading(edit, Some(&SOURCE_RECORD)).unwrap();
+        let report = w.writer.flush().unwrap();
+        assert!(report.errors.is_empty(), "{report:?}");
+        assert_eq!(report.item_units_read, history + 2, "{report:?}");
+        assert!(stored(&w, "s").rewrite_version > after.rewrite_version);
+        assert_matches_rows(&w, "s");
+    }
+}
+
+#[test]
 fn a_late_hook_line_is_placed_by_its_time_from_the_suffix() {
     let w = test_archive();
     let rows = (0..20u64)

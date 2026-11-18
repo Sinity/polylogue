@@ -100,13 +100,6 @@ impl ChangeSummary {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for message in messages {
             self.record_message(conn, message)?;
-            // Only the call's outcome/counts changed; retain its selected
-            // content and any counts installed in this transaction.
-            self.changed
-                .borrow_mut()
-                .items
-                .entry(message)
-                .or_insert(MessageItems::Metadata);
         }
         Ok(())
     }

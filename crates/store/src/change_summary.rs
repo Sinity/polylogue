@@ -69,6 +69,7 @@ struct Changed {
 }
 
 enum MessageItems {
+    Content,
     Metadata,
     Prepared(Vec<polylogue_model::read::IndexEntry>),
 }
@@ -113,8 +114,7 @@ impl ChangeSummary {
 
     pub(crate) fn reuses_items(&self, pk: i64) -> bool {
         let changed = self.changed.borrow();
-        !changed.messages.contains_key(&pk)
-            || matches!(changed.items.get(&pk), Some(MessageItems::Metadata))
+        matches!(changed.items.get(&pk), None | Some(MessageItems::Metadata))
     }
 
     /// Starts the summary of a transaction on `conn`, which from now on
@@ -130,7 +130,10 @@ impl ChangeSummary {
     /// Records a message before its row changes or is inserted.
     pub(crate) fn message(&self, conn: &Connection, pk: i64) -> Result<()> {
         self.record_message(conn, pk)?;
-        self.changed.borrow_mut().items.remove(&pk);
+        self.changed
+            .borrow_mut()
+            .items
+            .insert(pk, MessageItems::Content);
         Ok(())
     }
 
@@ -189,14 +192,12 @@ impl ChangeSummary {
     }
 
     pub(crate) fn new_message(&self, pk: i64) {
-        self.changed
-            .borrow_mut()
-            .messages
-            .entry(pk)
-            .or_insert(MessageChange {
-                before: None,
-                installed: None,
-            });
+        let mut changed = self.changed.borrow_mut();
+        changed.messages.entry(pk).or_insert(MessageChange {
+            before: None,
+            installed: None,
+        });
+        changed.items.entry(pk).or_insert(MessageItems::Content);
     }
 
     /// Records an event before its row changes or is inserted.
@@ -316,11 +317,28 @@ impl ChangeSummary {
     /// The changes by session, read after the rows changed. A message or
     /// event that moved between sessions belongs to both.
     pub(crate) fn sessions(&self, conn: &Connection) -> Result<BTreeMap<i64, SessionChange>> {
+        self.changed_sessions(conn, |_| true)
+    }
+
+    /// Tool outcomes contribute to counts and measures. They leave the
+    /// selected content and placement that the item index stores alone.
+    pub(crate) fn item_sessions(&self, conn: &Connection) -> Result<BTreeMap<i64, SessionChange>> {
+        self.changed_sessions(conn, |items| items.is_some())
+    }
+
+    fn changed_sessions(
+        &self,
+        conn: &Connection,
+        includes: impl Fn(Option<&MessageItems>) -> bool,
+    ) -> Result<BTreeMap<i64, SessionChange>> {
         let changed = self.changed.borrow();
         let mut out: BTreeMap<i64, SessionChange> = BTreeMap::new();
         let mut now =
             conn.prepare_cached("SELECT session_pk, parent_id FROM message WHERE pk = ?1")?;
         for (&pk, change) in &changed.messages {
+            if !includes(changed.items.get(&pk)) {
+                continue;
+            }
             let before = &change.before;
             let after: Option<(i64, Option<String>)> = match &change.installed {
                 Some(installed) => Some((installed.session, installed.parent.clone())),
