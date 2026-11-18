@@ -52,7 +52,7 @@ $ polylogue 'tool_calls where outcome:error command~"cargo test" since:7d' save 
 saved   query:failing (revision 1): runs again each time you use it
 kept    result:01JD7Q4M (34 rows, 2026-11-16T14:02:00Z), now result:failing
 watch   notices when a row starts matching query:failing
-undo    polylogue 'assertion:01JD7Q4M.1@01JD7Q4M.1 OR assertion:01JD7Q4M.2@01JD7Q4M.2' withdraw --all --request-id 01JD7Q4M-undo
+undo    polylogue 'annotation:01JD7Q4M.1@01JD7Q4M.1 OR annotation:01JD7Q4M.2@01JD7Q4M.2' withdraw --all --request-id 01JD7Q4M-undo
 ```
 
 Over MCP the same step is `polylogue_write {"arguments": {"selection": "tool_calls where outcome:error since:7d", "steps": [{"verb": "save", "name": "failing", "watch": true}]}}`.
@@ -79,7 +79,7 @@ Inside a saved query's definition, `result:NAME` is fixed at save time to the `r
 
 **Re-saving `NAME`.** A different question writes a new revision (earlier ones stay readable as `query:NAME@N`); the same question writes no revision. Either way a new kept result is written and `result:NAME` moves to it; earlier kept results stay listed, since nothing is deleted. A watch on the name stays on, follows the new revision, and takes the new kept result as its baseline, so a re-save never floods notices.
 
-**Withdrawing** the saved query (`polylogue 'annotations where kind:saved_query key:failing' withdraw`) makes the name unknown again, or restores the shipped query of that name, and withdraws its watch with it. Kept results are immutable records and stay readable by ID.
+**Withdrawing** the saved query (`polylogue query:failing withdraw`) makes the name unknown again, or restores the shipped query of that name, and withdraws its watch with it. This selects the authored family rather than its result rows ([annotations.md](annotations.md#withdraw)). Kept results are immutable records and stay readable by ID.
 
 **Shipped names.** A saved query of your own with a shipped name takes precedence; withdrawing yours restores the shipped one.
 

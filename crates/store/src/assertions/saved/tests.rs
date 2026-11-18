@@ -455,3 +455,78 @@ fn numeric_saved_revisions_ignore_withdrawn_siblings_but_keep_active_redo_forks(
         error => panic!("two active redo heads must remain ambiguous: {error}"),
     }
 }
+
+#[test]
+fn saved_query_target_uses_current_names_and_refuses_conflicting_heads() {
+    let directory = tempfile::tempdir().unwrap();
+    let fixture = crate::fixture::Fixture::new(directory.path()).unwrap();
+    let conn = crate::archive::open_archive_writer(&fixture.archive).unwrap();
+    let first = fact("first", "original", 1, None);
+    super::super::apply(&conn, &[first], 1).unwrap();
+    let pool = crate::ReadPool::open(&fixture.archive).unwrap();
+    let root = r("assertion:family");
+    assert_eq!(
+        pool.reader()
+            .unwrap()
+            .saved_query_target("original")
+            .unwrap(),
+        Some(root.clone())
+    );
+    let renamed = fact("renamed", "renamed", 2, Some("assertion:family@first"));
+    super::super::apply(&conn, &[renamed], 2).unwrap();
+    assert_eq!(
+        pool.reader()
+            .unwrap()
+            .saved_query_target("original")
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        pool.reader()
+            .unwrap()
+            .saved_query_target("renamed")
+            .unwrap(),
+        Some(root.clone())
+    );
+    let left = fact("left", "renamed", 3, Some("assertion:family@renamed"));
+    let right = fact("right", "renamed", 4, Some("assertion:family@renamed"));
+    super::super::apply(&conn, &[left, right], 3).unwrap();
+    let error = pool
+        .reader()
+        .unwrap()
+        .saved_query_target("renamed")
+        .unwrap_err();
+    let StoreError::Ambiguous { candidates, .. } = error else {
+        panic!("expected conflicting current definitions")
+    };
+    assert_eq!(
+        candidates
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>(),
+        [
+            "annotation:family@left".to_owned(),
+            "annotation:family@right".to_owned()
+        ]
+        .into_iter()
+        .collect()
+    );
+    let mut withdrawal = fact("withdraw-family", "unused", 5, None);
+    withdrawal.root = "withdraw-family".into();
+    withdrawal.kind = AssertionKind::Withdrawal;
+    withdrawal.key = None;
+    withdrawal.value = None;
+    withdrawal.links = vec![AssertionLink {
+        role: LinkRole::Withdraws,
+        reference: root,
+        seen_hash: None,
+        quote: None,
+    }];
+    super::super::apply(&conn, &[withdrawal], 4).unwrap();
+    assert_eq!(
+        pool.reader()
+            .unwrap()
+            .saved_query_target("renamed")
+            .unwrap(),
+        None
+    );
+}

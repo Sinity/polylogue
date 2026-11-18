@@ -1,3 +1,5 @@
+mod withdrawals;
+
 use super::*;
 use polylogue_testkit::{ClaudeHome, claude_user as user};
 
@@ -275,6 +277,40 @@ fn pending_requests(runtime: &Runtime) -> Vec<polylogue_model::authored::Prepare
     requests
 }
 
+fn confirm_authored(
+    home: &ClaudeHome,
+    connection: std::sync::Arc<polylogue_sinex::Sinex>,
+    records: Vec<(u64, &str, polylogue_model::authored::PreparedRequest)>,
+) {
+    use polylogue_store::primary::{Confirmed, ConfirmedChange, Product, ReplayControl};
+    let (archive, _lock) =
+        Archive::open_primary(&home.root, &home.dir.path().join("sinex-store")).unwrap();
+    let writer = polylogue_store::writer::Writer::start_on_sinex(&archive, connection).unwrap();
+    for (position, event, record) in records {
+        writer
+            .apply_confirmed(vec![
+                Confirmed {
+                    sinex_context: None,
+                    position,
+                    output_index: 0,
+                    event: event.into(),
+                    change: ConfirmedChange::Live(Box::new(Product::Request(record))),
+                },
+                Confirmed {
+                    sinex_context: None,
+                    position,
+                    output_index: 0,
+                    event: String::new(),
+                    change: ConfirmedChange::Control(Box::new(ReplayControl::Completion {
+                        position,
+                        delivery: None,
+                    })),
+                },
+            ])
+            .unwrap();
+    }
+}
+
 #[test]
 fn offline_setting_and_chat_writes_keep_own_results() {
     let home = ClaudeHome::new();
@@ -343,33 +379,11 @@ fn offline_setting_and_chat_writes_keep_own_results() {
         .unwrap();
     assert!(!prepared.outcome.pending);
     drop(runtime);
-    {
-        use polylogue_store::primary::{Confirmed, ConfirmedChange, Product, ReplayControl};
-        let (archive, _lock) =
-            Archive::open_primary(&home.root, &home.dir.path().join("sinex-store")).unwrap();
-        let writer = polylogue_store::writer::Writer::start_on_sinex(&archive, connection).unwrap();
-        writer
-            .apply_confirmed(vec![
-                Confirmed {
-                    sinex_context: None,
-                    position: 1,
-                    output_index: 0,
-                    event: "synthetic-confirmed-browser-policy".into(),
-                    change: ConfirmedChange::Live(Box::new(Product::Request(prepared))),
-                },
-                Confirmed {
-                    sinex_context: None,
-                    position: 1,
-                    output_index: 0,
-                    event: String::new(),
-                    change: ConfirmedChange::Control(Box::new(ReplayControl::Completion {
-                        position: 1,
-                        delivery: None,
-                    })),
-                },
-            ])
-            .unwrap();
-    }
+    confirm_authored(
+        &home,
+        connection,
+        vec![(1, "synthetic-confirmed-browser-policy", prepared)],
+    );
     let runtime = launch(primary(&home)).unwrap();
     assert_eq!(
         runtime
@@ -442,7 +456,6 @@ fn an_offline_tag_retry_keeps_its_pending_intent_when_another_tag_is_confirmed()
         assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink},
         user::UserWrite,
     };
-    use polylogue_store::primary::{Confirmed, ConfirmedChange, Product, ReplayControl};
     let home = ClaudeHome::new();
     let runtime = launch(primary(&home)).unwrap();
     let arguments = serde_json::json!({"references":["session:codex:tag-target"], "steps":[{"verb":"tag","name":"status:ready"}]});
@@ -546,32 +559,11 @@ fn an_offline_tag_retry_keeps_its_pending_intent_when_another_tag_is_confirmed()
         .unwrap();
     assert_eq!(records.len(), 1);
     let prepared = records.remove(0);
-    {
-        let (archive, _lock) =
-            Archive::open_primary(&home.root, &home.dir.path().join("sinex-store")).unwrap();
-        let writer = polylogue_store::writer::Writer::start_on_sinex(&archive, connection).unwrap();
-        writer
-            .apply_confirmed(vec![
-                Confirmed {
-                    sinex_context: None,
-                    position: 1,
-                    output_index: 0,
-                    event: "synthetic-confirmed-tag".into(),
-                    change: ConfirmedChange::Live(Box::new(Product::Request(prepared))),
-                },
-                Confirmed {
-                    sinex_context: None,
-                    position: 1,
-                    output_index: 0,
-                    event: String::new(),
-                    change: ConfirmedChange::Control(Box::new(ReplayControl::Completion {
-                        position: 1,
-                        delivery: None,
-                    })),
-                },
-            ])
-            .unwrap();
-    }
+    confirm_authored(
+        &home,
+        connection,
+        vec![(1, "synthetic-confirmed-tag", prepared)],
+    );
     let runtime = launch(primary(&home)).unwrap();
     {
         let reader = runtime.daemon.reads.reader().unwrap();

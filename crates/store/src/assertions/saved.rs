@@ -160,6 +160,31 @@ pub(crate) fn named_current(
         .collect()
 }
 
+/// One current named record; conflicting heads retain their exact candidates.
+pub(crate) fn single_named_current(
+    conn: &Connection,
+    kind: AssertionKind,
+    name: &str,
+) -> Result<Option<Assertion>> {
+    let rows = named_current(conn, kind, name)?;
+    if rows.len() > 1 {
+        return Err(StoreError::Ambiguous {
+            reference: format!("{}:{name}", kind.as_str()),
+            candidates: rows
+                .iter()
+                .map(|row| {
+                    Reference::Assertion(RevisionReference {
+                        root: row.fact.root.clone(),
+                        revision: Some(row.fact.id.clone()),
+                    })
+                    .to_string()
+                })
+                .collect(),
+        });
+    }
+    Ok(rows.into_iter().next())
+}
+
 fn revision_parents(row: &Assertion) -> Result<Vec<&RevisionReference>> {
     row.fact
         .links
@@ -365,6 +390,19 @@ pub(crate) fn named_revision(
 }
 
 impl crate::Reader<'_> {
+    /// The current authored saved-query family, without running its question.
+    pub fn saved_query_target(&self, name: &str) -> Result<Option<Reference>> {
+        let target =
+            single_named_current(self.conn()?, AssertionKind::SavedQuery, name)?.map(|row| {
+                Reference::Assertion(RevisionReference {
+                    root: row.fact.root,
+                    revision: None,
+                })
+            });
+        self.check()?;
+        Ok(target)
+    }
+
     /// Current unambiguous names for these dependent question identities.
     /// The authored text keeps the names a re-save must resolve again.
     pub fn dependent_saved_queries(

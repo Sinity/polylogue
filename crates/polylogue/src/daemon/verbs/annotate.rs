@@ -351,7 +351,7 @@ impl Verb for Withdraw {
         selection: &Selection,
         call: &StepCall<'_>,
     ) -> Result<StepDone, Failure> {
-        let targets = withdrawn(selection)?;
+        let targets = withdrawn(&step, selection)?;
         if targets.is_empty() {
             return Err(Failure::bad_request("targets must not be empty"));
         }
@@ -364,24 +364,46 @@ impl Verb for Withdraw {
             None,
         )
     }
-    fn would(_: &WithdrawStep, selection: &Selection, _: &StepCall<'_>) -> Result<String, Failure> {
-        withdrawn(selection)?;
+    fn would(
+        step: &WithdrawStep,
+        selection: &Selection,
+        _: &StepCall<'_>,
+    ) -> Result<String, Failure> {
+        withdrawn(step, selection)?;
         Ok(format!("would withdraw {}", selection.described()))
     }
 }
 
 /// The annotations and alternates a withdrawal names.
-fn withdrawn(selection: &Selection) -> Result<Vec<Reference>, Failure> {
-    selection
-        .references()?
-        .iter()
-        .map(|reference| match reference {
-            Reference::Assertion(_) | Reference::Variant { .. } => Ok(reference.clone()),
-            other => Err(Failure::bad_request(format!(
-                "withdraw takes annotations back; {other} is not one"
-            ))),
-        })
-        .collect()
+fn withdrawn(step: &WithdrawStep, selection: &Selection) -> Result<Vec<Reference>, Failure> {
+    let references = selection.references()?;
+    if let Some(other) = references.iter().find(|reference| {
+        !matches!(
+            reference,
+            Reference::Assertion(_) | Reference::Variant { .. }
+        )
+    }) {
+        let address = other.to_string();
+        let query = format!(
+            "annotations where about:{}",
+            polylogue_query::quoted(&address)
+        );
+        let request = command_surface::RunnableRequest::new(
+            "rows",
+            serde_json::json!({"selection":query, "all":true,
+                "steps":[crate::protocol::line::Step::Withdraw(step.clone())]}),
+            polylogue_reading::operation::new_run_id().to_string(),
+        );
+        let line = crate::commands::declarations()
+            .cli_command(&request)
+            .map_err(Failure::from)?;
+        return Err(Failure::bad_request(format!(
+            "withdraw needs annotations or alternates; {} is one of {} selected rows. To withdraw annotations about that row, use {}",
+            polylogue_model::terminal::escape(&address), references.len(),
+            polylogue_model::terminal::escape(&line),
+        )).error.with_suggestion(command_surface::Suggestion::Request(request)).into());
+    }
+    Ok(references.to_vec())
 }
 
 pub(crate) struct Judge;

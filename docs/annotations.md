@@ -234,7 +234,11 @@ A uniform label over a query is one line:
 
 ### withdraw
 
-`withdraw [--reason TEXT]` withdraws each selected annotation (a root withdraws its family, a revision only itself) or saved query; withdrawing the withdrawal restores. Nothing is deleted. On rows that are not annotations it is refused with the line that selects their annotations (`polylogue 'annotations where about:session:codex:019d0f2a' withdraw`).
+`withdraw [--reason TEXT]` withdraws each selected annotation (a root withdraws its family, a revision only itself), alternate or saved query; withdrawing the withdrawal restores. Nothing is deleted.
+
+An exact `query:NAME` selection in a line containing `withdraw` names the current authored saved-query family, including its watch, rather than the question's result rows. The whole line uses that record selection, and a retry retains its original family even if the name was withdrawn or recreated. Shipped queries without an authored definition cannot be withdrawn. Parameterized, revisioned and pipelined query expressions still select results: `polylogue 'query:selected-notes | sort by id' withdraw --all` withdraws those result annotations while keeping the saved definition.
+
+On rows that are not annotations or alternates, the refusal gives an executable line selecting annotations about the first such row, with the reason preserved (`polylogue 'annotations where about:session:codex:019d0f2a' withdraw --all`). It reports the selected row count; the proposed line addresses that one row.
 
 ### judge
 

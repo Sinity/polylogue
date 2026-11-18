@@ -19,6 +19,7 @@ pub(crate) mod sql;
 pub(crate) use saved::{
     CurrentSavedDefinition, SavedInput, SavedPreparation, SavedResolver, named_current,
     named_revision, saved_definition, saved_family, saved_query_snapshot, saved_revision_number,
+    single_named_current,
 };
 pub(crate) mod imports;
 mod read;
