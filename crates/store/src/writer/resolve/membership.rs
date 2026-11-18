@@ -1011,6 +1011,7 @@ impl<'a> MembershipState<'a> {
         {
             if hidden.contains(&i) {
                 choices.keep_messages.push(false);
+                choices.message_mains.push(false);
                 choices.message_order_times.push(None);
                 continue;
             }
