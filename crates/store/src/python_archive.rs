@@ -1,10 +1,14 @@
 //! Read-only access to Python Polylogue's source catalog. Its stored sessions
-//! become inputs with their source facts and append lineage; every row of
-//! every table is kept verbatim, and none of its repair or derived state
-//! is acted on.
-use crate::{Result, StoreError};
+//! become inputs with their source facts and append lineage. The original
+//! database and its nonempty WAL are kept as bytes. Other catalog rows are
+//! left in those originals.
+use crate::staging::PreparedBytes;
+use crate::{Archive, FileFacts, Result, StoreError};
 use rusqlite::Connection;
-use std::path::Path;
+use std::collections::BTreeSet;
+use std::fs::File;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Input {
@@ -25,30 +29,34 @@ pub struct Input {
     pub previous_revision: Option<String>,
 }
 
-/// Python Polylogue's source catalog: `source.db` beside its `blob/` folder.
+/// The exact catalog files and the session declarations read from them.
 pub struct Catalog {
-    conn: Connection,
-    columns: std::collections::BTreeSet<String>,
-    _copies: Option<tempfile::TempDir>,
+    pub database: PreparedBytes,
+    pub wal: Option<PreparedBytes>,
+    pub inputs: Vec<Input>,
 }
 
 impl Catalog {
-    /// Opens the catalog in `root`, or `None` when `root` has no `source.db`
-    /// and `blob/`. A catalog whose write-ahead log holds frames is copied
-    /// with it into `scratch` and the copy is read.
-    pub fn open(root: &Path, scratch: &Path) -> Result<Option<Self>> {
-        let catalog = root.join("source.db");
-        if !catalog.is_file() || !root.join("blob").is_dir() {
+    /// Reads session declarations and stages the exact catalog of the same
+    /// stable source. SQLite opens a private pair when the WAL has frames.
+    pub fn capture(root: &Path, archive: &Archive) -> Result<Option<Self>> {
+        if !root.join("blob").is_dir() {
             return Ok(None);
         }
+        let Some(mut database) = CatalogFile::open(root.join("source.db"))? else {
+            return Ok(None);
+        };
+        let wal_path = root.join("source.db-wal");
+        let mut wal = CatalogFile::open(wal_path.clone())?;
         let mut copies = None;
-        let conn = crate::older_archive::open_source(&catalog, &mut copies, scratch)?;
+        let conn =
+            crate::older_archive::open_source(&database.path, &mut copies, &archive.staging_dir())?;
         conn.execute_batch("BEGIN")?;
         let columns = crate::older_archive::tables_of(&conn)?
             .remove("raw_sessions")
             .unwrap_or_default()
             .into_iter()
-            .collect::<std::collections::BTreeSet<_>>();
+            .collect::<BTreeSet<_>>();
         if !["raw_id", "origin", "source_path", "blob_hash", "blob_size"]
             .iter()
             .all(|name| columns.contains(*name))
@@ -57,48 +65,29 @@ impl Catalog {
                 "Python Polylogue source.db has no declared raw_sessions catalog".into(),
             ));
         }
+        let inputs = Self::inputs(&conn, &columns)?;
+        let database_bytes = database.prepare(archive)?;
+        let wal_bytes = wal
+            .as_mut()
+            .filter(|file| file.facts.size > 0)
+            .map(|file| file.prepare(archive))
+            .transpose()?;
+        database.verify()?;
+        match wal {
+            Some(file) => file.verify()?,
+            None if CatalogFile::open(wal_path)?.is_some() => return Err(changed()),
+            None => {}
+        }
         Ok(Some(Self {
-            conn,
-            columns,
-            _copies: copies,
+            database: database_bytes,
+            wal: wal_bytes,
+            inputs,
         }))
     }
 
-    /// Writes every row of every table to `out`, one JSON object per line
-    /// (`{"table": …, "row": {column: value}}`), values kept exactly.
-    pub fn write_rows(&self, out: &mut dyn std::io::Write) -> Result<u64> {
-        let mut written = 0;
-        for (table, columns) in crate::older_archive::tables_of(&self.conn)? {
-            let order = (1..=columns.len())
-                .map(|n| n.to_string())
-                .collect::<Vec<_>>()
-                .join(",");
-            let mut statement = self
-                .conn
-                .prepare(&format!("SELECT * FROM \"{table}\" ORDER BY {order}"))?;
-            let mut rows = statement.query([])?;
-            while let Some(row) = rows.next()? {
-                let mut values = serde_json::Map::new();
-                for (index, name) in columns.iter().enumerate() {
-                    values.insert(
-                        name.clone(),
-                        crate::older_archive::json_value(row.get_ref(index)?),
-                    );
-                }
-                serde_json::to_writer(
-                    &mut *out,
-                    &serde_json::json!({"table": table, "row": values}),
-                )?;
-                out.write_all(b"\n")?;
-                written += 1;
-            }
-        }
-        Ok(written)
-    }
-
-    pub fn inputs(&self) -> Result<Vec<Input>> {
+    fn inputs(conn: &Connection, columns: &BTreeSet<String>) -> Result<Vec<Input>> {
         let optional = |name: &str, default: &str| {
-            if self.columns.contains(name) {
+            if columns.contains(name) {
                 name.to_owned()
             } else {
                 default.to_owned()
@@ -114,7 +103,7 @@ impl Catalog {
             optional("source_revision", "NULL"),
             optional("predecessor_source_revision", "NULL")
         );
-        let mut rows = self.conn.prepare(&sql)?;
+        let mut rows = conn.prepare(&sql)?;
         let inputs = rows
             .query_map([], |row| {
                 let bytes: Vec<u8> = row.get(3)?;
@@ -149,4 +138,55 @@ impl Catalog {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(inputs)
     }
+}
+
+struct CatalogFile {
+    path: PathBuf,
+    file: File,
+    facts: FileFacts,
+}
+
+impl CatalogFile {
+    fn open(path: PathBuf) -> Result<Option<Self>> {
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if !metadata.is_file() {
+            return Err(StoreError::invalid(
+                "Python Polylogue catalog files must be regular files",
+            ));
+        }
+        let file = File::open(&path)?;
+        let facts = FileFacts::of(&metadata);
+        if FileFacts::of(&file.metadata()?) != facts {
+            return Err(changed());
+        }
+        Ok(Some(Self { path, file, facts }))
+    }
+
+    fn prepare(&mut self, archive: &Archive) -> Result<PreparedBytes> {
+        let bytes = archive.prepare_bytes(&mut self.file)?;
+        if bytes.len() != self.facts.size {
+            return Err(changed());
+        }
+        Ok(bytes)
+    }
+
+    fn verify(&self) -> Result<()> {
+        if FileFacts::of(&self.file.metadata()?) != self.facts
+            || std::fs::metadata(&self.path)
+                .map(|meta| FileFacts::of(&meta))
+                .ok()
+                != Some(self.facts)
+        {
+            return Err(changed());
+        }
+        Ok(())
+    }
+}
+
+fn changed() -> StoreError {
+    StoreError::invalid("Python Polylogue catalog changed during capture")
 }
