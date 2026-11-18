@@ -178,6 +178,106 @@ fn continued(parent: &str, child: &str) -> String {
 }
 
 #[test]
+fn a_diamond_shows_each_node_once_with_a_cross_link() {
+    use polylogue_model::read::{LineageIssue, ParentIssue};
+
+    let d = test_daemon::start("placeholder");
+    let edges = [("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")];
+    for id in ["a", "b", "c", "d"] {
+        let mut source = polylogue_testkit::claude_user(&format!("question-{id}"), id, id);
+        for (parent, child) in edges {
+            if parent == id {
+                source.push_str(&continued(parent, child));
+            }
+        }
+        std::fs::write(
+            d.home
+                .join(".claude/projects/-p")
+                .join(format!("{id}.jsonl")),
+            source,
+        )
+        .unwrap();
+    }
+    d.wait_for(|status| status["store"]["messages"] == 5);
+    let page = read_target(&d, "session:claude-code:a", 1_000_000, None);
+    let reference = |id| format!("session:claude-code:{id}");
+    assert_eq!(
+        nodes(&page.document.items),
+        ["a", "b", "d", "c"].map(reference)
+    );
+    let actual_edges = page
+        .document
+        .items
+        .iter()
+        .filter_map(|item| match &item.kind {
+            ItemKind::Card { card } => match card.as_ref() {
+                Card::LinkEdge {
+                    from,
+                    to,
+                    cross_link,
+                    ..
+                } => Some((from.clone(), to.clone(), *cross_link)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let expected_edges = [
+        ("a", "b", false),
+        ("b", "d", false),
+        ("a", "c", false),
+        ("c", "d", true),
+    ]
+    .map(|(parent, child, cross)| (reference(parent), reference(child), cross));
+    assert_eq!(actual_edges, expected_edges);
+    for item in &page.document.items {
+        if let ItemKind::Card { card } = &item.kind
+            && let Card::LinkNode { lineage, .. } = card.as_ref()
+        {
+            let lineage = lineage
+                .as_deref()
+                .expect("each stored diamond node carries its lineage");
+            assert!(
+                !matches!(&lineage.issue, Some(LineageIssue::Cycle { .. })),
+                "{lineage:?}"
+            );
+        }
+        assert!(
+            !matches!(
+                &item.kind,
+                ItemKind::LinkIssue {
+                    issue: ParentIssue::Cycle { .. }
+                }
+            ),
+            "{item:?}"
+        );
+    }
+    for format in [
+        polylogue_render::Format::Markdown,
+        polylogue_render::Format::Terminal,
+        polylogue_render::Format::Html,
+    ] {
+        let mut bytes = Vec::new();
+        polylogue_render::encode_document(
+            &page.document,
+            format,
+            polylogue_render::EncodeOptions {
+                commands: Some(crate::commands::declarations().as_ref()),
+                ..Default::default()
+            },
+            &mut bytes,
+        )
+        .unwrap();
+        let output = String::from_utf8(bytes).unwrap();
+        assert_eq!(
+            output.matches("cross-link").count(),
+            1,
+            "{format:?}: {output}"
+        );
+    }
+}
+
+#[test]
 fn cyclic_and_conflicting_families_tile_both_directions_without_a_guessed_root() {
     use polylogue_model::read::LineageIssue;
     struct Case {
