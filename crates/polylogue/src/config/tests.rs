@@ -481,3 +481,15 @@ fn startup_sizes_the_pipeline_within_the_process_allowance() {
         assert_eq!(startup.engine.chunk, 16 << 20);
     }
 }
+
+#[test]
+fn zsh_startup_directory_is_resolved_from_the_captured_environment() {
+    let root = tempfile::tempdir().unwrap();
+    let mut inputs = process(root.path());
+    inputs.environment = EnvSnapshot::from_values([
+        ("HOME".into(), root.path().join("home").into_os_string()),
+        ("ZDOTDIR".into(), "shell-startup".into()),
+    ]);
+    let startup = Startup::load(&inputs, Overrides::default()).unwrap();
+    assert_eq!(startup.zsh_directory, root.path().join("shell-startup"));
+}

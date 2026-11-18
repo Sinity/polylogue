@@ -167,7 +167,14 @@ fn terminal_child() {
         },
     );
     let result = match result {
-        Ok(Choice::Selected(references)) => json!({"choice":references}),
+        Ok(Choice::Selected(references)) => {
+            if case == "print" {
+                for reference in &references {
+                    println!("{reference}");
+                }
+            }
+            json!({"choice":references})
+        }
         Ok(Choice::Cancelled) => json!({"cancelled":true}),
         Err(error) => json!({"error":error.code(),"candidates":error.candidates()}),
     };

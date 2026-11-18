@@ -1084,6 +1084,9 @@ fn ordered_read_destinations_receive_their_own_steps() {
 /// Drive the real binary through a PTY, waiting for a seeded candidate before
 /// choosing. A failed assertion still kills and reaps the owned client.
 fn choose(env: &crate::Fixture, args: &[&str], keys: &[u8]) -> Output {
+    choose_output(env, args, keys, false)
+}
+fn choose_output(env: &crate::Fixture, args: &[&str], keys: &[u8], capture: bool) -> Output {
     use rustix::pty::{OpenptFlags, grantpt, ioctl_tiocgptpeer, openpt, unlockpt};
     use std::fs::File;
     use std::sync::mpsc;
@@ -1110,12 +1113,27 @@ fn choose(env: &crate::Fixture, args: &[&str], keys: &[u8]) -> Output {
             .success()
     );
     let mut master = File::from(master);
-    let mut command = env.command();
+    let mut command = if capture {
+        let mut command = Command::new("setsid");
+        env.environment(&mut command);
+        command.args(["--ctty", "--wait", crate::BIN]);
+        command
+    } else {
+        env.command()
+    };
     let child = command
         .args(args)
         .stdin(slave.try_clone().unwrap())
-        .stdout(slave.try_clone().unwrap())
-        .stderr(Stdio::piped())
+        .stdout(if capture {
+            Stdio::piped()
+        } else {
+            Stdio::from(slave.try_clone().unwrap())
+        })
+        .stderr(if capture {
+            Stdio::from(slave.try_clone().unwrap())
+        } else {
+            Stdio::piped()
+        })
         .spawn()
         .unwrap();
     let mut client = Client(Some(child));
@@ -1164,8 +1182,31 @@ fn choose(env: &crate::Fixture, args: &[&str], keys: &[u8]) -> Output {
     }
     let mut output = client.0.take().unwrap().wait_with_output().unwrap();
     drop(master);
-    output.stdout = output_reader.join().unwrap();
+    let terminal = output_reader.join().unwrap();
+    if capture {
+        output.stderr = terminal;
+    } else {
+        output.stdout = terminal;
+    }
     output
+}
+
+fn plain_terminal(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let mut characters = text.chars();
+    let mut result = String::new();
+    while let Some(character) = characters.next() {
+        if character == '\x1b' && characters.next() == Some('[') {
+            for character in characters.by_ref() {
+                if ('@'..='~').contains(&character) {
+                    break;
+                }
+            }
+        } else if character != '\r' {
+            result.push(character);
+        }
+    }
+    result
 }
 
 pub(super) fn printed_cli(env: &crate::Fixture, command: &str) -> Output {
@@ -1214,6 +1255,19 @@ fn picker_prefix_suffix_retry_cancellation_and_complete_undo_set() {
         );
         assert!(out.status.success(), "{out:?}");
     }
+    let chosen = choose_output(&env, &["sessions | sort by id", "pick"], b"\r", true);
+    assert!(chosen.status.success(), "{chosen:?}");
+    assert_eq!(chosen.stdout, b"session:claude-code:s1\n");
+    assert!(String::from_utf8_lossy(&chosen.stderr).contains("Alpha picker candidate"));
+    let direct = choose(&env, &["sessions | sort by id", "pick"], b"\r");
+    assert!(direct.status.success(), "{direct:?}");
+    assert_eq!(
+        plain_terminal(&direct.stdout)
+            .lines()
+            .filter(|line| *line == "session:claude-code:s1")
+            .count(),
+        1
+    );
     let explained = cli(
         &env,
         &[

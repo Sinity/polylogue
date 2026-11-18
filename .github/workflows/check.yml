@@ -53,7 +53,7 @@ jobs:
           cache-dependency-path: extension/package-lock.json
       - name: Browser extension checks and real archives
         run: |
-          sudo apt-get install --yes zip
+          sudo apt-get install --yes zip zsh fish
           npm --prefix extension ci
           npm --prefix extension run check
       - name: Rust toolchain from rust-toolchain.toml

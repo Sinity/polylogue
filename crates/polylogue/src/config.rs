@@ -374,6 +374,8 @@ pub struct Startup {
     /// The pager a terminal read is shown through: `$PAGER`, else `less -R`.
     pub pager: String,
     pub hook: crate::hook::Inputs,
+    /// Zsh reads its startup files here when ZDOTDIR is set.
+    pub zsh_directory: PathBuf,
     pub(crate) lifecycle: crate::daemon::lifecycle::Inputs,
 }
 #[derive(Debug, Clone, Default)]
@@ -676,6 +678,11 @@ impl Startup {
         });
         Ok(Self {
             stopped_attempt: None,
+            zsh_directory: process
+                .environment
+                .get_os("ZDOTDIR")
+                .map(|path| absolute(path.into(), cwd))
+                .unwrap_or_else(|| config.paths.home.clone()),
             config,
             engine,
             mode,
@@ -757,6 +764,7 @@ impl Startup {
     pub(crate) fn for_test(engine: polylogue_engine::Config, archive: &Path) -> Self {
         Self {
             stopped_attempt: Some(polylogue_testkit::stopped_attempt()),
+            zsh_directory: engine.home.clone(),
             config: Config::for_test(&engine, archive),
             clock: engine.clock.clone(),
             engine,

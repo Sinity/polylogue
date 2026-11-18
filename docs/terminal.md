@@ -40,7 +40,7 @@ One embedded fuzzy picker, with no external program, in an inline viewport below
 - for a one-row verb given several rows on a terminal;
 - for Alt-p in any shell line, inserting the chosen references at the cursor (the key `install zsh` and `install fish` bind, [operations.md](installing.md#installing)).
 
-It opens only when standard input and output are terminals and no machine format (`--json`, `--format json|jsonl`) is asked for; running inside a harness is not a condition of its own, since a harness's tool shell has no terminal. It never opens for one row and never takes a row silently.
+It opens only when standard input and a display output are terminals and no machine format (`--json`, `--format json|jsonl`) is asked for; running inside a harness is not a condition of its own, since a harness's tool shell has no terminal. It never opens for one row and never takes a row silently. An explicit `pick` may send its references to a pipe while drawing on terminal standard error, as the Alt-p shell binding does. Automatic pickers still require terminal standard output. The line runner prints the selected references once; drawing and explicit Ctrl-p output stay on the display terminal.
 
 ```
  polylogue 'repo:sinex since:7d' pick › back off                        → 212 sessions
