@@ -404,6 +404,15 @@ pub fn install(
     }
     let version = install.then(version).flatten();
     let new = edit(text, harness, version.as_ref(), install)?;
+    if !install
+        && new != text
+        && saved.is_none()
+        && parse::settings(&new)?
+            .as_object()
+            .is_some_and(|settings| settings.is_empty())
+    {
+        return file.restore();
+    }
     file.write(new.as_bytes())
 }
 

@@ -241,3 +241,5 @@ fn install_chrome_remove_takes_back_a_new_manifest() {
 }
 
 mod drive;
+
+mod instructions;

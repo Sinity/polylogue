@@ -4,6 +4,7 @@
 
 use polylogue_model::JsonExt as _;
 pub mod arguments;
+mod instructions;
 mod shell;
 
 use super::fail;
@@ -189,7 +190,20 @@ fn install_with_output(
         )
     };
     if arguments.instructions {
-        return not_built("--instructions");
+        return match instructions::install(startup, &arguments, json, output) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => fail(
+                startup.output,
+                json,
+                if error.kind() == std::io::ErrorKind::InvalidInput {
+                    polylogue_model::Code::BadRequest
+                } else {
+                    polylogue_model::Code::Io
+                },
+                &error.to_string(),
+                1,
+            ),
+        };
     }
     if matches!(target, "zsh" | "bash" | "fish") {
         return match shell::install(startup, &arguments, json, output) {
