@@ -743,7 +743,7 @@ fn run_plan(
     ExitCode::FAILURE
 }
 
-fn is_down(e: &std::io::Error) -> bool {
+pub(crate) fn is_down(e: &std::io::Error) -> bool {
     matches!(
         e.kind(),
         std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
@@ -756,6 +756,7 @@ pub(crate) fn wait_for_ready<T>(
     mut call: impl FnMut() -> std::io::Result<T>,
 ) -> std::io::Result<T> {
     tokio::runtime::Builder::new_current_thread()
+        .enable_io()
         .enable_time()
         .build()?
         .block_on(when_ready(archive, deadline_ms, || {
@@ -768,26 +769,18 @@ pub(crate) async fn when_ready<T, F: std::future::Future<Output = std::io::Resul
     deadline_ms: Option<i64>,
     mut call: impl FnMut() -> F,
 ) -> std::io::Result<T> {
-    let mut pause = std::time::Duration::from_millis(50);
     let mut told = false;
-    let started = std::time::Instant::now();
-    let duration =
-        deadline_ms.map(|deadline_ms| crate::daemon::execution::remaining(Some(deadline_ms)));
+    let until = deadline_ms.map(|deadline_ms| {
+        std::time::Instant::now() + crate::daemon::execution::remaining(Some(deadline_ms))
+    });
     loop {
         match call().await {
             Err(e) if is_down(&e) && archive.lock_held() => {
-                if duration.is_some_and(|duration| started.elapsed() >= duration) {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        "the daemon did not start before the deadline",
-                    ));
-                }
                 if !told {
                     eprintln!("polylogue: waiting for the daemon to finish opening the archive");
                     told = true;
                 }
-                tokio::time::sleep(pause).await;
-                pause = (pause * 2).min(std::time::Duration::from_millis(500));
+                crate::client::wait_for_socket(&archive.socket(), until).await?;
             }
             other => return other,
         }

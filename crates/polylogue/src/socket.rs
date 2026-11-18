@@ -1,0 +1,117 @@
+//! Publish listening sockets and observe their directory without polling.
+use rustix::fs::inotify;
+use std::ffi::OsString;
+use std::io;
+use std::mem::MaybeUninit;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::net::UnixListener;
+use std::path::{Path, PathBuf};
+
+/// The caller owns the path through its archive lock or hosted-session identity.
+/// Publish only after bind has also made the socket listen.
+pub(crate) fn bind(path: &Path) -> io::Result<UnixListener> {
+    let mut private = path.as_os_str().to_os_string();
+    private.push(".binding");
+    let private = PathBuf::from(private);
+    match std::fs::remove_file(&private) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+        _ => {}
+    }
+    let listener = UnixListener::bind(&private).or_else(|error| {
+        if error.kind() != io::ErrorKind::InvalidInput {
+            return Err(error);
+        }
+        // The private suffix must not shorten the supported archive path.
+        // Binding through its parent fd leaves the same directory entry.
+        let parent = std::fs::File::open(private.parent().unwrap_or_else(|| Path::new(".")))?;
+        let alias = PathBuf::from(format!("/proc/self/fd/{}", parent.as_raw_fd()))
+            .join(private.file_name().unwrap());
+        UnixListener::bind(alias)
+    });
+    let result = listener.and_then(|listener| {
+        std::fs::rename(&private, path)?;
+        Ok(listener)
+    });
+    if result.is_err() {
+        let _ = std::fs::remove_file(&private);
+    }
+    result
+}
+
+pub(crate) struct Watch {
+    descriptor: OwnedFd,
+    name: OsString,
+}
+
+impl Watch {
+    pub(crate) fn new(path: &Path) -> io::Result<Self> {
+        let name = path
+            .file_name()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "socket has no file name"))?
+            .to_os_string();
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let descriptor =
+            inotify::init(inotify::CreateFlags::CLOEXEC | inotify::CreateFlags::NONBLOCK)?;
+        inotify::add_watch(
+            &descriptor,
+            parent,
+            inotify::WatchFlags::CREATE
+                | inotify::WatchFlags::MOVED_TO
+                | inotify::WatchFlags::CLOSE_WRITE
+                | inotify::WatchFlags::DELETE_SELF
+                | inotify::WatchFlags::MOVE_SELF
+                | inotify::WatchFlags::ONLYDIR,
+        )?;
+        Ok(Self { descriptor, name })
+    }
+
+    /// Drain notifications. Closing the writable archive lock also wakes a
+    /// client whose daemon failed before it could publish a socket.
+    pub(crate) fn changed(&self) -> io::Result<bool> {
+        let mut bytes = [MaybeUninit::uninit(); 4096];
+        let mut events = inotify::Reader::new(&self.descriptor, &mut bytes);
+        let mut changed = false;
+        loop {
+            let event = match events.next() {
+                Ok(event) => event,
+                Err(rustix::io::Errno::AGAIN) => return Ok(changed),
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(error) => return Err(error.into()),
+            };
+            if event.events().intersects(
+                inotify::ReadFlags::DELETE_SELF
+                    | inotify::ReadFlags::MOVE_SELF
+                    | inotify::ReadFlags::IGNORED,
+            ) {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "the socket directory disappeared while waiting",
+                ));
+            }
+            let name = event.file_name().map(|name| name.to_bytes());
+            changed |= name == Some(self.name.as_bytes())
+                || (name == Some(b"lock")
+                    && event.events().contains(inotify::ReadFlags::CLOSE_WRITE))
+                || event.events().contains(inotify::ReadFlags::QUEUE_OVERFLOW);
+        }
+    }
+}
+
+impl AsFd for Watch {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.descriptor.as_fd()
+    }
+}
+
+impl AsRawFd for Watch {
+    fn as_raw_fd(&self) -> RawFd {
+        self.descriptor.as_raw_fd()
+    }
+}
+
+#[cfg(test)]
+mod tests;

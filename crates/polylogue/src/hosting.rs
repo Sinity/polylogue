@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -347,8 +347,7 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
     if let Some(parent) = config.socket.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let _ = std::fs::remove_file(&config.socket);
-    let listener = UnixListener::bind(&config.socket)?;
+    let listener = crate::socket::bind(&config.socket)?;
     let mut child = Command::new(program)
         .args(args)
         .current_dir(&config.cwd)
@@ -557,7 +556,6 @@ pub(crate) fn spawn_host(
     spool: &Path,
     session_id: Option<&str>,
 ) -> std::io::Result<u32> {
-    use std::os::unix::process::CommandExt;
     let program = std::env::current_exe()?;
     let mut command = std::process::Command::new(program);
     command
@@ -575,29 +573,104 @@ pub(crate) fn spawn_host(
     if let Some(id) = session_id {
         command.arg("--session-id").arg(id);
     }
-    command.process_group(0);
-    let mut child = command.spawn()?;
-    let deadline = Instant::now() + ANSWER_WAIT;
-    while Instant::now() < deadline {
-        if UnixStream::connect(socket).is_ok() {
-            let pid = child.id();
-            // Reap the host when it exits while this daemon runs.
-            std::thread::spawn(move || {
-                let _ = child.wait();
-            });
-            return Ok(pid);
-        }
-        if let Some(status) = child.try_wait()? {
-            return Err(std::io::Error::other(format!(
-                "polylogue internal host exited at start ({status})"
-            )));
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    start_host(&mut command, socket, Instant::now() + ANSWER_WAIT)
+}
+
+fn start_host(
+    command: &mut std::process::Command,
+    socket: &Path,
+    until: Instant,
+) -> std::io::Result<u32> {
+    use std::os::fd::OwnedFd;
+    use std::os::unix::process::CommandExt;
+    if let Some(parent) = socket.parent() {
+        std::fs::create_dir_all(parent)?;
     }
-    stop_host(child.id());
-    Err(std::io::Error::other(
-        "polylogue internal host did not open its socket",
-    ))
+    let watch = crate::socket::Watch::new(socket)?;
+    let (exited, notify_exit) = UnixStream::pair()?;
+    let mut child = command.process_group(0).spawn()?;
+    let pid = child.id();
+    let pidfd = rustix::process::Pid::from_raw(pid as i32).and_then(|pid| {
+        rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty()).ok()
+    });
+    let exited: OwnedFd = pidfd.unwrap_or_else(|| exited.into());
+    // This is also the normal host reaper. On kernels without pidfds, closing
+    // its pipe reports the exit to the same poll without a timed fallback.
+    let reaper = std::thread::spawn(move || {
+        let result = child.wait();
+        drop(notify_exit);
+        result
+    });
+    let result = match wait_for_host_socket(&watch, socket, &exited, until) {
+        Ok(HostSocket::Listening) => Ok(pid),
+        Ok(HostSocket::Exited) => match reaper.join() {
+            Ok(Ok(status)) => Err(std::io::Error::other(format!(
+                "polylogue internal host exited at start ({status})"
+            ))),
+            Ok(Err(error)) => Err(error),
+            Err(_) => Err(std::io::Error::other("host reaper panicked")),
+        },
+        Err(error) => Err(error),
+    };
+    if result.is_err() {
+        stop_host(pid);
+    }
+    result
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum HostSocket {
+    Listening,
+    Exited,
+}
+
+fn wait_for_host_socket(
+    watch: &crate::socket::Watch,
+    socket: &Path,
+    exited: &std::os::fd::OwnedFd,
+    until: Instant,
+) -> std::io::Result<HostSocket> {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    let mut probe = true;
+    loop {
+        if Instant::now() >= until {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "polylogue internal host did not open its socket before the deadline",
+            ));
+        }
+        let mut events = [
+            PollFd::new(watch, PollFlags::IN),
+            PollFd::new(exited, PollFlags::IN),
+        ];
+        // An already exited child wins over a simultaneously published socket.
+        match poll(&mut events, Some(&Timespec::default())) {
+            Ok(_) => {}
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(error) => return Err(error.into()),
+        }
+        if !events[1].revents().is_empty() {
+            return Ok(HostSocket::Exited);
+        }
+        if !events[0].revents().is_empty() {
+            probe |= watch.changed()?;
+        }
+        if probe {
+            match UnixStream::connect(socket) {
+                Ok(_) => return Ok(HostSocket::Listening),
+                Err(error) if crate::cli::is_down(&error) => {}
+                Err(error) => return Err(error),
+            }
+            probe = false;
+        }
+        let remaining = until.saturating_duration_since(Instant::now());
+        let timeout = Timespec::try_from(remaining).map_err(std::io::Error::other)?;
+        match poll(&mut events, Some(&timeout)) {
+            Ok(_) => {}
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 /// Ends a host that never became a session, and its agent.

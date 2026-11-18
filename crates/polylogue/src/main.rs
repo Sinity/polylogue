@@ -32,6 +32,7 @@ mod resume;
 mod row_numbers;
 mod runtime_dir;
 mod signals;
+mod socket;
 #[cfg(test)]
 mod test_answers;
 #[cfg(test)]
