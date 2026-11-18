@@ -1704,7 +1704,12 @@ impl Inner {
             )?
         };
         scoped::require_current(&self.location, scope)?;
-        if known {
+        if known
+            || (matches!(
+                request.write,
+                polylogue_model::user::UserWrite::MarkSeen { .. }
+            ) && outcome.outcome.repeat)
+        {
             tx.rollback()?;
         } else {
             crate::write_lock::commit(tx)?;
@@ -1715,6 +1720,7 @@ impl Inner {
             request.write,
             polylogue_model::user::UserWrite::Deliver(_)
                 | polylogue_model::user::UserWrite::DeliveredAdvice(_)
+                | polylogue_model::user::UserWrite::MarkSeen { .. }
         ) {
             self.project_variant_text()?;
         }

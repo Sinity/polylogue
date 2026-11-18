@@ -84,9 +84,22 @@ impl SaveSelection {
     }
 }
 
+/// One reader's displayed position in a target, using the captured change position.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SeenMark {
+    pub target: String,
+    pub item: Option<String>,
+    pub at: crate::ChangePosition,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "write", rename_all = "snake_case", deny_unknown_fields)]
 pub enum UserWrite {
+    /// Advances only this computed author's displayed positions.
+    MarkSeen {
+        marks: Vec<SeenMark>,
+    },
     /// Names and keeps one accepted selection in one transaction.
     SaveSelection(Box<SaveSelection>),
     /// A line's accepted intent and fixed population, shared by every step and retry.

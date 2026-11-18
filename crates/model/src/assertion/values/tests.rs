@@ -725,3 +725,32 @@ fn accepting_and_stored_schemas_differ_on_python_record() {
         }
     }
 }
+
+#[test]
+fn seen_values_require_a_reference_and_a_valid_change_position() {
+    use crate::assertion::AssertionKind;
+    let valid = serde_json::json!({"position":{"item":"message:codex:item","at":"generation:2:3"}});
+    assert!(
+        super::decode(
+            AssertionKind::Seen,
+            Some("session:codex:session"),
+            Some(&valid)
+        )
+        .is_ok()
+    );
+    for invalid in [
+        serde_json::json!({"position":{"item":null,"at":"generation:-1:3"}}),
+        serde_json::json!({"position":{"item":"not a reference","at":"generation:2:3"}}),
+        serde_json::json!({"position":{"item":null,"at":"generation:2:3","extra":true}}),
+    ] {
+        assert!(
+            super::decode(
+                AssertionKind::Seen,
+                Some("session:codex:session"),
+                Some(&invalid)
+            )
+            .is_err()
+        );
+    }
+    assert!(super::decode(AssertionKind::Seen, Some("not a reference"), Some(&valid)).is_err());
+}

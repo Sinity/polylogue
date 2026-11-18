@@ -115,3 +115,15 @@ fn fragment_binding_keeps_membership_without_seek() {
         .insert("seek".into(), serde_json::json!({"start":0,"end":0}));
     assert!(serde_json::from_value::<ReadSpanBinding>(invented).is_err());
 }
+
+#[test]
+fn absent_here_and_seen_options_preserve_the_recorded_execution_shape() {
+    let original = serde_json::json!({
+        "references":null,"fields":[],"self_session":null,"embeddings":false,
+        "why":false,"ranking_identity":null,
+    });
+    let decoded: super::QueryExecutionOptions = serde_json::from_value(original.clone()).unwrap();
+    assert!(decoded.here.is_none());
+    assert!(decoded.seen_marks_of.is_none());
+    assert_eq!(serde_json::to_value(decoded).unwrap(), original);
+}

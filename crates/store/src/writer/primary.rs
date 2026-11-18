@@ -179,6 +179,14 @@ impl Inner {
         // Scope controls use this same serialized writer. Check after effect
         // preparation, immediately before the request is handed to the spool.
         scoped::require_current(&self.location, scope)?;
+        if matches!(
+            request.write,
+            polylogue_model::user::UserWrite::MarkSeen { .. }
+        ) && prepared.outcome.repeat
+            && prepared.effect.assertions.is_empty()
+        {
+            return crate::user_writes::UserReceipt::recorded(&prepared, prepared.outcome.clone());
+        }
         let outcome = sinex.prepare_request(&prepared)?;
         crate::user_writes::UserReceipt::recorded(&prepared, outcome)
     }

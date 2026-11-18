@@ -22,6 +22,7 @@ pub(crate) use saved::{
 };
 pub(crate) mod imports;
 mod read;
+pub(crate) mod seen;
 pub(crate) mod settings;
 mod write;
 pub(crate) use write::{WriteContext, revise_preparing, write_parts_preparing, write_preparing};

@@ -189,3 +189,35 @@ fn sinex_context_records_its_settings_revision() {
     assert_eq!(context.run_context().machine, "synthetic-machine");
     assert_eq!(context.run_context().sinex, sinex);
 }
+
+#[test]
+fn caller_working_directory_survives_replay_without_becoming_wire_context() {
+    let at = Timestamp::parse_rfc3339("2026-10-29T08:00:00Z").unwrap();
+    let day = DaySetting::new(
+        jiff::tz::TimeZone::UTC,
+        jiff::civil::Time::constant(4, 0, 0, 0),
+    )
+    .unwrap();
+    let invocation = Invocation::new(at, "fixture".into(), Context::worker_authorship("fixture"))
+        .with_working_directory(Some("/home/op/morrow".into()));
+    let context = Context::standalone(invocation, day.clone());
+    let replay = context
+        .replay_clock(Clock::new(
+            "2026-10-28T08:00:00Z".parse().unwrap(),
+            day.clone(),
+        ))
+        .unwrap();
+    assert_eq!(
+        replay.working_directory(),
+        Some(std::path::Path::new("/home/op/morrow"))
+    );
+    assert_eq!(
+        Context::standalone(replay.invocation(), day).working_directory(),
+        replay.working_directory()
+    );
+    assert!(
+        !serde_json::to_string(&replay.run_context())
+            .unwrap()
+            .contains("morrow")
+    );
+}

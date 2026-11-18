@@ -39,8 +39,14 @@ pub(crate) struct Call<'a> {
 impl Call<'_> {
     /// The evaluation context (clock, logical day, Sinex context) of this request.
     pub fn context(&self) -> Result<Arc<Context>, Failure> {
-        self.daemon
-            .resolve_operation_context(self.invocation.clone())
+        let invocation = if self.invocation.working_directory().is_some() {
+            self.invocation.clone()
+        } else {
+            self.invocation
+                .clone()
+                .with_working_directory(self.caller.cwd.clone())
+        };
+        self.daemon.resolve_operation_context(invocation)
     }
 
     /// A reader from the pool; a closed pool means the daemon is stopping.

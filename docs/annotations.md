@@ -100,6 +100,8 @@ Kinds are one closed declaration in the `model` crate. Each states the key's mea
 - **`hidden`** takes a session and its rows out of default listings, search results, briefs and the `unfinished` list; `hidden:true` or `hidden:*` brings them back. Measures and population counts still include hidden sessions and say how many ("includes 3 hidden sessions"), because a display preference never changes a measured population. It is written with `note 'why' --as hidden` and taken back with `withdraw`.
 - **A summary is an alternate,** not a kind ([alternates.md](alternates.md)). A pass is the one way to group bulk annotation.
 
+Seen marks contain `{position: {item, at}}`, where `item` is the last displayed item's reference or null, and `at` is the captured `GENERATION:INDEX:ARCHIVE` position. A mark belongs to one target and computed author. Within the current index generation it advances by archive counter, then index counter, then the actual item's reading order. Repeating or moving backward writes no request or mark. A mark from the current generation replaces an older-generation mark; a late write from a stale generation is refused. Reading marks provide no undo command and are omitted from normal annotation and feed listings. Displaying readers submit them; a read that merely writes a pipe or file does not.
+
 ## Links
 
 | Role | Meaning | Option |

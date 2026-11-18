@@ -67,6 +67,14 @@ pub struct FrozenDefinition {
     pub ast: Query,
 }
 
+/// Repository paths and recorded repository identities captured for this execution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HereScope {
+    pub paths: Vec<String>,
+    pub repo_roots: Vec<String>,
+}
+
 /// Execution choices that remain after semantic references have been bound.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -76,6 +84,10 @@ pub struct QueryExecutionOptions {
     pub references: Option<Vec<crate::Reference>>,
     pub fields: Vec<String>,
     pub self_session: Option<crate::SessionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub here: Option<HereScope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen_marks_of: Option<String>,
     pub embeddings: bool,
     pub why: bool,
     /// The actual provider, model and vector basis required by this execution.

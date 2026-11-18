@@ -7,6 +7,27 @@ use crate::Result;
 use polylogue_model::RepoLookup;
 use rusqlite::{OptionalExtension, Transaction, params};
 
+impl crate::Reader<'_> {
+    /// Recorded repository identities at these exact worktree roots.
+    pub fn repository_roots_at_paths(&self, paths: &[String]) -> Result<Vec<String>> {
+        let mut query = self.conn()?.prepare_cached(
+            "SELECT root_commits FROM repo_lookup WHERE path IN (SELECT value FROM json_each(?1)) ORDER BY path",
+        )?;
+        let mut rows = query.query([serde_json::to_string(paths)?])?;
+        let mut roots = std::collections::BTreeSet::new();
+        while let Some(row) = rows.next()? {
+            let encoded: String = row.get(0)?;
+            let mut recorded: Vec<String> = serde_json::from_str(&encoded)?;
+            recorded.sort();
+            if let Some(first) = recorded.into_iter().next() {
+                roots.insert(first);
+            }
+        }
+        self.check()?;
+        Ok(roots.into_iter().collect())
+    }
+}
+
 /// Stores a lookup; when it differs from the stored one, marks every
 /// session at or under its directory due for its repository.
 pub(crate) fn upsert_lookup(

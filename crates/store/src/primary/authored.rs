@@ -207,7 +207,7 @@ pub fn prepare(
                     crate::to_i64(attachment.size, "attachment size is out of range")?
                 ])?)
         };
-        crate::user_writes::apply_using(
+        let receipt = crate::user_writes::apply_using(
             tx,
             index,
             request,
@@ -215,7 +215,19 @@ pub fn prepare(
             &available,
             crate::user_writes::Preparation::plain(preparation, pending),
         )?;
-        known_request(tx, request)?.or_invalid("prepared request was not recorded")
+        match known_request(tx, request)? {
+            Some(prepared) => Ok(prepared),
+            None if matches!(request.write, UserWrite::MarkSeen { .. })
+                && receipt.outcome.repeat =>
+            {
+                Ok(PreparedRequest {
+                    request: request.clone(),
+                    outcome: receipt.outcome,
+                    effect: AuthoredEffect::default(),
+                })
+            }
+            None => Err(StoreError::invalid("prepared request was not recorded")),
+        }
     })
 }
 

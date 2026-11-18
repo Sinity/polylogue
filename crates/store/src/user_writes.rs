@@ -35,7 +35,11 @@ impl UserReceipt {
         Ok(Self {
             outcome,
             save,
-            written: Self::references(&prepared.effect),
+            written: if matches!(prepared.request.write, UserWrite::MarkSeen { .. }) {
+                Vec::new()
+            } else {
+                Self::references(&prepared.effect)
+            },
         })
     }
     fn references(
@@ -211,6 +215,28 @@ pub(crate) fn apply_using(
         outcome.repeat = true;
         return UserReceipt::recorded(&known, outcome);
     }
+    let advancing_seen = if let UserWrite::MarkSeen { marks } = &r.write {
+        let marks = crate::assertions::seen::advancing(
+            tx,
+            original,
+            &r.authorship.author.to_string(),
+            marks,
+        )?;
+        if marks.is_empty() {
+            return Ok(UserReceipt {
+                outcome: UserOutcome {
+                    id: r.id.clone(),
+                    repeat: true,
+                    pending: false,
+                },
+                save: None,
+                written: Vec::new(),
+            });
+        }
+        Some(marks)
+    } else {
+        None
+    };
     if let Some(prepared) = prepare_delivery(r) {
         crate::primary::authored::require_new_delivery(tx, &r.id)?;
         crate::primary::authored::apply(tx, &prepared, seq)?;
@@ -274,6 +300,31 @@ pub(crate) fn apply_using(
     };
     let mut save_outcomes = None;
     let outcome = match &r.write {
+        UserWrite::MarkSeen { .. } => {
+            let statements = advancing_seen
+                .as_ref()
+                .expect("seen marks prepared")
+                .iter()
+                .map(|mark| {
+                    Ok(polylogue_model::assertion::NewAssertion {
+                        kind: polylogue_model::assertion::AssertionKind::Seen,
+                        key: Some(mark.target.clone()),
+                        value: Some(serde_json::to_value(
+                            polylogue_model::assertion::values::Seen {
+                                position: polylogue_model::assertion::values::SeenPosition {
+                                    item: mark.item.clone(),
+                                    at: mark.at.to_string(),
+                                },
+                            },
+                        )?),
+                        valid_until: None,
+                        links: Vec::new(),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            crate::assertions::write_preparing(tx, &statements, context, &mut resolve_saved)
+        }
+
         UserWrite::SaveSelection(save) => {
             use polylogue_model::assertion::{AssertionKind, NewAssertion};
             if save.watch.is_some() && save.name.is_none() {
@@ -681,7 +732,11 @@ pub(crate) fn apply_using(
     Ok(UserReceipt {
         outcome,
         save: save_outcomes,
-        written: UserReceipt::references(&effect),
+        written: if matches!(r.write, UserWrite::MarkSeen { .. }) {
+            Vec::new()
+        } else {
+            UserReceipt::references(&effect)
+        },
     })
 }
 

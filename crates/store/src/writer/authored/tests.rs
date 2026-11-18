@@ -968,3 +968,90 @@ fn literal_deliveries_preserve_variant_reads_without_rebuilding_other_work() {
         steps.load(Ordering::Relaxed)
     );
 }
+
+#[test]
+fn primary_seen_noop_never_enters_the_spool_and_reopens_with_original_effect() {
+    use polylogue_model::user::SeenMark;
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("cache");
+    let bytes = directory.path().join("bytes");
+    let producer = Arc::new(Producer {
+        path: directory.path().join("saved-product.json"),
+        online: AtomicBool::new(false),
+        live_calls: AtomicUsize::new(0),
+        follow: Mutex::default(),
+    });
+    let target = polylogue_model::Reference::parse("session:codex:reader").unwrap();
+    let original;
+    {
+        let (archive, _lock) = Archive::open_primary(&root, &bytes).unwrap();
+        let writer = Writer::start_on_sinex(&archive, producer.clone()).unwrap();
+        let pool = crate::ReadPool::open(&archive).unwrap();
+        let at = pool.reader().unwrap().change_position().unwrap();
+        original = crate::fixture::authored::operator_request(
+            "seen-primary".into(),
+            UserWrite::MarkSeen {
+                marks: vec![SeenMark {
+                    target: target.to_string(),
+                    item: None,
+                    at,
+                }],
+            },
+        );
+        let first = writer.user_receipt(original.clone()).unwrap();
+        assert!(first.outcome.pending);
+        assert!(first.written.is_empty());
+        assert_eq!(producer.live_calls.load(Ordering::SeqCst), 1);
+        let saved = std::fs::read(&producer.path).unwrap();
+        let mut noop = original.clone();
+        noop.id = "seen-noop".into();
+        let outcome = writer.user(noop).unwrap();
+        assert!(outcome.repeat);
+        assert!(!outcome.pending);
+        assert_eq!(std::fs::read(&producer.path).unwrap(), saved);
+        assert_eq!(producer.live_calls.load(Ordering::SeqCst), 1);
+        assert!(
+            pool.reader()
+                .unwrap()
+                .user_request("seen-noop")
+                .unwrap()
+                .is_none()
+        );
+    }
+    let reopened = Arc::new(Producer {
+        path: producer.path.clone(),
+        online: AtomicBool::new(false),
+        live_calls: AtomicUsize::new(0),
+        follow: Mutex::default(),
+    });
+    let (archive, _lock) = Archive::open_primary(&root, &bytes).unwrap();
+    let writer = Writer::start_on_sinex(&archive, reopened.clone()).unwrap();
+    assert!(writer.user(original.clone()).unwrap().pending);
+    assert_eq!(reopened.live_calls.load(Ordering::SeqCst), 0);
+    reopened.online.store(true, Ordering::SeqCst);
+    assert_eq!(writer.synchronize_primary().unwrap(), 1);
+    let pool = crate::ReadPool::open(&archive).unwrap();
+    let before = pool.reader().unwrap().change_position().unwrap();
+    assert_eq!(
+        pool.reader()
+            .unwrap()
+            .seen_marks("operator", std::slice::from_ref(&target))
+            .unwrap(),
+        match &original.write {
+            UserWrite::MarkSeen { marks } => marks.clone(),
+            _ => unreachable!(),
+        }
+    );
+    let mut noop = original;
+    noop.id = "seen-confirmed-noop".into();
+    assert!(writer.user(noop).unwrap().repeat);
+    assert_eq!(pool.reader().unwrap().change_position().unwrap(), before);
+    assert!(
+        pool.reader()
+            .unwrap()
+            .user_request("seen-confirmed-noop")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(reopened.live_calls.load(Ordering::SeqCst), 0);
+}

@@ -100,6 +100,7 @@ pub(crate) fn kind(product: &Product) -> &'static str {
             UserWrite::ResolveLine { .. } => "polylogue.line_resolution",
             UserWrite::SaveSelection(_) => "polylogue.line_save",
             UserWrite::Assert { .. }
+            | UserWrite::MarkSeen { .. }
             | UserWrite::AssertQuery { .. }
             | UserWrite::ReviseAssertions { .. }
             | UserWrite::WithdrawAssertions { .. }
@@ -269,6 +270,7 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
                 json!({"request": request.id, "at": request.at, "machine": request.machine});
             match &request.write {
                 UserWrite::Assert { .. }
+                | UserWrite::MarkSeen { .. }
                 | UserWrite::AssertQuery { .. }
                 | UserWrite::ReviseAssertions { .. }
                 | UserWrite::WithdrawAssertions { .. }

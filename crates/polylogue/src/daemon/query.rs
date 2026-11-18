@@ -144,6 +144,12 @@ pub(crate) fn options(reader: &Reader<'_>, ask: &Ask<'_>, seed: u64) -> Result<O
             .session
             .clone()
             .or_else(|| ask.context.calling_session().map(str::to_owned)),
+        here: ask
+            .context
+            .working_directory()
+            .map(|cwd| super::here::scope(cwd, reader))
+            .transpose()?,
+        seen_marks_of: Some(ask.context.authorship.author.to_string()),
         saved: named.saved,
         kept: named.kept,
         fields: ask.fields.to_vec(),

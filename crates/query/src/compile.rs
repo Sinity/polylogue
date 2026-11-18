@@ -21,6 +21,10 @@ pub struct Options {
     pub embeddings: bool,
     /// The calling session, for `self`.
     pub self_session: Option<String>,
+    /// The caller's repository scope, resolved when this execution starts.
+    pub here: Option<polylogue_model::query_objects::HereScope>,
+    /// The computed author whose private reading marks this execution uses.
+    pub seen_marks_of: Option<String>,
     /// Saved queries by name: the current revision of each `saved_query`
     /// assertion family with that name (`query:NAME`). Two families with one
     /// name are an ambiguity the query refuses.

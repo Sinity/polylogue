@@ -25,6 +25,7 @@ pub struct Invocation {
     pub machine: String,
     pub authorship: Authorship,
     calling_session: Option<String>,
+    working_directory: Option<std::path::PathBuf>,
     accepted_request: Option<Arc<command_surface::RunnableRequest>>,
     parent: Option<Arc<ParentLifetime>>,
 }
@@ -45,6 +46,7 @@ impl Invocation {
             machine,
             authorship,
             calling_session: None,
+            working_directory: None,
             accepted_request: None,
             parent: None,
         }
@@ -53,6 +55,13 @@ impl Invocation {
     pub fn with_calling_session(mut self, session: Option<String>) -> Self {
         self.calling_session = session;
         self
+    }
+    pub fn with_working_directory(mut self, directory: Option<std::path::PathBuf>) -> Self {
+        self.working_directory = directory;
+        self
+    }
+    pub fn working_directory(&self) -> Option<&std::path::Path> {
+        self.working_directory.as_deref()
     }
     pub fn with_accepted_request(
         mut self,
@@ -81,6 +90,7 @@ impl Invocation {
             machine: metadata.machine().into(),
             authorship: authorship.clone(),
             calling_session: None,
+            working_directory: None,
             accepted_request: None,
             parent: None,
         }
@@ -105,6 +115,7 @@ pub struct Context {
     pub authorship: Authorship,
     sinex: SinexContext,
     calling_session: Option<String>,
+    working_directory: Option<std::path::PathBuf>,
     accepted_request: Option<Arc<command_surface::RunnableRequest>>,
     parent: Option<Arc<ParentLifetime>>,
 }
@@ -125,6 +136,7 @@ impl Context {
             authorship: invocation.authorship,
             sinex: SinexContext::Standalone,
             calling_session: invocation.calling_session,
+            working_directory: invocation.working_directory,
             accepted_request: invocation.accepted_request,
             parent: invocation.parent,
         }
@@ -137,6 +149,7 @@ impl Context {
             authorship: invocation.authorship,
             sinex,
             calling_session: invocation.calling_session,
+            working_directory: invocation.working_directory,
             accepted_request: invocation.accepted_request,
             parent: invocation.parent,
         }
@@ -147,6 +160,7 @@ impl Context {
             machine: self.machine.clone(),
             authorship: self.authorship.clone(),
             calling_session: self.calling_session.clone(),
+            working_directory: self.working_directory.clone(),
             accepted_request: self.accepted_request.clone(),
             parent: self.parent.clone(),
         }
@@ -159,6 +173,9 @@ impl Context {
     }
     pub fn calling_session(&self) -> Option<&str> {
         self.calling_session.as_deref()
+    }
+    pub fn working_directory(&self) -> Option<&std::path::Path> {
+        self.working_directory.as_deref()
     }
     pub fn accepted_request(&self) -> Option<&command_surface::RunnableRequest> {
         self.accepted_request.as_deref()

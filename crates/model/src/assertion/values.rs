@@ -154,6 +154,10 @@ pub fn text(value: &Json) -> Option<&str> {
 }
 record!(Annotation {value:Json,confidence:Option<Probability>,rationale:Option<String>});
 record!(Member {});
+record!(Seen {
+    position: SeenPosition
+});
+record!(SeenPosition {item:Option<String>,at:String});
 
 record!(Tag {value:Option<Json>,confidence:Option<Probability>});
 record!(Check {
@@ -568,6 +572,7 @@ pub enum Value {
     Role(Box<Structured<Role>>),
     Ping(Box<Structured<Ping>>),
     Setting(Box<Structured<Setting>>),
+    Seen(Box<Structured<Seen>>),
 }
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("invalid/{kind}: {message}")]
@@ -779,6 +784,18 @@ pub fn decode(
             ValueShape::Role => Value::Role(Box::new(parse(required()?)?)),
             ValueShape::Ping => Value::Ping(Box::new(parse(required()?)?)),
             ValueShape::Setting => Value::Setting(Box::new(parse(required()?)?)),
+            ValueShape::Seen => {
+                let seen: Structured<Seen> = parse(required()?)?;
+                crate::ChangePosition::parse(&seen.fields.position.at)
+                    .ok_or_else(|| "seen position needs GENERATION:INDEX:ARCHIVE".to_string())?;
+                if let Some(item) = &seen.fields.position.item {
+                    Reference::parse(item).map_err(|error| error.to_string())?;
+                }
+                let target =
+                    key.ok_or_else(|| "seen mark needs its target reference".to_string())?;
+                Reference::parse(target).map_err(|error| error.to_string())?;
+                Value::Seen(Box::new(seen))
+            }
         })
     })();
     decoded.map_err(invalid)
