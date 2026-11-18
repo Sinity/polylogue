@@ -482,6 +482,25 @@ impl<'a> Encoder<'a> {
     }
     fn card(&mut self, card: &Card) -> io::Result<()> {
         match card {
+            Card::Run {
+                question,
+                read_at,
+                author,
+                count,
+                exact,
+                outcome,
+            } => {
+                for line in run_lines(
+                    question.as_ref(),
+                    read_at,
+                    author,
+                    *count,
+                    *exact,
+                    outcome.as_ref(),
+                ) {
+                    self.line(&line)?;
+                }
+            }
             Card::Fields { title, figures } => {
                 self.line(title)?;
                 for figure in figures {
@@ -611,6 +630,54 @@ impl<'a> Encoder<'a> {
         Ok(())
     }
 }
+pub(crate) fn run_lines(
+    question: Option<&polylogue_model::Reference>,
+    read_at: &polylogue_model::ChangePosition,
+    author: &polylogue_model::Author,
+    count: Option<u64>,
+    exact: Option<bool>,
+    outcome: Option<&polylogue_model::query_objects::RunOutcome>,
+) -> Vec<String> {
+    use polylogue_model::query_objects::RunOutcome;
+    vec![
+        "Run".into(),
+        format!(
+            "Question: {}",
+            question
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "not applicable (object read)".into())
+        ),
+        format!("Read position: {read_at}"),
+        format!("Author: {author}"),
+        format!(
+            "Count: {}",
+            count
+                .map(|count| format!(
+                    "{count}{}",
+                    if exact == Some(false) {
+                        " (partial)"
+                    } else {
+                        ""
+                    }
+                ))
+                .unwrap_or_else(|| if outcome.is_some() {
+                    "not recorded"
+                } else {
+                    "pending"
+                }
+                .into())
+        ),
+        format!(
+            "Outcome: {}",
+            match outcome {
+                Some(RunOutcome::Ok) => "ok".into(),
+                Some(RunOutcome::Error { kind }) => format!("error: {kind}"),
+                None => "pending".into(),
+            }
+        ),
+    ]
+}
+
 /// All encoders share this state vocabulary. HTML adds semantic attributes.
 pub fn value_text<T: Display>(value: &ValueState<T>) -> String {
     match value {

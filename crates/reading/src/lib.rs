@@ -566,7 +566,7 @@ fn rows_page(
             opened
                 .check(&reading.target, &reading.digest)
                 .map_err(cursor_failure)?;
-            if matches!(selected, rows::Rows::Object(_)) && opened.rewritten(&versions) {
+            if matches!(selected, rows::Rows::Object(..)) && opened.rewritten(&versions) {
                 return Err(Error::stale_cursor(
                     "the stored record changed since this page was issued",
                 ));
@@ -692,7 +692,8 @@ fn rows_page(
             } else {
                 footer.next = position
                     .map(|position| continue_at(position, ReadDirection::After))
-                    .transpose()?;
+                    .transpose()?
+                    .or_else(|| footer.next.clone());
                 footer.previous = page_start
                     .map(|page_start| continue_at(&page_start, ReadDirection::Before))
                     .transpose()?;

@@ -3232,3 +3232,64 @@ fn markdown_escapes_only_heading_markers() {
         ]
     );
 }
+
+#[test]
+fn run_card_renders_zero_pending_and_unrecorded_counts_truthfully() {
+    use polylogue_model::{Author, ChangePosition, query_objects::RunOutcome};
+    for (count, exact, outcome, wanted_count, wanted_outcome) in [
+        (
+            Some(0),
+            Some(true),
+            Some(RunOutcome::Ok),
+            "Count: 0",
+            "Outcome: ok",
+        ),
+        (
+            Some(3),
+            Some(false),
+            Some(RunOutcome::Ok),
+            "Count: 3 (partial)",
+            "Outcome: ok",
+        ),
+        (None, None, None, "Count: pending", "Outcome: pending"),
+        (
+            None,
+            Some(false),
+            Some(RunOutcome::Error {
+                kind: "cancelled".into(),
+            }),
+            "Count: not recorded",
+            "Outcome: error: cancelled",
+        ),
+    ] {
+        let doc = document(vec![ReadItem {
+            source: Source::record("run:018f0000-0000-7000-8000-000000000001"),
+            kind: ItemKind::Card {
+                card: Box::new(Card::Run {
+                    question: None,
+                    read_at: ChangePosition {
+                        generation: "synthetic".into(),
+                        index: 3,
+                        archive: 7,
+                    },
+                    author: Author::Operator,
+                    count,
+                    exact,
+                    outcome,
+                }),
+            },
+        }]);
+        for format in [Format::Terminal, Format::Markdown, Format::Html] {
+            let output = encode(&doc, format);
+            for expected in [
+                "Question: not applicable (object read)",
+                "Read position: synthetic:3:7",
+                "Author: operator",
+                wanted_count,
+                wanted_outcome,
+            ] {
+                assert!(output.contains(expected), "{expected}: {output}");
+            }
+        }
+    }
+}

@@ -308,10 +308,6 @@ fn refused_surface(rows: &Rows, call: &Call<'_>) -> Result<Option<Failure>, Fail
                 .into(),
             ));
         }
-        return Ok(Some(Failure::new(
-            Code::NotBuilt,
-            "reading a recorded run is not built",
-        )));
     }
     if call.caller.surface == Surface::Mcp
         && rows
