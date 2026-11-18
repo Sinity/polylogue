@@ -278,6 +278,7 @@ struct Relay {
     tracker: Tracker,
     session: Option<SessionId>,
     spool: crate::live_events::PendingLines,
+    stopping: Arc<AtomicBool>,
 }
 
 /// The first line a host sends each new connection.
@@ -292,13 +293,16 @@ fn hello(relay: &Relay) -> Vec<u8> {
 }
 
 fn status_line(
-    pending: &mut crate::live_events::PendingLines,
+    relay: &mut Relay,
     config: &HostConfig,
     session: &SessionId,
     identity: Option<&polylogue_model::live::ProcessIdentity>,
     event: &str,
     word: Option<&str>,
 ) {
+    if relay.stopping.load(Ordering::Acquire) && event != "HostedEnded" {
+        return;
+    }
     let mut payload = json!({});
     if let Some(word) = word {
         payload["status"] = json!(word);
@@ -312,7 +316,16 @@ fn status_line(
     let line =
         crate::live_events::line("registry", event, session, jiff::Timestamp::now(), payload);
     let boot = crate::live_events::boot_id().unwrap_or_else(|| "unknown".into());
-    let _ = pending.append(&config.spool, &boot, &[line]);
+    let _ = relay.spool.append(&config.spool, &boot, &[line]);
+}
+
+/// Called under the relay lock, as is the stop decision and the final flush.
+fn retry_status(relay: &mut Relay, config: &HostConfig) {
+    if relay.stopping.load(Ordering::Acquire) {
+        return;
+    }
+    let boot = crate::live_events::boot_id().unwrap_or_else(|| "unknown".into());
+    let _ = relay.spool.append(&config.spool, &boot, &[]);
 }
 
 /// The session a protocol line names, once the agent has said it.
@@ -346,8 +359,10 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
     let identity = crate::live_events::identity(child.id());
     let input = Arc::new(Mutex::new(child.stdin.take().expect("piped stdin")));
     let output = child.stdout.take().expect("piped stdout");
+    let stopping = Arc::new(AtomicBool::new(false));
     let relay = Arc::new(Mutex::new(Relay {
         client: None,
+        stopping: Arc::clone(&stopping),
         backlog: VecDeque::new(),
         tracker: Tracker::new(config.protocol),
         spool: crate::live_events::PendingLines::new("registry", "host", Default::default()),
@@ -356,10 +371,7 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
             .as_deref()
             .and_then(|id| SessionId::parse(&format!("{}:{id}", config.harness)).ok()),
     }));
-    let stopping = Arc::new(AtomicBool::new(false));
-    let clients = Arc::new(Mutex::new(Vec::<std::thread::JoinHandle<()>>::new()));
     let accept = {
-        let clients = Arc::clone(&clients);
         let relay = Arc::clone(&relay);
         let input = Arc::clone(&input);
         let stopping = Arc::clone(&stopping);
@@ -414,7 +426,7 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
                                 && let Some(session) = relay.session.clone()
                             {
                                 status_line(
-                                    &mut relay.spool,
+                                    &mut relay,
                                     &config,
                                     &session,
                                     identity.as_ref(),
@@ -422,9 +434,7 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
                                     Some(word),
                                 );
                             }
-                            let boot =
-                                crate::live_events::boot_id().unwrap_or_else(|| "unknown".into());
-                            let _ = relay.spool.append(&config.spool, &boot, &[]);
+                            retry_status(&mut relay, &config);
                         }
                         let mut input = input.locked();
                         if input
@@ -437,9 +447,8 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
                         }
                     }
                 });
-                match client {
-                    Ok(client) => clients.locked().push(client),
-                    Err(error) => crate::log::log!(error, "start a host client worker: {error}"),
+                if let Err(error) = client {
+                    crate::log::log!(error, "start a host client worker: {error}");
                 }
             }
         })?
@@ -455,7 +464,7 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
                 && let Some(session) = relay.session.clone()
             {
                 status_line(
-                    &mut relay.spool,
+                    &mut relay,
                     config,
                     &session,
                     identity.as_ref(),
@@ -464,8 +473,7 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
                 );
             }
         }
-        let boot = crate::live_events::boot_id().unwrap_or_else(|| "unknown".into());
-        let _ = relay.spool.append(&config.spool, &boot, &[]);
+        retry_status(&mut relay, config);
         let sent = relay.client.as_mut().is_some_and(|client| {
             client
                 .write_all(&line)
@@ -484,7 +492,12 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
         }
     }
     let _ = child.wait();
-    stopping.store(true, Ordering::SeqCst);
+    {
+        // Status production and this stop decision share the append owner's lock.
+        // A client may still be writing a pipe held open by an agent descendant.
+        let _relay = relay.locked();
+        stopping.store(true, Ordering::Release);
+    }
     // Wakes the accept loop so it sees it should stop.
     let _ = UnixStream::connect(&config.socket);
     let mut failure = accept
@@ -496,15 +509,10 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
     if let Some(client) = relay.locked().client.take() {
         let _ = client.shutdown(std::net::Shutdown::Both);
     }
-    for client in std::mem::take(&mut *clients.locked()) {
-        if client.join().is_err() {
-            failure.get_or_insert_with(|| std::io::Error::other("host client worker panicked"));
-        }
-    }
     let session = relay.locked().session.clone();
     if let Some(session) = session {
         status_line(
-            &mut relay.locked().spool,
+            &mut relay.locked(),
             config,
             &session,
             identity.as_ref(),
