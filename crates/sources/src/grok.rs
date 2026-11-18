@@ -32,7 +32,7 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
         || (path
             .file_name()
             .is_some_and(|name| name == "prod-grok-backend.json")
-            && crate::chatgpt::first_byte(head) == Some(b'{'))
+            && crate::document::first_byte(head) == Some(b'{'))
 }
 
 pub fn open(_: &Path) -> Option<Parse> {

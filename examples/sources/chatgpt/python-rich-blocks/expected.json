@@ -35,6 +35,18 @@
         "at_quality": "unknown"
       },
       {
+        "data": {
+          "web_url": "https://chatgpt.com/c/native-rich-chatgpt"
+        },
+        "kind": "conversation_facts",
+        "range": [
+          3,
+          2818
+        ],
+        "session": "chatgpt:native-rich-chatgpt",
+        "at_quality": "unknown"
+      },
+      {
         "after": "chatgpt:files",
         "data": null,
         "kind": "active_leaf",

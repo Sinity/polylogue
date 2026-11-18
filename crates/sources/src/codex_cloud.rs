@@ -16,7 +16,7 @@ pub const ORIGIN: &str = "codex-cloud";
 
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
     path.file_name().is_some_and(|name| name == "codex.json")
-        && matches!(crate::chatgpt::first_byte(head), Some(b'[' | b'{'))
+        && matches!(crate::document::first_byte(head), Some(b'[' | b'{'))
 }
 pub fn open(_: &Path) -> Option<Parse> {
     Some(Parse::Export(Box::new(Cloud)))

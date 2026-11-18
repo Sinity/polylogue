@@ -16,7 +16,7 @@ use crate::fields::ExpectedType as T;
 mod fields;
 mod sidecars;
 
-use crate::chatgpt::first_byte;
+use crate::document::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, time_of};
 use crate::fields::{Fields, Rule};
 use crate::parse::{DocumentParser, ExtractedBlob, MessageRow, Output, Parse};

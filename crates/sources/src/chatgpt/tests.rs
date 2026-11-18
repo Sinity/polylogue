@@ -326,3 +326,257 @@ fn recognizes_the_export_and_its_shards_only() {
         b"[{\"uuid\": \"3b33\", \"name\": \"x\"}]"
     ));
 }
+
+#[test]
+fn project_gpt_and_template_facts_keep_their_conversation_urls() {
+    let mut project = conv("project-chat", "", vec![]);
+    project["gizmo_id"] = json!("g-p-project");
+    project["conversation_template_id"] = json!("template-opaque");
+    let mut gpt = conv("gpt-chat", "", vec![]);
+    gpt["gizmo_id"] = json!("g-custom");
+    let mut plain = conv("plain-chat", "", vec![]);
+    plain["gizmo_id"] = Json::Null;
+    plain["conversation_template_id"] = json!("");
+    plain.as_object_mut().unwrap().remove("update_time");
+    let step = export(&[project, gpt, plain]);
+    let facts: Vec<_> = step
+        .output
+        .events
+        .iter()
+        .filter(|event| event.kind == "conversation_facts")
+        .collect();
+    assert_eq!(facts.len(), 3);
+    assert_eq!(
+        facts.iter().map(|event| &event.data).collect::<Vec<_>>(),
+        [
+            &json!({"project":"g-p-project", "template":"template-opaque",
+                    "web_url":"https://chatgpt.com/g/g-p-project/c/project-chat"}),
+            &json!({"gpt":"g-custom", "web_url":"https://chatgpt.com/g/g-custom/c/gpt-chat"}),
+            &json!({"web_url":"https://chatgpt.com/c/plain-chat"}),
+        ],
+    );
+    for fact in &facts {
+        let settings = step
+            .output
+            .events
+            .iter()
+            .find(|event| event.kind == "conversation_settings" && event.session == fact.session)
+            .unwrap();
+        assert_eq!(fact.at, settings.at);
+        assert_eq!(fact.at_quality, settings.at_quality);
+        assert_eq!(fact.at_precision, settings.at_precision);
+        assert_eq!(fact.at_until, settings.at_until);
+    }
+    assert_eq!(facts[2].at, None);
+    let original = step
+        .output
+        .events
+        .iter()
+        .find(|event| {
+            event.kind == "conversation_settings"
+                && event.session.as_ref().unwrap().native().as_str() == "project-chat"
+        })
+        .unwrap();
+    assert_eq!(original.data["gizmo_id"], "g-p-project");
+    assert_eq!(original.data["conversation_template_id"], "template-opaque");
+}
+
+#[test]
+fn research_task_fields_are_message_facts_and_keep_the_original_metadata() {
+    let mut research = msg("research", "assistant", 1.0, text(&["Research started"]));
+    research["metadata"] = json!({"async_task_id":"task-opaque",
+        "async_task_title":"Compare the records", "async_task_type":"deep_research",
+        "future_task_field":{"value":7}});
+    let mut partial = msg("partial", "assistant", 2.0, text(&["Still running"]));
+    partial["metadata"] = json!({"async_task_id":"", "async_task_title":"Known title"});
+    let step = export(&[conv(
+        "research-chat",
+        "n2",
+        vec![node("n1", None, research), node("n2", Some("n1"), partial)],
+    )]);
+    let rows = &step.output.messages;
+    let tasks: Vec<_> = rows
+        .iter()
+        .flat_map(|row| row.message.blocks.iter())
+        .filter_map(|block| match block {
+            Block::Other { type_name, data } if type_name == "research_task" => Some(data),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        tasks,
+        [
+            &json!({"id":"task-opaque", "title":"Compare the records", "kind":"deep_research"}),
+            &json!({"title":"Known title"}),
+        ]
+    );
+    assert_eq!(
+        rows[0].message.attrs["metadata"]["future_task_field"],
+        json!({"value":7})
+    );
+    assert!(
+        matches!(&rows[0].message.blocks[0], Block::Text { text } if text == "Research started")
+    );
+}
+
+#[test]
+fn browsing_content_uses_the_same_fields_in_messages_and_tool_results() {
+    let cases = [
+        (
+            json!({"content_type":"tether_quote", "url":"https://example.test/one",
+                "title":"Named result", "domain":"ignored.example", "text":"Main text",
+                "snippet":"Ignored snippet", "result":"Ignored result", "tether_id":"tether-1",
+                "ref_id":"ignored-ref"}),
+            json!({"content_type":"tether_quote", "url":"https://example.test/one",
+                "title":"Named result", "text":"Main text", "source_id":"tether-1"}),
+        ),
+        (
+            json!({"content_type":"tether_browsing_display", "url":"https://example.test/two",
+                "title":"", "domain":"fallback.example", "text":"", "snippet":"Snippet text",
+                "result":"Ignored result", "tether_id":"", "ref_id":"ref-2"}),
+            json!({"content_type":"tether_browsing_display", "url":"https://example.test/two",
+                "title":"fallback.example", "text":"Snippet text", "source_id":"ref-2"}),
+        ),
+        (
+            json!({"content_type":"sonic_webpage", "domain":"sonic.example", "result":"Result text"}),
+            json!({"content_type":"sonic_webpage", "title":"sonic.example", "text":"Result text"}),
+        ),
+    ];
+    for (content, expected) in cases {
+        let mut call = msg("call", "assistant", 2.0, text(&["{}"]));
+        call["recipient"] = json!("web.run");
+        let step = export(&[conv(
+            "browsing",
+            "result-node",
+            vec![
+                node(
+                    "visible-node",
+                    None,
+                    msg("visible", "assistant", 1.0, content.clone()),
+                ),
+                node("call-node", Some("visible-node"), call),
+                node(
+                    "result-node",
+                    Some("call-node"),
+                    msg("result", "tool", 3.0, content),
+                ),
+            ],
+        )]);
+        let rows = &step.output.messages;
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows[0].message.blocks,
+            [Block::Other {
+                type_name: "web_result".into(),
+                data: expected.clone(),
+            }]
+        );
+        let Block::ToolResult {
+            call_id,
+            outcome,
+            output,
+            data,
+            ..
+        } = &rows[2].message.blocks[0]
+        else {
+            panic!("browsing tool output must remain a tool result")
+        };
+        assert_eq!(call_id.as_deref(), Some("call"));
+        assert_eq!(*outcome, ToolOutcome::Ok);
+        assert_eq!(output.as_deref(), expected.str("text"));
+        assert_eq!(data.as_ref(), Some(&expected));
+        assert_eq!(rows[2].message.role, Role::User);
+        assert_eq!(rows[2].message.prompt_kind, Some(PromptKind::Harness));
+        assert_eq!(
+            rows[2].message.parent.as_ref().unwrap().native().as_str(),
+            "call"
+        );
+    }
+}
+
+#[test]
+fn partial_browsing_content_does_not_invent_fields_or_change_unknown_content() {
+    let missing = json!({"content_type":"tether_quote", "title":"", "text":"", "ref_id":""});
+    let future = json!({"content_type":"future_browsing", "text":"still retained", "new":7});
+    let step = export(&[conv(
+        "partial-browsing",
+        "n2",
+        vec![
+            node("n1", None, msg("partial", "assistant", 1.0, missing)),
+            node(
+                "n2",
+                Some("n1"),
+                msg("future", "assistant", 2.0, future.clone()),
+            ),
+        ],
+    )]);
+    assert_eq!(
+        step.output.messages[0].message.blocks,
+        [Block::Other {
+            type_name: "web_result".into(),
+            data: json!({"content_type":"tether_quote"}),
+        }]
+    );
+    assert_eq!(
+        step.output.messages[1].message.blocks,
+        [Block::Other {
+            type_name: "future_browsing".into(),
+            data: future,
+        }]
+    );
+}
+
+#[test]
+fn conversation_headers_can_start_with_project_or_template_fields() {
+    for bytes in [
+        br#"[{"gizmo_id":"g-p-project","conversation_id":"c","mapping":{}}]"#.as_slice(),
+        br#"[{"conversation_template_id":"template","conversation_id":"c","mapping":{}}]"#
+            .as_slice(),
+    ] {
+        assert!(recognize(Path::new("conversations.json"), bytes));
+    }
+}
+
+#[test]
+fn browsing_and_project_facts_match_between_export_and_browser_capture() {
+    let mut message = msg(
+        "shared-message",
+        "assistant",
+        1.0,
+        json!({"content_type":"tether_quote", "text":"Recorded result", "ref_id":"shared-ref"}),
+    );
+    message["metadata"] = json!({"async_task_id":"shared-task", "async_task_type":"deep_research"});
+    let mut conversation = conv("shared-chat", "n1", vec![node("n1", None, message)]);
+    conversation["gizmo_id"] = json!("g-p-shared");
+    conversation["conversation_template_id"] = json!("shared-template");
+    let exported = export(&[conversation.clone()]);
+    let bytes = serde_json::to_vec(&json!({
+        "polylogue_capture_kind":"conversation", "schema_version":1, "source":"browser-extension",
+        "provenance":{"source_url":"https://chatgpt.com/g/g-p-shared/c/shared-chat",
+                      "captured_at":"2026-02-01T00:00:00Z", "capture_mode":"auto"},
+        "provider_meta":{}, "raw_provider_payload":conversation,
+        "session":{"provider":"chatgpt", "provider_session_id":"shared-chat", "turns":[]}
+    }))
+    .unwrap();
+    let captured = crate::parse::run_document(&crate::browser_capture::Capture, &bytes).unwrap();
+    assert_eq!(captured.output.messages.len(), 1);
+    assert_eq!(
+        captured.output.messages[0].message.id,
+        exported.output.messages[0].message.id
+    );
+    assert_eq!(
+        captured.output.messages[0].message.blocks,
+        exported.output.messages[0].message.blocks
+    );
+    let facts = |step: &crate::parse::Step| {
+        step.output
+            .events
+            .iter()
+            .filter(|event| event.kind == "conversation_facts")
+            .map(|event| (event.session.clone(), event.data.clone()))
+            .collect::<Vec<_>>()
+    };
+    let exported_facts = facts(&exported);
+    assert_eq!(exported_facts.len(), 1);
+    assert_eq!(facts(&captured), exported_facts);
+}

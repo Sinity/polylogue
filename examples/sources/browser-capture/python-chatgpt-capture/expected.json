@@ -73,6 +73,20 @@
         "at_precision": "instant"
       },
       {
+        "data": {
+          "web_url": "https://chatgpt.com/c/chatgpt-fixture-conversation"
+        },
+        "kind": "conversation_facts",
+        "at": "2026-07-16T02:42:20Z",
+        "range": [
+          0,
+          10211
+        ],
+        "session": "chatgpt:chatgpt-fixture-conversation",
+        "at_quality": "intrinsic",
+        "at_precision": "instant"
+      },
+      {
         "after": "chatgpt:answer-active-message",
         "data": null,
         "kind": "active_leaf",
