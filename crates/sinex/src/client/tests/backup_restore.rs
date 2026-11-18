@@ -24,13 +24,16 @@ fn config(real_sinex: &real_sinex::RealSinex) -> Config {
     }
 }
 
-fn wait_until(mut predicate: impl FnMut() -> bool) {
+fn wait_until(stage: &str, cache: &Path, sinex: &Sinex, mut predicate: impl FnMut() -> bool) {
     let started = Instant::now();
     while !predicate() {
-        assert!(
-            started.elapsed() < Duration::from_secs(90),
-            "Sinex primary fixture did not finish"
-        );
+        if started.elapsed() >= Duration::from_secs(90) {
+            panic!(
+                "Sinex fixture {} did not finish {stage}: {:?}",
+                cache.display(),
+                sinex.status()
+            );
+        }
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -77,7 +80,7 @@ fn encoding(
 /// acknowledgment or position.
 fn send_and_apply(sinex: &Arc<Sinex>, cache: &Path, items: &[(&str, &[u8])]) {
     sinex.send_pending();
-    wait_until(|| {
+    wait_until("acknowledging the pending frames", cache, sinex, || {
         items.iter().all(|(identity, _)| {
             sinex
                 .spool
@@ -126,7 +129,7 @@ fn send_and_apply(sinex: &Arc<Sinex>, cache: &Path, items: &[(&str, &[u8])]) {
     }
     let (archive, lock) = Archive::open_primary(cache, &sinex.config.store).unwrap();
     let writer = Writer::start_on_sinex(&archive, sinex.clone()).unwrap();
-    wait_until(|| {
+    wait_until("applying and retiring the frames", cache, sinex, || {
         let pool = match ReadPool::open(&archive) {
             Ok(pool) => pool,
             Err(polylogue_store::StoreError::ScopeChanged) => return false,
