@@ -247,9 +247,11 @@ Building the archive overlaps every stage:
   Missing or mismatched selected references refuse the transaction normally.
   Older, unchanged or reused-text versions keep full payload,
   hash and layout validation. A new message is inserted with its resolved
-  selected metadata before stated sources refer to it; its first body installation
-  consumes that creation result. Later installations replace the existing
-  blocks and routes, including multiple changes within one transaction;
+  selected metadata before stated sources refer to it. During a private build,
+  an ordinary fresh reservation lets the insert check for the row itself. A
+  split write retry can then reuse a row installed by an earlier retry. The
+  first body installation consumes an actual creation. Later installations
+  replace the existing blocks and routes, including multiple changes within one transaction;
   after a row application installs its selected messages and stated sources,
   one indexed operation resolves their event placements from that final state.
   Deleting a referenced message first detaches its events to preserve their

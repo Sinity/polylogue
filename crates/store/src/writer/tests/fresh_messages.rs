@@ -22,6 +22,22 @@ fn apply(
     step: usize,
     changes: &crate::change_summary::ChangeSummary,
 ) -> u64 {
+    apply_with_upkeep(
+        tx,
+        batch,
+        step,
+        changes,
+        &resolve::IndexUpkeep::PerTransaction,
+    )
+}
+
+fn apply_with_upkeep(
+    tx: &Transaction<'_>,
+    batch: &Batch,
+    step: usize,
+    changes: &crate::change_summary::ChangeSummary,
+    upkeep: &resolve::IndexUpkeep,
+) -> u64 {
     let step = &batch.parse[step];
     write_rows(
         tx,
@@ -30,13 +46,13 @@ fn apply(
         rows::ReadingWrite {
             texts: &crate::text_rows::TextIds::new(
                 tx,
-                false,
+                upkeep.at_build_end(),
                 crate::archive::MemoryBudget::default().keys() / 3,
             )
             .unwrap(),
             resolution: step.resolution.as_ref().unwrap(),
             counter: 1,
-            upkeep: &resolve::IndexUpkeep::PerTransaction,
+            upkeep,
             source_commit: Some(&fixture_commit()),
             changes,
             retraction: false,
@@ -143,8 +159,10 @@ fn fresh_messages_install_without_replacing_old_blocks() {
 fn reserved_message_keys_are_not_creation_results_across_steps() {
     let directory = tempfile::tempdir().unwrap();
     let mut conn = open_write(&directory.path().join("index.db"), 1).unwrap();
-    crate::schema::create_index(&conn).unwrap();
+    crate::schema::ensure_build_index(&conn).unwrap();
     conn.set_prepared_statement_cache_capacity(0);
+    let upkeep =
+        resolve::IndexUpkeep::AtBuildEnd(Arc::new(crate::key_maps::KeyMaps::load(&conn).unwrap()));
     let tx = conn.transaction().unwrap();
     let mut b = batch(
         "input",
@@ -177,7 +195,7 @@ fn reserved_message_keys_are_not_creation_results_across_steps() {
     b.parse[1].repeats_whole_conversations = true;
     b.length = 200;
     // Both steps reserve the key against the same pre-write snapshot.
-    resolve::prepare_index(&tx, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
+    resolve::prepare_index(&tx, &mut b, 1, &upkeep).unwrap();
     for step in &b.parse {
         assert!(
             !step
@@ -195,16 +213,24 @@ fn reserved_message_keys_are_not_creation_results_across_steps() {
         );
     }
     let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
+    MESSAGE_EXISTENCE_PROBES.with(|count| count.set(0));
+    tx.trace_v2(
+        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
+        Some(count_statement),
+    );
     tx.authorizer(Some(deny_old_block_selection)).unwrap();
-    assert_eq!(apply(&tx, &b, 0, &changes), 1);
+    assert_eq!(apply_with_upkeep(&tx, &b, 0, &changes, &upkeep), 1);
+    assert_eq!(MESSAGE_EXISTENCE_PROBES.with(|count| count.get()), 0);
     tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
         .unwrap();
-    assert_eq!(apply(&tx, &b, 1, &changes), 1);
+    assert_eq!(apply_with_upkeep(&tx, &b, 1, &changes, &upkeep), 1);
+    assert_eq!(MESSAGE_EXISTENCE_PROBES.with(|count| count.get()), 1);
     assert_eq!(
-        apply(&tx, &b, 1, &changes),
+        apply_with_upkeep(&tx, &b, 1, &changes, &upkeep),
         0,
         "a retry keeps the committed block_selection"
     );
+    assert_eq!(MESSAGE_EXISTENCE_PROBES.with(|count| count.get()), 1);
     assert_eq!(
         tx.query_row(
             "SELECT words,source_start,in_progress FROM message",
@@ -241,6 +267,70 @@ fn reserved_message_keys_are_not_creation_results_across_steps() {
         "replacement body is different"
     );
     check_items(&tx, &changes);
+}
+
+#[cfg(feature = "faults")]
+#[test]
+fn split_retry_keeps_both_sources_of_one_new_message() {
+    let w = test_archive();
+    let message = text_message(
+        "shared",
+        "s",
+        Role::Assistant,
+        "identical source text",
+        Some("end_turn"),
+    );
+    let group = [("first", b'a'), ("second", b'b')]
+        .into_iter()
+        .map(|(input, byte)| {
+            let mut batch = batch(input, Route::Live, 0, vec![row(7, message.clone())], &["s"]);
+            let (blob, file) = w.archive.prepare_blob(&[byte; 100]).unwrap();
+            batch.new_blob = Some(blob);
+            crate::staging::PreparedBatch {
+                batch,
+                files: file.into_iter().collect(),
+            }
+        })
+        .collect();
+    crate::fault::arm("write.index_commit", "", crate::fault::Action::Fail, 0, 1);
+    let results = w
+        .writer
+        .store_group(group, Arc::new(w.archive.blobs().unwrap()))
+        .unwrap();
+    crate::fault::clear();
+    assert_eq!(results.len(), 2);
+    for result in results {
+        result.unwrap();
+    }
+    w.writer.derive().unwrap();
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    // Separate commits prove that the group failed and its readers were retried in order.
+    assert_eq!(
+        reader
+            .query(
+                "SELECT count(*) AS chains, count(DISTINCT commit_seq) AS commits FROM parse_state WHERE status='done' AND parsed_upto=100",
+                &[],
+            )
+            .unwrap(),
+        [serde_json::json!({"chains":2,"commits":2})]
+    );
+    assert_eq!(
+        reader
+            .message_with_block_selection(&message.id)
+            .unwrap()
+            .map(|(selected, _)| selected),
+        Some(message)
+    );
+    assert_eq!(
+        reader
+            .query(
+                "SELECT (SELECT count(*) FROM message) AS messages, (SELECT count(*) FROM block) AS blocks, (SELECT count(*) FROM message_source) AS sources",
+                &[],
+            )
+            .unwrap(),
+        [serde_json::json!({"messages":1,"blocks":1,"sources":2})]
+    );
 }
 
 #[test]
@@ -303,10 +393,14 @@ fn fresh_tool_pairs_and_earlier_event_placements_keep_order() {
 
 thread_local! {
     static STATEMENTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static MESSAGE_EXISTENCE_PROBES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 fn count_statement(event: rusqlite::trace::TraceEvent<'_>) {
-    if let rusqlite::trace::TraceEvent::Profile(..) = event {
+    if let rusqlite::trace::TraceEvent::Profile(statement, _) = event {
         STATEMENTS.with(|n| n.set(n.get() + 1));
+        if statement.sql() == "SELECT pk FROM message WHERE pk=?1" {
+            MESSAGE_EXISTENCE_PROBES.with(|n| n.set(n.get() + 1));
+        }
     }
 }
 
