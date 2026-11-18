@@ -147,12 +147,27 @@ impl AllItems {
         let child = crate::commands::declarations()
             .parse_mcp_call(call["name"].as_str().unwrap(), call["arguments"].clone())
             .unwrap();
-        let arguments: crate::protocol::read::Arguments =
-            serde_json::from_value(child.arguments).unwrap();
+        let rows: crate::protocol::line::Rows = serde_json::from_value(child.arguments).unwrap();
+        let [crate::protocol::line::Step::Read(read)] = rows.steps.as_slice() else {
+            panic!("one read continuation")
+        };
+        let target = rows
+            .selection
+            .clone()
+            .unwrap_or_else(|| rows.references.join(" OR "));
+        let arguments = crate::daemon::verbs::read::arguments(read, target).unwrap();
         let mut request = crate::daemon::service::read::request_of(arguments, None).unwrap();
         request.delivery = polylogue_model::read::ReadDelivery::Stream;
         request.budget = None;
         request.with_blobs = false;
+        if !rows.references.is_empty() {
+            request.references = Some(
+                rows.references
+                    .iter()
+                    .map(|reference| polylogue_model::Reference::parse(reference).unwrap())
+                    .collect(),
+            );
+        }
         let operation = daemon
             .daemon
             .operation_context(&polylogue_reading::operation::Context::worker_authorship(
@@ -282,7 +297,7 @@ pub(super) fn collect(
     let archive = Archive::at(&daemon.daemon.archive.root);
     let query = page.snapshot.query.clone();
     let format = page.format;
-    let mut root: Option<(String, polylogue_model::read::View)> = None;
+    let mut root = None;
     let mut cursors = BTreeSet::new();
     let mut requests = BTreeSet::new();
     let mut items = Items::default();
@@ -306,11 +321,9 @@ pub(super) fn collect(
             .into_iter()
             .flatten()
         {
-            let cursor = call
-                .request
-                .cursor
-                .as_deref()
-                .expect("paged request has its cursor");
+            let cursor = call.request.arguments["steps"][0]["cursor"]
+                .as_str()
+                .expect("paged step has its cursor");
             assert_eq!(
                 footer_wire.matches(cursor).count(),
                 1,
@@ -388,22 +401,27 @@ pub(super) fn collect(
             requests.insert(request_id.to_owned()),
             "next page reused an invocation identity"
         );
-        let cursor = envelope["cursor"].as_str().expect("opaque continuation");
+        let cursor = envelope["arguments"]["steps"][0]["cursor"]
+            .as_str()
+            .expect("opaque continuation");
         assert!(
             cursors.insert(cursor.to_owned()),
             "continuation repeated a position"
         );
-        let arguments: crate::protocol::read::Arguments =
+        let rows: crate::protocol::line::Rows =
             serde_json::from_value(envelope["arguments"].clone()).unwrap();
+        let [crate::protocol::line::Step::Read(read)] = rows.steps.as_slice() else {
+            panic!("one read continuation")
+        };
         // A continuation reads the same target with the same options.
-        let identity = (arguments.target.clone(), arguments.view);
+        let identity = (rows.selection.clone(), rows.references.clone(), read.view);
         if let Some(root) = &root {
             assert_eq!(&identity, root, "the continuation changed its reading");
         } else {
             root = Some(identity);
         }
         if let Some(budget) = budget {
-            ready.request.arguments["page_tokens"] = json!(budget);
+            ready.request.arguments["steps"][0]["budget"] = json!(budget);
         }
         page = execute_ready(&archive, &ready).unwrap();
     }
@@ -432,7 +450,7 @@ pub(super) fn structured_read_without_deadline(
     arguments: Value,
 ) -> Result<ReadPage, String> {
     let mut request =
-        command_surface::RunnableRequest::new("read", arguments, uuid::Uuid::now_v7().to_string());
+        command_surface::RunnableRequest::new("rows", arguments, uuid::Uuid::now_v7().to_string());
     request.deadline = command_surface::Deadline::None;
     let call = crate::commands::declarations().mcp_call(&request).unwrap();
     let envelope = &call["arguments"];
@@ -452,9 +470,24 @@ fn decode_page(text: String, structured: Value, failed: bool) -> Result<ReadPage
     if failed {
         return Err(text);
     }
-    let answer: command_surface::Answer<ReadPage> =
+    let answer: command_surface::Answer<crate::protocol::line::LineAnswer> =
         serde_json::from_value(structured).map_err(|error| error.to_string())?;
-    answer.value().cloned().ok_or(text)
+    let Some(crate::protocol::line::LineAnswer::Steps(steps)) = answer.value() else {
+        return Err(text);
+    };
+    let [step] = steps.steps.as_slice() else {
+        return Err(text);
+    };
+    match &step.outcome {
+        crate::protocol::line::StepOutcome::Done {
+            reply: crate::protocol::line::StepAnswer::Read(page),
+            ..
+        } => Ok(*page.clone()),
+        crate::protocol::line::StepOutcome::Failed { error } => {
+            Err(format!("{:?}: {}", error.kind, error.message))
+        }
+        _ => Err(text),
+    }
 }
 
 pub(crate) fn execute_ready(archive: &Archive, ready: &ReadyCall) -> Result<ReadPage, String> {
@@ -484,7 +517,7 @@ fn mcp_read_pages_execute_the_generated_continuation_without_losing_unicode() {
     let archive = Archive::at(&daemon.daemon.archive.root);
     let first = structured_read_without_deadline(
         &archive,
-        json!({"target":"session:claude-code:s1", "page_tokens":256}),
+        json!({"selection":"session:claude-code:s1", "steps":[{"verb":"read", "budget":256}]}),
     )
     .unwrap();
     let page = first;
@@ -495,7 +528,7 @@ fn mcp_read_pages_execute_the_generated_continuation_without_losing_unicode() {
         .clone()
         .expect("bounded first page has continuation");
     let mut invalid = first_next.clone();
-    invalid.request.arguments["view"] = json!("dialogue");
+    invalid.request.arguments["steps"][0]["view"] = json!("dialogue");
     let error = execute_ready(&archive, &invalid).unwrap_err();
     // docs/query.md: "a cursor from another question is `invalid_query`";
     // a read continuation with other arguments is refused the same way.
@@ -518,7 +551,7 @@ fn budgeted_mcp_output_contains_one_bounded_layout_and_no_duplicate_source_recor
     let archive = Archive::at(&daemon.daemon.archive.root);
     let output = structured_read_without_deadline(
         &archive,
-        json!({"target":"session:claude-code:s1","page_tokens":2048}),
+        json!({"selection":"session:claude-code:s1", "steps":[{"verb":"read", "budget":2048}]}),
     )
     .unwrap();
     let page = output;
@@ -537,8 +570,10 @@ fn budgeted_mcp_output_contains_one_bounded_layout_and_no_duplicate_source_recor
     assert_eq!(items.text(), source);
     let error = call(
         &archive,
-        "read",
-        args(json!({"target":"session:claude-code:s1","slices":true})),
+        "rows",
+        args(
+            json!({"selection":"session:claude-code:s1", "steps":[{"verb":"read", "slices":true}]}),
+        ),
     )
     .unwrap_err();
     assert!(error.contains("bad_request"), "{error}");
@@ -550,11 +585,13 @@ fn an_omitted_read_deadline_stays_default_in_the_next_call() {
     let archive = Archive::at(&daemon.daemon.archive.root);
     let answer = structured_call_as(
         &archive,
-        "read",
-        args(json!({"target":"session:claude-code:s1","page_tokens":256})),
+        "rows",
+        args(
+            json!({"selection":"session:claude-code:s1", "steps":[{"verb":"read", "budget":256}]}),
+        ),
         &uuid::Uuid::now_v7().to_string(),
     );
-    let page: ReadPage = serde_json::from_value(answer.value().unwrap().clone()).unwrap();
+    let page = decode_page(String::new(), serde_json::to_value(answer).unwrap(), false).unwrap();
     let next = page
         .document
         .footer
@@ -572,7 +609,15 @@ fn an_omitted_read_deadline_stays_default_in_the_next_call() {
         .parse_mcp_call(call["name"].as_str().unwrap(), envelope.clone())
         .unwrap();
     assert_eq!(child.deadline, command_surface::Deadline::Default);
-    assert!(child.cursor.is_some());
+    assert!(
+        child.cursor.is_none(),
+        "the read step owns its continuation"
+    );
+    let rows: crate::protocol::line::Rows = serde_json::from_value(child.arguments).unwrap();
+    let [crate::protocol::line::Step::Read(read)] = rows.steps.as_slice() else {
+        panic!("one continued read")
+    };
+    assert!(read.cursor.is_some());
     let continued = execute_ready(&archive, &next).unwrap();
     assert_eq!(continued.snapshot.query, page.snapshot.query);
 }

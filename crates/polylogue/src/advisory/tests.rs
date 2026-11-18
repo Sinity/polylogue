@@ -9,22 +9,26 @@ use serde_json::{Value, json};
 use std::sync::atomic::{AtomicI64, Ordering};
 
 pub(crate) const CWD: &str = "/synthetic/repo";
-fn authored(w: &TestDaemon, request: crate::test_daemon::Call, author: Author) -> Value {
-    crate::test_answers::ok(
-        (request)
-            .limit(crate::daemon::execution::limit(None, Default::default()).clone())
-            .authorship(
-                Authorship {
-                    author,
-                    via: Channel::Cli,
-                }
-                .clone(),
-            )
-            .answer(&w.daemon),
-    )
+fn authored(
+    w: &TestDaemon,
+    id: &str,
+    write: polylogue_model::user::UserWrite,
+    author: Author,
+) -> Value {
+    let invocation = w.daemon.invocation(&Authorship {
+        author,
+        via: Channel::Cli,
+    });
+    serde_json::to_value(crate::test_answers::ok(crate::daemon::service::write(
+        &w.daemon,
+        &invocation,
+        id.into(),
+        write,
+    )))
+    .unwrap()
 }
-pub(crate) fn operator(w: &TestDaemon, request: crate::test_daemon::Call) -> Value {
-    authored(w, request, Author::Operator)
+pub(crate) fn operator(w: &TestDaemon, id: &str, write: polylogue_model::user::UserWrite) -> Value {
+    authored(w, id, write, Author::Operator)
 }
 fn operation(w: &TestDaemon) -> Arc<polylogue_reading::operation::Context> {
     w.daemon
@@ -54,17 +58,16 @@ pub(crate) fn statement(
     }
     authored(
         w,
-        crate::test_daemon::Call::new(
-            "assert",
-            serde_json::json!({"assertions": [NewAssertion {
+        id,
+        polylogue_model::user::UserWrite::Assert {
+            assertions: vec![NewAssertion {
                 kind,
                 key: Some(id.into()),
                 value: Some(json!("ARCHIVED_BODY_NOT_INLINED")),
                 valid_until: None,
                 links,
-            }]}),
-        )
-        .id(id),
+            }],
+        },
         Author::Agent(None),
     );
     let reader = w.daemon.reads.reader().unwrap();
@@ -89,9 +92,9 @@ pub(crate) fn statement(
 fn judge(w: &TestDaemon, reference: &RevisionReference, id: &str) {
     operator(
         w,
-        crate::test_daemon::Call::new(
-            "assert",
-            serde_json::json!({"assertions": [NewAssertion {
+        id,
+        polylogue_model::user::UserWrite::Assert {
+            assertions: vec![NewAssertion {
                 kind: AssertionKind::Judgment,
                 key: Some("accepted".into()),
                 value: None,
@@ -100,9 +103,8 @@ fn judge(w: &TestDaemon, reference: &RevisionReference, id: &str) {
                     role: LinkRole::About,
                     reference: Reference::Assertion(reference.clone()),
                 }],
-            }]}),
-        )
-        .id(id),
+            }],
+        },
     );
 }
 pub(crate) fn selected(w: &TestDaemon, prompt: &str, cwd: &str) -> Prepared {
@@ -153,18 +155,22 @@ fn advisory_selection_requires_a_current_operator_judgment_and_scoped_file() {
             .contains(&Reference::Assertion(reference.clone()).to_string())
     );
     assert!(!prepared.text.contains("ARCHIVED_BODY_NOT_INLINED"));
-    assert!(prepared.text.contains("polylogue read"));
+    assert!(
+        prepared
+            .text
+            .contains(&format!("polylogue assertion:{reference} read"))
+    );
     assert!(selected(&w, "Inspect src/parser.rs2", CWD).empty);
     assert!(!selected(&w, "Inspect ../src/parser.rs", "/synthetic/repo/subdir").empty);
     assert!(selected(&w, "Inspect src/parser.rs", "/synthetic/another").empty);
     assert!(selected(&w, "Continue the current work", CWD).empty);
     operator(
         &w,
-        crate::test_daemon::Call::new(
-            "withdraw",
-            serde_json::json!({"targets": [Reference::Assertion(reference)]}),
-        )
-        .id("withdraw-file-decision"),
+        "withdraw-file-decision",
+        polylogue_model::user::UserWrite::WithdrawAssertions {
+            targets: vec![Reference::Assertion(reference)],
+            reason: None,
+        },
     );
     assert!(selected(&w, "Inspect src/parser.rs", CWD).empty);
 }
@@ -284,16 +290,14 @@ fn a_new_file_assertion_revision_requires_its_own_judgment_and_is_a_distinct_pai
     now.fetch_add(1, Ordering::SeqCst);
     authored(
         &w,
-        crate::test_daemon::Call::new(
-            "revise",
-            serde_json::json!({"bases": [Reference::Assertion(old.clone()).to_string()], "patch": polylogue_model::assertion::AssertionPatch {
-                value: polylogue_model::assertion::Change::Set(json!(
-                    "new authored decision"
-                )),
+        "revise-file",
+        polylogue_model::user::UserWrite::ReviseAssertions {
+            bases: vec![old.clone()],
+            patch: polylogue_model::assertion::AssertionPatch {
+                value: polylogue_model::assertion::Change::Set(json!("new authored decision")),
                 ..Default::default()
-            }}),
-        )
-        .id("revise-file"),
+            },
+        },
         Author::Agent(None),
     );
     assert!(

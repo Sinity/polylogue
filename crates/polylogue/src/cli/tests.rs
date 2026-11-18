@@ -47,137 +47,12 @@ fn a_starting_daemon_is_waited_for() {
 }
 
 #[test]
-fn manual_is_an_offline_topic() {
-    let manual = COMMANDS.iter().find(|c| c.name == "manual").unwrap();
-    assert!(matches!(manual.run, crate::commands::Run::Local(..)));
-    let matches = command()
-        .try_get_matches_from(["polylogue", "manual"])
-        .unwrap();
-    assert_eq!(
-        run_local(
-            &matches,
-            crate::config::OutputConfig::new(false, false, false, None)
-        ),
-        Some(std::process::ExitCode::SUCCESS)
-    );
-}
-
-#[test]
-fn generated_ready_cli_call_reaches_the_socket_with_its_identity_and_deadline() {
-    use std::io::{BufRead, Write};
-    let daemon = crate::test_daemon::start("command example");
-    let request = command_surface::Request {
-        operation: "query".into(),
-        arguments: serde_json::json!({"query":"sessions"}),
-        request_id: "quoted ' identity".into(),
-        deadline: command_surface::Deadline::None,
-        budget_tokens: Default::default(),
-        cursor: None,
-        fresh: false,
-        format: Default::default(),
-    };
-    let ready = daemon.daemon.ready_call(&request).unwrap();
-    let stages = polylogue_model::command::effective_stages(
-        &crate::commands::declarations()
-            .cli_command(&ready.request)
-            .unwrap(),
-    );
-    assert_eq!(stages.len(), 1);
-    assert_eq!(stages[0].args[0], "find");
-    let root = tempfile::tempdir().unwrap();
-    let archive = Archive::at(root.path());
-    let listener = std::os::unix::net::UnixListener::bind(archive.socket()).unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let expected = request.clone();
-    let server = std::thread::spawn(move || {
-        let start = std::time::Instant::now();
-        let mut stream = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error)
-                    if error.kind() == std::io::ErrorKind::WouldBlock
-                        && start.elapsed() < std::time::Duration::from_secs(3) =>
-                {
-                    std::thread::yield_now()
-                }
-                Err(error) => panic!("CLI did not reach the daemon socket: {error}"),
-            }
-        };
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
-            .unwrap();
-        let mut text = String::new();
-        std::io::BufReader::new(&stream)
-            .read_line(&mut text)
-            .unwrap();
-        let actual = crate::protocol::wire::incoming(&text)
-            .unwrap()
-            .unwrap()
-            .request;
-        assert_eq!(actual, expected);
-        let answer = command_surface::Answer::ok(serde_json::json!({"count":1}));
-        writeln!(stream, "{}", serde_json::to_string(&answer).unwrap()).unwrap();
-    });
-    let mut arguments = vec!["polylogue".to_owned()];
-    arguments.extend(stages[0].args.clone());
-    arguments.push("--json".into());
-    let matches = command().try_get_matches_from(arguments).unwrap();
-    let startup = crate::config::Startup::for_test(daemon.config.clone(), root.path());
-    assert_eq!(run(&matches, &startup, root.path()), ExitCode::SUCCESS);
-    server.join().unwrap();
-    let mixed = command()
-        .try_get_matches_from([
-            "polylogue",
-            "find",
-            "--request",
-            r#"{"query":"sessions"}"#,
-            "--limit",
-            "1",
-        ])
-        .unwrap();
-    assert_eq!(run(&mixed, &startup, root.path()), ExitCode::from(2));
-}
-
-#[test]
-fn query_options_work_after_words_and_the_separator_keeps_literal_options() {
-    for argv in [
-        vec!["polylogue", "--json", "sessions where parser"],
-        vec!["polylogue", "sessions where parser", "--json"],
-        vec!["polylogue", "find", "sessions where parser", "--json"],
-    ] {
-        let matches = command().try_get_matches_from(argv).unwrap();
-        let (selected, arguments) = chosen(&matches).unwrap();
-        assert_eq!(selected.name, "query");
-        assert!(matches.get_flag("json"));
-        assert_eq!(
-            parsed(selected, arguments).unwrap().request.arguments["query"].as_str(),
-            Some("sessions where parser")
-        );
-    }
-    let (_, literal) = parse(&["polylogue", "find", "--", "--json"]).unwrap();
-    assert_eq!(literal.request.arguments["query"].as_str(), Some("--json"));
-}
-
-#[test]
-fn raw_cli_arguments_replace_required_positionals() {
-    let (selected, values) =
-        parse(&["polylogue", "find", "--request", "{}", "--deadline", "none"]).unwrap();
-    assert_eq!(selected.name, "query");
-    assert!(values.request.arguments.get("query").is_none());
-    assert!(
-        command()
-            .try_get_matches_from(["polylogue", "read", "--request", r#"{"target":"sessions"}"#])
-            .is_ok()
-    );
-}
-
-#[test]
 fn clients_wait_with_deadlines_only_for_reads_and_explicit_stream_limits() {
     use std::time::Duration;
     let stream = || {
         crate::client::request(
-            "read",
-            serde_json::json!({"target": "sessions", "delivery": "stream", "format": "json"}),
+            "rows",
+            serde_json::json!({"selection":"sessions", "steps":[{"verb":"read","delivery":"stream","format":"json"}]}),
             "stream".into(),
         )
     };
@@ -203,23 +78,14 @@ fn clients_wait_with_deadlines_only_for_reads_and_explicit_stream_limits() {
 
 #[test]
 fn only_read_only_requests_end_the_client_wait_at_their_read_deadline() {
-    use polylogue_model::assertion::{AssertionKind, NewAssertion};
-    let assertion = NewAssertion {
-        kind: AssertionKind::Lesson,
-        key: None,
-        value: Some(serde_json::json!("a lesson")),
-        valid_until: None,
-        links: vec![],
-    };
-    // assert-query reads under its deadline in the daemon, then writes. The
-    // write may wait on the writer after the read finished, so the client
-    // waits for the daemon's answer instead of giving up at the read deadline.
-    let assert_query = crate::client::request(
-        "assert-query",
-        serde_json::json!({"query": "messages", "assertion": assertion}),
-        "aq-1".into(),
+    // The writer can finish after the read deadline, so a writing line keeps
+    // waiting for its committed outcome.
+    let writing = crate::client::request(
+        "rows",
+        serde_json::json!({"selection":"messages","steps":[{"verb":"note","text":"a lesson","as":"lesson"}]}),
+        "write-1".into(),
     );
-    assert_eq!(crate::client::connection_budget(&assert_query, None), None);
+    assert_eq!(crate::client::connection_budget(&writing, None), None);
     let status = crate::client::request("status", serde_json::json!({}), "status-1".into());
     assert!(crate::client::connection_budget(&status, None).is_some());
 }
@@ -293,147 +159,6 @@ fn a_json_value_without_its_final_line_boundary_is_not_a_completed_answer() {
 }
 
 #[test]
-fn literal_read_envelope_is_not_expanded_with_cli_defaults() {
-    use std::io::{BufRead, Write};
-    let daemon = crate::test_daemon::start("read request example");
-    for form in ["generated", "literal", "flags", "export", "export-hidden"] {
-        let root = tempfile::tempdir().unwrap();
-        let archive = Archive::at(root.path());
-        let destination = root.path().join("reading");
-        let listener = std::os::unix::net::UnixListener::bind(archive.socket()).unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let mut expected = command_surface::Request {
-            operation: "read".into(),
-            arguments: serde_json::json!({"target":"sessions"}),
-            request_id: "read ' identity".into(),
-            deadline: command_surface::Deadline::None,
-            budget_tokens: Default::default(),
-            cursor: None,
-            fresh: false,
-            format: Default::default(),
-        };
-        let mut argv = vec!["polylogue".to_string()];
-        match form {
-            "generated" => {
-                let ready = daemon.daemon.ready_call(&expected).unwrap();
-                argv.extend(
-                    polylogue_model::command::effective_stages(
-                        &crate::commands::declarations()
-                            .cli_command(&ready.request)
-                            .unwrap(),
-                    )[0]
-                    .args
-                    .clone(),
-                );
-            }
-            "literal" => argv.extend([
-                "read".into(),
-                "--request".into(),
-                expected.arguments.to_string(),
-                "--request-id".into(),
-                expected.request_id.clone(),
-                "--deadline".into(),
-                "none".into(),
-            ]),
-            _ => {
-                expected.arguments = serde_json::json!({
-                    "target":"sessions", "view":"transcript", "format":"markdown",
-                    "page_tokens":41, "output_lines":100, "show":["tools:line"],
-                    "for_others":true, "variant":["concise"], "with_blobs":true,
-                });
-                expected.deadline = command_surface::Deadline::Milliseconds(60_000);
-                expected.cursor = Some("sealed:cursor".into());
-                argv.extend(
-                    [
-                        "read",
-                        "sessions",
-                        "--view",
-                        "transcript",
-                        "--format",
-                        "markdown",
-                        "--page-tokens",
-                        "41",
-                        "--output-lines",
-                        "100",
-                        "--show",
-                        "tools:line",
-                        "--for-others",
-                        "--variant",
-                        "concise",
-                        "--with-blobs",
-                        "--request-id",
-                        "read ' identity",
-                        "--deadline",
-                        "60000",
-                        "--cursor",
-                        "sealed:cursor",
-                    ]
-                    .map(str::to_owned),
-                );
-                if form.starts_with("export") {
-                    argv.extend(["--to".into(), destination.to_str().unwrap().into()]);
-                    expected.arguments["delivery"] = serde_json::json!("stream");
-                    if form == "export-hidden" {
-                        argv.extend(["--hide".into(), "inherited".into()]);
-                        expected.arguments["hide"] = serde_json::json!(["inherited"]);
-                    } else {
-                        expected.arguments["show"] = serde_json::json!(["tools:line", "inherited"]);
-                    }
-                }
-            }
-        }
-        argv.push("--json".into());
-        let peer = std::thread::spawn(move || {
-            let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
-            let mut stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(error)
-                        if error.kind() == std::io::ErrorKind::WouldBlock
-                            && std::time::Instant::now() < until =>
-                    {
-                        std::thread::yield_now()
-                    }
-                    Err(error) => {
-                        panic!("{form} read did not reach the configured socket: {error}")
-                    }
-                }
-            };
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(3)))
-                .unwrap();
-            let mut line = String::new();
-            std::io::BufReader::new(&stream)
-                .read_line(&mut line)
-                .unwrap();
-            let actual = crate::protocol::wire::incoming(&line)
-                .unwrap()
-                .unwrap()
-                .request;
-            assert_eq!(actual, expected, "{form} changed the accepted envelope");
-            let refusal =
-                command_surface::Answer::<serde_json::Value>::error(command_surface::Failure::new(
-                    command_surface::FailureKind::Refused,
-                    "synthetic refusal",
-                ));
-            writeln!(stream, "{}", serde_json::to_string(&refusal).unwrap()).unwrap();
-        });
-        let matches = command().try_get_matches_from(argv).unwrap();
-        let startup = crate::config::Startup::for_test(daemon.config.clone(), root.path());
-        assert_eq!(
-            run(&matches, &startup, root.path()),
-            ExitCode::from(3),
-            "{form}"
-        );
-        peer.join().unwrap();
-        assert!(
-            !destination.exists(),
-            "a refused export must not create its destination"
-        );
-    }
-}
-
-#[test]
 fn captured_output_policy_reaches_query_and_error_renderers_per_sink() {
     use crate::config::OutputConfig;
     let data = rows_document(
@@ -457,7 +182,13 @@ fn captured_output_policy_reaches_query_and_error_renderers_per_sink() {
             command_surface::TextStyle::Plain
         };
         let text = crate::commands::declarations()
-            .render_text("query", &command_surface::Answer::ok(data.clone()), style)
+            .render_text(
+                "rows",
+                &command_surface::Answer::ok(
+                    serde_json::json!({"kind":"listing","reply":data.clone()}),
+                ),
+                style,
+            )
             .unwrap();
         assert_eq!(text.contains("\x1b[1m"), output.stdout_color());
         assert!(
@@ -561,7 +292,7 @@ fn an_answer_from_another_protocol_is_refused_before_it_is_printed() {
     let older = Answer::ok(serde_json::json!({
         "outcome": "rows", "unit": "sessions", "rows": [], "count": 0
     }));
-    for name in ["query", "list", "measure sessions"] {
+    for name in ["rows", "list", "measure sessions"] {
         let command = crate::commands::command(name).unwrap_or_else(|| panic!("{name}"));
         let refused = crate::commands::declarations()
             .validate_answer(command.name, &older)
@@ -584,7 +315,7 @@ fn an_answer_from_another_protocol_is_refused_before_it_is_printed() {
     ));
     assert!(
         crate::commands::declarations()
-            .validate_answer("query", &failed)
+            .validate_answer("rows", &failed)
             .is_ok()
     );
 }
@@ -622,6 +353,7 @@ fn rows_document(
         shape: polylogue_query::Shape::Rows,
         columns: serde_json::from_value(columns).unwrap(),
         rows: serde_json::from_value(rows).unwrap(),
+        references: None,
         count: Some(count),
         next: None,
         ranked: false,
@@ -677,149 +409,4 @@ fn status_exit_code_is_degraded_when_answer_is_degraded() {
             ExitCode::SUCCESS
         );
     }
-}
-
-#[test]
-fn shared_cli_values_keep_request_options_and_calling_process_separate() {
-    let (_, parsed) = parse(&[
-        "polylogue",
-        "read",
-        "session:test:one",
-        "--page-tokens",
-        "256",
-        "--to",
-        "/synthetic/page.txt",
-        "--request-id",
-        "stable-read",
-        "--cursor",
-        "sealed",
-        "--budget",
-        "none",
-        "--deadline",
-        "none",
-        "--json",
-    ])
-    .unwrap();
-    assert_eq!(parsed.request.arguments["target"], "session:test:one");
-    assert_eq!(parsed.request.arguments["page_tokens"], 256);
-    assert!(parsed.request.arguments.get("to").is_none());
-    assert_eq!(parsed.calling_process["to"], "/synthetic/page.txt");
-    assert_eq!(parsed.request.request_id, "stable-read");
-    assert_eq!(parsed.request.cursor.as_deref(), Some("sealed"));
-    assert_eq!(parsed.request.deadline, command_surface::Deadline::None);
-    assert_eq!(
-        parsed.request.budget_tokens,
-        command_surface::TokenBudget::Unlimited
-    );
-    assert!(parsed.json);
-    assert!(
-        parse(&[
-            "polylogue",
-            "read",
-            "session:test:one",
-            "--page-tokens",
-            "not-a-number"
-        ])
-        .is_err()
-    );
-}
-
-#[test]
-fn local_and_stream_cli_use_their_declared_argument_types() {
-    let (_, completion) = parse(&[
-        "polylogue",
-        "install",
-        "zsh",
-        "--dry-run",
-        "--program",
-        "archive-view",
-    ])
-    .unwrap();
-    assert_eq!(
-        completion.request.arguments,
-        serde_json::json!({"target":"zsh", "dry_run":true, "program":"archive-view"})
-    );
-    let (_, installer) = parse(&[
-        "polylogue",
-        "install",
-        "chrome",
-        "--extension-id",
-        "synthetic-id",
-        "--remove",
-    ])
-    .unwrap();
-    assert_eq!(
-        installer.request.arguments,
-        serde_json::json!({"target":"chrome","extension_id":"synthetic-id","remove":true})
-    );
-    let (_, daemon) = parse(&["polylogue", "daemon", "--no-sources", "--until-idle"]).unwrap();
-    assert_eq!(
-        daemon.request.arguments,
-        serde_json::json!({"no_sources":true,"until_idle":true})
-    );
-    let (_, follow) = parse(&[
-        "polylogue",
-        "follow",
-        "session:test:one",
-        "--show",
-        "user,assistant",
-        "--until-idle",
-    ])
-    .unwrap();
-    assert_eq!(
-        follow.request.arguments,
-        serde_json::json!({"target":"session:test:one"})
-    );
-    assert_eq!(
-        follow.calling_process["show"],
-        serde_json::json!(["user", "assistant"])
-    );
-    assert_eq!(follow.calling_process["until_idle"], true);
-}
-
-#[test]
-fn cli_domain_choices_keep_their_existing_operation() {
-    for subject in crate::explain::SUBJECTS {
-        assert!(parse(&["polylogue", "explain", subject]).is_ok());
-    }
-    assert!(parse(&["polylogue", "explain", "unsupported-subject"]).is_err());
-    for harness in polylogue_model::live::channel::HARNESSES
-        .iter()
-        .filter(|harness| harness.host.is_some())
-    {
-        assert!(
-            parse(&[
-                "polylogue",
-                "start",
-                "hello",
-                "--cwd",
-                "/synthetic",
-                "--in",
-                harness.name
-            ])
-            .is_ok()
-        );
-        assert!(parse(&["polylogue", "hand-off", "test:one", "--to", harness.name]).is_ok());
-    }
-}
-
-#[test]
-fn read_help_shows_the_view_doc_comment_and_its_default() {
-    let help = command()
-        .try_get_matches_from(["polylogue", "read", "--help"])
-        .unwrap_err();
-    assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
-    let help = help.to_string();
-    // The `--view` line and its wrapped continuation, up to the next option.
-    let mut lines = help
-        .lines()
-        .skip_while(|line| !line.trim_start().starts_with("--view"));
-    let view = lines
-        .next()
-        .into_iter()
-        .chain(lines.take_while(|line| !line.trim_start().starts_with('-')))
-        .collect::<Vec<_>>()
-        .join(" ");
-    assert!(view.contains("The reading view"), "{help}");
-    assert!(view.contains("[default: transcript]"), "{help}");
 }

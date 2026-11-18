@@ -10,7 +10,7 @@ use crate::source::Source;
 use crate::{NewBlob, Result, StoreError};
 use crate::{OptionExt as _, ResultExt as _};
 use polylogue_model::authored::{AuthoredEffect, PendingAuthored, PreparedRequest};
-use polylogue_model::user::{UserOutcome, UserRequest};
+use polylogue_model::user::{UserOutcome, UserRequest, UserWrite};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::HashMap;
 
@@ -80,44 +80,42 @@ pub fn pending_request(
     sinex: &dyn crate::primary::Sinex,
     request: &UserRequest,
 ) -> Result<Option<UserRequest>> {
+    Ok(pending_prepared(sinex, request)?.map(|prepared| prepared.request))
+}
+
+pub(crate) fn pending_prepared(
+    sinex: &dyn crate::primary::Sinex,
+    request: &UserRequest,
+) -> Result<Option<PreparedRequest>> {
     let mut original = None;
     sinex.visit_pending_requests(&mut |pending| {
         if let Some(prepared) = pending.prepared()
             && prepared.request.id == request.id
         {
-            if request_hash(&prepared.request)? != request_hash(request)? {
+            if request_hash(&prepared.request)? != request_hash(request)?
+                || original.as_ref().is_some_and(|known| known != prepared)
+            {
                 return Err(StoreError::Conflict(request.id.clone()));
             }
-            original = Some(prepared.request.clone());
+            original = Some(prepared.clone());
         }
         Ok(())
     })?;
     Ok(original)
 }
 
-/// Pending requests keep their complete first committed body. A
-/// transport retry never rebuilds that effect against newer definitions.
+/// A pending receipt keeps its first accepted body and effect.
 pub(crate) fn pending_outcome(
     sinex: &dyn crate::primary::Sinex,
     request: &UserRequest,
 ) -> Result<Option<UserOutcome>> {
-    let mut outcome = None;
-    sinex.visit_pending_requests(&mut |pending| {
-        let Some(prepared) = pending.prepared() else {
-            return Ok(());
-        };
-        if prepared.request.id == request.id {
-            if request_hash(&prepared.request)? != request_hash(request)? {
-                return Err(StoreError::Conflict(request.id.clone()));
-            }
-            let mut original = prepared.outcome.clone();
-            original.pending = true;
-            original.repeat = true;
-            outcome = Some(original);
-        }
-        Ok(())
-    })?;
-    Ok(outcome)
+    Ok(
+        pending_prepared(sinex, request)?.map(|prepared| UserOutcome {
+            pending: true,
+            repeat: true,
+            ..prepared.outcome
+        }),
+    )
 }
 
 /// `visit_pending` includes requests Sinex acknowledged until the confirmed
@@ -264,6 +262,66 @@ pub(crate) fn with_overlay<T>(
 
 /// Checks a recorded request's internal consistency without applying it.
 pub fn validate(prepared: &PreparedRequest) -> Result<()> {
+    if let UserWrite::SaveSelection(save) = &prepared.request.write {
+        let parts = save
+            .outcomes
+            .as_ref()
+            .or_invalid("recorded Save has no resolved outcomes")?;
+        let identities = save.identities(&prepared.request.id);
+        let [kept] = prepared.effect.kept_results.as_slice() else {
+            return Err(StoreError::invalid(
+                "recorded Save must carry one kept effect",
+            ));
+        };
+        if parts.kept.id != identities.kept
+            || parts.kept.repeat
+            || parts.kept.pending
+            || parts.saved.is_some() != save.name.is_some()
+            || parts.watch.is_some() != save.watch.is_some()
+            || prepared.outcome.id != prepared.request.id
+            || kept.id != identities.kept
+            || kept.name != save.name
+            || kept.query != save.query
+            || kept.ran_at != prepared.request.at
+            || kept.read_at != save.read_at
+            || kept.rows_json != save.rows_json
+        {
+            return Err(StoreError::invalid(
+                "recorded Save outcomes differ from its kept effect",
+            ));
+        }
+        for (outcome, proposed, kind) in [
+            (
+                &parts.saved,
+                identities.saved,
+                polylogue_model::assertion::AssertionKind::SavedQuery,
+            ),
+            (
+                &parts.watch,
+                identities.watch,
+                polylogue_model::assertion::AssertionKind::Signal,
+            ),
+        ] {
+            if let Some(outcome) = outcome {
+                let new_fact = prepared
+                    .effect
+                    .assertions
+                    .iter()
+                    .find(|fact| fact.id == outcome.id);
+                if outcome.id.is_empty()
+                    || outcome.pending
+                    || (!outcome.repeat
+                        && (Some(&outcome.id) != proposed.as_ref()
+                            || new_fact
+                                .is_none_or(|fact| fact.kind != kind || fact.key != save.name)))
+                {
+                    return Err(StoreError::invalid(
+                        "recorded Save has inconsistent assertion outcomes",
+                    ));
+                }
+            }
+        }
+    }
     // Restored records can include later events written by other requests.
     // The request still owns its delivery body and its own delivery receipt.
     if let Some(expected) = crate::user_writes::prepare_delivery(&prepared.request) {

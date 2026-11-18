@@ -4,13 +4,13 @@
 //! - **harness resume**: the harness's own command reopens the session with
 //!   its full history (`claude --resume <id>`, `codex resume <id>`);
 //! - **context-assisted continuation**: a new session starts with a
-//!   takeover brief Polylogue prepares (`polylogue <id> brief`), for
+//!   takeover brief Polylogue prepares (`polylogue session:<id> brief`), for
 //!   harnesses without harness resume or a session whose file is gone.
 //!
 //! Which sessions are worth resuming comes from what they left open, not
 //! from how their text ended.
 
-use polylogue_model::SessionId;
+use polylogue_model::{Reference, SessionId};
 use polylogue_store::{OpenItems, Reader, StoreError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -59,8 +59,12 @@ pub fn plan(reader: &Reader<'_>, session: &SessionId) -> Result<Plan, StoreError
         harness_command: harness_resume(session, cwd.as_deref()),
         context_assisted: Command {
             program: "polylogue".into(),
-            args: vec![session.to_string(), "brief".into()],
-            cwd,
+            args: vec![
+                Reference::Session(session.clone()).to_string(),
+                "brief".into(),
+            ],
+            // Reading an archived session does not require its old directory.
+            cwd: None,
         },
     })
 }

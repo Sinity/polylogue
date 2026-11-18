@@ -22,32 +22,32 @@ fn cli_read_pages_cover_utf8_once_and_refuse_malformed_and_revoked_cursors() {
             "--deadline",
             "none",
             "--json",
-            "read",
             "session:claude-code:pages",
-            "--page-tokens",
+            "read",
+            "--budget",
             "100000",
         ],
     );
     assert!(whole.status.success(), "{whole:?}");
-    let whole: ReadPage = serde_json::from_value(json(&whole)).unwrap();
+    let whole: ReadPage = read_page(json(&whole));
     let finite_source = serde_json::to_vec(&whole.document.items).unwrap().len();
-    let mut args = vec![
+    let args = [
         "--deadline".into(),
         "none".into(),
         "--json".into(),
-        "read".into(),
         "session:claude-code:pages".into(),
-        "--page-tokens".into(),
+        "read".into(),
+        "--budget".into(),
         "1".into(),
     ];
     let mut joined = Items::default();
     let mut seen = std::collections::BTreeSet::new();
     let mut first_next = None;
     let mut complete = false;
+    let out = cli(&env, &args.iter().map(String::as_str).collect::<Vec<_>>());
+    assert!(out.status.success(), "{out:?}");
+    let mut page = read_page(json(&out));
     for _ in 0..=finite_source {
-        let out = cli(&env, &args.iter().map(String::as_str).collect::<Vec<_>>());
-        assert!(out.status.success(), "{out:?}");
-        let page: ReadPage = serde_json::from_value(json(&out)).unwrap();
         assert!(
             !page.document.items.is_empty(),
             "continuation made no item progress"
@@ -64,21 +64,24 @@ fn cli_read_pages_cover_utf8_once_and_refuse_malformed_and_revoked_cursors() {
             "repeated continuation"
         );
         first_next.get_or_insert_with(|| next.clone());
-        args = continuation_arguments(&next);
+        page = followed_page(&env, &next);
     }
     assert!(complete, "finite source delivery did not terminate");
     assert_eq!(joined.text(), expected);
     let next = first_next.expect("one-token page must continue");
-    let mut invalid = continuation_arguments(&next);
-    let cursor = invalid.iter().position(|word| word == "--cursor").unwrap() + 1;
-    assert!(!invalid[cursor].is_empty());
-    invalid[cursor] = "broken".into();
-    let invalid = cli(
-        &env,
-        &invalid.iter().map(String::as_str).collect::<Vec<_>>(),
+    let mut invalid = next.clone();
+    assert!(
+        !invalid.request.arguments["steps"][0]["cursor"]
+            .as_str()
+            .unwrap()
+            .is_empty()
     );
-    assert!(!invalid.status.success());
-    assert_eq!(json(&invalid)["error"]["kind"], "invalid_query");
+    invalid.request.arguments["steps"][0]["cursor"] = "broken".into();
+    let invalid = read_failure(follow(&env, &invalid));
+    assert_eq!(
+        serde_json::to_value(invalid).unwrap()["kind"],
+        "invalid_query"
+    );
     drop(daemon);
     polylogue_testkit::delete_index(&archive);
     let _rebuilt = start_daemon(&env);
@@ -87,10 +90,8 @@ fn cli_read_pages_cover_utf8_once_and_refuse_malformed_and_revoked_cursors() {
     });
     // A cursor from an earlier index generation is `stale_cursor`, never
     // restarted and never confused with a broken one (docs/query.md, Paging).
-    let args = continuation_arguments(&next);
-    let stale = cli(&env, &args.iter().map(String::as_str).collect::<Vec<_>>());
-    assert!(!stale.status.success());
-    assert_eq!(json(&stale)["error"]["kind"], "stale_cursor");
+    let stale = read_failure(follow(&env, &next));
+    assert_eq!(serde_json::to_value(stale).unwrap()["kind"], "stale_cursor");
 }
 
 /// A session of three short prompts, read in pages too small for all three.
@@ -118,22 +119,19 @@ fn three_prompts(dir: &std::path::Path) -> (crate::Fixture, super::Daemon) {
 const SMALL_PAGE: &[&str] = &[
     "--deadline",
     "none",
-    "read",
     "session:claude-code:pager",
-    "--page-tokens",
+    "read",
+    "--budget",
     "12",
 ];
 
 /// The continue command a piped read printed on standard error.
-fn continue_command(out: &std::process::Output) -> Option<Vec<String>> {
+fn continue_command(out: &std::process::Output) -> Option<String> {
     let stderr = String::from_utf8(out.stderr.clone()).unwrap();
     let command = stderr
         .lines()
         .find_map(|line| line.strip_prefix("continue: "))?;
-    let stages = polylogue_model::command::effective_stages(command);
-    assert_eq!(stages.len(), 1, "{command}");
-    assert_eq!(stages[0].program, "polylogue");
-    Some(stages[0].args.clone())
+    Some(command.to_owned())
 }
 
 #[test]
@@ -147,7 +145,9 @@ fn read_without_json_on_pipe_prints_continue_command_on_stderr() {
     assert!(!stdout.contains("third marker gamma"), "{stdout}");
     assert!(!stdout.contains("--cursor"), "the page alone is on stdout");
     let next = continue_command(&out).expect("a continue command on stderr");
-    assert!(next.iter().any(|word| word == "--cursor"), "{next:?}");
+    assert!(next.contains("--cursor"), "{next}");
+    let continued = printed_cli(&env, &next);
+    assert!(continued.status.success(), "{continued:?}");
 }
 
 #[test]
@@ -158,8 +158,8 @@ fn read_pages_tile_with_no_gap_or_overlap() {
     args.extend(["--format".to_owned(), "json".to_owned()]);
     let mut joined = Items::default();
     let mut pages = 0;
+    let mut out = cli(&env, &args.iter().map(String::as_str).collect::<Vec<_>>());
     loop {
-        let out = cli(&env, &args.iter().map(String::as_str).collect::<Vec<_>>());
         assert!(out.status.success(), "{out:?}");
         let document: polylogue_model::read::ReadDocument =
             serde_json::from_slice(&out.stdout).unwrap();
@@ -168,7 +168,7 @@ fn read_pages_tile_with_no_gap_or_overlap() {
         pages += 1;
         assert!(pages <= 20, "the reading did not end");
         match continue_command(&out) {
-            Some(next) => args = next,
+            Some(next) => out = printed_cli(&env, &next),
             None => break,
         }
     }

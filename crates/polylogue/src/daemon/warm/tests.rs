@@ -458,8 +458,8 @@ fn slow_provider_calls_cannot_fill_the_read_pool() {
                 scope.spawn(move || {
                     crate::test_daemon::call(
                         d,
-                        "query",
-                        serde_json::json!({"query": format!("messages where similar:\"slow {n}\"")}),
+                        "rows",
+                        serde_json::json!({"selection": format!("messages where similar:\"slow {n}\"")}),
                     )
                 })
             })
@@ -551,15 +551,15 @@ fn only_an_executed_ranking_asks_the_provider() {
         // Explaining a ranking runs nothing.
         crate::test_answers::ok(crate::test_daemon::call(
             d,
-            "explain",
-            json!({"subject": "query", "expression": "messages where similar:\"explained\""}),
+            "rows",
+            json!({"selection": "messages where similar:\"explained\"", "explain":true}),
         ));
         assert_eq!(calls.load(Ordering::Acquire), 0, "explain");
         // A query that parses but is refused runs nothing.
         let refused = crate::test_daemon::call(
             d,
-            "query",
-            json!({"query": "messages where no_such_field:1 similar:\"refused\""}),
+            "rows",
+            json!({"selection": "messages where no_such_field:1 similar:\"refused\""}),
         );
         assert!(
             matches!(refused.outcome, command_surface::Outcome::Error(_)),
@@ -569,8 +569,8 @@ fn only_an_executed_ranking_asks_the_provider() {
         // An executed ranking asks once: the run uses the vector asked for.
         crate::test_answers::ok(crate::test_daemon::call(
             d,
-            "query",
-            json!({"query": "messages where similar:\"executed\""}),
+            "rows",
+            json!({"selection": "messages where similar:\"executed\""}),
         ));
         assert_eq!(calls.load(Ordering::Acquire), 1, "executed query");
     });
@@ -585,7 +585,13 @@ fn ranking_with_model_calls_off_uses_stored_vectors() {
     let calls = AtomicUsize::new(0);
     let stop = AtomicBool::new(false);
     let d = &daemon.daemon;
-    let query = |text: &str| crate::test_daemon::call(d, "query", json!({ "query": text }));
+    let query = |text: &str| {
+        crate::test_answers::listing(crate::test_daemon::call(
+            d,
+            "rows",
+            json!({ "selection": text }),
+        ))
+    };
     std::thread::scope(|scope| {
         // A provider that counts the calls it answers.
         scope.spawn(|| {

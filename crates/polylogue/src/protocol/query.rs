@@ -23,7 +23,7 @@ pub struct Arguments {
     pub fields: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Position {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -34,7 +34,7 @@ pub struct Position {
     pub cursor: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Resolved {
     pub context: polylogue_model::context::RunContext,
@@ -48,7 +48,7 @@ pub use polylogue_store::query::execute::Explanation;
 /// measure data belongs to the named measure's own result contract. The
 /// variants differ by their fields, and whether an answer is empty or
 /// incomplete is the answer's outcome, never a field here.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum Answer {
     Rows(Box<Rows>),
@@ -85,7 +85,7 @@ impl Answer {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Rows {
     pub read_at: Position,
@@ -93,6 +93,9 @@ pub struct Rows {
     pub shape: polylogue_query::Shape,
     pub columns: Vec<polylogue_query::Column>,
     pub rows: Vec<Map<String, Value>>,
+    /// Native row identities in the same order, independent of displayed columns
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub references: Option<Vec<polylogue_model::Reference>>,
     pub count: Option<u64>,
     pub next: Option<String>,
     pub ranked: bool,
@@ -107,7 +110,7 @@ pub struct Rows {
     pub why: Option<Vec<Explanation>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PagedMeasure {
     pub measure: String,
@@ -122,7 +125,7 @@ pub struct PagedMeasure {
     pub next: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Measure {
     pub measure: String,

@@ -23,13 +23,14 @@ pub(super) fn target(reference: &str) -> String {
 }
 pub(super) fn reading(env: &crate::Fixture, reference: &str, options: &[&str]) -> ReadPage {
     let target = target(reference);
-    let mut args = vec!["--json", "read", target.as_str()];
+    let mut args = vec!["--json", target.as_str(), "read"];
     args.extend_from_slice(options);
     let started = Instant::now();
     loop {
         let out = cli(env, &args);
-        let answer: command_surface::Answer<ReadPage> = serde_json::from_slice(&out.stdout)
-            .unwrap_or_else(|error| panic!("invalid reading: {error}: {out:?}"));
+        let answer: command_surface::Answer<serde_json::Value> =
+            serde_json::from_slice(&out.stdout)
+                .unwrap_or_else(|error| panic!("invalid reading: {error}: {out:?}"));
         assert_eq!(
             out.status.code(),
             Some(i32::from(answer.exit_code())),
@@ -37,7 +38,7 @@ pub(super) fn reading(env: &crate::Fixture, reference: &str, options: &[&str]) -
         );
         match answer.outcome {
             command_surface::Outcome::Ok(page) | command_surface::Outcome::Empty(page) => {
-                return page;
+                return read_page(page);
             }
             command_surface::Outcome::Degraded { value: _, missing } => {
                 assert!(
@@ -57,8 +58,8 @@ pub(super) fn portable(env: &crate::Fixture, reference: &str, path: &Path) -> Ve
         env,
         &[
             "--json",
-            "read",
             &reference,
+            "read",
             "--format",
             "jsonl",
             "--to",
@@ -123,14 +124,14 @@ pub(super) fn joined_items_with_options(
     budget: &str,
     options: &[&str],
 ) -> Vec<polylogue_model::read::ReadItem> {
-    assert!(!options.contains(&"--page-tokens"));
+    assert!(!options.contains(&"--budget"));
     let mut whole_options = options.to_vec();
-    whole_options.extend(["--page-tokens", "100000"]);
+    whole_options.extend(["--budget", "100000"]);
     let whole = reading(env, reference, &whole_options);
     assert!(whole.document.footer.next.is_none());
     let bound = serde_json::to_vec(&whole.document.items).unwrap().len();
     let mut page_options = options.to_vec();
-    page_options.extend(["--page-tokens", budget]);
+    page_options.extend(["--budget", budget]);
     let mut page = reading(env, reference, &page_options);
     let mut items = super::read_current::Items::default();
     let mut seen = std::collections::BTreeSet::new();
@@ -143,10 +144,7 @@ pub(super) fn joined_items_with_options(
             seen.insert(serde_json::to_string(&next.request).unwrap()),
             "repeated continuation"
         );
-        let args = continuation_arguments(&next);
-        let out = cli(env, &args.iter().map(String::as_str).collect::<Vec<_>>());
-        assert!(out.status.success(), "{out:?}");
-        page = serde_json::from_value(json(&out)).unwrap();
+        page = followed_page(env, &next);
     }
     panic!("finite reading did not terminate");
 }
@@ -184,7 +182,7 @@ fn account_and_project_text_import_without_turns_or_invented_document_authorship
     );
     assert!(documents.status.success(), "{documents:?}");
     assert_eq!(
-        json(&documents)["count"],
+        listing(json(&documents))["count"],
         1,
         "project text must be queryable without pretending it is a human prompt"
     );
@@ -205,9 +203,9 @@ fn account_and_project_text_import_without_turns_or_invented_document_authorship
     else {
         panic!("expected typed empty query: {answer:?}");
     };
-    assert_eq!(value["count"], 0);
+    assert_eq!(listing(value)["count"], 0);
     let reference = "document:claude-ai:project:project-a:doc:doc-a";
-    let read = cli(&env, &["--json", "read", reference]);
+    let read = cli(&env, &["--json", reference, "read"]);
     assert!(read.status.success(), "{read:?}");
     let before = document(&env, reference);
     assert_eq!(before["blocks"][0]["text"], "Vendor document λ🙂");
@@ -231,7 +229,7 @@ fn account_and_project_text_import_without_turns_or_invented_document_authorship
     );
     assert!(sources.status.success(), "{sources:?}");
     assert_eq!(json(&sources)[0]["n"], 1);
-    let whole = reading(&env, reference, &["--page-tokens", "100000"]);
+    let whole = reading(&env, reference, &["--budget", "100000"]);
     assert_eq!(joined_items(&env, reference, "3"), whole.document.items);
     assert!(
         serde_json::to_string(&whole)
@@ -244,8 +242,8 @@ fn account_and_project_text_import_without_turns_or_invented_document_authorship
             &env,
             &[
                 "--json",
-                "read",
                 reference,
+                "read",
                 "--format",
                 format,
                 "--to",
@@ -277,18 +275,10 @@ fn account_and_project_text_import_without_turns_or_invented_document_authorship
     let imported = cli(&env, &["--json", "import", copy.to_str().unwrap()]);
     let _ = import_report(&imported);
     assert_eq!(document(&env, reference), before);
-    let notes = serde_json::to_string(&[polylogue_model::assertion::NewAssertion {
-        kind: polylogue_model::assertion::AssertionKind::Note,
-        key: None,
-        value: Some(json!("Synthetic document note")),
-        valid_until: None,
-        links: vec![polylogue_model::assertion::NewAssertionLink {
-            role: polylogue_model::assertion::LinkRole::About,
-            reference: polylogue_model::Reference::parse(reference).unwrap(),
-        }],
-    }])
-    .unwrap();
-    let note = cli(&env, &["--json", "assert", &notes]);
+    let note = cli(
+        &env,
+        &["--json", reference, "note", "Synthetic document note"],
+    );
     assert!(note.status.success(), "{note:?}");
     drop(daemon);
     // Rebuild this test archive from its stored bytes after the source file is gone.
@@ -296,7 +286,7 @@ fn account_and_project_text_import_without_turns_or_invented_document_authorship
     polylogue_testkit::delete_index(&archive);
     let daemon = start_daemon(&env);
     wait_status(&env, |s| s["store"]["documents"].as_u64() == Some(4));
-    let after = cli(&env, &["--json", "read", reference]);
+    let after = cli(&env, &["--json", reference, "read"]);
     assert!(after.status.success(), "{after:?}");
     assert_eq!(document(&env, reference), before);
     drop(daemon);

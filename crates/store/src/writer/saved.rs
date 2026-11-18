@@ -16,6 +16,7 @@ impl Inner {
     ) -> Result<Option<crate::ReadScopeToken>> {
         let needed = match &request.write {
             UserWrite::SaveQuery { .. } | UserWrite::ReviseAssertions { .. } => true,
+            UserWrite::SaveSelection(save) => save.name.is_some(),
             UserWrite::Assert { assertions } => assertions
                 .iter()
                 .any(|statement| statement.kind == AssertionKind::SavedQuery),

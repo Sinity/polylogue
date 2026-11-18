@@ -11,7 +11,8 @@ mod objects;
 mod values;
 pub use objects::{
     catalog_fingerprint, question_id_from_reference, referenced_kept_results,
-    referenced_question_ids, referenced_saved_names, replay, saved_query_bindings, validate_object,
+    referenced_question_ids, referenced_saved_names, replay, replay_binding, saved_query_bindings,
+    validate_object,
 };
 use std::sync::Arc;
 

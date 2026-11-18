@@ -1331,6 +1331,7 @@ fn accepted_line_keeps_original_population_without_annotation_effects() {
         UserWrite::ResolveLine {
             request: body.clone(),
             resolved: Some(vec![Reference::parse("session:codex:first").unwrap()]),
+            retained: None,
         },
     );
     let first = prepare_with(&conn, &original, &[], &[]).unwrap();
@@ -1342,6 +1343,7 @@ fn accepted_line_keeps_original_population_without_annotation_effects() {
         UserWrite::ResolveLine {
             request: body,
             resolved: Some(vec![Reference::parse("session:codex:later").unwrap()]),
+            retained: None,
         },
     );
     let repeated = prepare_with(&conn, &retry, std::slice::from_ref(&first), &[]).unwrap();
@@ -1353,9 +1355,113 @@ fn accepted_line_keeps_original_population_without_annotation_effects() {
         UserWrite::ResolveLine {
             request: serde_json::json!({"operation":"rows", "arguments":{"selection":"sessions"}}),
             resolved: None,
+            retained: None,
         },
     );
     assert!(
         matches!(prepare_with(&conn, &changed, &[first], &[]), Err(StoreError::Conflict(id)) if id == "line")
     );
+}
+
+#[test]
+fn save_selection_pending_and_effect_replay_keep_one_receipt_and_original_child_objects() {
+    let conn = cache();
+    let plan = polylogue_query::plan::prepare(
+        "sessions",
+        &polylogue_query::Bindings {
+            origins: vec!["codex".into()],
+            ..Default::default()
+        },
+        |_| Ok(()),
+    )
+    .unwrap();
+    let object = plan.query_object().unwrap();
+    crate::query_objects::apply_object(&conn, &object, 1).unwrap();
+    let r = request(
+        "atomic-save",
+        10,
+        UserWrite::SaveSelection(Box::new(polylogue_model::user::SaveSelection {
+            outcomes: None,
+            name: Some("atomic-example".into()),
+            query: "sessions".into(),
+            denominator: None,
+            rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
+            read_at: r#"{"now":1}"#.into(),
+            watch: Some(polylogue_model::user::SavedWatch {
+                hold: Some("20m".into()),
+                notify: false,
+            }),
+        })),
+    );
+    let first = prepare_with(&conn, &r, &[], &[]).unwrap();
+    assert_eq!(first.outcome.id, "atomic-save");
+    let ids: Vec<_> = first
+        .effect
+        .assertions
+        .iter()
+        .map(|fact| fact.id.as_str())
+        .collect();
+    assert_eq!(ids, ["atomic-save-save", "atomic-save-watch"]);
+    assert_eq!(first.effect.kept_results.len(), 1);
+    assert_eq!(first.effect.kept_results[0].id, "atomic-save-keep");
+    for table in ["assertion", "kept_result", "client_request"] {
+        assert_eq!(count(&conn, table), 0, "{table}");
+    }
+    let mut retried = r.clone();
+    let UserWrite::SaveSelection(save) = &mut retried.write else {
+        unreachable!()
+    };
+    save.rows_json = r#"{"unit":"sessions","columns":[],"rows":[{}]}"#.into();
+    save.read_at = r#"{"now":999}"#.into();
+    save.outcomes = Some(polylogue_model::user::SaveReport {
+        saved: None,
+        kept: UserOutcome {
+            id: "forged-retry".into(),
+            repeat: true,
+            pending: true,
+        },
+        watch: None,
+    });
+    assert_eq!(
+        prepare_with(&conn, &retried, std::slice::from_ref(&first), &[]).unwrap(),
+        first,
+        "pending intent retains the accepted payload"
+    );
+    let UserWrite::SaveSelection(save) = &mut retried.write else {
+        unreachable!()
+    };
+    save.query = "messages".into();
+    assert!(matches!(
+        prepare_with(&conn, &retried, std::slice::from_ref(&first), &[]),
+        Err(StoreError::Conflict(_))
+    ));
+    let mut rebuilt = cache();
+    crate::query_objects::apply_object(&rebuilt, &object, 1).unwrap();
+    rebuilt.execute_batch("CREATE TRIGGER reject_kept BEFORE INSERT ON source_kept_result BEGIN SELECT RAISE(ABORT,'synthetic confirmation failure'); END;").unwrap();
+    {
+        let tx = rebuilt.transaction().unwrap();
+        let failure = apply(&tx, &first, 2).unwrap_err();
+        assert!(
+            failure
+                .to_string()
+                .contains("synthetic confirmation failure"),
+            "{failure:?}"
+        );
+        tx.rollback().unwrap();
+    }
+    for table in ["assertion", "kept_result", "client_request"] {
+        assert_eq!(count(&rebuilt, table), 0, "{table}");
+    }
+    rebuilt.execute_batch("DROP TRIGGER reject_kept").unwrap();
+    let mut malformed = first.clone();
+    if let UserWrite::SaveSelection(save) = &mut malformed.request.write {
+        save.outcomes.as_mut().unwrap().kept.id = "forged-confirmation".into();
+    }
+    assert!(validate(&malformed).is_err());
+    commit(&mut rebuilt, &first, 2);
+    commit(&mut rebuilt, &first, 3);
+    assert_eq!(count(&rebuilt, "client_request"), 1);
+    assert_eq!(count(&rebuilt, "assertion"), 2);
+    assert_eq!(count(&rebuilt, "kept_result"), 1);
+    assert_eq!(known_request(&rebuilt, &r).unwrap(), Some(first));
 }

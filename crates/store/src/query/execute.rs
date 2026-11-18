@@ -518,6 +518,58 @@ impl Reader<'_> {
         })?;
         Ok(rows)
     }
+    /// Current columns of the accepted native population, in its original order.
+    /// The keyed projection has no selection predicate to evaluate again.
+    pub fn query_fixed_rows(
+        &self,
+        program: &Program,
+        references: &[polylogue_model::Reference],
+    ) -> Result<Vec<Value>, SelectionError> {
+        self.validate_selection(program)?;
+        let hydrate = program
+            .statements
+            .hydrate(program.params.len())
+            .ok_or_else(|| {
+                SelectionError::invalid(
+                    polylogue_model::Code::Internal,
+                    "a derived relation cannot hydrate native rows",
+                )
+            })?;
+        let mut keys = Vec::with_capacity(references.len());
+        for reference in references {
+            let mut params = Vec::new();
+            let sql = super::references::membership(program.unit, reference, &mut |value| {
+                params.push(SqlValue::Text(value));
+                format!("?{}", params.len())
+            })
+            .ok_or_else(|| {
+                SelectionError::invalid(
+                    polylogue_model::Code::BadRequest,
+                    "reference has no identity in the kept unit",
+                )
+            })?;
+            let rows = self.query(&format!("SELECT pk AS _pk FROM ({sql})"), &params)?;
+            let [key] = rows.as_slice() else {
+                return Err(SelectionError::invalid(
+                    polylogue_model::Code::Conflict,
+                    "a kept reference no longer names one row",
+                ));
+            };
+            keys.push(key.clone());
+        }
+        let mut rows = Vec::new();
+        match self.with_clock(&program.clock, || {
+            self.visit_hydrated(program, &hydrate, keys, &mut |row| {
+                rows.push(row);
+                Ok::<_, SelectionError>(std::ops::ControlFlow::Continue(()))
+            })
+        }) {
+            Ok(()) | Err(StreamError::Stop) => {}
+            Err(StreamError::Selection(error) | StreamError::Consumer(error)) => return Err(error),
+        }
+        Ok(rows)
+    }
+
     pub fn query_keys(
         &self,
         program: &Program,

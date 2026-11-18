@@ -33,11 +33,15 @@ Composition edges are recorded at compile time in `query_edge(query, uses, how)`
 
 `save [NAME]` acts on the question as well as the rows: it names the selection's question and stores the rows this line resolved as a kept result, in one act.
 
+One Save step has one request and transaction. Its definition, kept result and optional watch commit together; a failure leaves none of those effects. A retry returns the original kept result and the actual definition and watch revisions accepted by that request, including revisions reused from earlier Saves. Undo names only revisions that the Save created.
+
 **What `save NAME` writes**, on any selection (a reference or row numbers become their references' query text, `session:a OR session:b`):
 
 1. the saved query `NAME`, pointing at the selection's question (an annotation of kind `saved_query`; a new revision when `NAME` exists and the question differs);
 2. a kept result of the rows this line resolved (the same rows every other step of the line sees), labelled `NAME`, recording the question, the read position and the time;
 3. with `--watch`, a watch on `query:NAME` ([Watches](#watches)), with this kept result as its baseline. `--hold D` and `--notify` refine it.
+
+The statement that produced the selection determines what is retained. A keyed unit selection keeps its fixed row identities and hydrates their current columns when the Save step runs, so an earlier tag or note in the line is visible in the kept result. Its original predicate is not evaluated again. An empty keyed selection keeps its original unit and columns and stays empty across later Saves in the line. A derived relation retains the values resolved before the first step, including aggregates and projections that still carry native row keys. For example, a projection of annotation counts stays fixed even if a preceding Save creates another annotation. A later `read` still hydrates the line's fixed entity references at that read step. A named measurement is retained as one summary row with its actual `measure` text and `data` value. A paged measurement follows its normal authenticated cursor to completion under the original binding and request deadline; the retained data contains every page, with each global summary recorded once.
 
 `--denominator 'QUERY'` makes the saved query a [figure](#figures).
 
@@ -48,7 +52,8 @@ $ polylogue 'tool_calls where outcome:error command~"cargo test" since:7d' save 
 saved   query:failing (revision 1): runs again each time you use it
 kept    result:01JD7Q4M (34 rows, 16 Nov 14:02), now result:failing
 watch   notices when a row starts matching query:failing
-undo    polylogue 'annotations where request:01JD7Q4M' withdraw --all
+undo    polylogue assertion:01JD7Q4M-save@01JD7Q4M-save withdraw
+undo    polylogue assertion:01JD7Q4M-watch@01JD7Q4M-watch withdraw
 ```
 
 Over MCP the same step is `polylogue_write {"arguments": {"selection": "tool_calls where outcome:error since:7d", "steps": [{"verb": "save", "name": "failing", "watch": true}]}}`.

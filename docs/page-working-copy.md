@@ -126,8 +126,9 @@ refused 1: slot 4hq1 stale, the current revision is r3 by codex:01a20000-0006
 removed citation: slot 7q2m [^1] (codex:01a20000-0005)
 1 paragraph has no citation (shown as citation needed)
 ignored: edits in 1 generated region; edit page:morrow/architecture#parser there
-undo: polylogue 'annotations where request:01JE6R4T' withdraw --all
 ```
+
+The reply also prints an undo command carrying the exact written references on standard input to `polylogue - withdraw --all`.
 
 Reading a page out and checking it in unchanged writes nothing. Per-element refusal is the same per-line refusal annotation lines get ([annotations.md](annotations.md#annotation-lines)).
 

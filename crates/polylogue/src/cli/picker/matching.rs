@@ -42,65 +42,99 @@ pub fn fuzzy_page(
     request: &PageRequest,
     page_size: usize,
 ) -> Result<Page> {
-    if page_size == 0 {
-        return Err(Failure::bad_request(
-            "a candidate page size must be positive",
-        ));
-    }
-    let text = request
-        .fuzzy
-        .as_deref()
-        .ok_or_else(|| Failure::bad_request("query mode needs query rows"))?;
-    let after: Option<Rank> = request
-        .cursor
-        .as_deref()
-        .map(serde_json::from_str)
-        .transpose()
-        .map_err(Failure::bad_request)?;
-    let text = text.to_lowercase();
-    let matcher = SkimMatcherV2::default().ignore_case();
-    let mut best: BinaryHeap<Reverse<Ranked>> = BinaryHeap::new();
-    let mut count = 0;
-    for (position, row) in rows.into_iter().enumerate() {
-        let score = if text.is_empty() {
-            Some(0)
-        } else {
-            [&row.title, &row.first_prompt, &row.repository]
-                .into_iter()
-                .filter_map(|field| matcher.fuzzy_match(&field.to_lowercase(), &text))
-                .max()
-        };
-        let Some(score) = score else { continue };
-        count += 1;
-        let rank = Rank {
-            score,
-            position: Reverse(position as u64),
-        };
-        if after.is_some_and(|after| rank >= after) {
-            continue;
+    let mut matched = FuzzyRows::new(request, page_size)?;
+    matched.extend(rows);
+    matched.finish()
+}
+
+/// Builds one ranked page while source pages arrive in their stable order.
+/// Only the requested page and its next candidate are retained.
+pub struct FuzzyRows {
+    text: String,
+    after: Option<Rank>,
+    matcher: SkimMatcherV2,
+    best: BinaryHeap<Reverse<Ranked>>,
+    count: u64,
+    position: u64,
+    page_size: usize,
+}
+impl FuzzyRows {
+    pub fn new(request: &PageRequest, page_size: usize) -> Result<Self> {
+        if page_size == 0 {
+            return Err(Failure::bad_request(
+                "a candidate page size must be positive",
+            ));
         }
-        if best.len() <= page_size || best.peek().is_some_and(|worst| rank > worst.0.rank) {
-            best.push(Reverse(Ranked { rank, row }));
-            if best.len() > page_size.saturating_add(1) {
-                best.pop();
+        let text = request
+            .fuzzy
+            .as_deref()
+            .ok_or_else(|| Failure::bad_request("query mode needs query rows"))?;
+        let after: Option<Rank> = request
+            .cursor
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(Failure::bad_request)?;
+        let text = text.to_lowercase();
+        let matcher = SkimMatcherV2::default().ignore_case();
+        Ok(Self {
+            text,
+            after,
+            matcher,
+            best: BinaryHeap::new(),
+            count: 0,
+            position: 0,
+            page_size,
+        })
+    }
+    pub fn extend(&mut self, rows: impl IntoIterator<Item = Candidate>) {
+        for row in rows {
+            let position = self.position;
+            self.position += 1;
+            let score = if self.text.is_empty() {
+                Some(0)
+            } else {
+                [&row.title, &row.first_prompt, &row.repository]
+                    .into_iter()
+                    .filter_map(|field| self.matcher.fuzzy_match(&field.to_lowercase(), &self.text))
+                    .max()
+            };
+            let Some(score) = score else { continue };
+            self.count += 1;
+            let rank = Rank {
+                score,
+                position: Reverse(position),
+            };
+            if self.after.is_some_and(|after| rank >= after) {
+                continue;
+            }
+            if self.best.len() <= self.page_size
+                || self.best.peek().is_some_and(|worst| rank > worst.0.rank)
+            {
+                self.best.push(Reverse(Ranked { rank, row }));
+                if self.best.len() > self.page_size.saturating_add(1) {
+                    self.best.pop();
+                }
             }
         }
     }
-    let mut best: Vec<_> = best.into_iter().map(|row| row.0).collect();
-    best.sort_unstable_by_key(|row| Reverse(row.rank));
-    let more = best.len() > page_size;
-    best.truncate(page_size);
-    let next = if more {
-        best.last()
-            .map(|last| serde_json::to_string(&last.rank))
-            .transpose()
-            .map_err(Failure::internal)?
-    } else {
-        None
-    };
-    Ok(Page {
-        rows: best.into_iter().map(|ranked| ranked.row).collect(),
-        count: Some(count),
-        next,
-    })
+    pub fn finish(self) -> Result<Page> {
+        let mut best: Vec<_> = self.best.into_iter().map(|row| row.0).collect();
+        best.sort_unstable_by_key(|row| Reverse(row.rank));
+        let more = best.len() > self.page_size;
+        best.truncate(self.page_size);
+        let next = if more {
+            best.last()
+                .map(|last| serde_json::to_string(&last.rank))
+                .transpose()
+                .map_err(Failure::internal)?
+        } else {
+            None
+        };
+        Ok(Page {
+            rows: best.into_iter().map(|ranked| ranked.row).collect(),
+            count: Some(self.count),
+            next,
+        })
+    }
 }

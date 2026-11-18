@@ -38,32 +38,25 @@ fn refusal(answer: command_surface::Answer<Value>) -> command_surface::Failure {
 
 #[track_caller]
 fn count(d: &TestDaemon, query: &str) -> u64 {
-    let answer = Call::new("query", json!({ "query": query })).answer(&d.daemon);
+    let answer = Call::new("rows", json!({ "selection": query })).answer(&d.daemon);
     let value = answer
         .value()
         .cloned()
         .unwrap_or_else(|| panic!("{answer:?}"));
-    value["count"].as_u64().unwrap()
+    value["reply"]["count"].as_u64().unwrap()
 }
 
 #[test]
-fn rows_without_steps_lists_like_query() {
+fn rows_listing_preserves_fields_and_pages() {
     let d = two_sessions();
     let listed = crate::test_answers::ok(line(
         &d,
-        "list",
-        json!({"selection": "sessions", "fields": ["id"], "page_size": 1}),
+        "listing",
+        json!({"selection":"sessions | sort by id", "fields":["id"], "page_size":1}),
     ));
-    let queried = crate::test_answers::ok(
-        Call::new(
-            "query",
-            json!({"query": "sessions", "fields": ["id"], "limit": 1}),
-        )
-        .answer(&d.daemon),
-    );
     assert_eq!(listed["kind"], "listing");
-    assert_eq!(listed["reply"]["rows"], queried["rows"]);
-    assert_eq!(listed["reply"]["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["reply"]["rows"], json!([{"id":"claude-code:s1"}]));
+    assert!(listed["reply"]["next"].is_string());
 }
 
 #[test]
@@ -114,7 +107,9 @@ fn failing_step_stops_line_and_prints_undo() {
     assert_eq!(statuses, ["done", "failed", "not_run"]);
     assert_eq!(
         steps[0]["outcome"]["undo"],
-        json!(["polylogue assertion:line-1 withdraw"])
+        json!([
+            r"printf '%s\n' 'assertion:line-1@line-1' | polylogue --request-id line-1-undo - withdraw"
+        ])
     );
     assert_eq!(steps[1]["outcome"]["error"]["kind"], "bad_request");
     assert_eq!(steps[1]["request_id"], "line-2");
@@ -503,7 +498,9 @@ fn stream_prefix_failure_keeps_undo_and_does_not_start_a_read() {
         );
         assert_eq!(
             reports[0]["outcome"]["undo"],
-            json!(["polylogue assertion:prefix-1 withdraw"])
+            json!([
+                r"printf '%s\n' 'assertion:prefix-1@prefix-1' | polylogue --request-id prefix-1-undo - withdraw"
+            ])
         );
         assert_eq!(reports[0]["outcome"]["reply"]["reply"]["repeat"], retry);
         assert_eq!(count(&d, "assertions where kind:note"), 1);
@@ -623,7 +620,7 @@ fn session_notes_are_visible_in_pages_and_hide_or_withdraw_removes_them() {
         &daemon,
         "hide-note",
         json!({"selection":"session:claude-code:s1",
-        "steps":[{"verb":"read","hide":["assertions"]}]}),
+        "steps":[{"verb":"read","hide":["annotations"]}]}),
     );
     let hidden: ReadPage =
         serde_json::from_value(hidden[0]["outcome"]["reply"]["reply"].clone()).unwrap();
@@ -763,45 +760,357 @@ fn ordered_read_stream_preserves_degraded_read_outcome() {
     }
 }
 
-#[test]
-fn empty_save_keeps_the_delegated_query_contract() {
-    let d = test_daemon::start("empty save does not select its new name");
-    let baseline = Call::new("keep", json!({"query":""}))
-        .id("empty-keep")
-        .answer(&d.daemon);
-    let observed = steps(
-        &d,
-        "empty-save",
-        json!({
-            "selection":"assertions", "steps":[{"verb":"save","name":"empty-population"}]
-        }),
+fn listing_value(d: &TestDaemon, selection: &str) -> Value {
+    let answer = line(
+        d,
+        &uuid::Uuid::now_v7().to_string(),
+        json!({"selection":selection}),
     );
-    assert_eq!(observed.len(), 1);
-    match baseline.outcome {
-        command_surface::Outcome::Error(expected) => {
-            assert_eq!(observed[0]["outcome"]["status"], "failed");
-            let actual: command_surface::Failure =
-                serde_json::from_value(observed[0]["outcome"]["error"].clone()).unwrap();
-            assert_eq!(actual.kind, expected.kind);
-            assert_eq!(actual.message, expected.message);
+    let value = answer.value().unwrap_or_else(|| panic!("{answer:?}"));
+    assert_eq!(value["kind"], "listing", "{value}");
+    value["reply"].clone()
+}
+
+fn kept_result(d: &TestDaemon, report: &Value) -> Value {
+    assert_eq!(report["outcome"]["status"], "done", "{report}");
+    let id = report["outcome"]["reply"]["reply"]["kept"]["id"]
+        .as_str()
+        .unwrap();
+    listing_value(d, &format!("result:{id}"))
+}
+
+#[test]
+fn empty_entity_population_stays_empty_across_two_saves_and_retry() {
+    let mut d = test_daemon::start("fixed empty save population");
+    let expected = listing_value(&d, "assertions");
+    assert_eq!(expected["count"], 0);
+    let request = json!({"selection":"assertions", "steps":[
+        {"verb":"save","name":"first-empty"}, {"verb":"save","name":"second-empty"}
+    ]});
+    for restart in [false, true] {
+        if restart {
+            d.restart();
         }
-        outcome => {
-            let baseline = outcome.value().unwrap();
-            assert_eq!(observed[0]["outcome"]["status"], "done");
-            let kept = &observed[0]["outcome"]["reply"]["reply"]["kept"]["id"];
-            let result = |id: &str| {
-                let answer =
-                    Call::new("query", json!({"query":format!("result:{id}")})).answer(&d.daemon);
-                answer
-                    .value()
-                    .unwrap_or_else(|| panic!("{answer:?}"))
-                    .clone()
-            };
-            let original = result(baseline["id"].as_str().unwrap());
-            let saved = result(kept.as_str().unwrap());
+        let reports = steps(&d, "fixed-empty-save", request.clone());
+        for report in reports {
+            let result = kept_result(&d, &report);
             for field in ["unit", "columns", "rows", "count"] {
-                assert_eq!(saved[field], original[field], "{field}: {saved}");
+                assert_eq!(result[field], expected[field], "{field}: {result}");
             }
         }
     }
+    assert_eq!(count(&d, "assertions where kind:saved_query"), 2);
+}
+
+#[test]
+fn keyed_save_hydrates_earlier_title_and_read_sees_earlier_annotations() {
+    let d = test_daemon::start("original synthetic title");
+    let reports = steps(
+        &d,
+        "keyed-current-save",
+        json!({
+            "selection":"sessions", "steps":[
+                {"verb":"tag","name":"before-save"},
+                {"verb":"note","as":"title","text":"Title from earlier step"},
+                {"verb":"save","name":"current-entity"},
+                {"verb":"read","show":["annotations"]}
+            ]
+        }),
+    );
+    let kept = kept_result(&d, &reports[2]);
+    assert_eq!(
+        kept["rows"][0]["title"], "Title from earlier step",
+        "{kept}"
+    );
+    let read = reports[3]["outcome"]["reply"]["reply"].to_string();
+    assert!(read.contains("before-save"), "{read}");
+    assert!(read.contains("Title from earlier step"), "{read}");
+}
+
+#[test]
+fn unkeyed_aggregate_is_unchanged_by_its_own_saves() {
+    let d = test_daemon::start("aggregate save population");
+    let query = "assertions | count";
+    let expected = listing_value(&d, query);
+    let reports = steps(
+        &d,
+        "aggregate-save",
+        json!({"selection":query,"steps":[
+            {"verb":"save","name":"first-count","denominator":"assertions"}, {"verb":"save","name":"second-count","denominator":"assertions"}
+        ]}),
+    );
+    for report in reports {
+        let kept = kept_result(&d, &report);
+        assert_eq!(kept["rows"], expected["rows"], "{kept}");
+        assert_eq!(kept["columns"], expected["columns"], "{kept}");
+    }
+    assert_eq!(count(&d, "assertions where kind:saved_query"), 2);
+}
+
+#[test]
+fn projected_native_relation_is_fixed_while_a_later_read_is_current() {
+    let d = test_daemon::start("original projected title");
+    let query = "sessions | fields id, title";
+    let expected = listing_value(&d, query);
+    let reports = steps(
+        &d,
+        "projected-native-save",
+        json!({"selection":query,"steps":[
+            {"verb":"note","as":"title","text":"Current title after projection"},
+            {"verb":"save","name":"fixed-projection"},
+            {"verb":"read"}
+        ]}),
+    );
+    let kept = kept_result(&d, &reports[1]);
+    assert_eq!(kept["rows"], expected["rows"], "{kept}");
+    assert!(
+        reports[2]["outcome"]["reply"]["reply"]
+            .to_string()
+            .contains("Current title after projection"),
+        "{:?}",
+        reports[2]
+    );
+}
+
+#[test]
+fn saving_a_saved_kept_relation_retains_nested_output_schemas() {
+    let mut d = test_daemon::start("Nested kept source title");
+    let original = steps(
+        &d,
+        "kept-source",
+        json!({"selection":"session:claude-code:s1","steps":[{"verb":"save"}]}),
+    );
+    let source = original[0]["outcome"]["reply"]["reply"]["kept"]["id"]
+        .as_str()
+        .unwrap();
+    let expected = kept_result(&d, &original[0]);
+    let named = steps(
+        &d,
+        "name-kept-source",
+        json!({"selection":format!("result:{source}"),"steps":[{"verb":"save","name":"kept-source"}]}),
+    );
+    assert_eq!(kept_result(&d, &named[0])["rows"], expected["rows"]);
+    let request =
+        json!({"selection":"query:kept-source","steps":[{"verb":"save","name":"nested-kept"}]});
+    let nested = steps(&d, "nested-kept-source", request.clone());
+    assert_eq!(kept_result(&d, &nested[0])["rows"], expected["rows"]);
+    d.restart();
+    let repeated = steps(&d, "nested-kept-source", request);
+    assert_eq!(kept_result(&d, &repeated[0])["rows"], expected["rows"]);
+}
+
+#[test]
+fn kept_paged_measure_follows_every_page_with_its_original_population() {
+    let d = test_daemon::start_with_sources_and_workers(
+        "First measurement session",
+        &|home| {
+            for index in 0..30 {
+                let id = format!("measure-{index}");
+                std::fs::write(
+                    home.join(format!(".claude/projects/-p/{id}.jsonl")),
+                    polylogue_testkit::claude_user(
+                        &format!("u-{index}"),
+                        &id,
+                        "Synthetic measured session",
+                    ),
+                )
+                .unwrap();
+            }
+        },
+        30,
+        2,
+    );
+    let query = "sessions | measure compare:origin";
+    let first = listing_value(&d, query);
+    assert!(
+        first["next"].is_string(),
+        "fixture must exceed ordinary measure page size: {first}"
+    );
+    let request = json!({"selection":query,"steps":[{"verb":"save","name":"complete-measure","denominator":"sessions"}]});
+    let reports = steps(&d, "complete-paged-measure", request.clone());
+    let kept = kept_result(&d, &reports[0]);
+    assert_eq!(kept["shape"], "summary", "{kept}");
+    assert_eq!(kept["rows"].as_array().unwrap().len(), 1, "{kept}");
+    assert_eq!(kept["rows"][0]["measure"], "compare:origin");
+    let sessions = kept["rows"][0]["data"]["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 31, "{kept}");
+    let expected: std::collections::BTreeSet<_> = std::iter::once("claude-code:s1".to_owned())
+        .chain((0..30).map(|index| format!("claude-code:measure-{index}")))
+        .collect();
+    let actual: std::collections::BTreeSet<_> = sessions
+        .iter()
+        .map(|session| session["session"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(actual, expected);
+    let repeated = steps(&d, "complete-paged-measure", request);
+    assert_eq!(kept_result(&d, &repeated[0])["rows"], kept["rows"]);
+}
+
+#[test]
+fn requested_picker_population_retains_order_and_retry_after_prefix_changes_predicate() {
+    let mut d = two_sessions();
+    let request = json!({
+        "selection":"sessions where NOT tag:prefix | sort by id",
+        "all":true,"return_selection":true,
+        "steps":[{"verb":"tag","name":"prefix"}]
+    });
+    for restart in [false, true] {
+        if restart {
+            d.restart();
+        }
+        let answer = crate::test_answers::ok(line(&d, "accepted-picker-prefix", request.clone()));
+        let population = &answer["reply"]["resolved"]["population"]["value"];
+        assert_eq!(
+            population["references"],
+            json!(["session:claude-code:s1", "session:claude-code:s2"]),
+            "{answer}"
+        );
+        assert_eq!(population["rows"].as_array().unwrap().len(), 2, "{answer}");
+        assert_eq!(population["count"], 2, "{answer}");
+        assert_eq!(count(&d, "sessions where NOT tag:prefix"), 0);
+        assert_eq!(count(&d, "assertions where kind:tag"), 2);
+    }
+    let conflict = refusal(line(
+        &d,
+        "accepted-picker-prefix",
+        json!({
+            "selection":"sessions","all":true,"return_selection":true,
+            "steps":[{"verb":"tag","name":"prefix"}]
+        }),
+    ));
+    assert_eq!(conflict.code.as_deref(), Some("conflict"));
+}
+
+#[test]
+fn dry_run_picker_describes_steps_without_writing() {
+    let d = two_sessions();
+    let reports = steps(
+        &d,
+        "dry-picker",
+        json!({"selection":"sessions","all":true,"dry_run":true,
+        "steps":[{"verb":"tag","name":"prefix"},{"verb":"pick"},{"verb":"tag","name":"suffix"}]}),
+    );
+    assert_eq!(reports.len(), 3);
+    assert!(
+        reports[1]["outcome"]["would"]
+            .as_str()
+            .unwrap()
+            .contains("picker"),
+        "{reports:?}"
+    );
+    assert_eq!(count(&d, "assertions where kind:tag"), 0);
+}
+
+#[test]
+fn newly_saved_names_cannot_be_captured_by_commands_or_verbs() {
+    let d = test_daemon::start("saved name grammar");
+    for name in ["status", "read"] {
+        let failure = crate::test_answers::refusal(line(
+            &d,
+            &format!("reserved-{name}"),
+            json!({
+                "selection":"sessions", "steps":[{"verb":"save","name":name}]
+            }),
+        ));
+        assert_eq!(failure.code.as_deref(), Some("bad_value"));
+        assert!(failure.message.contains(name), "{failure:?}");
+    }
+    assert_eq!(count(&d, "assertions where kind:saved_query"), 0);
+    steps(
+        &d,
+        "ordinary-saved-name",
+        json!({"selection":"sessions", "steps":[{"verb":"save","name":"grammar-control"}]}),
+    );
+    assert_eq!(count(&d, "query:grammar-control"), 1);
+}
+
+#[test]
+fn a_save_retry_retains_original_child_revisions_and_undo_after_definition_changes() {
+    let d = test_daemon::start("Save child identities");
+    let save = |query: &str| json!({"selection":query,"steps":[{"verb":"save","name":"child-name","watch":true,"hold":"20m"}]});
+    let first = steps(&d, "first-save", save("sessions"));
+    let second = steps(&d, "second-save", save("sessions"));
+    let part = |report: &Value| report["outcome"]["reply"]["reply"].clone();
+    let first_parts = part(&first[0]);
+    let second_parts = part(&second[0]);
+    // Saved queries and signals revise the current named record even when
+    // their value is unchanged. A retry retains its own accepted revisions.
+    for field in ["saved", "watch"] {
+        assert_ne!(second_parts[field]["id"], first_parts[field]["id"]);
+        assert_eq!(second_parts[field]["repeat"], false);
+    }
+    assert_eq!(second[0]["outcome"]["undo"].as_array().unwrap().len(), 2);
+    assert_eq!(second_parts["kept"]["id"], "second-save-1-keep");
+    steps(&d, "changed-definition", save("messages"));
+    for (id, original) in [("first-save", &first[0]), ("second-save", &second[0])] {
+        let retry = steps(&d, id, save("sessions"));
+        for field in ["saved", "watch", "kept"] {
+            assert_eq!(part(&retry[0])[field]["id"], part(original)[field]["id"]);
+            assert_eq!(part(&retry[0])[field]["repeat"], true);
+        }
+        assert_eq!(retry[0]["outcome"]["undo"], original["outcome"]["undo"]);
+    }
+    assert_eq!(first[0]["outcome"]["undo"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn an_owned_save_finishes_atomically_after_deadline_then_stops_later_steps() {
+    use polylogue_store::{read::limit::ReadLimit, writer::DispatchPhase};
+    use std::time::Duration;
+    let d = test_daemon::start("atomic Save ownership");
+    let pause = d
+        .daemon
+        .writes
+        .as_ref()
+        .unwrap()
+        .pause_user_dispatch_for_test("owned-save-1", DispatchPhase::Owned);
+    let limit = ReadLimit::new(Duration::from_secs(2), Default::default());
+    let request = Call::new(
+        "rows",
+        json!({"selection":"sessions","steps":[
+            {"verb":"save","name":"owned-question","watch":true,"hold":"20m"},
+            {"verb":"read"},{"verb":"tag","name":"not-after-deadline"}
+        ]}),
+    )
+    .id("owned-save");
+    let answer = std::thread::scope(|scope| {
+        let worker = scope.spawn(|| request.limit(limit.clone()).answer(&d.daemon));
+        pause.wait().expect("Save must reach writer ownership");
+        while limit.check().is_ok() {
+            std::thread::yield_now();
+        }
+        pause.release();
+        worker.join().unwrap()
+    });
+    let value = crate::test_answers::ok(answer);
+    let reports = value["reply"]["steps"].as_array().unwrap();
+    assert_eq!(reports[0]["outcome"]["status"], "done", "{value}");
+    assert_eq!(
+        reports[0]["outcome"]["undo"].as_array().unwrap().len(),
+        2,
+        "{value}"
+    );
+    assert_eq!(reports[1]["outcome"]["error"]["kind"], "timeout", "{value}");
+    assert_eq!(reports[2]["outcome"]["status"], "not_run", "{value}");
+    let reader = d.daemon.reads.reader().unwrap();
+    let accepted = reader.user_request("owned-save-1").unwrap().unwrap();
+    let polylogue_model::user::UserWrite::SaveSelection(save) = accepted.write else {
+        panic!("one atomic Save request")
+    };
+    assert_eq!(save.outcomes.as_ref().unwrap().kept.id, "owned-save-1-keep");
+    for child in [
+        "owned-save-1-save",
+        "owned-save-1-keep",
+        "owned-save-1-watch",
+    ] {
+        assert!(
+            reader.user_request(child).unwrap().is_none(),
+            "one parent receipt: {child}"
+        );
+    }
+    drop(reader);
+    assert_eq!(count(&d, "assertions where kind:saved_query"), 1);
+    assert_eq!(count(&d, "assertions where kind:signal"), 1);
+    assert_eq!(count(&d, "assertions where kind:tag"), 0);
+    assert_eq!(count(&d, "result:owned-save-1-keep"), 1);
 }

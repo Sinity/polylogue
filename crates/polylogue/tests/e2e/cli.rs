@@ -8,37 +8,60 @@ use std::path::Path;
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-// Exercise the real CLI with the shared request envelope. Transport rendering itself
-// is covered by the command-declaration tests in the binary.
-fn continuation_arguments(call: &polylogue_model::read::ReadyCall) -> Vec<String> {
-    use command_surface::{Deadline, TokenBudget};
-    let request = &call.request;
-    assert!(matches!(request.operation.as_str(), "read" | "attachment"));
-    let mut arguments = vec![
-        "--json".into(),
-        request.operation.clone(),
-        "--request".into(),
-        serde_json::to_string(&request.arguments).unwrap(),
-        "--request-id".into(),
-        request.request_id.clone(),
-    ];
-    match request.deadline {
-        Deadline::Default => {}
-        Deadline::None => arguments.extend(["--deadline".into(), "none".into()]),
-        Deadline::Milliseconds(ms) => arguments.extend(["--deadline".into(), ms.to_string()]),
+/// Execute the typed continuation as supplied by the daemon. CLI formatting
+/// and execution are tested in the binary through its actual declarations.
+fn follow(
+    env: &crate::Fixture,
+    call: &polylogue_model::read::ReadyCall,
+) -> command_surface::Answer<serde_json::Value> {
+    use std::io::Write as _;
+    use std::os::unix::net::UnixStream;
+    assert!(matches!(
+        call.request.operation.as_str(),
+        "rows" | "attachment"
+    ));
+    let mut socket = UnixStream::connect(env.archive().join("daemon.sock")).unwrap();
+    socket.set_read_timeout(Some(READY_DEADLINE)).unwrap();
+    serde_json::to_writer(&mut socket, &call.request).unwrap();
+    socket.write_all(b"\n").unwrap();
+    let mut line = String::new();
+    assert!(BufReader::new(socket).read_line(&mut line).unwrap() > 0);
+    serde_json::from_str(&line).unwrap()
+}
+
+pub(super) fn listing(value: serde_json::Value) -> serde_json::Value {
+    assert_eq!(value["kind"], "listing", "{value}");
+    value["reply"].clone()
+}
+
+fn read_page(value: serde_json::Value) -> polylogue_model::read::ReadPage {
+    assert_eq!(value["kind"], "steps", "{value}");
+    let steps = value["reply"]["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 1, "{value}");
+    let outcome = &steps[0]["outcome"];
+    assert_eq!(outcome["status"], "done", "{value}");
+    assert_eq!(outcome["reply"]["kind"], "read", "{value}");
+    serde_json::from_value(outcome["reply"]["reply"].clone()).unwrap()
+}
+
+fn read_failure(answer: command_surface::Answer<serde_json::Value>) -> command_surface::Failure {
+    if let command_surface::Outcome::Error(error) = &answer.outcome {
+        return error.clone();
     }
-    match request.budget_tokens {
-        TokenBudget::Default => {}
-        TokenBudget::Unlimited => arguments.extend(["--budget".into(), "none".into()]),
-        TokenBudget::Tokens(n) => arguments.extend(["--budget".into(), n.to_string()]),
-    }
-    if let Some(cursor) = &request.cursor {
-        arguments.extend(["--cursor".into(), cursor.clone()]);
-    }
-    if request.fresh {
-        arguments.push("--fresh".into());
-    }
-    arguments
+    let value = answer.value().unwrap();
+    let steps = value["reply"]["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 1, "{answer:?}");
+    assert_eq!(steps[0]["outcome"]["status"], "failed", "{answer:?}");
+    serde_json::from_value(steps[0]["outcome"]["error"].clone()).unwrap()
+}
+
+fn followed_page(
+    env: &crate::Fixture,
+    call: &polylogue_model::read::ReadyCall,
+) -> polylogue_model::read::ReadPage {
+    let answer = follow(env, call);
+    assert_eq!(answer.exit_code(), 0, "{answer:?}");
+    read_page(answer.value().unwrap().clone())
 }
 
 const READY_DEADLINE: Duration = Duration::from_secs(60);
@@ -221,13 +244,14 @@ pub(super) fn query_rows(out: &Output) -> serde_json::Value {
             ..
         } => {
             assert!(out.status.success(), "{out:?}");
-            value
+            listing(value)
         }
         command_surface::Answer {
             outcome: command_surface::Outcome::Empty(value),
             ..
         } => {
             assert_eq!(out.status.code(), Some(1), "{out:?}");
+            let value = listing(value);
             assert_eq!(value["count"], 0, "{value}");
             assert_eq!(value["rows"], serde_json::json!([]), "{value}");
             value
@@ -499,8 +523,8 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
     assert!(ids.contains(&"claude-code:live".to_owned()), "{ids:?}");
     assert!(ids.contains(&"claude-code:exported".to_owned()), "{ids:?}");
 
-    let out = cli(&env, &["--json", "read", "session:claude-code:exported"]);
-    let read: polylogue_model::read::ReadPage = serde_json::from_value(json(&out)).unwrap();
+    let out = cli(&env, &["--json", "session:claude-code:exported", "read"]);
+    let read: polylogue_model::read::ReadPage = read_page(json(&out));
     let mut imported_items = read_current::Items::default();
     imported_items.push(&read);
     assert!(
@@ -509,7 +533,7 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
     );
     assert_eq!(imported_items.text(), "from an import");
 
-    let out = cli(&env, &["read", "session:claude-code:live"]);
+    let out = cli(&env, &["session:claude-code:live", "read"]);
     assert!(String::from_utf8_lossy(&out.stdout).contains("from a live file"));
 
     drop(daemon);
@@ -520,27 +544,27 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
 
 #[test]
 fn ai_studio_drive_prompt_and_title_read_identically_after_a_rebuild_from_stored_bytes() {
-    use polylogue_model::read::{ItemKind, ReadHeader, ReadItem, ReadPage, ValueState};
+    use polylogue_model::read::{ItemKind, ReadHeader, ReadItem, ValueState};
 
     fn reading(env: &crate::Fixture) -> (ReadHeader, Vec<ReadItem>) {
         // The system instruction is a harness message, which a default read
         // collapses to an indicator (docs/reading.md, harness messages).
-        let mut out = cli(
+        let out = cli(
             env,
             &[
                 "--json",
-                "read",
                 "session:ai-studio:drive-id",
+                "read",
                 "--show",
                 "harness:full",
             ],
         );
+        assert!(out.status.success(), "{out:?}");
+        let mut page = read_page(json(&out));
         let mut items = read_current::Items::default();
         let mut header = None;
         let mut continuations = std::collections::BTreeSet::new();
         loop {
-            assert!(out.status.success(), "{out:?}");
-            let page: ReadPage = serde_json::from_value(json(&out)).unwrap();
             if let Some(expected) = &header {
                 assert_eq!(&page.document.header, expected);
             } else {
@@ -554,9 +578,7 @@ fn ai_studio_drive_prompt_and_title_read_identically_after_a_rebuild_from_stored
                 continuations.insert(serde_json::to_string(&next.request).unwrap()),
                 "repeated continuation"
             );
-            let continuation = continuation_arguments(&next);
-            let args = continuation.iter().map(String::as_str).collect::<Vec<_>>();
-            out = cli(env, &args);
+            page = followed_page(env, &next);
         }
         (header.unwrap(), items.into_values())
     }
@@ -567,8 +589,8 @@ fn ai_studio_drive_prompt_and_title_read_identically_after_a_rebuild_from_stored
             env,
             &[
                 "--json",
-                "read",
                 "session:ai-studio:drive-id",
+                "read",
                 "--format",
                 "jsonl",
                 "--to",
@@ -779,8 +801,9 @@ mod terminal;
 
 mod index_open;
 
+#[cfg(target_os = "linux")]
 #[test]
-fn continue_exec_without_recorded_directory_is_refused() {
+fn terminal_resume_without_recorded_directory_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let archive = dir.path().join("archive");
@@ -793,12 +816,686 @@ fn continue_exec_without_recorded_directory_is_refused() {
     let _daemon = start_daemon(&env);
     wait_status(&env, |s| s["store"]["messages"].as_u64() == Some(1));
 
-    let out = cli(&env, &["continue", "claude-code:s1", "--exec"]);
+    use rustix::pty::{OpenptFlags, grantpt, ioctl_tiocgptpeer, openpt, unlockpt};
+    let flags = OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC;
+    let master = openpt(flags).unwrap();
+    grantpt(&master).unwrap();
+    unlockpt(&master).unwrap();
+    let terminal = std::fs::File::from(ioctl_tiocgptpeer(&master, flags).unwrap());
+    let out = env
+        .command()
+        .args(["session:claude-code:s1", "resume"])
+        .stdin(terminal.try_clone().unwrap())
+        .stdout(terminal)
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    drop(master);
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("directory_unknown"), "{stderr}");
+    let fallback = stderr
+        .lines()
+        .find_map(|line| {
+            line.split_once("continue with context instead: ")
+                .map(|(_, command)| command)
+        })
+        .expect("a usable context-assisted command");
+    let continued = printed_cli(&env, fallback);
+    assert!(continued.status.success(), "{continued:?}");
     assert!(
-        stderr.contains("polylogue takeover claude-code:s1"),
+        String::from_utf8_lossy(&continued.stdout).contains("no directory"),
+        "{continued:?}"
+    );
+    assert_eq!(fallback, "polylogue session:claude-code:s1 brief");
+}
+
+#[test]
+fn failed_step_exits_with_its_code_and_prints_undo() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let archive = dir.path().join("archive");
+    let project = home.join(".claude/projects/-line-prefix");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("s1.jsonl"),
+        line("u1", "s1", "Synthetic failed-prefix control"),
+    )
+    .unwrap();
+    let env = crate::Fixture::new(&archive, &home, &dir.path().join("config"));
+    let _daemon = start_daemon(&env);
+    wait_status(&env, |status| status["store"]["messages"] == 1);
+    let words = [
+        "--request-id",
+        "line-prefix",
+        "session:claude-code:s1",
+        "tag",
+        "prefix-done",
+        "read",
+        "--view",
+        "raw",
+        "--show",
+        "tools:full",
+        "tag",
+        "not-run",
+    ];
+    let mut undo = None;
+    for _ in 0..2 {
+        let output = cli(&env, &words);
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        let text = String::from_utf8(output.stderr).unwrap();
+        assert!(text.contains("view raw does not accept tools"), "{text}");
+        assert!(text.contains("tag not run"), "{text}");
+        let command = text
+            .lines()
+            .find_map(|line| line.strip_prefix("undo: "))
+            .expect("the committed prefix supplies undo");
+        if let Some(previous) = &undo {
+            assert_eq!(command, previous);
+        }
+        undo = Some(command.to_owned());
+        let listed = cli(
+            &env,
+            &["--json", "assertions where kind:tag", "--fields", "key"],
+        );
+        assert!(listed.status.success(), "{listed:?}");
+        let listing = json(&listed);
+        assert_eq!(listing["kind"], "listing");
+        assert_eq!(
+            listing["reply"]["rows"],
+            serde_json::json!([{"key":"prefix-done"}])
+        );
+    }
+    let withdrawn = printed_cli(&env, undo.as_deref().unwrap());
+    assert!(withdrawn.status.success(), "{withdrawn:?}");
+    let remaining = listing(json(&cli(&env, &["--json", "assertions where kind:tag"])));
+    assert_eq!(remaining["count"], 0);
+    let mut json_words = vec!["--json", "--request-id", "line-prefix-json"];
+    json_words.extend_from_slice(&words[2..]);
+    let tag = json_words
+        .iter()
+        .position(|word| *word == "prefix-done")
+        .unwrap();
+    json_words[tag] = "json-prefix-done";
+    let output = cli(&env, &json_words);
+    let answer: command_surface::Answer<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).unwrap();
+    let reports = answer.value().unwrap()["reply"]["steps"]
+        .as_array()
+        .unwrap();
+    assert_eq!(reports.len(), 3);
+    assert_eq!(reports[0]["outcome"]["status"], "done");
+    assert_eq!(reports[1]["outcome"]["status"], "failed");
+    assert_eq!(reports[2]["outcome"]["status"], "not_run");
+    assert_eq!(reports[0]["outcome"]["undo"].as_array().unwrap().len(), 1);
+    let failure: command_surface::Failure =
+        serde_json::from_value(reports[1]["outcome"]["error"].clone()).unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(i32::from(failure.kind.exit_code()))
+    );
+}
+
+fn two_session_cli() -> (tempfile::TempDir, crate::Fixture, Daemon) {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let project = home.join(".claude/projects/-line");
+    std::fs::create_dir_all(&project).unwrap();
+    for id in ["s1", "s2"] {
+        std::fs::write(
+            project.join(format!("{id}.jsonl")),
+            line(id, id, "Synthetic line candidate"),
+        )
+        .unwrap();
+    }
+    let env = crate::Fixture::new(
+        &dir.path().join("archive"),
+        &home,
+        &dir.path().join("config"),
+    );
+    let daemon = start_daemon(&env);
+    wait_status(&env, |status| status["store"]["messages"] == 2);
+    (dir, env, daemon)
+}
+
+#[test]
+fn verb_alone_refused_off_terminal_with_lines() {
+    let (_dir, env, _daemon) = two_session_cli();
+    let output = cli(&env, &["--json", "read"]);
+    let answer: command_surface::Answer<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).unwrap();
+    let failure = answer
+        .failure()
+        .expect("a verb without a choice is refused off terminal");
+    assert_eq!(output.status.code(), Some(i32::from(answer.exit_code())));
+    assert_eq!(failure.code.as_deref(), Some("ambiguous"));
+    let hint = failure.hint.as_deref().unwrap();
+    assert!(
+        hint.lines().any(|line| line == "polylogue latest read"),
+        "{hint}"
+    );
+    assert!(
+        hint.lines().any(|line| line == "polylogue SESSION read"),
+        "{hint}"
+    );
+    let output = cli(&env, &["--json", "sessions | sort by id", "pick", "read"]);
+    let answer: command_surface::Answer<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).unwrap();
+    let failure = answer.failure().expect("a picker needs a terminal");
+    assert_eq!(failure.code.as_deref(), Some("ambiguous"));
+    assert_eq!(
+        failure.hint.as_deref().unwrap().trim(),
+        "polylogue session:claude-code:s1 read\npolylogue session:claude-code:s2 read"
+    );
+}
+
+#[test]
+fn explain_option_runs_nothing() {
+    let (_dir, env, _daemon) = two_session_cli();
+    let output = cli(
+        &env,
+        &[
+            "--json",
+            "--explain",
+            "sessions",
+            "tag",
+            "not-written",
+            "--all",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(json(&output)["kind"], "explained");
+    assert_eq!(
+        listing(json(&cli(&env, &["--json", "assertions where kind:tag"])))["count"],
+        0
+    );
+}
+
+#[test]
+fn ordered_read_destinations_receive_their_own_steps() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let archive = dir.path().join("archive");
+    let project = home.join(".claude/projects/-line-delivery");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("s1.jsonl"),
+        line("u1", "s1", "Synthetic ordered delivery body"),
+    )
+    .unwrap();
+    let env = crate::Fixture::new(&archive, &home, &dir.path().join("config"));
+    let _daemon = start_daemon(&env);
+    wait_status(&env, |status| status["store"]["messages"] == 1);
+    let before = dir.path().join("before.md");
+    let after = dir.path().join("after.md");
+    let output = cli(
+        &env,
+        &[
+            "--deadline",
+            "none",
+            "--request-id",
+            "ordered-destinations",
+            "session:claude-code:s1",
+            "read",
+            "--show",
+            "annotations",
+            "--to",
+            before.to_str().unwrap(),
+            "tag",
+            "delivery-after-first-read",
+            "read",
+            "--show",
+            "annotations",
+            "--to",
+            after.to_str().unwrap(),
+            "read",
+            "--show",
+            "annotations",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let before = std::fs::read_to_string(before).unwrap();
+    let after = std::fs::read_to_string(after).unwrap();
+    assert!(
+        before.contains("Synthetic ordered delivery body"),
+        "{before}"
+    );
+    assert!(!before.contains("delivery-after-first-read"), "{before}");
+    assert!(after.contains("delivery-after-first-read"), "{after}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("Synthetic ordered delivery body"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("delivery-after-first-read"), "{stdout}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let undo = stderr
+        .lines()
+        .filter_map(|line| line.strip_prefix("undo: "))
+        .collect::<Vec<_>>();
+    assert_eq!(undo.len(), 1, "{stderr}");
+    let withdrawn = printed_cli(&env, undo[0]);
+    assert!(withdrawn.status.success(), "{withdrawn:?}");
+    assert_eq!(
+        listing(json(&cli(&env, &["--json", "assertions where kind:tag"])))["count"],
+        0
+    );
+}
+/// Drive the real binary through a PTY, waiting for a seeded candidate before
+/// choosing. A failed assertion still kills and reaps the owned client.
+fn choose(env: &crate::Fixture, args: &[&str], keys: &[u8]) -> Output {
+    use rustix::pty::{OpenptFlags, grantpt, ioctl_tiocgptpeer, openpt, unlockpt};
+    use std::fs::File;
+    use std::sync::mpsc;
+    struct Client(Option<Child>);
+    impl Drop for Client {
+        fn drop(&mut self) {
+            if let Some(child) = self.0.as_mut() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+    let flags = OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC;
+    let master = openpt(flags).unwrap();
+    grantpt(&master).unwrap();
+    unlockpt(&master).unwrap();
+    let slave = File::from(ioctl_tiocgptpeer(&master, flags).unwrap());
+    assert!(
+        Command::new("stty")
+            .args(["rows", "24", "cols", "100"])
+            .stdin(slave.try_clone().unwrap())
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut master = File::from(master);
+    let mut command = env.command();
+    let child = command
+        .args(args)
+        .stdin(slave.try_clone().unwrap())
+        .stdout(slave.try_clone().unwrap())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut client = Client(Some(child));
+    drop(command);
+    drop(slave);
+    let (send, receive) = mpsc::channel();
+    let mut reader = master.try_clone().unwrap();
+    let output_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let mut buffer = [0; 8192];
+        while let Ok(count) = reader.read(&mut buffer) {
+            if count == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buffer[..count]);
+            let _ = send.send(buffer[..count].to_vec());
+        }
+        bytes
+    });
+    let deadline = Instant::now() + READY_DEADLINE;
+    let mut shown = Vec::new();
+    while !String::from_utf8_lossy(&shown).contains("Alpha picker candidate") {
+        let left = deadline
+            .checked_duration_since(Instant::now())
+            .expect("picker did not show its accepted candidates");
+        match receive.recv_timeout(left) {
+            Ok(bytes) => shown.extend(bytes),
+            Err(error) => {
+                let mut child = client.0.take().unwrap();
+                let _ = child.kill();
+                let output = child.wait_with_output().unwrap();
+                panic!(
+                    "picker ended before its candidates: {error}; shown={}; child={output:?}",
+                    String::from_utf8_lossy(&shown)
+                );
+            }
+        }
+    }
+    master.write_all(keys).unwrap();
+    while client.0.as_mut().unwrap().try_wait().unwrap().is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "picker did not finish after selection"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let mut output = client.0.take().unwrap().wait_with_output().unwrap();
+    drop(master);
+    output.stdout = output_reader.join().unwrap();
+    output
+}
+
+pub(super) fn printed_cli(env: &crate::Fixture, command: &str) -> Output {
+    let mut shell = Command::new("sh");
+    env.environment(&mut shell);
+    let script = format!("polylogue() {{ \"$POLYLOGUE_TEST_BINARY\" \"$@\"; }}\n{command}");
+    shell
+        .env("POLYLOGUE_TEST_BINARY", crate::BIN)
+        .args(["-c", &script])
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn picker_prefix_suffix_retry_cancellation_and_complete_undo_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let project = home.join(".claude/projects/-picker");
+    std::fs::create_dir_all(&project).unwrap();
+    for (id, title) in [
+        ("s1", "Alpha picker candidate"),
+        ("s2", "Beta picker candidate"),
+    ] {
+        std::fs::write(project.join(format!("{id}.jsonl")), line(id, id, title)).unwrap();
+    }
+    let env = crate::Fixture::new(
+        &dir.path().join("archive"),
+        &home,
+        &dir.path().join("config"),
+    );
+    let _daemon = start_daemon(&env);
+    wait_status(&env, |status| status["store"]["messages"] == 2);
+    for (id, title) in [
+        ("s1", "Alpha picker candidate"),
+        ("s2", "Beta picker candidate"),
+    ] {
+        let out = cli(
+            &env,
+            &[
+                &format!("session:claude-code:{id}"),
+                "note",
+                title,
+                "--as",
+                "title",
+            ],
+        );
+        assert!(out.status.success(), "{out:?}");
+    }
+    let explained = cli(
+        &env,
+        &[
+            "--explain",
+            "sessions",
+            "tag",
+            "not-written",
+            "--all",
+            "pick",
+            "tag",
+            "also-not-written",
+        ],
+    );
+    assert!(explained.status.success(), "{explained:?}");
+    let empty = json(&cli(&env, &["--json", "assertions where kind:tag"]));
+    assert_eq!(empty["reply"]["count"], 0, "{empty}");
+    let simple = choose(
+        &env,
+        &[
+            "--request-id",
+            "simple-picker",
+            "sessions | sort by id",
+            "pick",
+            "note",
+            "Selected through the picker",
+        ],
+        b"\r",
+    );
+    assert!(simple.status.success(), "{simple:?}");
+    let picked = json(&cli(
+        &env,
+        &["--json", "assertions where id:simple-picker-pick-suffix-1"],
+    ));
+    assert_eq!(picked["reply"]["count"], 1, "{picked}");
+    for (id, count) in [("s1", 1), ("s2", 0)] {
+        let selected = json(&cli(
+            &env,
+            &[
+                "--json",
+                &format!("assertions where kind:note about:session:claude-code:{id}"),
+            ],
+        ));
+        assert_eq!(selected["reply"]["count"], count, "{selected}");
+    }
+    let words = [
+        "--request-id",
+        "picker-prefix-suffix",
+        "sessions where NOT tag:prefix | sort by id",
+        "tag",
+        "prefix",
+        "--all",
+        "pick",
+        "tag",
+        "suffix",
+    ];
+    let mut undo = Vec::new();
+    for _ in 0..2 {
+        let output = choose(&env, &words, b"\r");
+        assert!(output.status.success(), "{output:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        let current: Vec<_> = stderr
+            .lines()
+            .filter_map(|line| line.strip_prefix("undo: "))
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(current.len(), 2, "{stderr}");
+        if undo.is_empty() {
+            undo = current;
+        } else {
+            assert_eq!(current, undo);
+        }
+        let found = json(&cli(&env, &["--json", "assertions where kind:tag"]));
+        assert_eq!(found["reply"]["count"], 3, "{found}");
+        let chosen = json(&cli(
+            &env,
+            &["--json", "sessions where tag:suffix", "--fields", "id"],
+        ));
+        assert_eq!(
+            chosen["reply"]["rows"],
+            serde_json::json!([{"id":"claude-code:s1"}]),
+            "{chosen}"
+        );
+    }
+    for command in undo.iter().rev() {
+        let output = printed_cli(&env, command);
+        assert!(output.status.success(), "{output:?}");
+    }
+    let found = json(&cli(&env, &["--json", "assertions where kind:tag"]));
+    assert_eq!(found["reply"]["count"], 0, "{found}");
+    let cancelled = choose(
+        &env,
+        &[
+            "--request-id",
+            "picker-cancel",
+            "sessions where NOT tag:prefix | sort by id",
+            "tag",
+            "prefix",
+            "--all",
+            "pick",
+            "tag",
+            "suffix",
+        ],
+        b"\x1b",
+    );
+    assert!(cancelled.status.success(), "{cancelled:?}");
+    let stderr = String::from_utf8(cancelled.stderr).unwrap();
+    assert_eq!(
+        stderr
+            .lines()
+            .filter(|line| line.starts_with("undo: "))
+            .count(),
+        1,
         "{stderr}"
     );
+    let found = json(&cli(&env, &["--json", "assertions where kind:tag"]));
+    assert_eq!(found["reply"]["count"], 2, "{found}");
+    let suffix = json(&cli(&env, &["--json", "sessions where tag:suffix"]));
+    assert_eq!(suffix["reply"]["count"], 0, "{suffix}");
+    let prior = cli(
+        &env,
+        &[
+            "--request-id",
+            "tag-existing",
+            "session:claude-code:s1",
+            "tag",
+            "only-once",
+        ],
+    );
+    assert!(prior.status.success(), "{prior:?}");
+    let mixed_args = [
+        "--json",
+        "--request-id",
+        "tag-mixed",
+        "sessions | sort by id",
+        "tag",
+        "only-once",
+        "--all",
+    ];
+    let mixed = cli(&env, &mixed_args);
+    assert!(mixed.status.success(), "{mixed:?}");
+    let first = json(&mixed);
+    let undo = first["reply"]["steps"][0]["outcome"]["undo"]
+        .as_array()
+        .unwrap();
+    assert_eq!(undo.len(), 1);
+    let retry = cli(&env, &mixed_args);
+    assert!(retry.status.success(), "{retry:?}");
+    assert_eq!(
+        json(&retry)["reply"]["steps"][0]["outcome"]["undo"],
+        serde_json::json!(undo)
+    );
+    let restored = printed_cli(&env, undo[0].as_str().unwrap());
+    assert!(restored.status.success(), "{restored:?}");
+    let remaining = json(&cli(
+        &env,
+        &[
+            "--json",
+            "sessions where tag:only-once | sort by id",
+            "--fields",
+            "id",
+        ],
+    ));
+    assert_eq!(
+        remaining["reply"]["rows"],
+        serde_json::json!([{"id":"claude-code:s1"}])
+    );
+    let already = cli(
+        &env,
+        &[
+            "--json",
+            "--request-id",
+            "tag-already",
+            "session:claude-code:s1",
+            "tag",
+            "only-once",
+        ],
+    );
+    assert!(already.status.success(), "{already:?}");
+    assert!(
+        json(&already)["reply"]["steps"][0]["outcome"]
+            .get("undo")
+            .is_none()
+    );
+}
+
+#[test]
+fn printed_cli_continuation_and_previous_keep_the_accepted_options() {
+    use polylogue_model::read::ReadDocument;
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let project = home.join(".claude/projects/-pages");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("s1.jsonl"),
+        line("u1", "s1", &"Synthetic λ🙂 page text. ".repeat(100)),
+    )
+    .unwrap();
+    let env = crate::Fixture::new(
+        &dir.path().join("archive"),
+        &home,
+        &dir.path().join("config"),
+    );
+    let _daemon = start_daemon(&env);
+    wait_status(&env, |status| status["store"]["messages"] == 1);
+    let output = cli(
+        &env,
+        &[
+            "--budget",
+            "333",
+            "--deadline",
+            "none",
+            "--request-id",
+            "cli-page-grants",
+            "--all",
+            "session:claude-code:s1",
+            "read",
+            "--format",
+            "json",
+            "--budget",
+            "1",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let first: ReadDocument = serde_json::from_slice(&output.stdout).unwrap();
+    let next = first.footer.next.as_ref().expect("one token must continue");
+    let check_options = |call: &polylogue_model::read::ReadyCall| {
+        assert_eq!(
+            call.request.budget_tokens,
+            command_surface::TokenBudget::Tokens(333)
+        );
+        assert_eq!(call.request.deadline, command_surface::Deadline::None);
+        assert!(!call.request.fresh);
+        assert_eq!(call.request.format, command_surface::Format::Text);
+        assert_eq!(call.request.arguments["all"], true);
+        assert_eq!(call.request.arguments["steps"][0]["budget"], 1);
+        assert_eq!(call.request.arguments["steps"][0]["format"], "json");
+    };
+    check_options(next);
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let commands = stderr
+        .lines()
+        .filter_map(|line| line.strip_prefix("continue: "))
+        .collect::<Vec<_>>();
+    assert_eq!(commands.len(), 1, "{stderr}");
+    assert!(commands[0].contains(&next.request.request_id));
+    let continued = printed_cli(&env, commands[0]);
+    assert!(continued.status.success(), "{continued:?}");
+    let second: ReadDocument = serde_json::from_slice(&continued.stdout).unwrap();
+    let expected = followed_page(&env, next);
+    assert_eq!(second.items, expected.document.items);
+    assert_eq!(second.header, expected.document.header);
+    let previous = second
+        .footer
+        .previous
+        .as_ref()
+        .expect("second page has a predecessor");
+    check_options(previous);
+    let cursor = previous.request.arguments["steps"][0]["cursor"]
+        .as_str()
+        .unwrap();
+    let returned = cli(
+        &env,
+        &[
+            "--budget",
+            "333",
+            "--deadline",
+            "none",
+            "--request-id",
+            &previous.request.request_id,
+            "--all",
+            "session:claude-code:s1",
+            "read",
+            "--format",
+            "json",
+            "--budget",
+            "1",
+            "--cursor",
+            cursor,
+        ],
+    );
+    assert!(returned.status.success(), "{returned:?}");
+    let returned: ReadDocument = serde_json::from_slice(&returned.stdout).unwrap();
+    assert_eq!(returned.items, first.items);
+    assert_eq!(returned.header, first.header);
 }

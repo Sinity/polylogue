@@ -7,6 +7,12 @@ use super::*;
 use polylogue_store::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
 use query_language::time::Clock;
 
+/// Exercise the same resolution and Keep producer used by a Save step.
+fn save_rows(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
+    let (retained, references) = capture_selection(reader, &ask)?;
+    keep_selected(reader, ask, &retained, references.as_deref())
+}
+
 const DAY: i64 = 86_400_000;
 /// 2026-10-01T12:00Z.
 const OCT1: i64 = 1_790_856_000_000;
@@ -846,7 +852,7 @@ fn unrelated_query_steps_flat_with_500_kept() {
     let kept = {
         let pool = w.fx.reads().unwrap();
         let r = pool.reader().unwrap();
-        keep(&r, ask("messages")).unwrap()
+        save_rows(&r, ask("messages")).unwrap()
     };
     w.fx.kept_result("0199-named", "messages", &kept.to_string())
         .unwrap();
@@ -873,7 +879,7 @@ fn kept_results_read_back_as_they_were_kept() {
     let kept_of = |w: &TestArchive, text: &str| {
         let pool = w.fx.reads().unwrap();
         let r = pool.reader().unwrap();
-        keep(&r, ask(text)).unwrap()
+        save_rows(&r, ask(text)).unwrap()
     };
     let kept = kept_of(
         &w,
@@ -1485,7 +1491,7 @@ fn failed_saved_result_storage_is_not_an_empty_catalog() {
     );
     let pool = fixture.fx.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let kept_failure = keep(&reader, ask("result:broken")).unwrap_err();
+    let kept_failure = save_rows(&reader, ask("result:broken")).unwrap_err();
     assert_eq!(kept_failure.code(), "store");
     assert_eq!(kept_failure.message, failure.message);
 }
@@ -1543,7 +1549,7 @@ fn damaged_kept_result_shapes_are_not_defaulted_or_discarded() {
         assert!(run(&reader, ask("sessions")).is_ok());
         for failure in [
             run(&reader, ask("result:broken")).unwrap_err(),
-            keep(&reader, ask("result:broken")).unwrap_err(),
+            save_rows(&reader, ask("result:broken")).unwrap_err(),
         ] {
             assert_eq!(failure.code(), "store");
             assert!(failure.message.contains("broken"), "{failure:?}");
@@ -1559,7 +1565,7 @@ fn kept_results_without_match_rows_do_not_need_match_columns() {
     let body = {
         let pool = fixture.reads().unwrap();
         let reader = pool.reader().unwrap();
-        keep(&reader, ask("sessions")).unwrap()
+        save_rows(&reader, ask("sessions")).unwrap()
     };
     assert!(body.get("match_columns").is_none());
     fixture
@@ -1674,7 +1680,7 @@ fn keep_holds_bound_declarations_of_same_name_text_casts() {
             [FieldKind::Text, FieldKind::Text],
         ),
     ] {
-        let body = keep(&reader, ask(text)).unwrap();
+        let body = save_rows(&reader, ask(text)).unwrap();
         let metadata: OutputMetadata =
             serde_json::from_value(body["output_metadata"].clone()).unwrap();
         let schema = metadata.rows.as_ref().expect("producer declaration");

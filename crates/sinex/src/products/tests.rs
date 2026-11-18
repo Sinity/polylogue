@@ -30,7 +30,7 @@ fn restored_assertion_keys_keep_each_import_source() {
 }
 
 #[test]
-fn line_resolution_has_its_own_kinds_and_existing_authored_definitions_stay_exact() {
+fn line_writes_have_their_own_kinds_and_existing_authored_definitions_stay_exact() {
     use polylogue_model::authored::{AuthoredEffect, PreparedRequest};
     use polylogue_model::user::UserOutcome;
     let prepared = |write| PreparedRequest {
@@ -70,7 +70,38 @@ fn line_resolution_has_its_own_kinds_and_existing_authored_definitions_stay_exac
         resolved: Some(vec![
             polylogue_model::Reference::parse("session:codex:one").unwrap(),
         ]),
+        retained: None,
     });
+    let mut saved = prepared(UserWrite::SaveSelection(Box::new(
+        polylogue_model::user::SaveSelection {
+            name: None,
+            query: "sessions".into(),
+            denominator: None,
+            rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
+            read_at: r#"{"now":1}"#.into(),
+            watch: None,
+            outcomes: Some(polylogue_model::user::SaveReport {
+                saved: None,
+                kept: UserOutcome {
+                    id: "declared-line-keep".into(),
+                    repeat: false,
+                    pending: false,
+                },
+                watch: None,
+            }),
+        },
+    )));
+    saved
+        .effect
+        .kept_results
+        .push(polylogue_model::authored::KeptResult {
+            id: "declared-line-keep".into(),
+            name: None,
+            query: "sessions".into(),
+            ran_at: saved.request.at,
+            read_at: r#"{"now":1}"#.into(),
+            rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
+        });
     let authored = prepared(UserWrite::Assert { assertions: vec![] });
     for (product, old_product, name, old_name) in [
         (
@@ -81,8 +112,22 @@ fn line_resolution_has_its_own_kinds_and_existing_authored_definitions_stay_exac
         ),
         (
             Product::RestoredRequest { prepared: journal },
-            Product::RestoredRequest { prepared: authored },
+            Product::RestoredRequest {
+                prepared: authored.clone(),
+            },
             "polylogue.line_resolution_restore",
+            "polylogue.request_restore",
+        ),
+        (
+            Product::Request(saved.clone()),
+            Product::Request(authored.clone()),
+            "polylogue.line_save",
+            "polylogue.assertion",
+        ),
+        (
+            Product::RestoredRequest { prepared: saved },
+            Product::RestoredRequest { prepared: authored },
+            "polylogue.line_save_restore",
             "polylogue.request_restore",
         ),
     ] {

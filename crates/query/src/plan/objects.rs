@@ -620,6 +620,84 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
     let _ = expand(&object.query, &catalog, &bindings)?;
     Ok(())
 }
+/// Rebuild the same question from accepted execution inputs, without resolving
+/// saved names against a newer catalog snapshot.
+pub fn replay_binding(
+    binding: &polylogue_model::query_objects::ReplayBinding,
+) -> Result<Plan, QueryError> {
+    let outputs: Vec<SourceOutput> = binding
+        .source_outputs
+        .iter()
+        .map(|output| SourceOutput {
+            source: output.source.clone(),
+            schema: output.schema.clone(),
+        })
+        .collect();
+    let catalog = catalog(&outputs);
+    let mut definitions = Vec::new();
+    let mut queries = vec![binding.bound_ast.clone()];
+    queries.extend(
+        binding
+            .definitions
+            .iter()
+            .map(|definition| definition.ast.clone()),
+    );
+    for mut query in queries {
+        walk(
+            &mut query,
+            &mut |query| {
+                let question =
+                    identity::question_id(query, &catalog, &BTreeMap::new()).map_err(language)?;
+                if question != binding.context.question
+                    && !definitions
+                        .iter()
+                        .any(|definition: &FrozenQueryDefinition| definition.question == question)
+                {
+                    definitions.push(FrozenQueryDefinition {
+                        question,
+                        normal_form: identity::normal_form(query, &catalog).map_err(language)?,
+                        parameters: BTreeMap::new(),
+                        query: query.clone(),
+                        source_outputs: capture_outputs(query, &catalog)?,
+                    });
+                }
+                Ok(())
+            },
+            &mut |_| Ok(()),
+        )?;
+    }
+    let edges = edges(&binding.bound_ast, &catalog)?;
+    let object = QueryObject {
+        id: binding.context.question,
+        normal_form: identity::normal_form(&binding.bound_ast, &catalog).map_err(language)?,
+        parameters: BTreeMap::new(),
+        query: binding.bound_ast.clone(),
+        source_outputs: capture_outputs(&binding.bound_ast, &catalog)?,
+        definitions,
+        dependencies: dependencies(&edges),
+        edges,
+    };
+    let expected = binding
+        .context
+        .versions
+        .get("catalog")
+        .map(String::as_str)
+        .ok_or_else(|| QueryError::invalid("accepted execution has no catalog identity"))?;
+    let mut plan = replay(&object, expected)?;
+    plan.text = binding.original_text.clone();
+    plan.definitions = binding
+        .definitions
+        .iter()
+        .map(|definition| ResolvedDefinition {
+            name: definition.name.clone(),
+            revision: definition.revision.clone(),
+            root: definition.root.clone(),
+            question_id: definition.question,
+        })
+        .collect();
+    Ok(plan)
+}
+
 /// Reconstruct a pure plan without resolving current aliases or reading data.
 /// The caller obtains the expected version from its authenticated run context.
 pub fn replay(object: &QueryObject, expected_catalog: &str) -> Result<Plan, QueryError> {

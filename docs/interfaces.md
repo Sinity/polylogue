@@ -33,7 +33,7 @@ The [terminal interface](terminal.md) owns what a person sees: the orientation s
 
 ## Grammar
 
-```
+```text
 polylogue                                       the orientation screen (terminal.md)
 polylogue COMMAND [ARGS] [OPTIONS]
 polylogue SELECTION [OPTIONS] [VERB [WORD] [OPTIONS]]…
@@ -46,8 +46,27 @@ The quotes hold which rows; the words after them say what to do.
 - **After the selection come verbs.** A verb is its name, then exactly its declared number of words ([Verb words](#verb-words)), each one shell argument, then its own options. The next argument that is neither an option nor owed to the current verb is the next verb. Because every verb's word count is fixed, a line parses left to right with one word of lookahead and no separator word.
 - **The two optional words:** `save` takes a name or nothing, and `edit` takes its text or nothing. The word after either is its argument unless it is absent, starts with `-` (other than `-` alone, which reads standard input), or is a verb name. Saved names never equal a verb or command name ([saved-queries.md](saved-queries.md#saved-names)), so `save` is never ambiguous; a note whose whole new text is one verb word is written `edit 'read.'` or `edit -`. `--explain` shows which reading a line got ([terminal.md](terminal.md#explain)).
 - **No verb lists the rows.** A selection alone lists them.
-- **Options belong where they stand.** Options before the first verb belong to the listing (`--page-size`, `--fields`, `--why`, `--to`, `--cursor`); options after a verb belong to that verb; the line options (`--json`, `--deadline`, `--request-id`, `--dry-run`, `--explain`, `--wait`, `--all`) go anywhere, on commands too. An option a verb or command does not declare is refused (exit 2) with the ones it does declare. `--` ends option parsing for a selection that begins with `-` other than `-` itself.
+- **Options belong where they stand.** Options before the first verb belong to the listing (`--page-size`, `--fields`, `--why`, `--to`, `--cursor`); options after a verb belong to that verb; the line options (`--json`, `--deadline`, `--request-id`, `--dry-run`, `--explain`, `--wait`, `--all`) go anywhere, on commands too. An option a verb or command does not declare is refused (exit 2) with the ones it does declare. `--` before the selection takes the next argument literally as the selection, including a command or saved name, or a leading `-`. Before an owed verb word it takes that word literally, so `edit -- read` writes the text `read`; the next verb still starts the next step.
 - **Free text is one argument.** `note`, `send`, `edit`, `answer` and `start` take their text as one shell argument, quoted when it has spaces, or `-` to read it from standard input. The text of `note` and `edit` is Markdown with references ([page-text.md](page-text.md#markdown-with-references)). `edit` with no text on a terminal opens the selected annotations, or a page, in your editor ([page-working-copy.md](page-working-copy.md#editing-in-your-editor)). A line reads standard input at most once: a `-` selection and a `-` text in one line are refused.
+
+These executable examples use synthetic session and annotation references:
+
+```bash
+polylogue 'sessions'
+polylogue 'sessions where repo:morrow' pick read
+polylogue session:claude-code:example read --view dialogue --budget 1000
+polylogue session:claude-code:example brief
+polylogue session:claude-code:example note 'Investigate the latency.' --as finding
+polylogue session:claude-code:example tag reviewed
+polylogue assertion:example edit 'Confirmed the finding.'
+polylogue assertion:example withdraw --reason 'Superseded finding.'
+polylogue assertion:example judge accept --reason 'Matches the result.'
+polylogue 'sessions where repo:morrow' save morrow-review
+polylogue session:claude-code:example send 'Please check the result.'
+polylogue session:claude-code:example answer allow
+polylogue session:claude-code:example interrupt
+polylogue session:claude-code:example resume --fork
+```
 
 ### The first word
 
@@ -96,7 +115,7 @@ Each verb takes a fixed number of words after it, then its options; only `save`'
 | `interrupt` | 0 | — |
 | `resume` | 0 | `--fork`, `--anyway`; `--in HARNESS`, and with it `--at`, `--cwd`, `--stop-source` |
 
-Line options on every line: `--json`, `--deadline MS|none`, `--request-id ID`, `--dry-run`, `--explain`, `--wait D`, `--all`. Listing options, before the first verb: `--page-size N`, `--fields a,b`, `--why`, `--to`, `--cursor`, `--budget`. The same concept has the same option name on every verb and command that has it ([Option names](#option-names)).
+Line options on every line: `--json`, `--deadline MS|none`, `--request-id ID`, `--dry-run`, `--explain`, `--wait D`, `--all`, `--fresh`. Listing options, before the first verb: `--page-size N`, `--fields a,b`, `--why`, `--to`, `--cursor`, `--budget`. The same concept has the same option name on every verb and command that has it ([Option names](#option-names)). Boolean line and listing flags accept explicit values, such as `--all=false` and `--why=true`.
 
 ## Chains
 

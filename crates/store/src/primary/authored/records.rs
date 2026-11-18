@@ -138,6 +138,11 @@ pub(super) fn capture(
     if matches!(request.write, UserWrite::KeepResult { .. }) {
         effect.kept_results.push(kept(conn, &request.id)?);
     }
+    if let UserWrite::SaveSelection(save) = &request.write {
+        effect
+            .kept_results
+            .push(kept(conn, &save.identities(&request.id).kept)?);
+    }
     let touched = |table: &str, event_table: &str, column: &str| -> Result<Vec<String>> {
         Ok(conn.prepare(&source.sql(&format!("SELECT id FROM @source.{table} WHERE commit_seq=?1 UNION SELECT {column} FROM @source.{event_table} WHERE commit_seq=?1 ORDER BY 1")))?.query_map([counter],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?)
     };

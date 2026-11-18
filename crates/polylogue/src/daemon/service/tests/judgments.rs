@@ -10,7 +10,13 @@ fn ok_as(
     request: crate::test_daemon::Call,
     author: Author,
 ) -> serde_json::Value {
-    crate::test_answers::ok(send_as(d, request, author))
+    match crate::test_answers::step(send_as(d, request, author)) {
+        crate::protocol::line::StepAnswer::Wrote(outcome) => serde_json::to_value(outcome).unwrap(),
+        crate::protocol::line::StepAnswer::WroteEach(outcome) => {
+            serde_json::to_value(outcome).unwrap()
+        }
+        other => panic!("expected an authored result: {other:?}"),
+    }
 }
 
 fn send_as(
@@ -31,30 +37,18 @@ fn send_as(
         .answer(&d.daemon)
 }
 
-fn assertion(targets: Vec<Reference>, body: &str) -> polylogue_model::assertion::NewAssertion {
-    use polylogue_model::assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink};
-    NewAssertion {
-        kind: AssertionKind::Lesson,
-        key: None,
-        value: Some(serde_json::json!(body)),
-        valid_until: None,
-        links: targets
-            .into_iter()
-            .map(|reference| NewAssertionLink {
-                role: LinkRole::About,
-                reference,
-            })
-            .collect(),
-    }
+fn assertion(targets: Vec<Reference>, body: &str) -> serde_json::Value {
+    serde_json::json!({"references":targets.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        "steps":[{"verb":"note","as":"lesson","text":body}]})
 }
 
 /// A query's whole answer; the caller names the outcome it expects.
 fn query(d: &test_daemon::TestDaemon, text: &str) -> command_surface::Answer<serde_json::Value> {
-    send_as(
+    crate::test_answers::listing(send_as(
         d,
-        crate::test_daemon::Call::new("query", serde_json::json!({"query": text})),
+        crate::test_daemon::Call::new("rows", serde_json::json!({"selection": text})),
         Author::Operator,
-    )
+    ))
 }
 
 #[test]
@@ -63,27 +57,32 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
     let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
     let agent = ok_as(
         &d,
-        crate::test_daemon::Call::new("assert", serde_json::json!({"assertions": [assertion(vec![session.clone()], "use the fast path")]})).id("r1"),
+        crate::test_daemon::Call::new(
+            "rows",
+            assertion(vec![session.clone()], "use the fast path"),
+        )
+        .id("r1"),
         Author::Agent(None),
     );
     let agent_id = format!("assertion:{}", agent["id"].as_str().unwrap());
     let own = ok(
         &d,
-        crate::test_daemon::Call::new("assert", serde_json::json!({"assertions": [assertion(vec![session.clone()], "keep the operator lesson")]})).id("r2"),
+        crate::test_daemon::Call::new(
+            "rows",
+            assertion(vec![session.clone()], "keep the operator lesson"),
+        )
+        .id("r2"),
     );
     assert_eq!(
         crate::test_answers::ok(query(&d, "assertions where agent:true judged:unknown"))["count"],
         1
     );
     // The operator's own notes are revised or withdrawn, not judged.
-    let refused = crate::test_daemon::Call::new("judge", serde_json::json!({"note": format!("assertion:{}", own["id"].as_str().unwrap()), "accepted": true})).id("r3").answer(&d.daemon);
-    assert!(
-        matches!(refused, command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("bad_request")),
-        "{refused:?}"
-    );
+    let refused = crate::test_daemon::Call::new("rows", serde_json::json!({"selection": format!("assertion:{}", own["id"].as_str().unwrap()), "steps":[{"verb":"judge", "verdict":"accept"}]})).id("r3").answer(&d.daemon);
+    assert!(crate::test_answers::refusal(refused).code.as_deref() == Some("bad_request"));
     ok(
         &d,
-        crate::test_daemon::Call::new("judge", serde_json::json!({"note": agent_id.clone(), "accepted": true, "reason": Some("checked")})).id("r4"),
+        crate::test_daemon::Call::new("rows", serde_json::json!({"selection": agent_id.clone(), "steps":[{"verb":"judge", "verdict":"accept", "reason":"checked"}]})).id("r4"),
     );
     assert_eq!(
         crate::test_answers::ok(query(&d, "assertions where judged:accepted"))["count"],
@@ -134,8 +133,8 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
     ok(
         &d,
         crate::test_daemon::Call::new(
-            "judge",
-            serde_json::json!({"note": agent_id, "accepted": false}),
+            "rows",
+            serde_json::json!({"selection": agent_id, "steps":[{"verb":"judge", "verdict":"reject"}]}),
         )
         .id("r5"),
     );
@@ -152,13 +151,12 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
 #[test]
 fn a_note_applies_to_every_row_of_a_query() {
     let d = test_daemon::start("first prompt");
-    let intended = crate::test_daemon::Call::new("assert-query", serde_json::json!({"query": "messages", "assertion": polylogue_model::assertion::NewAssertion {
-            kind: polylogue_model::assertion::AssertionKind::Tag,
-            key: Some("reviewed".into()),
-            value: None,
-            valid_until: None,
-            links: vec![],
-        }})).id("r1");
+    let intended = crate::test_daemon::Call::new(
+        "rows",
+        serde_json::json!({"selection":"messages", "all":true,
+        "steps":[{"verb":"tag","name":"reviewed"}]}),
+    )
+    .id("r1");
     let done = ok(&d, intended.clone());
     assert_eq!(done["targets"], 1, "{done}");
     let repeated = ok(&d, intended);
@@ -169,7 +167,7 @@ fn a_note_applies_to_every_row_of_a_query() {
         .reads
         .reader()
         .unwrap()
-        .user_request("r1")
+        .user_request("r1-1")
         .unwrap()
         .unwrap();
     let UserWrite::AssertQuery { resolved, .. } = stored.write else {
@@ -180,21 +178,19 @@ fn a_note_applies_to_every_row_of_a_query() {
         crate::test_answers::ok(query(&d, "assertions where kind:tag key:reviewed"))["count"],
         1
     );
-    let refused = crate::test_daemon::Call::new("assert-query", serde_json::json!({"query": "sessions where origin:codex", "assertion": assertion(vec![], "x")})).id("r2").answer(&d.daemon);
+    let refused = crate::test_daemon::Call::new("rows", serde_json::json!({"selection":"sessions where origin:codex", "all":true,"steps":[{"verb":"note","text":"x","as":"lesson"}]})).id("r2").answer(&d.daemon);
+    let empty = crate::test_answers::step(refused);
     assert!(
-        matches!(refused, command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("empty")),
-        "{refused:?}"
+        matches!(&empty, crate::protocol::line::StepAnswer::WroteEach(outcome) if outcome.targets == 0),
+        "{empty:?}"
     );
     let refused = crate::test_daemon::Call::new(
-        "assert-query",
-        serde_json::json!({"query": "sessions | agg count", "assertion": assertion(vec![], "x")}),
+        "rows",
+        serde_json::json!({"selection":"sessions | agg count", "steps":[{"verb":"note","text":"x","as":"lesson"}]}),
     )
     .id("r3")
     .answer(&d.daemon);
-    assert!(
-        matches!(refused, command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("bad_request")),
-        "{refused:?}"
-    );
+    assert!(crate::test_answers::refusal(refused).code.as_deref() == Some("bad_request"));
 }
 
 /// Recorded history keeps the original authors of the note and its judgment.
@@ -204,22 +200,19 @@ fn recorded_history_keeps_note_and_judgment_authors() {
     let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
     let agent = ok_as(
         &d,
-        crate::test_daemon::Call::new(
-            "assert",
-            serde_json::json!({"assertions": [assertion(vec![session], "use the fast path")]}),
-        )
-        .id("r1"),
+        crate::test_daemon::Call::new("rows", assertion(vec![session], "use the fast path"))
+            .id("r1"),
         Author::Agent(None),
     );
     ok(
         &d,
-        crate::test_daemon::Call::new("judge", serde_json::json!({"note": format!("assertion:{}", agent["id"].as_str().unwrap()), "accepted": true})).id("r2"),
+        crate::test_daemon::Call::new("rows", serde_json::json!({"selection": format!("assertion:{}", agent["id"].as_str().unwrap()), "steps":[{"verb":"judge", "verdict":"accept"}]})).id("r2"),
     );
     let reader = d.daemon.reads.reader().unwrap();
     let mut requests = Vec::new();
     reader
         .visit_authored(&mut |prepared| {
-            if matches!(prepared.request.id.as_str(), "r1" | "r2") {
+            if matches!(prepared.request.id.as_str(), "r1-1" | "r2-1") {
                 requests.push(prepared.request.clone());
             }
             Ok(())
@@ -230,7 +223,7 @@ fn recorded_history_keeps_note_and_judgment_authors() {
             .iter()
             .map(|request| request.id.as_str())
             .collect::<Vec<_>>(),
-        ["r1", "r2"]
+        ["r1-1", "r2-1"]
     );
     assert_eq!(requests[0].authorship.author, Author::Agent(None));
     assert_eq!(requests[1].authorship.author, Author::Operator);
@@ -242,11 +235,8 @@ fn a_rejudged_revision_reads_its_latest_operator_judgment_everywhere() {
     let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
     let agent = ok_as(
         &d,
-        crate::test_daemon::Call::new(
-            "assert",
-            serde_json::json!({"assertions": [assertion(vec![session], "prefer the short path")]}),
-        )
-        .id("lesson"),
+        crate::test_daemon::Call::new("rows", assertion(vec![session], "prefer the short path"))
+            .id("lesson"),
         Author::Agent(None),
     );
     let target = format!("assertion:{}", agent["id"].as_str().unwrap());
@@ -254,8 +244,8 @@ fn a_rejudged_revision_reads_its_latest_operator_judgment_everywhere() {
         ok(
             &d,
             crate::test_daemon::Call::new(
-                "judge",
-                serde_json::json!({"note": target.clone(), "accepted": accepted}),
+                "rows",
+                serde_json::json!({"selection": target.clone(), "steps":[{"verb":"judge", "verdict":if accepted {"accept"} else {"reject"}}]}),
             )
             .id(request_id),
         );
@@ -286,11 +276,7 @@ fn changes_select_assertions_by_their_kind() {
     let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
     ok(
         &d,
-        crate::test_daemon::Call::new(
-            "assert",
-            serde_json::json!({"assertions": [assertion(vec![session], "a lesson")]}),
-        )
-        .id("lesson"),
+        crate::test_daemon::Call::new("rows", assertion(vec![session], "a lesson")).id("lesson"),
     );
     let lessons = crate::test_answers::ok(query(&d, "changes where assertion_kind:lesson"));
     assert_eq!(lessons["count"], 1, "{lessons}");
@@ -308,11 +294,8 @@ fn a_structured_value_matches_by_its_text() {
     let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
     ok(
         &d,
-        crate::test_daemon::Call::new(
-            "assert",
-            serde_json::json!({"assertions": [assertion(vec![session], "use the fast path")]}),
-        )
-        .id("lesson"),
+        crate::test_daemon::Call::new("rows", assertion(vec![session], "use the fast path"))
+            .id("lesson"),
     );
     assert_eq!(
         crate::test_answers::ok(query(&d, "assertions where value:\"use the fast path\""))["count"],
@@ -339,19 +322,16 @@ fn second_judgment_by_same_author_revises_the_first_regardless_of_clock() {
     let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
     let agent = ok_as(
         &d,
-        crate::test_daemon::Call::new(
-            "assert",
-            serde_json::json!({"assertions": [assertion(vec![session], "prefer the short path")]}),
-        )
-        .id("lesson"),
+        crate::test_daemon::Call::new("rows", assertion(vec![session], "prefer the short path"))
+            .id("lesson"),
         Author::Agent(None),
     );
     let target = format!("assertion:{}", agent["id"].as_str().unwrap());
     ok(
         &d,
         crate::test_daemon::Call::new(
-            "judge",
-            serde_json::json!({"note": target.clone(), "accepted": true}),
+            "rows",
+            serde_json::json!({"selection": target.clone(), "steps":[{"verb":"judge", "verdict":"accept"}]}),
         )
         .id("j1"),
     );
@@ -359,8 +339,8 @@ fn second_judgment_by_same_author_revises_the_first_regardless_of_clock() {
     ok(
         &d,
         crate::test_daemon::Call::new(
-            "judge",
-            serde_json::json!({"note": target.clone(), "accepted": false}),
+            "rows",
+            serde_json::json!({"selection": target.clone(), "steps":[{"verb":"judge", "verdict":"reject"}]}),
         )
         .id("j2"),
     );
@@ -379,9 +359,9 @@ fn second_judgment_by_same_author_revises_the_first_regardless_of_clock() {
         &d,
         "assertions where kind:judgment current:* | fields id, root, current | sort by id",
     ));
-    assert_eq!(revisions["rows"][0]["root"], "j1", "{revisions}");
-    assert_eq!(revisions["rows"][1]["root"], "j1", "{revisions}");
-    assert_eq!(revisions["rows"][1]["id"], "j2", "{revisions}");
+    assert_eq!(revisions["rows"][0]["root"], "j1-1", "{revisions}");
+    assert_eq!(revisions["rows"][1]["root"], "j1-1", "{revisions}");
+    assert_eq!(revisions["rows"][1]["id"], "j2-1", "{revisions}");
 }
 
 #[test]
@@ -390,32 +370,30 @@ fn revising_a_withdrawal_is_refused() {
     let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
     ok(
         &d,
-        crate::test_daemon::Call::new(
-            "assert",
-            serde_json::json!({"assertions": [assertion(vec![session], "keep the old path")]}),
-        )
-        .id("note"),
+        crate::test_daemon::Call::new("rows", assertion(vec![session], "keep the old path"))
+            .id("note"),
     );
     ok(
         &d,
         crate::test_daemon::Call::new(
-            "withdraw",
-            serde_json::json!({"targets": ["assertion:note"], "reason": "superseded"}),
+            "rows",
+            serde_json::json!({"selection":"assertion:note-1", "steps":[{"verb":"withdraw", "reason":"superseded"}]}),
         )
         .id("withdrawal"),
     );
     let refused = send_as(
         &d,
         crate::test_daemon::Call::new(
-            "revise",
-            serde_json::json!({"bases": ["assertion:withdrawal@withdrawal"], "patch": {"value": {"change": "set", "value": "a new reason"}}}),
+            "rows",
+            serde_json::json!({"selection":"assertion:withdrawal-1@withdrawal-1", "steps":[{"verb":"edit","text":"a new reason"}]}),
         )
         .id("revision"),
         Author::Operator,
     );
     assert!(
-        matches!(&refused.outcome, command_surface::Outcome::Error(error) if error.message.contains("withdrawal cannot be revised")),
-        "{refused:?}"
+        crate::test_answers::refusal(refused)
+            .message
+            .contains("withdrawal cannot be revised")
     );
     // The note stays withdrawn.
     assert_eq!(

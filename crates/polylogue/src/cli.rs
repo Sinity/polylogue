@@ -7,9 +7,11 @@ pub(crate) mod calling_process;
 pub mod changes;
 pub(crate) mod completion;
 pub(crate) mod follow;
+pub(crate) mod line;
 pub mod local;
 pub mod picker;
 pub mod print;
+pub(crate) mod run_line;
 pub(crate) mod schema;
 pub(crate) mod staged_file;
 pub(crate) mod write_out;
@@ -82,17 +84,21 @@ pub fn command() -> clap::Command {
         );
     for c in COMMANDS.iter() {
         match c.cli {
-            Cli::NoSubcommand => {
-                root = root
-                    .args(row_args(c))
-                    .subcommand(subcommand(c).name("find"));
-            }
-            Cli::Subcommand | Cli::Hidden | Cli::Line => {
+            Cli::Line => continue,
+            Cli::Subcommand | Cli::Hidden => {
                 let words: Vec<&str> = c.name.split(' ').collect();
                 root = place(root, "", &words[..words.len() - 1], subcommand(c));
             }
         }
     }
+    root = root.subcommand_precedence_over_arg(true).arg(
+        clap::Arg::new("selection")
+            .value_name("SELECTION")
+            .help("One quoted query or reference")
+            .add(clap_complete::engine::ArgValueCompleter::new(
+                completion::Query,
+            )),
+    );
     crate::config::augment_command(root)
 }
 
@@ -203,14 +209,7 @@ fn shown_arguments(command: &Command) -> Vec<(CliArgument, Option<&'static Value
                 .and_then(|properties| properties.get(&argument.spec.name));
             if argument.choices.is_empty() {
                 let name = argument.spec.name.as_str();
-                if command.name == "explain" && name == "subject" {
-                    argument.choices = crate::explain::SUBJECTS
-                        .iter()
-                        .map(|subject| (*subject).to_owned())
-                        .collect();
-                } else if (command.name == "start" && name == "harness")
-                    || (command.name == "hand-off" && name == "to")
-                {
+                if command.name == "start" && name == "harness" {
                     argument.choices = polylogue_model::live::channel::HARNESSES
                         .iter()
                         .filter(|harness| harness.host.is_some())
@@ -265,15 +264,7 @@ fn clap_arg(a: &CliArgument) -> clap::Arg {
 /// The table command the matches chose, and the matches holding its
 /// arguments.
 fn chosen(matches: &ArgMatches) -> Option<(&'static Command, &ArgMatches)> {
-    let Some((word, sub)) = matches.subcommand() else {
-        return COMMANDS
-            .iter()
-            .find(|c| c.cli == Cli::NoSubcommand)
-            .map(|c| (c, matches));
-    };
-    if word == "find" {
-        return crate::commands::command("query").map(|command| (command, sub));
-    }
+    let (word, sub) = matches.subcommand()?;
     let mut name = word.to_owned();
     let mut leaf = sub;
     while let Some((next, below)) = leaf.subcommand() {
@@ -497,7 +488,7 @@ pub fn run(
                 Err(error) => fail(policy, json, polylogue_model::Code::BadRequest, &error, 2),
             };
         }
-        Run::Daemon(_) | Run::Delivered { .. } | Run::Feed { .. } => {}
+        Run::Daemon(_) | Run::Feed { .. } => {}
     }
     if m.get_one::<String>("request").is_none()
         && let Some(prepare) = cmd.prepare
@@ -532,25 +523,6 @@ pub fn run(
             );
         }
         return deliver(&values, startup, call);
-    }
-    if let Run::Delivered { deliver, .. } = cmd.run {
-        return deliver(&values, startup, call);
-    }
-    if cmd.name == "rows"
-        && cmd.registration().is_some_and(|registration| {
-            registration
-                .admit(
-                    &call.arguments,
-                    cmd,
-                    &crate::commands::Caller {
-                        surface: crate::commands::Surface::Cli,
-                        cwd: Some(cwd.to_owned()),
-                    },
-                )
-                .is_ok_and(|policy| policy.streaming)
-        })
-    {
-        return write_out::line_stream(&values, startup, call);
     }
     let root = startup.config.archive.clone();
     let answer = match crate::client::call_ready(&Archive::at(&root), call) {
@@ -607,23 +579,6 @@ pub fn run(
     if let Err(failure) = crate::commands::declarations().validate_answer(cmd.name, &answer) {
         let mismatch = crate::protocol::protocol_mismatch(cmd.name, failure.message);
         return fail_with(policy, json, &mismatch, &[]);
-    }
-    // Rows a person reads are numbered for the next command line; only a
-    // query's row answer has them, and any other answer does not decode.
-    let data = answer.value().expect("a non-error answer has a value");
-    if !json
-        && let Ok(rows) = crate::protocol::query::Rows::deserialize(data)
-        && matches!(
-            rows.shape,
-            polylogue_query::Shape::Rows | polylogue_query::Shape::Matches
-        )
-    {
-        let rows = Value::Array(rows.rows.into_iter().map(Value::Object).collect());
-        crate::row_numbers::remember(
-            &startup.config.paths,
-            &root,
-            &crate::row_numbers::row_ids(&rows),
-        );
     }
     match cmd.output {
         Some(output) => output(&values, &answer, startup, json),
@@ -710,67 +665,11 @@ pub fn status_output(
     ExitCode::from(answer.exit_code())
 }
 
-/// `continue --exec`: replaces this process with the harness's own
-/// resume command; without `--exec`, the plan is printed.
-pub fn resume_output(
-    values: &ParsedCommand,
-    answer: &Answer<Value>,
-    startup: &crate::config::Startup,
-    json: bool,
+fn run_plan(
+    plan: &crate::resume::Plan,
+    output: crate::config::OutputConfig,
+    replace: bool,
 ) -> ExitCode {
-    let data = answer
-        .value()
-        .expect("output handlers receive answers with values");
-    let resume = match crate::protocol::resume::Answer::deserialize(data) {
-        Ok(resume) => resume,
-        Err(error) => {
-            return fail(
-                startup.output,
-                json,
-                polylogue_model::Code::Internal,
-                &error.to_string(),
-                1,
-            );
-        }
-    };
-    let options = match calling_process::options::<calling_process::Continue>(values) {
-        Ok(options) => options,
-        Err(error) => {
-            return fail(
-                startup.output,
-                json,
-                polylogue_model::Code::BadRequest,
-                &error,
-                2,
-            );
-        }
-    };
-    if !options.exec {
-        if json {
-            println!("{}", polylogue_render::terminal::json(data, false));
-        } else {
-            print!("{}", print::resume(&resume, style(startup.output)));
-        }
-        return ExitCode::SUCCESS;
-    }
-    match &resume {
-        crate::protocol::resume::Answer::Plan(plan) => exec_plan(plan, startup.output),
-        crate::protocol::resume::Answer::Sessions(_) => {
-            eprint!(
-                "{}",
-                print::diagnostic(
-                    "",
-                    "--exec runs one session's resume; name the session",
-                    None,
-                    startup.output.stderr_color()
-                )
-            );
-            ExitCode::from(1)
-        }
-    }
-}
-
-fn exec_plan(plan: &crate::resume::Plan, output: crate::config::OutputConfig) -> ExitCode {
     use std::os::unix::process::CommandExt;
     let Some(resume) = &plan.harness_command else {
         eprint!(
@@ -778,8 +677,8 @@ fn exec_plan(plan: &crate::resume::Plan, output: crate::config::OutputConfig) ->
             print::diagnostic(
                 "",
                 &format!(
-                    "this session has no harness resume; continue with context instead: polylogue takeover {}",
-                    plan.session
+                    "this session has no harness resume; continue with context instead: {}",
+                    print::command_line(&plan.context_assisted)
                 ),
                 None,
                 output.stderr_color()
@@ -802,8 +701,8 @@ fn exec_plan(plan: &crate::resume::Plan, output: crate::config::OutputConfig) ->
                 print::diagnostic(
                     "",
                     &format!(
-                        "{reason}; continue with context instead: polylogue takeover {}",
-                        plan.session
+                        "{reason}; continue with context instead: {}",
+                        print::command_line(&plan.context_assisted)
                     ),
                     None,
                     output.stderr_color()
@@ -814,6 +713,23 @@ fn exec_plan(plan: &crate::resume::Plan, output: crate::config::OutputConfig) ->
     };
     let mut cmd = std::process::Command::new(&resume.program);
     cmd.args(&resume.args).current_dir(dir);
+    if !replace {
+        return match cmd.status() {
+            Ok(status) => ExitCode::from(
+                status
+                    .code()
+                    .and_then(|code| u8::try_from(code).ok())
+                    .unwrap_or(1),
+            ),
+            Err(error) => fail(
+                output,
+                false,
+                polylogue_model::Code::Io,
+                &error.to_string(),
+                4,
+            ),
+        };
+    }
     let err = cmd.exec();
     eprint!(
         "{}",
@@ -891,7 +807,7 @@ pub(crate) fn fail(
 
 /// One printer for every failure: the whole answer for programs; for a
 /// person, the code, the message, the corrected query and the notes.
-fn fail_with(
+pub(crate) fn fail_with(
     output: crate::config::OutputConfig,
     json: bool,
     failure: &command_surface::Failure,

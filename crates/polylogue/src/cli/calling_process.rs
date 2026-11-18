@@ -5,26 +5,11 @@
 use command_surface::{JsonSchema, ParsedCommand};
 use serde::{Deserialize, de::DeserializeOwned};
 
-/// `read`: where a bundle is written.
-#[derive(Debug, Default, Deserialize, JsonSchema)]
-pub(crate) struct Read {
-    /// Write a bundle directory
-    pub to: Option<String>,
-}
-
 /// `attachment`: where the verified bytes go.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub(crate) struct Attachment {
     /// Write the verified bytes to FILE
     pub out: Option<String>,
-}
-
-/// `continue`: run the plan instead of printing it.
-#[derive(Debug, Default, Deserialize, JsonSchema)]
-pub(crate) struct Continue {
-    /// Run the harness resume command instead of printing it
-    #[serde(default)]
-    pub exec: bool,
 }
 
 /// `schema infer`, `schema unread` and `schema diff`: where the result goes.
@@ -40,20 +25,6 @@ pub(crate) struct ChatSend {
     /// Files to attach
     #[serde(default)]
     pub attach: Vec<String>,
-}
-
-/// `follow`: what each line shows and when it stops.
-#[derive(Debug, Default, Deserialize, JsonSchema)]
-pub(crate) struct Follow {
-    #[schemars(description = polylogue_model::read::ShowKind::HELP)]
-    #[serde(default)]
-    pub show: Vec<String>,
-    /// Item kinds to hide, from the same table as show
-    #[serde(default)]
-    pub hide: Vec<String>,
-    /// Stop when the session's live state is no longer working
-    #[serde(default)]
-    pub until_idle: bool,
 }
 
 /// The schema of a row's calling-process options, for the command table.

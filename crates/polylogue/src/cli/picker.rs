@@ -7,7 +7,7 @@ use std::{future::Future, sync::Arc, time::Duration};
 mod matching;
 mod screen;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-pub use matching::fuzzy_page;
+pub use matching::{FuzzyRows, fuzzy_page};
 use screen::Screen;
 use std::sync::mpsc;
 

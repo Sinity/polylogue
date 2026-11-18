@@ -374,7 +374,7 @@ fn ping_text(delivery: &str, ping: &str, author: &str, text: &str, about: Option
         pack.push_str(&format!("About: {about}\n"));
     }
     pack.push_str(&format!(
-        "Answer with Polylogue's MCP `assert` operation (tool `polylogue_note`): a `finding` whose `about` and `answers` links both name `assertion:{ping}@{ping}`. Reach the sender with the `ping` operation (tool `polylogue_act`)."
+        "Answer with Polylogue's MCP `rows` operation (tool `polylogue_write`): `selection` and `replies_to` both name `assertion:{ping}@{ping}`; use a `note` step with `as: finding` and your answer as `text`. Reach the sender with a `send` step (tool `polylogue_act`)."
     ));
     pack
 }

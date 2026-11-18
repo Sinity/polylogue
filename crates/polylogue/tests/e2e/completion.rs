@@ -166,27 +166,12 @@ fn completion_matrix_thirteen_positions_three_shells_empty_and_seeded() {
     .unwrap();
     let cases: [(&str, &[&str], &str, bool); 13] = [
         ("commands", &["sta"], "status", false),
-        (
-            "session fields",
-            &["sessions", "where", "ti"],
-            "title",
-            false,
-        ),
-        (
-            "message fields",
-            &["messages", "where", "mo"],
-            "model",
-            false,
-        ),
-        (
-            "tool fields",
-            &["tool_calls", "where", "ou"],
-            "outcome",
-            false,
-        ),
+        ("session fields", &["sessions where ti"], "title", false),
+        ("message fields", &["messages where mo"], "model", false),
+        ("tool fields", &["tool_calls where ou"], "outcome", false),
         (
             "observed value",
-            &["messages", "where", "model:alp"],
+            &["messages where model:alp"],
             "model:alpha",
             true,
         ),
@@ -196,7 +181,7 @@ fn completion_matrix_thirteen_positions_three_shells_empty_and_seeded() {
             "two words",
             true,
         ),
-        ("pipe stage", &["messages", "|", "gr"], "group by", false),
+        ("pipe stage", &["messages | gr"], "group by", false),
         (
             "group alias",
             &["sessions | group by repo | sort by co"],
@@ -389,9 +374,9 @@ fn named_wrappers_keep_their_registration_and_selected_offline_catalog() {
         );
         for shell in ["bash", "zsh", "fish"] {
             let output = command(shell)
-                .env("_CLAP_COMPLETE_INDEX", "3")
+                .env("_CLAP_COMPLETE_INDEX", "1")
                 .env("_CLAP_IFS", "\n")
-                .args(["--", name, "messages", "where", "model:"])
+                .args(["--", name, "messages where model:"])
                 .output()
                 .unwrap();
             assert!(

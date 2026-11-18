@@ -161,10 +161,7 @@ fn read(d: &test_daemon::TestDaemon, target: &str, options: ReadOptions) -> Read
         cursor: None,
     }))
     .answer(&d.daemon);
-    let Some(data) = response.value().cloned() else {
-        panic!("{response:?}")
-    };
-    serde_json::from_value(data).unwrap()
+    crate::test_answers::read(response)
 }
 
 fn texts(page: &ReadPage) -> Vec<String> {
@@ -375,7 +372,7 @@ fn the_last_page_follows_what_the_session_appends() {
     let envelope: command_surface::RunnableRequest = follow.request;
     let call = crate::test_daemon::Call::from_request(&envelope);
     let response = call.answer(&d.daemon);
-    let page: ReadPage = serde_json::from_value(response.value().cloned().unwrap()).unwrap();
+    let page = crate::test_answers::read(response);
     let texts = texts(&page);
     assert_eq!(
         texts

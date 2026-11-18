@@ -435,7 +435,7 @@ fn stopping_a_later_copy_keeps_the_completed_chain_and_rolls_back_its_own_readin
         .unwrap()
         .unwrap();
     let repeat = w.writer.user(request).unwrap();
-    assert_eq!(repeat.id, first.id);
+    assert_eq!(repeat.id, first.outcome.id);
     assert!(repeat.repeat && !repeat.pending);
 
     let TestArchive {

@@ -1063,6 +1063,11 @@ fn identity_target(unit: Unit, values: &[Value]) -> Option<ReadTarget> {
         _ => None,
     }
 }
+/// The native identity carried by a raw query row before presentation.
+pub fn row_reference(program: &Program, row: &Value) -> Option<Reference> {
+    row_target(program, row).map(|target| target.reference())
+}
+
 fn row_target(program: &Program, row: &Value) -> Option<ReadTarget> {
     if program.shape != Shape::Rows {
         return None;

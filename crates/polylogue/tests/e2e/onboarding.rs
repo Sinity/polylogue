@@ -207,7 +207,7 @@ fn demo_steps_run_through_rows() {
     assert!(output.status.success(), "{output:?}");
     let restarted: command_surface::Answer<Value> = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
-        restarted.value().expect("query succeeded")["rows"],
+        crate::cli::listing(restarted.value().expect("query succeeded").clone())["rows"],
         steps[2]["result"]["reply"]["rows"]
     );
     drop(daemon);

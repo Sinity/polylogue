@@ -180,7 +180,8 @@ fn a_native_selection_note_is_readable_by_cli_after_daemon_restart() {
         .unwrap();
     assert!(output.status.success(), "{output:?}");
     let answer: Value = serde_json::from_slice(&output.stdout).unwrap();
-    let notes = &answer["value"]["rows"];
+    let listing = crate::cli::listing(answer["value"].clone());
+    let notes = &listing["rows"];
     assert_eq!(notes.as_array().unwrap().len(), 1);
     assert_eq!(notes[0]["id"], note["request_id"]);
     assert_eq!(notes[0]["author"], "operator");

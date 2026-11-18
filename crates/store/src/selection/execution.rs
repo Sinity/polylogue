@@ -91,9 +91,19 @@ impl PreparedSelection<'_> {
                 blake3::hash(identity.as_bytes()).to_hex().to_string(),
             );
         }
+        let mut source_outputs = object.source_outputs.clone();
+        for output in object
+            .definitions
+            .iter()
+            .flat_map(|definition| &definition.source_outputs)
+        {
+            if !source_outputs.contains(output) {
+                source_outputs.push(output.clone());
+            }
+        }
         let replay = ReplayBinding {
             bound_ast: object.query,
-            source_outputs: object.source_outputs,
+            source_outputs,
             definitions,
             context: CursorContext {
                 question: context.question,

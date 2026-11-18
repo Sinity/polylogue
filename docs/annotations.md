@@ -142,7 +142,7 @@ Kinds are one closed declaration in the `model` crate. Each states the key's mea
 
 - **Key/value reads.** `kv(about, kind, key)` is the set of current, non-withdrawn values; a single-valued kind gives one value or `conflict`. In the query language: `tag:<name>`, `title:`, `kv:<kind>.<key>=<value>` on any unit, matched through `about` links at that unit's grain or through a span inside it, and the `annotations` unit ([query.md](query.md#units-and-fields)).
 - **Grain is strict.** An annotation about a session does not match its messages or tool calls; one about a block matches its message only through `kv:` at message grain with `within:`. A session-level `correction` marks no tool call corrected.
-- **History and links are queries.** A note's history is `polylogue 'annotations where root:annotation:01JB7Q2M withdrawn:*'`: revisions, withdrawals, judgments and conflicts in the order of the `revises` graph, ties shown by `(created_at, id)`. What one request wrote is `annotations where request:<id>`.
+- **History and links are queries.** A note's history is `polylogue 'annotations where root:annotation:01JB7Q2M withdrawn:*'`: revisions, withdrawals, judgments and conflicts in the order of the `revises` graph, ties shown by `(created_at, id)`. The undo command carries the exact revisions a request created.
 - **Backlinks.** Reading any reference lists what links to it: annotations by role, pages that place, link, cite or include it, kept results, deliveries and alternates (`referenced_by:` and `cited_by` in queries, the `links` unit; [page-text.md](page-text.md#backlinks)).
 - **As-of.** `seen_by:T` reads each annotation at the revision current among records with `created_at ≤ T`. `created_at` is the writer's clock, so as-of reads across machines are approximate and say so.
 
@@ -182,7 +182,7 @@ Every write step is a request `{id, machine, at, write}`, executed by the daemon
 3. **Resolution.** References resolve; the selection was resolved once for the whole line ([interfaces.md](interfaces.md#chains)).
 4. **Validation:** the kind's shape, cardinality, the rubric's allowance, a stale base.
 5. **Insert** with `commit_seq`. A step over many rows writes one annotation per row in one request, numbered `<request>.1`, `<request>.2`, …; a large write commits in steps under one request ID so the single writer never stalls live capture.
-6. **Reply** with the committed references, the count, the recorded author and channel, and **the undo line**: `polylogue annotation:<id> withdraw` for one annotation, `polylogue 'annotations where request:<id>' withdraw --all` for a step over many rows. Refusals carry their kind: `conflict`, `ambiguous`, `bad_value` with the shape, `not_allowed_by_rubric`, `single_valued_bulk`, `needs_all`.
+6. **Reply** with the committed references, the count, the recorded author and channel, and **the undo line**: a declared `withdraw` command over the exact created revisions, passed on standard input for a bulk write. Existing annotations reused by the write get no new undo; a retry retains the original undo. Refusals carry their kind: `conflict`, `ambiguous`, `bad_value` with the shape, `not_allowed_by_rubric`, `single_valued_bulk`, `needs_all`.
 
 Undo is the safety for named rows; a query matching several rows also needs `--all` first ([interfaces.md](interfaces.md#chains)). An annotation **about** `result:<id>` is about the kept result itself, which is different from annotations on its rows. Markup annotations are the only ones the parse step writes, and only for derived IDs not already present.
 
@@ -229,7 +229,7 @@ Undo is the safety for named rows; a query matching several rows also needs `--a
 
 ### Annotation lines
 
-A batch of different annotations about different rows is a file of annotation lines brought in with `polylogue import FILE`: each JSON line names its kind, key, value, links and optional request ID; each line is checked first, bad lines are reported by number and not written, and good lines share one request and one origin, so one withdrawal (`polylogue 'annotations where request:<id>' withdraw --all`) removes them. Moving user state between archives (`read --to DIR`, then `import`) is [primary-mode.md](primary-mode.md#moving-user-state).
+A batch of different annotations about different rows is a file of annotation lines brought in with `polylogue import FILE`: each JSON line names its kind, key, value, links and optional request ID; each line is checked first, bad lines are reported by number and not written, and good lines share one request and one origin, so the returned undo command withdraws just the revisions they created. Moving user state between archives (`read --to DIR`, then `import`) is [primary-mode.md](primary-mode.md#moving-user-state).
 
 ## Checked claims
 

@@ -42,7 +42,8 @@ fn read_target(
     let call = match cursor {
         Some(resume) => {
             let mut resume = resume.clone();
-            resume.arguments["page_tokens"] = serde_json::json!(budget);
+            resume.request_id = polylogue_store::user_writes::new_request_id();
+            resume.arguments["steps"][0]["budget"] = serde_json::json!(budget);
             test_daemon::Call::from_request(&resume)
         }
         None => test_daemon::read(polylogue_reading::ReadRequest {
@@ -60,10 +61,7 @@ fn read_target(
         }),
     };
     let response = call.answer(&d.daemon);
-    let Some(value) = response.value().cloned() else {
-        panic!("{response:?}")
-    };
-    serde_json::from_value(value).unwrap()
+    crate::test_answers::read(response)
 }
 
 fn resume(call: Option<&polylogue_model::read::ReadyCall>) -> Option<RunnableRequest> {
@@ -473,9 +471,9 @@ fn adding_a_parent_outside_the_cursor_frames_stales_the_links_walk() {
         ItemKind::Card {card} if matches!(card.as_ref(),Card::LinkEdge {from,to,relation,..}
             if from==&format!("session:claude-code:{unvisited}") && to==&format!("session:claude-code:{leaf}") && relation=="continuation"))));
     let response = test_daemon::Call::from_request(&cursor).answer(&d.daemon);
-    assert!(
-        matches!(&response,command_surface::Answer {outcome:command_surface::Outcome::Error(error),..}
-        if error.code.as_deref()==Some("stale_cursor")),
+    assert_eq!(
+        crate::test_answers::refusal(response).code.as_deref(),
+        Some("stale_cursor"),
         "the rewritten family must not continue the old walk"
     );
 }
@@ -504,11 +502,15 @@ fn links_cursor_survives_body_append_but_not_an_unrelated_relationship_edit() {
         key: reader.cursor_key().unwrap(),
         generation: reader.change_position().unwrap().generation,
     };
-    let mut old =
-        polylogue_model::read::PageCursor::open(cursor.cursor.as_deref().unwrap(), &seal).unwrap();
+    let mut old = polylogue_model::read::PageCursor::open(
+        cursor.arguments["steps"][0]["cursor"].as_str().unwrap(),
+        &seal,
+    )
+    .unwrap();
     old.versions = polylogue_model::read::PageCursor::version(&[]);
     let mut old_request = cursor.clone();
-    old_request.cursor = Some(old.seal(&seal));
+    old_request.request_id = polylogue_store::user_writes::new_request_id();
+    old_request.arguments["steps"][0]["cursor"] = serde_json::json!(old.seal(&seal));
     drop(reader);
     assert_stale(&d, &old_request);
     std::fs::write(
@@ -526,8 +528,8 @@ fn links_cursor_survives_body_append_but_not_an_unrelated_relationship_edit() {
 
 fn assert_stale(d: &test_daemon::TestDaemon, cursor: &RunnableRequest) {
     let answer = test_daemon::Call::from_request(cursor).answer(&d.daemon);
-    assert!(
-        matches!(&answer,command_surface::Answer {outcome:command_surface::Outcome::Error(error),..}
-        if error.code.as_deref()==Some("stale_cursor"))
+    assert_eq!(
+        crate::test_answers::refusal(answer).code.as_deref(),
+        Some("stale_cursor")
     );
 }

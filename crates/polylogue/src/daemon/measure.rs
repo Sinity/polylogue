@@ -35,6 +35,35 @@ pub struct Measure {
     pub text: fn(&Value) -> String,
 }
 
+/// Join pages produced by the measure's existing declared paging mode.
+/// Global summary values come from the same pinned read on every page.
+pub(crate) fn append_page(paging: Paging, all: &mut Value, mut page: Value) -> Result<(), Failure> {
+    let field = match paging {
+        Paging::Sessions => "sessions",
+        Paging::Facets => "values",
+    };
+    let values = page
+        .get_mut(field)
+        .and_then(Value::as_array_mut)
+        .map(std::mem::take)
+        .ok_or_else(|| Failure::internal("a measure page has no declared row array"))?;
+    let extra = page
+        .as_object()
+        .ok_or_else(|| Failure::internal("a measure page has no object"))?;
+    for (name, value) in extra {
+        if name != field && all.get(name) != Some(value) {
+            return Err(Failure::internal(
+                "measure page summaries differ within one read",
+            ));
+        }
+    }
+    all.get_mut(field)
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| Failure::internal("the first measure page has no declared row array"))?
+        .extend(values);
+    Ok(())
+}
+
 /// What a measurement runs over.
 pub struct Run<'a> {
     pub selection: Selection,

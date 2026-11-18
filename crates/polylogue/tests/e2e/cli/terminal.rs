@@ -76,6 +76,7 @@ fn archived_controls_are_data_in_pipes_and_terminals() {
         counts: bundle::Counts {
             sessions: 1,
             messages: 1,
+            assertions: 1,
             ..Default::default()
         },
         flags: bundle::Flags {
@@ -92,6 +93,24 @@ fn archived_controls_are_data_in_pipes_and_terminals() {
     };
     let records = [
         Record::Manifest(Box::new(manifest)),
+        Record::Assertion(Box::new(polylogue_model::assertion::AssertionRecord {
+            reference: "assertion:hostile-watch@hostile-watch".into(),
+            assertion: polylogue_model::assertion::AssertionFact {
+                id: "hostile-watch".into(),
+                root: "hostile-watch".into(),
+                kind: polylogue_model::assertion::AssertionKind::Signal,
+                key: Some(HOSTILE.into()),
+                value: Some(
+                    json!({"name":HOSTILE,"query":"sessions where kind:*","fires":"on_new","deliver":"notice","interrupt":false}),
+                ),
+                author: polylogue_model::Author::Operator,
+                via: polylogue_model::authorship::Channel::Import,
+                machine: "synthetic-host".into(),
+                created_at: None,
+                valid_until: None,
+                links: vec![],
+            },
+        })),
         Record::Session(bundle::SessionRecord {
             copied_prefixes: Vec::new(),
             reference: "session:claude-code:hostile".into(),
@@ -122,8 +141,6 @@ fn archived_controls_are_data_in_pipes_and_terminals() {
     let imported = cli(&env, &["import", source.to_str().unwrap()]);
     assert!(imported.status.success(), "{imported:?}");
     wait_status(&env, |status| status["store"]["search_pending"] == 0);
-    let watched = cli(&env, &["watch", "--name", HOSTILE, "sessions where kind:*"]);
-    assert!(watched.status.success(), "{watched:?}");
     let status = wait_status(&env, |status| {
         status["signals"]["rules"]
             .as_array()
@@ -131,14 +148,14 @@ fn archived_controls_are_data_in_pipes_and_terminals() {
     });
     assert_eq!(status["signals"]["rules"][0]["name"], HOSTILE);
     for args in [
-        vec!["read", "session:claude-code:hostile"],
+        vec!["session:claude-code:hostile", "read"],
         vec![
-            "read",
             "session:claude-code:hostile",
+            "read",
             "--format",
             "markdown",
         ],
-        vec!["read", "session:claude-code:hostile", "--page-tokens", "10"],
+        vec!["session:claude-code:hostile", "read", "--budget", "10"],
         vec!["sessions where kind:*"],
         vec!["\"title\""],
         vec!["status"],
@@ -152,7 +169,7 @@ fn archived_controls_are_data_in_pipes_and_terminals() {
         }
         safe(&terminal(&env, &args, true));
     }
-    let colored = terminal(&env, &["read", "session:claude-code:hostile"], false);
+    let colored = terminal(&env, &["session:claude-code:hostile", "read"], false);
     assert!(colored.contains("\x1b[1m"), "{colored:?}");
     safe(&colored.replace("\x1b[1m", "").replace("\x1b[0m", ""));
     assert!(colored.contains("\\x1b]52;c;YQ==\\x07"));
@@ -163,26 +180,25 @@ fn archived_controls_are_data_in_pipes_and_terminals() {
         &env,
         &[
             "--json",
-            "read",
             "session:claude-code:hostile",
+            "read",
             "--format",
             "json",
         ],
         false,
     );
     safe(&text);
-    let answer: command_surface::Answer<polylogue_model::read::ReadPage> =
-        serde_json::from_str(&text).unwrap();
-    let page = answer.value().expect("typed read answer");
+    let answer: command_surface::Answer<serde_json::Value> = serde_json::from_str(&text).unwrap();
+    let page = read_page(answer.value().expect("typed line answer").clone());
     let mut items = super::read_current::Items::default();
-    items.push(page);
+    items.push(&page);
     assert!(
         page.document.footer.next.is_none(),
         "short source must fit this root"
     );
     assert_eq!(items.text(), HOSTILE);
     assert_eq!(std::fs::read(&source).unwrap(), original);
-    let error = cli(&env, &["read", HOSTILE]);
+    let error = cli(&env, &[HOSTILE, "read"]);
     assert!(!error.status.success());
     safe(std::str::from_utf8(&error.stderr).unwrap());
 }

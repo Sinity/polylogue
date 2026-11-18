@@ -114,7 +114,7 @@ next: polylogue @1 read · polylogue 'rate limit' pick read · polylogue 'rate l
 ```
 
 - A default that removed rows is named whenever it removed any (`3 subagent sessions folded into their parents`); a plain-word search says it was one.
-- After a write: what was written, the recorded author, and the undo line (`polylogue annotation:01JB7Q2M withdraw`, or for a step over many rows `polylogue 'annotations where request:01JD7Q4M' withdraw --all`; [annotations.md](annotations.md#the-write-path)).
+- After a write: what was written, the recorded author, and the undo command ([annotations.md](annotations.md#the-write-path)).
 - After an act: who it reached, by which channel, and that it cannot be undone.
 - After an empty reply (exit 1): how many rows each condition kept and the nearest line that returns rows.
 - When the rows are kept, the footer names `result:<id>`.
@@ -170,7 +170,7 @@ With `--json` the reply has `outcome: "error"` and an `error` object on standard
 
 `polylogue help` prints the cheatsheet: one terminal screen (at most 24 lines at 100 columns), generated from the operation table, the catalog's top values and each row's examples; local, in the local class, with no daemon.
 
-```
+```text
 polylogue 'QUERY' [VERB …]   the quotes hold which rows; the words after say what to do
 polylogue REF [VERB …]       one thing: @3  latest  self  here  7f3a2c10  a chat URL  query:NAME  result:ID
 polylogue read · resume      pick from recent sessions, or from sessions that ended open

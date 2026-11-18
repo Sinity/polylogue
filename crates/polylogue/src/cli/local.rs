@@ -460,28 +460,6 @@ fn open_reader(startup: &crate::config::Startup, json: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// The same standing instructions the MCP server supplies at initialization.
-pub fn manual(
-    _: &Command,
-    _: &command_surface::ParsedCommand,
-    _output: crate::config::OutputConfig,
-    json: bool,
-) -> ExitCode {
-    let text = crate::manual::text();
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string(&command_surface::Answer::ok(
-                serde_json::json!({"manual": text})
-            ))
-            .expect("manual is serializable")
-        );
-    } else {
-        print!("{text}");
-    }
-    ExitCode::SUCCESS
-}
-
 /// `polylogue host`: holds a hosted agent's stdio for the daemon until the
 /// agent exits (`crate::hosting`).
 pub fn host(

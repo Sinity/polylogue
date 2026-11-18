@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 fn typed_page(output: &Output) -> ReadPage {
     assert!(output.status.success(), "{output:?}");
-    serde_json::from_value(json(output)).unwrap()
+    read_page(json(output))
 }
 #[derive(Default)]
 pub(super) struct Items {
@@ -96,43 +96,44 @@ fn typed_read_pages_unicode_once_and_writes_a_bundle() {
         &fixture,
         &[
             "--json",
-            "read",
             target,
+            "read",
             "--view",
             "transcript",
-            "--page-tokens",
+            "--budget",
             "10000",
         ],
     ));
     assert_eq!(words(&whole), expected);
     assert!(whole.records.is_empty());
-    let mut output = cli(
+    let output = cli(
         &fixture,
         &[
             "--json",
-            "read",
             target,
+            "read",
             "--view",
             "transcript",
-            "--page-tokens",
+            "--budget",
             "1",
         ],
     );
     let mut reconstructed = Items::default();
+    let mut answer: command_surface::Answer<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).unwrap();
     for page_number in 0..1000 {
         assert!(
-            output.stdout.len() <= 25_000,
+            serde_json::to_vec(&answer).unwrap().len() < 25_000,
             "page exceeds the transfer bound"
         );
-        let page = typed_page(&output);
+        assert_eq!(answer.exit_code(), 0, "{answer:?}");
+        let page = read_page(answer.value().unwrap().clone());
         reconstructed.push(&page);
         let Some(next) = page.document.footer.next else {
             break;
         };
         assert!(page_number < 999, "continuation failed to reach the end");
-        let continuation = continuation_arguments(&next);
-        let arguments = continuation.iter().map(String::as_str).collect::<Vec<_>>();
-        output = cli(&fixture, &arguments);
+        answer = follow(&fixture, &next);
     }
     assert_eq!(reconstructed.text(), expected);
     let destination = directory.as_path().join("bundle");
@@ -141,8 +142,8 @@ fn typed_read_pages_unicode_once_and_writes_a_bundle() {
         &fixture,
         &[
             "--json",
-            "read",
             target,
+            "read",
             "--view",
             "transcript",
             "--format",

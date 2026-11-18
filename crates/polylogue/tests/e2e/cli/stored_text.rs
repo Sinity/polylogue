@@ -32,15 +32,15 @@ pub(super) fn page(fixture: &crate::Fixture, options: &[&str]) -> ReadPage {
         "--deadline",
         "none",
         "--json",
-        "read",
         "session:claude-code:stored",
-        "--page-tokens",
+        "read",
+        "--budget",
         "100000",
     ];
     arguments.extend_from_slice(options);
     let output = cli(fixture, &arguments);
     assert!(output.status.success(), "{output:?}");
-    let page: ReadPage = serde_json::from_value(json(&output)).unwrap();
+    let page: ReadPage = read_page(json(&output));
     assert!(
         page.document.footer.next.is_none(),
         "small fixture must be complete"
@@ -68,8 +68,8 @@ pub(super) fn bundle(
             "--deadline",
             "none",
             "--json",
-            "read",
             "session:claude-code:stored",
+            "read",
             "--format",
             "jsonl",
             "--to",
@@ -128,7 +128,7 @@ fn tool_aliases_preserve_input_values_and_result_bytes() {
             ),
         ],
         |fixture, _| {
-            let shown = page(fixture, &["--show", "tools:full", "--output-lines", "0"]);
+            let shown = page(fixture, &["--show", "tools:full"]);
             let calls: Vec<_> = shown
                 .document
                 .items
@@ -148,10 +148,7 @@ fn tool_aliases_preserve_input_values_and_result_bytes() {
                 call.result_source.as_ref().unwrap().reference,
                 "block:claude-code:u1#0"
             );
-            let expanded = page(
-                fixture,
-                &["--show", "tools:full,harness:full", "--output-lines", "0"],
-            );
+            let expanded = page(fixture, &["--show", "tools:full,harness:full"]);
             assert_eq!(
                 expanded
                     .document
@@ -168,18 +165,16 @@ fn tool_aliases_preserve_input_values_and_result_bytes() {
                     "--deadline",
                     "none",
                     "--json",
-                    "read",
                     "block:claude-code:a1#0",
+                    "read",
                     "--show",
                     "tools:full",
-                    "--output-lines",
-                    "0",
-                    "--page-tokens",
+                    "--budget",
                     "100000",
                 ],
             );
             assert!(direct.status.success(), "{direct:?}");
-            let direct: ReadPage = serde_json::from_value(json(&direct)).unwrap();
+            let direct: ReadPage = read_page(json(&direct));
             let direct_calls: Vec<_> = direct
                 .document
                 .items
@@ -213,7 +208,7 @@ fn dialogue_filters_tool_output_without_rewriting_the_remaining_source() {
         )],
         |fixture, _| {
             assert_eq!(texts(&page(fixture, &["--view", "dialogue"])), [visible]);
-            let full = page(fixture, &["--show", "tools:full", "--output-lines", "0"]);
+            let full = page(fixture, &["--show", "tools:full"]);
             assert!(
                 serde_json::to_string(&full.document.items)
                     .unwrap()
@@ -257,32 +252,30 @@ fn indexed_tool_result_pages_reconstruct_the_pair_once() {
             ),
         ],
         |fixture, _| {
-            let mut args: Vec<String> = [
+            let args: Vec<String> = [
                 "--deadline",
                 "none",
                 "--json",
-                "read",
                 "block:claude-code:a1#0",
+                "read",
                 "--show",
                 "tools:full",
-                "--output-lines",
-                "0",
-                "--page-tokens",
+                "--budget",
                 "1000",
             ]
             .into_iter()
             .map(str::to_owned)
             .collect();
+            let raw = cli(
+                fixture,
+                &args.iter().map(String::as_str).collect::<Vec<_>>(),
+            );
+            assert!(raw.status.success(), "{raw:?}");
+            let mut shown = read_page(json(&raw));
             let mut items = super::read_current::Items::default();
             let mut cursors = std::collections::BTreeSet::new();
             let mut pages = 0usize;
             loop {
-                let raw = cli(
-                    fixture,
-                    &args.iter().map(String::as_str).collect::<Vec<_>>(),
-                );
-                assert!(raw.status.success(), "{raw:?}");
-                let shown: ReadPage = serde_json::from_value(json(&raw)).unwrap();
                 pages += 1;
                 assert!(
                     pages <= output.len() + input.to_string().len(),
@@ -293,7 +286,7 @@ fn indexed_tool_result_pages_reconstruct_the_pair_once() {
                     break;
                 };
                 assert!(cursors.insert(serde_json::to_string(next).unwrap()));
-                args = continuation_arguments(next);
+                shown = followed_page(fixture, next);
             }
             let values = items.into_values();
             let calls: Vec<_> = values

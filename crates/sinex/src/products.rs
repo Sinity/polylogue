@@ -88,6 +88,7 @@ pub(crate) fn kind(product: &Product) -> &'static str {
         Product::ParseProgress { .. } => "polylogue.parse_progress",
         Product::RestoredRequest { prepared } => match &prepared.request.write {
             UserWrite::ResolveLine { .. } => "polylogue.line_resolution_restore",
+            UserWrite::SaveSelection(_) => "polylogue.line_save_restore",
             _ => "polylogue.request_restore",
         },
         Product::RestoredAssertion { .. } => "polylogue.assertion_restore",
@@ -97,6 +98,7 @@ pub(crate) fn kind(product: &Product) -> &'static str {
         Product::Coverage(_) => "polylogue.coverage",
         Product::Request(request) => match &request.request.write {
             UserWrite::ResolveLine { .. } => "polylogue.line_resolution",
+            UserWrite::SaveSelection(_) => "polylogue.line_save",
             UserWrite::Assert { .. }
             | UserWrite::AssertQuery { .. }
             | UserWrite::ReviseAssertions { .. }
@@ -507,6 +509,8 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
         ("polylogue.request_restore", "restored_request"),
         ("polylogue.line_resolution", "request"),
         ("polylogue.line_resolution_restore", "restored_request"),
+        ("polylogue.line_save", "request"),
+        ("polylogue.line_save_restore", "restored_request"),
         ("polylogue.assertion_restore", "restored_assertion"),
         ("polylogue.query", "query"),
         ("polylogue.query_run", "query_run"),
@@ -562,19 +566,26 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
             };
             let mut definitions = definitions.as_object().expect("schema definitions").clone();
             if matches!(*product, "request" | "restored_request") {
-                // Line resolution journals have their own declared kind. Adding
-                // their body does not reinterpret existing authored records.
-                let resolution = matches!(
-                    *name,
-                    "polylogue.line_resolution" | "polylogue.line_resolution_restore"
-                );
+                // Line-owned writes have dedicated kinds so their bodies do
+                // not reinterpret existing authored records.
+                let write = match *name {
+                    "polylogue.line_resolution" | "polylogue.line_resolution_restore" => {
+                        Some("resolve_line")
+                    }
+                    "polylogue.line_save" | "polylogue.line_save_restore" => Some("save_selection"),
+                    _ => None,
+                };
                 definitions
                     .get_mut("UserWrite")
                     .expect("authored write schema")["oneOf"]
                     .as_array_mut()
                     .expect("tagged write variants")
                     .retain(|variant| {
-                        (variant["properties"]["write"]["const"] == "resolve_line") == resolution
+                        let variant = variant["properties"]["write"]["const"].as_str();
+                        match write {
+                            Some(write) => variant == Some(write),
+                            None => !matches!(variant, Some("resolve_line" | "save_selection")),
+                        }
                     });
             }
             if let Some(domain) = schema
@@ -708,9 +719,14 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                     name: (*name).into(),
                     version: if matches!(
                         *name,
-                        "polylogue.line_resolution" | "polylogue.line_resolution_restore"
+                        "polylogue.line_save" | "polylogue.line_save_restore"
                     ) {
                         1
+                    } else if matches!(
+                        *name,
+                        "polylogue.line_resolution" | "polylogue.line_resolution_restore"
+                    ) {
+                        2
                     } else if *name == "polylogue.assertion" {
                         3
                     } else {

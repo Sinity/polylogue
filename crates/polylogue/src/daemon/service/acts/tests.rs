@@ -86,7 +86,18 @@ fn concurrent_claims_hand_each_delivery_over_once() {
 #[test]
 fn a_ping_with_no_channel_is_refused_and_recorded() {
     let ping = |d: &test_daemon::TestDaemon, live: bool| {
-        crate::test_answers::ok(crate::test_daemon::Call::new("ping", serde_json::json!({"target": "@[claude-code:s1]", "text": "rebase after my commit", "live": live})).answer_with(&d.daemon, &invocation(d)))
+        crate::test_answers::ok(
+            super::ping(
+                &d.daemon,
+                &invocation(d),
+                &polylogue_store::user_writes::new_request_id(),
+                "@[claude-code:s1]",
+                "rebase after my commit",
+                live,
+                None,
+            )
+            .unwrap(),
+        )
     };
     let ended = test_daemon::start_with_clock("ended", at("2026-03-02T10:00:00Z"));
     let answer = ping(&ended, true);
@@ -112,11 +123,16 @@ fn a_ping_with_no_channel_is_refused_and_recorded() {
 fn a_broadcast_resolves_its_recipients_when_sent() {
     let d = test_daemon::start_with_clock("broadcast", at("2026-03-02T10:00:00Z"));
     let answer = crate::test_answers::ok(
-        crate::test_daemon::Call::new(
-            "ping",
-            serde_json::json!({"target": "@[sessions]", "text": "pause pushes", "live": true}),
+        super::ping(
+            &d.daemon,
+            &invocation(&d),
+            &polylogue_store::user_writes::new_request_id(),
+            "@[sessions]",
+            "pause pushes",
+            true,
+            None,
         )
-        .answer_with(&d.daemon, &invocation(&d)),
+        .unwrap(),
     );
     let deliveries = answer["deliveries"].as_array().unwrap();
     assert_eq!(deliveries.len(), 1);
@@ -128,11 +144,16 @@ fn a_broadcast_resolves_its_recipients_when_sent() {
 #[test]
 fn an_answer_needs_a_pending_request() {
     let d = test_daemon::start_with_clock("answer", at("2026-03-01T10:05:00Z"));
-    let answer = crate::test_daemon::Call::new(
-        "answer",
-        serde_json::json!({"session": s1(), "decision": "approve", "standing": true}),
+    let answer = super::answer(
+        &d.daemon,
+        &invocation(&d),
+        &polylogue_store::user_writes::new_request_id(),
+        &s1(),
+        true,
+        None,
+        true,
     )
-    .answer_with(&d.daemon, &invocation(&d));
+    .unwrap();
     let value = serde_json::to_value(&answer).unwrap();
     assert_eq!(value["error"]["kind"], "refused");
 }
@@ -197,7 +218,20 @@ fn a_hand_off_starts_a_new_session_briefed_from_the_source() {
     let fixture = hosted_codex(&d);
     let work = tempfile::tempdir().unwrap();
     let hand_off = |to: &str, print: bool| {
-        crate::test_daemon::Call::new("hand-off", serde_json::json!({"session": s1(), "to": to, "cwd": Some(work.path()), "at": Some("message:claude-code:u1"), "print": print})).answer_with(&d.daemon, &invocation(&d))
+        super::hand_off(
+            &d.daemon,
+            &invocation(&d),
+            &HandOff {
+                request_id: &polylogue_store::user_writes::new_request_id(),
+                source: &s1(),
+                to,
+                cwd: Some(work.path()),
+                at: Some("message:claude-code:u1"),
+                print,
+                stop_source: false,
+            },
+        )
+        .unwrap()
     };
     let printed = crate::test_answers::ok(hand_off("codex", true));
     assert!(
@@ -247,11 +281,16 @@ fn role_addresses_and_role_starts() {
     let work = tempfile::tempdir().unwrap();
     let ping = |target: &str| {
         serde_json::to_value(
-            crate::test_daemon::Call::new(
-                "ping",
-                serde_json::json!({"target": target, "text": "review my diff"}),
+            super::ping(
+                &d.daemon,
+                &invocation(&d),
+                &polylogue_store::user_writes::new_request_id(),
+                target,
+                "review my diff",
+                false,
+                None,
             )
-            .answer_with(&d.daemon, &invocation(&d)),
+            .unwrap_or_else(|failure| failure.answer()),
         )
         .unwrap()
     };
@@ -294,11 +333,16 @@ fn role_addresses_and_role_starts() {
     // The instance runs on its hosted connection (no live events have
     // arrived yet), so a ping reaches it rather than starting another.
     let pinged = crate::test_answers::ok(
-        crate::test_daemon::Call::new(
-            "ping",
-            serde_json::json!({"target": "@[role:reviewer]", "text": "review my diff"}),
+        super::ping(
+            &d.daemon,
+            &invocation(&d),
+            &polylogue_store::user_writes::new_request_id(),
+            "@[role:reviewer]",
+            "review my diff",
+            false,
+            None,
         )
-        .answer_with(&d.daemon, &invocation(&d)),
+        .unwrap(),
     );
     assert_eq!(pinged["deliveries"][0]["session"], "codex:t1");
     assert_eq!(pinged["deliveries"][0]["channel"], "protocol");
@@ -310,11 +354,16 @@ fn role_addresses_and_role_starts() {
         .acts
         .release_host(&SessionId::parse("codex:t1").unwrap());
     let restarted = crate::test_answers::ok(
-        crate::test_daemon::Call::new(
-            "ping",
-            serde_json::json!({"target": "@[role:reviewer]", "text": "one more"}),
+        super::ping(
+            &d.daemon,
+            &invocation(&d),
+            &polylogue_store::user_writes::new_request_id(),
+            "@[role:reviewer]",
+            "one more",
+            false,
+            None,
         )
-        .answer_with(&d.daemon, &invocation(&d)),
+        .unwrap(),
     );
     assert_eq!(restarted["deliveries"][0]["session"], "codex:t2");
     assert!(turns(fixture.path())[2].contains("one more"));
@@ -329,10 +378,10 @@ fn role_addresses_and_role_starts() {
 #[test]
 fn ping_text_names_the_assert_tool() {
     let text = ping_text("d1", "p1", "operator", "rebase please", None);
-    assert!(text.contains("`assert`"), "{text}");
-    assert!(text.contains("`polylogue_note`"), "{text}");
+    assert!(text.contains("`rows`"), "{text}");
+    assert!(text.contains("`polylogue_write`"), "{text}");
     assert!(
-        text.contains("`about` and `answers` links both name `assertion:p1@p1`"),
+        text.contains("`selection` and `replies_to` both name `assertion:p1@p1`"),
         "{text}"
     );
     assert!(!text.contains("::finding"), "{text}");
@@ -341,22 +390,27 @@ fn ping_text_names_the_assert_tool() {
 
 /// An answer written the way the pack says is an assertion linked to the ping.
 #[test]
-fn ping_answer_through_assert_links_to_the_ping() {
+fn an_authored_finding_answers_the_ping() {
     use polylogue_model::assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink};
     let d = test_daemon::start_with_clock("answer through assert", at("2026-03-02T10:00:00Z"));
     let sent = crate::test_answers::ok(
-        crate::test_daemon::Call::new(
-            "ping",
-            serde_json::json!({"target": "@[claude-code:s1]", "text": "is the rebase done?", "live": true}),
+        super::ping(
+            &d.daemon,
+            &invocation(&d),
+            &polylogue_store::user_writes::new_request_id(),
+            "@[claude-code:s1]",
+            "is the rebase done?",
+            true,
+            None,
         )
-        .answer_with(&d.daemon, &invocation(&d)),
+        .unwrap(),
     );
     let ping = sent["ping"].as_str().unwrap().to_owned();
     let delivery = sent["deliveries"][0]["delivery"].as_str().unwrap();
     let reader = d.daemon.reads.reader().unwrap();
     let (_, text) = reader.delivery(delivery).unwrap().unwrap();
     drop(reader);
-    let instruction = format!("`about` and `answers` links both name `assertion:{ping}@{ping}`");
+    let instruction = format!("`selection` and `replies_to` both name `assertion:{ping}@{ping}`");
     assert!(text.contains(&instruction), "{text}");
     let answer = NewAssertion {
         kind: AssertionKind::Finding,
@@ -372,12 +426,16 @@ fn ping_answer_through_assert_links_to_the_ping() {
             })
             .collect(),
     };
-    let written = crate::test_answers::ok(
-        crate::test_daemon::Call::new("assert", serde_json::json!({"assertions": [answer]}))
-            .id("answer")
-            .answer_with(&d.daemon, &invocation(&d)),
-    );
-    let id = written["id"].as_str().unwrap();
+    let written = author(
+        &d.daemon,
+        &invocation(&d),
+        "answer".into(),
+        UserWrite::Assert {
+            assertions: vec![answer],
+        },
+    )
+    .unwrap();
+    let id = written.id.as_str();
     let reader = d.daemon.reads.reader().unwrap();
     let stored = reader
         .assertion(&polylogue_model::RevisionReference::exact(

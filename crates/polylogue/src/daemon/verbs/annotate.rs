@@ -3,17 +3,14 @@
 //! writer checks and expands into one annotation per row.
 use super::{
     RowRule, Selection, StepCall, StepDone, Verb, delegated, not_built, not_built_use, undo_line,
-    written,
 };
 use crate::daemon::Failure;
-use crate::daemon::handler::Handler;
-use crate::daemon::service::handlers;
-use crate::protocol::assertion;
 use crate::protocol::line::StepAnswer;
 use crate::protocol::steps::{EditStep, JudgeStep, NoteStep, TagStep, WithdrawStep};
 use polylogue_model::assertion::{
     AssertionKind, AssertionPatch, Change, LinkRole, NewAssertion, NewAssertionLink,
 };
+use polylogue_model::user::UserWrite;
 use polylogue_model::{Reference, RevisionReference, Timestamp};
 use serde_json::Value;
 
@@ -178,7 +175,8 @@ fn each(
     let reader = call.call.reader()?;
     let scope = reader.scope_token();
     drop(reader);
-    let answer = crate::daemon::service::submit(
+    let mut committed = Vec::new();
+    let answer = crate::daemon::service::submit_receipt(
         call.call.daemon,
         call.call.invocation,
         call.call.request_id.into(),
@@ -188,7 +186,10 @@ fn each(
             resolved,
         },
         Some(scope),
-        |outcome| polylogue_model::user::AssertQueryOutcome::new(outcome, targets),
+        |receipt| {
+            committed = receipt.written;
+            polylogue_model::user::AssertQueryOutcome::new(receipt.outcome, targets)
+        },
     );
     let answer = if targets == 0 {
         match answer.outcome {
@@ -202,12 +203,8 @@ fn each(
         answer
     };
     let mut done = delegated(answer, StepAnswer::WroteEach)?;
-    if let StepAnswer::WroteEach(outcome) = &done.reply {
-        done.undo.extend(undo_line(
-            call.call.request_id,
-            &written(&outcome.id, outcome.targets),
-        ));
-    }
+    done.undo
+        .extend(undo_line(call.call.request_id, &committed)?);
     Ok(done)
 }
 
@@ -236,17 +233,15 @@ impl Verb for Edit {
                 })
                 .collect::<Result<Vec<_>, Failure>>()?
         };
-        let count = bases.len();
         let patch = AssertionPatch {
             key: step.key.map_or(Change::Keep, Change::Set),
             value: Change::Set(Value::String(text)),
             ..AssertionPatch::default()
         };
-        wrote(
-            handlers::Revise::run(assertion::Revise { bases, patch }, &call.call)?,
-            call,
-            count,
-        )
+        if bases.is_empty() {
+            return Err(Failure::bad_request("bases must not be empty"));
+        }
+        wrote(UserWrite::ReviseAssertions { bases, patch }, call, None)
     }
     fn would(step: &EditStep, selection: &Selection, _: &StepCall<'_>) -> Result<String, Failure> {
         text(step)?;
@@ -280,17 +275,25 @@ fn annotations(verb: &str, selection: &Selection) -> Result<Vec<RevisionReferenc
 
 /// A write's outcome as a finished step with its undo line.
 fn wrote(
-    answer: command_surface::Answer<polylogue_model::user::UserOutcome>,
+    write: UserWrite,
     call: &StepCall<'_>,
-    count: usize,
+    scope: Option<polylogue_store::ReadScopeToken>,
 ) -> Result<StepDone, Failure> {
+    let mut committed = Vec::new();
+    let answer = crate::daemon::service::submit_receipt(
+        call.call.daemon,
+        call.call.invocation,
+        call.call.request_id.into(),
+        write,
+        scope,
+        |receipt| {
+            committed = receipt.written;
+            receipt.outcome
+        },
+    );
     let mut done = delegated(answer, StepAnswer::Wrote)?;
-    if let StepAnswer::Wrote(outcome) = &done.reply {
-        done.undo.extend(undo_line(
-            call.call.request_id,
-            &written(&outcome.id, count),
-        ));
-    }
+    done.undo
+        .extend(undo_line(call.call.request_id, &committed)?);
     Ok(done)
 }
 
@@ -305,16 +308,16 @@ impl Verb for Withdraw {
         call: &StepCall<'_>,
     ) -> Result<StepDone, Failure> {
         let targets = withdrawn(selection)?;
+        if targets.is_empty() {
+            return Err(Failure::bad_request("targets must not be empty"));
+        }
         wrote(
-            handlers::Withdraw::run(
-                assertion::Withdraw {
-                    targets,
-                    reason: step.reason,
-                },
-                &call.call,
-            )?,
+            UserWrite::WithdrawAssertions {
+                targets,
+                reason: step.reason,
+            },
             call,
-            1,
+            None,
         )
     }
     fn would(_: &WithdrawStep, selection: &Selection, _: &StepCall<'_>) -> Result<String, Failure> {
@@ -348,17 +351,39 @@ impl Verb for Judge {
         call: &StepCall<'_>,
     ) -> Result<StepDone, Failure> {
         let (note, accepted) = verdict(&step, selection)?;
+        let Reference::Assertion(reference) = note else {
+            unreachable!("verdict checks the selection")
+        };
+        let reader = call.call.reader()?;
+        let scope = reader.scope_token();
+        let found = reader
+            .assertion(reference)?
+            .ok_or_else(|| Failure::not_found(format!("no assertion {note}")))?;
+        if !found.fact.author.is_agent() {
+            return Err(Failure::bad_request(
+                "only assertions agents wrote are accepted or rejected; revise or withdraw the operator's own",
+            ));
+        }
+        drop(reader);
+        let judgment = NewAssertion {
+            kind: AssertionKind::Judgment,
+            key: Some(if accepted { "accepted" } else { "rejected" }.into()),
+            value: step.reason.map(Value::String),
+            links: vec![NewAssertionLink {
+                role: LinkRole::About,
+                reference: Reference::Assertion(RevisionReference::exact(
+                    found.fact.root,
+                    found.fact.id,
+                )),
+            }],
+            valid_until: None,
+        };
         wrote(
-            handlers::Judge::run(
-                assertion::Judge {
-                    note: note.to_string(),
-                    accepted,
-                    reason: step.reason,
-                },
-                &call.call,
-            )?,
+            UserWrite::Assert {
+                assertions: vec![judgment],
+            },
             call,
-            1,
+            Some(scope),
         )
     }
     fn would(step: &JudgeStep, selection: &Selection, _: &StepCall<'_>) -> Result<String, Failure> {

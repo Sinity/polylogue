@@ -47,7 +47,7 @@ fn document_pages_preserve_prefix_and_refuse_cross_content_stale_and_tampered_co
     let _ = import_report(&imported);
     let reference = "document:claude-ai:manual";
     eprintln!("document pages: whole reading");
-    let whole = reading(&env, reference, &["--page-tokens", "100000"]);
+    let whole = reading(&env, reference, &["--budget", "100000"]);
     let encoded = serde_json::to_string(&whole).unwrap();
     assert!(encoded.contains("synthetic-secret-tail"));
     assert!(encoded.contains("Visible λ🙂 tail"));
@@ -59,7 +59,7 @@ fn document_pages_preserve_prefix_and_refuse_cross_content_stale_and_tampered_co
         serde_json::to_value(&doc).unwrap()
     );
     eprintln!("document pages: terminal and HTML");
-    let terminal = cli(&env, &["read", reference, "--format", "terminal"]);
+    let terminal = cli(&env, &[reference, "read", "--format", "terminal"]);
     assert!(terminal.status.success(), "{terminal:?}");
     assert!(!terminal.stdout.contains(&0x1b) && !terminal.stdout.contains(&7));
     assert!(
@@ -72,8 +72,8 @@ fn document_pages_preserve_prefix_and_refuse_cross_content_stale_and_tampered_co
         &env,
         &[
             "--json",
-            "read",
             reference,
+            "read",
             "--format",
             "html",
             "--to",
@@ -85,55 +85,50 @@ fn document_pages_preserve_prefix_and_refuse_cross_content_stale_and_tampered_co
     assert!(!html.contains("<script>alert('synthetic')</script>"));
     assert!(html.contains("&lt;script&gt;") && html.contains("synthetic-secret-tail"));
     eprintln!("document pages: refuse invalid continuation tokens");
-    let first = reading(&env, reference, &["--page-tokens", "1"]);
+    let first = reading(&env, reference, &["--budget", "1"]);
     let next = first.document.footer.next.unwrap();
-    let args = continuation_arguments(&next);
-    let cursor = args.iter().position(|arg| arg == "--cursor").unwrap() + 1;
-    assert!(!args[cursor].is_empty());
-    assert!(!args[cursor].contains("synthetic-secret-tail"));
-    let other_page = reading(&env, "document:claude-ai:other", &["--page-tokens", "1"]);
-    let other_args = continuation_arguments(&other_page.document.footer.next.unwrap());
-    let other_cursor = other_args.iter().position(|arg| arg == "--cursor").unwrap() + 1;
+    let cursor = next.request.arguments["steps"][0]["cursor"]
+        .as_str()
+        .unwrap();
+    assert!(!cursor.is_empty());
+    assert!(!cursor.contains("synthetic-secret-tail"));
+    let other_page = reading(&env, "document:claude-ai:other", &["--budget", "1"]);
+    let other = other_page.document.footer.next.unwrap();
     for token in [
-        other_args[other_cursor].clone(),
+        other.request.arguments["steps"][0]["cursor"]
+            .as_str()
+            .unwrap()
+            .to_owned(),
         "broken".into(),
         String::new(),
-        format!("{}x", args[cursor]),
+        format!("{cursor}x"),
     ] {
-        let mut changed = args.clone();
-        changed[cursor] = token;
-        let result = cli(
-            &env,
-            &changed.iter().map(String::as_str).collect::<Vec<_>>(),
-        );
-        assert!(!result.status.success(), "{result:?}");
+        let mut changed = next.clone();
+        changed.request.arguments["steps"][0]["cursor"] = token.into();
+        read_failure(follow(&env, &changed));
     }
-    let notes = serde_json::to_string(&[polylogue_model::assertion::NewAssertion {
-        kind: polylogue_model::assertion::AssertionKind::Note,
-        key: None,
-        value: Some(json!("Unrelated write")),
-        valid_until: None,
-        links: vec![polylogue_model::assertion::NewAssertionLink {
-            role: polylogue_model::assertion::LinkRole::About,
-            reference: polylogue_model::Reference::parse("document:claude-ai:other").unwrap(),
-        }],
-    }])
-    .unwrap();
     eprintln!("document pages: unrelated write and continuation");
-    let note = cli(&env, &["--json", "assert", &notes]);
+    let before_unrelated = followed_page(&env, &next);
+    let note = cli(
+        &env,
+        &[
+            "--json",
+            "document:claude-ai:other",
+            "note",
+            "Unrelated write",
+        ],
+    );
     assert!(note.status.success(), "{note:?}");
-    let continued = cli(&env, &args.iter().map(String::as_str).collect::<Vec<_>>());
-    assert!(continued.status.success(), "{continued:?}");
+    let continued = followed_page(&env, &next);
+    assert_eq!(continued.document.items, before_unrelated.document.items);
+    assert_eq!(continued.document.header, before_unrelated.document.header);
     eprintln!("document pages: corrupt body and preserve readable prefix");
     let index = rusqlite::Connection::open(archive.join("index.db")).unwrap();
     index.execute("UPDATE document_block SET body=x'00' WHERE idx=2 AND document_pk=(SELECT pk FROM document WHERE id='claude-ai:manual')",[]).unwrap();
     drop(index);
-    let prefix = reading(&env, reference, &["--page-tokens", "1"]);
+    let prefix = reading(&env, reference, &["--budget", "1"]);
     assert!(!prefix.document.items.is_empty());
-    let full = cli(
-        &env,
-        &["--json", "read", reference, "--page-tokens", "100000"],
-    );
+    let full = cli(&env, &["--json", reference, "read", "--budget", "100000"]);
     assert!(!full.status.success(), "{full:?}");
     doc.set_time(
         Timestamp::from_unix_ms(2),
@@ -148,9 +143,8 @@ fn document_pages_preserve_prefix_and_refuse_cross_content_stale_and_tampered_co
     eprintln!("document pages: replacement import and stale continuation");
     let imported = cli(&env, &["--json", "import", changed.to_str().unwrap()]);
     let _ = import_report(&imported);
-    let stale = cli(&env, &args.iter().map(String::as_str).collect::<Vec<_>>());
-    assert!(!stale.status.success(), "{stale:?}");
-    assert_eq!(json(&stale)["error"]["kind"], "stale_cursor");
+    let stale = read_failure(follow(&env, &next));
+    assert_eq!(serde_json::to_value(stale).unwrap()["kind"], "stale_cursor");
 }
 
 fn write_documents(path: &Path, documents: &[Document]) {

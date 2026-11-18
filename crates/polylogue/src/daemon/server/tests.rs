@@ -664,8 +664,8 @@ fn stalled_stream(daemon: &Daemon) -> UnixStream {
     stream
         .write_all(
             request_line(
-                "read",
-                serde_json::json!({"target": "claude-code:large", "delivery": "stream"}),
+                "rows",
+                serde_json::json!({"selection":"session:claude-code:large","steps":[{"verb":"read","delivery":"stream"}]}),
                 "stalled-stream",
             )
             .as_bytes(),
@@ -876,11 +876,21 @@ fn idle_listener_makes_no_wakeups() {
 
 /// The JSON of each `record` event a follow sends, as they arrive.
 fn follow_records(stream: UnixStream) -> impl Iterator<Item = serde_json::Value> {
+    let mut event = String::new();
     BufReader::new(stream)
         .lines()
         .map_while(Result::ok)
-        .filter_map(|line| line.strip_prefix("data: ").map(str::to_owned))
-        .filter_map(|data| serde_json::from_str(&data).ok())
+        .filter_map(move |line| {
+            if let Some(name) = line.strip_prefix("event: ") {
+                event = name.to_owned();
+                return None;
+            }
+            if event != "record" {
+                return None;
+            }
+            line.strip_prefix("data: ")
+                .and_then(|data| serde_json::from_str(data).ok())
+        })
 }
 
 #[test]
@@ -894,8 +904,8 @@ fn a_follow_shows_what_a_session_appends_and_ends_with_its_marks() {
     stream
         .write_all(
             request_line_with(
-                "follow",
-                serde_json::json!({"target": "sessions"}),
+                "rows",
+                serde_json::json!({"selection":"sessions","steps":[{"verb":"read","follow":true}]}),
                 "follow-appends",
                 command_surface::Deadline::Milliseconds(8_000),
             )
@@ -937,8 +947,8 @@ fn a_follow_whose_client_hangs_up_gives_up_its_place_at_once() {
     stream
         .write_all(
             request_line(
-                "follow",
-                serde_json::json!({"target": "claude-code:s1"}),
+                "rows",
+                serde_json::json!({"selection":"session:claude-code:s1","steps":[{"verb":"read","follow":true}]}),
                 "follow-without-deadline",
             )
             .as_bytes(),

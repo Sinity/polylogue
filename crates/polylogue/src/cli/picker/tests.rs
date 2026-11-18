@@ -523,7 +523,7 @@ fn single_match_never_opens_picker() {
 
 #[test]
 fn fuzzy_candidates_continue_across_pages() {
-    let mut rows = vec![row("Alpha"), row("Beta"), row("Gamma")];
+    let mut rows = [row("Alpha"), row("Beta"), row("Gamma")];
     rows[0].title = "Retry".into();
     rows[1].first_prompt = "retry".into();
     rows[2].repository = "retry".into();
@@ -534,7 +534,11 @@ fn fuzzy_candidates_continue_across_pages() {
     };
     let mut references = vec![];
     loop {
-        let page = fuzzy_page(rows.clone(), &request, 1).unwrap();
+        let mut matched = FuzzyRows::new(&request, 1).unwrap();
+        for chunk in rows.chunks(1) {
+            matched.extend(chunk.iter().cloned());
+        }
+        let page = matched.finish().unwrap();
         assert_eq!(page.count, Some(3));
         references.extend(page.rows.into_iter().map(|row| row.reference));
         request.cursor = page.next;

@@ -6,8 +6,8 @@ use polylogue_store::{Archive, ReadPool};
 use std::io::Read;
 
 #[test]
-fn rebuilding_cache_preserves_source7_and_source8_pending_authored_intent() {
-    for source_version in [7, 8] {
+fn rebuilding_cache_preserves_prior_source_pending_authored_intent() {
+    for source_version in [7, 8, 9] {
         let dir = tempfile::tempdir().unwrap();
         let store = dir.path().join("sinex");
         let root = dir.path().join("archive");

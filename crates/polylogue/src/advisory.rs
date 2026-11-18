@@ -266,7 +266,7 @@ pub fn prepare(
         let Some(target) = selected else {
             continue;
         };
-        let pointer = serde_json::json!({"target": target.to_string(), "read": format!("polylogue read {}", polylogue_render::shell_quote(&reference))});
+        let pointer = serde_json::json!({"target": target.to_string(), "read": format!("polylogue {} read", polylogue_render::shell_quote(&reference))});
         let text = format!(
             "[polylogue advice delivery:{}] Operator-judged {}: {}\n",
             polylogue_render::terminal::escape(delivery),

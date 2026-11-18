@@ -42,10 +42,10 @@ fn separate_immutable_exports_keep_older_text_when_new_collections_are_null_or_e
         .unwrap();
         let imported = cli(&env, &["--json", "import", source.to_str().unwrap()]);
         let _ = import_report(&imported);
-        let out = cli(&env, &["--json", "read", instruction]);
+        let out = cli(&env, &["--json", instruction, "read"]);
         assert!(out.status.success(), "{out:?}");
         assert_eq!(document(&env, instruction)["blocks"][0]["text"], body);
-        let out = cli(&env, &["--json", "read", context]);
+        let out = cli(&env, &["--json", context, "read"]);
         assert!(out.status.success(), "{out:?}");
         let value = document(&env, context);
         let sources = cli(
@@ -107,10 +107,10 @@ fn separate_immutable_exports_keep_older_text_when_new_collections_are_null_or_e
     let after = cli(&env, &["--json", "dev", "sql", ids_sql]);
     assert!(after.status.success(), "{after:?}");
     assert_eq!(json(&after), ids);
-    let out = cli(&env, &["--json", "read", context]);
+    let out = cli(&env, &["--json", context, "read"]);
     assert!(out.status.success(), "{out:?}");
     assert_eq!(&document(&env, context), initial.as_ref().unwrap());
-    let out = cli(&env, &["--json", "read", instruction]);
+    let out = cli(&env, &["--json", instruction, "read"]);
     assert!(out.status.success(), "{out:?}");
     assert_eq!(
         document(&env, instruction)["blocks"][0]["text"],

@@ -43,3 +43,64 @@ pub(crate) fn degraded<T: Debug>(answer: Answer<T>) -> (T, Vec<String>) {
         other => panic!("expected a degraded answer, got {other:?}"),
     }
 }
+
+/// A single successful step through the declared line operation.
+#[track_caller]
+pub(crate) fn step(answer: Answer<serde_json::Value>) -> crate::protocol::line::StepAnswer {
+    use crate::protocol::line::{LineAnswer, StepOutcome};
+    let line: LineAnswer = serde_json::from_value(
+        answer
+            .value()
+            .unwrap_or_else(|| panic!("expected a line value: {answer:?}"))
+            .clone(),
+    )
+    .unwrap();
+    let LineAnswer::Steps(mut steps) = line else {
+        panic!("expected steps: {answer:?}")
+    };
+    assert_eq!(steps.steps.len(), 1, "{answer:?}");
+    match steps.steps.remove(0).outcome {
+        StepOutcome::Done { reply, .. } => reply,
+        other => panic!("expected a completed step: {other:?}"),
+    }
+}
+
+/// The listing payload, preserving its empty/degraded outcome and envelope.
+#[track_caller]
+pub(crate) fn listing(answer: Answer<serde_json::Value>) -> Answer<serde_json::Value> {
+    answer.map(|value| {
+        let crate::protocol::line::LineAnswer::Listing(reply) =
+            serde_json::from_value(value).unwrap()
+        else {
+            panic!("expected a listing")
+        };
+        serde_json::to_value(reply).unwrap()
+    })
+}
+
+/// A single successful read step from the declared line operation.
+#[track_caller]
+pub(crate) fn read(answer: Answer<serde_json::Value>) -> polylogue_model::read::ReadPage {
+    match step(answer) {
+        crate::protocol::line::StepAnswer::Read(page) => *page,
+        other => panic!("expected a read: {other:?}"),
+    }
+}
+
+/// A refusal at acceptance or at the single requested line step.
+#[track_caller]
+pub(crate) fn refusal(answer: Answer<serde_json::Value>) -> command_surface::Failure {
+    use crate::protocol::line::{LineAnswer, StepOutcome};
+    if let command_surface::Outcome::Error(error) = &answer.outcome {
+        return error.clone();
+    }
+    let line: LineAnswer = serde_json::from_value(answer.value().unwrap().clone()).unwrap();
+    let LineAnswer::Steps(mut steps) = line else {
+        panic!("expected refused steps: {answer:?}")
+    };
+    assert_eq!(steps.steps.len(), 1, "{answer:?}");
+    match steps.steps.remove(0).outcome {
+        StepOutcome::Failed { error } => error,
+        other => panic!("expected a refused read: {other:?}"),
+    }
+}

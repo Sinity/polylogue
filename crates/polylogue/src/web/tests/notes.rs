@@ -3,7 +3,7 @@ use axum::body::{Body, to_bytes};
 use axum::http::Request as Http;
 use polylogue_model::{
     Reference,
-    assertion::{Assertion, LinkRole, NewAssertion},
+    assertion::{Assertion, LinkRole},
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -103,10 +103,17 @@ async fn command(f: &Fixture, operation: &str, id: &str, arguments: Value) -> Va
     let value = answer
         .value()
         .expect("successful answer has its typed value");
-    if operation == "rows" {
-        value["reply"].clone()
-    } else {
-        value.clone()
+    match value["kind"].as_str() {
+        Some("listing") => value["reply"].clone(),
+        Some("steps") => match crate::test_answers::step(answer) {
+            crate::protocol::line::StepAnswer::Wrote(reply) => serde_json::to_value(reply).unwrap(),
+            crate::protocol::line::StepAnswer::WroteEach(reply) => {
+                serde_json::to_value(reply).unwrap()
+            }
+            crate::protocol::line::StepAnswer::Saved(reply) => serde_json::to_value(reply).unwrap(),
+            other => panic!("expected an authored step: {other:?}"),
+        },
+        _ => value.clone(),
     }
 }
 async fn query(f: &Fixture, text: &str) -> Value {
@@ -122,17 +129,17 @@ async fn query(f: &Fixture, text: &str) -> Value {
     )
     .await
 }
-fn statement(kind: &str, key: Option<&str>, value: Value, about: &[String]) -> Value {
-    json!({"kind":kind,"key":key,"value":value,"valid_until":null,"links":about.iter().map(|reference|json!({"role":"about","reference":reference})).collect::<Vec<_>>()})
+fn note_line(kind: &str, key: Option<&str>, text: Value, about: &[String]) -> Value {
+    json!({"references":about,"steps":[{"verb":"note","as":kind,"key":key,"text":text}]})
 }
 fn note(text: &str) -> Value {
-    statement("note", None, json!(text), &["repo:morrow".into()])
+    note_line("note", None, json!(text), &["repo:morrow".into()])
 }
-async fn assert_one(f: &Fixture, id: &str, statement: Value) -> Value {
-    command(f, "assert", id, json!({"assertions":[statement]})).await
+async fn write_one(f: &Fixture, id: &str, line: Value) -> Value {
+    command(f, "rows", id, line).await
 }
 async fn revise(f: &Fixture, id: &str, root: &str, base: &str, value: Value) {
-    command(f,"revise",id,json!({"bases":[format!("assertion:{root}@{base}")],"patch":{"value":{"change":"set","value":value}}})).await;
+    command(f,"rows",id,json!({"selection":format!("assertion:{root}-1@{base}-1"),"steps":[{"verb":"edit","text":value}]})).await;
 }
 async fn stored(f: &Fixture, root: &str, revision: &str) -> Assertion {
     let reference = format!("assertion:{root}@{revision}");
@@ -140,9 +147,9 @@ async fn stored(f: &Fixture, root: &str, revision: &str) -> Assertion {
     // No deadline is lifted and no generated child is rewritten.
     let (status, bytes) = send_raw(
         f,
-        "read",
+        "rows",
         &format!("read-{revision}"),
-        json!({"target":reference,"format":"jsonl","delivery":"stream"}),
+        json!({"selection":reference,"steps":[{"verb":"read","format":"jsonl","delivery":"stream"}]}),
     )
     .await;
     assert_eq!(
@@ -226,13 +233,14 @@ fn agent_write(f: &Fixture, request: crate::test_daemon::Call) -> Value {
     };
     let answer = request.authorship(authorship).answer(&f.daemon.daemon);
     assert_eq!(answer.exit_code(), 0, "{answer:?}");
-    answer.value().unwrap().clone()
+    match crate::test_answers::step(answer) {
+        crate::protocol::line::StepAnswer::Wrote(reply) => serde_json::to_value(reply).unwrap(),
+        crate::protocol::line::StepAnswer::WroteEach(reply) => serde_json::to_value(reply).unwrap(),
+        other => panic!("expected an authored step: {other:?}"),
+    }
 }
 fn agent_assert(f: &Fixture, id: &str, value: &str) {
-    agent_write(
-        f,
-        crate::test_daemon::Call::new("assert", serde_json::json!({"assertions": [serde_json::from_value::<NewAssertion>(note(value)).unwrap()]})).id(id),
-    );
+    agent_write(f, crate::test_daemon::Call::new("rows", note(value)).id(id));
 }
 fn about(row: &Assertion) -> Vec<String> {
     row.fact
@@ -247,9 +255,9 @@ fn about(row: &Assertion) -> Vec<String> {
 fn operator_edits_and_judgments_keep_earlier_revisions() {
     run(async {
         let f = fixture();
-        assert_one(&f, "own", note("first <script>")).await;
+        write_one(&f, "own", note("first <script>")).await;
         revise(&f, "edit", "own", "own", json!("second")).await;
-        let old = stored(&f, "own", "own").await;
+        let old = stored(&f, "own-1", "own-1").await;
         assert_eq!(old.fact.value, Some(json!("first <script>")));
         assert_eq!(old.fact.author, polylogue_model::Author::Operator);
         assert_eq!(old.fact.via, polylogue_model::authorship::Channel::Web);
@@ -258,73 +266,53 @@ fn operator_edits_and_judgments_keep_earlier_revisions() {
             ("accept", "accepted", "checked"),
             ("reject", "rejected", "reconsidered"),
         ] {
-            assert_one(
-                &f,
-                id,
-                statement(
-                    "judgment",
-                    Some(key),
-                    json!(reason),
-                    &["assertion:agent@agent".into()],
-                ),
-            )
-            .await;
+            command(&f, "rows", id, json!({"selection":"assertion:agent-1@agent-1","steps":[{"verb":"judge","verdict":if key == "accepted" {"accept"} else {"reject"},"reason":reason}]})).await;
         }
         // Judging the revision again revises the operator's judgment of it.
         let current = query(
             &f,
-            "assertions where kind:judgment about:\"assertion:agent@agent\"",
+            "assertions where kind:judgment about:\"assertion:agent-1@agent-1\"",
         )
         .await;
         assert_eq!(current["count"], 1, "{current}");
-        assert_eq!(current["rows"][0]["id"], "reject", "{current}");
+        assert_eq!(current["rows"][0]["id"], "reject-1", "{current}");
         assert_eq!(
             query(
                 &f,
-                "assertions where kind:judgment current:* about:\"assertion:agent@agent\""
+                "assertions where kind:judgment current:* about:\"assertion:agent-1@agent-1\""
             )
             .await["count"],
             2
         );
         agent_write(
             &f,
-            crate::test_daemon::Call::new("revise", serde_json::json!({"bases": ["assertion:agent@agent"], "patch": {"value":{"change":"set","value":"new proposal"}}})).id("agent-new"),
+            crate::test_daemon::Call::new("rows", json!({"selection":"assertion:agent-1@agent-1", "steps":[{"verb":"edit","text":"new proposal"}]})).id("agent-new"),
         );
         let pending = query(&f, "assertions where agent:true judged:unknown").await;
         assert_eq!(pending["count"], 1);
-        assert_eq!(pending["rows"][0]["id"], "agent-new");
-        let retry = assert_one(
-            &f,
-            "reject",
-            statement(
-                "judgment",
-                Some("rejected"),
-                json!("reconsidered"),
-                &["assertion:agent@agent".into()],
-            ),
-        )
-        .await;
+        assert_eq!(pending["rows"][0]["id"], "agent-new-1");
+        let retry = command(&f,"rows","reject",json!({"selection":"assertion:agent-1@agent-1","steps":[{"verb":"judge","verdict":"reject","reason":"reconsidered"}]})).await;
         assert_eq!(retry["repeat"], true);
         assert_eq!(
             query(
                 &f,
-                "assertions where kind:judgment current:* about:\"assertion:agent@agent\""
+                "assertions where kind:judgment current:* about:\"assertion:agent-1@agent-1\""
             )
             .await["count"],
             2
         );
         command(
             &f,
-            "withdraw",
+            "rows",
             "withdraw-agent",
-            json!({"targets":["assertion:agent@agent-new"],"reason":"closed"}),
+            json!({"selection":"assertion:agent-1@agent-new-1","steps":[{"verb":"withdraw","reason":"closed"}]}),
         )
         .await;
         assert_eq!(
             query(&f, "assertions where agent:true judged:unknown").await["count"],
             0
         );
-        let revision = stored(&f, "agent", "agent-new").await;
+        let revision = stored(&f, "agent-1", "agent-new-1").await;
         assert_eq!(revision.fact.value, Some(json!("new proposal")));
         assert!(revision.fact.author.is_agent());
         assert_eq!(revision.fact.via, polylogue_model::authorship::Channel::Mcp);
@@ -340,21 +328,21 @@ fn selected_current_and_kept_rows_have_distinct_populations() {
         assert_eq!(
             command(
                 &f,
-                "keep",
+                "rows",
                 "kept",
-                json!({"query":"assertions where kind:question"})
+                json!({"selection":"assertions where kind:question","steps":[{"verb":"save"}]})
             )
-            .await["id"],
-            "kept"
+            .await["kept"]["id"],
+            "kept-1-keep"
         );
         assert_eq!(
             query(&f, "assertions where kind:question").await["count"],
             0
         );
-        assert_one(
+        write_one(
             &f,
             "question",
-            statement(
+            note_line(
                 "question",
                 None,
                 json!("new member"),
@@ -362,16 +350,16 @@ fn selected_current_and_kept_rows_have_distinct_populations() {
             ),
         )
         .await;
-        let result=command(&f,"assert-query","bulk",json!({"query":"assertions where kind:question","assertion":statement("note",None,json!("all when applied"),&[])})).await;
+        let result=command(&f,"rows","bulk",json!({"selection":"assertions where kind:question","all":true,"steps":[{"verb":"note","text":"all when applied"}]})).await;
         assert_eq!(result["targets"], 1);
         assert_eq!(
-            about(&stored(&f, "bulk", "bulk").await),
-            vec!["assertion:question@question"]
+            about(&stored(&f, "bulk-1", "bulk-1").await),
+            vec!["assertion:question-1@question-1"]
         );
-        assert_one(
+        write_one(
             &f,
             "selected",
-            statement(
+            note_line(
                 "note",
                 None,
                 json!("selected only"),
@@ -380,21 +368,25 @@ fn selected_current_and_kept_rows_have_distinct_populations() {
         )
         .await;
         assert_eq!(
-            query(&f, "assertions where about:\"assertion:question@question\"").await["count"],
+            query(
+                &f,
+                "assertions where about:\"assertion:question-1@question-1\""
+            )
+            .await["count"],
             1
         );
-        assert_eq!(query(&f, "result:kept").await["count"], 0);
+        assert_eq!(query(&f, "result:kept-1-keep").await["count"], 0);
         command(
             &f,
-            "keep",
+            "rows",
             "kept-questions",
-            json!({"query":"assertions where kind:question"}),
+            json!({"selection":"assertions where kind:question","steps":[{"verb":"save"}]}),
         )
         .await;
-        assert_one(
+        write_one(
             &f,
             "another",
-            statement(
+            note_line(
                 "question",
                 None,
                 json!("later member"),
@@ -402,18 +394,15 @@ fn selected_current_and_kept_rows_have_distinct_populations() {
             ),
         )
         .await;
-        let args = json!({"query":"result:kept-questions","assertion":statement("note",None,json!("fixed reviewed population"),&[])});
+        let args = json!({"selection":"result:kept-questions-1-keep","all":true,"steps":[{"verb":"note","text":"fixed reviewed population"}]});
         assert_eq!(
-            command(&f, "assert-query", "fixed", args.clone()).await["targets"],
+            command(&f, "rows", "fixed", args.clone()).await["targets"],
             1
         );
+        assert_eq!(command(&f, "rows", "fixed", args).await["repeat"], true);
         assert_eq!(
-            command(&f, "assert-query", "fixed", args).await["repeat"],
-            true
-        );
-        assert_eq!(
-            about(&stored(&f, "fixed", "fixed").await),
-            vec!["assertion:question@question"]
+            about(&stored(&f, "fixed-1", "fixed-1").await),
+            vec!["assertion:question-1@question-1"]
         );
     });
 }
@@ -422,23 +411,20 @@ fn selected_current_and_kept_rows_have_distinct_populations() {
 fn editing_keyed_assertions_preserves_relations_and_expiry() {
     run(async {
         let f = fixture();
-        assert_one(&f, "other", note("independent evidence")).await;
-        let mut content = statement(
+        write_one(&f, "other", note("independent evidence")).await;
+        let mut content = note_line(
             "finding",
             Some("result"),
             json!("original"),
             &["repo:morrow".into()],
         );
-        content["valid_until"] = json!("2099-01-01T00:00:00Z");
-        content["links"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!({"role":"derived_from","reference":"assertion:other@other"}));
-        assert_one(&f, "keyed", content).await;
+        content["steps"][0]["valid_until"] = json!("2099-01-01T00:00:00Z");
+        content["steps"][0]["derived_from"] = json!(["assertion:other-1@other-1"]);
+        write_one(&f, "keyed", content).await;
         revise(&f, "keyed-edit", "keyed", "keyed", json!("edited")).await;
-        let row = stored(&f, "keyed", "keyed-edit").await;
+        let row = stored(&f, "keyed-1", "keyed-edit-1").await;
         assert_eq!(row.fact.key.as_deref(), Some("result"));
-        assert_eq!(row.fact.root, "keyed");
+        assert_eq!(row.fact.root, "keyed-1");
         assert_eq!(row.fact.value, Some(json!("edited")));
         assert_eq!(
             row.fact.valid_until.unwrap().to_string(),
@@ -449,14 +435,14 @@ fn editing_keyed_assertions_preserves_relations_and_expiry() {
                 .links
                 .iter()
                 .any(|link| link.role == LinkRole::DerivedFrom
-                    && link.reference.to_string() == "assertion:other@other")
+                    && link.reference.to_string() == "assertion:other-1@other-1")
         );
         assert!(
             row.fact
                 .links
                 .iter()
                 .any(|link| link.role == LinkRole::Revises
-                    && link.reference.to_string() == "assertion:keyed@keyed")
+                    && link.reference.to_string() == "assertion:keyed-1@keyed-1")
         );
         assert_eq!(about(&row), vec!["repo:morrow"]);
     });
@@ -548,9 +534,9 @@ fn semantic_and_mixed_annotation_use_the_public_query_population() {
             let annotation = format!("reviewed semantic population {n}");
             let applied = command(
                 &f,
-                "assert-query",
+                "rows",
                 &id,
-                json!({"query":text,"assertion":statement("note",None,json!(annotation),&[])}),
+                json!({"selection":text,"all":true,"steps":[{"verb":"note","text":annotation}]}),
             )
             .await;
             assert_eq!(applied["targets"], expected["count"]);
@@ -561,7 +547,7 @@ fn semantic_and_mixed_annotation_use_the_public_query_population() {
                 .map(|row| format!("message:{}", row["id"].as_str().unwrap()))
                 .collect::<std::collections::BTreeSet<_>>();
             let reader = f.daemon.daemon.reads.reader().unwrap();
-            let recorded = reader.user_request(&id).unwrap().unwrap();
+            let recorded = reader.user_request(&format!("{id}-1")).unwrap().unwrap();
             let polylogue_model::user::UserWrite::AssertQuery { resolved, .. } = recorded.write
             else {
                 panic!("bulk request must keep its recorded population")
@@ -604,44 +590,44 @@ fn semantic_and_mixed_annotation_use_the_public_query_population() {
 fn bulk_retry_uses_committed_targets_after_the_query_becomes_empty() {
     run(async {
         let f = fixture();
-        assert_one(
+        write_one(
             &f,
             "question",
-            statement("question", None, json!("open"), &["repo:morrow".into()]),
+            note_line("question", None, json!("open"), &["repo:morrow".into()]),
         )
         .await;
-        let args = json!({"query":"assertions where kind:question","assertion":statement("note",None,json!("reviewed"),&[])});
+        let args = json!({"selection":"assertions where kind:question","all":true,"steps":[{"verb":"note","text":"reviewed"}]});
         assert_eq!(
-            command(&f, "assert-query", "bulk-retry", args.clone()).await["targets"],
+            command(&f, "rows", "bulk-retry", args.clone()).await["targets"],
             1
         );
         command(
             &f,
-            "withdraw",
+            "rows",
             "closed",
-            json!({"targets":["assertion:question@question"]}),
+            json!({"selection":"assertion:question-1@question-1","steps":[{"verb":"withdraw"}]}),
         )
         .await;
         assert_eq!(
             query(&f, "assertions where kind:question").await["count"],
             0
         );
-        let repeated = command(&f, "assert-query", "bulk-retry", args.clone()).await;
+        let repeated = command(&f, "rows", "bulk-retry", args.clone()).await;
         assert_eq!(repeated["repeat"], true);
         assert_eq!(repeated["targets"], 1);
         assert_eq!(
-            about(&stored(&f, "bulk-retry", "bulk-retry").await),
-            vec!["assertion:question@question"]
+            about(&stored(&f, "bulk-retry-1", "bulk-retry-1").await),
+            vec!["assertion:question-1@question-1"]
         );
-        for field in ["query", "assertion"] {
+        for field in ["selection", "steps"] {
             let mut changed = args.clone();
-            changed[field] = if field == "query" {
+            changed[field] = if field == "selection" {
                 json!("sessions")
             } else {
-                statement("note", None, json!("different"), &[])
+                json!([{"verb":"note","text":"different"}])
             };
             assert_eq!(
-                send(&f, "assert-query", "bulk-retry", changed).await.0,
+                send(&f, "rows", "bulk-retry", changed).await.0,
                 StatusCode::CONFLICT
             );
         }
@@ -654,46 +640,49 @@ fn assertion_fields_and_saved_query_edits_keep_metadata() {
         let f = fixture();
         command(
             &f,
-            "save",
+            "rows",
             "Saved:Case",
-            json!({"name":"morrow","query":"messages"}),
+            json!({"selection":"messages","steps":[{"verb":"save","name":"morrow"}]}),
         )
         .await;
         command(
             &f,
-            "save",
+            "rows",
             "Saved:Case:new",
-            json!({"name":"morrow","query":"sessions"}),
+            json!({"selection":"sessions","steps":[{"verb":"save","name":"morrow"}]}),
         )
         .await;
-        let page=command(&f,"rows","projection",json!({"selection":"assertions where root = \"Saved:Case\" current:*","fields":["id","key","about","judged"]})).await;
+        let page=command(&f,"rows","projection",json!({"selection":"assertions where root = \"Saved:Case-1-save\" current:*","fields":["id","key","about","judged"]})).await;
         assert_eq!(page["count"], 2);
         assert_eq!(
-            query(&f, "assertions where root = \"saved:case\" current:*").await["count"],
+            query(
+                &f,
+                "assertions where root = \"saved:case-1-save\" current:*"
+            )
+            .await["count"],
             0
         );
-        let row = stored(&f, "Saved:Case", "Saved:Case:new").await;
+        let row = stored(&f, "Saved:Case-1-save", "Saved:Case:new-1-save").await;
         assert_eq!(row.fact.key.as_deref(), Some("morrow"));
-        assert_eq!(row.fact.root, "Saved:Case");
+        assert_eq!(row.fact.root, "Saved:Case-1-save");
         assert_eq!(row.fact.value.as_ref().unwrap()["text"], "sessions");
         assert!(
             row.fact
                 .links
                 .iter()
                 .any(|link| link.role == LinkRole::Revises
-                    && link.reference.to_string() == "assertion:Saved:Case@Saved:Case")
+                    && link.reference.to_string()
+                        == "assertion:Saved:Case-1-save@Saved:Case-1-save")
         );
-        for field in ["links", "valid_until"] {
+        for field in ["derived_from", "valid_until"] {
             let mut invalid = note("invalid");
-            invalid[field] = json!(if field == "links" {
+            invalid["steps"][0][field] = json!(if field == "derived_from" {
                 "invalid"
             } else {
                 "tomorrow"
             });
             assert_eq!(
-                send(&f, "assert", "invalid", json!({"assertions":[invalid]}))
-                    .await
-                    .0,
+                send(&f, "rows", "invalid", invalid).await.0,
                 StatusCode::BAD_REQUEST
             );
         }
@@ -704,15 +693,9 @@ fn assertion_fields_and_saved_query_edits_keep_metadata() {
 fn grouped_assertion_population_returns_a_typed_refusal() {
     run(async {
         let f = fixture();
-        let (status,answer)=send(&f,"assert-query","grouped",json!({"query":"sessions | group by origin","assertion":statement("note",None,json!("review"),&[])})).await;
+        let (status,answer)=send(&f,"rows","grouped",json!({"selection":"sessions | group by origin","all":true,"steps":[{"verb":"note","text":"review"}]})).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{answer:?}");
-        let command_surface::Answer {
-            outcome: command_surface::Outcome::Error(error),
-            ..
-        } = answer
-        else {
-            panic!("group rows cannot name assertion targets")
-        };
+        let error = crate::test_answers::refusal(answer);
         assert_eq!(error.kind, command_surface::FailureKind::BadRequest);
         assert_eq!(error.code.as_deref(), Some("bad_request"));
     });

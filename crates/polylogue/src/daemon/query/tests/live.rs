@@ -2,7 +2,7 @@
 //! `sessions` with live fields, the `changes` unit and `deliveries`.
 
 use super::fixture_context;
-use super::run;
+use super::{run, save_rows};
 use crate::daemon::query::*;
 use polylogue_model::{Event, Json, Output, Session, SessionId, SessionKind, Timestamp};
 use polylogue_store::ReadPool;

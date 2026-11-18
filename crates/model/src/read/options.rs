@@ -165,7 +165,7 @@ impl Default for ReadOptions {
 /// last. The table gives the enum, its words and the `--show` help text, so
 /// the CLI, MCP and the web's show and hide keys cannot drift from it.
 macro_rules! show_hide_table {
-    ($($kind:ident $name:literal [$($level:literal),+] $depth:tt;)+) => {
+    ($($kind:ident $name:literal [$($level:literal),+] $number:tt;)+) => {
         /// The closed set of item kinds a reading shows or hides, one table for the
         /// CLI's `--show`/`--hide`, MCP's `show`/`hide` and the web's show and hide keys.
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,7 +177,7 @@ macro_rules! show_hide_table {
             /// The `--show` help: every kind with its levels.
             pub const HELP: &'static str = concat!(
                 "Item kinds to show, each with an optional level (the fullest when omitted):"
-                $(, " ", $name, "[:", show_hide_table!(@levels $($level),+), show_hide_table!(@depth $depth), "]")+
+                $(, " ", $name, "[:", show_hide_table!(@levels $($level),+), show_hide_table!(@number $number), "]")+
             );
             pub const fn name(self) -> &'static str {
                 match self {
@@ -191,10 +191,10 @@ macro_rules! show_hide_table {
                     $(Self::$kind => &[$($level),+],)+
                 }
             }
-            /// Whether the kind also takes a depth `N` (1 or more) as its level.
-            pub const fn takes_depth(self) -> bool {
+            /// Whether the kind also takes a positive number as its level.
+            pub const fn takes_number(self) -> bool {
                 match self {
-                    $(Self::$kind => $depth,)+
+                    $(Self::$kind => $number,)+
                 }
             }
         }
@@ -202,21 +202,21 @@ macro_rules! show_hide_table {
     (@levels $first:literal $(, $rest:literal)*) => {
         concat!($first $(, "|", $rest)*)
     };
-    (@depth true) => {
+    (@number true) => {
         "|N"
     };
-    (@depth false) => {
+    (@number false) => {
         ""
     };
 }
 show_hide_table! {
-    Tools "tools" ["line", "full"] false;
+    Tools "tools" ["line", "full"] true;
     Thinking "thinking" ["line", "full"] false;
     Harness "harness" ["line", "full"] false;
     Inherited "inherited" ["full"] false;
     Branches "branches" ["full"] false;
     Spawns "spawns" ["card", "full"] true;
-    Assertions "assertions" ["header"] false;
+    Annotations "annotations" ["header"] false;
     Turns "turns" ["dividers"] false;
     Context "context" ["meter"] false;
 }
@@ -253,7 +253,7 @@ impl ReadOptions {
                         "{}:{}{}",
                         kind.name(),
                         kind.levels().join("|"),
-                        if kind.takes_depth() { "|N" } else { "" }
+                        if kind.takes_number() { "|N" } else { "" }
                     )
                 })
                 .collect::<Vec<_>>()
@@ -265,11 +265,11 @@ impl ReadOptions {
                 .map_or((word.as_str(), None), |(n, l)| (n, Some(l)));
             let kind = ShowKind::parse(name).ok_or_else(|| unknown(word))?;
             let level = level.unwrap_or(kind.levels()[kind.levels().len() - 1]);
-            let depth = kind
-                .takes_depth()
-                .then(|| level.parse::<u32>().ok().filter(|depth| *depth > 0))
+            let number = kind
+                .takes_number()
+                .then(|| level.parse::<u64>().ok().filter(|number| *number > 0))
                 .flatten();
-            if depth.is_none() && !kind.levels().contains(&level) {
+            if number.is_none() && !kind.levels().contains(&level) {
                 return Err(unknown(word));
             }
             let expansion = if level == "full" {
@@ -278,19 +278,32 @@ impl ReadOptions {
                 Expansion::Collapsed
             };
             match kind {
-                ShowKind::Tools => self.tools = Some(expansion),
+                ShowKind::Tools => {
+                    self.tools = Some(if number.is_some() {
+                        Expansion::Full
+                    } else {
+                        expansion
+                    });
+                    self.output_lines = match (level, number) {
+                        ("full", _) => 0,
+                        (_, Some(lines)) => lines,
+                        _ => output_lines(),
+                    };
+                }
                 ShowKind::Thinking => self.thinking = Some(expansion),
                 ShowKind::Harness => self.harness = Some(expansion),
                 ShowKind::Inherited => self.inherited = true,
                 ShowKind::Branches => self.branches = true,
                 ShowKind::Spawns => {
-                    self.spawns = match (level, depth) {
+                    self.spawns = match (level, number) {
                         ("card", _) => SpawnFold::Card,
-                        (_, Some(depth)) => SpawnFold::Inline { depth: Some(depth) },
+                        (_, Some(depth)) => SpawnFold::Inline {
+                            depth: Some(u32::try_from(depth).map_err(|_| unknown(word))?),
+                        },
                         _ => SpawnFold::Inline { depth: None },
                     }
                 }
-                ShowKind::Assertions => self.assertions = true,
+                ShowKind::Annotations => self.assertions = true,
                 ShowKind::Turns => self.turns = true,
                 ShowKind::Context => self.context_meter = true,
             }
@@ -304,7 +317,7 @@ impl ReadOptions {
                 ShowKind::Inherited => self.inherited = false,
                 ShowKind::Branches => self.branches = false,
                 ShowKind::Spawns => self.spawns = SpawnFold::Hidden,
-                ShowKind::Assertions => self.assertions = false,
+                ShowKind::Annotations => self.assertions = false,
                 ShowKind::Turns => self.turns = false,
                 ShowKind::Context => self.context_meter = false,
             }
@@ -317,11 +330,14 @@ impl ReadOptions {
     pub fn show_hide_words(&self) -> (Vec<String>, Vec<String>) {
         let mut show = Vec::new();
         let mut hide = Vec::new();
-        for (name, level) in [
-            ("tools", self.tools),
-            ("thinking", self.thinking),
-            ("harness", self.harness),
-        ] {
+        match self.tools {
+            Some(Expansion::Full) if self.output_lines == 0 => show.push("tools:full".into()),
+            Some(Expansion::Full) => show.push(format!("tools:{}", self.output_lines)),
+            Some(Expansion::Collapsed) => show.push("tools:line".into()),
+            Some(Expansion::None) => hide.push("tools".into()),
+            None => {}
+        }
+        for (name, level) in [("thinking", self.thinking), ("harness", self.harness)] {
             match level {
                 Some(Expansion::Full) => show.push(format!("{name}:full")),
                 Some(Expansion::Collapsed) => show.push(format!("{name}:line")),
@@ -332,7 +348,7 @@ impl ReadOptions {
         for (name, value, default) in [
             ("inherited", self.inherited, false),
             ("branches", self.branches, false),
-            ("assertions", self.assertions, true),
+            (ShowKind::Annotations.name(), self.assertions, true),
             ("turns", self.turns, false),
             ("context", self.context_meter, false),
         ] {

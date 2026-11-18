@@ -8,10 +8,20 @@ use serde_json::json;
 /// these arguments through its tool.
 pub(crate) fn tool_call(operation: &str, arguments: Value, request_id: &str) -> Value {
     let command = crate::commands::command(operation).expect("a declared command");
-    let tool = command.tool.expect("an MCP operation");
-    json!({"name": tool.name(), "arguments": {
-        "operation": command.name, "arguments": arguments, "request_id": request_id,
-    }})
+    let home = command.tool.expect("an MCP operation");
+    let access = command
+        .registration()
+        .and_then(|registration| registration.tool_access(&arguments, command).ok())
+        // Admission still owns the refusal of malformed arguments.
+        .unwrap_or_else(|| home.access());
+    let tool = Tool::ALL
+        .into_iter()
+        .find(|tool| tool.access() == access)
+        .unwrap();
+    let request = crate::client::request(operation, arguments, request_id.into());
+    let mut call = crate::commands::declarations().mcp_call(&request).unwrap();
+    call["name"] = json!(tool.name());
+    call
 }
 
 /// Runs `operation` through its tool; a name that is no command is called
@@ -67,7 +77,19 @@ pub(crate) fn structured_call_as(
     let answer: command_surface::Answer<Value> =
         serde_json::from_value(reply["result"]["structuredContent"].clone())
             .unwrap_or_else(|error| panic!("invalid structured tool answer: {error}: {reply}"));
-    assert_eq!(reply["result"]["isError"], answer.failure().is_some());
+    let failed_step = operation == "rows"
+        && answer.value().is_some_and(|value| {
+            let line: crate::protocol::line::LineAnswer =
+                serde_json::from_value(value.clone()).expect("typed line answer");
+            matches!(line, crate::protocol::line::LineAnswer::Steps(steps)
+                if steps.steps.iter().any(|step| matches!(step.outcome,
+                    crate::protocol::line::StepOutcome::Failed { .. })))
+        });
+    assert_eq!(
+        reply["result"]["isError"],
+        answer.failure().is_some() || failed_step,
+        "{reply}",
+    );
     answer
 }
 
@@ -112,8 +134,8 @@ fn tools_answer_with_the_daemon_and_refuse_bad_calls() {
     // Every option of `read` reaches the daemon.
     let text = call(
         &archive,
-        "read",
-        args(json!({"target": "session:claude-code:s1", "format": "markdown"})),
+        "rows",
+        args(json!({"selection": "session:claude-code:s1", "steps":[{"verb":"read", "format":"markdown"}]})),
     )
     .unwrap();
     assert!(text.starts_with(polylogue_render::ARCHIVE_NOTICE), "{text}");
@@ -121,21 +143,31 @@ fn tools_answer_with_the_daemon_and_refuse_bad_calls() {
     assert!(text.contains("Times "), "{text}");
     let structured = structured_call_as(
         &archive,
-        "read",
-        args(json!({"target": "session:claude-code:s1"})),
+        "rows",
+        args(json!({"selection": "session:claude-code:s1", "steps":[{"verb":"read"}]})),
         &uuid::Uuid::now_v7().to_string(),
     );
-    let read: polylogue_model::read::ReadPage =
+    let line: crate::protocol::line::LineAnswer =
         serde_json::from_value(structured.value().unwrap().clone()).unwrap();
-    assert!(read_pages::body(&read).contains("walrus"));
+    let crate::protocol::line::LineAnswer::Steps(steps) = line else {
+        panic!("read steps")
+    };
+    let crate::protocol::line::StepOutcome::Done {
+        reply: crate::protocol::line::StepAnswer::Read(read),
+        ..
+    } = &steps.steps[0].outcome
+    else {
+        panic!("finished read")
+    };
+    assert!(read_pages::body(read).contains("walrus"));
 
-    let text = call(&archive, "query", args(json!({"query": "walrus"}))).unwrap();
+    let text = call(&archive, "rows", args(json!({"selection": "walrus"}))).unwrap();
     assert!(text.contains("claude-code:s1"), "{text}");
 
     let e = call(
         &archive,
-        "read",
-        args(json!({"target": "session:claude-code:s1", "pages": 1})),
+        "rows",
+        args(json!({"selection": "session:claude-code:s1", "steps":[{"verb":"read", "pages":1}]})),
     )
     .unwrap_err();
     assert!(e.starts_with("error (bad_request)"), "{e}");
@@ -148,8 +180,8 @@ fn tools_answer_with_the_daemon_and_refuse_bad_calls() {
     assert!(e.contains("unknown MCP tool excise"), "{e}");
     let e = call(
         &archive,
-        "read",
-        args(json!({"target": "session:claude-code:nope"})),
+        "rows",
+        args(json!({"selection": "session:claude-code:nope", "steps":[{"verb":"read"}]})),
     )
     .unwrap_err();
     assert!(e.starts_with("error (not_found)"), "{e}");
@@ -320,8 +352,8 @@ fn manual_query_examples_compile_through_the_public_command() {
     {
         call(
             &archive,
-            "explain",
-            args(json!({"subject":"query", "expression":query})),
+            "rows",
+            args(json!({"selection":query, "explain":true})),
         )
         .unwrap_or_else(|e| panic!("{query}: {e}"));
     }
@@ -479,32 +511,41 @@ fn a_tool_call_names_one_of_its_operations() {
     );
     let inside = run(
         "polylogue_write",
-        json!({"operation": "save", "arguments": {"name": "x", "query": "sessions", "request_id": "inner"}, "request_id": "outer"}),
+        json!({"operation": "rows", "arguments": {"selection": "sessions", "steps":[{"verb":"save", "name":"x"}], "request_id": "inner"}, "request_id": "outer"}),
     );
     assert!(inside.contains("beside arguments"), "{inside}");
     let unknown = run(
-        "polylogue_context",
-        json!({"operation": "brief", "arguments": {"cwd": "/synthetic", "detail": "full"}, "request_id": "unknown-argument"}),
+        "polylogue_read",
+        json!({"operation": "rows", "arguments": {"steps":[{"verb":"brief", "cwd": "/synthetic", "detail": "full"}]}, "request_id": "unknown-argument"}),
     );
-    assert!(unknown.contains("unknown field `detail`"), "{unknown}");
+    assert!(
+        unknown.contains("brief: unknown argument detail"),
+        "{unknown}"
+    );
     let live = crate::test_daemon::start("finite context deadline");
-    let rows = call(&live.daemon.archive, "list", args(json!({}))).unwrap();
-    let rows: Value = serde_json::from_str(&rows).unwrap();
-    assert_eq!(rows["count"], 1, "{rows}");
+    let rows = structured_call_as(
+        &live.daemon.archive,
+        "rows",
+        args(json!({"selection":"sessions"})),
+        "finite-context-listing",
+    );
+    assert_eq!(rows.value().unwrap()["reply"]["count"], 1, "{rows:?}");
     let (_, answer, failed) = call_with_limit(
-        &live.daemon.archive, "polylogue_context",
-        json!({"operation":"brief", "arguments":{"cwd":"/synthetic"}, "request_id":"finite", "deadline":1000}).as_object().unwrap().clone(),
+        &live.daemon.archive, "polylogue_read",
+        json!({"operation":"rows", "arguments":{"steps":[{"verb":"brief","cwd":"/synthetic"}]}, "request_id":"finite", "deadline":1000}).as_object().unwrap().clone(),
         None, &tokio_util::sync::CancellationToken::new(), None,
     ).unwrap();
     assert!(!failed, "{answer}");
     let (_, lifted, failed) = call_with_limit(
-        &live.daemon.archive, "polylogue_context",
-        json!({"operation":"brief", "arguments":{"cwd":"/synthetic"}, "request_id":"lifted", "deadline":null, "budget_tokens":300}).as_object().unwrap().clone(),
+        &live.daemon.archive, "polylogue_read",
+        json!({"operation":"rows", "arguments":{"steps":[{"verb":"brief","cwd":"/synthetic"}]}, "request_id":"lifted", "deadline":null, "budget_tokens":300}).as_object().unwrap().clone(),
         None, &tokio_util::sync::CancellationToken::new(), None,
     ).unwrap();
     assert!(!failed, "{lifted}");
     let value = &lifted["value"];
-    let text = value["prepared"]["text"].as_str().unwrap();
+    let text = value["reply"]["steps"][0]["outcome"]["reply"]["reply"]["prepared"]["text"]
+        .as_str()
+        .unwrap();
     let manual = format!("\nAgent manual:\n{}\n", crate::manual::text());
     assert!(text.contains(&manual));
     assert!(text.replacen(&manual, "", 1).len() <= 1200);
@@ -557,8 +598,8 @@ fn generated_ready_mcp_call_executes_its_typed_envelope() {
     let ready = daemon
         .daemon
         .ready_call(&command_surface::Request {
-            operation: "query".into(),
-            arguments: json!({"query":"sessions"}),
+            operation: "rows".into(),
+            arguments: json!({"selection":"sessions"}),
             request_id: "mcp-ready-id".into(),
             deadline: command_surface::Deadline::None,
             budget_tokens: Default::default(),
@@ -577,7 +618,7 @@ fn generated_ready_mcp_call_executes_its_typed_envelope() {
         .unwrap();
     assert_eq!(reply["result"]["isError"], false, "{reply}");
     assert_eq!(
-        reply["result"]["structuredContent"]["value"]["count"], 1,
+        reply["result"]["structuredContent"]["value"]["reply"]["count"], 1,
         "{reply}"
     );
     assert_eq!(
@@ -590,32 +631,48 @@ fn generated_ready_mcp_call_executes_its_typed_envelope() {
         crate::commands::declarations()
             .mcp_call(&ready.request)
             .unwrap()["arguments"]["operation"],
-        "query"
+        "rows"
     );
-    // Preserve shared metadata through the transport, then let the product's
-    // declarations reject options it does not offer, as every other surface does.
+    // Shared metadata survives transport. Fresh remains unsupported; JSON is
+    // an accepted output format for the current line operation.
     for option in ["fresh", "format"] {
         let mut request = ready.request.clone();
-        request.request_id = format!("unsupported-{option}");
+        request.request_id = format!("metadata-{option}");
         if option == "fresh" {
             request.fresh = true;
         } else {
             request.format = command_surface::Format::Json;
         }
         let params = crate::commands::declarations().mcp_call(&request).unwrap();
-        let refusal = session
+        assert_eq!(
+            params["arguments"][option],
+            if option == "fresh" {
+                json!(true)
+            } else {
+                json!("json")
+            },
+        );
+        let reply = session
             .prepare(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":params}))
             .answer(&daemon.daemon.archive)
             .unwrap();
-        assert_eq!(refusal["result"]["isError"], true, "{refusal}");
-        assert_eq!(
-            refusal["result"]["structuredContent"]["error"]["kind"],
-            "bad_request"
-        );
-        assert_eq!(
-            refusal["result"]["structuredContent"]["error"]["message"],
-            format!("polylogue does not take {option}")
-        );
+        if option == "fresh" {
+            assert_eq!(reply["result"]["isError"], true, "{reply}");
+            assert_eq!(
+                reply["result"]["structuredContent"]["error"]["kind"],
+                "bad_request"
+            );
+            assert_eq!(
+                reply["result"]["structuredContent"]["error"]["message"],
+                "polylogue does not take fresh"
+            );
+        } else {
+            assert_eq!(reply["result"]["isError"], false, "{reply}");
+            let answer =
+                serde_json::from_value(reply["result"]["structuredContent"].clone()).unwrap();
+            let listing = crate::test_answers::ok(crate::test_answers::listing(answer));
+            assert_eq!(listing["count"], 1);
+        }
     }
     // Every declared request keeps an executable MCP form.
     let sql = daemon
@@ -648,6 +705,21 @@ fn generated_ready_mcp_call_executes_its_typed_envelope() {
         .answer(&daemon.daemon.archive)
         .unwrap();
     assert_eq!(reply["result"]["isError"], false, "{reply}");
+    let mut unsupported = sql.request.clone();
+    unsupported.cursor = Some("a SQL request has no continuation".into());
+    unsupported.request_id = "sql-with-unsupported-cursor".into();
+    let params = crate::commands::declarations()
+        .mcp_call(&unsupported)
+        .unwrap();
+    let refused = session
+        .prepare(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":params}))
+        .answer(&daemon.daemon.archive)
+        .unwrap();
+    assert_eq!(refused["result"]["isError"], true, "{refused}");
+    let answer = serde_json::from_value(refused["result"]["structuredContent"].clone()).unwrap();
+    let error = crate::test_answers::refusal(answer);
+    assert_eq!(error.kind, command_surface::FailureKind::BadRequest);
+    assert_eq!(error.message, "operation does not continue a page");
     assert!(
         polylogue_render::web::http_url(crate::commands::declarations(), &sql.request)
             .unwrap()
@@ -656,7 +728,7 @@ fn generated_ready_mcp_call_executes_its_typed_envelope() {
     let outside_arguments = call_with_limit(
         &daemon.daemon.archive,
         "polylogue_read",
-        args(json!({"operation":"query","query":"sessions","request_id":"outside"})),
+        args(json!({"operation":"rows","selection":"sessions","request_id":"outside"})),
         None,
         &Default::default(),
         None,
@@ -677,30 +749,28 @@ fn generated_ready_mcp_call_executes_its_typed_envelope() {
 fn typed_acceptance_failure_answers_without_a_daemon() {
     let directory = tempfile::tempdir().unwrap();
     let archive = Archive::at(directory.path());
-    let (text, structured, failed) = call_with_limit(
-        &archive,
-        "polylogue_read",
-        args(json!({
-            "operation":"read",
-            "arguments":{"target":"session:claude-code:synthetic", "author":"invented"},
+    let params = json!({
+        "name":"polylogue_read",
+        "arguments":{
+            "operation":"rows",
+            "arguments":{"selection":"session:claude-code:synthetic", "steps":[{"verb":"read", "author":"invented"}]},
             "request_id":"invalid-request-example"
-        })),
-        None,
-        &tokio_util::sync::CancellationToken::new(),
-        None,
-    )
-    .unwrap();
-    assert!(failed);
+        }
+    });
+    let reply = Session {
+        initialized: true,
+        ..Default::default()
+    }
+    .prepare(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":params}))
+    .answer(&archive)
+    .expect("typed admission refusal without a daemon");
+    assert_eq!(reply["result"]["isError"], true, "{reply}");
+    let text = reply["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.starts_with("error (bad_request)"), "{text}");
-    let answer: command_surface::Answer<Value> = serde_json::from_value(structured).unwrap();
-    let command_surface::Answer {
-        outcome: command_surface::Outcome::Error(error),
-        ..
-    } = answer
-    else {
-        panic!("request refusal");
-    };
+    let answer = serde_json::from_value(reply["result"]["structuredContent"].clone()).unwrap();
+    let error = crate::test_answers::refusal(answer);
     assert_eq!(error.kind, command_surface::FailureKind::BadRequest);
+    assert!(error.message.contains("read: unknown argument author"));
 }
 
 /// The tool list is the shared declarations rendered from the rows: one
@@ -758,8 +828,8 @@ fn generated_mcp_follow_up_preserves_the_accepted_request() {
         fresh: true,
         format: command_surface::Format::Json,
         ..command_surface::RunnableRequest::new(
-            "read",
-            json!({"target":"session:claude-code:synthetic"}),
+            "rows",
+            json!({"selection":"session:claude-code:synthetic", "steps":[{"verb":"read"}]}),
             "accepted-child",
         )
     };

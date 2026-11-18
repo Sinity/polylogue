@@ -9,6 +9,11 @@ use polylogue_model::read::{ReadDelivery, View};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::path::PathBuf;
 
+/// The shipped selection for a read invoked without explicit rows.
+pub const fn usual_read_selection(follow: bool) -> &'static str {
+    if follow { "running" } else { "recent" }
+}
+
 /// `read`: show the rows' content.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -383,7 +388,7 @@ pub fn declarations() -> StepDeclarations {
     declare::<AnswerStep>(&mut steps, "answer");
     declare::<InterruptStep>(&mut steps, "interrupt");
     declare::<ResumeStep>(&mut steps, "resume");
-    steps
+    steps.cli_selection("selection", "references")
 }
 
 #[cfg(test)]

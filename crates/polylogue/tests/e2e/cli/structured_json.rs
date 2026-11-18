@@ -103,8 +103,8 @@ fn source_controls_are_escaped_and_html_remains_inert() {
                 &[
                     "--deadline",
                     "none",
-                    "read",
                     "session:claude-code:stored",
+                    "read",
                     "--format",
                     "terminal",
                 ],
@@ -117,8 +117,8 @@ fn source_controls_are_escaped_and_html_remains_inert() {
                 &[
                     "--deadline",
                     "none",
-                    "read",
                     "session:claude-code:stored",
+                    "read",
                     "--format",
                     "html",
                     "--to",

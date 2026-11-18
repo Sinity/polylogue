@@ -24,6 +24,9 @@ impl Fixture {
             config: config.into(),
         }
     }
+    pub(crate) fn archive(&self) -> &std::path::Path {
+        &self.archive
+    }
     pub(crate) fn environment(&self, command: &mut std::process::Command) {
         use std::os::unix::fs::PermissionsExt;
         let runtime = self.root.join("runtime");

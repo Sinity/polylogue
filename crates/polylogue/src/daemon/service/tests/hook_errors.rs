@@ -66,11 +66,11 @@ fn message_id(item: &ReadItem) -> polylogue_model::MessageId {
 fn mcp_page(archive: &Archive, arguments: serde_json::Value) -> ReadPage {
     let answer = crate::mcp::tests::structured_call_as(
         archive,
-        "read",
+        "rows",
         arguments.as_object().unwrap().clone(),
         &uuid::Uuid::now_v7().to_string(),
     );
-    serde_json::from_value(answer.value().expect("MCP read page").clone()).unwrap()
+    crate::test_answers::read(answer)
 }
 
 #[test]
@@ -135,7 +135,7 @@ fn hook_failures_reach_mcp_reads_and_budgeted_pages() {
     let archive = Archive::at(&daemon.daemon.archive.root);
     let full = mcp_page(
         &archive,
-        json!({"target":"session:claude-code:s1", "show":["harness:full"], "page_tokens":10000}),
+        json!({"selection":"session:claude-code:s1", "steps":[{"verb":"read", "show":["harness:full"], "budget":10000}]}),
     );
     assert!(full.document.footer.next.is_none());
     let mut expected = Items::default();
@@ -149,7 +149,7 @@ fn hook_failures_reach_mcp_reads_and_budgeted_pages() {
     assert!(expected_text.contains("check blocked"));
     let mut page = mcp_page(
         &archive,
-        json!({"target":"session:claude-code:s1", "show":["harness:full"], "page_tokens":1}),
+        json!({"selection":"session:claude-code:s1", "steps":[{"verb":"read", "show":["harness:full"], "budget":1}]}),
     );
     assert_eq!(page.snapshot.query, full.snapshot.query);
     let question = page.snapshot.query.clone();
@@ -164,20 +164,23 @@ fn hook_failures_reach_mcp_reads_and_budgeted_pages() {
             break;
         };
         let envelope: command_surface::RunnableRequest = next.request.clone();
-        assert_eq!(envelope.operation, "read");
-        let arguments: crate::protocol::read::Arguments =
+        assert_eq!(envelope.operation, "rows");
+        let arguments: crate::protocol::line::Rows =
             serde_json::from_value(envelope.arguments.clone()).unwrap();
+        let target = (arguments.selection.clone(), arguments.references.clone());
         if let Some(root) = &root {
-            assert_eq!(&arguments.target, root);
+            assert_eq!(&target, root);
         } else {
-            root = Some(arguments.target.clone());
+            root = Some(target);
         }
+        let [crate::protocol::line::Step::Read(step)] = arguments.steps.as_slice() else {
+            panic!("one read")
+        };
         assert!(
             seen.insert(
-                envelope
-                    .cursor
+                step.cursor
                     .clone()
-                    .expect("a continuation has a cursor")
+                    .expect("a continuation has a read cursor")
             ),
             "continuation must advance"
         );

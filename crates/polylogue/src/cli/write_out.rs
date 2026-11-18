@@ -1,15 +1,13 @@
 //! Client delivery of the same finite reading. Files and directories publish
 //! only after a validated completion; staged failures keep their diagnosis.
-use polylogue_model::JsonExt as _;
 pub(crate) mod bundle;
 
 use super::{Archive, fail};
 use base64::Engine as _;
-use polylogue_model::{Reference, bundle::Counts, read::*};
+use polylogue_model::{bundle::Counts, read::*};
 use polylogue_store::export_items::ExportItems;
 use std::{
     io::{self, Read, Write},
-    path::{Path, PathBuf},
     process::ExitCode,
 };
 
@@ -29,98 +27,169 @@ impl From<&str> for DeliveryError {
     }
 }
 
-pub(crate) fn run(
-    values: &command_surface::ParsedCommand,
+fn delivery_failure(
+    error: DeliveryError,
     startup: &crate::config::Startup,
-    accepted: &command_surface::RunnableRequest,
+    json: bool,
 ) -> ExitCode {
-    match deliver(values, startup, accepted) {
-        Ok(code) => ExitCode::from(code),
-        Err(DeliveryError::Text(error)) => fail(
+    match error {
+        DeliveryError::Text(error) => fail(
             startup.output,
-            values.json,
+            json,
             polylogue_model::Code::ReadOutput,
             &error,
-            1,
+            4,
         ),
-        Err(DeliveryError::Answer(answer)) => {
-            let code = answer.exit_code();
-            if values.json {
-                println!(
-                    "{}",
-                    polylogue_render::terminal::json(
-                        &serde_json::to_value(&answer).expect("answer serializes"),
-                        false
-                    )
-                );
-            } else if let command_surface::Answer {
-                outcome: command_surface::Outcome::Error(error),
-                envelope: command_surface::Envelope { notes, .. },
-                ..
-            } = answer.as_ref()
-            {
-                eprint!(
-                    "{}",
-                    super::print::diagnostic(
-                        error.code.as_deref().unwrap_or("read_output"),
-                        &error.message,
-                        crate::protocol::suggestion_text(error).as_deref(),
-                        startup.output.stderr_color()
-                    )
-                );
-                if let Some(hint) = &error.hint {
-                    eprintln!("{}", polylogue_render::terminal::escape(hint));
-                }
-                for note in notes {
-                    eprintln!("{}", polylogue_render::terminal::escape(note));
-                }
+        DeliveryError::Answer(answer) => match &answer.outcome {
+            command_surface::Outcome::Error(error) => {
+                super::fail_with(startup.output, json, error, &[])
             }
-            ExitCode::from(code)
-        }
+            _ => ExitCode::from(answer.exit_code()),
+        },
     }
 }
-/// Stream the declared line through the same validated read consumer.
+fn page_of(value: &serde_json::Value) -> Result<ReadPage, DeliveryError> {
+    let line: crate::protocol::line::LineAnswer =
+        serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+    match line {
+        crate::protocol::line::LineAnswer::Steps(steps) => steps
+            .steps
+            .into_iter()
+            .find_map(|step| match step.outcome {
+                crate::protocol::line::StepOutcome::Done {
+                    reply: crate::protocol::line::StepAnswer::Read(page),
+                    ..
+                } => Some(*page),
+                _ => None,
+            })
+            .ok_or_else(|| DeliveryError::Text("the line returned no reading".into())),
+        _ => Err("the line returned no reading".into()),
+    }
+}
+pub(crate) fn line_page(
+    startup: &crate::config::Startup,
+    page: &ReadPage,
+    last: bool,
+    destination: Option<&super::line::Destination>,
+    format: Option<&str>,
+) -> Result<(), command_surface::Failure> {
+    use super::line::Destination;
+    use crate::protocol::line::{LineAnswer, StepAnswer, StepOutcome, StepReport, StepsAnswer};
+    let line = LineAnswer::Steps(StepsAnswer {
+        resolved: None,
+        steps: vec![StepReport {
+            verb: "read".into(),
+            request_id: None,
+            outcome: StepOutcome::Done {
+                reply: StepAnswer::Read(Box::new(page.clone())),
+                undo: vec![],
+            },
+        }],
+    });
+    let answer = command_surface::Answer::ok(
+        serde_json::to_value(line).expect("a typed reading serializes"),
+    );
+    let archive = Archive::at(&startup.config.archive);
+    let format = format
+        .map(polylogue_render::Format::parse)
+        .unwrap_or(Some(polylogue_render::Format::Terminal))
+        .ok_or_else(|| {
+            crate::protocol::failure(polylogue_model::Code::BadValue, "unknown read format")
+        })?;
+    let result = match destination {
+        Some(Destination::Clipboard | Destination::Browser) => {
+            return Err(crate::protocol::failure(
+                polylogue_model::Code::NotBuilt,
+                "this destination is not built yet",
+            ));
+        }
+        Some(Destination::File(_) | Destination::Dir(_)) => {
+            return Err(crate::protocol::failure(
+                polylogue_model::Code::BadRequest,
+                "file delivery requires a streamed reading",
+            ));
+        }
+        Some(Destination::Pager) => through_pager(&archive, startup, answer, format),
+        None if last && startup.output.stdout_terminal => {
+            through_pager(&archive, startup, answer, format)
+        }
+        _ => one_page(startup, answer, format),
+    };
+    result.map(|_| ()).map_err(|error| {
+        crate::protocol::failure(
+            polylogue_model::Code::ReadOutput,
+            match error {
+                DeliveryError::Text(text) => text,
+                DeliveryError::Answer(answer) => serde_json::to_string(&answer).unwrap_or_default(),
+            },
+        )
+    })
+}
 pub(crate) fn line_stream(
-    values: &command_surface::ParsedCommand,
     startup: &crate::config::Startup,
     accepted: &command_surface::RunnableRequest,
+    parsed: &super::line::ParsedLine,
+    state: &mut super::run_line::OutputState,
 ) -> ExitCode {
-    let archive = Archive::at(&startup.config.archive);
-    let result = consume(
-        None,
-        false,
-        polylogue_render::Format::Terminal,
-        None,
-        false,
-        values.json,
-        Some(startup),
-        |callback| {
-            crate::client::stream::run_call(
-                &archive,
-                accepted,
-                crate::client::connection_budget(accepted, None),
-                callback,
+    let mut call = accepted.clone();
+    for (wire, step) in call.arguments["steps"]
+        .as_array_mut()
+        .expect("line steps")
+        .iter_mut()
+        .zip(&parsed.steps)
+    {
+        if step.step["follow"] == true {
+            wire.as_object_mut()
+                .expect("read step")
+                .remove("until_idle");
+        }
+        if step.verb == "read"
+            && matches!(
+                step.to,
+                Some(super::line::Destination::File(_) | super::line::Destination::Dir(_))
             )
-        },
-    );
+        {
+            wire["delivery"] = serde_json::json!("stream");
+            // Bundles preserve inherited prefixes unless explicitly hidden.
+            let directory = match &step.to {
+                Some(super::line::Destination::Dir(_)) => true,
+                Some(super::line::Destination::File(path)) => path.is_dir(),
+                _ => false,
+            };
+            if directory {
+                let hidden = wire["hide"]
+                    .as_array()
+                    .is_some_and(|words| words.iter().any(|word| word == "inherited"));
+                if !hidden {
+                    let show = wire
+                        .as_object_mut()
+                        .expect("read step")
+                        .entry("show")
+                        .or_insert_with(|| serde_json::json!([]))
+                        .as_array_mut()
+                        .expect("typed read show words");
+                    if !show.iter().any(|word| word == "inherited") {
+                        show.push(serde_json::json!("inherited"));
+                    }
+                }
+            }
+            if wire["format"].is_null() {
+                wire["format"] = serde_json::json!("markdown");
+            }
+        }
+    }
+    let archive = Archive::at(&startup.config.archive);
+    let result = consume(startup, parsed, state, |callback| {
+        crate::client::stream::run_call(
+            &archive,
+            &call,
+            crate::client::connection_budget(&call, None),
+            callback,
+        )
+    });
     match result {
         Ok(code) => ExitCode::from(code),
-        Err(DeliveryError::Text(error)) => fail(
-            startup.output,
-            values.json,
-            polylogue_model::Code::ReadOutput,
-            &error,
-            1,
-        ),
-        Err(DeliveryError::Answer(answer)) => super::fail_with(
-            startup.output,
-            values.json,
-            match &answer.outcome {
-                command_surface::Outcome::Error(error) => error,
-                _ => unreachable!("stream error contains a failure"),
-            },
-            &answer.envelope.notes,
-        ),
+        Err(error) => delivery_failure(error, startup, parsed.line.json),
     }
 }
 
@@ -133,7 +202,7 @@ fn encode_page(
     let Some(value) = answer.value() else {
         return Err(DeliveryError::Answer(Box::new(answer.clone())));
     };
-    let page: ReadPage = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+    let page = page_of(value)?;
     let mut encoded = Vec::new();
     polylogue_render::encode_document(
         &page.document,
@@ -205,8 +274,7 @@ fn through_pager(
         let Some(value) = answer.value() else {
             return Err(DeliveryError::Answer(Box::new(answer.clone())));
         };
-        serde_json::from_value::<ReadPage>(value.clone())
-            .map_err(|e| DeliveryError::Text(e.to_string()))
+        page_of(value)
     };
     let first = page_of(&answer)?;
     let mut pager = std::process::Command::new("sh")
@@ -309,113 +377,6 @@ impl<W: Write> Write for BoldFirstLine<W> {
     }
 }
 
-fn deliver(
-    values: &command_surface::ParsedCommand,
-    startup: &crate::config::Startup,
-    accepted: &command_surface::RunnableRequest,
-) -> Result<u8, DeliveryError> {
-    let archive = Archive::at(&startup.config.archive);
-    let arguments: crate::protocol::read::Arguments =
-        serde_json::from_value(accepted.arguments.clone()).map_err(|e| e.to_string())?;
-    let destination =
-        crate::cli::calling_process::options::<crate::cli::calling_process::Read>(values)?
-            .to
-            .map(PathBuf::from);
-    // Writing to a destination streams the reading; a terminal shows
-    // the terminal form unless JSON was asked for.
-    let delivery = if destination.is_some() {
-        ReadDelivery::Stream
-    } else {
-        arguments.delivery
-    };
-    let format = arguments.format.unwrap_or(if values.json {
-        Format::Json
-    } else {
-        Format::Terminal
-    });
-    if destination.is_none() && delivery == ReadDelivery::Page {
-        let answer = crate::client::call_ready(&archive, accepted).map_err(|e| e.to_string())?;
-        let code = answer.exit_code();
-        if values.json {
-            println!(
-                "{}",
-                polylogue_render::terminal::json(
-                    &serde_json::to_value(&answer).expect("answer serializes"),
-                    false
-                )
-            );
-            return Ok(code);
-        }
-        let format = polylogue_render::Format::parse(format.name()).ok_or("unknown read format")?;
-        return if startup.output.stdout_terminal {
-            through_pager(&archive, startup, answer, format)
-        } else {
-            one_page(startup, answer, format)
-        };
-    }
-    let target = &arguments.target;
-    let format = polylogue_render::Format::parse(format.name()).ok_or("unknown read format")?;
-    let directory = destination
-        .as_ref()
-        .is_some_and(|path| path.is_dir() || target.parse::<Reference>().is_err());
-    let package_format = match format {
-        polylogue_render::Format::Json => Some(polylogue_model::bundle::Format::Json),
-        polylogue_render::Format::Jsonl => Some(polylogue_model::bundle::Format::Jsonl),
-        polylogue_render::Format::Markdown => Some(polylogue_model::bundle::Format::Markdown),
-        polylogue_render::Format::Html => Some(polylogue_model::bundle::Format::Html),
-        polylogue_render::Format::Terminal => None,
-    };
-    if directory && package_format.is_none() {
-        return Err("directory delivery requires json, jsonl, markdown or html".into());
-    }
-    let with_blobs = arguments.with_blobs;
-    // Writing to a destination selects streaming delivery. Keep the caller's
-    // arguments and request fields rather than serializing execution defaults.
-    let mut call = accepted.clone();
-    if destination.is_some() {
-        call.arguments["delivery"] = serde_json::json!("stream");
-        // A bundle carries inherited prefixes unless they are hidden.
-        if !arguments
-            .hide
-            .iter()
-            .any(|word| word.split(':').next() == Some("inherited"))
-        {
-            let mut show = values
-                .request
-                .arguments
-                .array("show")
-                .into_iter()
-                .flatten()
-                .filter_map(|value| value.as_str().map(str::to_owned))
-                .collect::<Vec<_>>();
-            if !show
-                .iter()
-                .any(|word| word.split(':').next() == Some("inherited"))
-            {
-                show.push("inherited".into());
-            }
-            call.arguments["show"] = serde_json::json!(show);
-        }
-    }
-    consume(
-        destination.as_deref(),
-        directory,
-        format,
-        package_format,
-        with_blobs,
-        values.json,
-        None,
-        |callback| {
-            crate::client::stream::run_call(
-                &archive,
-                &call,
-                crate::client::connection_budget(&call, None),
-                callback,
-            )
-        },
-    )
-}
-
 enum Sink {
     Directory(Box<bundle::Bundle>),
     Encoded {
@@ -426,36 +387,41 @@ enum Sink {
     },
 }
 
-#[allow(clippy::too_many_arguments)]
 fn consume(
-    destination: Option<&Path>,
-    directory: bool,
-    format: polylogue_render::Format,
-    package_format: Option<polylogue_model::bundle::Format>,
-    with_blobs: bool,
-    json: bool,
-    line: Option<&crate::config::Startup>,
+    startup: &crate::config::Startup,
+    parsed: &super::line::ParsedLine,
+    state: &mut super::run_line::OutputState,
     run: impl FnOnce(
         &mut dyn FnMut(command_surface::SseEvent) -> io::Result<bool>,
     ) -> Result<(), crate::client::stream::Error>,
 ) -> Result<u8, DeliveryError> {
+    use super::line::Destination;
+    let json = parsed.line.json;
+    let mut destination = None;
+    let mut format = polylogue_render::Format::Terminal;
     let mut sink = None;
     let mut completed = false;
     let mut code = 0_u8;
     let mut failed = None;
     let result = run(&mut |frame| {
-        if line.is_some() && json {
+        let follow_record = frame.event == "record"
+            && parsed
+                .steps
+                .get(state.offset)
+                .is_some_and(|step| step.step["follow"] == true);
+        if json && !follow_record {
             let data: serde_json::Value =
                 serde_json::from_str(&frame.data).map_err(io::Error::other)?;
             writeln!(
                 io::stdout().lock(),
                 "{}",
-                serde_json::json!({"event":frame.event,"data":data})
+                polylogue_render::terminal::json(
+                    &serde_json::json!({"event":frame.event,"data":data}),
+                    false
+                )
             )?;
         }
-        if let Some(startup) = line
-            && matches!(frame.event.as_str(), "steps" | "answer")
-        {
+        if matches!(frame.event.as_str(), "steps" | "answer") {
             let answer: command_surface::Answer<crate::protocol::line::LineAnswer> =
                 serde_json::from_str(&frame.data).map_err(io::Error::other)?;
             if let Some(crate::protocol::line::LineAnswer::Steps(steps)) = answer.value() {
@@ -466,30 +432,70 @@ fn consume(
                 }
             }
             if !json {
-                if let Some(value) = answer.value() {
-                    write!(
-                        io::stdout().lock(),
-                        "{}",
-                        super::print::line(value, super::style(startup.output))
-                    )?;
+                let reported = super::run_line::stream_steps(&frame.data, parsed, startup, state)?;
+                match reported {
+                    std::ops::ControlFlow::Continue(5) => code = 5,
+                    std::ops::ControlFlow::Break(failure) => {
+                        failed.get_or_insert(failure);
+                    }
+                    _ => {}
                 }
-                super::notes(
-                    &crate::protocol::notes(&answer).cloned().collect::<Vec<_>>(),
-                    startup.output,
-                );
+            } else if let Some(crate::protocol::line::LineAnswer::Steps(steps)) = answer.value() {
+                state.accept(&answer);
+                state.offset += steps.steps.len();
             }
             if frame.event == "answer" {
                 if sink.is_some() {
                     return Err(io::Error::other("line ended inside a read"));
                 }
                 completed = true;
-                code = failed.unwrap_or(answer.exit_code());
+                code = failed.unwrap_or(state.exit_code());
+                return Ok(true);
+            }
+            return Ok(false);
+        }
+        if frame.event == "record"
+            && parsed
+                .steps
+                .get(state.offset)
+                .is_some_and(|step| step.step["follow"] == true)
+        {
+            let step = &parsed.steps[state.offset].step;
+            if super::follow::record(startup, step, &frame.data, json)? {
+                completed = true;
                 return Ok(true);
             }
             return Ok(false);
         }
         match frame.event.as_str() {
             "begin" => {
+                let step = parsed
+                    .steps
+                    .get(state.offset)
+                    .ok_or_else(|| io::Error::other("read stream has no declared step"))?;
+                destination = match &step.to {
+                    Some(Destination::File(path) | Destination::Dir(path)) => Some(path.as_path()),
+                    _ => None,
+                };
+                let directory = matches!(&step.to, Some(Destination::Dir(_)))
+                    || destination.is_some_and(|path| path.is_dir());
+                format = polylogue_render::Format::parse(step.step["format"].as_str().unwrap_or(
+                    if destination.is_some() {
+                        "markdown"
+                    } else {
+                        "terminal"
+                    },
+                ))
+                .ok_or_else(|| io::Error::other("unknown read format"))?;
+                let package_format = match format {
+                    polylogue_render::Format::Json => Some(polylogue_model::bundle::Format::Json),
+                    polylogue_render::Format::Jsonl => Some(polylogue_model::bundle::Format::Jsonl),
+                    polylogue_render::Format::Markdown => {
+                        Some(polylogue_model::bundle::Format::Markdown)
+                    }
+                    polylogue_render::Format::Html => Some(polylogue_model::bundle::Format::Html),
+                    polylogue_render::Format::Terminal => None,
+                };
                 completed = false;
                 if sink.is_some() {
                     return Err(io::Error::new(
@@ -522,7 +528,7 @@ fn consume(
                                     "directory format missing".to_string(),
                                 )
                             })?,
-                            with_blobs,
+                            true,
                         )
                         .map_err(|error| {
                             io::Error::new(io::ErrorKind::InvalidData, error.to_string())
@@ -672,7 +678,7 @@ fn consume(
                                 )?;
                             }
                             eprintln!("polylogue: wrote {}", path.display());
-                        } else if !(line.is_some() && json) {
+                        } else if !json {
                             encode(
                                 &begin,
                                 &mut items,
@@ -683,8 +689,7 @@ fn consume(
                         }
                     }
                 }
-                completed = line.is_none();
-                return Ok(line.is_none());
+                return Ok(false);
             }
             _ => {
                 return Err(io::Error::new(
@@ -756,8 +761,12 @@ fn written(value: serde_json::Value, code: u8) -> io::Result<()> {
     } else {
         command_surface::Answer::ok(value)
     };
-    serde_json::to_writer(io::stdout().lock(), &answer)?;
-    writeln!(io::stdout().lock())
+    let event = serde_json::json!({"event":"written", "data":answer});
+    writeln!(
+        io::stdout().lock(),
+        "{}",
+        polylogue_render::terminal::json(&event, false)
+    )
 }
 
 fn encode(

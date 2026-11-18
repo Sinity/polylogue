@@ -26,7 +26,6 @@ fn assert_document_import(response: command_surface::Answer<serde_json::Value>) 
 
 #[test]
 fn documents_search_and_read_in_one_http_operation() {
-    use polylogue_model::read::ReadPage;
     let r = reader();
     let literal = "AKIAIOSFODNN7EXAMPLE";
     let source = r.w._dir.path().join("synthetic-project-documents");
@@ -63,16 +62,13 @@ fn documents_search_and_read_in_one_http_operation() {
         assert!(!page.contains("<script>"));
         assert_read_command(&page, &target);
         let api = read_page(&r, &target, &[]).await;
-        let Ok(data) = crate::protocol::into_value(
+        let socket = crate::test_answers::read(
             crate::test_daemon::Call::new(
-                "read",
-                serde_json::json!({"target": target, "format": "json"}),
+                "rows",
+                serde_json::json!({"selection":target,"steps":[{"verb":"read","format":"json"}]}),
             )
             .answer(&r.web.daemon),
-        ) else {
-            panic!("document read failed")
-        };
-        let socket: ReadPage = serde_json::from_value(data).unwrap();
+        );
         assert_eq!(api.document.items, socket.document.items);
         assert_eq!(api.document.header, socket.document.header);
         for (path, expected) in [
@@ -103,27 +99,33 @@ fn documents_search_and_read_in_one_http_operation() {
 #[test]
 fn links_follow_references_in_unit_and_grouped_rows() {
     let r = reader();
-    let note = crate::test_daemon::Call::new(
-        "assert",
-        serde_json::json!({"assertions": [NewAssertion {
-            kind: AssertionKind::Tag,
-            key: Some("claude-code:s1".into()),
-            value: Some(json!({"value": "claude-code:s1"})),
-            links: vec![NewAssertionLink {
-                role: LinkRole::About,
-                reference: Reference::Session(
-                    polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
-                ),
+    let invocation = r
+        .web
+        .daemon
+        .invocation(&polylogue_model::authorship::Authorship {
+            author: polylogue_model::Author::Operator,
+            via: polylogue_model::authorship::Channel::Cli,
+        });
+    crate::test_answers::ok(crate::daemon::service::write(
+        &r.web.daemon,
+        &invocation,
+        "claude-code:s1".into(),
+        polylogue_model::user::UserWrite::Assert {
+            assertions: vec![NewAssertion {
+                kind: AssertionKind::Tag,
+                key: Some("claude-code:s1".into()),
+                value: Some(json!({"value":"claude-code:s1"})),
+                links: vec![NewAssertionLink {
+                    role: LinkRole::About,
+                    reference: Reference::parse("session:claude-code:s1").unwrap(),
+                }],
+                valid_until: None,
             }],
-            valid_until: None,
-        }]}),
-    )
-    .id("claude-code:s1")
-    .answer(&r.web.daemon);
-    crate::test_answers::ok(note);
+        },
+    ));
     let kept = crate::test_daemon::Call::new(
-        "keep",
-        serde_json::json!({"query": "sessions | group by id"}),
+        "rows",
+        serde_json::json!({"selection":"sessions | group by id","steps":[{"verb":"save"}]}),
     )
     .id("web-kept-group")
     .answer(&r.web.daemon);
@@ -150,7 +152,7 @@ fn links_follow_references_in_unit_and_grouped_rows() {
             ("sessions | fields text(id) as id", false),
             ("sessions | group by id", true),
             ("sessions | agg min(id)", true),
-            ("result:web-kept-group", true),
+            ("result:web-kept-group-1-keep", true),
         ] {
             let path = format!(
                 "/search?q={}",

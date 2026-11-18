@@ -91,7 +91,7 @@ impl TestArchive {
 
 fn typed_page(output: &Output) -> ReadPage {
     assert!(output.status.success(), "{output:?}");
-    serde_json::from_value(json(output)).unwrap()
+    read_page(json(output))
 }
 fn one_attachment(items: &[ReadItem]) -> &ReadItem {
     let attachments: Vec<_> = items
@@ -119,15 +119,15 @@ fn assert_available(env: &crate::Fixture, item: &ReadItem, descriptor: &Value) {
     );
     assert_eq!(attachment.source_id.as_deref(), Some("file-Native"));
     assert_eq!(availability.value().map(String::as_str), Some("present"));
-    let args = continuation_arguments(
+    let answer = follow(
+        env,
         open.as_deref()
             .expect("available stored attachment needs its typed open action"),
     );
-    let output = cli(env, &args.iter().map(String::as_str).collect::<Vec<_>>());
-    assert!(output.status.success(), "{output:?}");
-    assert_eq!(json(&output)["descriptor"], *descriptor);
+    assert_eq!(answer.exit_code(), 0, "{answer:?}");
+    let page = answer.value().unwrap();
+    assert_eq!(page["descriptor"], *descriptor);
     use base64::Engine as _;
-    let page = json(&output);
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(page["content_base64"].as_str().unwrap())
         .unwrap();
@@ -158,7 +158,7 @@ fn directory_and_zip_imports_describe_stored_attachment_bytes() {
                 .to_string()
                 .contains("synthetic-private-file-value")
         );
-        let read = cli(&fixture.env(), &["--json", "read", SESSION]);
+        let read = cli(&fixture.env(), &["--json", SESSION, "read"]);
         assert!(read.status.success(), "{read:?}");
         let page = typed_page(&read);
         let item = one_attachment(&page.document.items);
@@ -169,8 +169,8 @@ fn directory_and_zip_imports_describe_stored_attachment_bytes() {
             &fixture.env(),
             &[
                 "--json",
-                "read",
                 SESSION,
+                "read",
                 "--format",
                 "jsonl",
                 "--to",
@@ -220,7 +220,7 @@ fn directory_and_zip_imports_describe_stored_attachment_bytes() {
             assert_eq!(binding.candidates[0].size, SECRET.len() as u64);
             binding.validate().unwrap();
         }
-        let shown = cli(&fixture.env(), &["read", SESSION, "--format", "markdown"]);
+        let shown = cli(&fixture.env(), &[SESSION, "read", "--format", "markdown"]);
         assert!(shown.status.success(), "{shown:?}");
         let shown = String::from_utf8(shown.stdout).unwrap();
         assert!(!shown.contains("synthetic-private-file-value"));
@@ -354,7 +354,7 @@ fn unicode_attachment_pages_check_the_descriptor_and_refuse_a_changed_file() {
     let fixture = TestArchive::with_label(false, SECRET, &label);
     let whole = cli(
         &fixture.env(),
-        &["--json", "read", SESSION, "--page-tokens", "100000"],
+        &["--json", SESSION, "read", "--budget", "100000"],
     );
     assert!(whole.status.success(), "{whole:?}");
     let whole = typed_page(&whole);
@@ -363,23 +363,23 @@ fn unicode_attachment_pages_check_the_descriptor_and_refuse_a_changed_file() {
     assert_available(&fixture.env(), expected, &descriptor);
     assert_eq!(descriptor["matches"][0]["names"], json!([label]));
     let mut reconstructed = Items::default();
-    let mut args = vec![
+    let args = [
         "--json".to_owned(),
-        "read".into(),
         SESSION.into(),
-        "--page-tokens".into(),
+        "read".into(),
+        "--budget".into(),
         "3".into(),
     ];
     let mut original_next = None;
     let mut seen = std::collections::BTreeSet::new();
     let mut complete = false;
     let encoded = serde_json::to_vec(&whole.document.items).unwrap().len();
+    let output = cli(
+        &fixture.env(),
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    let mut page = typed_page(&output);
     for index in 0..=encoded {
-        let output = cli(
-            &fixture.env(),
-            &args.iter().map(String::as_str).collect::<Vec<_>>(),
-        );
-        let page = typed_page(&output);
         assert!(
             !page.document.items.is_empty(),
             "page made no item progress"
@@ -416,7 +416,7 @@ fn unicode_attachment_pages_check_the_descriptor_and_refuse_a_changed_file() {
             "repeated continuation"
         );
         original_next.get_or_insert_with(|| next.clone());
-        args = continuation_arguments(&next);
+        page = followed_page(&fixture.env(), &next);
     }
     assert!(complete, "finite attachment reading did not finish");
     let joined = reconstructed.into_values();
@@ -466,13 +466,11 @@ fn unicode_attachment_pages_check_the_descriptor_and_refuse_a_changed_file() {
         .success()
     );
     let next = original_next.expect("small page must continue");
-    let args = continuation_arguments(&next);
-    let refused = cli(
-        &fixture.env(),
-        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+    let refused = read_failure(follow(&fixture.env(), &next));
+    assert_eq!(
+        serde_json::to_value(refused).unwrap()["kind"],
+        "stale_cursor"
     );
-    assert!(!refused.status.success());
-    assert_eq!(json(&refused)["error"]["kind"], "stale_cursor");
 }
 
 #[test]

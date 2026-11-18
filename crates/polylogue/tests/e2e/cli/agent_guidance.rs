@@ -44,32 +44,31 @@ fn gemini_hooks_install_and_uninstall_through_the_public_command() {
 }
 
 #[test]
-fn manual_runs_offline_as_text_and_json() {
+fn help_runs_offline_and_the_daemon_serves_the_full_manual() {
     let dir = tempfile::tempdir().unwrap();
-    let archive = dir.path().join("absent-archive");
-    let plain = cli(
-        &crate::Fixture::new(
-            &archive,
-            &dir.path().join("home"),
-            &dir.path().join("config"),
-        ),
-        &["manual"],
+    let archive = dir.path().join("archive");
+    let fixture = crate::Fixture::new(
+        &archive,
+        &dir.path().join("home"),
+        &dir.path().join("config"),
     );
+    let plain = cli(&fixture, &["help"]);
     assert!(plain.status.success(), "{plain:?}");
     let text = String::from_utf8(plain.stdout).unwrap();
     assert!(text.contains("polylogue"));
-    assert!(text.contains("sessions where"));
-    let structured = cli(
-        &crate::Fixture::new(
-            &archive,
-            &dir.path().join("home"),
-            &dir.path().join("config"),
-        ),
-        &["--json", "manual"],
-    );
-    assert!(structured.status.success(), "{structured:?}");
-    assert_eq!(json(&structured)["manual"], text);
+    assert!(text.contains("read") && text.contains("save"));
     assert!(!archive.exists());
+    let _daemon = start_daemon(&fixture);
+    let full = cli(&fixture, &["help", "--all"]);
+    assert!(full.status.success(), "{full:?}");
+    let text = String::from_utf8(full.stdout).unwrap();
+    assert!(text.contains("sessions where"));
+    let structured = cli(&fixture, &["--json", "help", "--all"]);
+    assert!(structured.status.success(), "{structured:?}");
+    assert_eq!(
+        json(&structured)["manual"].as_str().unwrap().trim_end(),
+        text.trim_end()
+    );
 }
 
 #[test]

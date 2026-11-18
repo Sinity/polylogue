@@ -43,6 +43,10 @@ pub struct Rows {
     /// Return when rows match or this long passes (`30m`)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait: Option<String>,
+    /// Return the complete accepted population for a client picker boundary
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[schemars(extend("unlisted" = true))]
+    pub return_selection: bool,
 }
 
 /// One verb of a line with its options.
@@ -140,6 +144,9 @@ pub struct Resolved {
     pub named: bool,
     /// The first rows' references, at most twenty
     pub first: Vec<String>,
+    /// The requested complete population, keeping its original grain and bindings
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub population: Option<Box<command_surface::Answer<super::query::Answer>>>,
 }
 
 /// One step's request and what came of it.
@@ -192,14 +199,7 @@ pub enum StepAnswer {
     Resume(Box<super::resume::Answer>),
 }
 
-/// What `save` wrote: the named question, the kept rows and the watch.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct SaveReport {
-    pub saved: Option<UserOutcome>,
-    pub kept: UserOutcome,
-    pub watch: Option<UserOutcome>,
-}
+pub use polylogue_model::user::SaveReport;
 
 /// Whom `send` reached, and the sessions it skipped with the line that sends to each alone.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

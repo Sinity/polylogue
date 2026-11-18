@@ -416,6 +416,19 @@ pub(crate) fn submit<T: serde::Serialize>(
     selected_scope: Option<polylogue_store::ReadScopeToken>,
     present: impl FnOnce(polylogue_model::user::UserOutcome) -> T,
 ) -> Answer<T> {
+    submit_receipt(d, invocation, request_id, w, selected_scope, |receipt| {
+        present(receipt.outcome)
+    })
+}
+
+pub(crate) fn submit_receipt<T>(
+    d: &Daemon,
+    invocation: &Invocation,
+    request_id: String,
+    w: UserWrite,
+    selected_scope: Option<polylogue_store::ReadScopeToken>,
+    present: impl FnOnce(polylogue_store::user_writes::UserReceipt) -> T,
+) -> Answer<T> {
     let accepted = || -> Result<_, Failure> {
         let writes = writer(d)?;
         invocation.check_parent_lifetime()?;
@@ -428,7 +441,7 @@ pub(crate) fn submit<T: serde::Serialize>(
     };
     let request = invocation.request(request_id, w);
     let preparation = authored_preparation();
-    let result = writes.user(polylogue_store::writer::UserSubmission {
+    let result = writes.user_receipt(polylogue_store::writer::UserSubmission {
         request,
         scope: selected_scope,
         preparation: Some(preparation),
@@ -436,7 +449,7 @@ pub(crate) fn submit<T: serde::Serialize>(
     });
     match result {
         Ok(outcome) => {
-            let pending = outcome.pending;
+            let pending = outcome.outcome.pending;
             crate::protocol::written(present(outcome), pending)
         }
         Err(error) => store_error(&error),

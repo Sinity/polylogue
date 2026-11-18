@@ -13,20 +13,21 @@ fn mcp_reads_input_events_through_the_same_typed_reader_and_budget_cursor() {
         .answer(&daemon.daemon);
     crate::test_answers::ok(imported);
     let archive = Archive::at(&daemon.daemon.archive.root);
-    let listed: Value = serde_json::from_str(
-        &call(
-            &archive,
-            "query",
-            args(json!({"query":"events where source:hermes"})),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(listed["count"], 1);
-    let reference = format!("event:{}", listed["rows"][0]["id"].as_str().unwrap());
+    let answer = structured_call_as(
+        &archive,
+        "rows",
+        args(json!({"selection":"events where source:hermes"})),
+        "event-listing",
+    );
+    let listed = answer.value().expect("event listing");
+    assert_eq!(listed["reply"]["count"], 1);
+    let reference = format!(
+        "event:{}",
+        listed["reply"]["rows"][0]["id"].as_str().unwrap()
+    );
     let ordinary: ReadPage = super::read_pages::structured_read_without_deadline(
         &archive,
-        json!({"target":reference,"format":"json"}),
+        json!({"selection":reference,"steps":[{"verb":"read","format":"json"}]}),
     )
     .unwrap();
     let (ordinary, _) = super::read_pages::collect(
@@ -48,7 +49,7 @@ fn mcp_reads_input_events_through_the_same_typed_reader_and_budget_cursor() {
     assert_eq!(data["event"]["data"]["data"]["credential"], credential);
     let page: ReadPage = super::read_pages::structured_read_without_deadline(
         &archive,
-        json!({"target":reference,"page_tokens":128}),
+        json!({"selection":reference,"steps":[{"verb":"read","budget":128}]}),
     )
     .unwrap();
     let next = page
@@ -57,10 +58,15 @@ fn mcp_reads_input_events_through_the_same_typed_reader_and_budget_cursor() {
         .next
         .clone()
         .expect("structured event is paged");
-    let token = next.request.cursor.as_deref().unwrap();
+    let rows: crate::protocol::line::Rows =
+        serde_json::from_value(next.request.arguments.clone()).unwrap();
+    let [crate::protocol::line::Step::Read(read)] = rows.steps.as_slice() else {
+        panic!("one continued event read")
+    };
+    let token = read.cursor.as_deref().unwrap();
     assert!(!token.contains("synthetic-later-value"));
     let mut wrong = next.clone();
-    wrong.request.arguments["view"] = json!("dialogue");
+    wrong.request.arguments["steps"][0]["view"] = json!("dialogue");
     let error = super::read_pages::execute_ready(&archive, &wrong).unwrap_err();
     // docs/query.md: "a cursor from another question is `invalid_query`";
     // a read continuation with other arguments is refused the same way.

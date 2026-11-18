@@ -1,5 +1,7 @@
 //! The opt-in benchmark runs in this CLI and daemon test binary.
+use super::read_current::Items;
 use super::*;
+use polylogue_model::read::{ItemKind, ReadItem};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 
@@ -76,6 +78,7 @@ fn assert_status(status: &Value) {
 }
 
 fn assert_sessions(answer: &Value) {
+    let answer = &answer["reply"];
     let actual: Vec<_> = answer["rows"]
         .as_array()
         .unwrap()
@@ -112,26 +115,36 @@ fn walk(env: &crate::Fixture, expected: &[String]) -> (Value, String) {
     let began = Instant::now();
     let mut cursor = None;
     let mut seen = HashSet::new();
-    let mut text = String::new();
+    let mut joined = Items::default();
     let mut samples = Vec::new();
     let budget = PAGE_BUDGET.to_string();
     // A page limit from this fixed population, so a broken cursor cannot loop.
     let max_pages = expected.iter().map(String::len).sum::<usize>() / PAGE_BUDGET + MAIN_MESSAGES;
     for _ in 0..max_pages {
-        let mut args = vec!["--json", "read", LARGE, "--page-tokens", &budget];
+        let mut args = vec![
+            "--json",
+            "session:claude-code:read-bench-large",
+            "read",
+            "--budget",
+            &budget,
+        ];
         if let Some(token) = cursor.as_deref() {
             args.extend(["--cursor", token]);
         }
         let (page, seconds) = request(env, &args);
-        let body = page["text"].as_str().expect("read page has no text");
-        assert!(!body.is_empty(), "empty page cannot establish progress");
+        let page = read_page(page);
         assert!(
-            body.chars().count() <= PAGE_BUDGET * 4,
-            "page exceeded its requested character budget"
+            !page.document.items.is_empty(),
+            "empty page cannot establish progress"
         );
-        text.push_str(body);
+        joined.push(&page);
         samples.push(seconds);
-        cursor = page["next"].as_str().map(str::to_owned);
+        cursor = page.document.footer.next.as_ref().map(|next| {
+            next.request.arguments["steps"][0]["cursor"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        });
         if let Some(token) = &cursor {
             assert!(seen.insert(token.clone()), "read cursor repeated");
         }
@@ -145,6 +158,7 @@ fn walk(env: &crate::Fixture, expected: &[String]) -> (Value, String) {
     );
     let seconds = began.elapsed().as_secs_f64();
     let verification = Instant::now();
+    let text = joined.text();
     verify_text(&text, expected);
     let digest = blake3::hash(text.as_bytes()).to_hex().to_string();
     (
@@ -159,94 +173,121 @@ struct WindowStart {
     name: &'static str,
     byte: usize,
     cursor: Option<String>,
+    pages: Vec<Vec<ReadItem>>,
+    reached_end: bool,
 }
 
-fn reference_windows(env: &crate::Fixture, bodies: &[String]) -> (String, Vec<WindowStart>, Value) {
+fn reference_windows(env: &crate::Fixture, bodies: &[String]) -> (Vec<WindowStart>, Value) {
     let began = Instant::now();
-    let budget = bodies.iter().map(String::len).sum::<usize>().to_string();
-    eprintln!("read bench: starting complete reference read");
-    let (whole, seconds) = request(env, &["--json", "read", LARGE, "--page-tokens", &budget]);
-    assert!(
-        whole["next"].is_null(),
-        "reference read must include the whole declared population"
-    );
-    let reference = whole["text"].as_str().unwrap().to_owned();
-    verify_text(&reference, bodies);
-    let characters = reference.chars().count();
-    let pages = characters.div_ceil(PAGE_BUDGET * 4);
-    let mut starts = Vec::new();
-    for (name, page) in [
-        ("first", 0),
-        ("middle", pages / 2),
-        ("tail", pages - WINDOW_PAGES),
-    ] {
-        let character = page * PAGE_BUDGET * 4;
-        let byte = reference.char_indices().nth(character).unwrap().0;
-        let cursor = if page == 0 {
-            None
-        } else {
-            eprintln!("read bench: preparing {name} reference cursor");
-            let budget = (page * PAGE_BUDGET).to_string();
-            let (prefix, _) = request(env, &["--json", "read", LARGE, "--page-tokens", &budget]);
-            assert_eq!(prefix["text"].as_str().unwrap(), &reference[..byte]);
-            Some(
-                prefix["next"]
-                    .as_str()
-                    .expect("reference prefix must supply a real continuation")
-                    .to_owned(),
-            )
-        };
-        starts.push(WindowStart { name, byte, cursor });
-    }
-    let facts = json!({"seconds":seconds,"setup_seconds":began.elapsed().as_secs_f64(),"source_messages_verified":bodies.len(),"rendered_bytes":reference.len(),"rendered_characters":characters,"rendered_blake3":blake3::hash(reference.as_bytes()).to_hex().to_string()});
-    (reference, starts, facts)
-}
-
-fn window(env: &crate::Fixture, start: &WindowStart, reference: &str) -> Value {
-    let began = Instant::now();
-    let mut cursor = start.cursor.clone();
-    let mut text = String::new();
-    let mut samples = Vec::new();
     let budget = PAGE_BUDGET.to_string();
-    for _ in 0..WINDOW_PAGES {
-        let mut args = vec!["--json", "read", LARGE, "--page-tokens", &budget];
+    let mut cursor: Option<String> = None;
+    let mut pages = Vec::new();
+    let mut starts = Vec::new();
+    let mut joined = Items::default();
+    let mut seen = HashSet::new();
+    let mut bytes = 0;
+    // Walk real page boundaries; budgets split encoded items, not rendered
+    // text at a predictable character offset.
+    loop {
+        starts.push((cursor.clone(), bytes));
+        let mut args = vec![
+            "--json",
+            "session:claude-code:read-bench-large",
+            "read",
+            "--budget",
+            &budget,
+        ];
         if let Some(token) = cursor.as_deref() {
             args.extend(["--cursor", token]);
         }
-        let (page, seconds) = request(env, &args);
-        let body = page["text"].as_str().unwrap();
-        assert!(!body.is_empty());
-        assert!(body.chars().count() <= PAGE_BUDGET * 4);
-        text.push_str(body);
-        samples.push(seconds);
-        cursor = page["next"].as_str().map(str::to_owned);
-        if cursor.is_none() {
-            break;
-        }
+        let (answer, _) = request(env, &args);
+        let page = read_page(answer);
+        assert!(!page.document.items.is_empty());
+        bytes += serde_json::to_vec(&page.document.items).unwrap().len();
+        joined.push(&page);
+        pages.push(page.document.items);
+        cursor = page.document.footer.next.as_ref().map(|next| {
+            next.request.arguments["steps"][0]["cursor"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        });
+        let Some(token) = &cursor else { break };
+        assert!(seen.insert(token.clone()), "reference cursor repeated");
     }
+    let text = joined.text();
+    verify_text(&text, bodies);
+    let count = pages.len();
+    let windows = [
+        ("first", 0),
+        ("middle", count / 2),
+        ("tail", count.saturating_sub(WINDOW_PAGES)),
+    ]
+    .into_iter()
+    .map(|(name, index)| {
+        let end = (index + WINDOW_PAGES).min(count);
+        WindowStart {
+            name,
+            byte: starts[index].1,
+            cursor: starts[index].0.clone(),
+            pages: pages[index..end].to_vec(),
+            reached_end: end == count,
+        }
+    })
+    .collect();
     let seconds = began.elapsed().as_secs_f64();
-    let expected: String = reference[start.byte..]
-        .chars()
-        .take(WINDOW_PAGES * PAGE_BUDGET * 4)
-        .collect();
-    assert_eq!(
-        text, expected,
-        "bounded pages changed or omitted the requested reference slice"
-    );
-    let reached_end = expected.len() == reference.len() - start.byte;
-    assert_eq!(
-        cursor.is_none(),
-        reached_end,
-        "continuation must describe remaining content honestly"
-    );
-    json!({"seconds":seconds,"first_page_seconds":samples[0],"page_seconds":summary(&samples),"pages":samples.len(),"rendered_bytes":text.len(),"rendered_blake3":blake3::hash(text.as_bytes()).to_hex().to_string(),"reference_slice_verified":true,"reached_end":reached_end,"complete_session_walk":false})
+    let facts = json!({"seconds":seconds,"setup_seconds":seconds,"source_messages_verified":bodies.len(),"rendered_bytes":text.len(),"rendered_characters":text.chars().count(),"rendered_blake3":blake3::hash(text.as_bytes()).to_hex().to_string()});
+    (windows, facts)
+}
+
+fn window(env: &crate::Fixture, start: &WindowStart) -> Value {
+    let began = Instant::now();
+    let mut cursor = start.cursor.clone();
+    let mut items = Vec::new();
+    let mut samples = Vec::new();
+    let budget = PAGE_BUDGET.to_string();
+    for expected in &start.pages {
+        let mut args = vec![
+            "--json",
+            "session:claude-code:read-bench-large",
+            "read",
+            "--budget",
+            &budget,
+        ];
+        if let Some(token) = cursor.as_deref() {
+            args.extend(["--cursor", token]);
+        }
+        let (answer, seconds) = request(env, &args);
+        let page = read_page(answer);
+        assert_eq!(
+            &page.document.items, expected,
+            "bounded page changed or omitted reference items"
+        );
+        items.extend(page.document.items);
+        samples.push(seconds);
+        cursor = page.document.footer.next.as_ref().map(|next| {
+            next.request.arguments["steps"][0]["cursor"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        });
+    }
+    assert_eq!(cursor.is_none(), start.reached_end);
+    let encoded = serde_json::to_vec(&items).unwrap();
+    json!({"seconds":began.elapsed().as_secs_f64(),"first_page_seconds":samples[0],"page_seconds":summary(&samples),"pages":samples.len(),"rendered_bytes":encoded.len(),"rendered_blake3":blake3::hash(&encoded).to_hex().to_string(),"reference_slice_verified":true,"reached_end":start.reached_end,"complete_session_walk":false})
 }
 
 fn cancelled_client(env: &crate::Fixture) {
     let budget = PAGE_BUDGET.to_string();
     let mut command = super::command(env);
     command
-        .args(["--json", "read", LARGE, "--page-tokens", &budget])
+        .args([
+            "--json",
+            "session:claude-code:read-bench-large",
+            "read",
+            "--budget",
+            &budget,
+        ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = Daemon(polylogue_testkit::spawn_daemon(&mut command).unwrap());
@@ -277,13 +318,19 @@ fn check_cancelled_client(env: &crate::Fixture, daemon: &Daemon, expected: &[Str
         env,
         &[
             "--json",
+            "session:claude-code:read-bench-large",
             "read",
-            LARGE,
-            "--page-tokens",
+            "--budget",
             &PAGE_BUDGET.to_string(),
         ],
     );
-    assert!(after["text"].as_str().unwrap().contains(&expected[0]));
+    let page = read_page(after);
+    assert!(
+        page.document
+            .items
+            .iter()
+            .any(|item| { matches!(&item.kind, ItemKind::Text { text } if text == &expected[0]) })
+    );
     eprintln!("read bench: recovery read verified");
     memory(daemon.0.id())
 }
@@ -392,7 +439,7 @@ fn read_benchmark() {
         let text = String::from_utf8(answer.stdout).unwrap();
         assert!(text.contains("read") && text.contains("status"));
     }
-    let read = if let Some((reference, starts, reference_facts)) = prepared {
+    let read = if let Some((starts, reference_facts)) = prepared {
         let mut windows = serde_json::Map::new();
         for start in starts {
             eprintln!("read bench: starting {} window", start.name);
@@ -402,7 +449,7 @@ fn read_benchmark() {
             let before = memory(daemon.0.id());
             let mut walks = Vec::new();
             for iteration in 0..=repetitions {
-                let mut result = window(&env, &start, &reference);
+                let mut result = window(&env, &start);
                 result["rss_after"] = memory(daemon.0.id());
                 eprintln!(
                     "read bench: {} window {iteration} verified at {:.3}s: {result}",
@@ -447,6 +494,7 @@ fn read_benchmark() {
     let result = json!({"population":{"id":"native-reads-v1","sessions":SMALL_SESSIONS+1,"messages":MAIN_MESSAGES+SMALL_SESSIONS*SMALL_MESSAGES,"large_messages":MAIN_MESSAGES,"body_bytes":BODY_BYTES,"input_bytes":input_bytes,"blake3":identity.finalize().to_hex().to_string()},
         "mode":if full_walk {"full_walk"}else{"windows"},"profile":"release","debug_assertions":cfg!(debug_assertions),"repetitions":repetitions,"population_setup_seconds":population_seconds,"initial_daemon_start_seconds":initial_daemon_start_seconds,"archive_setup_seconds":archive_setup_seconds,
         "cold_definition":"first request after daemon restart; filesystem cache is not flushed; every CLI call starts a new client process",
+        "content_measurement":"full walks hash reconstructed source text; bounded windows compare exact typed page items and hash their JSON encoding",
         "operations":operations,"help":{"first_seconds":help[0],"repeated_seconds":summary(&help[1..])},
         "read":read,
         "cancellation":"CLI client killed after its first output byte; a subsequent status and bounded read verified daemon responsiveness",

@@ -79,25 +79,25 @@ fn expired_requests_never_start_any_read_operation() {
     let requests = [
         crate::test_daemon::Call::new("status", serde_json::json!({})),
         crate::test_daemon::Call::new(
-            "read",
-            serde_json::json!({"target": "session:claude-code:s1", "format": "json"}),
+            "rows",
+            serde_json::json!({"selection": "session:claude-code:s1", "steps":[{"verb":"read", "format":"json"}]}),
         )
         .cursor(Some("never-open-an-expired-request")),
         crate::test_daemon::Call::new(
-            "read",
-            serde_json::json!({"target": "session:claude-code:s1", "format": "json"}),
+            "rows",
+            serde_json::json!({"selection": "session:claude-code:s1", "steps":[{"verb":"read", "format":"json"}]}),
         ),
-        crate::test_daemon::Call::new("recall", serde_json::json!({"query": "synthetic"}))
-            .id("synthetic-recall"),
+        crate::test_daemon::Call::new("rows", serde_json::json!({"selection":"synthetic", "steps":[{"verb":"brief"}]}))
+            .id("synthetic-context"),
         crate::test_daemon::Call::new(
-            "query",
-            serde_json::json!({"query": "sessions | measure usage"}),
+            "rows",
+            serde_json::json!({"selection": "sessions | measure usage"}),
         ),
         crate::test_daemon::Call::new(
             "internal complete",
             serde_json::json!({"text": "repo:", "position": 5}),
         ),
-        crate::test_daemon::Call::new("query", serde_json::json!({"query": "sessions"})),
+        crate::test_daemon::Call::new("rows", serde_json::json!({"selection": "sessions"})),
         crate::test_daemon::Call::new("dev sql", serde_json::json!({"statement": "SELECT 1"})),
     ];
     for request in requests {
@@ -127,8 +127,11 @@ fn write_requests_do_not_enter_a_read_scope_even_with_an_expired_cancelled_limit
     let limit = ReadLimit::new(Duration::ZERO, Default::default());
     limit.cancellation.cancel();
     for request in [
-        crate::test_daemon::Call::new("keep", serde_json::json!({"query": "sessions"}))
-            .id("synthetic-keep"),
+        crate::test_daemon::Call::new(
+            "set",
+            serde_json::json!({"key":"browser.actions", "value":"on"}),
+        )
+        .id("synthetic-keep"),
         crate::test_daemon::Call::new("embed", serde_json::json!({"yes":true})),
     ] {
         let policy = policy(&request);
@@ -147,8 +150,8 @@ fn write_requests_do_not_enter_a_read_scope_even_with_an_expired_cancelled_limit
 #[test]
 fn streamed_read_has_no_default_deadline_and_explicit_deadlines_still_apply() {
     let request = crate::test_daemon::Call::new(
-        "read",
-        serde_json::json!({"target": "sessions", "delivery": "stream", "format": "json"}),
+        "rows",
+        serde_json::json!({"selection":"sessions", "steps":[{"verb":"read", "delivery":"stream", "format":"json"}]}),
     );
     let policy = policy(&request);
     assert!(policy.read_phase && policy.streaming && !policy.default_deadline);
@@ -180,10 +183,12 @@ fn other_read_requests_use_their_operation_name_in_refusals() {
 #[test]
 fn context_writes_keep_the_read_phase_deadline() {
     let daemon = test_daemon::start("synthetic context deadline");
-    let request =
-        crate::test_daemon::Call::new("takeover", serde_json::json!({"session": "claude-code:s1"}))
-            .id("synthetic-context")
-            .surface(crate::commands::Surface::Mcp);
+    let request = crate::test_daemon::Call::new(
+        "rows",
+        serde_json::json!({"selection":"session:claude-code:s1", "steps":[{"verb":"brief"}]}),
+    )
+    .id("synthetic-context")
+    .surface(crate::commands::Surface::Mcp);
     let policy = policy(&request);
     assert!(!policy.read_only && policy.read_phase && policy.default_deadline);
     let response = request
@@ -200,10 +205,13 @@ fn an_authored_write_commits_with_an_expired_cancelled_read_budget() {
     let limit = ReadLimit::new(Duration::ZERO, Default::default());
     limit.cancellation.cancel();
     let id = polylogue_store::user_writes::new_request_id();
-    let response = crate::test_daemon::Call::new("keep", serde_json::json!({"query": "sessions"}))
-        .id(id.clone().as_ref())
-        .limit(limit.clone())
-        .answer(&daemon.daemon);
+    let response = crate::test_daemon::Call::new(
+        "set",
+        serde_json::json!({"key":"browser.actions", "value":"on"}),
+    )
+    .id(id.clone().as_ref())
+    .limit(limit.clone())
+    .answer(&daemon.daemon);
     crate::test_answers::ok(response);
     assert!(
         daemon
@@ -220,8 +228,8 @@ fn an_authored_write_commits_with_an_expired_cancelled_read_budget() {
 #[test]
 fn continued_read_is_a_page_with_a_read_deadline() {
     let request = crate::test_daemon::Call::new(
-        "read",
-        serde_json::json!({"target": "session:claude-code:s1", "format": "json"}),
+        "rows",
+        serde_json::json!({"selection": "session:claude-code:s1", "steps":[{"verb":"read", "format":"json"}]}),
     )
     .cursor(Some("opaque-awaiting-daemon-validation"));
     let policy = policy(&request);
@@ -231,7 +239,7 @@ fn continued_read_is_a_page_with_a_read_deadline() {
 #[test]
 fn a_read_first_write_whose_deadline_passes_after_handoff_answers_its_write() {
     let limit = ReadLimit::new(Duration::from_millis(50), Default::default());
-    let response = within_limit(&limit, true, false, "assert-query", None, || {
+    let response = within_limit(&limit, true, false, "rows", None, || {
         crate::daemon::handler::finish_read_phase("write").expect("handed over in time");
         assert!(ReadLimit::current().is_none(), "the read phase ended");
         // The writer's commit outlasts the read deadline.
@@ -327,7 +335,7 @@ fn deadline_hint_uses_stopped_stage() {
 }
 
 #[test]
-fn recall_deadline_hint_is_recall_form() {
+fn context_deadline_hint_names_the_context_form() {
     for stage in [None, Some("page"), Some("similarity")] {
         let limit = ReadLimit::new(Duration::ZERO, Default::default());
         if let Some(stage) = stage {

@@ -13,7 +13,8 @@ fn request(
 ) -> crate::test_daemon::Call {
     if let Some(resume) = cursor {
         let mut resume = resume.clone();
-        resume.arguments["page_tokens"] = serde_json::json!(budget);
+        resume.request_id = polylogue_store::user_writes::new_request_id();
+        resume.arguments["steps"][0]["budget"] = serde_json::json!(budget);
         return crate::test_daemon::Call::from_request(&resume);
     }
     crate::test_daemon::read(polylogue_reading::ReadRequest {
@@ -40,20 +41,17 @@ fn page(
     cursor: Option<&ResumeArguments>,
 ) -> ReadPage {
     let response = (request(target, inherited, view, budget, cursor)).answer(d);
-    let Some(data) = response.value().cloned() else {
-        panic!("{response:?}")
-    };
-    serde_json::from_value(data).unwrap()
+    crate::test_answers::read(response)
 }
 fn refused(response: command_surface::Answer<serde_json::Value>, expected: &str) {
-    assert!(
-        matches!(&response, command_surface::Answer { outcome: command_surface::Outcome::Error(error), .. } if error.code.as_deref() == Some(expected)),
-        "{response:?}"
+    assert_eq!(
+        crate::test_answers::refusal(response).code.as_deref(),
+        Some(expected)
     );
 }
 fn call_cursor(call: &polylogue_model::read::ReadyCall) -> ResumeArguments {
     let envelope: command_surface::RunnableRequest = call.request.clone();
-    assert_eq!(envelope.operation, "read");
+    assert_eq!(envelope.operation, "rows");
     envelope
 }
 fn next(page: &ReadPage) -> Option<ResumeArguments> {
@@ -178,7 +176,7 @@ fn all(d: &Daemon, target: &str, inherited: bool, view: View) -> String {
         let continued = next(&page);
         if let (Some(previous), Some(next)) = (&cursor, &continued) {
             assert_eq!(
-                next.arguments["target"], previous.arguments["target"],
+                next.arguments["selection"], previous.arguments["selection"],
                 "a continuation reads the same target"
             );
         }
@@ -257,7 +255,7 @@ fn read_pages_refuse_malformed_cross_view_and_tampered_positions() {
     let token = next(&first).expect("real continuation");
     for malformed in ["broken", "m0.b0.c0", "m0.b0.c0.extra", "m999.b0.c0"] {
         let mut malformed_resume = token.clone();
-        malformed_resume.cursor = Some(malformed.to_owned());
+        malformed_resume.arguments["steps"][0]["cursor"] = serde_json::json!(malformed);
         refused(
             (request(
                 "session:claude-code:s1",
@@ -278,16 +276,26 @@ fn read_pages_refuse_malformed_cross_view_and_tampered_positions() {
         // A cursor is bound to its reading: other arguments are refused
         // when the page is read (docs/reading.md, Budgets).
         let mut changed = token.clone();
-        changed.arguments[field] = value;
+        changed.request_id = polylogue_store::user_writes::new_request_id();
+        if field == "target" {
+            changed.arguments["selection"] = value;
+            changed.arguments["references"] = serde_json::json!([]);
+        } else {
+            changed.arguments["steps"][0][field] = value;
+        }
         let request = crate::test_daemon::Call::from_request(&changed);
         refused((request).answer(&d.daemon), "invalid_query");
     }
-    let wire = token.cursor.clone().unwrap();
+    let wire = token.arguments["steps"][0]["cursor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     for at in [0, wire.len() / 2, wire.len() - 1] {
         let mut changed = wire.as_bytes().to_vec();
         changed[at] = if changed[at] == b'a' { b'b' } else { b'a' };
         let mut changed_resume = token.clone();
-        changed_resume.cursor = Some(String::from_utf8(changed).unwrap());
+        changed_resume.arguments["steps"][0]["cursor"] =
+            serde_json::json!(String::from_utf8(changed).unwrap());
         refused(
             (request(
                 "session:claude-code:s1",
@@ -335,9 +343,9 @@ fn read_pages_survive_unrelated_writes_and_refuse_changed_earlier_content() {
         Some(&token),
     ))
     .answer(&d.daemon);
-    assert!(
-        matches!(&response, command_surface::Answer { outcome: command_surface::Outcome::Error(error), .. } if error.code.as_deref() == Some("stale_cursor")),
-        "{response:?}"
+    assert_eq!(
+        crate::test_answers::refusal(response).code.as_deref(),
+        Some("stale_cursor")
     );
 }
 
@@ -432,20 +440,18 @@ fn direct_references_keep_their_text_and_refuse_missing_sources() {
         all(&d.daemon, "block:claude-code:u2#0", false, View::Transcript),
         source
     );
-    assert!(matches!(
-        (request(
-            "message:claude-code:missing",
-            false,
-            View::Transcript,
-            10,
-            None
-        ))
-        .answer(&d.daemon),
-        command_surface::Answer {
-            outcome: command_surface::Outcome::Error(_),
-            ..
-        }
-    ));
+    let missing = request(
+        "message:claude-code:missing",
+        false,
+        View::Transcript,
+        10,
+        None,
+    )
+    .answer(&d.daemon);
+    assert_eq!(
+        crate::test_answers::refusal(missing).code.as_deref(),
+        Some("not_found")
+    );
 }
 
 /// Pages and direct jumps over a session of many one-token pages. Paging

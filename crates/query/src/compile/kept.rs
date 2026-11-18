@@ -2,6 +2,11 @@ use super::*;
 use query_language::catalog::{Field, FieldKind, OutputSchema};
 
 impl Kept {
+    /// A retained summary has physical values and no native row domain.
+    pub fn summary_output(columns: &[Column]) -> OutputSchema {
+        physical_schema("", columns)
+    }
+
     pub fn validate_output_metadata(&self) -> Result<(), QueryError> {
         for (declared, columns) in [
             (&self.output_metadata.rows, &self.columns),

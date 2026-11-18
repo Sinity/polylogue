@@ -16,7 +16,6 @@ fn deployment_flags_preserve_daemon_signal_policy_and_native_host_selection() {
         ])
         .unwrap();
     assert!(super::daemon_command(&daemon));
-    assert!(!super::native_host(&daemon));
     assert!(super::cli::needs_engine(
         &daemon,
         &super::daemon::service::ArchiveMode::Standalone
@@ -39,47 +38,28 @@ fn deployment_flags_preserve_daemon_signal_policy_and_native_host_selection() {
         assert!(super::cli::needs_engine(&tour, &blocked));
     }
     let origin = "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/";
-    for args in [
-        vec!["polylogue", origin],
-        vec![
-            "polylogue",
-            "--archive",
-            "/synthetic/archive",
-            "--config",
-            "/synthetic/config",
-            origin,
-        ],
-    ] {
-        let native = super::cli::command().try_get_matches_from(args).unwrap();
-        assert!(super::native_host(&native));
-        assert!(!super::daemon_command(&native));
-        assert!(!super::cli::needs_engine(
-            &native,
-            &super::daemon::service::ArchiveMode::Standalone
-        ));
-        if let Some(archive) = super::config::Overrides::from_matches(&native).archive {
-            assert_eq!(archive, std::path::Path::new("/synthetic/archive"));
-            assert_eq!(
-                super::config::Overrides::from_matches(&native)
-                    .config_file
-                    .unwrap(),
-                std::path::Path::new("/synthetic/config")
-            );
-        }
-    }
-    for args in [
-        vec!["polylogue", "find", origin],
-        vec!["polylogue", "read", origin],
-        vec!["polylogue", "--archive", origin, "status"],
-        vec!["polylogue", origin, "another-word"],
-    ] {
-        let query = super::cli::command().try_get_matches_from(args).unwrap();
-        assert!(!super::native_host(&query));
-        assert!(!super::cli::needs_engine(
-            &query,
-            &super::daemon::service::ArchiveMode::Standalone
-        ));
-    }
+    assert!(super::cli::run_line::native_host(&[origin.into()]));
+    assert!(!super::cli::run_line::native_host(&[
+        origin.into(),
+        "extra".into()
+    ]));
+    let (overrides, words) = super::cli::run_line::deployment_arguments(&[
+        "--archive".into(),
+        "/synthetic/archive".into(),
+        "--config".into(),
+        "/synthetic/config".into(),
+        origin.into(),
+    ])
+    .unwrap();
+    assert!(super::cli::run_line::native_host(&words));
+    assert_eq!(
+        overrides.archive.unwrap(),
+        std::path::Path::new("/synthetic/archive")
+    );
+    assert_eq!(
+        overrides.config_file.unwrap(),
+        std::path::Path::new("/synthetic/config")
+    );
 }
 
 #[test]

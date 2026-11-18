@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+import socket
 from pathlib import Path
 
 from .models import Answer, _copy
@@ -11,10 +12,12 @@ __all__ = ["Client", "Refused"]
 
 
 def _failure(answer):
+    if not isinstance(answer, dict):
+        return None
     if answer.get("outcome") == "error":
         return answer["error"]
     value = answer.get("value", {})
-    if value.get("kind") == "steps":
+    if isinstance(value, dict) and value.get("kind") == "steps":
         for step in value["reply"]["steps"]:
             if step["outcome"]["status"] == "failed":
                 return step["outcome"]["error"]
@@ -47,12 +50,12 @@ class Client:
         command = [self.executable]
         if self.archive is not None:
             command.extend(["--archive", self.archive])
-        return [*command, "--json", *arguments]
+        return [*command, *arguments]
 
     def call(self, *arguments):
         """One declared command, with the same arguments and answer as CLI JSON."""
         result = subprocess.run(
-            self._arguments(*arguments),
+            self._arguments("--json", *arguments),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
         try:
@@ -60,7 +63,7 @@ class Client:
         except (ValueError, UnicodeDecodeError) as error:
             raise RuntimeError(f"Polylogue returned no JSON answer (exit {result.returncode})") from error
         outcome = answer.get("outcome") if isinstance(answer, dict) else None
-        if _failure(answer):
+        if _failure(answer) is not None:
             if result.returncode == 0:
                 raise RuntimeError("Polylogue returned an error with a successful exit status")
             raise Refused(answer, result.returncode)
@@ -78,7 +81,7 @@ class Client:
         failures retain their earlier step reports and undo lines.
         Closing the iterator terminates and reaps the child process.
         """
-        with subprocess.Popen(self._arguments(*arguments), stdout=subprocess.PIPE) as process:
+        with subprocess.Popen(self._arguments("--json", *arguments), stdout=subprocess.PIPE) as process:
             final = None
             failed = None
             try:
@@ -115,49 +118,50 @@ class Client:
         return self.call("status")
 
     def query(self, text, *, cursor=None, page_size=None):
-        arguments = {"selection": text}
+        arguments = ["--", text]
         if page_size is not None:
-            arguments["page_size"] = page_size
-        command = ["rows", "--request", json.dumps(arguments, ensure_ascii=False)]
+            arguments.extend(["--page-size", str(page_size)])
         if cursor is not None:
-            command.extend(["--cursor", cursor])
-        return self.call(*command)
+            arguments.extend(["--cursor", cursor])
+        return self.call(*arguments)
 
     def read(self, identity, *, view="transcript", page_tokens=None):
-        arguments = ["read", identity, "--view", view]
+        arguments = ["--", identity, "read", "--view", view]
         if page_tokens is not None:
-            arguments.extend(["--page-tokens", str(page_tokens)])
+            arguments.extend(["--budget", str(page_tokens)])
         return self.call(*arguments)
 
     def follow_read(self, request):
-        """Execute a generated rows/read/attachment action, including a previous page.
+        """Execute one generated rows or attachment request on the daemon socket.
 
-        The request is passed as structured arguments; displayed commands are
-        never parsed. Omitted and explicit null deadlines/budgets stay distinct.
+        The structured request stays unchanged, including omitted and null
+        deadlines, budgets and step cursors. No displayed command is parsed.
         """
         request = _copy(request)
-        operation = request["operation"]
-        if operation not in {"rows", "read", "attachment"}:
-            raise ValueError(f"unsupported read follow-up operation: {operation}")
+        if request["operation"] not in {"rows", "attachment"}:
+            raise ValueError(f"unsupported read follow-up operation: {request['operation']}")
         unknown = request.keys() - {
             "operation", "arguments", "request_id", "deadline", "budget_tokens",
             "cursor", "fresh", "format",
         }
         if unknown:
             raise ValueError(f"unknown read follow-up fields: {sorted(unknown)}")
-        # These shared-envelope options are not offered by this product. They
-        # must not be discarded or reinterpreted as CLI output switches.
-        if request.get("fresh", False) or request.get("format", "text") != "text":
-            raise ValueError("unsupported read follow-up freshness or envelope format")
-        arguments = [operation, "--request", json.dumps(request["arguments"], ensure_ascii=False),
-                     "--request-id", request["request_id"]]
-        for field, flag in [("deadline", "--deadline"), ("budget_tokens", "--budget")]:
-            if field in request:
-                value = request[field]
-                arguments.extend([flag, "none" if value is None else str(value)])
-        if request.get("cursor") is not None:
-            arguments.extend(["--cursor", request["cursor"]])
-        return self.call(*arguments)
+        archive = self.archive
+        if archive is None:
+            archive = self.status().json()["value"]["archive"]
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.connect(os.path.join(archive, "daemon.sock"))
+            connection.sendall(json.dumps(request, ensure_ascii=False).encode("utf-8") + b"\n")
+            with connection.makefile("rb") as response:
+                line = response.readline()
+        if not line.endswith(b"\n"):
+            raise RuntimeError("Polylogue closed an incomplete answer")
+        answer = json.loads(line)
+        if _failure(answer) is not None:
+            raise Refused(answer, None)
+        if answer.get("outcome") not in {"ok", "empty", "degraded"}:
+            raise RuntimeError("Polylogue returned an invalid shared answer")
+        return Answer(answer)
 
     def changes(self, after=None):
         """Yield a finite feed. Save only the position on its completion line.

@@ -12,29 +12,55 @@ use tower::ServiceExt;
 /// Every read command all three surfaces offer, with the arguments it is
 /// asked with here.
 const ASKED: &[(&str, &[&str])] = &[
-    ("query", &["sessions"]),
-    ("query", &["messages where parser"]),
-    ("query", &["sessions where"]),
-    ("explain", &["syntax"]),
+    ("rows", &["sessions"]),
+    ("rows", &["messages where parser"]),
+    ("rows", &["sessions where"]),
     ("help", &["units"]),
     ("dev sql", &["SELECT id FROM v1_sessions ORDER BY id"]),
     ("dev schema infer", &[]),
     ("dev schema unread", &[]),
     ("list", &[]),
-    ("read", &["session:claude-code:s1"]),
-    ("read", &["session:claude-code:missing"]),
+    ("rows", &["session:claude-code:s1", "read"]),
+    ("rows", &["session:claude-code:missing", "read"]),
     ("attachment", &["claude-code:missing", "0"]),
-    ("read", &["assertion:missing"]),
-    ("continue", &["claude-code:s1"]),
-    ("brief", &["--cwd", "/synthetic", "--source", "startup"]),
-    ("takeover", &["claude-code:s1"]),
-    ("takeover", &["claude-code:missing"]),
-    ("recall", &["parser", "--cwd", "/synthetic"]),
+    ("rows", &["assertion:missing", "read"]),
+    ("rows", &["session:claude-code:s1", "resume"]),
+    ("rows", &["brief", "--cwd", "/synthetic"]),
+    ("rows", &["session:claude-code:s1", "brief"]),
+    ("rows", &["session:claude-code:missing", "brief"]),
+    ("rows", &["parser", "brief", "--cwd", "/synthetic"]),
     ("chat list", &[]),
     ("backfill list", &[]),
     ("timeline", &["--date", "2024-01-01"]),
     ("cost", &["--date", "2024-01-01"]),
 ];
+fn parse_line(argv: &[&str]) -> Result<(&'static Command, command_surface::ParsedCommand), String> {
+    let words = argv
+        .iter()
+        .skip(1)
+        .map(|word| (*word).to_owned())
+        .collect::<Vec<_>>();
+    let parsed = crate::cli::line::parse(
+        &words,
+        &crate::cli::line::FirstWordCatalog::default(),
+        false,
+    )
+    .map_err(|error| error.message)?;
+    if parsed.first == crate::cli::line::FirstWord::Command {
+        return crate::cli::parse(argv);
+    }
+    let row = command("rows").unwrap();
+    let request = crate::cli::run_line::request(&parsed).map_err(|error| error.message)?;
+    Ok((
+        row,
+        command_surface::ParsedCommand {
+            request,
+            kind: declarations().spec_named("rows").unwrap().kind.clone(),
+            json: parsed.line.json,
+            calling_process: Default::default(),
+        },
+    ))
+}
 
 /// Read commands left out, each with the reason.
 const LEFT_OUT: &[(&str, &str)] = &[(
@@ -50,12 +76,11 @@ type Answer = Result<Value, String>;
 type Exit = Option<u8>;
 
 fn cli_answer(w: &test_daemon::TestDaemon, argv: &[&str], request_id: &str) -> (Answer, Exit) {
-    let cwd = std::env::current_dir().unwrap();
-    let (c, _, arguments) = match crate::cli::request_arguments(argv, &cwd) {
+    let (c, values) = match parse_line(argv) {
         Ok(parsed) => parsed,
         Err(e) => return (Err(format!("bad_request: {e}")), None),
     };
-    let request = crate::client::request(c.name, Value::Object(arguments), request_id.into());
+    let request = crate::client::request(c.name, values.request.arguments, request_id.into());
     let answer = crate::client::call_ready(&w.daemon.archive, &request).unwrap();
     let exit = answer.exit_code();
     let shown = crate::protocol::into_value(answer).map_err(|error| {
@@ -121,7 +146,6 @@ fn http_answer(
     values: &command_surface::ParsedCommand,
     request_id: &str,
 ) -> (Answer, Exit) {
-    let mut pairs: Vec<String> = Vec::new();
     let names: Vec<&str> = crate::commands::declarations()
         .spec_named(c.name)
         .expect("declared row")
@@ -130,28 +154,6 @@ fn http_answer(
         .filter(|a| !a.calling_process)
         .map(|a| a.name.as_str())
         .collect();
-    for (name, value) in values
-        .request
-        .arguments
-        .as_object()
-        .unwrap()
-        .iter()
-        .filter(|(name, _)| names.contains(&name.as_str()))
-    {
-        let texts = match value {
-            Value::Array(items) => items
-                .iter()
-                .map(|item| {
-                    item.as_str()
-                        .map_or_else(|| item.to_string(), str::to_owned)
-                })
-                .collect(),
-            Value::String(text) => vec![text.clone()],
-            Value::Bool(false) | Value::Null => Vec::new(),
-            other => vec![other.to_string()],
-        };
-        pairs.extend(texts.iter().map(|t| format!("{name}={}", encoded(t))));
-    }
     let arguments: serde_json::Map<String, Value> = values
         .request
         .arguments
@@ -161,22 +163,39 @@ fn http_answer(
         .filter(|(name, _)| names.contains(&name.as_str()))
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
-    pairs = vec![
+    let arguments = Value::Object(arguments);
+    let access = c
+        .registration()
+        .unwrap()
+        .tool_access(&arguments, c)
+        .unwrap();
+    let pairs = [
         format!("operation={}", encoded(c.name)),
-        format!(
-            "arguments={}",
-            encoded(&Value::Object(arguments).to_string())
-        ),
+        format!("arguments={}", encoded(&arguments.to_string())),
         format!("request_id={}", encoded(request_id)),
     ];
     let uri = format!("/api/v1{}?{}", c.http_path(), pairs.join("&"));
-    let request = axum::http::Request::get(uri)
+    let (request, body) = if access > crate::commands::ToolAccess::Read {
+        let body =
+            serde_json::json!({"operation":c.name,"arguments":arguments,"request_id":request_id});
+        (
+            axum::http::Request::post(format!("/api/v1{}", c.http_path())).header(
+                axum::http::header::ORIGIN,
+                format!("http://127.0.0.1:{}", web.port),
+            ),
+            Body::from(body.to_string()),
+        )
+    } else {
+        (axum::http::Request::get(uri), Body::empty())
+    };
+    let request = request
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
         .header(axum::http::header::HOST, format!("127.0.0.1:{}", web.port))
         .header(
             axum::http::header::COOKIE,
             format!("polylogue_{}={}", web.key, web.token),
         )
-        .body(Body::empty())
+        .body(body)
         .unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -187,8 +206,15 @@ fn http_answer(
             .oneshot(request)
             .await
             .unwrap();
+        let status = response.status();
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        serde_json::from_slice(&bytes).unwrap()
+        serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+            panic!(
+                "{} HTTP {status} returned invalid JSON: {error}: {}",
+                c.name,
+                String::from_utf8_lossy(&bytes)
+            )
+        })
     });
     let answer: command_surface::Answer<Value> = serde_json::from_value(body).unwrap();
     let exit = answer.exit_code();
@@ -213,7 +239,8 @@ fn socket_authorship() -> Authorship {
 
 fn context_authorship_path(name: &str) -> Option<&'static str> {
     match name {
-        "query" | "list" => Some("/resolved/context/authorship"),
+        "list" => Some("/resolved/context/authorship"),
+        "rows" => Some("/reply/resolved/context/authorship"),
         "timeline" | "cost" => Some("/context/authorship"),
         _ => None,
     }
@@ -221,6 +248,9 @@ fn context_authorship_path(name: &str) -> Option<&'static str> {
 
 fn assert_transport_authorship(answer: &Answer, name: &str, expected: &Authorship) {
     if let (Ok(value), Some(path)) = (answer, context_authorship_path(name)) {
+        if name == "rows" && value["kind"] != "listing" {
+            return;
+        }
         assert_eq!(
             value.pointer(path).expect("operation context authorship"),
             &serde_json::to_value(expected).unwrap()
@@ -231,6 +261,9 @@ fn assert_transport_authorship(answer: &Answer, name: &str, expected: &Authorshi
 fn expected_transport_answer(baseline: &Answer, name: &str, authorship: &Authorship) -> Answer {
     let mut expected = baseline.clone();
     if let (Ok(value), Some(path)) = (&mut expected, context_authorship_path(name)) {
+        if name == "rows" && value["kind"] != "listing" {
+            return expected;
+        }
         *value
             .pointer_mut(path)
             .expect("operation context authorship") = serde_json::to_value(authorship).unwrap();
@@ -259,7 +292,7 @@ fn read_position(w: &test_daemon::TestDaemon) -> polylogue_model::ChangePosition
 
 fn assert_read_page(answer: &Answer, position: &polylogue_model::ChangePosition) {
     let value = answer.as_ref().expect("session read succeeds");
-    let page: polylogue_model::read::ReadPage = serde_json::from_value(value.clone()).unwrap();
+    let page = crate::test_answers::read(command_surface::Answer::ok(value.clone()));
     assert_eq!(
         &page.snapshot.read_at, position,
         "the page must report the independently observed position"
@@ -348,50 +381,121 @@ fn every_client_answers_the_same_request_identically() {
         let command = command(name).unwrap();
         let words = command.cli_words();
         let mut argv = vec!["polylogue"];
-        if command.cli != Cli::NoSubcommand {
+        if command.cli != Cli::Line {
             argv.extend(words.iter().map(String::as_str));
         }
         argv.extend(*args);
-        let (c, values) = crate::cli::parse(&argv).unwrap();
-        let cli_position = (*name == "read").then(|| read_position(&w));
+        let (c, values) = parse_line(&argv).unwrap();
+        let cli_position = (args.last() == Some(&"read")).then(|| read_position(&w));
         let (cli, cli_exit) = cli_answer(&w, &argv, &request_id);
-        let mcp_position = (*name == "read").then(|| read_position(&w));
+        let owned = c
+            .registration()
+            .unwrap()
+            .tool_access(&values.request.arguments, c)
+            .unwrap()
+            > crate::commands::ToolAccess::Read;
+        let stored = |id: &str| w.daemon.reads.reader().unwrap().user_request(id).unwrap();
+        let original =
+            owned.then(|| stored(&request_id).expect("the owned line retains its accepted intent"));
+        let mcp_position = (args.last() == Some(&"read")).then(|| read_position(&w));
         let mcp = mcp_answer(&w, c, &values, &request_id);
-        let http_position = (*name == "read").then(|| read_position(&w));
-        let (http, http_exit) = http_answer(&web, c, &values, &request_id);
+        if let Some(original) = &original {
+            assert_eq!(original.authorship, socket_author);
+            assert_eq!(
+                stored(&request_id).as_ref(),
+                Some(original),
+                "same-author replay preserves the exact accepted body"
+            );
+            let (same, exit) = cli_answer(&w, &argv, &request_id);
+            assert_eq!((&same, exit), (&cli, cli_exit));
+            assert_eq!(stored(&request_id).as_ref(), Some(original));
+        }
+        let http_position = (args.last() == Some(&"read")).then(|| read_position(&w));
+        let http_id = if owned {
+            let (refused, _) = http_answer(&web, c, &values, &request_id);
+            assert_eq!(
+                refused,
+                Err(format!(
+                    "conflict: request {request_id} was already used for different content"
+                )),
+                "a different author cannot take over an accepted request"
+            );
+            assert_eq!(stored(&request_id), original);
+            format!("{request_id}-web")
+        } else {
+            request_id.clone()
+        };
+        let (http, http_exit) = http_answer(&web, c, &values, &http_id);
+        if let Some(original) = &original {
+            let independent = stored(&http_id).expect("the web action owns its own request");
+            assert_eq!(independent.machine, original.machine);
+            assert_eq!(independent.authorship, web_author);
+            for (accepted, id) in [(original, &request_id), (&independent, &http_id)] {
+                let polylogue_model::user::UserWrite::ResolveLine { request, .. } = &accepted.write
+                else {
+                    panic!("the accepted line")
+                };
+                let request: command_surface::RunnableRequest =
+                    serde_json::from_value(request.clone()).unwrap();
+                assert_eq!(&request.request_id, id);
+                assert_eq!(
+                    serde_json::from_value::<crate::protocol::line::Rows>(request.arguments)
+                        .unwrap(),
+                    serde_json::from_value::<crate::protocol::line::Rows>(
+                        values.request.arguments.clone()
+                    )
+                    .unwrap(),
+                    "each channel accepted the same semantic line"
+                );
+            }
+            let (again, exit) = http_answer(&web, c, &values, &http_id);
+            assert_eq!((&again, exit), (&http, http_exit));
+            assert_eq!(stored(&http_id).as_ref(), Some(&independent));
+        }
         if cli_exit.is_some() {
             assert_eq!(
                 cli_exit,
                 http_exit,
-                "`{}`: the command line and HTTP name different outcomes",
+                "`{}`: the command line and HTTP name different outcomes; CLI: {cli:?}; HTTP: {http:?}",
                 argv.join(" ")
             );
         }
         assert_transport_authorship(&cli, name, &socket_author);
         assert_transport_authorship(&mcp, name, &socket_author);
         assert_transport_authorship(&http, name, &web_author);
-        if *name == "read" && args.first() == Some(&"session:claude-code:s1") {
+        if args.last() == Some(&"read") && args.first() == Some(&"session:claude-code:s1") {
             assert_read_page(&cli, cli_position.as_ref().unwrap());
             assert_read_page(&mcp, mcp_position.as_ref().unwrap());
             assert_read_page(&http, http_position.as_ref().unwrap());
             // Keep the complete raw answer. Only its expected per-invocation
             // descriptor differs, and that value was observed outside the answer.
             let mut expected = cli.as_ref().unwrap().clone();
-            expected["snapshot"]["read_at"] = serde_json::to_value(mcp_position.unwrap()).unwrap();
+            expected["reply"]["steps"][0]["outcome"]["reply"]["reply"]["snapshot"]["read_at"] =
+                serde_json::to_value(mcp_position.unwrap()).unwrap();
             assert_eq!(Ok(expected.clone()), mcp, "whole MCP read answer");
-            expected["snapshot"]["read_at"] = serde_json::to_value(http_position.unwrap()).unwrap();
+            expected["reply"]["steps"][0]["outcome"]["reply"]["reply"]["snapshot"]["read_at"] =
+                serde_json::to_value(http_position.unwrap()).unwrap();
             assert_eq!(Ok(expected), http, "whole HTTP read answer");
             continue;
         }
-        if matches!(*name, "brief" | "takeover" | "recall")
+        if args.contains(&"brief")
             && let Ok(value) = &cli
         {
             // Session's protocol handler runs in this test process. The
             // daemon observes that socket peer as CLI, so it does not record
             // a model delivery. The MCP process control is in e2e.
-            assert_eq!(value["delivery"], Value::Null);
-            assert_eq!(http.as_ref().unwrap()["delivery"], Value::Null);
-            assert_eq!(mcp.as_ref().unwrap()["delivery"], Value::Null);
+            assert_eq!(
+                value["reply"]["steps"][0]["outcome"]["reply"]["reply"]["delivery"],
+                Value::Null
+            );
+            assert_eq!(
+                http.as_ref().unwrap()["reply"]["steps"][0]["outcome"]["reply"]["reply"]["delivery"],
+                Value::Null
+            );
+            assert_eq!(
+                mcp.as_ref().unwrap()["reply"]["steps"][0]["outcome"]["reply"]["reply"]["delivery"],
+                Value::Null
+            );
         }
         assert_eq!(
             cli,
@@ -399,8 +503,17 @@ fn every_client_answers_the_same_request_identically() {
             "`{}`: the command line and MCP differ",
             argv.join(" ")
         );
+        let mut expected_http = expected_transport_answer(&cli, name, &web_author);
+        if owned {
+            let value = expected_http.as_mut().expect("the independent resume plan");
+            assert_eq!(
+                value["reply"]["steps"][0]["request_id"],
+                format!("{request_id}-1")
+            );
+            value["reply"]["steps"][0]["request_id"] = serde_json::json!(format!("{http_id}-1"));
+        }
         assert_eq!(
-            expected_transport_answer(&cli, name, &web_author),
+            expected_http,
             http,
             "`{}`: the command line and HTTP differ",
             argv.join(" ")

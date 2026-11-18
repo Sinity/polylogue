@@ -1,6 +1,6 @@
 use crate::test_daemon;
-use command_surface::{Outcome, Suggestion};
-use polylogue_model::read::{ReadPage, View};
+use command_surface::Suggestion;
+use polylogue_model::read::View;
 
 fn replace(daemon: &test_daemon::TestDaemon, source: String) {
     let status = test_daemon::Call::new("status", serde_json::json!({})).answer(&daemon.daemon);
@@ -45,11 +45,11 @@ fn stale_cursor_failures_suggest_rerun() {
             );
         }
         let response = test_daemon::Call::new(
-            "read",
-            serde_json::json!({"target": target, "view": view, "page_tokens": 1}),
+            "rows",
+            serde_json::json!({"selection": target, "steps":[{"verb":"read", "view": view, "budget":1}]}),
         )
         .answer(&daemon.daemon);
-        let page: ReadPage = serde_json::from_value(response.value().expect(case).clone()).unwrap();
+        let page = crate::test_answers::read(response);
         let cursor = page.document.footer.next.expect(case).request;
         match case {
             "rewritten session" => replace(
@@ -64,9 +64,7 @@ fn stale_cursor_failures_suggest_rerun() {
             _ => unreachable!(),
         }
         let response = test_daemon::Call::from_request(&cursor).answer(&daemon.daemon);
-        let Outcome::Error(failure) = &response.outcome else {
-            panic!("{case}: {response:?}")
-        };
+        let failure = crate::test_answers::refusal(response);
         assert_eq!(
             failure.code.as_deref(),
             Some("stale_cursor"),
@@ -78,7 +76,7 @@ fn stale_cursor_failures_suggest_rerun() {
             format!(" --view {view}")
         };
         let command = format!(
-            "; run `polylogue read {}{view_option}` again to start over",
+            "; run `polylogue {} read{view_option}` again to start over",
             polylogue_render::shell_quote(target)
         );
         assert!(failure.message.ends_with(&command), "{case}: {failure:?}");
@@ -86,13 +84,22 @@ fn stale_cursor_failures_suggest_rerun() {
             panic!("{case}: {failure:?}")
         };
         assert_eq!(repeated.operation, cursor.operation, "{case}");
-        assert_eq!(repeated.arguments, cursor.arguments, "{case}");
+        let mut expected: crate::protocol::line::Rows =
+            serde_json::from_value(cursor.arguments.clone()).unwrap();
+        expected.references.clear();
+        expected.selection = Some(target.into());
+        let crate::protocol::line::Step::Read(step) = &mut expected.steps[0] else {
+            panic!("one read")
+        };
+        step.cursor = None;
+        let actual: crate::protocol::line::Rows =
+            serde_json::from_value(repeated.arguments.clone()).unwrap();
+        assert_eq!(actual, expected, "{case}");
         assert_eq!(repeated.cursor, None, "{case}");
         let restarted = test_daemon::Call::from_request(repeated).answer(&daemon.daemon);
         assert!(restarted.value().is_some(), "{case}: {restarted:?}");
         if case == "removed row" {
-            let restarted: ReadPage =
-                serde_json::from_value(restarted.value().unwrap().clone()).unwrap();
+            let restarted = crate::test_answers::read(restarted);
             assert_eq!(restarted.document.items, []);
         }
     }

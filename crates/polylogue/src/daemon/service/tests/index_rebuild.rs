@@ -37,9 +37,11 @@ fn a_daemon_over_an_index_from_another_format_rebuilds_it_and_serves() {
         .collect();
     assert_eq!(left, Vec::<String>::new());
     let found = crate::test_answers::ok(
-        test_daemon::Call::new("query", serde_json::json!({"query": "sessions"})).answer(&d.daemon),
+        test_daemon::Call::new("rows", serde_json::json!({"selection": "sessions"}))
+            .answer(&d.daemon),
     );
-    assert_eq!(found["count"], 1, "{found}");
+    assert_eq!(found["kind"], "listing", "{found}");
+    assert_eq!(found["reply"]["count"], 1, "{found}");
     let tables: Vec<String> = rusqlite::Connection::open(&index)
         .unwrap()
         .prepare("SELECT name FROM sqlite_master WHERE name = 'synthetic_older'")

@@ -233,7 +233,7 @@ impl From<polylogue_model::user::UserRequest> for UserSubmission {
 enum UserMsg {
     Request(
         Box<UserSubmission>,
-        SyncSender<Result<polylogue_model::user::UserOutcome>>,
+        SyncSender<Result<crate::user_writes::UserReceipt>>,
     ),
     QueryObject(
         Box<polylogue_model::query_objects::QueryObject>,
@@ -581,7 +581,7 @@ impl Writer {
 /// Where [`WriterSender::try_enqueue_user`] left a request.
 pub enum Queued {
     /// In the queue; the receiver gets its outcome once committed.
-    Committing(Receiver<Result<polylogue_model::user::UserOutcome>>),
+    Committing(Receiver<Result<crate::user_writes::UserReceipt>>),
     /// The queue was full: the complete submission, handed back.
     Full(Box<UserSubmission>),
 }
@@ -714,6 +714,14 @@ impl WriterSender {
         &self,
         submission: impl Into<UserSubmission>,
     ) -> Result<polylogue_model::user::UserOutcome> {
+        self.user_receipt(submission).map(|receipt| receipt.outcome)
+    }
+
+    /// Return the accepting transaction's exact resolved part outcomes too.
+    pub fn user_receipt(
+        &self,
+        submission: impl Into<UserSubmission>,
+    ) -> Result<crate::user_writes::UserReceipt> {
         let (reply, wait) = sync_channel(1);
         self.0
             .send_user(UserMsg::Request(Box::new(submission.into()), reply))
@@ -1660,7 +1668,7 @@ impl Inner {
         request: &polylogue_model::user::UserRequest,
         scope: Option<&crate::ReadScopeToken>,
         preparation: Option<&crate::user_writes::PreparationContext>,
-    ) -> Result<polylogue_model::user::UserOutcome> {
+    ) -> Result<crate::user_writes::UserReceipt> {
         scoped::require_current(&self.location, scope)?;
         let prepared_scope = self.preflight_saved(request, preparation, scope)?;
         let scope = scope.or(prepared_scope.as_ref());

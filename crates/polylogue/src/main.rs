@@ -151,29 +151,21 @@ fn run() -> ExitCode {
         })
         .complete();
     }
-    let mut matches = match cli::command().try_get_matches_from(arguments.clone()) {
-        Ok(matches) => matches,
-        Err(error) => {
-            client_pipe_signal();
-            if hook {
-                return hook_startup_error(error);
-            }
-            return cli::parse_error(error, process.output);
-        }
+    let (overrides, words) = match cli::run_line::deployment_arguments(&arguments[1..]) {
+        Ok(arguments) => arguments,
+        Err(error) => return startup_error(hook, error, process.output),
     };
-    let native = native_host(&matches);
-    if !daemon_command(&matches) {
-        client_pipe_signal();
-    }
-    if let Some(result) = cli::run_local(&matches, process.output) {
-        return result;
-    }
-    let overrides = config::Overrides::from_matches(&matches);
-    if !native
-        && arguments
-            .iter()
-            .any(|value| value.to_str().is_some_and(|value| value.contains('@')))
+    let native = cli::run_line::native_host(&words);
+    let empty_catalog = cli::line::FirstWordCatalog::default();
+    let preliminary = cli::line::parse(&words, &empty_catalog, cli::run_line::terminal());
+    let catalog = if preliminary
+        .as_ref()
+        .is_ok_and(|parsed| parsed.first == cli::line::FirstWord::Command)
+        || words.as_slice() == ["--version"]
+        || native
     {
+        empty_catalog
+    } else {
         let paths = match config::Paths::resolve(&process.environment) {
             Ok(paths) => paths,
             Err(error) => return startup_error(hook, error, process.output),
@@ -182,21 +174,66 @@ fn run() -> ExitCode {
             Ok(archive) => archive,
             Err(error) => return startup_error(hook, error, process.output),
         };
-        let text = arguments
-            .iter()
-            .map(|value| value.to_str().map(str::to_owned))
-            .collect::<Option<Vec<_>>>();
-        if let Some(text) = text {
-            matches = match row_numbers::rewrite_args(&paths, text, &archive) {
-                Ok(arguments) => match cli::command().try_get_matches_from(arguments) {
-                    Ok(matches) => matches,
-                    Err(error) if hook => return hook_startup_error(error),
-                    Err(error) => return cli::parse_error(error, process.output),
-                },
-                Err(error) => return startup_error(hook, error, process.output),
-            };
+        cli::line::FirstWordCatalog::load(&paths, &archive)
+    };
+    let parsed = match cli::line::parse(&words, &catalog, cli::run_line::terminal()) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            client_pipe_signal();
+            let mut failure = crate::protocol::failure(error.code, error.message);
+            failure.hint = error.try_line.map(|line| format!("try: {line}"));
+            if !error.candidates.is_empty() {
+                failure
+                    .hint
+                    .get_or_insert_default()
+                    .push_str(&format!("\n{}", error.candidates.join("\n")));
+            }
+            return cli::fail_with(
+                process.output,
+                words.iter().any(|word| word == "--json"),
+                &failure,
+                &[],
+            );
         }
-    }
+    };
+    let command =
+        parsed.first == cli::line::FirstWord::Command || words.as_slice() == ["--version"];
+    let matches = if command {
+        let mut command_words = words.clone();
+        if matches!(
+            command_words.first().map(String::as_str),
+            Some("--help" | "-h")
+        ) {
+            command_words[0] = "help".into();
+        }
+        if command_words.first().is_some_and(|word| word == "help")
+            && cli::run_line::help(&command_words[1..])
+        {
+            return ExitCode::SUCCESS;
+        }
+        let mut argv = vec!["polylogue".to_owned()];
+        argv.extend(command_words);
+        let matches = match cli::command().try_get_matches_from(argv) {
+            Ok(matches) => matches,
+            Err(error) => {
+                client_pipe_signal();
+                if hook {
+                    return hook_startup_error(error);
+                }
+                return cli::parse_error(error, process.output);
+            }
+        };
+        if !daemon_command(&matches) {
+            client_pipe_signal();
+        }
+        if let Some(result) = cli::run_local(&matches, process.output) {
+            return result;
+        }
+        Some(matches)
+    } else {
+        client_pipe_signal();
+        None
+    };
     let mut startup = match config::Startup::load(&process, overrides) {
         Ok(startup) => startup,
         Err(error) => return startup_error(hook, error, process.output),
@@ -212,13 +249,19 @@ fn run() -> ExitCode {
     let Some(cwd) = process.cwd.as_deref() else {
         return startup_error(hook, "the working directory is unavailable", process.output);
     };
-    if cli::needs_engine(&matches, &startup.mode) {
+    if matches
+        .as_ref()
+        .is_some_and(|matches| cli::needs_engine(matches, &startup.mode))
+    {
         startup.stopped_attempt = match executable_attempt() {
             Ok(attempt) => Some(attempt),
             Err(error) => return startup_error(hook, error, process.output),
         };
     }
-    cli::run(&matches, &startup, cwd)
+    match matches {
+        Some(matches) => cli::run(&matches, &startup, cwd),
+        None => cli::run_line::run(parsed, &startup, cwd),
+    }
 }
 
 /// The process boundary captures the running image, rather than a build label.
@@ -249,19 +292,6 @@ fn attempt_from_executable(
 fn daemon_command(matches: &clap::ArgMatches) -> bool {
     matches!(matches.subcommand_name(), Some("daemon"))
         || matches!(matches.subcommand(), Some(("internal", internal)) if internal.subcommand_name() == Some("host"))
-}
-
-fn native_host(matches: &clap::ArgMatches) -> bool {
-    if matches.subcommand().is_some() {
-        return false;
-    }
-    let Some(mut query) = matches.get_many::<String>("query") else {
-        return false;
-    };
-    query
-        .next()
-        .is_some_and(|word| word.starts_with("chrome-extension://"))
-        && query.next().is_none()
 }
 
 fn client_pipe_signal() {
