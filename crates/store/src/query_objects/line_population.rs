@@ -252,6 +252,7 @@ pub fn convert_preserved(
         }
     }
     if target == OutputKind::Register {
+        tx.execute_batch(crate::schema::ARCHIVE_RESULT_INDEX)?;
         tx.pragma_update(None, "user_version", crate::schema::ARCHIVE_VERSION)?;
     }
     tx.commit()?;

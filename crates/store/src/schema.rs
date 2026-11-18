@@ -13,6 +13,8 @@ use std::collections::HashSet;
 pub const ARCHIVE: &str = concat!(
     include_str!("schema/archive.sql"),
     "\n",
+    include_str!("schema/archive_result_index.sql"),
+    "\n",
     include_str!("schema/client_requests.sql"),
     "\n",
     include_str!("schema/assertions.sql"),
@@ -25,6 +27,7 @@ pub const ARCHIVE: &str = concat!(
     "\n",
     include_str!("schema/signals.sql")
 );
+pub(crate) const ARCHIVE_RESULT_INDEX: &str = include_str!("schema/archive_result_index.sql");
 pub const INDEX: &str = concat!(
     include_str!("schema/index.sql"),
     "\n",
