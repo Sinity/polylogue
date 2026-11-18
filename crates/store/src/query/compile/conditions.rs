@@ -510,11 +510,18 @@ impl<'a> Compiler<'a> {
                 template => scope.a.expand(template),
             }
         };
-        // Resolve the reference to session keys once, so the row's own
-        // session key is matched through its index.
+        // Resolve the reference once, so the row's own session key can use its index.
         let resolved = self.session_reference("rs.id", "id", id);
+        // One resolved session has at most one non-null key. For tool calls,
+        // IS preserves a miss as false and lets SQLite prefer the session
+        // index over the action index, whose common actions span the archive.
+        let comparison = if scope.unit == Unit::ToolCalls {
+            "IS"
+        } else {
+            "IN"
+        };
         Ok(format!(
-            "{key} IN (SELECT rs.pk FROM session rs WHERE {resolved})"
+            "{key} {comparison} (SELECT rs.pk FROM session rs WHERE {resolved})"
         ))
     }
 
