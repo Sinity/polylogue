@@ -1049,7 +1049,16 @@ impl<'a> MembershipState<'a> {
             let merged = Arc::new(MessageValue::from(match previous_value {
                 Some(previous) => {
                     let MessageValue { message, prepared } = Arc::unwrap_or_clone(previous);
-                    merge_message((message, prepared), incoming)?
+                    let merged = merge_message((message, prepared), incoming)?;
+                    // The step already packed its own text. A merge can add an older block.
+                    step.prepared.texts.add(
+                        merged
+                            .0
+                            .blocks
+                            .iter()
+                            .filter_map(crate::encoding::block_text),
+                    )?;
+                    merged
                 }
                 None => incoming,
             }));
@@ -1063,14 +1072,6 @@ impl<'a> MembershipState<'a> {
                     .is_some_and(|previous| previous.replace);
             self.message_layouts
                 .insert(prepared.hash.to_vec(), Some(layout));
-            // A merged value can bring texts its step did not parse.
-            step.prepared.texts.add(
-                merged
-                    .message
-                    .blocks
-                    .iter()
-                    .filter_map(crate::encoding::block_text),
-            )?;
             choices.message_versions.insert(
                 BlobHash(prepared.hash),
                 MessageVersion {
