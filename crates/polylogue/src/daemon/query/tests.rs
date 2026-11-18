@@ -542,20 +542,20 @@ fn session_queries_follow_the_morrow_examples() {
     // 2: naming kind drops the default.
     assert_eq!(ids(&q(&w, "origin:claude-code kind:subagent")), ["#3"]);
     // 5: repo by name matches name, owner/name and URL.
-    assert_eq!(ids(&q(&w, "repo:morrow")), ["#6", "#5"]);
+    assert_eq!(ids(&q(&w, "repo:morrow")), ["#5"]);
     // 8: unknown cost never matches a comparison.
     let v = q(&w, "sessions where cost > 1");
     assert_eq!(ids(&v), ["#4", "#2", "#1"]);
     assert_eq!(v["rows"][1]["cost"], 2.85);
     // 9: cost:unknown.
-    assert_eq!(ids(&q(&w, "cost:unknown")), ["#8", "#6", "#5", "#7"]);
+    assert_eq!(ids(&q(&w, "cost:unknown")), ["#8", "#5", "#7"]);
     // 11: own messages only.
     let v = q(&w, "sessions where messages >= 6");
     assert_eq!(ids(&v), ["#1"]);
     // 12.
     assert_eq!(ids(&q(&w, "sessions where tool_calls > 2")), ["#2", "#1"]);
     // 26: since a date.
-    assert_eq!(ids(&q(&w, "since:2026-10-05")), ["#8", "#6", "#5"]);
+    assert_eq!(ids(&q(&w, "since:2026-10-05")), ["#8", "#5"]);
     // 27: whole logical days, inclusive.
     assert_eq!(
         ids(&q(&w, "started between 2026-10-02 and 2026-10-03")),
@@ -564,7 +564,7 @@ fn session_queries_follow_the_morrow_examples() {
     // 28.
     assert_eq!(ids(&q(&w, "has:compaction")), ["#4"]);
     // 29: only the subagent used the model.
-    assert_eq!(q(&w, "model:claude-opus-5-5")["outcome"], "empty");
+    assert_eq!(ids(&q(&w, "model:claude-opus-5-5")), ["#2"]);
     assert_eq!(ids(&q(&w, "model:claude-opus-5-5 kind:*")), ["#3"]);
     // 30.
     assert_eq!(ids(&q(&w, "origin:(chatgpt|claude-ai)")), ["#8", "#7"]);
@@ -590,17 +590,14 @@ fn aggregates_count_unknowns_apart() {
         groups(&v, "origin"),
         [
             ("claude-code".into(), 3),
-            ("codex".into(), 2),
             ("chatgpt".into(), 1),
-            ("claude-ai".into(), 1)
+            ("claude-ai".into(), 1),
+            ("codex".into(), 1)
         ]
     );
     // After grouping, `| where` filters groups.
     let v = q(&w, "sessions | group by origin | count | where count >= 2");
-    assert_eq!(
-        groups(&v, "origin"),
-        [("claude-code".into(), 3), ("codex".into(), 2)]
-    );
+    assert_eq!(groups(&v, "origin"), [("claude-code".into(), 3)]);
 }
 
 #[test]
@@ -1080,7 +1077,7 @@ fn why_names_default_kind() {
         .find(|w| w["clause"].as_str().unwrap().contains("kind:"))
         .expect("the main-session default is named");
     assert!(main["clause"].as_str().unwrap().contains("id:"), "{main}");
-    assert_eq!(main["matches"], 7);
+    assert_eq!(main["matches"], 6);
     assert_eq!(main["of"], 8);
 }
 
@@ -1112,19 +1109,19 @@ fn an_empty_result_explains_itself() {
     assert_same_question(clauses[0]["clause"].as_str().unwrap(), "repo:other");
     assert_eq!(clauses[0]["matches"], 0);
     assert_eq!(clauses[0]["of"], 8);
-    // The defaults come first and name what they hid: the main-session
-    // default keeps 7 of the 8 sessions (subagent #3 is out).
+    // The defaults name the six logical roots of eight physical sessions:
+    // #3 folds into #2, and fork #6 folds into #5.
     assert!(why[0]["clause"].as_str().unwrap().starts_with("default"));
     let main = defaults
         .iter()
         .find(|w| w["clause"].as_str().unwrap().contains("kind:"))
         .expect("the main-session default is named");
-    assert_eq!(main["matches"], 7);
+    assert_eq!(main["matches"], 6);
     assert_eq!(main["of"], 8);
     // 33: semantic search is not enabled.
     let v = q(&w, "similar:\"ambiguous date formats\"");
     assert_eq!(v["outcome"], "incomplete");
-    assert_eq!(v["count"], 7);
+    assert_eq!(v["count"], 6);
 }
 
 /// Similarities for `similar:` computed from stored vectors: the texts of the
@@ -1185,7 +1182,7 @@ fn near_ranks_every_row_by_similarity() {
     assert_eq!(v["outcome"], "rows", "{v}");
     assert_eq!(v["ranked"], true);
     // Ranking keeps every row; the nearest comes first.
-    assert_eq!(v["count"], 7);
+    assert_eq!(v["count"], 6);
     assert_eq!(ids(&v)[0], "#2");
 }
 
@@ -1196,11 +1193,11 @@ fn near_applies_its_conditions_before_ranking() {
     // excludes #2 still ranks what it keeps instead of finding nothing.
     let s = similarity(&w, "%0002-4000%");
     let near = |_: &str| Ok(std::sync::Arc::clone(&s));
-    let mut a = ask("similar:x -id:claude-code:7f3a2c10-0002");
+    let mut a = ask("physical:true similar:x -id:claude-code:7f3a2c10-0002");
     a.embeddings = true;
     a.near = Some(&near);
     let v = run_q(&w, a).unwrap();
-    assert_eq!(v["count"], 6, "{v}");
+    assert_eq!(v["count"], 7, "{v}");
     assert!(!ids(&v).contains(&"#2".to_owned()));
     assert!(
         v["rows"]

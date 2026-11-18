@@ -18,7 +18,7 @@ fn error(w: &TestArchive, text: &str) -> Failure {
 fn set_stages_select_what_their_conditions_would() {
     let w = morrow();
     let union = q(&w, "origin:claude-code | union (origin:codex)");
-    assert_eq!(ids(&union), ["#1", "#2", "#4", "#5", "#6"]);
+    assert_eq!(ids(&union), ["#1", "#2", "#4", "#5"]);
     assert_eq!(
         ids(&union),
         ids(&q(&w, "origin:(claude-code|codex) | sort by id"))
@@ -56,12 +56,12 @@ fn set_stages_select_what_their_conditions_would() {
             &w,
             "origin:codex | union (model:claude-opus-5-5 kind:*)"
         )),
-        ["#3", "#5", "#6"]
+        ["#3", "#5"]
     );
     // Later stages see the combined rows.
     assert_eq!(
         q(&w, "origin:claude-code | union (origin:codex) | count")["rows"][0]["count"],
-        5
+        4
     );
 }
 
