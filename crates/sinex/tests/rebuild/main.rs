@@ -883,12 +883,30 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
         .unwrap();
     let id = selected["id"].as_str().unwrap();
     let target = format!("sinex:ev/{id}");
-    let archived = real_sinex::request(
+    let archived = real_sinex::request_at(
         &running.socket,
         "agent",
-        serde_json::json!({"method":"archive", "target":target}),
+        "/v1/rows",
+        serde_json::json!({
+            "operation":"rows", "request_id":sinex_model::OperationId::new(),
+            "deadline":null,
+            "arguments":{"selection":target,"steps":[{"verb":"archive"}]}
+        }),
     );
     assert_eq!(archived["outcome"], "ok", "{archived}");
+    assert_eq!(
+        archived["value"]["steps"][0]["outcome"]["status"], "done",
+        "{archived}"
+    );
+    assert_eq!(
+        archived["value"]["steps"][0]["outcome"]["reply"]["kind"], "written",
+        "{archived}"
+    );
+    assert_eq!(
+        archived["value"]["steps"][0]["outcome"]["reply"]["reply"]["cascade"]["archived"]["polylogue.message"],
+        1,
+        "{archived}"
+    );
     let remaining: Vec<_> = expected_messages
         .iter()
         .filter(|message| message.id.to_string() != "claude-code:assistant-1")
@@ -904,12 +922,30 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
             .unwrap(),
         remaining
     );
-    let restored = real_sinex::request(
+    let restored = real_sinex::request_at(
         &running.socket,
         "agent",
-        serde_json::json!({"method":"restore", "target":target}),
+        "/v1/rows",
+        serde_json::json!({
+            "operation":"rows", "request_id":sinex_model::OperationId::new(),
+            "deadline":null,
+            "arguments":{"selection":target,"steps":[{"verb":"restore"}]}
+        }),
     );
     assert_eq!(restored["outcome"], "ok", "{restored}");
+    assert_eq!(
+        restored["value"]["steps"][0]["outcome"]["status"], "done",
+        "{restored}"
+    );
+    assert_eq!(
+        restored["value"]["steps"][0]["outcome"]["reply"]["kind"], "written",
+        "{restored}"
+    );
+    assert_eq!(
+        restored["value"]["steps"][0]["outcome"]["reply"]["reply"]["cascade"]["restored"]["polylogue.message"],
+        1,
+        "{restored}"
+    );
     let restored = build("restore AI reading", &empty, &expected_messages);
     assert_eq!(
         polylogue_testkit::session_bundle(

@@ -186,12 +186,21 @@ fn binary() -> String {
 // Sinex backup also latches the daemon telemetry generation. Its finite
 // natural seal may take 300 seconds; use the real Sinex fixture's 600-second budget.
 pub fn request(socket: &Path, role: &str, body: serde_json::Value) -> serde_json::Value {
+    request_at(socket, role, "/v1", body)
+}
+
+pub fn request_at(
+    socket: &Path,
+    role: &str,
+    route: &str,
+    body: serde_json::Value,
+) -> serde_json::Value {
     let body = body.to_string();
     let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(600)))
         .unwrap();
-    write!(stream,"POST /v1 HTTP/1.1\r\nHost: sinexd\r\nContent-Type: application/json\r\nAuthorization: Bearer {role}-rebuild-token\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+    write!(stream,"POST {route} HTTP/1.1\r\nHost: sinexd\r\nContent-Type: application/json\r\nAuthorization: Bearer {role}-rebuild-token\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
     let mut reply = Vec::new();
     stream.read_to_end(&mut reply).unwrap();
     let split = reply
