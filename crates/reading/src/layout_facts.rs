@@ -16,17 +16,7 @@ pub(super) fn annotations(
         // Both visitors select current revisions before loading their bodies.
         if let Some(assertion) = reader.assertion(&revision)? {
             let fact = assertion.fact;
-            use polylogue_model::assertion::AssertionKind;
-            if fact.valid_until.is_none_or(|until| until > at)
-                && !matches!(
-                    fact.kind,
-                    AssertionKind::Seen
-                        | AssertionKind::Withdrawal
-                        | AssertionKind::SavedQuery
-                        | AssertionKind::Signal
-                        | AssertionKind::Setting
-                )
-            {
+            if fact.valid_until.is_none_or(|until| until > at) {
                 annotations.push(Annotation {
                     reference: polylogue_model::Reference::Assertion(revision).to_string(),
                     key: fact.key,

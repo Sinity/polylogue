@@ -124,10 +124,7 @@ fn message_annotations_include_original_spans_once_and_keep_current_user_facts()
             key: Some(message.into()),
             value: Some(json!({"position":{"item":null,"at":at.to_string()}})),
             valid_until: None,
-            links: vec![NewAssertionLink {
-                role: LinkRole::About,
-                reference: Reference::parse(message).unwrap(),
-            }],
+            links: vec![],
         },
     );
     let page = read(&d.daemon, message, false);
