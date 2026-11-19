@@ -23,6 +23,8 @@ use std::thread::ThreadId;
 
 pub mod limit;
 pub mod scope;
+#[cfg(test)]
+pub(crate) mod search_budget_diagnostic;
 
 pub mod authored_read;
 mod object;
@@ -172,6 +174,8 @@ pub struct Reader<'a> {
     state: std::cell::Cell<ReadState>,
     holder: ThreadId,
     limit: Option<limit::ReadLimit>,
+    #[cfg(test)]
+    pub(crate) diagnostic_budget: Arc<search_budget_diagnostic::WorkBudget>,
     scope: scope::ReadScopeToken,
     // Counting holders by ThreadId detects self-exhaustion only if live readers stay
     // on their checkout thread. The marker makes that invariant enforceable.
@@ -506,6 +510,8 @@ impl ReadPool {
             state: std::cell::Cell::new(ReadState::Deferred),
             holder,
             limit,
+            #[cfg(test)]
+            diagnostic_budget: Arc::default(),
             scope,
             thread_bound: std::marker::PhantomData,
             vectors: std::cell::RefCell::new(None),
@@ -542,12 +548,19 @@ impl ReadPool {
             limit.install(&conn)?;
         }
         let (scope, stop, limit) = (reader.scope.clone(), stop.clone(), reader.limit.clone());
+        #[cfg(test)]
+        let diagnostic_budget = reader.diagnostic_budget.clone();
         crate::cancellation::interrupt_on(&conn, move || {
+            #[cfg(test)]
+            diagnostic_budget.before_checks();
             stop.check()?;
             scope.check()?;
             limit
                 .as_ref()
-                .map_or(Ok(()), limit::ReadLimit::count_and_check)
+                .map_or(Ok(()), limit::ReadLimit::count_and_check)?;
+            #[cfg(test)]
+            diagnostic_budget.tick()?;
+            Ok(())
         })?;
         reader.check()?;
         crate::sql_functions::register_calendar(&conn, &reader.calendar)?;

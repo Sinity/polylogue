@@ -98,6 +98,8 @@ impl Compiler<'_> {
             .filter(|_| selection.unit == scope.unit)
             .and_then(|filter| without_terms(filter, &build.spans));
         let explicit = filter.as_ref().is_some_and(supplied);
+        #[cfg(test)]
+        let explicit = explicit || super::DIAGNOSTIC_SUPPLIED.with(std::cell::Cell::get);
         if !explicit && recent_order.is_none() {
             return Ok(None);
         }

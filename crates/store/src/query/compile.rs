@@ -670,3 +670,8 @@ fn parse_random_seed(operand: &Expression) -> Result<Option<u64>, QueryError> {
         })
         .transpose()
 }
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static DIAGNOSTIC_SUPPLIED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
