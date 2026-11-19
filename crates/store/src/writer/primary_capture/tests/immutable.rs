@@ -21,7 +21,7 @@ fn imported(archive: &Archive, bytes: &[u8]) -> PreparedBatch {
             end: bytes.len() as u64,
         },
         hash,
-        observed_at: "2026-01-01T00:00:00Z".parse().unwrap(),
+        observed_at: polylogue_model::Timestamp::parse_rfc3339("2026-01-01T00:00:00Z").unwrap(),
         generation: None,
         raw_total: None,
         raw_predecessor: None,
@@ -145,6 +145,22 @@ fn completed_imports_keep_their_receipt_when_repeated_or_mixed_with_new_members(
         store(vec![wrong_format]).remove(0),
         Err(StoreError::Conflict(_))
     ));
+    let mut other_receiver = imported(&archive, bytes);
+    other_receiver.batch.observation.as_mut().unwrap().machine = "second-machine".into();
+    other_receiver
+        .batch
+        .acquisition
+        .as_mut()
+        .unwrap()
+        .source
+        .machine = "second-machine".into();
+    assert!(
+        matches!(
+            store(vec![other_receiver]).remove(0),
+            Err(StoreError::PrimaryPending { .. })
+        ),
+        "a different receiver must still capture its own acquisition"
+    );
     let index = crate::archive::open_read(&archive.index_db()).unwrap();
     assert_eq!(
         index

@@ -35,6 +35,12 @@ impl Inner {
         let Some(revision) = latest(&self.index, &batch.input.id)? else {
             return Ok(None);
         };
+        if !self.index.scalar::<bool>(
+            "SELECT EXISTS(SELECT 1 FROM source_observation WHERE input=?1 AND machine=?2 AND class='imported')",
+            params![batch.input.id, read.source.machine],
+        )? {
+            return Ok(None);
+        }
         let format: String = self.index.query_row(
             "SELECT format FROM source_input WHERE id=?1",
             [&batch.input.id],
