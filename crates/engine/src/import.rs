@@ -483,7 +483,7 @@ impl Engine {
             .input_progress(&input.id)?
             .ok_or_else(|| std::io::Error::other("a stored import has no revision"))?;
         let version = origin.reading_version();
-        let reading = reader.parser_checkpoint(&input.id, stored.chain, &version)?;
+        let reading = reader.parser_progress(&input.id, stored.chain)?;
         // An import does not grow, so a reading that waits on its last
         // record is unfinished and is read again; a recorded stop at its
         // length stays final for the same program.
@@ -500,6 +500,7 @@ impl Engine {
         {
             return Ok(None);
         }
+        let reading = reader.parser_checkpoint(&input.id, stored.chain, &version)?;
         let origin =
             self.stored_import_origin(Some(&reader), path, origin, &input.id, stored.chain, size)?;
         let parser = (origin.open)(path);
