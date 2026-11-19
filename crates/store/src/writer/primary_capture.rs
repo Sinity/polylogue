@@ -8,6 +8,7 @@ use crate::primary::{
 use crate::staging::{PreparedBatch, StoredInput};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Seek, SeekFrom};
+mod immutable;
 
 fn latest(index: &Connection, input: &str) -> Result<Option<Revision>> {
     index.query_row("SELECT number,produced,chain,length FROM source_revision WHERE input=?1 ORDER BY number DESC LIMIT 1",[input],|row|Ok(Revision{number:row.get(0)?,produced:row.get(1)?,chain:row.get(2)?,length:row.get(3)?})).optional().map_err(StoreError::from)
@@ -208,11 +209,14 @@ pub(super) fn validate(item: &PreparedBatch, archive: &Archive) -> Result<()> {
 
 // A capture group's intent is independent of observer time and generated
 // observation IDs. Ordered source content and file facts tell new work apart.
-fn capture_group_identity(group: &[PreparedBatch], immutable: bool) -> Result<String> {
+fn capture_group_identity(
+    group: &[impl std::borrow::Borrow<PreparedBatch>],
+    immutable: bool,
+) -> Result<String> {
     let mut hash = blake3::Hasher::new();
     hash.update(b"polylogue-capture-group-v1");
     for item in group {
-        let b = &item.batch;
+        let b = &item.borrow().batch;
         let change = match b.change {
             Change::First => ("first", 0, 0),
             Change::Unchanged => ("unchanged", 0, 0),
@@ -337,6 +341,59 @@ impl Inner {
         }
         for item in group {
             validate(item, &self.location)?;
+        }
+        let immutable = group.iter().all(|item| {
+            item.batch
+                .acquisition
+                .as_ref()
+                .is_some_and(|read| read.route == crate::primary::AcquisitionRoute::ExplicitImport)
+        });
+        let mut held = Vec::with_capacity(group.len());
+        if immutable {
+            self.primary_cache_ready()?;
+            let intent = capture_group_identity(group, true)?;
+            let pending = self
+                .sinex
+                .as_ref()
+                .expect("primary producer")
+                .pending_captures()?;
+            // A still-pending group keeps its original members and frame bytes.
+            // Only completed groups may be reduced to their new members.
+            let retry = pending.iter().any(|member| {
+                matches!(&member.captured, Capture::Input(input)
+                    if input.group.as_ref().is_some_and(|group| group.intent == intent))
+            });
+            for item in group {
+                held.push(if retry {
+                    None
+                } else {
+                    self.confirmed_immutable_import(item)?
+                });
+            }
+        } else {
+            held.resize_with(group.len(), || None);
+        }
+        let new: Vec<_> = group
+            .iter()
+            .zip(&held)
+            .filter_map(|(item, held)| held.is_none().then_some(item))
+            .collect();
+        let mut stored = self.capture_new_primary_group(&new)?.into_iter();
+        Ok(held
+            .into_iter()
+            .map(|held| match held {
+                Some(held) => Ok(held),
+                None => stored.next().expect("one result per new capture"),
+            })
+            .collect())
+    }
+
+    fn capture_new_primary_group(
+        &mut self,
+        group: &[&PreparedBatch],
+    ) -> Result<Vec<Result<StoredInput>>> {
+        if group.is_empty() {
+            return Ok(Vec::new());
         }
         let sinex =
             Arc::clone(self.sinex.as_ref().ok_or_else(|| {

@@ -1,3 +1,4 @@
+mod immutable;
 mod rebuild;
 mod restored;
 use super::*;

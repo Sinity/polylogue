@@ -72,6 +72,8 @@ a failed attempt with no committed progress produces no commit notification.
 The capture loop returns queued writer errors on continuing passes even when
 there are no new inputs to parse, while keeping the client's outstanding unacknowledged spool entries pending.
 
+A repeated content-addressed import reuses the live confirmed original and its observation after the producer spool has been retired. It checks the current readable scope, input format, exact extents and original material before reporting `already_stored`. A package can mix those confirmed members with new or pending members; only new work enters capture. A pending capture keeps its original group and receipt. Conflicting confirmed identities remain errors.
+
 A capture turn pins the existing read scope (the token naming which confirmed state a turn may use) before using cached confirmed state and checks that same token before reporting completion. A reset during a turn, or between turns, discards reconstructible input progress, parser and discovery caches; watched identities and entries still awaiting acknowledgment stay in the spool until their acknowledgments arrive. The next turn reloads confirmed events under a fresh scope and repeats discovery. The outer loop retries a scope interruption as a failed turn; queued writer and reset failures remain errors.
 
 A failed capture turn cannot mark earlier unacknowledged spool entries finished. The loop
