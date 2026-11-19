@@ -1,7 +1,6 @@
 use super::*;
 use crate::archive::open_write;
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 fn deny_old_block_selection(context: AuthContext<'_>) -> Authorization {
     match context.action {
@@ -404,80 +403,14 @@ fn count_statement(event: rusqlite::trace::TraceEvent<'_>) {
     }
 }
 
-fn thread_cpu_ticks() -> u64 {
-    let stat = std::fs::read_to_string("/proc/thread-self/stat").unwrap();
-    let fields = stat
-        .rsplit_once(')')
-        .unwrap()
-        .1
-        .split_whitespace()
-        .collect::<Vec<_>>();
-    fields[11].parse::<u64>().unwrap() + fields[12].parse::<u64>().unwrap()
-}
-
 /// A bounded production row-application measurement; printing counters does
 /// not assert a machine-dependent duration or a whole-pipeline rate.
 #[test]
 fn prepared_message_transaction_work() {
-    let directory = tempfile::tempdir().unwrap();
-    let mut conn = open_write(&directory.path().join("index.db"), 1).unwrap();
-    crate::schema::create_index(&conn).unwrap();
-    let rows = (0..256)
-        .map(|n| {
-            row(
-                n,
-                text_message(
-                    &format!("m{n}"),
-                    "s",
-                    Role::Assistant,
-                    &format!("message {n}: {}", "synthetic body text ".repeat(64)),
-                    Some("end_turn"),
-                ),
-            )
-        })
-        .collect();
-    let mut b = batch("input", Route::Live, 0, rows, &["s"]);
-    b.length = 512;
-    b.parse[0].parsed_upto = 512;
-    resolve::prepare_index(&conn, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
-    let steps = Arc::new(AtomicU64::new(0));
-    let count = steps.clone();
-    conn.progress_handler(
-        1,
-        Some(move || {
-            count.fetch_add(1, Ordering::Relaxed);
-            false
-        }),
-    )
-    .unwrap();
-    STATEMENTS.with(|n| n.set(0));
-    conn.trace_v2(
-        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
-        Some(count_statement),
-    );
-    let cpu = thread_cpu_ticks();
-    let start = std::time::Instant::now();
-    let tx = conn.transaction().unwrap();
-    let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
-    assert_eq!(apply(&tx, &b, 0, &changes), 256);
-    crate::items::refresh(&tx, &changes).unwrap();
-    tx.commit().unwrap();
-    let elapsed = start.elapsed();
-    let cpu = thread_cpu_ticks() - cpu;
-    conn.progress_handler(0, None::<fn() -> bool>).unwrap();
-    conn.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
-    println!(
-        "prepared transaction: messages=256 statements={} vm_steps={} thread_cpu_ticks={cpu} elapsed_us={}",
-        STATEMENTS.with(|n| n.get()),
-        steps.load(Ordering::Relaxed),
-        elapsed.as_micros()
-    );
-    assert_eq!(
-        conn.query_row("SELECT count(*) FROM block", [], |r| r.get::<_, i64>(0))
-            .unwrap(),
-        256
-    );
+    diagnostic::run();
 }
+
+pub(crate) mod diagnostic;
 
 #[test]
 fn early_copy_materialization_then_refresh_keeps_one_body_through_release() {

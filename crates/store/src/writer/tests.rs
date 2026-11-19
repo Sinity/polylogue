@@ -12,7 +12,7 @@ mod empty_source;
 mod event_fk;
 mod event_placement;
 mod extent_checkpoint;
-mod fresh_messages;
+pub(crate) mod fresh_messages;
 #[cfg(all(feature = "faults", target_os = "linux"))]
 mod fts;
 mod input_events;
