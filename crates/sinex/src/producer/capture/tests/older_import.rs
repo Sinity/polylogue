@@ -148,6 +148,91 @@ fn ordinary_older_import_spools_original_history_and_reports_pending_classes() {
         count,
         "retry keeps accepted capture identities"
     );
+    // Supply confirmed material authority at the same boundary as Sinex. All
+    // fixture bytes are encoded into one held segment, not invented hash lookups.
+    let mut segment = hashed_blobs::SegmentWriter::open(
+        &sdk.config.store,
+        "segments/confirmed.hb",
+        0,
+        &[],
+        0o600,
+    )
+    .unwrap();
+    let mut bodies = Vec::new();
+    for capture in &pending {
+        let raw = matches!(&capture.captured,Capture::Input(input) if input.provenance==InputProvenance::Restored && input.raw_range.is_some())
+            || matches!(&capture.captured, Capture::Blob { .. });
+        if raw {
+            for body in sdk.capture_body(&capture.identity).unwrap() {
+                bodies.push(hashed_blobs::Prepared::from_own_encoding(
+                    body.file,
+                    body.descriptor,
+                ));
+            }
+        }
+    }
+    let committed = segment
+        .append_group(bodies, |_| Ok(None))
+        .unwrap()
+        .wait()
+        .unwrap();
+    segment.acknowledge(&committed).unwrap();
+    let mut confirmed = Vec::new();
+    for capture in &pending {
+        let material = |hash: BlobHash, length: u64| polylogue_store::primary::Material {
+            id: crate::material_id(&sdk.config.producer, &capture.identity).to_string(),
+            hash,
+            length,
+            extents: vec![
+                committed
+                    .extents
+                    .iter()
+                    .find(|extent| extent.hash.0 == hash.0)
+                    .expect("committed original")
+                    .encode(),
+            ],
+        };
+        let product = match &capture.captured {
+            Capture::Input(input) if input.provenance == InputProvenance::Restored => {
+                Some(Product::Input {
+                    rows: Box::new(input.rows.clone()),
+                    material: input.raw_range.map(|_| material(input.hash, input.length)),
+                })
+            }
+            Capture::Blob { hash, length } => Some(Product::Blob(material(*hash, *length))),
+            _ => None,
+        };
+        if let Some(product) = product {
+            confirmed.push(Confirmed {
+                position: 1,
+                event: format!("confirmed:{}", capture.identity),
+                output_index: 0,
+                sinex_context: None,
+                change: ConfirmedChange::Live(Box::new(product)),
+            });
+        }
+    }
+    confirmed.push(control(ReplayControl::Completion {
+        position: 1,
+        delivery: None,
+    }));
+    engine.writer().apply_confirmed(confirmed).unwrap();
+    let applied = engine
+        .import_with_options(&[], &options)
+        .unwrap()
+        .older_archive
+        .unwrap();
+    assert_eq!(applied.classes["input"].pending, 0);
+    assert_eq!(applied.classes["input"].stored, 0);
+    assert_eq!(
+        applied.classes["input"].present,
+        report.classes["input"].pending
+    );
+    assert_eq!(
+        sdk.pending_captures().unwrap().len(),
+        count,
+        "confirmed retry does not create generic copies of captured originals"
+    );
     assert_eq!(older_archive::fixture::file_hashes(&old_root), originals);
     assert!(!home.root.join("archive.db").exists());
 }

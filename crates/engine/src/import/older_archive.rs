@@ -422,8 +422,11 @@ impl Engine {
             self.readings_pending = true;
         }
         if self.archive.is_primary() && !dry_run {
-            report.pending = report.classes.values().any(|class| class.pending > 0)
-                || self.reads.reader()?.input_progress(&rows_id)?.is_none();
+            report.pending = report.classes.values().any(|class| class.pending > 0);
+            let reader = self.reads.reader()?;
+            for input in std::iter::once(&rows_id).chain(report.refused_inputs.iter()) {
+                report.pending |= reader.input_progress(input)?.is_none();
+            }
         }
         Ok(report)
     }

@@ -38,15 +38,21 @@ fn pending(queue: &crate::spool::Spool, entry: crate::spool::Prepared) -> Result
 fn compared_fields(input: &CapturedInput, mode: CaptureMode) -> Result<serde_json::Value> {
     // The first accepted capture fixes cache coordinates and observer clocks.
     // Byte identity must still match.
-    Ok(serde_json::json!({
-        "provenance":input.provenance,
-        "restored":(input.provenance == polylogue_store::primary::InputProvenance::Restored).then_some(&input.rows),
+    let mut fields = serde_json::json!({
         "hash":input.hash, "length":input.length, "raw_range":input.raw_range,
         "generation":input.generation, "raw_total":input.raw_total, "raw_predecessor":input.raw_predecessor,
-        "index":(input.provenance == polylogue_store::primary::InputProvenance::Acquired).then_some(input.index), "route":input.route,
+        "index":input.index, "route":input.route,
         "origin":input.input.origin,
         "source":(mode == CaptureMode::Mutable).then(|| input.basis.as_ref().map(|base| &base.source)),
-    }))
+    });
+    if input.provenance == polylogue_store::primary::InputProvenance::Restored {
+        fields["provenance"] = serde_json::to_value(input.provenance)?;
+        fields["restored"] = serde_json::to_value(&input.rows)?;
+        // The accepted group fixes its material predecessors. Retrying exact
+        // history cannot replace them with a newer pending group position.
+        fields["index"] = serde_json::Value::Null;
+    }
+    Ok(fields)
 }
 
 impl Sinex {

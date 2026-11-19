@@ -160,7 +160,12 @@ impl Inner {
             .map(|(header, _)| header.hash)
             .collect();
         for file in &group.files {
-            if !cited.contains(&file.hash()) {
+            if !cited.contains(&file.hash())
+                && !self.index.scalar::<bool>(
+                    "SELECT EXISTS(SELECT 1 FROM source_blob WHERE hash=?1)",
+                    [&file.hash().0[..]],
+                )?
+            {
                 sinex.prepare_blob(file.hash(), file.len(), file.body()?)?;
             }
         }
