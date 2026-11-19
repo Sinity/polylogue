@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::input_rows::InputRows;
+pub(super) mod primary;
 use crate::older_archive::{Input, Machine};
 use crate::staging::PreparedBytes;
 use std::collections::BTreeSet;
@@ -36,6 +37,8 @@ pub enum Restored {
     Present,
     /// Not written, for the reason given.
     Refused(String),
+    /// Saved in the producer spool, not yet applied by the confirmed reader.
+    Pending,
 }
 
 impl WriterSender {
@@ -81,10 +84,15 @@ fn facts(input: &str, o: &crate::input_rows::ObservationRow) -> ObservationFacts
 /// hold it (`None`). Rows this archive added after an earlier import, such as
 /// later observations of a watched file, do not count as a difference.
 fn held(conn: &Connection, input: &Input) -> Result<Option<Option<String>>> {
+    let source = crate::source::Source::of(conn)?;
+    let partial = matches!(source, crate::source::Source::Cache);
+    let mut missing = false;
     let format: Option<String> = conn
-        .query_row("SELECT format FROM input WHERE id = ?1", [&input.id], |r| {
-            r.get(0)
-        })
+        .query_row(
+            &source.sql("SELECT format FROM @source.input WHERE id = ?1"),
+            [&input.id],
+            |r| r.get(0),
+        )
         .optional()?;
     let Some(format) = format else {
         return Ok(None);
@@ -95,15 +103,19 @@ fn held(conn: &Connection, input: &Input) -> Result<Option<Option<String>>> {
             input.format
         ))));
     }
-    let mut revision = conn.prepare_cached(
-        "SELECT produced, chain, length FROM revision WHERE input = ?1 AND number = ?2",
-    )?;
+    let mut revision = conn.prepare_cached(&source.sql(
+        "SELECT produced, chain, length FROM @source.revision WHERE input = ?1 AND number = ?2",
+    ))?;
     for r in &input.revisions {
         let found: Option<(String, i64, i64)> = revision
             .query_row(params![input.id, r.number], |row| {
                 <(_, _, _)>::try_from(row)
             })
             .optional()?;
+        if found.is_none() && partial {
+            missing = true;
+            continue;
+        }
         if found != Some((r.produced.clone(), r.chain, r.length)) {
             return Ok(Some(Some(format!(
                 "this archive holds its revision {} differently",
@@ -112,7 +124,7 @@ fn held(conn: &Connection, input: &Input) -> Result<Option<Option<String>>> {
         }
     }
     let mut extent = conn.prepare_cached(
-        "SELECT length, blob, blob_offset FROM extent WHERE input = ?1 AND chain = ?2 AND offset = ?3",
+        &source.sql("SELECT length, blob, blob_offset FROM @source.extent WHERE input = ?1 AND chain = ?2 AND offset = ?3"),
     )?;
     for e in &input.extents {
         let found: Option<(i64, Vec<u8>, i64)> = extent
@@ -120,6 +132,10 @@ fn held(conn: &Connection, input: &Input) -> Result<Option<Option<String>>> {
                 <(_, _, _)>::try_from(row)
             })
             .optional()?;
+        if found.is_none() && partial {
+            missing = true;
+            continue;
+        }
         if found != Some((e.length, e.blob.0.to_vec(), e.blob_offset)) {
             return Ok(Some(Some(format!(
                 "this archive holds its bytes at chain {} offset {} differently",
@@ -127,11 +143,11 @@ fn held(conn: &Connection, input: &Input) -> Result<Option<Option<String>>> {
             ))));
         }
     }
-    let mut observation = conn.prepare_cached(
+    let mut observation = conn.prepare_cached(&source.sql(
         "SELECT input, machine, path, class, revision, length, device, inode, size, mtime_ns,
                 ctime_ns, details_json, polylogue_version, seen_at, path_bytes
-         FROM observation WHERE id = ?1",
-    )?;
+         FROM @source.observation WHERE id = ?1",
+    ))?;
     for o in &input.observations {
         let found: Option<ObservationFacts> = observation
             .query_row([&o.id], |row| {
@@ -156,6 +172,10 @@ fn held(conn: &Connection, input: &Input) -> Result<Option<Option<String>>> {
                 })
             })
             .optional()?;
+        if found.is_none() && partial {
+            missing = true;
+            continue;
+        }
         if found.as_ref() != Some(&facts(&input.id, o)) {
             return Ok(Some(Some(format!(
                 "this archive holds its observation {} differently",
@@ -163,16 +183,20 @@ fn held(conn: &Connection, input: &Input) -> Result<Option<Option<String>>> {
             ))));
         }
     }
-    Ok(Some(None))
+    Ok(if missing { None } else { Some(None) })
 }
 
 /// For an input this archive does not hold: an observation ID it already
 /// uses for another input.
 fn taken_observation(conn: &Connection, input: &Input) -> Result<Option<String>> {
-    let mut statement = conn.prepare_cached("SELECT input FROM observation WHERE id = ?1")?;
+    let source = crate::source::Source::of(conn)?;
+    let mut statement =
+        conn.prepare_cached(&source.sql("SELECT input FROM @source.observation WHERE id = ?1"))?;
     for o in &input.observations {
         let holder: Option<String> = statement.query_row([&o.id], |r| r.get(0)).optional()?;
-        if let Some(holder) = holder {
+        if let Some(holder) = holder
+            && holder != input.id
+        {
             return Ok(Some(format!(
                 "its observation {} is already the observation of input {holder} here",
                 o.id
@@ -188,9 +212,7 @@ impl Inner {
     /// rest are written in one transaction with the extents of their bytes.
     pub(super) fn restore_older(&mut self, mut group: OlderGroup) -> Result<GroupOutcome> {
         if self.sinex.is_some() {
-            return Err(StoreError::Invalid(
-                "an archive in the older format is imported by a standalone archive".into(),
-            ));
+            return self.restore_primary_older(group);
         }
         let mut outcomes = Vec::with_capacity(group.inputs.len());
         let mut write = Vec::new();

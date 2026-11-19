@@ -39,11 +39,10 @@ impl Engine {
                 )
                 .into());
             }
-            report.older_archive = Some(self.import_older_archive(
-                root,
-                options.dry_run,
-                options.authorship.as_ref(),
-            )?);
+            let older =
+                self.import_older_archive(root, options.dry_run, options.authorship.as_ref())?;
+            report.pass.capture_pending = older.pending;
+            report.older_archive = Some(older);
             report.pass.seconds = started.elapsed().as_secs_f64();
             return Ok(report);
         }

@@ -62,13 +62,6 @@ pub struct Install {
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct MoveToSinex {
-    /// Describe the move without writing
-    #[serde(default)]
-    pub dry_run: bool,
-}
-#[derive(Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct Hook {
     /// The hook event's name
     #[schemars(extend("argument_form" = "positional"))]

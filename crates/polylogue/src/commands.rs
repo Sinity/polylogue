@@ -411,13 +411,6 @@ const WRITTEN: &[Command] = &[
         ..CLI
     },
     Command {
-        name: "dev move-to-sinex",
-        examples: &["polylogue dev move-to-sinex --dry-run"],
-        help: "Move the archive to primary mode",
-        run: local_command::<local::arguments::MoveToSinex>(local::not_built),
-        ..CLI
-    },
-    Command {
         name: "rows",
         reason: "Acts on selected rows with verbs, in order, on every surface",
         latency: command_surface::LatencyClass::Search,

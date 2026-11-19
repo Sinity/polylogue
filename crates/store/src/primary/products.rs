@@ -314,6 +314,10 @@ pub enum ConfirmedChange {
 /// A source capture waiting in the producer spool, before cache application.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CapturedInput {
+    /// Restored rows keep their recorded source history, rather than claiming
+    /// that this host just observed the original provider file.
+    #[serde(default, skip_serializing_if = "InputProvenance::is_acquired")]
+    pub provenance: InputProvenance,
     pub input: super::InputName,
     pub rows: InputRows,
     pub index: u32,
@@ -338,6 +342,22 @@ pub struct CapturedInput {
     /// observed source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub basis: Option<super::SourceBasis>,
+}
+
+/// Whether source rows describe a current acquisition or preserved history.
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum InputProvenance {
+    #[default]
+    Acquired,
+    Restored,
+}
+impl InputProvenance {
+    fn is_acquired(&self) -> bool {
+        *self == Self::Acquired
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

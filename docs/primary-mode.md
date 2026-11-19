@@ -333,18 +333,13 @@ Python Polylogue's authored records are imported as a declared older format ([ca
 
 ## Moving to Sinex
 
-Moving an archive to primary mode is a technical act, run once by whoever builds it when the comparison passes. It sits under `dev` because it is a one-time move, not an everyday act ([interfaces.md#discipline](interfaces.md#discipline)).
+An older archive enters primary mode through `polylogue import --from-archive DIR` against a fresh primary local index. The source archive remains unchanged. Original input bodies enter the ordinary producer capture spool; their recorded revisions, chains, extent offsets and observations become confirmed source facts. Reopening an empty local index reconstructs those facts and reads the same original bodies. Historical observations retain their recorded times and do not claim a new filesystem acquisition.
 
-`polylogue dev move-to-sinex`:
-1. checks that the primary daemon has collected every provider location and is idle;
-2. sends every standalone input as materials, including inputs whose provider files are gone (imports, browser captures, older spools), and replays all authored state with its stored authors (`via: import`);
-3. compares the two archives by natural keys (sessions, messages, attachments, authored records and their current revisions); any difference stops the act and is reported with the keys;
-4. sets the standalone archive aside, moved to a recorded location and never deleted;
-5. switches Polylogue's configured mode to `primary` and checks that `status` shows `primary` and `healthy`.
+The import report distinguishes queued delivery from confirmed local application. Pending rows are not restored rows. A repeated import accepts identical history and reports conflicting recorded identities instead of replacing them. The imported rows input also retains the older archive's non-byte rows verbatim.
 
-`--dry-run` performs steps 1 and 3 against what Sinex already holds and changes nothing.
+This input transfer is one part of moving an archive. Historical authored state, independent machine records and paid vectors require their supported restoration stages; the report explicitly names classes that this primary import does not yet restore. Keep the source archive and its embeddings database until all original bytes, authored state and paid vectors have passed their separate acceptance checks. A raw-input import does not establish complete cutover.
 
-Where a deployment manages Polylogue's configuration (a Nix module option, for example), the mode switch of step 5 is that deployment's change: whoever runs the move makes it through the deployment and applies it the deployment's way. The binary never edits a deployment's configuration.
+After those checks, set the standalone archive aside at a recorded location and switch the deployment's configured mode to `primary`. Verify the running binary, confirmed progress, reconstructed local data and client behavior. Deployment configuration owns the mode change.
 
 ## Cross-system queries
 
