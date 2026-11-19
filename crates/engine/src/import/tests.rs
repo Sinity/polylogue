@@ -485,6 +485,59 @@ fn replayed_import_keeps_the_captured_winner() {
 
 mod documents;
 
+#[test]
+fn batched_line_import_selects_the_same_overlapping_message_after_restart() {
+    use polylogue_testkit::{ClaudeHome, claude_user};
+
+    let batched = ClaudeHome::new();
+    let serial = ClaudeHome::new();
+    let origin = polylogue_sources::origin::by_name("claude-code").unwrap();
+    let inputs = [
+        (
+            "first.jsonl",
+            claude_user("shared", "session", "first reading"),
+        ),
+        (
+            "second.jsonl",
+            claude_user("shared", "session", "different reading")
+                + &claude_user("next", "session", "another message"),
+        ),
+    ];
+    let group = |engine: &Engine| {
+        inputs
+            .iter()
+            .map(|(path, text)| {
+                let captured = Captured::stream(&engine.archive, text.as_bytes()).unwrap();
+                (PathBuf::from(path), origin, None, captured)
+            })
+            .collect::<Vec<_>>()
+    };
+    let (mut reference, _lock) = engine(&serial, 64);
+    let mut report = ImportReport::default();
+    for item in group(&reference) {
+        reference
+            .store_import_group(vec![item], &mut report)
+            .unwrap();
+    }
+    assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
+    let expected = serial.texts("session");
+    assert_eq!(expected.len(), 2);
+
+    for repeat in [false, true] {
+        let (mut receiver, _lock) = engine(&batched, 64);
+        let mut items = group(&receiver);
+        if repeat {
+            items.reverse();
+        }
+        let mut report = ImportReport::default();
+        receiver.store_import_group(items, &mut report).unwrap();
+        assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
+        assert_eq!(batched.texts("session"), expected);
+        assert_eq!(batched.count("SELECT COUNT(*) AS n FROM a.revision"), 2);
+        assert_eq!(report.pass.bytes_stored == 0, repeat);
+    }
+}
+
 mod browser_files;
 mod replay;
 
