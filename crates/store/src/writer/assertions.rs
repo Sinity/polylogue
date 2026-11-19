@@ -69,10 +69,37 @@ impl Inner {
                 ))?)
                 .to_hex()
             );
-            let writes = self.product_writes(vec![crate::primary::Product::RestoredAssertion {
+            let mut original = None;
+            sinex.visit_named_products(
+                &crate::primary::NamedProductSelector::Exact(identity.clone()),
+                &mut |product| {
+                    let crate::primary::Product::RestoredAssertion { fact, import } = product
+                    else {
+                        return Err(StoreError::Invalid(
+                            "assertion restoration has another product".into(),
+                        ));
+                    };
+                    let mut offered_import = restoration.import.clone();
+                    if let (Some(offered), Some(kept)) = (&mut offered_import, import) {
+                        // The first durable preparation owns its observation time.
+                        offered.at = kept.at;
+                    }
+                    if fact != &restoration.fact || import != &offered_import {
+                        return Err(StoreError::Conflict(restoration.fact.id.clone()));
+                    }
+                    if original.replace(product.clone()).is_some() {
+                        return Err(StoreError::Invalid(
+                            "assertion restoration has multiple products".into(),
+                        ));
+                    }
+                    Ok(())
+                },
+            )?;
+            let product = original.unwrap_or_else(|| crate::primary::Product::RestoredAssertion {
                 fact: restoration.fact.clone(),
                 import: restoration.import.clone(),
-            }])?;
+            });
+            let writes = self.product_writes(vec![product])?;
             sinex.prepare_named_products(&identity, &writes)?;
             outcome.pending = true;
             return Ok(outcome);
