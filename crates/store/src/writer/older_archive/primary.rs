@@ -7,6 +7,15 @@ use crate::primary::{
 impl Inner {
     pub(super) fn restore_primary_older(&mut self, group: OlderGroup) -> Result<GroupOutcome> {
         self.primary_cache_ready()?;
+        if group
+            .files
+            .iter()
+            .any(|file| file.owner != self.location.root)
+        {
+            return Err(StoreError::Invalid(
+                "prepared bytes belong to another archive".into(),
+            ));
+        }
         let sinex = Arc::clone(self.sinex.as_ref().expect("primary writer"));
         let mut outcomes = Vec::new();
         let mut inputs = Vec::new();

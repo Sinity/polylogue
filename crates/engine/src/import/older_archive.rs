@@ -363,12 +363,12 @@ impl Engine {
                     "primary import of historical authored state is not implemented; original rows remain in the rows input and source archive".into()),&format!("{n} rows"));
                 }
             }
-            older.vectors(|vector| {
-                report.tally("embedded",1,&Restored::Refused("primary import of paid vectors is not implemented; retain the original embeddings database".into()),&format!("{} chunk {}",vector.model,vector.chunk));
-                Ok(())
-            })?;
-            for failure in older.vector_failures()? {
-                report.tally("embed_failure",1,&Restored::Refused("primary import of historical embedding failures is not implemented; retain the original embeddings database".into()),&failure.model);
+            for table in ["embedded", "embed_failure"] {
+                let n = found(table);
+                if n > 0 {
+                    report.tally(table,n,&Restored::Refused(
+                        "primary restoration of historical embedding rows is not implemented; retain the original embeddings database".into()),&format!("{n} rows"));
+                }
             }
         } else {
             self.import_older_authored(&older, current.as_ref(), &mut report)?;

@@ -43,11 +43,9 @@ fn ordinary_older_import_spools_original_history_and_reports_pending_classes() {
         from_archive: Some(old_root.clone()),
         ..Default::default()
     };
-    let report = engine
-        .import_with_options(&[], &options)
-        .unwrap()
-        .older_archive
-        .unwrap();
+    let imported = engine.import_with_options(&[], &options).unwrap();
+    assert!(imported.pass.capture_pending);
+    let report = imported.older_archive.unwrap();
     assert!(report.pending);
     assert!(report.classes["input"].pending > 0);
     assert_eq!(report.classes["input"].stored, 0);
@@ -234,5 +232,18 @@ fn ordinary_older_import_spools_original_history_and_reports_pending_classes() {
         "confirmed retry does not create generic copies of captured originals"
     );
     assert_eq!(older_archive::fixture::file_hashes(&old_root), originals);
+    let (foreign, _foreign_lock) =
+        Archive::open_or_create(&home.dir.path().join("foreign")).unwrap();
+    let prepared = foreign.prepare_bytes(&b"foreign original"[..]).unwrap();
+    assert!(matches!(
+        engine
+            .writer()
+            .restore_older(polylogue_store::writer::OlderGroup {
+                files: vec![prepared],
+                ..Default::default()
+            }),
+        Err(polylogue_store::StoreError::Invalid(_))
+    ));
+    assert_eq!(sdk.pending_captures().unwrap().len(), count);
     assert!(!home.root.join("archive.db").exists());
 }
