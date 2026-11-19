@@ -997,6 +997,11 @@ impl<'a> MembershipState<'a> {
     ) -> Result<()> {
         let mut positions = BTreeMap::<u64, i64>::new();
         let mut read = Vec::new();
+        let hidden = if self.resolver.location().is_primary() {
+            crate::primary::products::hidden_messages(self.index, input_key, chain, step)?
+        } else {
+            Default::default()
+        };
         for (i, (row, prepared)) in step
             .output
             .messages
@@ -1013,13 +1018,14 @@ impl<'a> MembershipState<'a> {
                 .get(Kind::Session, row.message.session.to_string().as_bytes())?
                 .pk;
             let previous = self.messages.find(pk, input, chain).map(|m| m.start);
-            let keep = !previous.is_some_and(|start| {
-                if step.repeats_whole_conversations {
-                    (row.offset as i64) < start
-                } else {
-                    (row.offset as i64) > start
-                }
-            });
+            let keep = !hidden.contains(&i)
+                && !previous.is_some_and(|start| {
+                    if step.repeats_whole_conversations {
+                        (row.offset as i64) < start
+                    } else {
+                        (row.offset as i64) > start
+                    }
+                });
             choices.keep_messages.push(keep);
             choices.message_order_times.push(None);
             // A non-selected source value still belongs to the archive. Keyed

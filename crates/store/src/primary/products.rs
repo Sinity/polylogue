@@ -384,6 +384,52 @@ pub struct SourceLocation {
     pub anchor: u64,
 }
 
+/// Select message values whose exact confirmed fact is no longer live.
+pub(crate) fn hidden_messages(
+    index: &rusqlite::Connection,
+    input: &InputKey,
+    chain: i64,
+    step: &crate::ParseStep,
+) -> crate::Result<std::collections::BTreeSet<usize>> {
+    use crate::ConnExt as _;
+    let mut hidden = std::collections::BTreeSet::new();
+    if step.output.messages.is_empty() || step.delivery.is_some() {
+        return Ok(hidden);
+    }
+    if !index.exists(
+        "SELECT EXISTS(SELECT 1 FROM confirmed_event WHERE input=?1 AND chain=?2
+          AND reading_version=?3 AND state!='live' AND reference GLOB 'message:*')",
+        rusqlite::params![input.id, chain, step.reading_version],
+    )? {
+        return Ok(hidden);
+    }
+    let mut state = index.prepare_cached(
+        "SELECT count(*)>0 AND count(*) FILTER (WHERE state='live')=0
+         FROM confirmed_event WHERE input=?1 AND chain=?2 AND reading_version=?3
+          AND reference=?4 AND value_hash=?5",
+    )?;
+    let messages = parse(input, chain, None, step)?
+        .into_iter()
+        .filter(|product| matches!(product, Product::Message { .. }));
+    for (i, product) in messages.enumerate() {
+        let record = SourceRecord::of(&product)?.expect("a message has a source record");
+        let suppressed = state.query_row(
+            rusqlite::params![
+                input.id,
+                chain,
+                step.reading_version,
+                record.reference,
+                &record.value_hash.0[..]
+            ],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if suppressed {
+            hidden.insert(i);
+        }
+    }
+    Ok(hidden)
+}
+
 /// Creates complete outbound products from one parser step, before any index write.
 pub fn parse(
     input: &InputKey,

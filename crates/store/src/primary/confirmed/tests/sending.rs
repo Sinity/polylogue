@@ -1,5 +1,5 @@
 use super::*;
-use crate::primary::products::{SourceRecord, needs_sending};
+use crate::primary::products::{SourceRecord, hidden_messages, needs_sending};
 
 fn message(input: &str, offset: u64) -> Product {
     let mut step = crate::ParseStep::new(Default::default(), Default::default(), 0..100, true);
@@ -68,6 +68,13 @@ fn confirmed_event_is_not_sent_again_in_any_state() {
     .unwrap();
     let first = message("first-source", 10);
     let independent = message("second-source", 10);
+    let Product::Message { facts, reading, .. } = &first else {
+        unreachable!("fixture message")
+    };
+    let mut step = crate::ParseStep::new(Default::default(), Default::default(), 0..100, true);
+    step.reading_version = reading.reading_version.clone();
+    step.output.messages.push((**facts).clone());
+    step.prepare();
     assert!(unsent(&index, first.reading().unwrap(), &first));
     apply(
         &crate::text_rows::TextIds::new(
@@ -83,10 +90,10 @@ fn confirmed_event_is_not_sent_again_in_any_state() {
     .unwrap();
     assert!(!unsent(&index, first.reading().unwrap(), &first));
     assert!(unsent(&index, independent.reading().unwrap(), &independent));
-    for (position, change) in [
-        (2, ConfirmedChange::Archived),
-        (3, ConfirmedChange::Restored),
-        (4, ConfirmedChange::Tombstoned),
+    for (position, change, suppressed) in [
+        (2, ConfirmedChange::Archived, true),
+        (3, ConfirmedChange::Restored, false),
+        (4, ConfirmedChange::Tombstoned, true),
     ] {
         apply(
             &crate::text_rows::TextIds::new(
@@ -110,6 +117,12 @@ fn confirmed_event_is_not_sent_again_in_any_state() {
         )
         .unwrap();
         assert!(!unsent(&index, first.reading().unwrap(), &first));
+        assert_eq!(
+            hidden_messages(&index, &reading.input, reading.chain, &step)
+                .unwrap()
+                .contains(&0),
+            suppressed,
+        );
     }
 }
 

@@ -550,6 +550,30 @@ fn plan(index: &Connection) -> Result<Plan> {
             }
         }
     }
+    // A lifecycle change can hide or restore one parsed value while its
+    // original material remains live. Rebuild only affected cached chains.
+    let mut changed_messages = index.prepare(
+        "SELECT DISTINCT i.id,p.chain,i.format,
+           coalesce((SELECT max(length) FROM source_revision WHERE input=i.id AND chain=p.chain),0)
+         FROM primary_staged c JOIN confirmed_event f ON f.event=c.event
+         JOIN input_ref i ON i.id=f.input
+         JOIN parse_state p ON p.input_pk=i.pk AND p.chain=f.chain
+         WHERE c.state!=f.state AND f.reference GLOB 'message:*'",
+    )?;
+    for row in changed_messages.query_map([], |row| <(String, i64, String, u64)>::try_from(row))? {
+        let (input, chain, format, length) = row?;
+        chains.insert(
+            (input.clone(), chain),
+            (
+                crate::InputKey {
+                    id: input,
+                    format,
+                    route: polylogue_model::Route::Live,
+                },
+                length,
+            ),
+        );
+    }
     for hash in &out.materials {
         let mut affected = index.prepare("SELECT f.input,f.chain,i.format,p.parsed_upto FROM confirmed_event_blob b JOIN confirmed_event f ON f.event=b.event JOIN input_ref i ON i.id=f.input JOIN parse_state p ON p.input_pk=i.pk AND p.chain=f.chain WHERE b.hash=?1")?;
         for row in affected.query_map([hash.0.as_slice()], |row| {
