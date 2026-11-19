@@ -222,6 +222,8 @@ impl CatalogWriter {
         };
         let position = &cache.metadata.position;
         if position.generation != current.position.generation
+            || position.index < 0
+            || position.archive < 0
             || position.index > current.position.index
             || position.archive > current.position.archive
             || serde_json::to_value(cache.catalog()?)? != serde_json::to_value(catalog)?

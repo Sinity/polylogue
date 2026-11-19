@@ -295,21 +295,21 @@ impl State {
             written_at: self.requests.now().unix_ms(),
         };
         let pointer = completion::CatalogPointer::new(path.to_owned());
-        if self.writer.is_none() && self.position.is_none() {
-            // This cache is derived. Missing, incompatible or damaged state uses
-            // the same fresh publication path as its initial creation.
-            if let Ok(Some((writer, saved, vocabulary))) =
+        // This cache is derived. Missing, incompatible or damaged state uses
+        // the same fresh publication path as its initial creation.
+        if self.writer.is_none()
+            && self.position.is_none()
+            && let Ok(Some((writer, saved, vocabulary))) =
                 pointer.resume(&metadata, &self.catalog, self.requests.machine())
-            {
-                token.check()?;
-                self.vocabulary = Vocabulary::default();
-                for (id, family) in vocabulary.families {
-                    self.vocabulary.install_family(id, family);
-                }
-                self.vocabulary.kept = vocabulary.kept;
-                self.position = Some(saved.position);
-                self.writer = Some((position.generation.clone(), writer));
+        {
+            token.check()?;
+            self.vocabulary = Vocabulary::default();
+            for (id, family) in vocabulary.families {
+                self.vocabulary.install_family(id, family);
             }
+            self.vocabulary.kept = vocabulary.kept;
+            self.position = Some(saved.position);
+            self.writer = Some((position.generation.clone(), writer));
         }
         if self.position.as_ref() == Some(&position) {
             pointer.activate(

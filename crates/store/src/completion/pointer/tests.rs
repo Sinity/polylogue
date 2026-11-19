@@ -214,6 +214,8 @@ fn resume_validates_the_publication_identity_before_reusing_its_database() {
         "generation",
         "index",
         "archive_position",
+        "negative_index",
+        "negative_archive",
         "grammar",
         "machine",
     ] {
@@ -246,6 +248,21 @@ fn resume_validates_the_publication_identity_before_reusing_its_database() {
         pointer
             .activate(&writer, &archive.scope_token().unwrap())
             .unwrap();
+        if matches!(case, "negative_index" | "negative_archive") {
+            let mut invalid = metadata.position.clone();
+            if case == "negative_index" {
+                invalid.index = -1;
+            } else {
+                invalid.archive = -1;
+            }
+            writer
+                .connection()
+                .execute(
+                    "UPDATE metadata SET value=?1 WHERE key='position'",
+                    [serde_json::to_string(&invalid).unwrap()],
+                )
+                .unwrap();
+        }
         if case == "version6" {
             writer
                 .connection()
