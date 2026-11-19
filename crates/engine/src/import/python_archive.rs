@@ -345,7 +345,7 @@ fn visit(
             root.display(),
             input.raw_id
         ));
-        let chain = match lineage(input, &declared, &by_revision) {
+        let parts = match lineage(root, input, &declared, &by_revision) {
             Ok(chain) => chain,
             Err(reason) => {
                 // The fragment above keeps the bytes; only the joined
@@ -367,7 +367,7 @@ fn visit(
         };
         accept(Member::Raw(RawMember {
             path: at,
-            parts: chain.into_iter().map(Blob::from).collect(),
+            parts,
             origin: polylogue_store::python_polylogue::origin(&input.origin)
                 .and_then(polylogue_sources::origin::by_name),
         }))?;
@@ -441,6 +441,7 @@ enum Member {
 struct Blob {
     hash: [u8; 32],
     size: u64,
+    header: Vec<u8>,
 }
 
 impl From<&Input> for Blob {
@@ -448,6 +449,7 @@ impl From<&Input> for Blob {
         Self {
             hash: input.blob_hash,
             size: input.blob_size,
+            header: Vec::new(),
         }
     }
 }
@@ -547,7 +549,7 @@ fn copy_blob(
     mut write: impl FnMut(&[u8]) -> std::io::Result<()>,
 ) -> polylogue_store::Result<()> {
     let hash: String = polylogue_model::hex(&blob.hash);
-    let path = root.join("blob").join(&hash[..2]).join(&hash[2..]);
+    let path = blob_path(root, &hash);
     if !std::fs::symlink_metadata(&path)?.is_file() {
         return Err(polylogue_store::StoreError::invalid(format!(
             "non-regular Python Polylogue blob {hash}"
@@ -555,7 +557,17 @@ fn copy_blob(
     }
     let mut source = std::fs::File::open(path)?;
     let mut actual = Sha256::new();
-    let mut length = 0;
+    let mut length = blob.header.len() as u64;
+    if !blob.header.is_empty() {
+        let mut header = vec![0; blob.header.len()];
+        source.read_exact(&mut header)?;
+        if header != blob.header {
+            return Err(polylogue_store::StoreError::invalid(
+                "the Codex append header changed during import",
+            ));
+        }
+        actual.update(&header);
+    }
     let mut buffer = [0; 64 * 1024];
     loop {
         let n = source.read(&mut buffer)?;
@@ -573,6 +585,10 @@ fn copy_blob(
         )));
     }
     Ok(())
+}
+
+fn blob_path(root: &Path, hash: &str) -> PathBuf {
+    root.join("blob").join(&hash[..2]).join(&hash[2..])
 }
 
 #[cfg(test)]
@@ -595,10 +611,11 @@ type Input = polylogue_store::python_archive::Input;
 /// continues by row ID, or else by revision name; its recorded offsets must
 /// join the bytes before it. Otherwise the reason it cannot be joined.
 fn lineage<'a>(
+    root: &Path,
     input: &'a Input,
     declared: &BTreeMap<String, &'a Input>,
     by_revision: &BTreeMap<&str, Option<&'a Input>>,
-) -> Result<Vec<&'a Input>, String> {
+) -> Result<Vec<Blob>, String> {
     let mut chain = Vec::new();
     let mut seen = BTreeSet::new();
     let mut current = input;
@@ -625,19 +642,75 @@ fn lineage<'a>(
     }
     chain.push(current);
     chain.reverse();
-    let mut length = chain[0].blob_size;
+    let baseline = chain[0];
+    let mut length = baseline.blob_size;
+    let mut parts = vec![Blob::from(baseline)];
     for append in &chain[1..] {
-        if append.append_start != Some(length)
-            || append.append_end != length.checked_add(append.blob_size)
-        {
-            return Err(format!(
+        let offset_error = || {
+            format!(
                 "the recorded offsets of append {} do not join the bytes before it",
                 append.raw_id
-            ));
+            )
+        };
+        let end = append
+            .append_end
+            .filter(|end| append.append_start == Some(length) && *end >= length)
+            .ok_or_else(offset_error)?;
+        let mut part = Blob::from(*append);
+        if end - length != part.size {
+            part.header = codex_append_header(root, baseline, append, end - length)
+                .ok_or_else(offset_error)?;
         }
-        length += append.blob_size;
+        length = end;
+        parts.push(part);
     }
-    Ok(chain)
+    Ok(parts)
+}
+
+/// The Python capture prepended an identity-only line to some Codex tails.
+/// Only the exact envelope for the declared rollout is outside its byte range.
+fn codex_append_header(
+    root: &Path,
+    baseline: &Input,
+    append: &Input,
+    length: u64,
+) -> Option<Vec<u8>> {
+    if append.origin != "codex-session" {
+        return None;
+    }
+    let rollout = |input: &Input| match polylogue_sources::codex::File::from_path(Path::new(
+        &input.source_path,
+    )) {
+        Some(polylogue_sources::codex::File::Rollout { thread }) => thread,
+        _ => None,
+    };
+    let thread = rollout(append)?;
+    if rollout(baseline).as_ref() != Some(&thread)
+        || !thread.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+    {
+        return None;
+    }
+    let expected =
+        format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{thread}\"}}}}\n").into_bytes();
+    if append.blob_size.checked_sub(length)? != expected.len() as u64 {
+        return None;
+    }
+    let path = blob_path(root, &polylogue_model::hex(&append.blob_hash));
+    if !std::fs::symlink_metadata(&path).ok()?.is_file() {
+        return None;
+    }
+    let mut actual = vec![0; expected.len()];
+    std::fs::File::open(path)
+        .ok()?
+        .read_exact(&mut actual)
+        .ok()?;
+    (actual == expected).then_some(expected)
 }
 
 #[cfg(test)]

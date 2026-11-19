@@ -74,6 +74,38 @@ fn python_archive_is_read_only_when_named() {
 }
 
 #[test]
+fn python_codex_append_keeps_its_header_but_joins_only_the_source_bytes() {
+    let scratch = tempfile::tempdir().unwrap();
+    let archive = Archive::at(scratch.path());
+    let thread = "019a0000-0000-7000-8000-000000000001";
+    let other = "019a0000-0000-7000-8000-000000000002";
+    let path = format!("rollout-2026-03-01T10-00-00-{thread}.jsonl");
+    for id in [thread, other] {
+        let root = tempfile::tempdir().unwrap();
+        let head = format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\"}}}}\n");
+        let wrapped = [head.as_bytes(), APPEND].concat();
+        fixture_with_parts(root.path(), &path, FULL, &wrapped);
+        let db = rusqlite::Connection::open(root.path().join("source.db")).unwrap();
+        db.execute("UPDATE raw_sessions SET origin='codex-session'", [])
+            .unwrap();
+        db.execute(
+            "UPDATE raw_sessions SET append_end_offset=?1 WHERE raw_id='next'",
+            [(FULL.len() + APPEND.len()) as i64],
+        )
+        .unwrap();
+        drop(db);
+        let members = stage(root.path(), &archive).unwrap().unwrap();
+        assert_eq!(decoded(&members[2]), wrapped);
+        if id == thread {
+            assert_eq!(members[3].origin.unwrap().name, "codex");
+            assert_eq!(decoded(&members[3]), [FULL, APPEND].concat());
+        } else {
+            assert!(members[3].refusal.is_some());
+        }
+    }
+}
+
+#[test]
 fn python_blobs_join_only_at_recorded_append_offsets() {
     let root = tempfile::tempdir().unwrap();
     let scratch = tempfile::tempdir().unwrap();
@@ -549,6 +581,7 @@ fn a_writer_miss_checks_the_source_again_before_admitting_it() {
         parts: vec![Blob {
             hash: Sha256::digest(FULL).into(),
             size: FULL.len() as u64,
+            header: Vec::new(),
         }],
         origin: polylogue_sources::origin::by_name("claude-code"),
     };
