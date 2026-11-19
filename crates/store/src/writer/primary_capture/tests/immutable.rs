@@ -43,15 +43,15 @@ fn completed_imports_keep_their_receipt_when_repeated_or_mixed_with_new_members(
     });
     let writer = Writer::start_on_sinex(&archive, producer.clone()).unwrap();
     writer
-        .apply_confirmed(vec![
-            read_control(ReplayControl::Reset {
-                scope: "scope".into(),
-            }),
-            read_control(ReplayControl::Completion {
-                position: 0,
-                delivery: None,
-            }),
-        ])
+        .apply_confirmed(vec![read_control(ReplayControl::Reset {
+            scope: "scope".into(),
+        })])
+        .unwrap();
+    writer
+        .apply_confirmed(vec![read_control(ReplayControl::Completion {
+            position: 0,
+            delivery: None,
+        })])
         .unwrap();
     let bytes = b"immutable original";
     let store = |items| {
