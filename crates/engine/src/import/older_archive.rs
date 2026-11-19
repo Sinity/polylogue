@@ -234,7 +234,9 @@ pub(super) fn keep(classes: &mut BTreeMap<String, ClassCount>, class: &str, n: u
 }
 
 pub(super) fn restored(outcome: &polylogue_model::user::UserOutcome) -> Restored {
-    if outcome.repeat {
+    if outcome.pending {
+        Restored::Pending
+    } else if outcome.repeat {
         Restored::Present
     } else {
         Restored::Stored

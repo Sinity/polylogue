@@ -1,4 +1,4 @@
-//! `polylogue import --format NAME PATH` for Python Polylogue's own
+//! `polylogue import --origin NAME PATH` for Python Polylogue's own
 //! stores ([`polylogue_store::python_polylogue`]), each named explicitly:
 //!
 //! - `python-user-db`: its `user.db`. Every row of every table is kept
@@ -44,12 +44,16 @@ const TEXTS_PER_PAGE: u64 = 4096;
 pub struct PythonImportReport {
     pub path: PathBuf,
     pub format: String,
-    /// Per class of row: `found` is always the sum of the other four.
+    /// Per class of row: `found` is the sum of its reported outcomes.
     pub classes: BTreeMap<String, ClassCount>,
     pub refused: Vec<RefusedRow>,
     /// The imported input keeping every row of a `user.db` verbatim, by its ID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rows_input: Option<String>,
+    /// Authored publication or its confirmed source membership is unfinished.
+    /// Repeat after the rows input is confirmed to record that membership.
+    #[serde(default)]
+    pub pending: bool,
     /// Vectors the store holds.
     #[serde(default)]
     pub vectors: u64,
@@ -77,6 +81,7 @@ fn embedding_key(model: &str, dims: usize) -> Option<String> {
 
 impl PythonImportReport {
     fn tally(&mut self, class: &str, n: u64, outcome: &Restored, row: &str) {
+        self.pending |= matches!(outcome, Restored::Pending);
         tally(&mut self.classes, &mut self.refused, class, n, outcome, row);
     }
 
@@ -174,26 +179,28 @@ impl Engine {
         }
         // Source membership has its own observed import time; it never supplies
         // a missing original authored time or changes a rubric's identity.
-        let chain = self
-            .reads
-            .reader()?
-            .input_progress(&rows_id)?
-            .ok_or_else(|| std::io::Error::other("the rows input was not stored"))?
-            .chain;
-        let ingress = polylogue_model::authored::ImportAttribution {
+        let progress = self.reads.reader()?.input_progress(&rows_id)?;
+        if progress.is_none() && !self.archive.is_primary() {
+            return Err(std::io::Error::other("the rows input was not stored").into());
+        }
+        let ingress = progress.map(|progress| polylogue_model::authored::ImportAttribution {
             input: rows_id.clone(),
-            chain,
+            chain: progress.chain,
             machine: machine.clone(),
             actor: authorship.map_or_else(
                 || polylogue_model::Author::Script("polylogue-import".into()),
                 |a| a.author.clone(),
             ),
             at: self.config.clock.now().into(),
-        };
+        });
+        // The original facts are durable even while their source capture is
+        // pending. A later import adds its separately observed membership;
+        // no proposed capture chain becomes confirmed attribution.
+        report.pending |= ingress.is_none();
         for schema in db.schemas()? {
             let row = format!("{}@{}", schema.id, schema.version);
             let outcome = match user_db::rubric(&schema, &machine) {
-                Ok(fact) => match writer.restore_assertion(fact, Some(ingress.clone())) {
+                Ok(fact) => match writer.restore_assertion(fact, ingress.clone()) {
                     Ok(outcome) => restored(&outcome),
                     Err(error) => refusal(error)?,
                 },

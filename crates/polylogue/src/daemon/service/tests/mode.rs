@@ -1,3 +1,4 @@
+mod authored_import;
 mod confirmed_inputs;
 mod withdrawals;
 
