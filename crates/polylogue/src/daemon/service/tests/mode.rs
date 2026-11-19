@@ -217,15 +217,19 @@ fn older_import_preserves_scope_refusal_and_succeeds_after_initial_confirmation(
             scope: "initial-import-scope".into(),
         })])
         .unwrap();
+    assert!(matches!(
+        runtime.daemon.reads.reader(),
+        Err(StoreError::ScopeChanged)
+    ));
     let import = || {
         crate::test_daemon::Call::new("import", serde_json::json!({"from_archive": older}))
             .answer(&runtime.daemon)
     };
     let refused = import();
     assert!(
-        matches!(refused.outcome, command_surface::Outcome::Error(error)
+        matches!(&refused.outcome, command_surface::Outcome::Error(error)
             if error.code.as_deref() == Some("scope_changed") && error.retryable),
-        "an initial scope refusal must remain a typed transient failure"
+        "an initial scope refusal must remain a typed transient failure: {refused:?}"
     );
     assert!(matches!(
         runtime.daemon.reads.reader(),

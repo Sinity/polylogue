@@ -18,6 +18,7 @@ fn failed(count: usize, error: StoreError) -> Vec<Result<StoredInput>> {
     (0..count)
         .map(|_| {
             Err(match &error {
+                StoreError::ScopeChanged => StoreError::ScopeChanged,
                 StoreError::Conflict(identity) => StoreError::Conflict(identity.clone()),
                 StoreError::PrimaryPending { identity } => StoreError::PrimaryPending {
                     identity: identity.clone(),
