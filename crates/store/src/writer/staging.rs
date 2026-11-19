@@ -362,10 +362,14 @@ impl Inner {
             return Ok(None);
         }
         for batch in &group {
-            let Some(member) = batch.observation.as_ref().and_then(|o| o.import.as_ref()) else {
+            let Some(observation) = batch.observation.as_ref() else {
+                return Ok(None);
+            };
+            let Some(member) = observation.import.as_ref() else {
                 return Ok(None);
             };
             if member.format.as_deref() != Some(batch.input.format.as_str())
+                || observation.container.is_some()
                 || !matches!(batch.change, Change::First)
                 || batch.continues
                 || batch.new_blob.as_ref().is_none_or(|blob| {
@@ -440,7 +444,9 @@ impl Inner {
                    AND r.number=(SELECT max(number) FROM revision WHERE input=?1)
                    AND r.length=?2
                    AND (SELECT count(*) FROM extent WHERE input=?1 AND chain=r.chain)=1
-                   AND EXISTS(SELECT 1 FROM extent x WHERE x.input=?1 AND x.chain=r.chain AND x.offset=0 AND x.length=?2 AND x.blob=?3)",
+                   AND EXISTS(SELECT 1 FROM extent x JOIN blob b ON b.hash=x.blob
+                       WHERE x.input=?1 AND x.chain=r.chain AND x.offset=0
+                         AND x.length=?2 AND x.blob_offset=0 AND x.blob=?3 AND b.size=?2)",
                 params![b.input.id,b.length as i64,&blob.hash.0[..],observation.machine,observation.path_bytes,details],
                 |row| <(i64, i64, bool)>::try_from(row),
             ).optional()?;
