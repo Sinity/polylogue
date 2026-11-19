@@ -1,6 +1,6 @@
 //! A first build has the same ranked search as incremental writes.
 use crate::archive::{cache, open_write};
-use crate::text_rows::{build_search_indexes, index_pending, insert_alone};
+use crate::text_rows::{SearchBuild, index_pending, insert_alone};
 use rusqlite::Connection;
 
 fn vocabulary(conn: &Connection, table: &str) -> Vec<(String, i64, i64)> {
@@ -68,23 +68,12 @@ fn built_search_vocabulary_matches_incremental_writes() {
             rusqlite::params![crate::encoding::pack_bytes(body.as_bytes()).unwrap(), group],
         )
         .unwrap();
-    // This limit creates several windows and makes the final text a singleton.
-    let mut visited = Vec::new();
-    super::super::search_build::visit_indexed_texts(&built, 26, |id, bits, text| {
-        visited.push((id, bits, text));
-        Ok(())
-    })
-    .unwrap();
-    let expected: Vec<_> = inputs
-        .into_iter()
-        .enumerate()
-        .filter(|(_, (_, bits))| *bits != 0)
-        .map(|(n, (text, bits))| (n as i64 + 1, bits, text.to_owned()))
-        .collect();
-    assert_eq!(visited, expected);
     index_pending(&incremental, || ()).unwrap();
     assert!(vocabulary(&built, "fts_vocab_output").is_empty());
-    build_search_indexes(&built).unwrap();
+    SearchBuild::start(&built, &crate::cancellation::Cancellation::default(), 8)
+        .unwrap()
+        .finish(&built)
+        .unwrap();
     for table in ["fts_vocab_text", "fts_vocab_output"] {
         assert_eq!(
             vocabulary(&built, table),
@@ -172,7 +161,9 @@ fn failed_search_rebuild_preserves_both_tables_and_reader_snapshots() {
         0,
         1,
     );
-    let result = build_search_indexes(&conn);
+    let result = SearchBuild::start(&conn, &crate::cancellation::Cancellation::default(), 8)
+        .unwrap()
+        .finish(&conn);
     crate::fault::clear();
     assert!(result.is_err());
     let reopened = crate::archive::open_read(&path).unwrap();
@@ -182,7 +173,10 @@ fn failed_search_rebuild_preserves_both_tables_and_reader_snapshots() {
     }
     reopened.execute_batch("BEGIN").unwrap();
     assert_eq!(vocabulary(&reopened, "fts_vocab_text"), before[0]);
-    build_search_indexes(&conn).unwrap();
+    SearchBuild::start(&conn, &crate::cancellation::Cancellation::default(), 8)
+        .unwrap()
+        .finish(&conn)
+        .unwrap();
     assert_eq!(vocabulary(&reopened, "fts_vocab_text"), before[0]);
     assert_eq!(vocabulary(&reopened, "fts_vocab_output"), before[1]);
     reopened.execute_batch("COMMIT").unwrap();

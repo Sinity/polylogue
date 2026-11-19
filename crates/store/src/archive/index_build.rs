@@ -557,6 +557,7 @@ fn discard(paths: &Paths) -> Result<()> {
     for suffix in ["-journal", "-wal", "-shm", ""] {
         remove(&with_suffix(&paths.build, suffix))?;
     }
+    remove(&crate::text_rows::SearchBuild::path(&paths.build))?;
     remove(&paths.unsynced)?;
     sync_directory(&paths.dir)
 }
@@ -565,7 +566,8 @@ fn remove_build_files(paths: &Paths) -> Result<()> {
     if !paths.dir.exists() {
         return Ok(());
     }
-    for path in [&paths.build, &paths.built, &paths.previous] {
+    let search = crate::text_rows::SearchBuild::path(&paths.build);
+    for path in [&paths.build, &paths.built, &paths.previous, &search] {
         for suffix in ["-journal", "-wal", "-shm", ""] {
             remove(&with_suffix(path, suffix))?;
         }

@@ -307,6 +307,34 @@ fn a_crash_during_a_build_discards_it_and_restarts_from_the_stored_bytes() {
 
 #[cfg(feature = "faults")]
 #[test]
+fn a_killed_search_copy_discards_its_temporary_trees_and_rebuilds_from_preserved_inputs() {
+    let directory = crash_at("search.copied_table");
+    let paths = Paths::of(directory.path());
+    let search = crate::text_rows::SearchBuild::path(&paths.build);
+    assert!(search.exists(), "the child died before temporary cleanup");
+    assert!(paths.unsynced.exists());
+    let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
+    assert!(!search.exists());
+    let pool = ReadPool::open(&archive).unwrap();
+    let reader = pool.reader().unwrap();
+    assert_eq!(reader.status().unwrap().inputs, 1);
+    assert_eq!(reader.status().unwrap().messages, 0);
+    let progress = reader.input_progress("crashed").unwrap().unwrap();
+    assert_eq!(progress.length, 100);
+    assert!(!progress.parsed);
+    drop(reader);
+    let writer = Writer::start(&archive).unwrap();
+    store_message(&archive, &writer, "crashed", "written before the crash");
+    writer.derive().unwrap();
+    assert_eq!(messages(&serving(&archive)), 1);
+    assert!(
+        !paths.dir.exists(),
+        "temporary search files cannot prevent installation"
+    );
+}
+
+#[cfg(feature = "faults")]
+#[test]
 fn a_crash_between_the_finish_sync_and_the_rename_installs_at_the_next_open() {
     let directory = crash_at("index.build.before_rename");
     let paths = Paths::of(directory.path());

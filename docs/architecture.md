@@ -259,12 +259,19 @@ Building the archive overlaps every stage:
 - consumers of committed positions: derived data (computed on a thread of
   its own and written by the writer only if its inputs are unchanged), the
   request-log view and the completion catalog;
-- at the end of an index build, the writer fills both full-text tables in one
-  transaction in the private index. A bounded scan reads each referenced text
-  group once per window and visits its texts in rowid order. Each table uses
-  its installed schema's tokenizer and configuration. A stop or error rolls
-  back both tables together. The writer builds the trigram and deferred
-  secondary indexes before installing the build as `index.db` ([durability](#durability));
+- during a first build, a search worker builds both native full-text tables
+  beside the private index while later row groups parse and commit. Between
+  transactions the writer snapshots changed texts' current membership and
+  compressed groups; the worker decodes each group once per bounded window,
+  folds its texts and visits each snapshot in text-ID order. One
+  batch may wait behind the worker's current batch; a group above the window
+  allowance is sent alone. Both corpora retain the installed schema's tokenizer,
+  positions and configuration. The temporary trees own no durable progress:
+  a restart seeds another builder from committed text. At build end the writer
+  drains all committed changes, flushes the native trees and copies both in
+  one transaction. A failed copy leaves both earlier tables intact. The writer
+  builds the trigram and deferred secondary indexes before syncing and installing
+  the build as `index.db` ([durability](#durability));
 - live inputs ahead of bulk work.
 
 The writer's transactions are sized by the bytes and rows they cover, not

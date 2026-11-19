@@ -254,8 +254,8 @@ INSERT INTO output_fts(output_fts, rank) VALUES ('hashsize', 67108864);
 -- Search entries still to write. The writer records a
 -- text here in the transaction that stores it, and the search thread writes
 -- the entry shortly after, outside the writer's transaction; a flush writes
--- every waiting entry before it returns. A first build writes none: it
--- builds the search indexes in bulk when it ends.
+-- every waiting entry before it returns. A first build uses committed text
+-- snapshots instead; its independent native builder drains before installation.
 CREATE TABLE search_pending (
   text_id           INTEGER NOT NULL,       -- text.id
   fts_table         INTEGER NOT NULL,       -- which index: 1 text_fts, 2 output_fts (the bits of text.indexed)

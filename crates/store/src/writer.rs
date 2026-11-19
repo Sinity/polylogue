@@ -474,6 +474,15 @@ impl Writer {
         };
         let texts =
             crate::text_rows::TextIds::new(&index, building, archive.memory_budget().keys() / 3)?;
+        let build_search = building
+            .then(|| {
+                crate::text_rows::SearchBuild::start(
+                    &index,
+                    archive.stop(),
+                    archive.memory_budget().search_cache_mib(),
+                )
+            })
+            .transpose()?;
         let segment = if sinex.is_none() {
             Some(crate::blobs::open_writer(&archive_conn, &archive.root)?)
         } else {
@@ -508,6 +517,7 @@ impl Writer {
             index,
             report: WriteReport::default(),
             texts,
+            build_search,
             users,
             // Both open the installed index, once a build has ended.
             search: Search::start(
@@ -864,6 +874,8 @@ struct Inner {
     index: Connection,
     report: WriteReport,
     texts: crate::text_rows::TextIds,
+    /// Disposable first-build postings, fed only between index transactions.
+    build_search: Option<crate::text_rows::SearchBuild>,
     /// User requests, served between the writer's transactions.
     users: Arc<user_queue::UserQueue>,
     /// The search thread ([`search_thread`]): woken after each commit, and
@@ -1323,6 +1335,13 @@ impl Inner {
                     .errors
                     .push(format!("primary cache rebuild: {error}"));
             }
+            if !self.stop.is_cancelled()
+                && let Err(error) = self.feed_build_search()
+            {
+                self.report
+                    .errors
+                    .push(format!("first-build search: {error}"));
+            }
             for (reply, derive) in flushes.drain(..) {
                 let report = std::mem::take(&mut self.report);
                 // Whatever a flush reports written is also derived, except in
@@ -1614,7 +1633,11 @@ impl Inner {
     fn build_deferred(&mut self) -> Result<()> {
         use crate::timing::{Stage, add};
         self.index.flush_prepared_statement_cache();
-        crate::text_rows::build_search_indexes(&self.index)?;
+        self.feed_build_search()?;
+        self.build_search
+            .take()
+            .expect("a first build has a search builder")
+            .finish(&self.index)?;
         let started = std::time::Instant::now();
         self.index.execute(
             "INSERT INTO tool_call_trigram(tool_call_trigram) VALUES ('rebuild')",
@@ -1631,6 +1654,32 @@ impl Inner {
         }
         add(Stage::SecondaryIndexes, started.elapsed());
         Ok(())
+    }
+
+    /// A failed disposable build is seeded again from committed rows on the
+    /// next turn. Neither its queue nor its local high water authorizes progress.
+    fn feed_build_search(&mut self) -> Result<()> {
+        if !self.resolver.upkeep().at_build_end() {
+            return Ok(());
+        }
+        if self.build_search.is_none() {
+            self.build_search = Some(crate::text_rows::SearchBuild::start(
+                &self.index,
+                &self.stop,
+                self.location.memory_budget().search_cache_mib(),
+            )?);
+        }
+        let result = self
+            .build_search
+            .as_mut()
+            .expect("search builder")
+            .capture(&self.index);
+        if result.is_err() {
+            self.build_search.take();
+            self.index
+                .update_hook(None::<fn(rusqlite::hooks::Action, &str, &str, i64)>)?;
+        }
+        result
     }
 
     /// Writes a group in one transaction per database. If it fails, each
