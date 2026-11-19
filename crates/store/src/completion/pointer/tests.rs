@@ -368,6 +368,7 @@ fn resume_validates_the_publication_identity_before_reusing_its_database() {
 
 #[test]
 fn an_offline_reader_cannot_leave_a_resumed_publisher_unwritable() {
+    use std::os::unix::fs::MetadataExt;
     let directory = tempfile::tempdir().unwrap();
     let pointer = CatalogPointer::new(directory.path().join("catalog"));
     let (archive, _lock) = Archive::open_or_create(&directory.path().join("archive")).unwrap();
@@ -406,26 +407,36 @@ fn an_offline_reader_cannot_leave_a_resumed_publisher_unwritable() {
         pinned.values("model", "").unwrap()[0].value,
         "retained-model"
     );
-    match pointer.resume(&metadata, &catalog, "machine") {
-        Ok(Some((mut writer, _, _))) => {
-            writer
-                .update(&metadata, |writer| populate(writer, "new-model"))
-                .unwrap();
-            assert_eq!(
-                pinned.values("model", "").unwrap()[0].value,
-                "retained-model"
-            );
+    let target = fs::read_link(&pointer.path).unwrap();
+    let identity = fs::metadata(&pointer.path).unwrap().ino();
+    let resumed = match pointer.resume(&metadata, &catalog, "machine") {
+        Ok(Some((writer, _, _))) => Some(writer),
+        Err(StoreError::Sqlite(error))
+            if error.sqlite_error_code() == Some(rusqlite::ErrorCode::ReadOnly) =>
+        {
+            None
         }
-        Ok(None) | Err(_) => {
-            let writer = pointer
-                .build(&metadata, |writer| populate(writer, "new-model"))
-                .unwrap();
-            pointer
-                .activate(&writer, &archive.scope_token().unwrap())
-                .unwrap();
-            assert!(matches!(pinned.check(), Err(StoreError::ScopeChanged)));
-        }
-    }
+        Err(error) => panic!("expected transient readonly mapping: {error}"),
+        Ok(None) => panic!("valid catalog was rejected"),
+    };
+    assert_eq!(fs::read_link(&pointer.path).unwrap(), target);
+    assert_eq!(
+        pinned.values("model", "").unwrap()[0].value,
+        "retained-model"
+    );
+    drop(pinned);
+    let mut writer = resumed.unwrap_or_else(|| {
+        pointer
+            .resume(&metadata, &catalog, "machine")
+            .unwrap()
+            .unwrap()
+            .0
+    });
+    writer
+        .update(&metadata, |writer| populate(writer, "new-model"))
+        .unwrap();
+    assert_eq!(fs::read_link(&pointer.path).unwrap(), target);
+    assert_eq!(fs::metadata(&pointer.path).unwrap().ino(), identity);
     let current = CatalogReader::open(&pointer.path, "synthetic")
         .unwrap()
         .unwrap();

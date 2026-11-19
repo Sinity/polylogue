@@ -295,12 +295,13 @@ impl State {
             written_at: self.requests.now().unix_ms(),
         };
         let pointer = completion::CatalogPointer::new(path.to_owned());
-        // This cache is derived. Missing, incompatible or damaged state uses
-        // the same fresh publication path as its initial creation.
+        // Missing, incompatible or damaged derived state gets a fresh snapshot.
+        // A reader's readonly_shm mapping can temporarily prevent a writable
+        // reopen: let the existing worker retry after that reader releases it.
         if self.writer.is_none()
             && self.position.is_none()
-            && let Ok(Some((writer, saved, vocabulary))) =
-                pointer.resume(&metadata, &self.catalog, self.requests.machine())
+            && let Some((writer, saved, vocabulary)) =
+                pointer.resume(&metadata, &self.catalog, self.requests.machine())?
         {
             token.check()?;
             self.vocabulary = Vocabulary::default();

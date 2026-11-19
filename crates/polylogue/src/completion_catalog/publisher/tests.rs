@@ -793,9 +793,15 @@ fn damaged_or_missing_catalog_is_rebuilt_for_the_offline_consumer() {
     refresh();
     let second = std::fs::read_link(&path).unwrap();
     assert_ne!(first, second);
+    let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&path, permissions).unwrap();
+    refresh();
+    let third = std::fs::read_link(&path).unwrap();
+    assert_ne!(second, third);
     std::fs::remove_file(&path).unwrap();
     refresh();
-    assert_ne!(second, std::fs::read_link(&path).unwrap());
+    assert_ne!(third, std::fs::read_link(&path).unwrap());
 }
 
 #[test]

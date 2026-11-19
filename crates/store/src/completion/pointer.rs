@@ -55,7 +55,33 @@ impl CatalogPointer {
             .path
             .parent()
             .or_invalid("completion catalog has no parent")?;
-        let resumed = CatalogWriter::resume(&parent.join(&target), current, catalog, machine)?;
+        let resumed = match CatalogWriter::resume(&parent.join(&target), current, catalog, machine)
+        {
+            Ok(resumed) => resumed,
+            Err(error) => {
+                let damaged = match &error {
+                    StoreError::Sqlite(sqlite) => !matches!(
+                        sqlite.sqlite_error_code(),
+                        Some(
+                            rusqlite::ErrorCode::ReadOnly
+                                | rusqlite::ErrorCode::DatabaseBusy
+                                | rusqlite::ErrorCode::DatabaseLocked
+                                | rusqlite::ErrorCode::SystemIoFailure
+                                | rusqlite::ErrorCode::DiskFull
+                                | rusqlite::ErrorCode::OperationInterrupted
+                                | rusqlite::ErrorCode::CannotOpen
+                        )
+                    ),
+                    StoreError::Json(_) | StoreError::Invalid(_) => true,
+                    _ => false,
+                };
+                if !damaged {
+                    return Err(error);
+                }
+                eprintln!("polylogue: completion catalog: cannot resume ({error}); rebuilding");
+                None
+            }
+        };
         if fs::read_link(&self.path).ok().as_ref() != Some(&target) {
             return Ok(None);
         }
