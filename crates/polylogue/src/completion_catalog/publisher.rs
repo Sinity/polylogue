@@ -153,11 +153,7 @@ struct Vocabulary {
     name_users: BTreeMap<String, std::collections::BTreeSet<String>>,
     kept: BTreeMap<String, polylogue_query::Kept>,
 }
-#[derive(Default)]
-struct Family {
-    names: BTreeMap<String, usize>,
-    sources: std::collections::BTreeSet<String>,
-}
+type Family = completion::Dependencies;
 impl Vocabulary {
     fn install_family(&mut self, id: String, family: Family) {
         if let Some(old) = self.families.remove(&id) {
@@ -280,9 +276,6 @@ impl State {
             return Ok(());
         }
         let position = reader.change_position()?;
-        if self.position.as_ref() == Some(&position) {
-            return Ok(());
-        }
         if self
             .writer
             .as_ref()
@@ -302,6 +295,29 @@ impl State {
             written_at: self.requests.now().unix_ms(),
         };
         let pointer = completion::CatalogPointer::new(path.to_owned());
+        if self.writer.is_none() && self.position.is_none() {
+            // This cache is derived. Missing, incompatible or damaged state uses
+            // the same fresh publication path as its initial creation.
+            if let Ok(Some((writer, saved, vocabulary))) =
+                pointer.resume(&metadata, &self.catalog, self.requests.machine())
+            {
+                token.check()?;
+                self.vocabulary = Vocabulary::default();
+                for (id, family) in vocabulary.families {
+                    self.vocabulary.install_family(id, family);
+                }
+                self.vocabulary.kept = vocabulary.kept;
+                self.position = Some(saved.position);
+                self.writer = Some((position.generation.clone(), writer));
+            }
+        }
+        if self.position.as_ref() == Some(&position) {
+            pointer.activate(
+                &self.writer.as_ref().expect("resumed publication").1,
+                &token,
+            )?;
+            return Ok(());
+        }
         let after = self.position.clone();
         let update = self.prepare_vocabulary(
             reader,
@@ -644,9 +660,14 @@ impl State {
         update: &VocabularyUpdate,
         reader: &Reader<'_>,
     ) -> Result<()> {
+        writer.put_publisher_machine(self.requests.machine())?;
         let mut put = |change| writer.apply(change);
         let first = match sessions {
             Sessions::All => {
+                polylogue_store::fault::check(
+                    "completion.full_snapshot",
+                    &reader.change_position()?.generation,
+                )?;
                 reader.visit_completion_sessions(None, &mut put)?;
                 true
             }
@@ -733,8 +754,12 @@ impl State {
                 relation_scope: Some(relation_scope),
             })?;
         }
-        for (kept, _) in update.kept.values() {
+        for (id, family) in &update.families {
+            writer.put_dependencies(id, family)?;
+        }
+        for (id, (kept, binding)) in &update.kept {
             writer.put_kept(kept)?;
+            writer.put_kept_binding(id, binding.as_ref())?;
         }
         let mut keys: std::collections::BTreeSet<_> = update.settings.iter().cloned().collect();
         if first || update.replaced {

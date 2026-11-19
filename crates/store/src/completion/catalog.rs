@@ -14,7 +14,7 @@ use std::{
     time::Duration,
 };
 
-const VERSION: u32 = 6;
+const VERSION: u32 = 7;
 const SCHEMA: &str = "
 CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL) WITHOUT ROWID;
 CREATE TABLE session(id TEXT PRIMARY KEY,native_id TEXT NOT NULL,prefix TEXT NOT NULL,title TEXT NOT NULL,title_key TEXT NOT NULL,origin TEXT NOT NULL,repo TEXT,last_activity INTEGER,first_prompt TEXT) WITHOUT ROWID;
@@ -80,6 +80,18 @@ pub struct Setting {
     pub key: String,
     pub value: polylogue_model::settings::Current,
     pub choices: Vec<String>,
+}
+
+/// Derived dependencies needed to continue publication after reopening the cache.
+#[derive(Default, Debug, Serialize, Deserialize)]
+pub struct Dependencies {
+    pub names: BTreeMap<String, usize>,
+    pub sources: std::collections::BTreeSet<String>,
+}
+#[derive(Default)]
+pub struct PublisherVocabulary {
+    pub families: BTreeMap<String, Dependencies>,
+    pub kept: BTreeMap<String, polylogue_query::Kept>,
 }
 
 pub struct CatalogWriter {
@@ -198,6 +210,79 @@ impl CatalogWriter {
             path: path.to_owned(),
             identity: (file.dev(), file.ino()),
         })
+    }
+    pub(super) fn resume(
+        path: &Path,
+        current: &Metadata,
+        catalog: &query_language::catalog::Catalog,
+        machine: &str,
+    ) -> Result<Option<(Self, Metadata, PublisherVocabulary)>> {
+        let Some(cache) = CatalogReader::open(path, &current.archive)? else {
+            return Ok(None);
+        };
+        let position = &cache.metadata.position;
+        if position.generation != current.position.generation
+            || position.index > current.position.index
+            || position.archive > current.position.archive
+            || serde_json::to_value(cache.catalog()?)? != serde_json::to_value(catalog)?
+            || cache.conn.scalar::<String>(
+                "SELECT value FROM metadata WHERE key='publisher_machine'",
+                [],
+            )? != machine
+        {
+            return Ok(None);
+        }
+        let mut vocabulary = PublisherVocabulary::default();
+        let mut statement = cache.conn.prepare("SELECT kind,id,payload FROM item WHERE kind IN ('dependencies','kept_binding') ORDER BY kind,id")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let kind: String = row.get(0)?;
+            let id: String = row.get(1)?;
+            let payload: String = row.get(2)?;
+            if kind == "dependencies" {
+                vocabulary
+                    .families
+                    .insert(id, serde_json::from_str(&payload)?);
+            } else {
+                let kept: polylogue_query::Kept = serde_json::from_str(&payload)?;
+                kept.validate_output_metadata()
+                    .map_err(|error| StoreError::Invalid(error.to_string()))?;
+                vocabulary.kept.insert(id, kept);
+            }
+        }
+        let writer = Self::open(path)?;
+        cache.check()?;
+        if writer.identity != cache.identity {
+            return Ok(None);
+        }
+        Ok(Some((writer, cache.metadata.clone(), vocabulary)))
+    }
+    /// Publication dependencies share the transaction and position of their visible rows.
+    pub fn put_dependencies(&mut self, id: &str, dependencies: &Dependencies) -> Result<()> {
+        if dependencies.names.is_empty() && dependencies.sources.is_empty() {
+            self.conn
+                .execute("DELETE FROM item WHERE kind='dependencies' AND id=?1", [id])?;
+            Ok(())
+        } else {
+            self.put_item("dependencies", id, "", dependencies)
+        }
+    }
+    pub fn put_kept_binding(
+        &mut self,
+        id: &str,
+        binding: Option<&polylogue_query::Kept>,
+    ) -> Result<()> {
+        if let Some(binding) = binding {
+            self.put_item("kept_binding", id, "", binding)
+        } else {
+            self.conn
+                .execute("DELETE FROM item WHERE kind='kept_binding' AND id=?1", [id])?;
+            Ok(())
+        }
+    }
+    pub fn put_publisher_machine(&mut self, machine: &str) -> Result<()> {
+        self.conn.execute("INSERT INTO metadata VALUES('publisher_machine',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [machine])?;
+        Ok(())
     }
     #[cfg(test)]
     pub(crate) fn connection(&self) -> &Connection {
@@ -455,7 +540,7 @@ impl CatalogWriter {
             self.remove_values(&format!("assertion:{family}"))?;
         }
         self.conn.execute(
-            "DELETE FROM item WHERE kind IN ('saved','kept','setting')",
+            "DELETE FROM item WHERE kind IN ('saved','kept','setting','dependencies','kept_binding')",
             [],
         )?;
         Ok(())

@@ -29,6 +29,48 @@ impl CatalogPointer {
         ));
         CatalogWriter::build(&target, metadata, populate)
     }
+    /// Resume only the cache-local database still selected by this pointer.
+    pub fn resume(
+        &self,
+        current: &Metadata,
+        catalog: &query_language::catalog::Catalog,
+        machine: &str,
+    ) -> Result<Option<(CatalogWriter, Metadata, super::PublisherVocabulary)>> {
+        let target = match fs::read_link(&self.path) {
+            Ok(target) => target,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidInput
+                ) =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if !Self::owns(&target) {
+            return Ok(None);
+        }
+        let parent = self
+            .path
+            .parent()
+            .or_invalid("completion catalog has no parent")?;
+        let resumed = CatalogWriter::resume(&parent.join(&target), current, catalog, machine)?;
+        if fs::read_link(&self.path).ok().as_ref() != Some(&target) {
+            return Ok(None);
+        }
+        Ok(resumed)
+    }
+    fn owns(target: &Path) -> bool {
+        target.components().count() == 1
+            && matches!(
+                target.components().next(),
+                Some(std::path::Component::Normal(_))
+            )
+            && target
+                .to_str()
+                .is_some_and(|name| name.starts_with("catalog.") && name.ends_with(".db"))
+    }
     /// Called synchronously by the holder of the read scope, never by a commit wake.
     pub fn invalidate(&self) -> Result<()> {
         let previous = fs::read_link(&self.path).ok();
@@ -82,14 +124,7 @@ impl CatalogPointer {
     // Cleanup cannot change the outcome of a replacement already installed.
     fn retire(&self, target: &Path) {
         let Some(name) = target.to_str() else { return };
-        if target.components().count() != 1
-            || !matches!(
-                target.components().next(),
-                Some(std::path::Component::Normal(_))
-            )
-            || !name.starts_with("catalog.")
-            || !name.ends_with(".db")
-        {
+        if !Self::owns(target) {
             return;
         }
         let Some(parent) = self.path.parent() else {
