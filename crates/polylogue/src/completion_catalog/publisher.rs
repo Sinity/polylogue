@@ -266,7 +266,7 @@ impl State {
         if self
             .writer
             .as_ref()
-            .is_some_and(|(_, writer)| !writer.is_current_file())
+            .is_none_or(|(_, writer)| !writer.is_current_file())
         {
             self.writer = None;
             self.position = None;

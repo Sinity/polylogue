@@ -701,6 +701,13 @@ fn reopened_publication_skips_the_source_snapshot_and_keeps_offline_completion_c
     assert_eq!(std::fs::read_link(&path).unwrap(), target);
     assert_eq!(std::fs::metadata(&path).unwrap().ino(), inode);
     assert_eq!(std::fs::read(&path).unwrap(), before);
+    // A failed source delta read can drop the taken writer before returning.
+    // Its in-memory cursor cannot stand in for the committed catalog connection.
+    state.writer = None;
+    state
+        .refresh(&reads.reader().unwrap(), &path, "synthetic")
+        .unwrap();
+    assert_eq!(std::fs::read_link(&path).unwrap(), target);
     let complete = |text: &str| super::super::complete_file(&path, "synthetic", text, text.len());
     assert!(
         complete("model:retained")
