@@ -82,9 +82,8 @@ fn standalone_generation_change_revokes_pointer_before_reopen_finishes() {
     let root = directory.path().join("archive");
     let pointer = Arc::new(CatalogPointer::new(directory.path().join("catalog")));
     let invalidator = Arc::clone(&pointer);
-    let _registration =
-        Archive::register_scope_invalidator(&root, move || invalidator.invalidate()).unwrap();
-    let (archive, lock) = Archive::open_or_create(&root).unwrap();
+    let (archive, lock, registration) =
+        Archive::open_or_create_with_invalidator(&root, move || invalidator.invalidate()).unwrap();
     let token = archive.scope_token().unwrap();
     let writer = build(&pointer, "first", "cached");
     pointer.activate(&writer, &token).unwrap();
@@ -95,9 +94,13 @@ fn standalone_generation_change_revokes_pointer_before_reopen_finishes() {
     )
     .unwrap();
     drop(conn);
+    drop(writer);
+    drop(registration);
     drop(lock);
     drop(archive);
-    let (_archive, _lock) = Archive::open_or_create(&root).unwrap();
+    let invalidator = Arc::clone(&pointer);
+    let (_archive, _lock, _registration) =
+        Archive::open_or_create_with_invalidator(&root, move || invalidator.invalidate()).unwrap();
     assert!(!pointer.path.exists());
     assert!(matches!(token.check(), Err(StoreError::ScopeChanged)));
 }
@@ -458,4 +461,59 @@ fn resume_does_not_follow_a_cache_target_into_another_file() {
     std::os::unix::fs::symlink("catalog.link.db", &pointer.path).unwrap();
     assert!(pointer.resume(&metadata, &catalog, "machine").is_err());
     assert_eq!(fs::read(&target).unwrap(), before);
+}
+
+#[test]
+fn failed_standalone_open_revokes_the_previous_catalog() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("archive");
+    let (archive, lock) = Archive::open_or_create(&root).unwrap();
+    let token = archive.scope_token().unwrap();
+    let pointer = Arc::new(CatalogPointer::new(directory.path().join("catalog")));
+    let writer = build(&pointer, "generation", "cached");
+    pointer.activate(&writer, &token).unwrap();
+    let conn = crate::archive::open_write(&archive.archive_db(), 1).unwrap();
+    conn.execute_batch("PRAGMA user_version=999").unwrap();
+    drop(conn);
+    drop(writer);
+    drop(lock);
+    drop(archive);
+    let invalidator = Arc::clone(&pointer);
+    assert!(
+        Archive::open_or_create_with_invalidator(&root, move || invalidator.invalidate()).is_err()
+    );
+    assert!(!pointer.path.exists());
+    assert!(matches!(token.check(), Err(StoreError::ScopeChanged)));
+}
+
+#[test]
+fn unknown_and_primary_startup_revoke_the_previous_catalog() {
+    for mode in ["primary", "cache", "blocked"] {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("archive");
+        let (archive, lock) = if mode == "blocked" {
+            Archive::open_or_create(&root).unwrap()
+        } else {
+            Archive::open_primary(&root, &root.join("bytes")).unwrap()
+        };
+        let pointer = Arc::new(CatalogPointer::new(directory.path().join("catalog")));
+        let writer = build(&pointer, "generation", "cached");
+        pointer
+            .activate(&writer, &archive.scope_token().unwrap())
+            .unwrap();
+        drop(writer);
+        drop(lock);
+        drop(archive);
+        let invalidator = Arc::clone(&pointer);
+        let invalidate = move || invalidator.invalidate();
+        let opened = match mode {
+            "primary" => {
+                Archive::open_primary_with_invalidator(&root, &root.join("bytes"), invalidate)
+            }
+            "cache" => Archive::open_primary_cache_with_invalidator(&root, invalidate),
+            _ => Archive::open_blocked_with_invalidator(&root, invalidate),
+        };
+        assert!(opened.is_ok(), "{mode}");
+        assert!(!pointer.path.exists(), "{mode}");
+    }
 }

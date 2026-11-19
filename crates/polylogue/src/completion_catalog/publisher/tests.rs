@@ -836,3 +836,80 @@ fn reopening_keeps_typed_result_bindings_for_new_saved_definitions() {
             .any(|candidate| candidate.value == "title")
     );
 }
+
+#[test]
+fn full_standalone_restart_retains_publication_and_applies_deltas_without_a_snapshot() {
+    use std::os::unix::fs::MetadataExt;
+    use std::time::{Duration, Instant};
+    let mut daemon = crate::test_daemon::start("A synthetic prompt for completion restart");
+    let path = daemon.daemon.completion_path.clone();
+    let key = crate::runtime_dir::archive_key(&daemon.daemon.archive.root);
+    let wait = |name: &str| {
+        let text = format!("sessions where tag:{}", &name[..name.len() - 1]);
+        let until = Instant::now() + Duration::from_secs(5);
+        loop {
+            if super::super::complete_file(&path, &key, &text, text.len())
+                .iter()
+                .any(|candidate| candidate.value == name)
+            {
+                break;
+            }
+            assert!(Instant::now() < until, "completion never published {name}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    let tag = |daemon: &crate::daemon::service::Daemon, name: &str| {
+        crate::test_answers::step(crate::test_daemon::call(
+            daemon,
+            "rows",
+            serde_json::json!({
+                "selection":"session:claude-code:s1", "steps":[{"verb":"tag", "name":name}]
+            }),
+        ));
+    };
+    tag(&daemon.daemon, "restart-before");
+    wait("restart-before");
+    let saved = completion::CatalogReader::open(&path, &key)
+        .unwrap()
+        .unwrap()
+        .metadata
+        .position;
+    let target = std::fs::read_link(&path).unwrap();
+    let inode = std::fs::metadata(&path).unwrap().ino();
+    daemon.restart_after_stop(|| {
+        polylogue_store::fault::arm(
+            "completion.full_snapshot",
+            &saved.generation,
+            polylogue_store::fault::Action::Fail,
+            0,
+            1,
+        );
+    });
+    assert_eq!(std::fs::read_link(&path).unwrap(), target);
+    assert_eq!(std::fs::metadata(&path).unwrap().ino(), inode);
+    wait("restart-before");
+    tag(&daemon.daemon, "restart-after");
+    wait("restart-after");
+    wait("restart-before");
+    assert_eq!(std::fs::read_link(&path).unwrap(), target);
+    assert_eq!(std::fs::metadata(&path).unwrap().ino(), inode);
+    let current = completion::CatalogReader::open(&path, &key)
+        .unwrap()
+        .unwrap()
+        .metadata
+        .position;
+    assert_eq!(current.generation, saved.generation);
+    assert!(current.index > saved.index || current.archive > saved.archive);
+    // The untouched fault proves the real restarted worker never read all sessions.
+    let error = State::new(false, daemon.daemon.config.requests.clone())
+        .refresh(
+            &daemon.daemon.reads.reader().unwrap(),
+            &path.with_file_name("fresh"),
+            &key,
+        )
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("completion.full_snapshot"),
+        "{error}"
+    );
+}
