@@ -209,7 +209,9 @@ impl CatalogWriter {
         let before = fs::metadata(path)?;
         let conn = Connection::open_with_flags(
             path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
         configure(&conn)?;
         // New readers must keep the previous committed vocabulary while a
@@ -235,10 +237,19 @@ impl CatalogWriter {
         catalog: &query_language::catalog::Catalog,
         machine: &str,
     ) -> Result<Option<(Self, Metadata, PublisherVocabulary)>> {
-        // The publisher must establish the writable WAL mapping before any
-        // readonly_shm reader in this process. Opening a CatalogReader first
-        // can leave the reopened writer unable to update the shared mapping.
+        // Validate the derived format before opening a writer. Release this
+        // readonly_shm mapping first, so it cannot make our writer read-only.
+        let identity = {
+            let Some(cache) = CatalogReader::open(path, &current.archive)? else {
+                return Ok(None);
+            };
+            cache.check()?;
+            cache.identity
+        };
         let writer = Self::open(path)?;
+        if writer.identity != identity {
+            return Ok(None);
+        }
         writer.conn.execute_batch("BEGIN IMMEDIATE")?;
         let loaded: Result<Option<(Metadata, PublisherVocabulary)>> = (|| {
             let Some(metadata) = read_metadata(&writer.conn, &current.archive)? else {

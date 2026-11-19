@@ -414,3 +414,34 @@ fn an_offline_reader_cannot_leave_a_resumed_publisher_unwritable() {
         .unwrap();
     assert_eq!(current.values("model", "").unwrap()[0].value, "new-model");
 }
+
+#[test]
+fn resume_does_not_follow_a_cache_target_into_another_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let metadata = Metadata {
+        archive: "synthetic".into(),
+        position: polylogue_model::ChangePosition {
+            generation: "g".into(),
+            index: 1,
+            archive: 1,
+        },
+        written_at: 1,
+    };
+    let catalog = query_language::catalog::Catalog::new("sessions");
+    let elsewhere = CatalogPointer::new(outside.path().join("catalog"));
+    let writer = elsewhere
+        .build(&metadata, |writer| {
+            writer.put_catalog(&catalog)?;
+            writer.put_publisher_machine("machine")
+        })
+        .unwrap();
+    let target = writer.path.clone();
+    drop(writer);
+    let before = fs::read(&target).unwrap();
+    std::os::unix::fs::symlink(&target, directory.path().join("catalog.link.db")).unwrap();
+    let pointer = CatalogPointer::new(directory.path().join("catalog"));
+    std::os::unix::fs::symlink("catalog.link.db", &pointer.path).unwrap();
+    assert!(pointer.resume(&metadata, &catalog, "machine").is_err());
+    assert_eq!(fs::read(&target).unwrap(), before);
+}
