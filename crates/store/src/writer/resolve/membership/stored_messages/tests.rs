@@ -196,7 +196,7 @@ fn measured(conn: &Connection, pks: &[i64]) -> (Vec<ReadingFact>, u64) {
         }),
     )
     .unwrap();
-    let result = (|| {
+    let result = {
         let mut all = Vec::new();
         let mut layouts = BTreeMap::new();
         for pks in pks.chunks(BATCH) {
@@ -213,7 +213,7 @@ fn measured(conn: &Connection, pks: &[i64]) -> (Vec<ReadingFact>, u64) {
             }
         }
         all
-    })();
+    };
     conn.progress_handler(0, None::<fn() -> bool>).unwrap();
     (result, count.load(Ordering::Relaxed))
 }
