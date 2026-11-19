@@ -34,6 +34,8 @@ impl Requests {
             pending: None,
             yielding: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             serving: false,
+            commits: None,
+            commit_wake: false,
         }
     }
 
@@ -46,6 +48,10 @@ impl Requests {
                 match self.receiver.try_recv() {
                     // The watcher owns the paths; this is only its wake-up.
                     Ok(LoopMsg::Changed) => continue,
+                    Ok(LoopMsg::Committed) => {
+                        self.commit_wake = true;
+                        continue;
+                    }
                     Ok(message) => {
                         self.pending = Some(message);
                         self.yielding
@@ -60,13 +66,12 @@ impl Requests {
     }
 
     fn recv_timeout(&mut self, timeout: Duration) -> Result<LoopMsg, RecvTimeoutError> {
-        self.pending
-            .take()
+        self.queued()
             .map_or_else(|| self.receiver.recv_timeout(timeout), Ok)
     }
 
     fn recv(&mut self) -> Result<LoopMsg, RecvTimeoutError> {
-        self.pending.take().map_or_else(
+        self.queued().map_or_else(
             || {
                 self.receiver
                     .recv()
@@ -77,9 +82,13 @@ impl Requests {
     }
 
     fn try_recv(&mut self) -> Result<LoopMsg, std::sync::mpsc::TryRecvError> {
+        self.queued().map_or_else(|| self.receiver.try_recv(), Ok)
+    }
+
+    fn queued(&mut self) -> Option<LoopMsg> {
         self.pending
             .take()
-            .map_or_else(|| self.receiver.try_recv(), Ok)
+            .or_else(|| std::mem::take(&mut self.commit_wake).then_some(LoopMsg::Committed))
     }
 }
 
@@ -379,7 +388,13 @@ impl Engine {
         let continuing = self.pass_open;
         let started = Instant::now();
         self.load()?;
-        if discover && !self.readings_pending {
+        let content_committed = self
+            .requests
+            .as_ref()
+            .and_then(|requests| requests.commits.as_ref())
+            .and_then(|commits| commits.try_recv().ok())
+            .is_some_and(|committed| committed.content);
+        if content_committed || (discover && !self.readings_pending) {
             use polylogue_model::freshness::{CompletenessDimension, CompletenessReason};
             self.readings_pending = match self
                 .reads
@@ -2373,7 +2388,17 @@ impl Engine {
             None
         };
         self.wake = Some(tx.clone());
-        self.requests = Some(Requests::new(rx));
+        let mut requests = Requests::new(rx);
+        if self.archive.is_primary() {
+            let wake = tx.clone();
+            requests.commits = Some(self.writer.completion_commits_with_wake(
+                polylogue_store::completion::Committed::CONTENT,
+                move || {
+                    let _ = wake.send(LoopMsg::Committed);
+                },
+            ));
+        }
+        self.requests = Some(requests);
         // The stop request wakes a loop waiting between passes.
         let stop = self.archive.stop().clone();
         let _stop_wake = stop.on_cancel(move || {

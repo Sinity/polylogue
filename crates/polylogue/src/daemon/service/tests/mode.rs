@@ -1,3 +1,4 @@
+mod confirmed_inputs;
 mod withdrawals;
 
 use super::*;

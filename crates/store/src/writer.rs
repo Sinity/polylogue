@@ -614,6 +614,16 @@ impl WriterSender {
         self.0.commits.subscribe()
     }
 
+    /// Subscribe before the caller's first index read; the callback only
+    /// queues a wake in its existing inbox.
+    pub fn completion_commits_with_wake(
+        &self,
+        interests: crate::completion::Committed,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> crate::completion::CommitSubscription {
+        self.0.commits.subscribe_with_wake(interests, wake)
+    }
+
     pub fn store_group(
         &self,
         group: Vec<crate::staging::PreparedBatch>,
