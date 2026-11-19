@@ -1,8 +1,8 @@
 //! Executing the one compiled query and shaping declared public values.
-use super::compile::PageColumns;
+use super::compile::{PageColumns, SearchPage};
 use super::{ColKind, Program};
 use crate::ResultExt as _;
-use crate::search::{SearchDriver, SnippetIndex, SnippetQuery, Within};
+use crate::search::{SnippetIndex, SnippetQuery, Within};
 use crate::selection::{sql_value, values};
 use crate::{Reader, SqlValue, selection::SelectionError};
 use serde_json::Value;
@@ -236,37 +236,32 @@ impl Reader<'_> {
                     super::compile::Statements::Keyed(rows) => rows.search.as_ref(),
                     _ => None,
                 };
-                let driver = if limit != 0
-                    && let Some(search) = search
-                    && let Some(scope) = &search.scope
-                {
-                    self.search_driver(
-                        &scope.blocks,
-                        &params,
-                        search.index,
-                        &search.expression,
-                        scope.recent.is_some() && !reverse && limit > 0,
+                let owners = search.and_then(|search| match &search.page {
+                    SearchPage::Owners { keys } => Some(keys),
+                    SearchPage::Recent { keys, .. } if !reverse && limit > 0 => Some(keys),
+                    _ => None,
+                });
+                let page = owners.map_or(page, |keys| {
+                    super::compile::Statements::Derived(super::compile::DerivedRows {
+                        rows: keys.clone(),
+                        count: None,
+                        members: None,
+                    })
+                    .page(
+                        &program.order,
+                        program.params.len(),
+                        after.is_some(),
+                        reverse,
+                        PageColumns::All,
                     )
-                    .map_err(SelectionError::from)
-                    .map_err(E::from)?
-                } else {
-                    SearchDriver::Index
-                };
-                if driver == SearchDriver::Scope {
-                    params[search.unwrap().scope.as_ref().unwrap().mode - 1] = SqlValue::Int(1);
-                }
+                });
                 let selected = search.filter(|search| {
-                    driver == SearchDriver::Recency
-                        || (driver == SearchDriver::Index
-                            && !reverse
-                            && limit >= 0
-                            && search
-                                .scope
-                                .as_ref()
-                                .is_none_or(|scope| scope.recent.is_none()))
+                    !reverse
+                        && limit > 0
+                        && matches!(search.page, SearchPage::Ranked | SearchPage::Recent { .. })
                 });
                 if let Some(search) = selected {
-                    let keys = if driver == SearchDriver::Recency {
+                    let keys = if matches!(search.page, SearchPage::Recent { .. }) {
                         self.recent_keys(program, &page, params, search, after, limit)
                     } else {
                         self.ranked_keys(&page, params, search, limit)
@@ -338,10 +333,14 @@ impl Reader<'_> {
         limit: i64,
     ) -> Result<Vec<Value>, SelectionError> {
         use super::compile::{DerivedRows, Statements};
-        let scope = search.scope.as_ref().expect("recency scope");
-        let recent = scope.recent.as_ref().expect("recency candidate keys");
+        let SearchPage::Recent {
+            candidates, batch, ..
+        } = &search.page
+        else {
+            unreachable!("recency candidate keys")
+        };
         let candidates = Statements::Derived(DerivedRows {
-            rows: recent.keys.clone(),
+            rows: candidates.clone(),
             count: None,
             members: None,
         })
@@ -383,8 +382,7 @@ impl Reader<'_> {
             if batch.is_empty() {
                 break;
             }
-            params[scope.mode - 1] = SqlValue::Int(2);
-            params[recent.batch - 1] =
+            params[*batch - 1] =
                 SqlValue::Text(serde_json::to_string(&batch).expect("row keys serialize"));
             let remaining = limit - rows.len() as i64;
             *params.last_mut().expect("result page limit") = SqlValue::Int(remaining);
@@ -425,7 +423,7 @@ impl Reader<'_> {
         );
         let mut prefix = limit.max(1);
         loop {
-            params[search.limit - 1] = SqlValue::Int(prefix);
+            params[search.prefix - 1] = SqlValue::Int(prefix);
             let rows = self.query(page, &params)?;
             if prefix < 0 {
                 return Ok(rows);

@@ -30,19 +30,17 @@ Command, verb and unit names and saved query names are not searched as plain wor
 
 ## The search leg
 
-The compiler emits the non-text conditions as a filter plan plus a **search leg** (index, match expression, whether rank and order are needed). A word matching at most 256 eligible block occurrences uses the index directly. For larger index legs, the store chooses among three plans:
+The compiler keeps non-text conditions and the search terms bound to the same query. Session and message search pages use separate statements for three physical paths:
 
-- **scope drives** when the non-text scope has at most 256 text blocks, or 64 times its block count is below the word's document frequency;
-- **the index drives** otherwise: rank inside the index, filter by scope in rank order, and fetch rank batches of doubling size until the page is full, reading ties through;
-- **recency drives** for a recency order with a frequent word: walk the newest sessions' blocks newest first, checking each text.
+- **Supplied owners:** exact references or an AND-constrained set of row identities enumerates those owners' eligible blocks. Distinct text identities are checked in the index once and joined back only through those blocks. An OR qualifies only when each branch restricts identities. Ordinary kind, directory, repository and time predicates do not trigger a speculative scan to establish the scope's size.
+- **Ranked index:** other relevance pages start with ranked index texts, expand only their block occurrences and ancestors, and hydrate returned rows. The ranked prefix grows until the last owner's best score is strictly better than the next unseen text score, reading ties through. Counts and complete index selections use all matching texts.
+- **Ordered owners:** a direct newest-first session or message page without supplied identities walks candidate owners in its final time/identity order and checks each current batch's eligible texts. Its statement contains no global matching-block expansion. A shared descendant cannot return a parent outside that batch. Full or reverse reads use the complete index statement.
 
-All three return the same rows in the same order. Rows are joined to blocks, messages and sessions only for the page and what fills it. The index prefix is combined into each parent row's best score before the cursor applies, so weaker later hits cannot reintroduce an earlier row. Prefix aggregation uses bounded temporary storage; cursors carry only order values.
+The physical choice requires no term-frequency or scope-size probe. The index path can read more matching occurrences than a scope path would for a selective ordinary filter; paired workloads check that tradeoff. Choosing a path changes no membership, rank, source or ordering rule. The same query's count remains exact and independent of the page's transfer limit.
 
-For this cost decision, the word's frequency counts eligible block occurrences before the non-text scope, including every block that shares an indexed text. The full-text vocabulary counts distinct stored texts; it can make a body repeated across thousands of messages look rare and underestimate expansion work. The store first checks for a rare index leg, so deciding a cheap search does not require walking a large scope with few eligible blocks. Otherwise it probes scope blocks and matching block occurrences together, stopping as soon as the 256-block or 64-to-one comparison is decided. The probe stores no prefix and changes only the physical plan.
+The index prefix is combined into each parent row's best score before the cursor applies, so weaker later hits cannot reintroduce an earlier row. Prefix aggregation uses SQLite temporary storage; cursors carry only order values. Transfer batches bound memory, never the rows a valid query can return. A page's snippet batch already supplies its owners, so it reads their eligible blocks once and checks each distinct text without a global search-planning pass.
 
-When scope drives a batch of snippets, eligible block identities are computed and stored once for the text probes and source selection. The planning probe streams those identities so deciding the plan does not first read the whole scope.
-
-For a frequent word in a direct newest-first session or message sort, candidate parent rows stream in the requested time order. Bounded current batches use the same scoped best-source selection. Reading continues until the page fills or the candidates end; a batch size never limits the reply. Shared descendants cannot return a parent row outside the current batch or repeat one from an earlier batch. Only the returned order values enter the continuation.
+Other text-search units and relational pipelines retain their exact existing lowering. Where a stage requires a complete population or a different order, an index prefix must not change its meaning.
 
 ## Counts
 

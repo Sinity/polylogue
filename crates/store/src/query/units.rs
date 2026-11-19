@@ -84,7 +84,8 @@ pub struct Hits<'a> {
     pub cte: &'a str,
     pub index: Index,
     pub source: bool,
-    pub scope: Option<(&'a str, &'a str)>,
+    /// Eligible (owner_pk, block, text_id) rows for supplied owners.
+    pub scope: Option<&'a str>,
 }
 
 impl Hits<'_> {
@@ -101,28 +102,22 @@ impl Hits<'_> {
     /// Scope execution starts from in-scope block keys, rather than expanding
     /// every global reference to a shared matching text and filtering later.
     fn blocks(&self) -> (Vec<String>, String) {
-        let Some((mode, scope)) = self.scope else {
-            return (
+        match self.scope {
+            None => (
                 vec![],
                 format!(
-                    "FROM {} h CROSS JOIN block xb ON xb.text_id=h.text_id",
+                    "FROM {} h CROSS JOIN block xb INDEXED BY block_text ON xb.text_id=h.text_id",
                     self.cte
                 ),
-            );
-        };
-        let blocks = format!("{}_blocks", self.cte);
-        let cte = format!(
-            "{blocks} AS NOT MATERIALIZED (\
-             SELECT b.pk AS block,h.rank FROM {} h \
-             CROSS JOIN block b ON b.text_id=h.text_id WHERE {mode}=0 UNION ALL \
-             SELECT b.pk,h.rank FROM {scope} e CROSS JOIN block b ON b.pk=e.block \
-             CROSS JOIN {} h ON h.text_id=b.text_id WHERE {mode}<>0)",
-            self.cte, self.cte
-        );
-        (
-            vec![cte],
-            format!("FROM {blocks} h CROSS JOIN block xb ON xb.pk=h.block"),
-        )
+            ),
+            Some(scope) => (
+                vec![],
+                format!(
+                    "FROM {scope} e CROSS JOIN block xb ON xb.pk=e.block CROSS JOIN {} h ON h.text_id=xb.text_id",
+                    self.cte
+                ),
+            ),
+        }
     }
 
     /// Prose excludes harness prompts except summaries. Unknown authorship
@@ -170,11 +165,24 @@ fn documents_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
 fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
     let sessions = format!("{}_sessions", h.cte);
     let (mut ctes, blocks) = h.blocks();
-    // Find the owning sessions from the hits, then their subagent ancestors.
-    // A session's best own source suffices for every ancestor. UNION over
-    // the session and kept score/source bounds cycles and shared descendants.
-    // Recursive expansion stays driven by those hits even after ANALYZE.
-    let rows = if h.source {
+    // Supplied blocks retain their selected root. Global hits instead walk
+    // ancestors once; UNION bounds cycles and shared descendants.
+    let rows = if let Some(owners) = h.scope {
+        let best = crate::search::best_source("candidates", "hit_session");
+        format!(
+            "{sessions} AS MATERIALIZED (WITH candidates AS MATERIALIZED (\
+             SELECT e.owner_pk AS hit_session,xb.pk AS block,xm.at,xm.id AS message,h.rank \
+             FROM {owners} e CROSS JOIN block xb ON xb.pk=e.block \
+             CROSS JOIN {texts} h ON h.text_id=xb.text_id \
+             CROSS JOIN message xm ON xm.pk=xb.message_pk \
+             WHERE {}{} AND {}) \
+             SELECT hit_session AS session_pk,block,at,rank FROM ({best}))",
+            h.block_kind("xb"),
+            h.writer("xm"),
+            fields::own_messages("xm", None),
+            texts = h.cte,
+        )
+    } else if h.source {
         let own = crate::search::best_source("candidates", "hit_session");
         let inherited = crate::search::best_source("ancestors", "hit_session");
         format!(

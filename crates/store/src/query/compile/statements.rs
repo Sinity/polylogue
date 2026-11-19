@@ -36,33 +36,26 @@ pub struct KeyedRows {
 pub struct TextSearch {
     pub index: polylogue_query::search::SnippetIndex,
     pub expression: String,
-    /// One-based parameter holding the number of ranked indexed texts.
-    /// Its usual value is -1, so counts and whole selections stay exact.
-    pub limit: usize,
-    /// A non-text scope whose blocks can drive the same ranked selection.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub scope: Option<ScopedSearch>,
+    /// Ranked text-prefix parameter; -1 selects all texts for exact counts.
+    pub prefix: usize,
+    pub page: SearchPage,
     #[serde(skip)]
-    pub(super) scope_build: Option<super::search::ScopeBuild>,
+    pub(super) build: Option<super::search::SearchBuild>,
 }
 
+/// Separate statements for a page; no query parameter selects a join direction.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct ScopedSearch {
-    /// Streams in-scope block occurrences for the bounded planning probe.
-    pub blocks: String,
-    /// One-based parameter: zero reads the index, one reads the full scope,
-    /// two reads the current recency batch.
-    pub mode: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub recent: Option<RecentSearch>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct RecentSearch {
-    /// Keys of the scope rows and their final order values, read newest first.
-    pub keys: String,
-    /// One-based JSON parameter containing the current batch of row keys.
-    pub batch: usize,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SearchPage {
+    Ranked,
+    Owners {
+        keys: String,
+    },
+    Recent {
+        candidates: String,
+        keys: String,
+        batch: usize,
+    },
 }
 
 /// A derived relation's rows.

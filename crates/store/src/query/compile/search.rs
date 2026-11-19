@@ -1,5 +1,5 @@
-//! A scope-driven alternative to the selected full-text leg.
-//! The bound filter keeps every other predicate and its original defaults.
+//! Compile separate full-text reads from supplied owners or final time order.
+//! Ordinary filters never trigger a speculative scope walk.
 use super::*;
 use crate::query::fields::STRUCTURAL_KINDS;
 use polylogue_query::filter::Filter;
@@ -31,11 +31,11 @@ pub(super) fn recent_sort(unit: Unit, transforms: &[Transform]) -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct ScopeBuild {
+pub(super) struct SearchBuild {
     pub cte: usize,
     pub name: String,
     pub expression: String,
-    pub mode: usize,
+    pub through: usize,
     pub spans: Vec<Span>,
 }
 
@@ -58,6 +58,25 @@ fn without_terms(filter: &Filter, spans: &[Span]) -> Option<Filter> {
     }
 }
 
+/// The selected owner statement's CTEs and final batch membership.
+pub(super) struct OwnerRows {
+    pub ctes: Vec<String>,
+    pub restriction: Option<String>,
+}
+
+fn supplied(filter: &Filter) -> bool {
+    use polylogue_query::filter::Test;
+    match filter {
+        Filter::All(parts) => parts.iter().any(supplied),
+        Filter::Any(parts) => !parts.is_empty() && parts.iter().all(supplied),
+        Filter::Session { .. } | Filter::Rows { .. } => true,
+        Filter::Field(field) if field.field.declaration().name == "id" => {
+            matches!(&field.test, Test::Prefix(_))
+        }
+        _ => false,
+    }
+}
+
 impl Compiler<'_> {
     pub(super) fn search_scope(
         &mut self,
@@ -65,33 +84,29 @@ impl Compiler<'_> {
         scope: &RowContext,
         defaults: &[String],
         recent_order: Option<&[String]>,
-    ) -> Result<(), QueryError> {
+    ) -> Result<Option<OwnerRows>, QueryError> {
         let Some(build) = self
             .text_search
             .as_mut()
-            .and_then(|search| search.scope_build.take())
+            .and_then(|search| search.build.take())
         else {
-            return Ok(());
+            return Ok(None);
         };
         let filter = selection
             .filter
             .as_ref()
             .filter(|_| selection.unit == scope.unit)
             .and_then(|filter| without_terms(filter, &build.spans));
-        if filter.is_none() && recent_order.is_none() {
-            // With only the unit's defaults there is no narrower scope to
-            // drive this search. Keep the ranked index-prefix path.
-            self.ctes.push(format!(
-                "{}_scope_candidates AS (SELECT NULL AS block WHERE 0)",
-                build.name
-            ));
-            return Ok(());
+        let explicit = filter.as_ref().is_some_and(supplied);
+        if !explicit && recent_order.is_none() {
+            return Ok(None);
         }
         let mut conditions = defaults.to_vec();
         if let Some(filter) = filter {
             conditions.push(self.lower(&filter, scope, false)?);
         }
-        let recent_batch = recent_order.map(|_| {
+        let recent = !explicit && recent_order.is_some();
+        let batch = recent.then(|| {
             let parameter = self.params.len() + 1;
             self.bind(Param::Text("[]".into()));
             parameter
@@ -102,95 +117,77 @@ impl Compiler<'_> {
             polylogue_query::search::SnippetIndex::Output => ("output_fts", Index::Output),
         };
         let name = &build.name;
-        let mode = format!("?{}", build.mode);
-        let scope_rows = format!("{name}_scope_rows");
-        let blocks = format!("{name}_scope_blocks");
-        let candidates = format!("{name}_scope_candidates");
+        let owners = format!("{name}_owners");
+        let blocks = format!("{name}_owner_blocks");
         let hits = units::Hits {
             cte: name,
             index,
-            source: false,
-            scope: None,
+            source: true,
+            scope: Some(&blocks),
         };
         let kind = hits.block_kind("b");
         let writer = hits.writer("m");
         let pk = scope.a.expand(units::spec(scope.unit).key);
         let from = self.from(scope)?;
         let condition = and_all(&conditions);
-        let scope_row_sql = match recent_batch {
+        let owner_sql = match batch {
             Some(parameter) => format!(
-                "SELECT {pk} AS pk FROM {from} WHERE {mode}<>2 AND {condition} UNION ALL \
-                 SELECT {pk} FROM json_each(?{parameter}) chosen CROSS JOIN {from} \
-                 WHERE {mode}=2 AND {pk}=chosen.value AND {condition}"
+                "SELECT {pk} AS pk FROM json_each(?{parameter}) chosen CROSS JOIN {from} \
+                 WHERE {pk}=chosen.value AND {condition}"
             ),
             None => format!("SELECT {pk} AS pk FROM {from} WHERE {condition}"),
         };
-        self.ctes.push(format!(
-            "{scope_rows} AS NOT MATERIALIZED ({scope_row_sql})"
-        ));
         let eligible = match scope.unit {
             Unit::Sessions => format!(
-                "WITH RECURSIVE tree(pk) AS (\
-                 SELECT pk FROM {scope_rows} WHERE {mode}<>0 UNION \
-                 SELECT min(pk) FROM {scope_rows} WHERE {mode}=0 UNION \
-                 SELECT l.child_pk FROM tree t CROSS JOIN session p ON p.pk=t.pk \
+                "WITH RECURSIVE tree(owner_pk,pk) AS (SELECT pk,pk FROM {owners} UNION \
+                 SELECT t.owner_pk,l.child_pk FROM tree t CROSS JOIN session p ON p.pk=t.pk \
                  CROSS JOIN session_link l ON l.parent_id=p.id AND l.kind IN ({STRUCTURAL_KINDS}) \
-                 WHERE l.child_pk IS NOT NULL UNION \
-                 SELECT (SELECT min(pk) FROM {scope_rows} WHERE pk>t.pk) \
-                 FROM tree t WHERE {mode}=0 AND t.pk IS NOT NULL) \
-                 SELECT b.pk AS block,b.text_id FROM tree t \
-                 CROSS JOIN message m ON m.session_pk=t.pk \
-                 CROSS JOIN block b ON b.message_pk=m.pk \
+                 WHERE l.child_pk IS NOT NULL) \
+                 SELECT t.owner_pk,b.pk AS block,b.text_id FROM tree t \
+                 CROSS JOIN message m ON m.session_pk=t.pk CROSS JOIN block b ON b.message_pk=m.pk \
                  WHERE b.text_id IS NOT NULL AND {kind}{writer} AND {}",
                 fields::own_messages("m", None)
             ),
             Unit::Messages => format!(
-                "SELECT b.pk AS block,b.text_id FROM {scope_rows} o \
-                 CROSS JOIN message m ON m.pk=o.pk \
-                 CROSS JOIN block b ON b.message_pk=m.pk \
+                "SELECT o.pk AS owner_pk,b.pk AS block,b.text_id FROM {owners} o \
+                 CROSS JOIN message m ON m.pk=o.pk CROSS JOIN block b ON b.message_pk=m.pk \
                  WHERE b.text_id IS NOT NULL AND {kind}{writer}"
             ),
-            _ => unreachable!("scope-driven source units"),
+            _ => unreachable!("owner-driven source units"),
         };
-        // The recursive probe adds scope rows one at a time: seeding every
-        // row would read the full scope before its first block. Execution
-        // seeds all rows directly. Only execution stores the blocks, and it
-        // shares them with text probes and row selection.
-        self.ctes
-            .push(format!("{blocks} AS NOT MATERIALIZED ({eligible})"));
-        self.ctes.push(format!(
-            "{candidates} AS MATERIALIZED (SELECT * FROM {blocks} WHERE {mode}<>0)"
-        ));
-        self.ctes[build.cte] = format!(
-            "{name} AS MATERIALIZED (WITH index_prefix AS MATERIALIZED (\
-               SELECT rowid AS text_id,bm25({table}) AS rank FROM {table} \
-               WHERE {mode}=0 AND {table} MATCH {expression} \
-               ORDER BY {table}.rank LIMIT ?{limit}), \
-             scoped_texts AS MATERIALIZED (SELECT DISTINCT text_id FROM {candidates}) \
-             SELECT text_id,rank FROM index_prefix UNION ALL \
-             SELECT t.text_id,bm25({table}) AS rank FROM scoped_texts t \
-             CROSS JOIN {table} ON {table}.rowid=t.text_id \
-             WHERE {mode}<>0 AND {table} MATCH {expression})",
-            expression = build.expression,
-            limit = search.limit,
-        );
-        let blocks = format!("WITH {} SELECT block FROM {blocks}", self.ctes.join(", "));
-        let recent = recent_order.zip(recent_batch).map(|(order, batch)| {
-            let (hidden, _) = hidden_order(order, "_o");
-            RecentSearch {
-                keys: format!(
-                    "WITH {} SELECT {pk} AS _pk,{} FROM {from} WHERE {condition}",
-                    self.ctes.join(", "),
-                    hidden.join(", ")
-                ),
-                batch,
+        let Search::Hits { rows } = units::spec(scope.unit).search else {
+            unreachable!("selected full-text search")
+        };
+        let found = rows(&scope.a, &hits).expect("session or message full-text sources");
+        let replacement = [
+            format!("{owners} AS MATERIALIZED ({owner_sql})"),
+            format!("{blocks} AS MATERIALIZED ({eligible})"),
+            format!(
+                "{name} AS MATERIALIZED (WITH texts AS MATERIALIZED (SELECT DISTINCT text_id FROM {blocks}) \
+                 SELECT t.text_id,bm25({table}) AS rank FROM texts t CROSS JOIN {table} \
+                 ON {table}.rowid=t.text_id WHERE {table} MATCH {})", build.expression),
+        ].into_iter().chain(found.ctes).collect::<Vec<_>>();
+        let mut ctes = self.ctes.clone();
+        ctes.splice(build.cte..build.through, replacement);
+        let restriction =
+            batch.map(|parameter| format!("{pk} IN (SELECT value FROM json_each(?{parameter}))"));
+        self.text_search.as_mut().expect("selected search").page = match batch {
+            Some(batch) => {
+                let (hidden, _) = hidden_order(recent_order.expect("time order"), "_o");
+                SearchPage::Recent {
+                    candidates: format!(
+                        "WITH {} SELECT {pk} AS _pk,{} FROM {from} WHERE {condition}",
+                        self.ctes.join(", "),
+                        hidden.join(", ")
+                    ),
+                    keys: String::new(),
+                    batch,
+                }
             }
-        });
-        self.text_search.as_mut().expect("selected search").scope = Some(ScopedSearch {
-            blocks,
-            mode: build.mode,
-            recent,
-        });
-        Ok(())
+            None => SearchPage::Owners {
+                keys: String::new(),
+            },
+        };
+        Ok(Some(OwnerRows { ctes, restriction }))
     }
 }

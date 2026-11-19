@@ -14,6 +14,7 @@ struct SelectionSql {
     matched: Option<MatchRel>,
     measure: Option<Measure>,
     explicit_order: Option<Vec<String>>,
+    owner_rows: Option<super::search::OwnerRows>,
 }
 
 struct RowStatements {
@@ -207,6 +208,7 @@ impl<'a> Compiler<'a> {
             matched: preset,
             measure: None,
             explicit_order: None,
+            owner_rows: None,
         })
     }
 
@@ -426,20 +428,8 @@ impl<'a> Compiler<'a> {
             None
         };
         self.fuse_text_and_near(scope, where_sql)?;
-        self.search_scope(selection, scope, defaults_only, explicit_order.as_deref())?;
-        if let Some(search) = &self.text_search
-            && let Some(scoped) = &search.scope
-            && let Some(recent) = &scoped.recent
-        {
-            // A shared descendant can make other rows match. A recency
-            // batch must still return only its own candidate rows.
-            where_sql.push(format!(
-                "(?{}<>2 OR {} IN (SELECT value FROM json_each(?{})))",
-                scoped.mode,
-                scope.a.expand(units::spec(scope.unit).key),
-                recent.batch
-            ));
-        }
+        parts.owner_rows =
+            self.search_scope(selection, scope, defaults_only, explicit_order.as_deref())?;
         Ok(count_relation)
     }
 
@@ -496,7 +486,7 @@ impl<'a> Compiler<'a> {
         let keyed = parts
             .measure
             .is_none()
-            .then(|| self.keyed_statements(scope, ctes, (&from, &wh), &pk, &row_select, &hidden));
+            .then(|| self.keyed_statements(parts, ctes, (&from, &wh), &pk, &row_select, &hidden));
         select.extend(hidden);
         let sql = format!(
             "{ctes}SELECT {} FROM {from} WHERE {wh} ORDER BY {}",
@@ -584,14 +574,15 @@ impl<'a> Compiler<'a> {
     }
 
     fn keyed_statements(
-        &self,
-        scope: &RowContext,
+        &mut self,
+        parts: &SelectionSql,
         ctes: &str,
         condition: (&str, &str),
         pk: &str,
         row_select: &[String],
         hidden: &[String],
     ) -> (String, String) {
+        let scope = &parts.scope;
         let (from, wh) = condition;
         let mut key_select = vec![format!("{pk} AS _pk")];
         if let Some(rank) = self.ranking() {
@@ -608,6 +599,22 @@ impl<'a> Compiler<'a> {
             self.near_rank.as_deref().unwrap_or("1")
         ));
         key_select.extend(hidden.iter().cloned());
+        if let Some(owners) = &parts.owner_rows {
+            let wh = match &owners.restriction {
+                Some(restriction) => format!("({wh}) AND ({restriction})"),
+                None => wh.to_owned(),
+            };
+            let keys = format!(
+                "WITH {} SELECT {} FROM {from} WHERE {wh}",
+                owners.ctes.join(", "),
+                key_select.join(", ")
+            );
+            match &mut self.text_search.as_mut().expect("selected search").page {
+                SearchPage::Owners { keys: selected }
+                | SearchPage::Recent { keys: selected, .. } => *selected = keys,
+                SearchPage::Ranked => unreachable!("owner SQL has an owner page"),
+            }
+        }
         (
             format!(
                 "{ctes}SELECT {} FROM {from} WHERE {wh}",

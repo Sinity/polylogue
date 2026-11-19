@@ -5,23 +5,6 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-fn scope_drives(reader: &Reader<'_>, fts: &str, wanted: &str) -> bool {
-    let scope = scope_ctes(SnippetIndex::Prose, false);
-    reader
-        .search_driver(
-            &format!("WITH RECURSIVE {scope} SELECT DISTINCT block FROM eligible"),
-            &[
-                crate::SqlValue::Text(fts.into()),
-                crate::SqlValue::Text(wanted.into()),
-            ],
-            SnippetIndex::Prose,
-            fts,
-            false,
-        )
-        .unwrap()
-        == SearchDriver::Scope
-}
-
 #[test]
 fn scoped_snippets_read_the_in_scope_blocks_once() {
     let mut work = Vec::new();
@@ -86,11 +69,6 @@ fn scoped_snippets_read_the_in_scope_blocks_once() {
             let pool = fixture.reads().unwrap();
             let reader = pool.reader().unwrap();
             let conn = reader.conn().unwrap();
-            assert!(scope_drives(
-                &reader,
-                "needle",
-                &serde_json::to_string(&[(0, session, true)]).unwrap()
-            ));
             let steps = Arc::new(AtomicU64::new(0));
             let counter = Arc::clone(&steps);
             conn.progress_handler(
@@ -127,7 +105,7 @@ fn scoped_snippets_read_the_in_scope_blocks_once() {
 }
 
 #[test]
-fn shared_text_reference_fanout_and_rare_text_choose_different_plans() {
+fn supplied_snippet_owners_keep_their_sources_as_global_reference_fanout_grows() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(dir.path()).unwrap();
     let root = fixture
@@ -186,12 +164,6 @@ fn shared_text_reference_fanout_and_rare_text_choose_different_plans() {
         .unwrap();
     let insert = "INSERT INTO block(message_pk,session_pk,idx,kind,text_id,body) SELECT m.pk,m.session_pk,0,'text',?1,?2 FROM message m JOIN session s ON s.pk=m.session_pk WHERE s.id LIKE 'test:many-%' AND NOT EXISTS(SELECT 1 FROM block b WHERE b.message_pk=m.pk) ORDER BY m.pk LIMIT ?3";
     write.execute(insert, params![text, body, 1000]).unwrap();
-    let wanted = serde_json::to_string(&[(0, root, true)]).unwrap();
-    {
-        let pool = fixture.reads().unwrap();
-        let reader = pool.reader().unwrap();
-        assert!(!scope_drives(&reader, "needle", &wanted));
-    }
     write.execute(insert, params![text, body, 19_000]).unwrap();
     for analyzed in [false, true] {
         if analyzed {
@@ -215,8 +187,6 @@ fn shared_text_reference_fanout_and_rare_text_choose_different_plans() {
                 .unwrap(),
             20_301
         );
-        assert!(scope_drives(&reader, "needle", &wanted));
-        assert!(!scope_drives(&reader, "actuallyrare", &wanted));
         let terms = [polylogue_query::search::SnippetTerms::Word {
             text: "needle".into(),
             index: SnippetIndex::Prose,
@@ -232,5 +202,20 @@ fn shared_text_reference_fanout_and_rare_text_choose_different_plans() {
             .unwrap();
         assert_eq!(snippets[0].as_ref().unwrap().text, "needle shared");
         assert_eq!(snippets[0].as_ref().unwrap().message, "own-0");
+        let terms = [polylogue_query::search::SnippetTerms::Word {
+            text: "actuallyrare".into(),
+            index: SnippetIndex::Prose,
+        }];
+        let rare = reader
+            .snippets(
+                &[SnippetQuery {
+                    index: SnippetIndex::Prose,
+                    terms: &terms,
+                }],
+                &[Within::Session(root)],
+            )
+            .unwrap();
+        assert_eq!(rare[0].as_ref().unwrap().text, "actuallyrare body");
+        assert_eq!(rare[0].as_ref().unwrap().message, "rare");
     }
 }

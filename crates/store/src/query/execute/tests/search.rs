@@ -237,7 +237,7 @@ fn rare_ranked_pages_skip_a_catalog_sized_scope_probe() {
         assert!(matches!(
             &program.statements,
             crate::query::compile::Statements::Keyed(rows)
-                if rows.search.as_ref().unwrap().scope.is_some()
+                if matches!(rows.search.as_ref().unwrap().page, crate::query::compile::SearchPage::Ranked)
         ));
         for analyzed in [false, true] {
             if analyzed {
@@ -384,6 +384,33 @@ fn pages(reader: &Reader<'_>, program: &Program) -> Vec<Value> {
     rows
 }
 
+fn reverse_pages(reader: &Reader<'_>, program: &Program) -> Vec<Value> {
+    let mut after = None;
+    let mut rows = Vec::new();
+    loop {
+        let mut page = Vec::new();
+        reader
+            .visit_page(program, after.as_deref(), true, 1, |row| {
+                page.push(row);
+                Ok::<_, crate::selection::SelectionError>(std::ops::ControlFlow::Continue(()))
+            })
+            .unwrap();
+        if page.is_empty() {
+            break;
+        }
+        after = page.last().map(|row| {
+            program
+                .order
+                .iter()
+                .map(|key| row[&key.column].clone())
+                .collect::<Vec<_>>()
+        });
+        rows.extend(page);
+    }
+    rows.reverse();
+    rows
+}
+
 fn shared_body_outside_scope(fixture: &mut Fixture, message: &str, count: usize) {
     fixture
         .many_sessions(ManySessions {
@@ -449,7 +476,7 @@ fn search_message(
 
 #[test]
 fn recency_scope_and_index_agree_across_batches_shared_children_and_unknown_times() {
-    use crate::query::compile::{Param, Statements};
+    use crate::query::compile::{SearchPage, Statements};
     for output in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let mut fixture = Fixture::new(dir.path()).unwrap();
@@ -471,6 +498,7 @@ fn recency_scope_and_index_agree_across_batches_shared_children_and_unknown_time
                         id: &format!("test:{id}"),
                         kind,
                         last,
+                        title: Some("selected owners"),
                         ..Default::default()
                     })
                     .unwrap(),
@@ -538,6 +566,13 @@ fn recency_scope_and_index_agree_across_batches_shared_children_and_unknown_time
             ),
             (
                 format!(
+                    "sessions where kind:main title:\"selected owners\" {term} | sort by last_active desc"
+                ),
+                3,
+                vec!["test:a", "test:d", "test:e", "test:f", "test:g"],
+            ),
+            (
+                format!(
                     "messages where (id:shared-hit OR id:miss-b OR id:miss-c OR id:own-f OR id:own-g) {term} | sort by at desc"
                 ),
                 2,
@@ -546,24 +581,22 @@ fn recency_scope_and_index_agree_across_batches_shared_children_and_unknown_time
         ] {
             let mut program = crate::query::compile(&query, &options_for_search()).unwrap();
             program.page_size = page_size;
-            let scope = match &program.statements {
-                Statements::Keyed(rows) => rows
-                    .search
-                    .as_ref()
-                    .unwrap()
-                    .scope
-                    .as_ref()
-                    .unwrap()
-                    .clone(),
+            let page = match &program.statements {
+                Statements::Keyed(rows) => &rows.search.as_ref().unwrap().page,
                 _ => panic!("direct recency sort stays keyed"),
             };
-            assert!(scope.recent.is_some());
+            assert!(matches!(
+                page,
+                SearchPage::Owners { .. } | SearchPage::Recent { .. }
+            ));
+            assert_eq!(
+                matches!(page, SearchPage::Recent { .. }),
+                query.contains("title:")
+            );
             let mut indexed = program.clone();
             if let Statements::Keyed(rows) = &mut indexed.statements {
                 rows.search = None;
             }
-            let mut scoped = indexed.clone();
-            scoped.params[scope.mode - 1] = Param::Int(1);
             for analyzed in [false, true] {
                 if analyzed {
                     crate::archive::open_write(&fixture.archive.index_db(), 1024)
@@ -573,22 +606,6 @@ fn recency_scope_and_index_agree_across_batches_shared_children_and_unknown_time
                 }
                 let pool = fixture.reads().unwrap();
                 let reader = pool.reader().unwrap();
-                assert_eq!(
-                    reader
-                        .search_driver(
-                            &scope.blocks,
-                            &crate::selection::values(&program.params),
-                            if output {
-                                SnippetIndex::Output
-                            } else {
-                                SnippetIndex::Prose
-                            },
-                            "needle",
-                            true
-                        )
-                        .unwrap(),
-                    SearchDriver::Recency
-                );
                 let expected = reader.query_rows(&indexed).unwrap();
                 assert_eq!(
                     expected
@@ -597,9 +614,13 @@ fn recency_scope_and_index_agree_across_batches_shared_children_and_unknown_time
                         .collect::<Vec<_>>(),
                     expected_ids
                 );
-                for candidate in [&program, &scoped] {
+                for candidate in [&program] {
                     let mut actual = pages(&reader, candidate);
                     assert_eq!(result(&actual), result(&expected));
+                    assert_eq!(
+                        result(&reverse_pages(&reader, candidate)),
+                        result(&expected)
+                    );
                     assert_eq!(
                         reader.query_count(candidate).unwrap(),
                         Some((expected_ids.len() as u64, 0))
@@ -736,23 +757,12 @@ fn scope_and_index_plans_agree_on_rows_sources_counts_and_continuations() {
             ] {
                 let mut program = crate::query::compile(&query, &options_for_search()).unwrap();
                 program.page_size = 1;
-                let mode = match &program.statements {
-                    crate::query::compile::Statements::Keyed(rows) => {
-                        rows.search.as_ref().unwrap().scope.as_ref().unwrap().mode
-                    }
-                    _ => panic!("scoped search has keyed rows"),
-                };
-                let mut scoped = program.clone();
-                scoped.params[mode - 1] = crate::query::compile::Param::Int(1);
-                if let crate::query::compile::Statements::Keyed(rows) = &mut scoped.statements {
-                    rows.search = None;
-                }
                 let mut indexed = program.clone();
                 if let crate::query::compile::Statements::Keyed(rows) = &mut indexed.statements {
                     rows.search = None;
                 }
                 let expected = reader.query_rows(&indexed).unwrap();
-                for candidate in [&program, &scoped] {
+                for candidate in [&program] {
                     assert_eq!(
                         result(&reader.query_rows(candidate).unwrap()),
                         result(&expected),
@@ -760,6 +770,11 @@ fn scope_and_index_plans_agree_on_rows_sources_counts_and_continuations() {
                     );
                     let mut actual = pages(&reader, candidate);
                     assert_eq!(result(&actual), result(&expected), "{query}");
+                    assert_eq!(
+                        result(&reverse_pages(&reader, candidate)),
+                        result(&expected),
+                        "reverse: {query}"
+                    );
                     assert_eq!(
                         reader.query_count(candidate).unwrap(),
                         Some((expected.len() as u64, 0))
@@ -1255,6 +1270,89 @@ fn recency_sort_keeps_a_source_order_condition() {
         assert!(
             rows.iter().all(|row| row["id"] != "test:hit-000032"),
             "{query}"
+        );
+    }
+}
+
+#[test]
+fn supplied_owner_page_does_not_walk_other_parents_of_its_shared_child() {
+    let mut work = Vec::new();
+    for outside in [32, 256] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut fixture = Fixture::new(dir.path()).unwrap();
+        fixture
+            .session(SessionFacts {
+                id: "test:wanted",
+                kind: "main",
+                ..Default::default()
+            })
+            .unwrap();
+        let child = fixture
+            .session(SessionFacts {
+                id: "test:shared",
+                kind: "subagent",
+                ..Default::default()
+            })
+            .unwrap();
+        search_message(
+            &mut fixture,
+            child,
+            "test:shared-message",
+            Some(1000),
+            "needle",
+            false,
+        );
+        fixture
+            .link("test:wanted", "test:shared", "spawn", None)
+            .unwrap();
+        for i in 0..outside {
+            let id = format!("test:other-parent-{i}");
+            fixture
+                .session(SessionFacts {
+                    id: &id,
+                    kind: "main",
+                    ..Default::default()
+                })
+                .unwrap();
+            fixture.link(&id, "test:shared", "spawn", None).unwrap();
+        }
+        let mut program = crate::query::compile(
+            "sessions where id:test:wanted needle",
+            &options_for_search(),
+        )
+        .unwrap();
+        program.page_size = 1;
+        for analyzed in [false, true] {
+            if analyzed {
+                crate::archive::open_write(&fixture.archive.index_db(), 1024)
+                    .unwrap()
+                    .execute_batch("ANALYZE")
+                    .unwrap();
+            }
+            let pool = fixture.reads().unwrap();
+            let reader = pool.reader().unwrap();
+            let (rows, steps) =
+                counted(&reader, || reader.query_page(&program, None).unwrap().rows);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0]["id"], "test:wanted");
+            let mut rows = rows;
+            snippets(&reader, &program, &mut rows).unwrap();
+            assert_eq!(rows[0]["snippet"]["message"], "test:shared-message");
+            work.push((outside, analyzed, steps));
+        }
+    }
+    for analyzed in [false, true] {
+        let small = work
+            .iter()
+            .find(|entry| entry.0 == 32 && entry.1 == analyzed)
+            .unwrap();
+        let large = work
+            .iter()
+            .find(|entry| entry.0 == 256 && entry.1 == analyzed)
+            .unwrap();
+        assert!(
+            large.2 <= small.2 + small.2 / 5,
+            "supplied owner work: {small:?} -> {large:?}"
         );
     }
 }
