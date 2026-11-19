@@ -640,6 +640,12 @@ impl Handler for Import {
         Ok(match wait.recv() {
             Ok(Ok(report)) => super::import_answer(report),
             Ok(Err(polylogue_engine::ImportFailure::Parent(error))) => store_error(&error),
+            Ok(Err(polylogue_engine::ImportFailure::Import(
+                polylogue_engine::EngineError::Store(error),
+            ))) => store_error(&error),
+            Ok(Err(polylogue_engine::ImportFailure::Import(
+                polylogue_engine::EngineError::Stopped,
+            ))) => store_error(&polylogue_store::StoreError::Stopped),
             Ok(Err(polylogue_engine::ImportFailure::Import(error))) => {
                 super::error(polylogue_model::Code::Import, error)
             }

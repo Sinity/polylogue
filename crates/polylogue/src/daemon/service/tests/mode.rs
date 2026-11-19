@@ -196,6 +196,65 @@ fn missing_config_is_standalone() {
 }
 
 #[test]
+fn older_import_preserves_scope_refusal_and_succeeds_after_initial_confirmation() {
+    use polylogue_store::primary::{Confirmed, ConfirmedChange, ReplayControl};
+
+    let home = ClaudeHome::new();
+    let older = home.dir.path().join("older");
+    let _fixture = polylogue_store::older_archive::fixture::standard(&older);
+    let original_files = polylogue_store::older_archive::fixture::file_hashes(&older);
+    let runtime = launch(primary(&home)).unwrap();
+    let writer = runtime.daemon.writes.as_ref().unwrap();
+    let control = |control| Confirmed {
+        position: 0,
+        event: String::new(),
+        output_index: 0,
+        sinex_context: None,
+        change: ConfirmedChange::Control(Box::new(control)),
+    };
+    writer
+        .apply_confirmed(vec![control(ReplayControl::Reset {
+            scope: "initial-import-scope".into(),
+        })])
+        .unwrap();
+    let import = || {
+        crate::test_daemon::Call::new("import", serde_json::json!({"from_archive": older}))
+            .answer(&runtime.daemon)
+    };
+    let refused = import();
+    assert!(
+        matches!(refused.outcome, command_surface::Outcome::Error(error)
+            if error.code.as_deref() == Some("scope_changed") && error.retryable),
+        "an initial scope refusal must remain a typed transient failure"
+    );
+    assert!(matches!(
+        runtime.daemon.reads.reader(),
+        Err(StoreError::ScopeChanged)
+    ));
+    writer
+        .apply_confirmed(vec![control(ReplayControl::Completion {
+            position: 0,
+            delivery: None,
+        })])
+        .unwrap();
+    let accepted = import();
+    let report = accepted
+        .value()
+        .expect("import accepted after scope completion");
+    assert_eq!(report["older_archive"]["pending"], true);
+    assert!(
+        report["older_archive"]["classes"]["input"]["pending"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    assert_eq!(
+        polylogue_store::older_archive::fixture::file_hashes(&older),
+        original_files
+    );
+}
+
+#[test]
 fn sinex_outage_keeps_raw_bytes_without_standalone_day() {
     for existing in [false, true] {
         let w = ClaudeHome::new();
