@@ -201,7 +201,7 @@ fn codex_checkpoint_retry(predecessor: bool) {
         retry.refused.is_empty() && retry.pass.errors.is_empty(),
         "{retry:?}"
     );
-    assert_eq!(retry.already_stored, [path]);
+    assert_eq!(retry.already_stored.as_slice(), std::slice::from_ref(&path));
     if predecessor {
         assert_eq!(retry.imported.len(), 1);
         assert!(retry.imported[0].ends_with("source.db"));
@@ -258,6 +258,29 @@ fn codex_checkpoint_retry(predecessor: bool) {
             .query(&format!("SELECT input FROM {table} ORDER BY input"), &[])
             .unwrap();
         assert_eq!(rows, expected, "{table}");
+    }
+    drop(reader);
+    if predecessor {
+        let source_observations = "SELECT count(*) AS n FROM a.observation o
+            JOIN a.input i ON i.id=o.input WHERE i.format='codex'";
+        let before = home.count(source_observations);
+        let options = ImportOptions {
+            authorship: Some(polylogue_model::authorship::Authorship {
+                author: polylogue_model::Author::Script("fixture-resume".into()),
+                via: polylogue_model::authorship::Channel::Import,
+            }),
+            ..options
+        };
+        for _ in 0..2 {
+            let report = engine
+                .import_with_options(std::slice::from_ref(&root), &options)
+                .unwrap();
+            assert!(report.refused.is_empty() && report.pass.errors.is_empty());
+            assert!(report.imported.is_empty());
+            assert!(report.already_stored.contains(&path));
+            assert_eq!(home.count(source_observations), before + 1);
+        }
+        assert_eq!(home.count("SELECT count(*) AS n FROM a.revision"), 2);
     }
 }
 

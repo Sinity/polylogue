@@ -1203,7 +1203,7 @@ impl Inner {
             }
             self.store_groups(std::mem::take(&mut file_groups));
             for (items, reply) in import_checks.drain(..) {
-                let _ = reply.send(self.confirm_imports(&items));
+                let _ = reply.send(self.confirm_imports(items));
             }
             for (input, chain, length, reading, reply) in replacements.drain(..) {
                 let _ = reply.send(crate::timing::time(crate::timing::Stage::Rows, || {

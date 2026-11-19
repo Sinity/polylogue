@@ -441,7 +441,7 @@ fn wrapped_names_and_non_message_members_cannot_authorize_a_reading() {
     assert_eq!(w.count("SELECT count(*) AS n FROM message_source"), 1);
 }
 #[test]
-fn a_repeat_confirms_members_without_staging_and_a_new_author_needs_admission() {
+fn repeated_bytes_can_gain_a_new_import_observation_without_staging() {
     use polylogue_store::fault::{self, Action};
     let home = polylogue_testkit::ClaudeHome::new();
     let old = home.dir.path().join("catalog");
@@ -470,13 +470,10 @@ fn a_repeat_confirms_members_without_staging_and_a_new_author_needs_admission() 
         }),
         ..archive_format()
     };
-    let error = engine.import_with_options(root, &options).unwrap_err();
-    assert!(
-        error.to_string().contains("python_archive.prepare_raw"),
-        "{error}"
-    );
     let second = engine.import_with_options(root, &options).unwrap();
+    fault::clear();
     assert_eq!(second.already_stored, first.imported);
+    assert_eq!(second.pass.bytes_stored, 0);
     assert!(commits() > before);
     assert_eq!(home.count("SELECT count(*) AS n FROM a.revision"), 4);
     assert_eq!(home.count("SELECT count(*) AS n FROM import_member"), 8);
