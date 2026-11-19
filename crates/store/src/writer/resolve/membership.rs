@@ -416,91 +416,18 @@ struct Shown {
     routes: Vec<(FieldGroup, i64, i64, Vec<u8>)>,
 }
 
-/// A stored message's readings and what it shows.
+mod stored_messages;
+
+/// Late copy/release discovery uses the same snapshot loader as the initial batch.
 fn load_message(
     index: &Connection,
     pk: i64,
     layouts: &mut BTreeMap<Vec<u8>, Option<Vec<u8>>>,
 ) -> Result<(Vec<MessageMember>, Option<Shown>)> {
-    let shown = index
-        .query_row(
-            "SELECT (SELECT version_hash FROM message_version WHERE pk=s.version_pk),m.session_pk,p.layout FROM message m
-             JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
-             LEFT JOIN message_block_selection p ON p.version_pk=s.version_pk WHERE m.pk=?1",
-            [pk],
-            |r| {
-                Ok(Shown {
-                    hash: r.get(0)?,
-                    session: r.get(1)?,
-                    layout: r.get(2)?,
-                    routes: Vec::new(),
-                })
-            },
-        )
-        .optional()?;
-    let shown = match shown {
-        Some(mut shown) => {
-            shown.routes = index
-                .prepare_cached(
-                    "SELECT r.field_group,r.input_pk,r.chain,(SELECT version_hash FROM message_version WHERE pk=s.version_pk) FROM message_route r
-                     JOIN message_source s ON s.message_pk=r.message_pk AND s.input_pk=r.input_pk AND s.chain=r.chain
-                     WHERE r.message_pk=?1 ORDER BY r.field_group",
-                )?
-                .query_map([pk], |r| {
-                    let group: String = r.get(0)?;
-                    Ok((group, r.get(1)?, r.get(2)?, r.get(3)?))
-                })?
-                .map(|row| {
-                    let (group, input, chain, hash) = row?;
-                    let group = FieldGroup::from_name(&group).ok_or_else(|| {
-                        StoreError::Invalid(format!("unknown field group {group}"))
-                    })?;
-                    Ok((group, input, chain, hash))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            shown.routes.sort();
-            Some(shown)
-        }
-        None => None,
-    };
-    let mut statement = index.prepare_cached(
-        "SELECT s.input_pk,s.chain,s.source_start,s.source_end,s.session_pk,s.main,s.completion,s.route,s.seq,s.record_position,(SELECT version_hash FROM message_version WHERE pk=s.version_pk),s.id_kind,p.layout,i.id,s.order_time,s.at,coalesce((SELECT json_extract(facts,'$.kind')<>'compaction' FROM session_record f WHERE f.session_pk=s.session_pk AND f.input_pk=s.input_pk AND f.chain=s.chain),0)
-         FROM message_source s JOIN input_ref i ON i.pk=s.input_pk
-         LEFT JOIN message_block_selection p ON p.version_pk=s.version_pk WHERE message_pk=?1",
-    )?;
-    let rows = statement
-        .query_map([pk], |r| {
-            Ok((
-                MessageMember {
-                    input: r.get(0)?,
-                    input_id: r.get(13)?,
-                    chain: r.get(1)?,
-                    start: r.get(2)?,
-                    end: r.get(3)?,
-                    session: r.get(4)?,
-                    main: r.get(5)?,
-                    explicit_session: r.get(16)?,
-                    completion: named(r.get(6)?)?,
-                    route: named(r.get(7)?)?,
-                    seq: r.get(8)?,
-                    position: r.get(9)?,
-                    order_time: r.get(14)?,
-                    at: r.get(15)?,
-                    hash: r.get(10)?,
-                    content: r.get::<_, String>(11)? == IdKind::Content.as_str(),
-                },
-                r.get::<_, Option<Vec<u8>>>(12)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let members = rows
-        .into_iter()
-        .map(|(member, layout)| {
-            layouts.insert(member.hash.clone(), layout);
-            member
-        })
-        .collect();
-    Ok((members, shown))
+    let stored = stored_messages::load(index, &[pk], layouts)?
+        .remove(&pk)
+        .expect("one requested message");
+    Ok((stored.members, stored.shown))
 }
 
 fn load_document(index: &Connection, pk: i64) -> Result<Vec<DocumentMember>> {
@@ -623,15 +550,24 @@ impl<'a> MembershipState<'a> {
             released: BTreeSet::new(),
             values,
         };
+        let messages: Vec<_> = keys
+            .rows
+            .iter()
+            .filter(|(key, row)| key.kind == Kind::Message && row.existing)
+            .map(|(_, row)| row.pk)
+            .collect();
+        for pks in messages.chunks(stored_messages::BATCH) {
+            for (pk, stored) in
+                stored_messages::load(index, pks, &mut membership_state.message_layouts)?
+            {
+                membership_state.shown_messages.insert(pk, stored.shown);
+                membership_state.messages.members.insert(pk, stored.members);
+            }
+        }
         for (key, row) in &keys.rows {
             let pk = row.pk;
             match key.kind {
-                Kind::Message if row.existing => {
-                    let (members, shown) =
-                        load_message(index, pk, &mut membership_state.message_layouts)?;
-                    membership_state.shown_messages.insert(pk, shown);
-                    membership_state.messages.members.insert(pk, members);
-                }
+                Kind::Message if row.existing => {}
                 Kind::Document if row.existing => {
                     membership_state.shown_documents.insert(
                         pk,
