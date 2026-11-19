@@ -67,7 +67,7 @@ fn a_registered_import_retries_after_restart_without_storing_part_blobs() {
         )
         .unwrap();
     assert!(retry.pass.errors.is_empty(), "{:?}", retry.pass.errors);
-    assert_eq!(retry.already_stored.as_slice(), std::slice::from_ref(&path));
+    assert_eq!(retry.already_stored, [path]);
     assert_eq!(retry.pass.bytes_stored, 0);
     assert_eq!(w.texts("s1"), ["stored before parse"]);
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.revision"), 1);
@@ -201,7 +201,7 @@ fn codex_checkpoint_retry(predecessor: bool) {
         retry.refused.is_empty() && retry.pass.errors.is_empty(),
         "{retry:?}"
     );
-    assert_eq!(retry.already_stored, [path]);
+    assert_eq!(retry.already_stored.as_slice(), std::slice::from_ref(&path));
     if predecessor {
         assert_eq!(retry.imported.len(), 1);
         assert!(retry.imported[0].ends_with("source.db"));
