@@ -334,7 +334,9 @@ impl Reader<'_> {
     ) -> Result<Vec<Value>, SelectionError> {
         use super::compile::{DerivedRows, Statements};
         let SearchPage::Recent {
-            candidates, batch, ..
+            candidates,
+            batch: parameter,
+            ..
         } = &search.page
         else {
             unreachable!("recency candidate keys")
@@ -382,7 +384,7 @@ impl Reader<'_> {
             if batch.is_empty() {
                 break;
             }
-            params[*batch - 1] =
+            params[*parameter - 1] =
                 SqlValue::Text(serde_json::to_string(&batch).expect("row keys serialize"));
             let remaining = limit - rows.len() as i64;
             *params.last_mut().expect("result page limit") = SqlValue::Int(remaining);

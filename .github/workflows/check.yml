@@ -30,4 +30,4 @@ jobs:
       - name: Rust toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - name: Focused Reader and complete-key discriminator
-        run: cargo test --locked -p polylogue-store --lib search_budget_diagnostic -- --nocapture --test-threads=1
+        run: cargo test --locked -p polylogue-store --features faults --lib search_budget_diagnostic -- --nocapture --test-threads=1
