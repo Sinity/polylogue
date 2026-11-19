@@ -1,3 +1,4 @@
+mod commit_wake;
 mod older_import;
 use super::*;
 use crate::tests::{body, capture, client};

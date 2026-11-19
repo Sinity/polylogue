@@ -320,11 +320,29 @@ impl Engine {
         {
             self.discard_confirmed_state();
         }
+        if self.poll_request() {
+            return Ok((
+                Pass {
+                    capture_pending: true,
+                    ..Pass::default()
+                },
+                HashSet::new(),
+            ));
+        }
+        // Drain before taking a scope token: a fenced turn must leave room
+        // for the later successful reset's wake. Pending imports keep the cue.
+        let content_committed = self
+            .requests
+            .as_ref()
+            .and_then(|requests| requests.commits.as_ref())
+            .and_then(|commits| commits.try_recv().ok())
+            .is_some_and(|committed| committed.content);
         let result = (|| {
             let scope = self.cached_scope()?;
             let result = self.read_turn(
                 discover || (self.config.reads_sources && !self.watched_loaded),
                 paths,
+                content_committed,
             )?;
             // A completed reset can race the last SQL read. Its cached progress
             // cannot establish completion in the new scope.
@@ -375,25 +393,11 @@ impl Engine {
         &mut self,
         discover: bool,
         paths: &std::collections::BTreeSet<PathBuf>,
+        content_committed: bool,
     ) -> Result<(Pass, HashSet<PathBuf>), EngineError> {
-        if self.poll_request() {
-            return Ok((
-                Pass {
-                    capture_pending: true,
-                    ..Pass::default()
-                },
-                HashSet::new(),
-            ));
-        }
         let continuing = self.pass_open;
         let started = Instant::now();
         self.load()?;
-        let content_committed = self
-            .requests
-            .as_ref()
-            .and_then(|requests| requests.commits.as_ref())
-            .and_then(|commits| commits.try_recv().ok())
-            .is_some_and(|committed| committed.content);
         if content_committed || (discover && !self.readings_pending) {
             use polylogue_model::freshness::{CompletenessDimension, CompletenessReason};
             self.readings_pending = match self
