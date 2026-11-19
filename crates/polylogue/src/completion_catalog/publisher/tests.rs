@@ -669,7 +669,16 @@ fn reopened_publication_skips_the_source_snapshot_and_keeps_offline_completion_c
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("catalog");
     let mut archive = WriterArchive::new();
-    let mut messages = prose("first", 3, 100, "A retained prompt");
+    let mut messages = (1..=3)
+        .flat_map(|n| {
+            prose(
+                "first",
+                n,
+                100 + i64::from(n),
+                &format!("Retained prompt {n}"),
+            )
+        })
+        .collect::<Vec<_>>();
     for message in &mut messages {
         message.model = Some("retained-model".into());
     }
@@ -680,6 +689,11 @@ fn reopened_publication_skips_the_source_snapshot_and_keeps_offline_completion_c
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
     let saved = state.position.clone().unwrap();
+    let initial = completion::CatalogReader::open(&path, "synthetic")
+        .unwrap()
+        .unwrap();
+    assert_eq!(initial.values("model", "retained").unwrap()[0].count, 3);
+    drop(initial);
     drop(state);
     drop(reads);
     let target = std::fs::read_link(&path).unwrap();
