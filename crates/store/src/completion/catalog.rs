@@ -207,8 +207,18 @@ impl CatalogWriter {
     }
     fn open(path: &Path) -> Result<Self> {
         let before = fs::metadata(path)?;
+        // Cache directories may be aliases; NOFOLLOW protects the database
+        // itself after resolving its directory, not the configured directory.
+        let database = fs::canonicalize(
+            path.parent()
+                .or_invalid("completion catalog has no parent")?,
+        )?
+        .join(
+            path.file_name()
+                .or_invalid("completion catalog has no file name")?,
+        );
         let conn = Connection::open_with_flags(
-            path,
+            database,
             OpenFlags::SQLITE_OPEN_READ_WRITE
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX
                 | OpenFlags::SQLITE_OPEN_NOFOLLOW,

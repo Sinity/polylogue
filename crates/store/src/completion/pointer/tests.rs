@@ -209,6 +209,7 @@ fn resume_validates_the_publication_identity_before_reusing_its_database() {
     use std::os::unix::fs::MetadataExt;
     for case in [
         "current",
+        "aliased_parent",
         "version6",
         "archive",
         "generation",
@@ -220,7 +221,16 @@ fn resume_validates_the_publication_identity_before_reusing_its_database() {
         "machine",
     ] {
         let directory = tempfile::tempdir().unwrap();
-        let pointer = CatalogPointer::new(directory.path().join("catalog"));
+        let parent = if case == "aliased_parent" {
+            let real = directory.path().join("real");
+            fs::create_dir(&real).unwrap();
+            let alias = directory.path().join("alias");
+            std::os::unix::fs::symlink(&real, &alias).unwrap();
+            alias
+        } else {
+            directory.path().to_owned()
+        };
+        let pointer = CatalogPointer::new(parent.join("catalog"));
         let (archive, _lock) = Archive::open_or_create(&directory.path().join("archive")).unwrap();
         let catalog = query_language::catalog::Catalog::new("sessions");
         let metadata = Metadata {
@@ -289,7 +299,11 @@ fn resume_validates_the_publication_identity_before_reusing_its_database() {
         let resumed = pointer
             .resume(&current, &expected_catalog, machine)
             .unwrap();
-        assert_eq!(resumed.is_some(), case == "current", "{case}");
+        assert_eq!(
+            resumed.is_some(),
+            matches!(case, "current" | "aliased_parent"),
+            "{case}"
+        );
         assert_eq!(fs::metadata(&pointer.path).unwrap().ino(), inode);
         if let Some((mut writer, saved, _vocabulary)) = resumed {
             assert_eq!(saved.position, metadata.position);
