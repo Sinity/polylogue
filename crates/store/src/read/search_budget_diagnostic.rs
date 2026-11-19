@@ -1,7 +1,6 @@
 //! Temporary, test-only discriminator. Nothing in this module ships.
 use super::*;
-use rusqlite::trace::{TraceEvent, TraceEventCodes};
-use std::cell::RefCell;
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 const EXHAUSTED: &str = "diagnostic SQLite work budget exhausted";
@@ -82,99 +81,54 @@ pub(crate) fn attempt<T>(
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ExactWork {
     pub(crate) steps: u64,
-    pub(crate) statements: usize,
-    starts: BTreeMap<String, Vec<i32>>,
-    unmatched: usize,
 }
-thread_local! { static EXACT: RefCell<ExactWork> = RefCell::default(); }
+thread_local! { static EXACT: Cell<u64> = const { Cell::new(0) }; }
 
-fn observe(event: TraceEvent<'_>) {
-    match event {
-        TraceEvent::Stmt(statement, _) => EXACT.with(|work| {
-            work.borrow_mut()
-                .starts
-                .entry(statement.sql().into_owned())
-                .or_default()
-                .push(statement.get_status(rusqlite::StatementStatus::VmStep));
-        }),
-        TraceEvent::Profile(statement, _) => EXACT.with(|work| {
-            let mut work = work.borrow_mut();
-            let before = work
-                .starts
-                .get_mut(statement.sql().as_ref())
-                .and_then(Vec::pop);
-            if let Some(before) = before {
-                let steps = statement.get_status(rusqlite::StatementStatus::VmStep) - before;
-                work.steps +=
-                    u64::try_from(steps).expect("VM status is monotone during one execution");
-                work.statements += 1;
-            } else {
-                work.unmatched += 1;
-            }
-        }),
-        _ => {}
-    }
-}
-struct Trace<'a>(&'a Connection);
-impl Drop for Trace<'_> {
-    fn drop(&mut self) {
-        self.0.trace_v2(TraceEventCodes::empty(), None);
-    }
+/// Called only by the existing cancellation progress owner at interval one.
+pub(crate) fn instruction() {
+    EXACT.with(|steps| steps.set(steps.get() + 1));
 }
 
 pub(crate) fn measured<T>(reader: &Reader<'_>, work: impl FnOnce() -> T) -> (T, ExactWork) {
-    let conn = reader.conn().unwrap();
-    EXACT.with(|value| *value.borrow_mut() = ExactWork::default());
-    conn.trace_v2(
-        TraceEventCodes::SQLITE_TRACE_STMT | TraceEventCodes::SQLITE_TRACE_PROFILE,
-        Some(observe),
-    );
-    let trace = Trace(conn);
+    let _ = reader.conn().unwrap();
+    let before = EXACT.with(Cell::get);
     let result = work();
-    drop(trace);
-    let exact = EXACT.with(|value| value.borrow().clone());
-    assert_eq!(exact.unmatched, 0, "each profile has its execution start");
-    assert!(
-        exact.starts.values().all(Vec::is_empty),
-        "each started statement, including an interrupt, has a final profile: {exact:?}"
-    );
-    (result, exact)
+    let steps = EXACT.with(Cell::get) - before;
+    (result, ExactWork { steps })
 }
 
 #[test]
-fn search_budget_diagnostic_exact_profile_matches_the_existing_per_instruction_oracle() {
+fn search_budget_diagnostic_owner_matches_the_existing_per_instruction_oracle() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = crate::fixture::Fixture::new(dir.path()).unwrap();
-    let pool = ReadPool::with_budget(&fixture.archive, 1, 8 << 20).unwrap();
+    let pool = ReadPool::with_budget(&fixture.archive, 2, 8 << 20).unwrap();
     let reader = pool.reader().unwrap();
-    let conn = reader.conn().unwrap();
+    let calibration = pool.reader().unwrap();
     let old = Arc::new(AtomicU64::new(0));
     let counter = old.clone();
-    // This sacrificial calibration has no planning budget. Dropping this
-    // reader removes the counter; actual budget tests retain the real owner.
-    conn.progress_handler(
-        1,
-        Some(move || {
-            counter.fetch_add(1, Ordering::Relaxed);
-            false
-        }),
-    )
-    .unwrap();
+    // Independent sacrificial connection retains the unchanged old oracle.
+    calibration
+        .conn()
+        .unwrap()
+        .progress_handler(
+            1,
+            Some(move || {
+                counter.fetch_add(1, Ordering::Relaxed);
+                false
+            }),
+        )
+        .unwrap();
     let sql = "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100) SELECT sum(x) AS n FROM n";
+    reader.query(sql, &[]).unwrap();
+    calibration.query(sql, &[]).unwrap();
     for _ in 0..3 {
-        old.store(0, Ordering::Relaxed);
         let (rows, exact) = measured(&reader, || reader.query(sql, &[]).unwrap());
+        old.store(0, Ordering::Relaxed);
+        assert_eq!(rows, calibration.query(sql, &[]).unwrap());
         assert_eq!(rows[0]["n"], 5050);
-        assert_eq!(
-            exact.steps,
-            old.load(Ordering::Relaxed),
-            "profile and original callback oracle differ"
-        );
+        assert_eq!(exact.steps, old.load(Ordering::Relaxed));
         assert!(exact.steps > 100);
-        eprintln!(
-            "CALIBRATION steps={} statements={}",
-            exact.steps, exact.statements
-        );
+        eprintln!("CALIBRATION steps={}", exact.steps);
     }
 }
 
@@ -222,10 +176,7 @@ fn search_budget_diagnostic_interrupt_preserves_the_same_snapshot_and_next_state
     );
     let fresh = pool.reader().unwrap();
     assert_eq!(fresh.query(sql, &[]).unwrap()[0]["title"], "after");
-    eprintln!(
-        "SNAPSHOT preserved; interrupted_steps={} statements={}",
-        exact.steps, exact.statements
-    );
+    eprintln!("SNAPSHOT preserved; interrupted_steps={}", exact.steps);
 }
 
 #[test]

@@ -188,14 +188,32 @@ pub(crate) fn interrupt_on(
     conn: &Connection,
     check: impl Fn() -> Result<()> + Send + 'static,
 ) -> Result<()> {
-    // A single SQLite step can scan the whole archive without yielding a row.
+    // Keep one callback owner. The diagnostic counts every instruction using
+    // the original oracle, while real checks retain their 1,000-step cadence.
+    #[cfg(test)]
+    let interval = 1;
+    #[cfg(not(test))]
+    let interval = 1000;
+    #[cfg(test)]
+    let cadence = std::cell::Cell::new(0u16);
     conn.progress_handler(
-        1000,
-        Some(move || match check() {
-            Ok(()) => false,
-            Err(error) => {
-                INTERRUPTED_BY.with(|cause| cause.replace(Some(error)));
-                true
+        interval,
+        Some(move || {
+            #[cfg(test)]
+            {
+                crate::read::search_budget_diagnostic::instruction();
+                let next = cadence.get() + 1;
+                cadence.set(next % 1000);
+                if next < 1000 {
+                    return false;
+                }
+            }
+            match check() {
+                Ok(()) => false,
+                Err(error) => {
+                    INTERRUPTED_BY.with(|cause| cause.replace(Some(error)));
+                    true
+                }
             }
         }),
     )?;

@@ -7,6 +7,13 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+fn search_options() -> Options {
+    let mut options = options();
+    options.fields = vec!["id".into()];
+    options.page_size = Some(1);
+    options
+}
+
 fn owner_program(text: &str) -> Program {
     struct Restore;
     impl Drop for Restore {
@@ -16,7 +23,7 @@ fn owner_program(text: &str) -> Program {
     }
     crate::query::compile::DIAGNOSTIC_SUPPLIED.with(|flag| assert!(!flag.replace(true)));
     let _restore = Restore;
-    crate::query::compile(text, &options()).unwrap()
+    crate::query::compile(text, &search_options()).unwrap()
 }
 
 fn store_error(error: crate::selection::SelectionError) -> crate::StoreError {
@@ -155,7 +162,7 @@ fn search_budget_diagnostic_actual_key_work_races_rare_common_and_recency_cases(
     ] {
         for outside in [128, 2048] {
             let (_dir, fixture, wanted) = fixture_case(outside, common);
-            let program = crate::query::compile(text, &options()).unwrap();
+            let program = crate::query::compile(text, &search_options()).unwrap();
             let choices = if case == "rare-old-recency" {
                 let mut indexed = program.clone();
                 let Statements::Keyed(rows) = &mut indexed.statements else {
@@ -176,6 +183,7 @@ fn search_budget_diagnostic_actual_key_work_races_rare_common_and_recency_cases(
             let mut complete = Vec::new();
             let mut expected = None;
             for (name, program) in &choices {
+                key_page(&reader, program).unwrap();
                 let (rows, exact) = measured(&reader, || key_page(&reader, program));
                 let rows = rows.unwrap();
                 assert_eq!(rows.len(), 1, "{case}/{name}");
@@ -225,7 +233,7 @@ fn search_budget_diagnostic_actual_key_work_races_rare_common_and_recency_cases(
                 serde_json::json!({"case":case,"outside":outside,"complete":complete,"winner":winner,"race_vm_steps":total,"attempts":attempts,"final_budget":budget})
             );
             drop(reader);
-            // Calibrate the exact trace against the original per-op oracle
+            // Calibrate the owning callback against the original per-op oracle
             // on every complete algorithm, including FTS internal statements.
             // This reader is discarded afterwards; it never runs a budget.
             let calibration = pool.reader().unwrap();
@@ -242,19 +250,19 @@ fn search_budget_diagnostic_actual_key_work_races_rare_common_and_recency_cases(
                     }),
                 )
                 .unwrap();
-            for (name, program) in &choices {
+            for ((name, program), (_, exact)) in choices.iter().zip(&complete) {
+                key_page(&calibration, program).unwrap();
                 counter.store(0, Ordering::Relaxed);
-                let (rows, exact) = measured(&calibration, || key_page(&calibration, program));
-                assert_eq!(Some(rows.unwrap()), expected);
+                let rows = key_page(&calibration, program).unwrap();
+                assert_eq!(Some(rows), expected);
                 let original = counter.load(Ordering::Relaxed);
                 eprintln!(
                     "ORACLE {}",
-                    serde_json::json!({"case":case,"outside":outside,"algorithm":name,"profile_vm_steps":exact.steps,"original_progress_steps":original,"statements":exact.statements})
+                    serde_json::json!({"case":case,"outside":outside,"algorithm":name,"owner_vm_steps":exact,"original_progress_steps":original})
                 );
-                if exact.steps != original {
+                if *exact != original {
                     oracle_differences.push(format!(
-                        "{case}/{outside}/{name}: profile={} original={original}",
-                        exact.steps
+                        "{case}/{outside}/{name}: owner={exact} original={original}"
                     ));
                 }
             }
