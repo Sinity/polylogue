@@ -250,12 +250,35 @@ impl CatalogWriter {
         // Validate the derived format before opening a writer. Release this
         // readonly_shm mapping first, so it cannot make our writer read-only.
         let identity = {
-            let Some(cache) = CatalogReader::open(path, &current.archive)? else {
-                return Ok(None);
+            let cache = match CatalogReader::open(path, &current.archive) {
+                Ok(Some(cache)) => cache,
+                Ok(None) => {
+                    eprintln!(
+                        "polylogue: completion catalog: missing or incompatible header; rebuilding"
+                    );
+                    return Ok(None);
+                }
+                Err(StoreError::Sqlite(error))
+                    if error.sqlite_error_code() == Some(rusqlite::ErrorCode::CannotOpen) =>
+                {
+                    // Offline reads cannot create a missing WAL mapping. A
+                    // replacement gets its own complete journal namespace.
+                    eprintln!(
+                        "polylogue: completion catalog: cannot read cached database or journals ({error}); rebuilding"
+                    );
+                    return Ok(None);
+                }
+                Err(error) => return Err(error),
             };
             cache.check()?;
             cache.identity
         };
+        if fs::metadata(path)?.permissions().readonly() {
+            eprintln!(
+                "polylogue: completion catalog: database has no write permission; rebuilding"
+            );
+            return Ok(None);
+        }
         let writer = Self::open(path)?;
         if writer.identity != identity {
             return Ok(None);
@@ -269,18 +292,29 @@ impl CatalogWriter {
             let cached_catalog: String = writer
                 .conn
                 .scalar("SELECT value FROM metadata WHERE key='catalog'", [])?;
-            if position.generation != current.position.generation
-                || position.index < 0
-                || position.archive < 0
-                || position.index > current.position.index
+            let incompatible = if position.generation != current.position.generation {
+                Some("index generation changed")
+            } else if position.index < 0 || position.archive < 0 {
+                Some("negative stored position")
+            } else if position.index > current.position.index
                 || position.archive > current.position.archive
-                || serde_json::from_str::<serde_json::Value>(&cached_catalog)?
-                    != serde_json::to_value(catalog)?
-                || writer.conn.scalar::<String>(
-                    "SELECT value FROM metadata WHERE key='publisher_machine'",
-                    [],
-                )? != machine
             {
+                Some("stored position is ahead of source")
+            } else if serde_json::from_str::<serde_json::Value>(&cached_catalog)?
+                != serde_json::to_value(catalog)?
+            {
+                Some("language catalog changed")
+            } else if writer.conn.scalar::<String>(
+                "SELECT value FROM metadata WHERE key='publisher_machine'",
+                [],
+            )? != machine
+            {
+                Some("publishing machine changed")
+            } else {
+                None
+            };
+            if let Some(reason) = incompatible {
+                eprintln!("polylogue: completion catalog: {reason}; rebuilding");
                 return Ok(None);
             }
             let mut vocabulary = PublisherVocabulary::default();

@@ -82,9 +82,8 @@ fn standalone_generation_change_revokes_pointer_before_reopen_finishes() {
     let root = directory.path().join("archive");
     let pointer = Arc::new(CatalogPointer::new(directory.path().join("catalog")));
     let invalidator = Arc::clone(&pointer);
-    let _registration =
-        Archive::register_scope_invalidator(&root, move || invalidator.invalidate()).unwrap();
-    let (archive, lock) = Archive::open_or_create(&root).unwrap();
+    let (archive, lock, registration) =
+        Archive::open_or_create_with_invalidator(&root, move || invalidator.invalidate()).unwrap();
     let token = archive.scope_token().unwrap();
     let writer = build(&pointer, "first", "cached");
     pointer.activate(&writer, &token).unwrap();
@@ -95,9 +94,13 @@ fn standalone_generation_change_revokes_pointer_before_reopen_finishes() {
     )
     .unwrap();
     drop(conn);
+    drop(writer);
+    drop(registration);
     drop(lock);
     drop(archive);
-    let (_archive, _lock) = Archive::open_or_create(&root).unwrap();
+    let invalidator = Arc::clone(&pointer);
+    let (_archive, _lock, _registration) =
+        Archive::open_or_create_with_invalidator(&root, move || invalidator.invalidate()).unwrap();
     assert!(!pointer.path.exists());
     assert!(matches!(token.check(), Err(StoreError::ScopeChanged)));
 }
@@ -365,6 +368,7 @@ fn resume_validates_the_publication_identity_before_reusing_its_database() {
 
 #[test]
 fn an_offline_reader_cannot_leave_a_resumed_publisher_unwritable() {
+    use std::os::unix::fs::MetadataExt;
     let directory = tempfile::tempdir().unwrap();
     let pointer = CatalogPointer::new(directory.path().join("catalog"));
     let (archive, _lock) = Archive::open_or_create(&directory.path().join("archive")).unwrap();
@@ -403,26 +407,36 @@ fn an_offline_reader_cannot_leave_a_resumed_publisher_unwritable() {
         pinned.values("model", "").unwrap()[0].value,
         "retained-model"
     );
-    match pointer.resume(&metadata, &catalog, "machine") {
-        Ok(Some((mut writer, _, _))) => {
-            writer
-                .update(&metadata, |writer| populate(writer, "new-model"))
-                .unwrap();
-            assert_eq!(
-                pinned.values("model", "").unwrap()[0].value,
-                "retained-model"
-            );
+    let target = fs::read_link(&pointer.path).unwrap();
+    let identity = fs::metadata(&pointer.path).unwrap().ino();
+    let resumed = match pointer.resume(&metadata, &catalog, "machine") {
+        Ok(Some((writer, _, _))) => Some(writer),
+        Err(StoreError::Sqlite(error))
+            if error.sqlite_error_code() == Some(rusqlite::ErrorCode::ReadOnly) =>
+        {
+            None
         }
-        Ok(None) | Err(_) => {
-            let writer = pointer
-                .build(&metadata, |writer| populate(writer, "new-model"))
-                .unwrap();
-            pointer
-                .activate(&writer, &archive.scope_token().unwrap())
-                .unwrap();
-            assert!(matches!(pinned.check(), Err(StoreError::ScopeChanged)));
-        }
-    }
+        Err(error) => panic!("expected transient readonly mapping: {error}"),
+        Ok(None) => panic!("valid catalog was rejected"),
+    };
+    assert_eq!(fs::read_link(&pointer.path).unwrap(), target);
+    assert_eq!(
+        pinned.values("model", "").unwrap()[0].value,
+        "retained-model"
+    );
+    drop(pinned);
+    let mut writer = resumed.unwrap_or_else(|| {
+        pointer
+            .resume(&metadata, &catalog, "machine")
+            .unwrap()
+            .unwrap()
+            .0
+    });
+    writer
+        .update(&metadata, |writer| populate(writer, "new-model"))
+        .unwrap();
+    assert_eq!(fs::read_link(&pointer.path).unwrap(), target);
+    assert_eq!(fs::metadata(&pointer.path).unwrap().ino(), identity);
     let current = CatalogReader::open(&pointer.path, "synthetic")
         .unwrap()
         .unwrap();
@@ -458,4 +472,59 @@ fn resume_does_not_follow_a_cache_target_into_another_file() {
     std::os::unix::fs::symlink("catalog.link.db", &pointer.path).unwrap();
     assert!(pointer.resume(&metadata, &catalog, "machine").is_err());
     assert_eq!(fs::read(&target).unwrap(), before);
+}
+
+#[test]
+fn failed_standalone_open_revokes_the_previous_catalog() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("archive");
+    let (archive, lock) = Archive::open_or_create(&root).unwrap();
+    let token = archive.scope_token().unwrap();
+    let pointer = Arc::new(CatalogPointer::new(directory.path().join("catalog")));
+    let writer = build(&pointer, "generation", "cached");
+    pointer.activate(&writer, &token).unwrap();
+    let conn = crate::archive::open_write(&archive.archive_db(), 1).unwrap();
+    conn.execute_batch("PRAGMA user_version=999").unwrap();
+    drop(conn);
+    drop(writer);
+    drop(lock);
+    drop(archive);
+    let invalidator = Arc::clone(&pointer);
+    assert!(
+        Archive::open_or_create_with_invalidator(&root, move || invalidator.invalidate()).is_err()
+    );
+    assert!(!pointer.path.exists());
+    assert!(matches!(token.check(), Err(StoreError::ScopeChanged)));
+}
+
+#[test]
+fn unknown_and_primary_startup_revoke_the_previous_catalog() {
+    for mode in ["primary", "cache", "blocked"] {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("archive");
+        let (archive, lock) = if mode == "blocked" {
+            Archive::open_or_create(&root).unwrap()
+        } else {
+            Archive::open_primary(&root, &root.join("bytes")).unwrap()
+        };
+        let pointer = Arc::new(CatalogPointer::new(directory.path().join("catalog")));
+        let writer = build(&pointer, "generation", "cached");
+        pointer
+            .activate(&writer, &archive.scope_token().unwrap())
+            .unwrap();
+        drop(writer);
+        drop(lock);
+        drop(archive);
+        let invalidator = Arc::clone(&pointer);
+        let invalidate = move || invalidator.invalidate();
+        let opened = match mode {
+            "primary" => {
+                Archive::open_primary_with_invalidator(&root, &root.join("bytes"), invalidate)
+            }
+            "cache" => Archive::open_primary_cache_with_invalidator(&root, invalidate),
+            _ => Archive::open_blocked_with_invalidator(&root, invalidate),
+        };
+        assert!(opened.is_ok(), "{mode}");
+        assert!(!pointer.path.exists(), "{mode}");
+    }
 }

@@ -99,12 +99,16 @@ impl ReadScopeState {
     pub(crate) fn register(
         self: &Arc<Self>,
         callback: impl Fn() -> Result<()> + Send + Sync + 'static,
+        invalidate_initial: bool,
     ) -> Result<ScopeInvalidation> {
         let callback: Arc<Invalidator> = Arc::new(callback);
         let mut fence = self.fence.write().map_err(|_| poisoned())?;
-        // Install before the first snapshot. Startup cannot expose a pointer
-        // from an earlier process while its current scope is still unknown.
-        callback()?;
+        // Unknown scopes revoke their previous pointer immediately. Standalone
+        // opens install this callback before index setup and invalidate when
+        // that setup actually changes the local generation.
+        if invalidate_initial {
+            callback()?;
+        }
         fence.retain(|callback| callback.strong_count() > 0);
         fence.push(Arc::downgrade(&callback));
         Ok(ScopeInvalidation {

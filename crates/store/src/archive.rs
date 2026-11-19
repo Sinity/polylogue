@@ -139,7 +139,7 @@ impl Archive {
         root: &Path,
         invalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
     ) -> Result<crate::read::scope::ScopeInvalidation> {
-        crate::read::scope::state(root).register(invalidate)
+        crate::read::scope::state(root).register(invalidate, true)
     }
 
     /// A transition guard without SQL. Currentness still comes from a reader's
@@ -292,7 +292,7 @@ impl Archive {
         invalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
     ) -> Result<(Self, ArchiveLock, crate::ScopeInvalidation)> {
         Self::open_configured(Self::at(root), |archive| {
-            archive.read_scope.register(invalidate)
+            archive.read_scope.register(invalidate, false)
         })
     }
 
@@ -303,7 +303,7 @@ impl Archive {
         invalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
     ) -> Result<(Self, ArchiveLock, crate::ScopeInvalidation)> {
         Self::open_configured(Self::on_sinex(root, store), |archive| {
-            archive.read_scope.register(invalidate)
+            archive.read_scope.register(invalidate, true)
         })
     }
 
@@ -313,7 +313,7 @@ impl Archive {
         invalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
     ) -> Result<(Self, ArchiveLock, crate::ScopeInvalidation)> {
         Self::open_configured(Self::primary_cache(root), |archive| {
-            archive.read_scope.register(invalidate)
+            archive.read_scope.register(invalidate, true)
         })
     }
 
@@ -338,14 +338,25 @@ impl Archive {
         metadata::check(&archive)?;
         metadata::create(&archive)?;
         let setup = setup(&archive)?;
-        if !archive.is_primary() {
-            fs::create_dir_all(archive.blobs_dir())?;
-            let source = open_write(&archive.archive_db(), cache::SETUP)?;
-            let schema_lock = crate::write_lock::hold(&source)?;
-            schema::ensure_archive(&source)?;
-            drop(schema_lock);
+        let opened = (|| {
+            if !archive.is_primary() {
+                fs::create_dir_all(archive.blobs_dir())?;
+                let source = open_write(&archive.archive_db(), cache::SETUP)?;
+                let schema_lock = crate::write_lock::hold(&source)?;
+                schema::ensure_archive(&source)?;
+                drop(schema_lock);
+            }
+            archive.finish_open()
+        })();
+        if let Err(error) = opened {
+            // A failed open cannot leave the previous cache authorized. Keep
+            // the writer lock and registration until its pointer is revoked.
+            let mut reset = archive.read_scope.begin_reset()?;
+            reset.invalidate()?;
+            drop(reset);
+            archive.read_scope.finish_reset();
+            return Err(error);
         }
-        archive.finish_open()?;
         Ok((archive, lock, setup))
     }
 
@@ -370,7 +381,9 @@ impl Archive {
                 )));
             }
         };
-        Self::open_configured(archive, |archive| archive.read_scope.register(invalidate))
+        Self::open_configured(archive, |archive| {
+            archive.read_scope.register(invalidate, true)
+        })
     }
 
     /// Where input bytes wait, in primary mode, until the writer sends them
