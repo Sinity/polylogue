@@ -354,11 +354,14 @@ impl Inner {
         Ok(stored)
     }
 
-    pub(super) fn confirm_imports(&self, group: &[Batch]) -> Result<Option<Vec<StoredInput>>> {
+    pub(super) fn confirm_imports(
+        &mut self,
+        group: Vec<Batch>,
+    ) -> Result<Option<Vec<StoredInput>>> {
         if self.sinex.is_some() {
             return Ok(None);
         }
-        for batch in group {
+        for batch in &group {
             let Some(member) = batch.observation.as_ref().and_then(|o| o.import.as_ref()) else {
                 return Ok(None);
             };
@@ -375,7 +378,25 @@ impl Inner {
             }
             check_import_format(&self.archive, &batch.input.id, Some(member))?;
         }
-        self.repeated_imports(group.iter())
+        let Some((stored, missing)) = self.held_imports(group.iter())? else {
+            return Ok(None);
+        };
+        if !missing.is_empty() {
+            // Verified originals already have extents. The normal archive
+            // transaction can record a different receiving observation
+            // without acquiring and staging their bodies a second time.
+            let mut observations: Vec<_> = group
+                .into_iter()
+                .enumerate()
+                .filter(|(index, _)| missing.contains(index))
+                .map(|(_, batch)| PreparedBatch {
+                    batch,
+                    files: Vec::new(),
+                })
+                .collect();
+            self.write_rows_first(&mut observations, None)?;
+        }
+        Ok(Some(stored))
     }
 
     /// A retry of an unchanged import group has nothing new to write.
@@ -385,8 +406,18 @@ impl Inner {
         &self,
         group: impl ExactSizeIterator<Item = &'a Batch>,
     ) -> Result<Option<Vec<StoredInput>>> {
+        Ok(self
+            .held_imports(group)?
+            .and_then(|(stored, missing)| missing.is_empty().then_some(stored)))
+    }
+
+    fn held_imports<'a>(
+        &self,
+        group: impl ExactSizeIterator<Item = &'a Batch>,
+    ) -> Result<Option<(Vec<StoredInput>, BTreeSet<usize>)>> {
         let mut stored = Vec::with_capacity(group.len());
-        for b in group {
+        let mut missing = BTreeSet::new();
+        for (index, b) in group.enumerate() {
             let (Some(observation), Some(blob)) = (&b.observation, &b.new_blob) else {
                 return Ok(None);
             };
@@ -402,19 +433,23 @@ impl Inner {
                     )
                 })
                 .transpose()?;
-            let known: Option<(i64, i64)> = self.archive.query_row(
-                "SELECT r.chain,r.length FROM revision r WHERE r.input=?1
+            let known = self.archive.query_row(
+                "SELECT r.chain,r.length,
+                   EXISTS(SELECT 1 FROM observation o WHERE o.input=?1 AND o.machine=?4 AND o.path_bytes=?5 AND o.class='imported' AND json_extract(o.details_json,'$.import') IS json_extract(?6,'$.import') AND json_extract(o.details_json,'$.import_format') IS json_extract(?6,'$.import_format'))
+                 FROM revision r WHERE r.input=?1
                    AND r.number=(SELECT max(number) FROM revision WHERE input=?1)
                    AND r.length=?2
                    AND (SELECT count(*) FROM extent WHERE input=?1 AND chain=r.chain)=1
-                   AND EXISTS(SELECT 1 FROM extent x WHERE x.input=?1 AND x.chain=r.chain AND x.offset=0 AND x.length=?2 AND x.blob=?3)
-                   AND EXISTS(SELECT 1 FROM observation o WHERE o.input=?1 AND o.machine=?4 AND o.path_bytes=?5 AND o.class='imported' AND json_extract(o.details_json,'$.import') IS json_extract(?6,'$.import') AND json_extract(o.details_json,'$.import_format') IS json_extract(?6,'$.import_format'))",
+                   AND EXISTS(SELECT 1 FROM extent x WHERE x.input=?1 AND x.chain=r.chain AND x.offset=0 AND x.length=?2 AND x.blob=?3)",
                 params![b.input.id,b.length as i64,&blob.hash.0[..],observation.machine,observation.path_bytes,details],
-                |row| <(_, _)>::try_from(row),
+                |row| <(i64, i64, bool)>::try_from(row),
             ).optional()?;
-            let Some((chain, length)) = known else {
+            let Some((chain, length, observed)) = known else {
                 return Ok(None);
             };
+            if !observed {
+                missing.insert(index);
+            }
             stored.push(StoredInput {
                 input: b.input.id.clone(),
                 chain,
@@ -423,7 +458,7 @@ impl Inner {
                 bytes_written: 0,
             });
         }
-        Ok(Some(stored))
+        Ok(Some((stored, missing)))
     }
 
     /// What a batch must satisfy before any of its rows are written.
