@@ -278,6 +278,7 @@ impl Engine {
                     report.pass.capture_pending = true;
                     continue;
                 }
+                Err(error @ polylogue_store::StoreError::ScopeChanged) => return Err(error.into()),
                 Err(error) => {
                     report.pass.errors.push(error.to_string());
                     continue;

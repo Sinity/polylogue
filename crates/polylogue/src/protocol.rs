@@ -436,6 +436,11 @@ pub fn query_failure(error: &polylogue_store::query::QueryError) -> Failure {
 /// Every store error reaches surfaces through this one classification.
 pub fn store_failure(error: &polylogue_store::StoreError) -> Failure {
     match error {
+        polylogue_store::StoreError::ScopeChanged => {
+            let mut failure = failure(error.code(), error.to_string());
+            failure.retryable = true;
+            failure
+        }
         polylogue_store::StoreError::Query(error) => query_failure(error),
         polylogue_store::StoreError::Ambiguous { candidates, .. } => {
             failure(error.code(), error.to_string()).with_candidates(candidates.clone())

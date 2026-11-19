@@ -2645,7 +2645,7 @@ impl Engine {
                             ..Default::default()
                         },
                     )
-                    .map_err(|e| ImportFailure::Import(e.to_string()));
+                    .map_err(ImportFailure::Import);
                 busy(pending);
                 report
             });

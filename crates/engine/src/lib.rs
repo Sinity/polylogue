@@ -421,12 +421,12 @@ pub struct UserStateReport {
     pub present: u64,
 }
 
-/// Runtime import failures keep parent cancellation and deadline errors for
-/// the accepting transport's shared error classifier.
+/// Runtime import failures retain typed store errors for the accepting
+/// transport's shared error classifier, including changes of access scope.
 #[derive(Debug)]
 pub enum ImportFailure {
     Parent(polylogue_store::StoreError),
-    Import(String),
+    Import(EngineError),
 }
 
 /// Messages the loop thread waits on.
