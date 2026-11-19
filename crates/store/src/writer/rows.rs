@@ -159,8 +159,6 @@ fn apply_rows(
         bits: &rows.current_texts(),
         at_build_end: upkeep.at_build_end(),
     };
-    #[cfg(test)]
-    let diagnostic_versions = super::tests::fresh_messages::diagnostic::phase("versions");
     for version in choices.message_versions.values() {
         let registered = crate::versions::store_message(
             tx,
@@ -178,8 +176,6 @@ fn apply_rows(
         rows.versions
             .insert(version.value.prepared.hash, registered);
     }
-    #[cfg(test)]
-    drop(diagnostic_versions);
     let mut sessions: HashMap<String, i64> = HashMap::new();
     for s in &p.output.sessions {
         let (pk, _) = rows.upsert_session(s, rows.source_committed)?;
@@ -215,8 +211,6 @@ fn apply_rows(
     // Messages one record holds share its offset; their order in the
     // record breaks the tie.
     let mut in_record: HashMap<u64, i64> = HashMap::new();
-    #[cfg(test)]
-    let diagnostic_headers = super::tests::fresh_messages::diagnostic::phase("headers_sources");
     for (i, row) in p.output.messages.iter().enumerate() {
         if !choices.keep_messages[i] {
             continue;
@@ -263,8 +257,6 @@ fn apply_rows(
             *last = (*last).max(at);
         }
     }
-    #[cfg(test)]
-    drop(diagnostic_headers);
     // A stored version no source row chose is deleted before the commit.
     for version in rows.versions.values() {
         if !chosen.contains(&version.pk()) {
@@ -406,14 +398,9 @@ fn apply_rows(
             )?
             .execute(params![message_pk, source_input, source_chain])?;
         }
-        #[cfg(test)]
-        let diagnostic_selected =
-            super::tests::fresh_messages::diagnostic::phase("selected_refresh");
         for pk in choices.messages.keys() {
             written += u64::from(rows.refresh_message(*pk)?);
         }
-        #[cfg(test)]
-        drop(diagnostic_selected);
         rows.refresh_event_placement()?;
         for (pk, choice) in &choices.documents {
             crate::documents::apply_choice(tx, *pk, choice.as_ref(), counter, upkeep, texts, keys)?;

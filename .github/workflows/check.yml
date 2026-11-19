@@ -52,7 +52,6 @@ jobs:
           cache: npm
           cache-dependency-path: extension/package-lock.json
       - name: Browser extension checks and real archives
-        if: github.event_name != 'workflow_dispatch'
         run: |
           sudo apt-get install --yes zip zsh fish
           npm --prefix extension ci
@@ -61,7 +60,6 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - uses: taiki-e/install-action@nextest
       - name: nats-server for the Sinex client tests
-        if: github.event_name != 'workflow_dispatch'
         run: |
           curl -sSfL https://github.com/nats-io/nats-server/releases/download/v2.10.22/nats-server-v2.10.22-linux-amd64.tar.gz | tar xz
           sudo mv nats-server-v2.10.22-linux-amd64/nats-server /usr/local/bin/
@@ -89,13 +87,7 @@ jobs:
           git diff --no-renames --name-only -z "$built" HEAD | xargs -0 -r touch -h -c
           echo "restored build of $built; $(git diff --no-renames --name-only "$built" HEAD | wc -l) files differ"
       # Pull requests check their merge tree; pushes and exact-revision dispatches run all tests.
-      - name: Focused row diagnostic
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          NEXTEST_SUCCESS_OUTPUT: immediate
-        run: cargo xtask test -p polylogue-store --lib -E 'test(prepared_message_transaction_work)'
       - name: cargo xtask check
-        if: github.event_name != 'workflow_dispatch'
         run: cargo xtask check ${{ github.event_name == 'pull_request' && '--changed-base HEAD^1' || '' }}
       # A failed test leaves a valid build, so it is saved too.
       - name: Save master's build
