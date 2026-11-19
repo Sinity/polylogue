@@ -407,10 +407,11 @@ fn count_statement(event: rusqlite::trace::TraceEvent<'_>) {
 /// not assert a machine-dependent duration or a whole-pipeline rate.
 #[test]
 fn prepared_message_transaction_work() {
-    diagnostic::run();
+    physical::run();
 }
 
 pub(crate) mod diagnostic;
+mod physical;
 
 #[test]
 fn early_copy_materialization_then_refresh_keeps_one_body_through_release() {
