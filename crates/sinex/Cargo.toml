@@ -38,7 +38,7 @@ toml = "1.1"
 
 [dev-dependencies]
 sinex-query = { git = "https://github.com/Sinity/sinex", rev = "1aed2d03531a8d60b3ed090c5a46e75fc9dda665" }
-polylogue-store = { workspace = true, features = ["fixture"] }
+polylogue-store = { workspace = true, features = ["fixture", "faults"] }
 jsonschema = { version = "0.42", default-features = false }
 polylogue-testkit.workspace = true
 polylogue-engine.workspace = true

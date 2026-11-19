@@ -115,6 +115,11 @@ waits before polling again; failures keep their retry backoff. Withheld
 events use at most sixteen concurrent grant-checked fetches, with results
 applied in delivery order; whole events need no fetch. A refused or erased event keeps its own position;
 a lost connection fails the page before its deliveries can be acknowledged.
+Confirmed content changes wake the local parser even while the daemon is idle
+or provider discovery is disabled with `daemon --no-sources`. The parser checks
+its indexed reading state and reads newly available original bodies. Completed
+readings do not keep scheduling passes merely because parsing itself committed
+rows; provider files remain unnecessary.
 Acknowledging a page removes the producer spool operations that it confirmed. An
 operation whose events Sinex admitted is removed only when every one of those
 events has a row in `index.db`; the applied position alone is not enough,

@@ -1,4 +1,4 @@
-//! The derived offline completion catalog and cues from committed index changes.
+//! Coalesced cues from committed index changes and the offline completion catalog.
 use polylogue_model::LockExt;
 use std::sync::{Arc, Mutex, mpsc};
 
@@ -46,8 +46,10 @@ impl Committed {
 }
 
 struct Subscriber {
+    interests: Option<Committed>,
     pending: Arc<Mutex<Committed>>,
     wake: mpsc::SyncSender<()>,
+    notify: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// Coalesced cues to read the index, each saying what kinds
@@ -64,11 +66,32 @@ impl CommitEvents {
     /// Subscribe before taking the startup snapshot so commits cannot fall
     /// between the snapshot and the next incremental read.
     pub fn subscribe(&self) -> CommitSubscription {
+        self.subscribe_to(None, None)
+    }
+
+    /// Wake the caller's inbox when selected commits first become pending.
+    /// The callback must only queue a wake, never block or call the writer.
+    /// Drain the returned subscription to allow another coalesced wake.
+    pub fn subscribe_with_wake(
+        &self,
+        interests: Committed,
+        notify: impl Fn() + Send + Sync + 'static,
+    ) -> CommitSubscription {
+        self.subscribe_to(Some(interests), Some(Arc::new(notify)))
+    }
+
+    fn subscribe_to(
+        &self,
+        interests: Option<Committed>,
+        notify: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> CommitSubscription {
         let (wake, receiver) = mpsc::sync_channel(1);
         let pending = Arc::default();
         self.0.locked().push(Subscriber {
+            interests,
             pending: Arc::clone(&pending),
             wake: wake.clone(),
+            notify,
         });
         CommitSubscription {
             pending,
@@ -81,14 +104,34 @@ impl CommitEvents {
     /// with what it changed.
     pub(crate) fn committed(&self, changed: Committed) {
         self.0.locked().retain(|subscriber| {
+            let changed = if let Some(interests) = subscriber.interests {
+                let selected = Committed {
+                    content: changed.content && interests.content,
+                    authored: changed.authored && interests.authored,
+                    query_records: changed.query_records && interests.query_records,
+                };
+                if selected == Committed::default() {
+                    return true;
+                }
+                selected
+            } else {
+                changed
+            };
             subscriber.pending.locked().merge(changed);
-            !matches!(
-                subscriber.wake.try_send(()),
-                Err(mpsc::TrySendError::Disconnected(()))
-            )
+            match subscriber.wake.try_send(()) {
+                Ok(()) => {
+                    if let Some(notify) = &subscriber.notify {
+                        notify();
+                    }
+                    true
+                }
+                Err(mpsc::TrySendError::Full(())) => true,
+                Err(mpsc::TrySendError::Disconnected(())) => false,
+            }
         });
     }
 }
+
 impl CommitSubscription {
     /// Waits for a cue and returns what the commits since the last one
     /// changed; a wake from [`Self::wake_handle`] alone changed nothing.
@@ -127,3 +170,6 @@ pub use catalog_rows::{DefinitionChange, KeptEntry, SavedEntry, SessionChange, V
 
 mod pointer;
 pub use pointer::CatalogPointer;
+
+#[cfg(test)]
+mod tests;

@@ -433,6 +433,8 @@ pub enum ImportFailure {
 pub enum LoopMsg {
     /// Something changed under a watched location.
     Changed,
+    /// Selected index commits are waiting in the coalesced subscription.
+    Committed,
     Import {
         paths: Vec<PathBuf>,
         /// The declared structure the paths are read as, or the Python
@@ -457,6 +459,8 @@ struct Requests {
     pending: Option<LoopMsg>,
     yielding: Arc<std::sync::atomic::AtomicBool>,
     serving: bool,
+    commits: Option<polylogue_store::completion::CommitSubscription>,
+    commit_wake: bool,
 }
 
 pub struct Engine {
