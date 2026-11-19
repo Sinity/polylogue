@@ -226,6 +226,10 @@ Building the archive overlaps every stage:
   a bounded dictionary with sorted spill files keeps text identities for the
   writer's lifetime, including while an unreferenced text has no row.
   Builds preload hashes by row order; other writes learn identities as needed.
+  The resolver reads existing messages' selected rows, routes and source claims
+  in bounded groups within its existing snapshot. Shared version/layout, input
+  and source-session facts are fetched once per key group, so repeated claims
+  do not repeatedly read the same metadata or decode the same session facts.
   Missing build keys skip database probes. A fixed-size Bloom filter skips
   spill-file probes for unseen keys; possible matches still compare the stored
   row's complete key. Session and required foreign-key indexes remain live.
