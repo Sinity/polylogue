@@ -118,7 +118,8 @@ impl CommitSubscription {
 
 mod catalog;
 pub use catalog::{
-    CatalogReader, CatalogWriter, Kept, Metadata, Parameter, Saved, Session, Setting, ValueCount,
+    CatalogReader, CatalogWriter, Dependencies, Kept, Metadata, Parameter, PublisherVocabulary,
+    Saved, Session, Setting, ValueCount,
 };
 
 mod catalog_rows;

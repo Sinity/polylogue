@@ -199,6 +199,8 @@ fn saved_metadata_follows_committed_families_and_late_query_bodies() {
         .unwrap();
     assert!(cached.saved("historical").unwrap()[0].schema.is_none());
     drop(cached);
+    drop(state);
+    let mut state = State::new(false, super::super::tests::request_metadata());
     archive.writer.query_object(object.clone(), None).unwrap();
     state
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
@@ -360,6 +362,8 @@ fn failed_catalog_transaction_retries_the_same_committed_definition_delta() {
     assert!(cache.saved("beta").unwrap().is_empty());
     assert_eq!(cache.saved("alpha").unwrap().len(), 1);
     drop(cache);
+    drop(state);
+    let mut state = State::new(false, super::super::tests::request_metadata());
     state
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
@@ -481,6 +485,8 @@ fn late_kept_result_refreshes_inline_dependency() {
             .is_none()
     );
     let before = state.position.clone().unwrap();
+    drop(state);
+    let mut state = State::new(false, super::super::tests::request_metadata());
     writer
         .user(polylogue_store::writer::UserSubmission {
             request: keep(),
@@ -653,5 +659,180 @@ fn historical_drive_intent_is_removed_from_initial_and_incremental_completions()
             .setting_value("drive.ai-studio", "synthetic-host")
             .unwrap(),
         Some(polylogue_model::settings::Value::Boolean(true))
+    );
+}
+
+#[test]
+fn reopened_publication_skips_the_source_snapshot_and_keeps_offline_completion_current() {
+    use polylogue_store::fixture::writer::{WriterArchive, prose};
+    use std::os::unix::fs::MetadataExt;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("catalog");
+    let mut archive = WriterArchive::new();
+    let mut messages = (1..=3)
+        .flat_map(|n| {
+            prose(
+                "first",
+                n,
+                100 + i64::from(n),
+                &format!("Retained prompt {n}"),
+            )
+        })
+        .collect::<Vec<_>>();
+    for message in &mut messages {
+        message.model = Some("retained-model".into());
+    }
+    archive.write("first", messages);
+    let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
+    let mut state = State::new(false, super::super::tests::request_metadata());
+    state
+        .refresh(&reads.reader().unwrap(), &path, "synthetic")
+        .unwrap();
+    let saved = state.position.clone().unwrap();
+    let initial = completion::CatalogReader::open(&path, "synthetic")
+        .unwrap()
+        .unwrap();
+    assert_eq!(initial.values("model", "retained").unwrap()[0].count, 3);
+    drop(initial);
+    drop(state);
+    drop(reads);
+    let target = std::fs::read_link(&path).unwrap();
+    let inode = std::fs::metadata(&path).unwrap().ino();
+    let before = std::fs::read(&path).unwrap();
+    let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
+    polylogue_store::fault::arm(
+        "completion.full_snapshot",
+        &saved.generation,
+        polylogue_store::fault::Action::Fail,
+        0,
+        1,
+    );
+    let mut state = State::new(false, super::super::tests::request_metadata());
+    state
+        .refresh(&reads.reader().unwrap(), &path, "synthetic")
+        .unwrap();
+    assert_eq!(state.position, Some(saved));
+    assert_eq!(std::fs::read_link(&path).unwrap(), target);
+    assert_eq!(std::fs::metadata(&path).unwrap().ino(), inode);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    // A failed source delta read can drop the taken writer before returning.
+    // Its in-memory cursor cannot stand in for the committed catalog connection.
+    state.writer = None;
+    state
+        .refresh(&reads.reader().unwrap(), &path, "synthetic")
+        .unwrap();
+    assert_eq!(std::fs::read_link(&path).unwrap(), target);
+    let complete = |text: &str| super::super::complete_file(&path, "synthetic", text, text.len());
+    assert!(
+        complete("model:retained")
+            .iter()
+            .any(|candidate| candidate.value == "retained-model")
+    );
+    let mut messages = prose("second", 1, 200, "A newly committed prompt");
+    messages[0].model = Some("new-model".into());
+    archive.write("second", messages);
+    // A restart behind the source uses the committed delta, not another snapshot.
+    drop(state);
+    let mut state = State::new(false, super::super::tests::request_metadata());
+    state
+        .refresh(&reads.reader().unwrap(), &path, "synthetic")
+        .unwrap();
+    assert!(
+        complete("model:new")
+            .iter()
+            .any(|candidate| candidate.value == "new-model")
+    );
+    assert!(
+        complete("model:retained")
+            .iter()
+            .any(|candidate| candidate.value == "retained-model")
+    );
+    let cache = completion::CatalogReader::open(&path, "synthetic")
+        .unwrap()
+        .unwrap();
+    assert_eq!(cache.values("model", "retained").unwrap()[0].count, 3);
+    assert_eq!(cache.values("model", "new").unwrap()[0].count, 1);
+    // Prove the same armed source-read boundary rejects a real fresh publication.
+    let error = State::new(false, super::super::tests::request_metadata())
+        .refresh(
+            &reads.reader().unwrap(),
+            &directory.path().join("fresh"),
+            "synthetic",
+        )
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("completion.full_snapshot"),
+        "{error}"
+    );
+}
+
+#[test]
+fn damaged_or_missing_catalog_is_rebuilt_for_the_offline_consumer() {
+    use polylogue_store::fixture::writer::{WriterArchive, prose};
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("catalog");
+    let mut archive = WriterArchive::new();
+    let mut messages = prose("source", 1, 100, "A source prompt");
+    messages[0].model = Some("source-model".into());
+    archive.write("source", messages);
+    let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
+    let refresh = || {
+        State::new(false, super::super::tests::request_metadata())
+            .refresh(&reads.reader().unwrap(), &path, "synthetic")
+            .unwrap();
+        let text = "model:source";
+        assert!(
+            super::super::complete_file(&path, "synthetic", text, text.len())
+                .iter()
+                .any(|candidate| candidate.value == "source-model")
+        );
+    };
+    refresh();
+    let first = std::fs::read_link(&path).unwrap();
+    std::fs::write(&path, b"damaged derived catalog").unwrap();
+    refresh();
+    let second = std::fs::read_link(&path).unwrap();
+    assert_ne!(first, second);
+    std::fs::remove_file(&path).unwrap();
+    refresh();
+    assert_ne!(second, std::fs::read_link(&path).unwrap());
+}
+
+#[test]
+fn reopening_keeps_typed_result_bindings_for_new_saved_definitions() {
+    use polylogue_model::user::{Save, UserWrite};
+    let archive = polylogue_store::fixture::writer::WriterArchive::new();
+    let save = |id: &str, name: Option<&str>, query: &str| {
+        archive.writer.user(polylogue_store::writer::UserSubmission {
+            request: polylogue_store::fixture::authored::operator_request(id.into(),
+                UserWrite::Save(Box::new(Save {
+                    name: name.map(str::to_owned), query: query.into(),
+                    rows_json: r#"{"unit":"sessions","shape":"rows","columns":[{"name":"title","kind":"text"}],"rows":[],"identities":[]}"#.into(),
+                    read_at: "{}".into(), denominator: None, watch: None, outcomes: None,
+                }))),
+            scope: None, preparation: Some(crate::daemon::service::authored_preparation()), parent: None,
+        }).unwrap()
+    };
+    save("retained-kept", None, "sessions");
+    let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("catalog");
+    let mut state = State::new(false, super::super::tests::request_metadata());
+    state
+        .refresh(&reads.reader().unwrap(), &path, "synthetic")
+        .unwrap();
+    let binding = state.vocabulary.kept["retained-kept"].clone();
+    drop(state);
+    save("later-definition", Some("later"), "result:retained-kept");
+    let mut state = State::new(false, super::super::tests::request_metadata());
+    state
+        .refresh(&reads.reader().unwrap(), &path, "synthetic")
+        .unwrap();
+    assert_eq!(state.vocabulary.kept["retained-kept"], binding);
+    let text = "query:later | where ti";
+    assert!(
+        super::super::complete_file(&path, "synthetic", text, text.len())
+            .iter()
+            .any(|candidate| candidate.value == "title")
     );
 }

@@ -203,3 +203,259 @@ fn namespace_retirement_stays_local_and_cannot_fail_an_activated_pointer() {
         .unwrap();
     assert_eq!(reader.values("repo", "").unwrap()[0].value, "second");
 }
+
+#[test]
+fn resume_validates_the_publication_identity_before_reusing_its_database() {
+    use std::os::unix::fs::MetadataExt;
+    for case in [
+        "current",
+        "aliased_parent",
+        "version6",
+        "archive",
+        "generation",
+        "index",
+        "archive_position",
+        "negative_index",
+        "negative_archive",
+        "grammar",
+        "machine",
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let parent = if case == "aliased_parent" {
+            let real = directory.path().join("real");
+            fs::create_dir(&real).unwrap();
+            let alias = directory.path().join("alias");
+            std::os::unix::fs::symlink(&real, &alias).unwrap();
+            alias
+        } else {
+            directory.path().to_owned()
+        };
+        let pointer = CatalogPointer::new(parent.join("catalog"));
+        let (archive, _lock) = Archive::open_or_create(&directory.path().join("archive")).unwrap();
+        let catalog = query_language::catalog::Catalog::new("sessions");
+        let metadata = Metadata {
+            archive: "synthetic".into(),
+            position: polylogue_model::ChangePosition {
+                generation: "generation".into(),
+                index: 10,
+                archive: 20,
+            },
+            written_at: 123,
+        };
+        let writer = pointer
+            .build(&metadata, |writer| {
+                writer.put_catalog(&catalog)?;
+                writer.put_publisher_machine("machine")?;
+                writer.put_values(
+                    "source",
+                    &std::collections::BTreeMap::from([(
+                        "model".into(),
+                        std::collections::BTreeMap::from([("retained-model".into(), 3)]),
+                    )]),
+                )
+            })
+            .unwrap();
+        pointer
+            .activate(&writer, &archive.scope_token().unwrap())
+            .unwrap();
+        if matches!(case, "negative_index" | "negative_archive") {
+            let mut invalid = metadata.position.clone();
+            if case == "negative_index" {
+                invalid.index = -1;
+            } else {
+                invalid.archive = -1;
+            }
+            writer
+                .connection()
+                .execute(
+                    "UPDATE metadata SET value=?1 WHERE key='position'",
+                    [serde_json::to_string(&invalid).unwrap()],
+                )
+                .unwrap();
+        }
+        if case == "version6" {
+            writer
+                .connection()
+                .execute("UPDATE metadata SET value='6' WHERE key='version'", [])
+                .unwrap();
+        }
+        drop(writer);
+        let inode = fs::metadata(&pointer.path).unwrap().ino();
+        let mut current = metadata.clone();
+        let mut expected_catalog = catalog;
+        let machine = if case == "machine" {
+            "other"
+        } else {
+            "machine"
+        };
+        match case {
+            "archive" => current.archive = "other".into(),
+            "generation" => current.position.generation = "other".into(),
+            "index" => current.position.index -= 1,
+            "archive_position" => current.position.archive -= 1,
+            "grammar" => expected_catalog = query_language::catalog::Catalog::new("messages"),
+            _ => {}
+        }
+        let resumed = pointer
+            .resume(&current, &expected_catalog, machine)
+            .unwrap();
+        assert_eq!(
+            resumed.is_some(),
+            matches!(case, "current" | "aliased_parent"),
+            "{case}"
+        );
+        assert_eq!(fs::metadata(&pointer.path).unwrap().ino(), inode);
+        if let Some((mut writer, saved, _vocabulary)) = resumed {
+            assert_eq!(saved.position, metadata.position);
+            assert_eq!(
+                CatalogReader::open(&pointer.path, "synthetic")
+                    .unwrap()
+                    .unwrap()
+                    .values("model", "retained")
+                    .unwrap()[0]
+                    .count,
+                3
+            );
+            writer
+                .update(&saved, |writer| {
+                    writer.put_values(
+                        "changed",
+                        &std::collections::BTreeMap::from([(
+                            "model".into(),
+                            std::collections::BTreeMap::from([("new-model".into(), 1)]),
+                        )]),
+                    )
+                })
+                .unwrap();
+            assert_eq!(
+                CatalogReader::open(&pointer.path, "synthetic")
+                    .unwrap()
+                    .unwrap()
+                    .values("model", "new")
+                    .unwrap()[0]
+                    .count,
+                1
+            );
+        }
+        if case == "version6" {
+            let rebuilt = pointer
+                .build(&metadata, |writer| {
+                    writer.put_catalog(&expected_catalog)?;
+                    writer.put_publisher_machine("machine")?;
+                    writer.put_values(
+                        "new-source",
+                        &std::collections::BTreeMap::from([(
+                            "model".into(),
+                            std::collections::BTreeMap::from([("rebuilt-model".into(), 1)]),
+                        )]),
+                    )
+                })
+                .unwrap();
+            pointer
+                .activate(&rebuilt, &archive.scope_token().unwrap())
+                .unwrap();
+            assert_ne!(fs::metadata(&pointer.path).unwrap().ino(), inode);
+            let cache = CatalogReader::open(&pointer.path, "synthetic")
+                .unwrap()
+                .unwrap();
+            assert_eq!(cache.values("model", "").unwrap()[0].value, "rebuilt-model");
+        }
+    }
+}
+
+#[test]
+fn an_offline_reader_cannot_leave_a_resumed_publisher_unwritable() {
+    let directory = tempfile::tempdir().unwrap();
+    let pointer = CatalogPointer::new(directory.path().join("catalog"));
+    let (archive, _lock) = Archive::open_or_create(&directory.path().join("archive")).unwrap();
+    let catalog = query_language::catalog::Catalog::new("sessions");
+    let metadata = Metadata {
+        archive: "synthetic".into(),
+        position: polylogue_model::ChangePosition {
+            generation: "generation".into(),
+            index: 1,
+            archive: 1,
+        },
+        written_at: 123,
+    };
+    let populate = |writer: &mut CatalogWriter, value: &str| {
+        writer.put_catalog(&catalog)?;
+        writer.put_publisher_machine("machine")?;
+        writer.put_values(
+            "source",
+            &std::collections::BTreeMap::from([(
+                "model".into(),
+                std::collections::BTreeMap::from([(value.into(), 1)]),
+            )]),
+        )
+    };
+    let writer = pointer
+        .build(&metadata, |writer| populate(writer, "retained-model"))
+        .unwrap();
+    pointer
+        .activate(&writer, &archive.scope_token().unwrap())
+        .unwrap();
+    drop(writer);
+    let pinned = CatalogReader::open(&pointer.path, "synthetic")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        pinned.values("model", "").unwrap()[0].value,
+        "retained-model"
+    );
+    match pointer.resume(&metadata, &catalog, "machine") {
+        Ok(Some((mut writer, _, _))) => {
+            writer
+                .update(&metadata, |writer| populate(writer, "new-model"))
+                .unwrap();
+            assert_eq!(
+                pinned.values("model", "").unwrap()[0].value,
+                "retained-model"
+            );
+        }
+        Ok(None) | Err(_) => {
+            let writer = pointer
+                .build(&metadata, |writer| populate(writer, "new-model"))
+                .unwrap();
+            pointer
+                .activate(&writer, &archive.scope_token().unwrap())
+                .unwrap();
+            assert!(matches!(pinned.check(), Err(StoreError::ScopeChanged)));
+        }
+    }
+    let current = CatalogReader::open(&pointer.path, "synthetic")
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.values("model", "").unwrap()[0].value, "new-model");
+}
+
+#[test]
+fn resume_does_not_follow_a_cache_target_into_another_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let metadata = Metadata {
+        archive: "synthetic".into(),
+        position: polylogue_model::ChangePosition {
+            generation: "g".into(),
+            index: 1,
+            archive: 1,
+        },
+        written_at: 1,
+    };
+    let catalog = query_language::catalog::Catalog::new("sessions");
+    let elsewhere = CatalogPointer::new(outside.path().join("catalog"));
+    let writer = elsewhere
+        .build(&metadata, |writer| {
+            writer.put_catalog(&catalog)?;
+            writer.put_publisher_machine("machine")
+        })
+        .unwrap();
+    let target = writer.path.clone();
+    drop(writer);
+    let before = fs::read(&target).unwrap();
+    std::os::unix::fs::symlink(&target, directory.path().join("catalog.link.db")).unwrap();
+    let pointer = CatalogPointer::new(directory.path().join("catalog"));
+    std::os::unix::fs::symlink("catalog.link.db", &pointer.path).unwrap();
+    assert!(pointer.resume(&metadata, &catalog, "machine").is_err());
+    assert_eq!(fs::read(&target).unwrap(), before);
+}
