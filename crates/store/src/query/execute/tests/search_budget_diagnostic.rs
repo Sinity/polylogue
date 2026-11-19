@@ -7,7 +7,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-fn search_options() -> Options {
+fn search_options() -> crate::query::Options {
     let mut options = options();
     options.fields = vec!["id".into()];
     options.page_size = Some(1);
