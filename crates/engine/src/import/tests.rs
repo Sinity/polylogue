@@ -261,6 +261,31 @@ fn codex_checkpoint_retry(predecessor: bool) {
     }
     drop(reader);
     if predecessor {
+        let checkpoint_subject = format!("{}:{input}", engine.archive.root.display());
+        polylogue_store::fault::arm(
+            "parser.checkpoint",
+            &checkpoint_subject,
+            polylogue_store::fault::Action::Fail,
+            0,
+            u32::MAX,
+        );
+        // The fault reaches the full reader. The completed import must not.
+        assert!(
+            engine
+                .reads
+                .reader()
+                .unwrap()
+                .parser_checkpoint(
+                    input.as_ref(),
+                    progress.chain,
+                    &polylogue_sources::origin::by_name("codex")
+                        .unwrap()
+                        .reading_version()
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("parser.checkpoint")
+        );
         let source_observations = "SELECT count(*) AS n FROM a.observation o
             JOIN a.input i ON i.id=o.input WHERE i.format='codex'";
         let before = home.count(source_observations);
@@ -281,6 +306,7 @@ fn codex_checkpoint_retry(predecessor: bool) {
             assert_eq!(home.count(source_observations), before + 1);
         }
         assert_eq!(home.count("SELECT count(*) AS n FROM a.revision"), 2);
+        polylogue_store::fault::clear();
     }
 }
 

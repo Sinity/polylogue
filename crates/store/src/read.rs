@@ -35,7 +35,7 @@ mod cursor_generation;
 pub use cursor_generation::open_cursor;
 mod hook_fields;
 mod parser_checkpoint;
-pub use parser_checkpoint::StoredParserCheckpoint;
+pub use parser_checkpoint::{StoredParserCheckpoint, StoredParserProgress};
 mod import_counts;
 pub use import_counts::ImportCounts;
 mod parents;

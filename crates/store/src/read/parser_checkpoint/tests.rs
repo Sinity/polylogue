@@ -39,6 +39,59 @@ fn checkpoint_commits_with_its_cursor_and_mismatched_state_rolls_back() {
         .unwrap()
         .unwrap();
     assert_eq!(row.checkpoint, Some(state.clone()));
+    {
+        use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+        fn deny_continuation(context: AuthContext<'_>) -> Authorization {
+            match context.action {
+                AuthAction::Read {
+                    table_name: "parse_state",
+                    column_name: "checkpoint",
+                    ..
+                } => Authorization::Deny,
+                _ => Authorization::Allow,
+            }
+        }
+        let reader = pool.reader().unwrap();
+        reader
+            .conn()
+            .unwrap()
+            .authorizer(Some(deny_continuation))
+            .unwrap();
+        let metadata = reader
+            .parser_progress("checkpoint-input", stored.chain)
+            .unwrap()
+            .unwrap();
+        assert_eq!(metadata.reading_version, state.reading_version);
+        assert_eq!(metadata.parsed_upto, state.parsed_upto);
+        assert_eq!(
+            metadata.progress,
+            polylogue_model::batch::ParseProgress::Done
+        );
+        assert_eq!(metadata.stopped_attempt, None);
+        assert!(
+            reader
+                .parser_progress("checkpoint-input", stored.chain + 1)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            reader
+                .parser_progress("missing-input", stored.chain)
+                .unwrap()
+                .is_none()
+        );
+        // The same authorizer rejects the old full-checkpoint query.
+        assert!(
+            reader
+                .parser_checkpoint("checkpoint-input", stored.chain, "synthetic=1")
+                .is_err()
+        );
+        reader
+            .conn()
+            .unwrap()
+            .authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
+            .unwrap();
+    }
     assert!(
         pool.reader()
             .unwrap()
