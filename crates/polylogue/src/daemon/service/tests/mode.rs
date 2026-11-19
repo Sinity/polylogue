@@ -197,6 +197,7 @@ fn missing_config_is_standalone() {
 
 #[test]
 fn older_import_preserves_scope_refusal_and_succeeds_after_initial_confirmation() {
+    use polylogue_store::fault::{self, Action};
     use polylogue_store::primary::{Confirmed, ConfirmedChange, ReplayControl};
 
     let home = ClaudeHome::new();
@@ -212,15 +213,27 @@ fn older_import_preserves_scope_refusal_and_succeeds_after_initial_confirmation(
         sinex_context: None,
         change: ConfirmedChange::Control(Box::new(control)),
     };
-    writer
+    fault::clear();
+    fault::arm("primary.scope_reset_commit", "", Action::Fail, 0, 1);
+    let failed_reset = writer
         .apply_confirmed(vec![control(ReplayControl::Reset {
             scope: "initial-import-scope".into(),
         })])
-        .unwrap();
-    assert!(matches!(
-        runtime.daemon.reads.reader(),
-        Err(StoreError::ScopeChanged)
-    ));
+        .unwrap_err();
+    fault::clear();
+    assert!(
+        failed_reset
+            .to_string()
+            .contains("primary.scope_reset_commit"),
+        "the reset must fail at its commit boundary: {failed_reset}"
+    );
+    let fenced = runtime
+        .daemon
+        .reads
+        .reader()
+        .err()
+        .expect("failed reset fences reads");
+    assert!(matches!(&fenced, StoreError::ScopeChanged), "{fenced}");
     let import = || {
         crate::test_daemon::Call::new("import", serde_json::json!({"from_archive": older}))
             .answer(&runtime.daemon)
@@ -236,15 +249,30 @@ fn older_import_preserves_scope_refusal_and_succeeds_after_initial_confirmation(
         Err(StoreError::ScopeChanged)
     ));
     writer
+        .apply_confirmed(vec![control(ReplayControl::Reset {
+            scope: "initial-import-scope".into(),
+        })])
+        .unwrap();
+    writer
         .apply_confirmed(vec![control(ReplayControl::Completion {
             position: 0,
             delivery: None,
         })])
         .unwrap();
+    assert_eq!(
+        runtime
+            .daemon
+            .reads
+            .reader()
+            .unwrap()
+            .confirmed_checkpoint()
+            .unwrap(),
+        Some(0)
+    );
     let accepted = import();
     let report = accepted
         .value()
-        .expect("import accepted after scope completion");
+        .unwrap_or_else(|| panic!("import accepted after scope completion: {accepted:?}"));
     assert_eq!(report["older_archive"]["pending"], true);
     assert!(
         report["older_archive"]["classes"]["input"]["pending"]
