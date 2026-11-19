@@ -138,6 +138,20 @@ fn text_key(value: &str) -> String {
     polylogue_model::text::key(value)
 }
 
+fn read_metadata(conn: &Connection, archive: &str) -> Result<Option<Metadata>> {
+    let get = |key: &str| conn.scalar::<String>("SELECT value FROM metadata WHERE key=?1", [key]);
+    if get("version")? != VERSION.to_string() || get("archive")? != archive {
+        return Ok(None);
+    }
+    Ok(Some(Metadata {
+        archive: archive.into(),
+        position: serde_json::from_str(&get("position")?)?,
+        written_at: get("written_at")?
+            .parse()
+            .or_invalid("invalid completion time")?,
+    }))
+}
+
 impl CatalogWriter {
     /// Seed a synthetic catalog for cross-crate read tests. Production builds
     /// allocate their database file through CatalogPointer.
@@ -192,6 +206,7 @@ impl CatalogWriter {
         Self::open(path)
     }
     fn open(path: &Path) -> Result<Self> {
+        let before = fs::metadata(path)?;
         let conn = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -205,6 +220,9 @@ impl CatalogWriter {
         // Offline readers need neither directory writes nor journal creation.
         conn.query_row("SELECT count(*) FROM metadata", [], |_| Ok(()))?;
         let file = fs::metadata(path)?;
+        if (before.dev(), before.ino()) != (file.dev(), file.ino()) {
+            return Err(StoreError::ScopeChanged);
+        }
         Ok(Self {
             conn,
             path: path.to_owned(),
@@ -217,48 +235,65 @@ impl CatalogWriter {
         catalog: &query_language::catalog::Catalog,
         machine: &str,
     ) -> Result<Option<(Self, Metadata, PublisherVocabulary)>> {
-        let Some(cache) = CatalogReader::open(path, &current.archive)? else {
+        // The publisher must establish the writable WAL mapping before any
+        // readonly_shm reader in this process. Opening a CatalogReader first
+        // can leave the reopened writer unable to update the shared mapping.
+        let writer = Self::open(path)?;
+        writer.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let loaded: Result<Option<(Metadata, PublisherVocabulary)>> = (|| {
+            let Some(metadata) = read_metadata(&writer.conn, &current.archive)? else {
+                return Ok(None);
+            };
+            let position = &metadata.position;
+            let cached_catalog: String = writer
+                .conn
+                .scalar("SELECT value FROM metadata WHERE key='catalog'", [])?;
+            if position.generation != current.position.generation
+                || position.index < 0
+                || position.archive < 0
+                || position.index > current.position.index
+                || position.archive > current.position.archive
+                || serde_json::from_str::<serde_json::Value>(&cached_catalog)?
+                    != serde_json::to_value(catalog)?
+                || writer.conn.scalar::<String>(
+                    "SELECT value FROM metadata WHERE key='publisher_machine'",
+                    [],
+                )? != machine
+            {
+                return Ok(None);
+            }
+            let mut vocabulary = PublisherVocabulary::default();
+            let mut statement = writer.conn.prepare("SELECT kind,id,payload FROM item WHERE kind IN ('dependencies','kept_binding') ORDER BY kind,id")?;
+            let mut rows = statement.query([])?;
+            while let Some(row) = rows.next()? {
+                let kind: String = row.get(0)?;
+                let id: String = row.get(1)?;
+                let payload: String = row.get(2)?;
+                if kind == "dependencies" {
+                    vocabulary
+                        .families
+                        .insert(id, serde_json::from_str(&payload)?);
+                } else {
+                    let kept: polylogue_query::Kept = serde_json::from_str(&payload)?;
+                    kept.validate_output_metadata()
+                        .map_err(|error| StoreError::Invalid(error.to_string()))?;
+                    vocabulary.kept.insert(id, kept);
+                }
+            }
+            Ok(Some((metadata, vocabulary)))
+        })();
+        // Reopening tests write capability and pins one snapshot without
+        // changing the cache's rows, position or last-publication time.
+        writer.conn.execute_batch("ROLLBACK")?;
+        let Some((metadata, vocabulary)) = loaded? else {
             return Ok(None);
         };
-        let position = &cache.metadata.position;
-        if position.generation != current.position.generation
-            || position.index < 0
-            || position.archive < 0
-            || position.index > current.position.index
-            || position.archive > current.position.archive
-            || serde_json::to_value(cache.catalog()?)? != serde_json::to_value(catalog)?
-            || cache.conn.scalar::<String>(
-                "SELECT value FROM metadata WHERE key='publisher_machine'",
-                [],
-            )? != machine
-        {
+        if !writer.is_current_file() {
             return Ok(None);
         }
-        let mut vocabulary = PublisherVocabulary::default();
-        let mut statement = cache.conn.prepare("SELECT kind,id,payload FROM item WHERE kind IN ('dependencies','kept_binding') ORDER BY kind,id")?;
-        let mut rows = statement.query([])?;
-        while let Some(row) = rows.next()? {
-            let kind: String = row.get(0)?;
-            let id: String = row.get(1)?;
-            let payload: String = row.get(2)?;
-            if kind == "dependencies" {
-                vocabulary
-                    .families
-                    .insert(id, serde_json::from_str(&payload)?);
-            } else {
-                let kept: polylogue_query::Kept = serde_json::from_str(&payload)?;
-                kept.validate_output_metadata()
-                    .map_err(|error| StoreError::Invalid(error.to_string()))?;
-                vocabulary.kept.insert(id, kept);
-            }
-        }
-        let writer = Self::open(path)?;
-        cache.check()?;
-        if writer.identity != cache.identity {
-            return Ok(None);
-        }
-        Ok(Some((writer, cache.metadata.clone(), vocabulary)))
+        Ok(Some((writer, metadata, vocabulary)))
     }
+
     /// Publication dependencies share the transaction and position of their visible rows.
     pub fn put_dependencies(&mut self, id: &str, dependencies: &Dependencies) -> Result<()> {
         if dependencies.names.is_empty() && dependencies.sources.is_empty() {
@@ -589,17 +624,8 @@ impl CatalogReader {
         )?;
         configure(&conn)?;
         conn.execute_batch("PRAGMA query_only=ON; BEGIN")?;
-        let get =
-            |key: &str| conn.scalar::<String>("SELECT value FROM metadata WHERE key=?1", [key]);
-        if get("version")? != VERSION.to_string() || get("archive")? != archive {
+        let Some(metadata) = read_metadata(&conn, archive)? else {
             return Ok(None);
-        }
-        let metadata = Metadata {
-            archive: archive.into(),
-            position: serde_json::from_str(&get("position")?)?,
-            written_at: get("written_at")?
-                .parse()
-                .or_invalid("invalid completion time")?,
         };
         let reader = Self {
             conn,

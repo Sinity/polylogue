@@ -291,7 +291,7 @@ fn resume_validates_the_publication_identity_before_reusing_its_database() {
             .unwrap();
         assert_eq!(resumed.is_some(), case == "current", "{case}");
         assert_eq!(fs::metadata(&pointer.path).unwrap().ino(), inode);
-        if let Some((_writer, saved, _vocabulary)) = resumed {
+        if let Some((mut writer, saved, _vocabulary)) = resumed {
             assert_eq!(saved.position, metadata.position);
             assert_eq!(
                 CatalogReader::open(&pointer.path, "synthetic")
@@ -301,6 +301,26 @@ fn resume_validates_the_publication_identity_before_reusing_its_database() {
                     .unwrap()[0]
                     .count,
                 3
+            );
+            writer
+                .update(&saved, |writer| {
+                    writer.put_values(
+                        "changed",
+                        &std::collections::BTreeMap::from([(
+                            "model".into(),
+                            std::collections::BTreeMap::from([("new-model".into(), 1)]),
+                        )]),
+                    )
+                })
+                .unwrap();
+            assert_eq!(
+                CatalogReader::open(&pointer.path, "synthetic")
+                    .unwrap()
+                    .unwrap()
+                    .values("model", "new")
+                    .unwrap()[0]
+                    .count,
+                1
             );
         }
         if case == "version6" {
@@ -327,4 +347,70 @@ fn resume_validates_the_publication_identity_before_reusing_its_database() {
             assert_eq!(cache.values("model", "").unwrap()[0].value, "rebuilt-model");
         }
     }
+}
+
+#[test]
+fn an_offline_reader_cannot_leave_a_resumed_publisher_unwritable() {
+    let directory = tempfile::tempdir().unwrap();
+    let pointer = CatalogPointer::new(directory.path().join("catalog"));
+    let (archive, _lock) = Archive::open_or_create(&directory.path().join("archive")).unwrap();
+    let catalog = query_language::catalog::Catalog::new("sessions");
+    let metadata = Metadata {
+        archive: "synthetic".into(),
+        position: polylogue_model::ChangePosition {
+            generation: "generation".into(),
+            index: 1,
+            archive: 1,
+        },
+        written_at: 123,
+    };
+    let populate = |writer: &mut CatalogWriter, value: &str| {
+        writer.put_catalog(&catalog)?;
+        writer.put_publisher_machine("machine")?;
+        writer.put_values(
+            "source",
+            &std::collections::BTreeMap::from([(
+                "model".into(),
+                std::collections::BTreeMap::from([(value.into(), 1)]),
+            )]),
+        )
+    };
+    let writer = pointer
+        .build(&metadata, |writer| populate(writer, "retained-model"))
+        .unwrap();
+    pointer
+        .activate(&writer, &archive.scope_token().unwrap())
+        .unwrap();
+    drop(writer);
+    let pinned = CatalogReader::open(&pointer.path, "synthetic")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        pinned.values("model", "").unwrap()[0].value,
+        "retained-model"
+    );
+    match pointer.resume(&metadata, &catalog, "machine") {
+        Ok(Some((mut writer, _, _))) => {
+            writer
+                .update(&metadata, |writer| populate(writer, "new-model"))
+                .unwrap();
+            assert_eq!(
+                pinned.values("model", "").unwrap()[0].value,
+                "retained-model"
+            );
+        }
+        Ok(None) | Err(_) => {
+            let writer = pointer
+                .build(&metadata, |writer| populate(writer, "new-model"))
+                .unwrap();
+            pointer
+                .activate(&writer, &archive.scope_token().unwrap())
+                .unwrap();
+            assert!(matches!(pinned.check(), Err(StoreError::ScopeChanged)));
+        }
+    }
+    let current = CatalogReader::open(&pointer.path, "synthetic")
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.values("model", "").unwrap()[0].value, "new-model");
 }
