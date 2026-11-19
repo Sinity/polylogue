@@ -250,11 +250,25 @@ impl CatalogWriter {
         // Validate the derived format before opening a writer. Release this
         // readonly_shm mapping first, so it cannot make our writer read-only.
         let identity = {
-            let Some(cache) = CatalogReader::open(path, &current.archive)? else {
-                eprintln!(
-                    "polylogue: completion catalog: missing or incompatible header; rebuilding"
-                );
-                return Ok(None);
+            let cache = match CatalogReader::open(path, &current.archive) {
+                Ok(Some(cache)) => cache,
+                Ok(None) => {
+                    eprintln!(
+                        "polylogue: completion catalog: missing or incompatible header; rebuilding"
+                    );
+                    return Ok(None);
+                }
+                Err(StoreError::Sqlite(error))
+                    if error.sqlite_error_code() == Some(rusqlite::ErrorCode::CannotOpen) =>
+                {
+                    // Offline reads cannot create a missing WAL mapping. A
+                    // replacement gets its own complete journal namespace.
+                    eprintln!(
+                        "polylogue: completion catalog: cannot read cached database or journals ({error}); rebuilding"
+                    );
+                    return Ok(None);
+                }
+                Err(error) => return Err(error),
             };
             cache.check()?;
             cache.identity

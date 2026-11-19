@@ -799,9 +799,14 @@ fn damaged_or_missing_catalog_is_rebuilt_for_the_offline_consumer() {
     refresh();
     let third = std::fs::read_link(&path).unwrap();
     assert_ne!(second, third);
+    let database = std::fs::canonicalize(&path).unwrap();
+    std::fs::remove_file(format!("{}-shm", database.display())).unwrap();
+    refresh();
+    let fourth = std::fs::read_link(&path).unwrap();
+    assert_ne!(third, fourth);
     std::fs::remove_file(&path).unwrap();
     refresh();
-    assert_ne!(third, std::fs::read_link(&path).unwrap());
+    assert_ne!(fourth, std::fs::read_link(&path).unwrap());
 }
 
 #[test]
