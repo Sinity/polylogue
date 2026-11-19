@@ -98,8 +98,8 @@ fn python_authored_import_stays_pending_until_source_and_membership_are_confirme
     let report = first.value().unwrap();
     assert_eq!(report["python_import"]["pending"], true);
     assert_eq!(
-        report["python_import"]["classes"]["assertions"]["pending"],
-        11
+        report["python_import"]["classes"]["assertions"]["pending"], 11,
+        "prepared authored facts must be reported pending: {first:?}"
     );
     assert_eq!(
         report["python_import"]["classes"]["annotation_schemas"]["pending"],
