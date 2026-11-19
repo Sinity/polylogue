@@ -23,7 +23,7 @@ const BYTES_PER_GROUP: u64 = 256 << 20;
 const VECTORS_PER_GROUP: usize = 4096;
 
 /// What became of the rows of one class. `found` is always the sum of the
-/// other five.
+/// other six.
 #[derive(
     Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
@@ -34,6 +34,9 @@ pub struct ClassCount {
     pub stored: u64,
     /// Already here unchanged, from an earlier import.
     pub present: u64,
+    /// Saved for primary delivery but not yet applied by its confirmed reader.
+    #[serde(default)]
+    pub pending: u64,
     /// Not carried; each is listed in the report's `refused` with its reason.
     pub refused: u64,
     /// Kept only verbatim in the rows input: rows this archive recomputes,
@@ -77,6 +80,9 @@ pub struct OlderArchiveReport {
     /// Read and checked the older archive without writing anything here.
     /// Rows already here are not told apart in a dry run: they count as stored.
     pub dry_run: bool,
+    /// Some original inputs or metadata still await confirmed delivery.
+    #[serde(default)]
+    pub pending: bool,
     /// Per class of row, by the older archive's table name.
     pub classes: BTreeMap<String, ClassCount>,
     pub refused: Vec<RefusedRow>,
@@ -116,6 +122,7 @@ impl OlderArchiveReport {
             Restored::Stored => count.stored += n,
             Restored::Present => count.present += n,
             Restored::Refused(_) => count.refused += n,
+            Restored::Pending => count.pending += n,
         }
     }
 
@@ -207,6 +214,7 @@ pub(super) fn tally(
     match outcome {
         Restored::Stored => count.stored += n,
         Restored::Present => count.present += n,
+        Restored::Pending => count.pending += n,
         Restored::Refused(reason) => {
             count.refused += n;
             refused.push(RefusedRow {
@@ -262,12 +270,6 @@ impl Engine {
         dry_run: bool,
         authorship: Option<&polylogue_model::authorship::Authorship>,
     ) -> Result<OlderArchiveReport, EngineError> {
-        if self.archive.is_primary() {
-            return Err(std::io::Error::other(
-                "an archive in the older format is imported by a standalone archive",
-            )
-            .into());
-        }
         let scratch = self
             .archive
             .archive_db()
@@ -298,22 +300,27 @@ impl Engine {
             None
         } else {
             self.store_kept_member(root, "archive.db", "rows.jsonl", rows_bytes, authorship)?;
-            let chain = self
-                .reads
-                .reader()?
-                .input_progress(&rows_id)?
-                .ok_or_else(|| std::io::Error::other("the rows input was not stored"))?
-                .chain;
-            Some(polylogue_model::authored::ImportAttribution {
-                machine: self.config.machine.clone(),
-                input: rows_id.clone(),
-                chain,
-                actor: authorship.map_or_else(
-                    || polylogue_model::Author::Script("polylogue-import".into()),
-                    |authorship| authorship.author.clone(),
-                ),
-                at: self.config.clock.now().into(),
-            })
+            let progress = self.reads.reader()?.input_progress(&rows_id)?;
+            if progress.is_none() && self.archive.is_primary() {
+                report.pending = true;
+            }
+            if let Some(progress) = progress {
+                let chain = progress.chain;
+                Some(polylogue_model::authored::ImportAttribution {
+                    machine: self.config.machine.clone(),
+                    input: rows_id.clone(),
+                    chain,
+                    actor: authorship.map_or_else(
+                        || polylogue_model::Author::Script("polylogue-import".into()),
+                        |authorship| authorship.author.clone(),
+                    ),
+                    at: self.config.clock.now().into(),
+                })
+            } else if self.archive.is_primary() {
+                None
+            } else {
+                return Err(std::io::Error::other("the rows input was not stored").into());
+            }
         };
 
         self.import_older_inputs(&older, dry_run, &mut report)?;
@@ -339,8 +346,34 @@ impl Engine {
                 )?;
             }
         }
-        self.import_older_authored(&older, current.as_ref(), &mut report)?;
-        self.import_older_vectors(&older, dry_run, &mut report)?;
+        if self.archive.is_primary() {
+            for table in [
+                "note",
+                "note_target",
+                "note_relation",
+                "setting",
+                "client_request",
+                "delivery",
+                "delivery_event",
+                "kept_result",
+            ] {
+                let n = found(table);
+                if n > 0 {
+                    report.tally(table,n,&Restored::Refused(
+                    "primary import of historical authored state is not implemented; original rows remain in the rows input and source archive".into()),&format!("{n} rows"));
+                }
+            }
+            older.vectors(|vector| {
+                report.tally("embedded",1,&Restored::Refused("primary import of paid vectors is not implemented; retain the original embeddings database".into()),&format!("{} chunk {}",vector.model,vector.chunk));
+                Ok(())
+            })?;
+            for failure in older.vector_failures()? {
+                report.tally("embed_failure",1,&Restored::Refused("primary import of historical embedding failures is not implemented; retain the original embeddings database".into()),&failure.model);
+            }
+        } else {
+            self.import_older_authored(&older, current.as_ref(), &mut report)?;
+            self.import_older_vectors(&older, dry_run, &mut report)?;
+        }
 
         for table in older_archive::QUEUE_TABLES {
             let n = found(table);
@@ -387,6 +420,10 @@ impl Engine {
             // the imported inputs, and reads their chains into the index.
             self.watched_loaded = false;
             self.readings_pending = true;
+        }
+        if self.archive.is_primary() && !dry_run {
+            report.pending = report.classes.values().any(|class| class.pending > 0)
+                || self.reads.reader()?.input_progress(&rows_id)?.is_none();
         }
         Ok(report)
     }
@@ -524,6 +561,25 @@ impl Engine {
                             report,
                         )?);
                     }
+                    if self.archive.is_primary()
+                        && !dry_run
+                        && matches!(blobs.get(&hash), Some(BlobState::Ready))
+                        && !group.files.iter().any(|file| file.hash() == hash)
+                    {
+                        let blob = older.blob(&hash)?.expect("checked blob");
+                        let (file, checked) = self
+                            .archive
+                            .prepare_write(|out| older.copy_blob(&blob, out))?;
+                        checked.map_err(std::io::Error::other)?;
+                        if file.hash() != hash || file.len() != blob.size {
+                            return Err(std::io::Error::other(
+                                "original body changed during import",
+                            )
+                            .into());
+                        }
+                        prepared_bytes += file.len();
+                        group.files.push(file);
+                    }
                     if input.refusal.is_none()
                         && let Some(BlobState::Refused(reason)) = blobs.get(&hash)
                     {
@@ -581,6 +637,20 @@ impl Engine {
                 dry_run,
                 report,
             )?;
+        }
+        if self.archive.is_primary() && !dry_run {
+            let confirmed = blobs
+                .iter()
+                .filter(|(hash, state)| {
+                    matches!(state, BlobState::Ready)
+                        && self.blobs.extent(&hashed_blobs::Hash(hash.0)).is_ok()
+                })
+                .count() as u64;
+            if let Some(count) = report.classes.get_mut("blob") {
+                let applied = confirmed.min(count.pending);
+                count.pending -= applied;
+                count.stored += applied;
+            }
         }
         Ok(())
     }
@@ -684,7 +754,10 @@ impl Engine {
                 "an extent cites it but the older archive has no row for it".into(),
             ));
         };
-        if !dry_run && self.blobs.extent(&hashed_blobs::Hash(hash.0)).is_ok() {
+        if !dry_run
+            && !self.archive.is_primary()
+            && self.blobs.extent(&hashed_blobs::Hash(hash.0)).is_ok()
+        {
             report.tally("blob", 1, &Restored::Present, &hash.to_string());
             return Ok(BlobState::Ready);
         }
@@ -700,7 +773,13 @@ impl Engine {
         });
         match checked {
             Ok(()) => {
-                report.tally("blob", 1, &Restored::Stored, &hash.to_string());
+                let outcome = if !dry_run && self.archive.is_primary() {
+                    Restored::Pending
+                } else {
+                    Restored::Stored
+                };
+                report.tally("blob", 1, &outcome, &hash.to_string());
+                report.pending |= outcome == Restored::Pending;
                 if !dry_run {
                     *prepared_bytes += prepared.len();
                     group.files.push(prepared);
@@ -766,6 +845,7 @@ impl Engine {
                 &format!("{} {}", machine.id, machine.host),
             );
         }
+        report.pending |= outcome.inputs.contains(&Restored::Pending);
         for (input, restored) in group.inputs.iter().zip(&outcome.inputs) {
             report.tally("input", 1, restored, &input.id);
             report.tally_with("revision", input.revisions.len() as u64, restored);

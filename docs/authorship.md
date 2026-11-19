@@ -42,7 +42,7 @@ Harness variable names are harness internals. A test pins the variables seen by 
 
 ## MCP completeness
 
-Every write is a step or operation of the `polylogue_write` or `polylogue_act` tool ([agents.md](agents.md#mcp-server)): `note`, `tag`, `edit`, `withdraw`, `judge`, `save`, `set`, `import` of annotation lines, `send`, `answer`, `interrupt`, `resume`, `start`. Only local commands (`daemon`, `install`, `demo`, `web`, `status --verify`, `dev move-to-sinex`) stay CLI-only, so an agent never needs the CLI to write.
+Every write is a step or operation of the `polylogue_write` or `polylogue_act` tool ([agents.md](agents.md#mcp-server)): `note`, `tag`, `edit`, `withdraw`, `judge`, `save`, `set`, `import` of annotation lines, `send`, `answer`, `interrupt`, `resume`, `start`. Only local commands (`daemon`, `install`, `demo`, `web`, `status --verify`) stay CLI-only, so an agent never needs the CLI to write.
 
 ## What authorship does not guarantee
 

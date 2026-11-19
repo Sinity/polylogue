@@ -174,7 +174,7 @@ Commands are not about selected rows.
 | `demo` | `demo DIR` | builds the Morrow sample archive ([operations.md](installing.md#demo)) |
 | `daemon` | `daemon [--until-idle] [--no-sources]` | the background service ([operations.md](operations.md#the-daemon)) |
 | `mcp` | `mcp` | the MCP server over stdio ([agents.md](agents.md#mcp-server)) |
-| `dev` | `dev sql STATEMENT` · `dev schema infer\|unread\|diff …` · `dev feed --after POSITION` · `dev move-to-sinex [--dry-run]` | read-only SQL over the `v1_*` views ([query.md](query.md#read-only-sql)), parser maintenance ([archive.md](archive.md#schema-tools)), the change feed for programs ([operations.md](operations.md#the-change-feed)), the move into primary mode ([primary-mode.md](primary-mode.md#moving-to-sinex)) |
+| `dev` | `dev sql STATEMENT` · `dev schema infer\|unread\|diff …` · `dev feed --after POSITION` | read-only SQL over the `v1_*` views ([query.md](query.md#read-only-sql)), parser maintenance ([archive.md](archive.md#schema-tools)), the change feed for programs ([operations.md](operations.md#the-change-feed)) |
 
 ### Discipline
 
@@ -193,7 +193,7 @@ One name per concept, on every verb and command that has the concept.
 | continue a page | `--cursor C` | every paged reply |
 | how long to wait | `--deadline MS\|none` | every line |
 | act on every row of a query | `--all` | lines with a write or act |
-| show what would happen | `--dry-run` | every line; `install`, `dev move-to-sinex` |
+| show what would happen | `--dry-run` | every line; `install` |
 | how a line is read | `--explain` | every line and command |
 | where the CLI writes | `--to stdout\|pager\|FILE\|DIR\|clipboard\|browser` | the listing, `read`, `brief`, `help` |
 | document encoding | `--format F` | `read`, `help` |

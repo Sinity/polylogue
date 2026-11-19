@@ -504,7 +504,7 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **write identity**: the identity of a prepared write, saved with it and
   reused on retry.
 - **move to Sinex**: the one-way move of a standalone archive to primary mode
-  (`dev move-to-sinex`).
+  through ordinary import and deployment configuration.
 
 ## Development
 
@@ -546,7 +546,6 @@ another line does are in [set-aside.md](set-aside.md#words-another-line-does).
 | `sql`, `schema`, `changes` (commands) | `dev sql`, `dev schema`, `dev feed` |
 | harness and browser setup | `install TARGET`, `install TARGET --remove` |
 | `auth drive` | `install drive` |
-| `cutover`, `sinex cutover`, `move-to-sinex` (as a first word) | `dev move-to-sinex` |
 | `demo tour` | `demo DIR` |
 | `manual` | `help --all` |
 | `fetch` | `import PROVIDER` |

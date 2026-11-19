@@ -39,9 +39,11 @@ fn compared_fields(input: &CapturedInput, mode: CaptureMode) -> Result<serde_jso
     // The first accepted capture fixes cache coordinates and observer clocks.
     // Byte identity must still match.
     Ok(serde_json::json!({
+        "provenance":input.provenance,
+        "restored":(input.provenance == polylogue_store::primary::InputProvenance::Restored).then_some(&input.rows),
         "hash":input.hash, "length":input.length, "raw_range":input.raw_range,
         "generation":input.generation, "raw_total":input.raw_total, "raw_predecessor":input.raw_predecessor,
-        "index":input.index, "route":input.route,
+        "index":(input.provenance == polylogue_store::primary::InputProvenance::Acquired).then_some(input.index), "route":input.route,
         "origin":input.input.origin,
         "source":(mode == CaptureMode::Mutable).then(|| input.basis.as_ref().map(|base| &base.source)),
     }))
@@ -112,6 +114,7 @@ impl Sinex {
         )?;
         let staging = staged.queue();
         let mut ordinal = 0u64;
+        let mut restored_chains = BTreeMap::<(String, i64), (u32, String)>::new();
         let mut adjacent_members = BTreeMap::<Vec<u8>, (u64, String)>::new();
         {
             members(&mut |mut input, body| {
@@ -171,6 +174,25 @@ impl Sinex {
                         input.raw_predecessor = Some(previous.clone());
                     }
                     adjacent_members.insert(key, (range.end, member.clone()));
+                }
+                if input.provenance == polylogue_store::primary::InputProvenance::Restored
+                    && let Some(extent) = input.rows.extents.first()
+                {
+                    let key = (input.rows.input.clone(), extent.chain);
+                    if let Some((index, previous)) = restored_chains.get(&key) {
+                        input.index = *index;
+                        input.previous =
+                            Some(crate::material_id(&self.config.producer, previous).to_string());
+                    }
+                    restored_chains.insert(
+                        key,
+                        (
+                            input.index.checked_add(1).ok_or_else(|| {
+                                Error::invalid("restored chain has too many material parts")
+                            })?,
+                            member.clone(),
+                        ),
+                    );
                 }
                 let kept = {
                     let queue = self.queue()?;
