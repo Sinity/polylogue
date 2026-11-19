@@ -125,6 +125,7 @@ impl Inner {
         mut group: Vec<PreparedBatch>,
         _store: std::sync::Arc<crate::blobs::Blobs>,
     ) -> Vec<Result<StoredInput>> {
+        let _part = crate::timing::part(crate::timing::Part::RawOther);
         if group.is_empty() {
             return Vec::new();
         }
@@ -162,10 +163,12 @@ impl Inner {
                 }
                 let writer = self.segment.as_mut().expect("opened segment writer");
                 let prepared = files.into_iter().map(PreparedBytes::into_prepared);
+                let append = crate::timing::part(crate::timing::Part::SegmentAppend);
                 let appended = writer.append_group(prepared, |hash| {
                     crate::blobs::load_extent(&self.archive, "", hash)
                         .map_err(|error| hashed_blobs::Error::Io(std::io::Error::other(error)))
                 });
+                drop(append);
                 let pending = match appended {
                     Ok(pending) => pending,
                     Err(error) => {
@@ -177,6 +180,7 @@ impl Inner {
                     self.segment.take();
                     return errors(&group, error);
                 }
+                let sync = crate::timing::part(crate::timing::Part::SegmentSyncWait);
                 let synced = match pending.wait() {
                     Ok(synced) => synced,
                     Err(error) => {
@@ -184,6 +188,7 @@ impl Inner {
                         return errors(&group, error.into());
                     }
                 };
+                drop(sync);
                 if let Err(error) = crate::fault::check("segment.after_sync", "") {
                     self.segment.take();
                     return errors(&group, error);
@@ -270,6 +275,7 @@ impl Inner {
         group: &mut [PreparedBatch],
         synced: Option<&hashed_blobs::SyncedGroup>,
     ) -> Result<Vec<StoredInput>> {
+        let _part = crate::timing::part(crate::timing::Part::RegisterRows);
         // A member read from a container needs its container stored, earlier in this group
         // or before.
         let staged: BTreeSet<&str> = group
@@ -346,7 +352,10 @@ impl Inner {
             });
         }
         crate::fault::check("write.archive_commit", "")?;
-        crate::write_lock::commit(tx)?;
+        {
+            let _part = crate::timing::part(crate::timing::Part::RegisterCommit);
+            crate::write_lock::commit(tx)?;
+        }
         self.commits
             .committed(crate::completion::Committed::CONTENT);
         self.report.transactions += 1;

@@ -985,6 +985,7 @@ impl Inner {
 
     fn run(&mut self, rx: &Receiver<Msg>) {
         let _worker = crate::timing::worker();
+        let _part = crate::timing::part(crate::timing::Part::WriterOther);
         let mut flushes = Vec::new();
         let mut primary_finish = None;
         let mut derives = Vec::new();
@@ -1012,14 +1013,21 @@ impl Inner {
         let mut blobs = Vec::new();
         let mut older_groups = Vec::new();
         loop {
-            let first = match rx.recv() {
+            let received = {
+                let _part = crate::timing::part(crate::timing::Part::QueueWait);
+                rx.recv()
+            };
+            let first = match received {
                 Ok(first) => first,
                 Err(_) => break,
             };
             let _busy = crate::timing::writer_started();
             self.serve_users();
             let turn = Arc::clone(&self.search.turn);
-            let _turn = turn.locked();
+            let _turn = {
+                let _part = crate::timing::part(crate::timing::Part::SearchTurnWait);
+                turn.locked()
+            };
             let mut stopping = false;
             let mut group = Vec::new();
             let mut rows = 0;
@@ -1191,7 +1199,10 @@ impl Inner {
             // memory charges, not only their committed database rows.
             drop(group);
             for (write, reply) in derive_writes.drain(..) {
-                let result = crate::derive::apply(&self.index, &write);
+                let result = {
+                    let _part = crate::timing::part(crate::timing::Part::DeriveApply);
+                    crate::derive::apply(&self.index, &write)
+                };
                 if result.is_ok() {
                     self.commits
                         .committed(crate::completion::Committed::CONTENT);
@@ -1368,6 +1379,7 @@ impl Inner {
     /// with no index transaction after it (bytes stored without parsed rows,
     /// a restored older archive, a write whose index transaction failed).
     fn refresh_chain_progress(&mut self) -> Result<()> {
+        let _part = crate::timing::part(crate::timing::Part::ChainProgress);
         if self.sinex.is_some() {
             return Ok(());
         }
@@ -1392,6 +1404,7 @@ impl Inner {
     /// checkpoint size ([`crate::archive::restart_full_log`]). A log still in
     /// use by a reader is tried again after the next transaction.
     fn restart_full_logs(&mut self) {
+        let _part = crate::timing::part(crate::timing::Part::WalRestart);
         if self.stop.is_cancelled() {
             return;
         }
@@ -1599,6 +1612,7 @@ impl Inner {
     /// on the new connection. A failed install leaves the writer on the build
     /// file, which a later finish installs.
     fn install_build(&mut self) -> Result<()> {
+        let _part = crate::timing::part(crate::timing::Part::Install);
         self.index.flush_prepared_statement_cache();
         let built = std::mem::replace(&mut self.index, Connection::open_in_memory()?);
         built.close().map_err(|(_, error)| error)?;
@@ -1616,11 +1630,14 @@ impl Inner {
         self.index.flush_prepared_statement_cache();
         crate::text_rows::build_search_indexes(&self.index)?;
         let started = std::time::Instant::now();
+        let trigram = crate::timing::part(crate::timing::Part::TrigramBuild);
         self.index.execute(
             "INSERT INTO tool_call_trigram(tool_call_trigram) VALUES ('rebuild')",
             [],
         )?;
         add(Stage::TrigramIndex, started.elapsed());
+        drop(trigram);
+        let secondary = crate::timing::part(crate::timing::Part::SecondaryBuild);
         let started = std::time::Instant::now();
         for sql in crate::schema::built_at_end_sql()? {
             if self.stop.is_cancelled() {
@@ -1630,6 +1647,7 @@ impl Inner {
             crate::fault::check("index.deferred", &self.location.root.to_string_lossy())?;
         }
         add(Stage::SecondaryIndexes, started.elapsed());
+        drop(secondary);
         Ok(())
     }
 
@@ -1811,6 +1829,7 @@ impl Inner {
         &mut self,
         batches: impl Iterator<Item = &'a Batch> + Clone,
     ) -> Result<()> {
+        let _part = crate::timing::part(crate::timing::Part::RowTransaction);
         let upkeep = self.resolver.upkeep();
         let primary = self.sinex.is_some();
         if primary {
@@ -1891,6 +1910,7 @@ impl Inner {
             }
         }
         if !parsed_only {
+            let _part = crate::timing::part(crate::timing::Part::RegisterRows);
             let atx = self.archive.transaction()?;
             let seq = bump_counter(&atx)?;
             for batch in batches.clone() {
@@ -1898,7 +1918,10 @@ impl Inner {
                 chains.push(chain);
             }
             crate::fault::check("write.archive_commit", "")?;
-            crate::write_lock::commit(atx)?;
+            {
+                let _part = crate::timing::part(crate::timing::Part::RegisterCommit);
+                crate::write_lock::commit(atx)?;
+            }
             self.commits
                 .committed(crate::completion::Committed::CONTENT);
             crate::fault::check("write.between_commits", "")?;
@@ -1962,7 +1985,10 @@ impl Inner {
             None
         };
         crate::fault::check("write.index_commit", "")?;
-        itx.commit()?;
+        {
+            let _part = crate::timing::part(crate::timing::Part::IndexCommit);
+            itx.commit()?;
+        }
         text_transaction.commit();
         if let Some(changed) = source_changed {
             crate::chain_progress::forget(&self.archive, &changed)?;

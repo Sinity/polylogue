@@ -710,7 +710,10 @@ impl Inner {
         batch.parse.clear();
         crate::fault::check("write.index_commit", "")?;
         crate::fault::check("reparse.commit", &batch.input.id)?;
-        crate::timing::time(crate::timing::Stage::Commit, || tx.commit())?;
+        {
+            let _part = crate::timing::part(crate::timing::Part::IndexCommit);
+            crate::timing::time(crate::timing::Stage::Commit, || tx.commit())?;
+        }
         text_transaction.commit();
         self.commits
             .committed(crate::completion::Committed::CONTENT);
