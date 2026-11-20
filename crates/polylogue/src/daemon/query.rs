@@ -2,8 +2,9 @@
 //! then count its population within the same read transaction. A slow optional
 //! count leaves the completed rows available.
 
-use polylogue_store::Reader;
+use polylogue_model::LockExt as _;
 use polylogue_store::query::{Options, Program, RowKind, Shape};
+use polylogue_store::{ReadScopeToken, Reader};
 #[cfg(test)]
 use polylogue_store::{SqlValue, query::ColKind};
 use query_language::time::DaySetting;
@@ -588,6 +589,41 @@ impl QueryAnswer {
             notes: Vec::new(),
         }
     }
+
+    fn count_deferred(&mut self, note: String) {
+        if let crate::protocol::query::Answer::Rows(rows) = &mut self.value {
+            rows.notes.push(note.clone());
+        }
+        self.notes.push(note);
+    }
+}
+
+pub(crate) type CountReply = command_surface::Answer<crate::protocol::query::Answer>;
+pub(super) type CountPageSender = tokio::sync::oneshot::Sender<std::sync::Arc<CountPage>>;
+
+/// The worker and the request can each take the page once. The worker keeps
+/// its reader and takes the page when it has counted that snapshot. The
+/// request may take it first if there is no time left to wait for the count.
+pub(super) struct CountPage {
+    answer: std::sync::Mutex<Option<QueryAnswer>>,
+    freshness: polylogue_model::freshness::ReadFreshness,
+    scope: ReadScopeToken,
+    retry: String,
+}
+
+impl CountPage {
+    fn take(&self) -> Option<QueryAnswer> {
+        self.answer.locked().take()
+    }
+
+    pub(super) fn without_count(&self) -> Option<CountReply> {
+        let mut answer = self.take()?;
+        if let Err(error) = self.scope.check() {
+            return Some(super::service::store_error(&error));
+        }
+        answer.count_deferred(self.retry.clone());
+        Some(super::service::query_outcome(answer, &self.freshness))
+    }
 }
 
 /// An answer whose rows are ready before its optional exact count runs.
@@ -598,52 +634,93 @@ pub struct PreparedQuery<'read, 'pool> {
     similarity: Option<std::sync::Arc<polylogue_store::vectors::Similarity>>,
 }
 impl PreparedQuery<'_, '_> {
-    pub fn complete(mut self) -> Result<QueryAnswer, Failure> {
-        let reader = self.reader;
-        if let Some(program) = self.count {
-            let count = || reader.query_count(&program);
-            let counts = match self.similarity {
-                Some(similarity) => reader.with_similarity(similarity, count),
-                None => count(),
-            }?;
-            let count = counts.map(|counts| counts.0);
-            let deferred = || {
-                format!(
-                    "count deferred; run the exact count without a deadline: polylogue {} --deadline none",
-                    polylogue_render::shell_quote(&if program.measure.is_some() {
-                        program.query.clone()
-                    } else {
-                        format!("{} | count", program.query)
-                    })
-                )
-            };
-            match &mut self.answer.value {
+    pub fn complete(self) -> Result<QueryAnswer, Failure> {
+        self.count(None)
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.answer.outcome == Outcome::Empty
+    }
+
+    pub(super) fn complete_reply(
+        self,
+        freshness: &polylogue_model::freshness::ReadFreshness,
+    ) -> Result<QueryAnswer, Failure> {
+        self.count(super::handler::count_page_sender().map(|sender| (freshness, sender)))
+    }
+
+    fn count(
+        self,
+        offer: Option<(&polylogue_model::freshness::ReadFreshness, CountPageSender)>,
+    ) -> Result<QueryAnswer, Failure> {
+        let Self {
+            reader,
+            answer,
+            count,
+            similarity,
+        } = self;
+        let Some(program) = count else {
+            return Ok(answer);
+        };
+        let retry = || {
+            format!(
+                "count deferred; run the exact count without a deadline: polylogue {} --deadline none",
+                polylogue_render::shell_quote(&if program.measure.is_some() {
+                    program.query.clone()
+                } else {
+                    format!("{} | count", program.query)
+                })
+            )
+        };
+        let mut answer = Some(answer);
+        let page = if let Some((freshness, sender)) = offer {
+            let page = std::sync::Arc::new(CountPage {
+                answer: std::sync::Mutex::new(answer.take()),
+                freshness: freshness.clone(),
+                scope: reader.scope_token(),
+                retry: retry(),
+            });
+            sender
+                .send(page.clone())
+                .map_err(|_| Failure::from(polylogue_store::StoreError::ReadCancelled))?;
+            Some(page)
+        } else {
+            None
+        };
+        let count = || reader.query_count(&program);
+        let counts = match similarity {
+            Some(similarity) => reader.with_similarity(similarity, count),
+            None => count(),
+        }?;
+        let mut answer = match page {
+            Some(page) => page.take(),
+            None => answer,
+        }
+        .ok_or_else(|| Failure::from(polylogue_store::StoreError::ReadCancelled))?;
+        if let Some((count, without)) = counts {
+            match &mut answer.value {
                 crate::protocol::query::Answer::Rows(rows) => {
-                    rows.count = count;
-                    if program.counts_near
-                        && let Some((count, without)) = counts
-                    {
+                    rows.count = Some(count);
+                    if program.counts_near {
                         rows.unknown.insert("near".into(), without);
                         if without > 0 {
                             let note = format!(
                                 "{without} of {count} rows have no vector; their semantic similarity is unknown"
                             );
                             rows.notes.push(note.clone());
-                            self.answer.notes.push(note);
+                            answer.notes.push(note);
                         }
                     }
-                    if count.is_none() {
-                        rows.notes.push(deferred());
-                    }
                 }
-                crate::protocol::query::Answer::PagedMeasure(measure) => measure.count = count,
+                crate::protocol::query::Answer::PagedMeasure(measure) => {
+                    measure.count = Some(count)
+                }
                 crate::protocol::query::Answer::Measure(_) => {}
             }
-            if count.is_none() {
-                self.answer.notes.push(deferred());
-            }
+        } else {
+            answer.count_deferred(retry());
         }
-        Ok(self.answer)
+        Ok(answer)
     }
 }
 

@@ -66,6 +66,66 @@ fn typed_query_runs_through_the_shared_table_and_socket() {
 }
 
 #[test]
+fn a_blocked_optional_count_leaves_the_completed_socket_page_available() {
+    use polylogue_store::fault::{self, Action};
+    use std::time::Duration;
+
+    let daemon = crate::test_daemon::start("optional count fixture");
+    let socket = daemon.daemon.archive.socket();
+    let mut exact = request(
+        "rows",
+        json!({"selection":"session:claude-code:s1", "page_size":1}),
+        "exact-count-control",
+    );
+    exact.deadline = command_surface::Deadline::Milliseconds(10_000);
+    let control = crate::client::call(&socket, &exact).unwrap();
+    let control = &control.value().expect("exact session listing")["reply"];
+    assert_eq!(control["count"], 1);
+    assert_eq!(control["rows"].as_array().unwrap().len(), 1);
+
+    // This statement counts the population. Neither page key selection
+    // nor hydration starts with it.
+    let observations = daemon.watch_reads();
+    let mut listing = request(
+        "rows",
+        json!({"selection":"sessions", "page_size":1}),
+        "blocked-optional-count",
+    );
+    listing.deadline = command_surface::Deadline::Milliseconds(1_000);
+    fault::arm(
+        "read.query",
+        "SELECT count(*), 0 FROM session s WHERE",
+        Action::Hold,
+        0,
+        1,
+    );
+    let answer = crate::client::call(&socket, &listing);
+    let reached_count = fault::held();
+    fault::release();
+    let observation = observations.recv_timeout(Duration::from_secs(5)).unwrap();
+    daemon.assert_read_released(&observation);
+    fault::clear();
+    assert!(reached_count, "the fixture did not hold the optional count");
+
+    // The client answered while the count statement was still held.
+    let answer = answer.unwrap();
+    let reply = &answer
+        .value()
+        .unwrap_or_else(|| panic!("the held count hid the completed page: {answer:?}"))["reply"];
+    assert_eq!(reply["rows"], control["rows"]);
+    assert!(reply["count"].is_null());
+    assert!(reply["notes"].as_array().unwrap().contains(&json!(
+        "count deferred; run the exact count without a deadline: polylogue 'sessions | count' --deadline none"
+    )));
+
+    listing.deadline = command_surface::Deadline::None;
+    let retry = crate::client::call(&socket, &listing).unwrap();
+    let counted = &retry.value().expect("listing with an exact count")["reply"];
+    assert_eq!(counted["rows"], control["rows"]);
+    assert_eq!(counted["count"], 1);
+}
+
+#[test]
 fn typed_query_refuses_unknown_fields_and_another_operations_arguments() {
     let daemon = crate::test_daemon::start("typed operation refusal");
     let table = crate::commands::table(Arc::clone(&daemon.daemon));

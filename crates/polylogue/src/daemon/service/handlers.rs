@@ -9,7 +9,7 @@ use super::{
 use crate::briefing::Ask;
 use crate::cli::print;
 use crate::commands::{Caller, Command};
-use crate::daemon::handler::{Call, Handler};
+use crate::daemon::handler::{Call, CountReplyMap, Handler};
 use crate::protocol;
 use command_surface::{Access, Answer, TextStyle};
 use polylogue_model::user::UserWrite;
@@ -60,10 +60,12 @@ fn query_reply(
                 fields: input.fields,
             };
             match super::super::query::prepare(&reader, ask).and_then(|prepared| {
-                if finish_reads {
+                if finish_reads || !prepared.is_empty() || !freshness.up_to_date() {
                     super::super::handler::finish_read_phase("optional query count")?;
+                    prepared.complete_reply(&freshness)
+                } else {
+                    prepared.complete()
                 }
-                prepared.complete()
             }) {
                 Ok(answer) => super::query_outcome(answer, &freshness),
                 Err(failure) => failure.answer(),
@@ -98,7 +100,7 @@ impl Handler for Query {
     }
 }
 
-/// A listing that keeps the enclosing wait's read phase open.
+/// A listing that keeps the wait's read phase open while it has no answer.
 pub(super) fn waiting_query(
     arguments: &protocol::query::Arguments,
     call: &Call<'_>,
@@ -122,6 +124,9 @@ impl Handler for Measure {
     type Arguments = protocol::query::MeasureArguments;
     type Answer = protocol::query::Answer;
     const PAGES: bool = true;
+    fn count_reply(_arguments: &Self::Arguments) -> Option<CountReplyMap<Self::Answer>> {
+        Some(std::convert::identity)
+    }
     fn query_text(arguments: &Self::Arguments) -> Option<&str> {
         arguments.query.as_deref()
     }
@@ -150,6 +155,9 @@ impl Handler for MeasureArchive {
     type Arguments = protocol::query::MeasureArchiveArguments;
     type Answer = protocol::query::Answer;
     const PAGES: bool = true;
+    fn count_reply(_arguments: &Self::Arguments) -> Option<CountReplyMap<Self::Answer>> {
+        Some(std::convert::identity)
+    }
     const PRINT: fn(&Self::Answer, TextStyle) -> String = print::query;
     fn ranking_query(arguments: &Self::Arguments, row: &Command) -> Option<String> {
         Some(measure_query(row.name, &arguments.clone().into()))

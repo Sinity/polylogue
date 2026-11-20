@@ -6,6 +6,7 @@
 //! table from the same row, so an operation without a handler does not
 //! compile and nothing joins two tables by name.
 use super::Failure;
+use super::query::{CountPageSender, CountReply};
 use super::service::Daemon;
 use crate::commands::{Caller, Command, Surface, ToolAccess};
 use command_surface::{
@@ -19,6 +20,8 @@ use serde_json::Value;
 use std::io::Write;
 use std::marker::PhantomData;
 use std::sync::Arc;
+
+pub(crate) type CountReplyMap<T> = fn(CountReply) -> Answer<T>;
 
 /// What a handler receives beside its typed arguments.
 pub(crate) struct Call<'a> {
@@ -128,6 +131,11 @@ pub(crate) trait Handler: Send + Sync + 'static {
     /// Records a delivery when the caller's surface names a sender, so it
     /// then writes.
     const RECORDS_DELIVERY: bool = false;
+    /// Presents a prepared query page when its optional count outlasts
+    /// the time available to reply.
+    fn count_reply(_arguments: &Self::Arguments) -> Option<CountReplyMap<Self::Answer>> {
+        None
+    }
     /// The answer as text for a person or a model.
     const PRINT: fn(&Self::Answer, TextStyle) -> String = crate::cli::print::json::<Self::Answer>;
 
@@ -672,13 +680,27 @@ impl<H: Handler> Operation for Row<H> {
                 }
                 None => None,
             };
+            let table_deadline = context.read_deadline().map(tokio::time::Instant::into_std);
+            let count_deadline = [deadline, table_deadline].into_iter().flatten().min();
+            let count_reply = H::count_reply(&arguments)
+                .zip(count_deadline)
+                .filter(|_| H::read_only(&arguments, self.row, &caller));
+            let deadline = if count_reply.is_some() {
+                count_deadline
+            } else {
+                deadline
+            };
+            let (count_sender, pending_count) =
+                count_reply.map_or((None, None), |(map, deadline)| {
+                    let (sender, receiver) = tokio::sync::oneshot::channel();
+                    (Some(sender), Some((receiver, map, deadline)))
+                });
             let class = H::class(&arguments);
             let job = move || {
-                let _table = TableContext::enter(table_context);
-                let limit = match (&parent, deadline) {
-                    (Some(parent), _) => parent.read_limit(cancellation),
-                    (None, Some(deadline)) => ReadLimit::at(deadline, cancellation),
-                    (None, None) => ReadLimit::without_deadline(cancellation),
+                let _table = TableContext::enter(table_context, count_sender);
+                let limit = match deadline {
+                    Some(deadline) => ReadLimit::at(deadline, cancellation),
+                    None => ReadLimit::without_deadline(cancellation),
                 };
                 let invocation = invocation
                     .unwrap_or_else(|| daemon.invocation(&authorship))
@@ -696,9 +718,37 @@ impl<H: Handler> Operation for Row<H> {
                     budget,
                 )
             };
-            let Some(answer) = self.daemon.executor.run(class, deadline, job).await else {
-                return Answer::error(super::service::shutting_down().error);
+            let completed = async {
+                self.daemon
+                    .executor
+                    .run(class, deadline, job)
+                    .await
+                    .unwrap_or_else(|| Answer::error(super::service::shutting_down().error))
             };
+            let deferred = async {
+                if let Some((receiver, map, deadline)) = pending_count
+                    && let Ok(page) = receiver.await
+                {
+                    let left = deadline.saturating_duration_since(std::time::Instant::now());
+                    let reply_at = deadline - super::service::answer_reserve(left);
+                    tokio::time::sleep_until(reply_at.into()).await;
+                    if let Err(error) = guard.0.check() {
+                        return super::service::store_error(&error);
+                    }
+                    if let Some(answer) = page.without_count() {
+                        return map(answer);
+                    }
+                }
+                std::future::pending().await
+            };
+            let answer = tokio::select! {
+                biased;
+                answer = completed => answer,
+                answer = deferred => answer,
+            };
+            // If the page won, the count still owns its executor place
+            // until SQLite returns. Cancelling it here does not free a
+            // place for another blocked count.
             drop(guard);
             answer
         })
@@ -824,16 +874,26 @@ pub(crate) fn within_limit<T>(
 
 thread_local! {
     /// The operation table's context of the request this thread is answering.
-    static TABLE_CONTEXT: std::cell::RefCell<Option<RequestContext>> =
+    static TABLE_CONTEXT: std::cell::RefCell<Option<TableRequest>> =
         const { std::cell::RefCell::new(None) };
+}
+
+struct TableRequest {
+    context: RequestContext,
+    count_sender: Option<CountPageSender>,
 }
 
 /// Holds the table context for the request a worker thread answers, and
 /// forgets it when the answer is done.
 struct TableContext;
 impl TableContext {
-    fn enter(context: RequestContext) -> Self {
-        TABLE_CONTEXT.with(|current| current.replace(Some(context)));
+    fn enter(context: RequestContext, count_sender: Option<CountPageSender>) -> Self {
+        TABLE_CONTEXT.with(|current| {
+            current.replace(Some(TableRequest {
+                context,
+                count_sender,
+            }))
+        });
         Self
     }
 }
@@ -843,13 +903,17 @@ impl Drop for TableContext {
     }
 }
 
+pub(super) fn count_page_sender() -> Option<CountPageSender> {
+    TABLE_CONTEXT.with(|current| current.borrow_mut().as_mut()?.count_sender.take())
+}
+
 /// Ends required reads before an acknowledged mutation or after the primary
 /// answer is prepared. An already expired read refuses this boundary; optional
 /// aggregates keep their original limit without replacing completed rows.
 pub(crate) fn finish_read_phase(stage: &'static str) -> Result<(), Failure> {
     ReadLimit::finish_scope(stage).map_err(Failure::from)?;
     TABLE_CONTEXT.with(|current| match current.borrow().as_ref() {
-        Some(context) => context.finish_read_phase().map_err(Failure::from),
+        Some(request) => request.context.finish_read_phase().map_err(Failure::from),
         None => Ok(()),
     })
 }
