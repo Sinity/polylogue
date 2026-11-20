@@ -42,3 +42,20 @@ fn released_reservations_keep_their_row_ids_for_older_snapshots_after_spilling()
         .unwrap();
     assert_eq!(same.pk, first);
 }
+
+#[test]
+fn repeated_key_lookups_reuse_the_same_prepared_statement() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(&dir.path().join("archive")).unwrap();
+    let index = archive.open_index_read().unwrap();
+    let resolver = Resolver::new(&archive, &index, IndexUpkeep::PerTransaction).unwrap();
+    let key = Key::new(Kind::Session, b"missing-session".as_slice());
+
+    for _ in 0..2 {
+        assert_eq!(resolver.find(&index, &key).unwrap(), None);
+    }
+    let prepared = index
+        .prepare_cached("SELECT pk FROM session WHERE id=?1")
+        .unwrap();
+    assert_eq!(prepared.get_status(rusqlite::StatementStatus::Run), 2);
+}
