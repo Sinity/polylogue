@@ -127,6 +127,27 @@ fn reading_an_older_archive_writes_nothing_in_its_folder() {
     assert_eq!(file_hashes(&standard.root), before);
 }
 
+#[cfg(unix)]
+#[test]
+fn a_broken_write_ahead_log_link_does_not_open_a_stale_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let standard = fixture::standard(&dir.path().join("older"));
+    let wal = standard.root.join("archive.db-wal");
+    for target in ["missing-wal", "archive.db-wal"] {
+        std::os::unix::fs::symlink(target, &wal).unwrap();
+        let expected = std::fs::metadata(&wal).unwrap_err();
+        let error = open_source(
+            &standard.root.join("archive.db"),
+            &mut None,
+            scratch().path(),
+        )
+        .expect_err("a broken log must stop the import");
+        assert!(matches!(error, crate::StoreError::Io(error)
+            if error.raw_os_error() == expected.raw_os_error()));
+        std::fs::remove_file(&wal).unwrap();
+    }
+}
+
 #[test]
 fn a_write_ahead_log_is_read_from_a_copy_and_the_original_pair_is_unchanged() {
     let dir = tempfile::tempdir().unwrap();
