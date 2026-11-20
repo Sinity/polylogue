@@ -1,7 +1,6 @@
 //! A test-only lower bound for constructing a closed cohort away from the
 //! serial writer. It does not supply the current rows of a prior cohort.
 use super::*;
-use crate::ConnExt as _;
 use crate::archive::open_write;
 use rusqlite::{config::DbConfig, types::ValueRef};
 use std::collections::{BTreeMap, BTreeSet};
@@ -461,8 +460,7 @@ fn messages(count: usize, words: usize) -> Vec<Message> {
     (0..count)
         .map(|number| {
             let role = match number % 4 {
-                0 => Role::User,
-                2 => Role::Tool,
+                0 | 2 => Role::User,
                 _ => Role::Assistant,
             };
             let text = prose(number, words);
@@ -473,16 +471,19 @@ fn messages(count: usize, words: usize) -> Vec<Message> {
             }
             match number % 4 {
                 1 => {
+                    message.stop_reason = Some("tool_use".into());
                     message.blocks = vec![
                         Block::Thinking { text: Some(text), signature: Some(format!("signature-{number}")), redacted: false },
                         serde_json::from_value(serde_json::json!({
                             "type": "tool_call", "call_id": format!("call-{number}"),
-                            "tool": "shell", "input": {"command": format!("cargo check --package fixture-{number}")},
+                            "tool": "shell", "action": "shell", "input": {"command": format!("cargo check --package fixture-{number}")},
                             "command": format!("cargo check --package fixture-{number}")
                         })).unwrap(),
                     ];
                 }
                 2 => {
+                    message.prompt_kind = Some(PromptKind::Harness);
+                    message.stop_reason = None;
                     message.blocks = vec![serde_json::from_value(serde_json::json!({
                         "type": "tool_result", "call_id": format!("call-{}", number - 1),
                         "outcome": {"kind": "ok"}, "output": text,
@@ -749,7 +750,7 @@ fn reading(archive: &Archive, fixture: &Cohort) -> Reading {
     assert_eq!(rewritten.text(), "cohort rewritten café parser value");
     drop(reader);
     drop(pool);
-    let conn = crate::archive::open_read(archive.index_db()).unwrap();
+    let conn = crate::archive::open_read(&archive.index_db()).unwrap();
     assert_eq!(
         conn.scalar::<u64>("SELECT count(*) FROM pragma_foreign_key_check", [])
             .unwrap(),
