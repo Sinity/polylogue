@@ -414,21 +414,23 @@ impl Resolver {
                     Option<String>,
                     Option<String>,
                 ) = serde_json::from_slice(&key.bytes)?;
-                Ok(index.scalar_optional("SELECT pk FROM link WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND how IS ?4 AND branch_point IS ?5 AND spawning_call IS ?6",params![parent,child,kind,how,at,call])?)
+                let mut statement = index.prepare_cached(
+                    "SELECT pk FROM link WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND how IS ?4 AND branch_point IS ?5 AND spawning_call IS ?6",
+                )?;
+                Ok(statement
+                    .query_row(params![parent, child, kind, how, at, call], |row| {
+                        row.get(0)
+                    })
+                    .optional()?)
             }
             kind => {
-                let column = "id";
-                let value: rusqlite::types::Value = String::from_utf8(key.bytes.clone())
-                    .expect("string key")
-                    .into();
-                Ok(index.scalar_optional(
-                    &format!(
-                        "SELECT {} FROM {} WHERE {column}=?1",
-                        kind.pk(),
-                        kind.table()
-                    ),
-                    [value],
-                )?)
+                let value = std::str::from_utf8(&key.bytes).expect("string key");
+                let mut statement = index.prepare_cached(&format!(
+                    "SELECT {} FROM {} WHERE id=?1",
+                    kind.pk(),
+                    kind.table()
+                ))?;
+                Ok(statement.query_row([value], |row| row.get(0)).optional()?)
             }
         }
     }
@@ -578,13 +580,13 @@ impl Resolver {
                         let sql = format!(
                             "SELECT r.{column} FROM {table} r JOIN {table}_source s ON s.{table}_pk=r.pk JOIN input_ref i ON i.pk=s.input_pk WHERE i.id=?1 AND s.chain=?2"
                         );
-                        let mut stmt = index.prepare(&sql)?;
+                        let mut stmt = index.prepare_cached(&sql)?;
                         let mut rows = stmt.query(params![b.input.id, chain])?;
                         while let Some(row) = rows.next()? {
                             keys.insert(Key::new(kind, row.get::<_, String>(0)?.into_bytes()));
                         }
                     }
-                    let mut stmt=index.prepare("SELECT l.parent_id,l.child_id,l.kind,l.how,l.branch_point,l.spawning_call FROM link l JOIN link_source s ON s.link_pk=l.pk JOIN input_ref i ON i.pk=s.input_pk WHERE i.id=?1 AND s.chain=?2")?;
+                    let mut stmt=index.prepare_cached("SELECT l.parent_id,l.child_id,l.kind,l.how,l.branch_point,l.spawning_call FROM link l JOIN link_source s ON s.link_pk=l.pk JOIN input_ref i ON i.pk=s.input_pk WHERE i.id=?1 AND s.chain=?2")?;
                     let mut rows = stmt.query(params![b.input.id, chain])?;
                     while let Some(row) = rows.next()? {
                         let values: (
@@ -604,7 +606,7 @@ impl Resolver {
                         );
                         keys.insert(Key::new(Kind::Link, serde_json::to_vec(&values)?));
                     }
-                    let mut stmt=index.prepare("SELECT s.id FROM session s JOIN parsed p ON p.session_pk=s.pk JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1 AND p.chain=?2")?;
+                    let mut stmt=index.prepare_cached("SELECT s.id FROM session s JOIN parsed p ON p.session_pk=s.pk JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1 AND p.chain=?2")?;
                     let mut rows = stmt.query(params![b.input.id, chain])?;
                     while let Some(row) = rows.next()? {
                         keys.insert(Key::new(
@@ -615,7 +617,7 @@ impl Resolver {
                 }
                 for s in &p.output.sessions {
                     keys.insert(Key::new(Kind::Session, s.id.to_string().into_bytes()));
-                    let mut stmt=index.prepare("SELECT m.id FROM message m JOIN message_source v ON v.message_pk=m.pk JOIN session s ON s.pk=v.session_pk JOIN input_ref i ON i.pk=v.input_pk WHERE s.id=?1 AND i.id=?2 AND v.chain=?3")?;
+                    let mut stmt=index.prepare_cached("SELECT m.id FROM message m JOIN message_source v ON v.message_pk=m.pk JOIN session s ON s.pk=v.session_pk JOIN input_ref i ON i.pk=v.input_pk WHERE s.id=?1 AND i.id=?2 AND v.chain=?3")?;
                     let id = s.id.to_string();
                     let mut rows =
                         stmt.query(params![identities.session(&id), b.input.id, chain])?;
@@ -711,7 +713,7 @@ impl Resolver {
             .collect();
         for key in event_keys {
             if let Some(pk) = self.find(index, &key)? {
-                let mut stmt=index.prepare("SELECT after_message_id FROM event_source WHERE event_pk=?1 AND after_message_id IS NOT NULL")?;
+                let mut stmt=index.prepare_cached("SELECT after_message_id FROM event_source WHERE event_pk=?1 AND after_message_id IS NOT NULL")?;
                 let mut rows = stmt.query([pk])?;
                 while let Some(row) = rows.next()? {
                     keys.insert(Key::new(
