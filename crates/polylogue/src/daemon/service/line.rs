@@ -6,7 +6,7 @@
 //! read streams.
 use super::{Failure, answers, handlers, query_targets};
 use crate::commands::{Caller, Command, Surface, ToolAccess};
-use crate::daemon::handler::{Call, Handler, Streams};
+use crate::daemon::handler::{Call, CountReplyMap, Handler, Streams};
 use crate::daemon::verbs::{
     self, Given, RowRule, Selection, StepCall, read::LineReads, refused_pick, rows_rule,
 };
@@ -32,6 +32,13 @@ impl Handler for Line {
     const PAGES: bool = true;
     const BUDGETED: bool = true;
     const READS_FIRST: bool = true;
+    fn count_reply(rows: &Rows) -> Option<CountReplyMap<Self::Answer>> {
+        if rows.steps.is_empty() && !rows.explain {
+            Some(listing_answer)
+        } else {
+            None
+        }
+    }
     const PRINT: fn(&Self::Answer, TextStyle) -> String = crate::cli::print::line;
     fn read_only(rows: &Rows, _: &Command, caller: &Caller) -> bool {
         rows.access() == ToolAccess::Read
@@ -833,6 +840,10 @@ fn execute_steps(
     })
 }
 
+fn listing_answer(answer: crate::daemon::query::CountReply) -> Answer<LineAnswer> {
+    answer.map(|found| LineAnswer::Listing(Box::new(found)))
+}
+
 /// The selection alone: its rows, a page at a time.
 fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswer>, Failure> {
     let query = Selection {
@@ -851,8 +862,7 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
         fields: rows.fields.clone(),
     };
     let Some(wait) = rows.wait.as_deref() else {
-        return Ok(handlers::Query::run(arguments, call)?
-            .map(|found| LineAnswer::Listing(Box::new(found))));
+        return handlers::Query::run(arguments, call).map(listing_answer);
     };
     let wait = crate::signals::duration(wait)
         .ok_or_else(|| Failure::bad_value("--wait needs a duration such as 30s or 30m"))?;
@@ -884,8 +894,7 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
         if let Some(limit) = &limit {
             limit.check()?;
         }
-        let answer = handlers::waiting_query(&arguments, call)?
-            .map(|found| LineAnswer::Listing(Box::new(found)));
+        let answer = listing_answer(handlers::waiting_query(&arguments, call)?);
         if !matches!(answer.outcome, command_surface::Outcome::Empty(_)) {
             return Ok(answer);
         }

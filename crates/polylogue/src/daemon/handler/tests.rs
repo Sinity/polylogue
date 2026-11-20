@@ -72,11 +72,12 @@ fn a_blocked_optional_count_leaves_the_completed_socket_page_available() {
 
     let daemon = crate::test_daemon::start("optional count fixture");
     let socket = daemon.daemon.archive.socket();
-    let exact = request(
+    let mut exact = request(
         "rows",
         json!({"selection":"session:claude-code:s1", "page_size":1}),
         "exact-count-control",
     );
+    exact.deadline = command_surface::Deadline::Milliseconds(10_000);
     let control = crate::client::call(&socket, &exact).unwrap();
     let control = &control.value().expect("exact session listing")["reply"];
     assert_eq!(control["count"], 1);
@@ -106,18 +107,22 @@ fn a_blocked_optional_count_leaves_the_completed_socket_page_available() {
     fault::clear();
     assert!(reached_count, "the fixture did not hold the optional count");
 
-    // The transport deadline has ended the client's wait while the
-    // statement was held. A completed page must survive that deadline.
+    // The client answered while the count statement was still held.
     let answer = answer.unwrap();
     let reply = &answer
         .value()
         .unwrap_or_else(|| panic!("the held count hid the completed page: {answer:?}"))["reply"];
     assert_eq!(reply["rows"], control["rows"]);
     assert!(reply["count"].is_null());
-    assert!(reply["notes"].as_array().unwrap().iter().any(|note| {
-        note.as_str()
-            .is_some_and(|note| note.contains("count deferred"))
-    }));
+    assert!(reply["notes"].as_array().unwrap().contains(&json!(
+        "count deferred; run the exact count without a deadline: polylogue 'sessions | count' --deadline none"
+    )));
+
+    listing.deadline = command_surface::Deadline::None;
+    let retry = crate::client::call(&socket, &listing).unwrap();
+    let counted = &retry.value().expect("listing with an exact count")["reply"];
+    assert_eq!(counted["rows"], control["rows"]);
+    assert_eq!(counted["count"], 1);
 }
 
 #[test]
