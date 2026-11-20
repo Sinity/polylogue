@@ -1225,10 +1225,11 @@ fn session_start(
         })?
         .unwrap_or_default();
 
-    if matches!(
+    let with_manual = matches!(
         source,
         StartSource::Startup | StartSource::Clear | StartSource::Compact
-    ) {
+    );
+    if with_manual {
         header.push_str("\nAgent manual:\n");
         header.push_str(&crate::manual::text());
         header.push('\n');
