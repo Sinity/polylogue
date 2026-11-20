@@ -48,6 +48,23 @@ fn populated(home: &ClaudeHome) -> (Engine, polylogue_store::ArchiveLock) {
     (engine, lock)
 }
 
+fn observe_range_checkpoints(home: &ClaudeHome, input: &str) {
+    let index = rusqlite::Connection::open(home.index_db()).unwrap();
+    // These fixture rows roll back with the native checkpoint transaction.
+    // Distinct cursors prove that the input crossed acknowledged ranges.
+    index
+        .execute_batch(&format!(
+            "CREATE TABLE fixture_ranges(cursor INTEGER PRIMARY KEY);
+         CREATE TRIGGER fixture_range_insert AFTER INSERT ON parse_state
+         WHEN NEW.input_pk=(SELECT pk FROM input_ref WHERE id='{input}')
+         BEGIN INSERT OR IGNORE INTO fixture_ranges VALUES(NEW.parsed_upto); END;
+         CREATE TRIGGER fixture_range_update AFTER UPDATE OF parsed_upto ON parse_state
+         WHEN NEW.input_pk=(SELECT pk FROM input_ref WHERE id='{input}')
+         BEGIN INSERT OR IGNORE INTO fixture_ranges VALUES(NEW.parsed_upto); END;"
+        ))
+        .unwrap();
+}
+
 fn assert_reading(engine: &Engine, bytes: &str) {
     let reader = engine.reads.reader().unwrap();
     let messages = reader
@@ -90,7 +107,9 @@ fn assert_reading(engine: &Engine, bytes: &str) {
         .unwrap()
         .unwrap();
     assert_eq!(cited.input, input);
-    assert_eq!(cited.bytes, bytes.as_bytes());
+    // Native provider record ranges exclude the final line delimiter.
+    assert_eq!(bytes.as_bytes().last(), Some(&b'\n'));
+    assert_eq!(cited.bytes, bytes.as_bytes()[..bytes.len() - 1]);
 }
 
 #[test]
@@ -102,6 +121,7 @@ fn an_immutable_import_keeps_its_context_without_opening_the_populated_index() {
     std::fs::write(&path, &bytes).unwrap();
     let input = BlobHash::of(bytes.as_bytes()).to_string();
     let (mut engine, _lock) = populated(&home);
+    observe_range_checkpoints(&home, &input);
     fault::arm(
         "parser_context.open_committed",
         &input,
@@ -112,6 +132,7 @@ fn an_immutable_import_keeps_its_context_without_opening_the_populated_index() {
     let report = import(&mut engine, &path);
     assert!(report.pass.errors.is_empty(), "{report:?}");
     assert!(report.pass.bytes_read >= bytes.len() as u64);
+    assert!(home.count("SELECT count(*) AS n FROM fixture_ranges WHERE cursor>0") >= 4);
     assert_reading(&engine, &bytes);
     // The same armed boundary must still reject a real committed-context
     // open, proving the successful import did not silently consume it.
@@ -147,7 +168,7 @@ fn an_immutable_import_keeps_its_context_without_opening_the_populated_index() {
 }
 
 #[test]
-fn a_rejected_import_range_resumes_from_its_committed_context() {
+fn a_transiently_failed_import_range_resumes_from_its_committed_context() {
     fault::clear();
     let home = ClaudeHome::new();
     let path = home.dir.path().join("interrupted-context.jsonl");
@@ -155,8 +176,10 @@ fn a_rejected_import_range_resumes_from_its_committed_context() {
     std::fs::write(&path, &bytes).unwrap();
     let input = BlobHash::of(bytes.as_bytes()).to_string();
     let (mut engine, _lock) = populated(&home);
-    let index = rusqlite::Connection::open(home.index_db()).unwrap();
-    index.execute_batch("CREATE TRIGGER reject_context_range BEFORE INSERT ON message WHEN NEW.id='claude-code:part-12' BEGIN SELECT RAISE(ABORT,'synthetic range refusal'); END;").unwrap();
+    observe_range_checkpoints(&home, &input);
+    // An I/O failure permits retry. A deterministic content refusal is final
+    // for this program and these bytes, even if its fixture trigger is removed.
+    fault::arm("write.index_commit", "", Action::Fail, 3, 1);
     let failed = import(&mut engine, &path);
     assert!(!failed.pass.errors.is_empty(), "{failed:?}");
     let before = engine
@@ -167,10 +190,8 @@ fn a_rejected_import_range_resumes_from_its_committed_context() {
         .unwrap()
         .unwrap();
     assert!(before.parsed_upto > 0 && before.parsed_upto < bytes.len() as u64);
-    index
-        .execute_batch("DROP TRIGGER reject_context_range")
-        .unwrap();
-    drop(index);
+    assert!(home.count("SELECT count(*) AS n FROM fixture_ranges WHERE cursor>0") >= 3);
+    fault::clear();
     // A later attempt must reopen the committed context. The previous
     // private scratch view cannot stand for a failed or restarted reading.
     fault::arm(
