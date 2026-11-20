@@ -19,15 +19,68 @@ env:
   NEXTEST_FAILURE_OUTPUT: immediate-final
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: cb14d7d60a553591fb3f3714b856b8d048cb874e
+      - name: Free disk space for unpacking
+        run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Restore the pinned full cache
+        id: restore
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: check-${{ hashFiles('rust-toolchain.toml') }}-cb14d7d60a553591fb3f3714b856b8d048cb874e
+      - name: Confirm cache identity
+        env:
+          CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+        run: |
+          test "$CACHE_HIT" = true
+          test "$(cat target/source-commit)" = cb14d7d60a553591fb3f3714b856b8d048cb874e
+      - name: Remove workspace build outputs
+        run: |
+          set -euo pipefail
+          metadata=$(cargo metadata --no-deps --format-version 1)
+          mapfile -t members < <(jq -r '.packages[].name' <<< "$metadata")
+          test "${#members[@]}" -gt 0
+          args=()
+          for member in "${members[@]}"; do args+=(-p "$member"); done
+          cargo clean "${args[@]}"
+          du -sb target
+      - name: Package dependency build
+        run: |
+          workspace=${GITHUB_WORKSPACE#"$HOME"/}
+          test "$workspace" != "$GITHUB_WORKSPACE"
+          cd "$HOME"
+          paths=("$workspace/target")
+          for path in .cargo/registry .cargo/git; do
+            if test -d "$path"; then paths+=("$path"); fi
+          done
+          tar --zstd -cf "$RUNNER_TEMP/dependencies.tar.zst" "${paths[@]}"
+          stat -c '%s' "$RUNNER_TEMP/dependencies.tar.zst"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dependency-build
+          path: ${{ runner.temp }}/dependencies.tar.zst
+          compression-level: 0
+          retention-days: 1
   rust:
-    name: Rust (${{ matrix.rev }}, ${{ matrix.cache }})
+    name: Rust (${{ matrix.rev }}, dependency archive)
+    needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
         rev: ['${{ inputs.rev }}', '${{ inputs.comparison_rev }}']
-        cache: [full, dependencies]
     steps:
       # A pull request's checkout is its merge commit; the first parent is the
       # base branch's tip, the base `xtask check` selects tests against.
@@ -65,22 +118,13 @@ jobs:
         run: |
           curl -sSfL https://github.com/nats-io/nats-server/releases/download/v2.10.22/nats-server-v2.10.22-linux-amd64.tar.gz | tar xz
           sudo mv nats-server-v2.10.22-linux-amd64/nats-server /usr/local/bin/
-      # Every event may reuse master's whole target directory, whose source
-      # commit is recorded alongside it. Full test selection on master is
-      # independent of compiler reuse. A fresh checkout makes source files
-      # newer than the saved build. Cargo uses file times, so sources are dated before
-      # the build and the files that differ from the saved commit are dated
-      # now: Cargo rebuilds the packages those files belong to and the ones
-      # depending on them, and reuses the rest.
-      - name: Restore the same master build in both arms
-        id: restore
-        uses: actions/cache/restore@v4
+      - name: Download dependency build
+        uses: actions/download-artifact@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: check-${{ hashFiles('rust-toolchain.toml') }}-cb14d7d60a553591fb3f3714b856b8d048cb874e
+          name: dependency-build
+          path: ${{ runner.temp }}
+      - name: Extract dependency build
+        run: tar --zstd -xf "$RUNNER_TEMP/dependencies.tar.zst" -C "$HOME"
       - name: Date sources against the restored build
         run: |
           built=$(cat target/source-commit 2>/dev/null) || exit 0
@@ -88,23 +132,5 @@ jobs:
           git ls-files -z | xargs -0 touch -h -d '2000-01-01 00:00:00 UTC'
           git diff --no-renames --name-only -z "$built" HEAD | xargs -0 -r touch -h -c
           echo "restored build of $built; $(git diff --no-renames --name-only "$built" HEAD | wc -l) files differ"
-      - name: Verify and measure the restored build
-        env:
-          CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
-        run: |
-          test "$CACHE_HIT" = true
-          test "$(cat target/source-commit)" = cb14d7d60a553591fb3f3714b856b8d048cb874e
-          du -sb target
-      - name: Remove workspace build outputs
-        if: matrix.cache == 'dependencies'
-        run: |
-          set -euo pipefail
-          metadata=$(cargo metadata --no-deps --format-version 1)
-          mapfile -t members < <(jq -r '.packages[].name' <<< "$metadata")
-          test "${#members[@]}" -gt 0
-          args=()
-          for member in "${members[@]}"; do args+=(-p "$member"); done
-          cargo clean "${args[@]}"
-          du -sb target
       - name: Run the complete Rust check
         run: cargo xtask check
