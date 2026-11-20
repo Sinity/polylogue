@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 /// A location match is only a hint. The writer verifies the bytes and receipt.
 pub fn import_locations(archive: &Archive) -> Result<impl Fn(&str, &[u8]) -> Result<bool>> {
     let conn = crate::archive::open_read(&archive.archive_db())?;
-    Ok(move |machine, path| {
+    Ok(move |machine: &str, path: &[u8]| {
         let mut statement = conn.prepare_cached(
             "SELECT EXISTS(SELECT 1 FROM observation WHERE machine=?1 AND path_bytes=?2 AND class='imported')",
         )?;
