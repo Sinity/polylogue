@@ -915,9 +915,15 @@ impl RowWriter<'_, '_> {
                 let selected = write.value.map(|value| &value.message).ok_or_else(|| {
                     StoreError::Invalid("a changed version has no prepared message".into())
                 })?;
+                let columns = choice
+                    .value
+                    .as_ref()
+                    .or_invalid("a changed version has no prepared columns")?
+                    .columns();
                 self.session_pk(sessions, &selected.session)?;
                 let inserted = self.insert_message(
                     selected,
+                    columns,
                     choice.session,
                     &selected_version(choice, write.value),
                     &choice.order,
@@ -935,7 +941,15 @@ impl RowWriter<'_, '_> {
                     position.0,
                     position.1,
                 );
-                self.insert_message(m, session_pk, &v, &order, reserved, try_insert)?
+                self.insert_message(
+                    m,
+                    &crate::writer::message_columns::MessageColumns::new(m),
+                    session_pk,
+                    &v,
+                    &order,
+                    reserved,
+                    try_insert,
+                )?
             };
             // Resolution already recorded the reserved key in the build map.
             if inserted && pk != source_pk {
@@ -1048,6 +1062,11 @@ impl RowWriter<'_, '_> {
         })?;
         let m = &value.message;
         let prepared = &value.prepared;
+        let columns = choice
+            .value
+            .as_ref()
+            .or_invalid("a changed version has no prepared columns")?
+            .columns();
         self.changes.prepare_items(pk, prepared.items.clone());
         self.changes.session(self.tx, session_pk)?;
         if created.is_none() {
@@ -1057,13 +1076,13 @@ impl RowWriter<'_, '_> {
                 .query_row([pk], |r| r.get::<_, bool>(0))?
             {
                 self.clear_blocks(pk)?;
-                self.set_message(pk, None, m, session_pk, &v, order, false)?;
+                self.set_message(pk, None, m, columns, session_pk, &v, order, false)?;
                 self.tx
                     .prepare_cached("DELETE FROM message_route WHERE message_pk=?1")?
                     .execute([pk])?;
             } else {
                 // A copy joining its session can first materialize here.
-                self.insert_message(m, session_pk, &v, order, None, false)?;
+                self.insert_message(m, columns, session_pk, &v, order, None, false)?;
             }
         }
         self.insert_blocks(pk, session_pk, m, prepared)?;
@@ -1081,6 +1100,7 @@ impl RowWriter<'_, '_> {
     fn insert_message(
         &self,
         m: &Message,
+        columns: &crate::writer::message_columns::MessageColumns,
         session_pk: i64,
         v: &Version,
         order: &str,
@@ -1098,6 +1118,7 @@ impl RowWriter<'_, '_> {
             pk,
             Some(shown.as_ref()),
             m,
+            columns,
             session_pk,
             v,
             order,
@@ -1114,13 +1135,14 @@ impl RowWriter<'_, '_> {
         pk: i64,
         id: Option<&str>,
         m: &Message,
+        columns: &crate::writer::message_columns::MessageColumns,
         session_pk: i64,
         v: &Version,
         order: &str,
         try_insert: bool,
     ) -> Result<bool> {
         self.changes.session(self.tx, session_pk)?;
-        let author = polylogue_model::WrittenBy::of(m);
+        let author = columns.author;
         let written_by = author.as_str();
         let parent = m.parent.as_ref().map(|p| {
             self.keys
@@ -1128,28 +1150,7 @@ impl RowWriter<'_, '_> {
                 .shown_message(&p.to_string())
                 .into_owned()
         });
-        let words: i64 = m
-            .blocks
-            .iter()
-            .filter_map(Block::text)
-            .map(|t| t.split_whitespace().count() as i64)
-            .sum();
-        let attrs = {
-            let mut a = serde_json::Map::new();
-            if !m.attrs.is_empty() {
-                a.insert("attrs".into(), Json::Object(m.attrs.clone()));
-            }
-            if let Some(c) = &m.reported_cost_usd {
-                a.insert("reported_cost_usd".into(), c.clone().into());
-            }
-            if !m.production.is_empty() {
-                a.insert(
-                    "production".into(),
-                    serde_json::to_value(&m.production).unwrap_or_default(),
-                );
-            }
-            (!a.is_empty()).then(|| serde_json::Value::Object(a).to_string())
-        };
+        let words = columns.words;
         let u = &m.usage;
         let n = |x: Option<u64>| x.map(|x| x as i64);
         let sql = if id.is_none() {
@@ -1183,9 +1184,9 @@ impl RowWriter<'_, '_> {
             first,
             session_pk,
             order,
-            name(&m.role),
+            columns.role,
             written_by,
-            m.prompt_kind.map(|k| name(&k)),
+            columns.prompt_kind,
             m.model,
             ms(m.at),
             parent.as_deref(),
@@ -1201,10 +1202,10 @@ impl RowWriter<'_, '_> {
             u.service_tier,
             m.stop_reason,
             n(m.duration_ms),
-            attrs,
+            columns.attrs,
             words,
             v.end,
-            reported_nusd(m.reported_cost_usd.as_ref()),
+            columns.provider_cost_nusd,
             // The five-minute part is known only when the one-hour part is.
             u.cache_write_1h
                 .and(u.cache_write)
@@ -1213,7 +1214,7 @@ impl RowWriter<'_, '_> {
             u.speed,
             // The cost derivation's value, written with the row so a first
             // build's derive does not rewrite every priced message.
-            polylogue_model::Catalog::builtin().cost_nusd(m.model.as_deref(), u),
+            columns.cost_nusd,
             pk,
             v.time,
         ])?;
@@ -1716,11 +1717,4 @@ pub(super) fn outcome_columns(o: &ToolOutcome) -> (&'static str, Option<String>,
         ToolOutcome::Unknown { reason } => (Some(name(reason)), None),
     };
     (o.stored().as_str(), reason, exit)
-}
-
-/// A provider's reported amount is an observed fact, separate from catalog
-/// pricing. The number keeps its exact spelling (`arbitrary_precision`), so
-/// it converts to nano-USD without passing through a float.
-fn reported_nusd(usd: Option<&serde_json::Number>) -> Option<i64> {
-    polylogue_model::money::nusd_from_usd(&usd?.to_string())
 }

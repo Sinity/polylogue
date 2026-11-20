@@ -118,9 +118,23 @@ impl From<(Message, PreparedMessage)> for MessageValue {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum SelectedMessage {
     /// The matching complete entry in this Choices owns the payload.
-    Version { message: MessageId },
+    Version {
+        message: MessageId,
+        columns: crate::writer::message_columns::MessageColumns,
+    },
     /// Composition and enrichment keep their selected time and item overlays.
-    Value(Box<MessageValue>),
+    Value {
+        value: Box<MessageValue>,
+        columns: crate::writer::message_columns::MessageColumns,
+    },
+}
+
+impl SelectedMessage {
+    pub(in crate::writer) fn columns(&self) -> &crate::writer::message_columns::MessageColumns {
+        match self {
+            Self::Version { columns, .. } | Self::Value { columns, .. } => columns,
+        }
+    }
 }
 
 impl Choices {
@@ -130,8 +144,8 @@ impl Choices {
     ) -> Result<Option<&'a MessageValue>> {
         match (&choice.value, choice.changed) {
             (None, false) => Ok(None),
-            (Some(SelectedMessage::Value(value)), true) => Ok(Some(value.as_ref())),
-            (Some(SelectedMessage::Version { message }), true) => {
+            (Some(SelectedMessage::Value { value, .. }), true) => Ok(Some(value.as_ref())),
+            (Some(SelectedMessage::Version { message, .. }), true) => {
                 let hash = BlobHash(choice.hash.as_slice().try_into().map_err(|_| {
                     StoreError::Invalid("a selected version has an invalid hash".into())
                 })?);
@@ -1664,6 +1678,9 @@ impl<'a> MembershipState<'a> {
                 if reference {
                     Some(SelectedMessage::Version {
                         message: source.message.id.clone(),
+                        columns: crate::writer::message_columns::MessageColumns::new(
+                            &source.message,
+                        ),
                     })
                 } else {
                     let MessageValue {
@@ -1678,10 +1695,10 @@ impl<'a> MembershipState<'a> {
                         &message,
                         polylogue_model::read::MessagePlace::default(),
                     );
-                    Some(SelectedMessage::Value(Box::new(MessageValue {
-                        message,
-                        prepared,
-                    })))
+                    Some(SelectedMessage::Value {
+                        columns: crate::writer::message_columns::MessageColumns::new(&message),
+                        value: Box::new(MessageValue { message, prepared }),
+                    })
                 }
             } else {
                 None

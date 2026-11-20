@@ -52,6 +52,7 @@ mod source_snapshot;
 pub(crate) use retractions::{apply_source_retractions, prepare_source_retractions};
 pub(crate) use rows::finish as finish_rows;
 mod hook_fields;
+mod message_columns;
 mod older_archive;
 pub use older_archive::{GroupOutcome, OlderGroup, Restored};
 pub(crate) mod resolve;

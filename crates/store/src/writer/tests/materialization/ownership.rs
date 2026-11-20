@@ -47,7 +47,10 @@ fn fresh_message_selection_shares_one_value_through_preparation_and_spill() {
         .unwrap()
         .as_mut()
         .unwrap()
-        .value = Some(SelectedMessage::Value(Box::new(value.clone())));
+        .value = Some(SelectedMessage::Value {
+        columns: crate::writer::message_columns::MessageColumns::new(&value.message),
+        value: Box::new(value.clone()),
+    });
     let owned_encoded = serde_json::to_vec(&owned).unwrap();
     assert_eq!(
         std::str::from_utf8(&owned_encoded)
@@ -117,7 +120,7 @@ fn selected_version_references_refuse_missing_mismatched_or_sparse_values_atomic
         let retry = b.clone();
         let choices = &mut b.parse[0].resolution.as_mut().unwrap().choices;
         let pk = *choices.messages.iter().find(|(_, c)| c.as_ref().is_some_and(|c|
-            matches!(&c.value, Some(SelectedMessage::Version { message }) if *message == messages[0].id)))
+            matches!(&c.value, Some(SelectedMessage::Version { message, .. }) if *message == messages[0].id)))
             .unwrap().0;
         let hash = messages[0].content_hash().unwrap();
         match defect {
@@ -176,15 +179,17 @@ fn composed_and_sparse_selections_keep_their_owned_metadata_and_values() {
         .0
         .unwrap();
     let mut richer = base.clone();
-    richer.model = Some("synthetic-model".into());
+    richer.model = Some("claude-opus-4-1".into());
+    richer.usage.input = Some(1_000_000);
+    richer.usage.output = Some(1_000_000);
     let mut b = reading("export", vec![richer], Vec::new());
     b.input.route = Route::Export;
     resolve::prepare_index(&conn, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
     let choices = &b.parse[0].resolution.as_ref().unwrap().choices;
     let choice = choices.messages.values().flatten().next().unwrap();
-    assert!(matches!(choice.value, Some(SelectedMessage::Value(_))));
+    assert!(matches!(choice.value, Some(SelectedMessage::Value { .. })));
     let selected = choices.selected_message(choice).unwrap().unwrap();
-    assert_eq!(selected.message.model.as_deref(), Some("synthetic-model"));
+    assert_eq!(selected.message.model.as_deref(), Some("claude-opus-4-1"));
     assert_eq!(
         selected.prepared.items,
         polylogue_model::read::message_entries(
@@ -194,6 +199,12 @@ fn composed_and_sparse_selections_keep_their_owned_metadata_and_values() {
         )
     );
     apply_prepared(&mut conn, b).0.unwrap();
+    let columns: (i64, i64) = conn
+        .query_row("SELECT words,cost_nusd FROM message", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(columns, (2, 90_000_000_000));
 
     let mut full = text_message("sparse", "s", Role::Assistant, "first", Some("end_turn"));
     full.blocks.push(Block::Text {
@@ -221,8 +232,144 @@ fn composed_and_sparse_selections_keep_their_owned_metadata_and_values() {
         .flatten()
         .next()
         .unwrap();
-    assert!(matches!(choice.value, Some(SelectedMessage::Value(_))));
+    assert!(matches!(choice.value, Some(SelectedMessage::Value { .. })));
     apply_prepared(&mut conn, b).0.unwrap();
+}
+
+#[test]
+fn selected_columns_keep_exact_metadata_and_change_with_a_replacement_reading() {
+    let mut conn = database();
+    let mut message = text_message(
+        "columns",
+        "s",
+        Role::Assistant,
+        "alpha\u{2003}beta\n gamma",
+        Some("end_turn"),
+    );
+    message.blocks.push(Block::Thinking {
+        text: Some("delta epsilon".into()),
+        signature: None,
+        redacted: false,
+    });
+    message.blocks.push(Block::ToolResult {
+        reported_duration_ms: None,
+        call_id: None,
+        outcome: ToolOutcome::Ok,
+        output: Some("tool output does not add prose words".into()),
+        data: None,
+        attachments: Vec::new(),
+    });
+    message.model = Some("claude-opus-4-1".into());
+    message.usage.input = Some(1_000_000);
+    message.usage.output = Some(1_000_000);
+    message.reported_cost_usd = Some("0.123456789".parse().unwrap());
+    message.production.iterations = Some(3);
+    message.production.phase = Some("analysis".into());
+    message.attrs.insert(
+        "nested".into(),
+        serde_json::json!({"exact": 9007199254740993_i64}),
+    );
+    let mut b = reading("column-source", vec![message.clone()], Vec::new());
+    b.parse[0].output.messages[0].offset = 7;
+    b.parse[0].output.messages[0].end = 77;
+    resolve::prepare_index(&conn, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
+    let choices = &b.parse[0].resolution.as_ref().unwrap().choices;
+    let encoded = serde_json::to_vec(choices).unwrap();
+    let decoded = crate::encoding::read_json(&encoded).unwrap();
+    b.parse[0].resolution.as_mut().unwrap().choices = decoded;
+    apply_prepared(&mut conn, b).0.unwrap();
+    let (role, author, words, cost, provider_cost, attrs, start, end): (
+        String,
+        String,
+        i64,
+        i64,
+        i64,
+        String,
+        i64,
+        i64,
+    ) = conn
+        .query_row(
+            "SELECT role,written_by,words,cost_nusd,provider_cost_nusd,attrs_json,
+                    source_start,source_end FROM message",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        (role.as_str(), author.as_str(), words),
+        ("assistant", "model", 5)
+    );
+    assert_eq!((cost, provider_cost), (90_000_000_000, 123_456_789));
+    assert_eq!((start, end), (7, 77));
+    assert_eq!(
+        serde_json::from_str::<Json>(&attrs).unwrap(),
+        serde_json::json!({
+            "attrs": {"nested": {"exact": 9007199254740993_i64}},
+            "reported_cost_usd": 0.123456789,
+            "production": {"iterations": 3, "phase": "analysis"}
+        })
+    );
+    assert_eq!(
+        crate::versions::read_message(&conn, &message.content_hash().unwrap().0)
+            .unwrap()
+            .unwrap()
+            .0,
+        message
+    );
+
+    message.role = Role::User;
+    message.prompt_kind = Some(polylogue_model::PromptKind::Prose);
+    message.blocks = vec![Block::Text {
+        text: "new content".into(),
+    }];
+    message.model = None;
+    message.usage = Default::default();
+    message.reported_cost_usd = None;
+    message.production = Default::default();
+    message.attrs.clear();
+    let mut b = reading("column-source", vec![message.clone()], Vec::new());
+    b.parse[0].reset = true;
+    apply(&mut conn, b).0.unwrap();
+    let columns: (String, String, String, i64, Option<i64>, Option<i64>, Option<String>) = conn
+        .query_row(
+            "SELECT role,written_by,prompt_kind,words,cost_nusd,provider_cost_nusd,attrs_json FROM message",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,
+                row.get(4)?, row.get(5)?, row.get(6)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        columns,
+        (
+            "user".into(),
+            "human".into(),
+            "prose".into(),
+            2,
+            None,
+            None,
+            None
+        )
+    );
+    assert!(
+        conn.prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query([])
+            .unwrap()
+            .next()
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
