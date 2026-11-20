@@ -4,6 +4,8 @@ use rusqlite::trace::{TraceEvent, TraceEventCodes};
 use std::cell::Cell;
 
 mod ownership;
+#[cfg(target_os = "linux")]
+mod row_construction;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Work {

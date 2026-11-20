@@ -89,6 +89,10 @@ jobs:
       # Pull requests check their merge tree; pushes and exact-revision dispatches run all tests.
       - name: cargo xtask check
         run: cargo xtask check ${{ github.event_name == 'pull_request' && '--changed-base HEAD^1' || '' }}
+      # Temporary release-profile counterfactual on this experimental branch.
+      # The ordinary check covers the small behavioral controls first.
+      - name: Release row construction counterfactual
+        run: cargo nextest run --release --workspace --all-features --lib --success-output final -E 'package(polylogue-store) and test(row_construction::)'
       # A failed test leaves a valid build, so it is saved too.
       - name: Save master's build
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
