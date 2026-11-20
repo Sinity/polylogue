@@ -281,12 +281,15 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
             continue;
         };
         if let crate::commands::Run::Feed { registration, .. } = command.run {
-            if let Err(failure) = registration.admit(&request) {
-                if !write_answer(&mut out, &failure.answer()) {
-                    return;
+            let produce = match registration.prepare(&request) {
+                Ok(produce) => produce,
+                Err(failure) => {
+                    if !write_answer(&mut out, &failure.answer()) {
+                        return;
+                    }
+                    continue;
                 }
-                continue;
-            }
+            };
             let limit = execution::request_limit(
                 request.deadline,
                 command.latency,
@@ -294,16 +297,13 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
                 parent_deadline,
                 cancellation.clone(),
             );
-            let arguments = request.arguments.clone();
             if !send_stream(
                 &mut out,
                 d,
                 super::executor::Class::Ordinary,
                 &accepted,
                 limit,
-                Box::new(move |d, _, context, output| {
-                    registration.produce(&arguments, d, context, output)
-                }),
+                produce,
             ) {
                 return;
             }

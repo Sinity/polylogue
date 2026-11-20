@@ -298,9 +298,10 @@ async fn answer_as(
     let registration = match c.run {
         Run::Daemon(registration) => registration,
         Run::Feed { registration, .. } => {
-            if let Err(failure) = registration.admit(&request) {
-                return json_answer(web, failure.answer::<serde_json::Value>());
-            }
+            let produce = match registration.prepare(&request) {
+                Ok(produce) => produce,
+                Err(failure) => return json_answer(web, failure.answer::<serde_json::Value>()),
+            };
             let limit = execution::request_limit(
                 request.deadline,
                 c.latency,
@@ -308,16 +309,13 @@ async fn answer_as(
                 parent_deadline,
                 super::request_limit().cancellation,
             );
-            let arguments = request.arguments.clone();
             return stream_as(
                 web,
                 crate::daemon::executor::Class::Ordinary,
                 limit,
                 request,
-                details.clone(),
-                Box::new(move |d, _, context, output| {
-                    registration.produce(&arguments, d, context, output)
-                }),
+                details,
+                produce,
             )
             .await;
         }

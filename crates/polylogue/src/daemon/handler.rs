@@ -276,18 +276,14 @@ pub(crate) const fn streams<H: Streams>() -> Registration {
 /// A stream-only row, with shared argument declarations and product stream delivery.
 #[derive(Clone, Copy)]
 pub struct FeedRegistration {
-    produce: ProduceFeed,
     declare: fn(&mut DeclarationsBuilder, &'static Command),
-    admit: fn(&command_surface::RunnableRequest) -> Result<(), Failure>,
+    prepare: fn(&command_surface::RunnableRequest) -> Result<super::streaming::Produce, Failure>,
 }
-
-type ProduceFeed = fn(&Value, &Daemon, &Arc<Context>, &mut dyn Write) -> Result<(), Failure>;
 
 pub(crate) const fn feed<F: Feed>() -> FeedRegistration {
     FeedRegistration {
-        produce: produce_feed::<F>,
         declare: declare_feed::<F>,
-        admit: admit_feed::<F>,
+        prepare: prepare_feed::<F>,
     }
 }
 
@@ -386,22 +382,13 @@ impl Registration {
 }
 
 impl FeedRegistration {
-    /// Check the shared request envelope and the feed's own typed arguments before
-    /// opening a stream. Feed positions live in those arguments, not page
-    /// cursors. Feeds emit their own event format and do not prepare context
-    /// under a token budget or refresh the archive.
-    pub(crate) fn admit(&self, request: &command_surface::RunnableRequest) -> Result<(), Failure> {
-        (self.admit)(request)
-    }
-
-    pub(crate) fn produce(
+    /// Check the envelope and decode the feed's arguments before opening a
+    /// stream. Feed positions belong to those arguments, outside page cursors.
+    pub(crate) fn prepare(
         &self,
-        arguments: &Value,
-        daemon: &Daemon,
-        context: &Arc<Context>,
-        output: &mut dyn Write,
-    ) -> Result<(), Failure> {
-        (self.produce)(arguments, daemon, context, output)
+        request: &command_surface::RunnableRequest,
+    ) -> Result<super::streaming::Produce, Failure> {
+        (self.prepare)(request)
     }
 }
 
@@ -468,7 +455,9 @@ fn answer_local<H: Handler>(
     }
 }
 
-fn admit_feed<F: Feed>(request: &command_surface::RunnableRequest) -> Result<(), Failure> {
+fn prepare_feed<F: Feed>(
+    request: &command_surface::RunnableRequest,
+) -> Result<super::streaming::Produce, Failure> {
     if request.request_id.is_empty() {
         return Err(Failure::bad_request("request_id must not be empty"));
     }
@@ -485,7 +474,11 @@ fn admit_feed<F: Feed>(request: &command_surface::RunnableRequest) -> Result<(),
             option.name()
         )));
     }
-    decode::<F::Arguments>(&request.arguments).map(drop)
+    let arguments = decode::<F::Arguments>(&request.arguments)?;
+    Ok(Box::new(move |daemon, _, context, output| {
+        super::service::accepting(daemon)?;
+        F::produce(arguments, daemon, context, output)
+    }))
 }
 
 fn admit<H: Handler>(
@@ -546,17 +539,6 @@ fn produce<H: Streams>(
     };
     super::service::accepting(daemon)?;
     H::produce(arguments, &call, context, output)
-}
-
-fn produce_feed<F: Feed>(
-    arguments: &Value,
-    daemon: &Daemon,
-    context: &Arc<Context>,
-    output: &mut dyn Write,
-) -> Result<(), Failure> {
-    let arguments: F::Arguments = decode(arguments)?;
-    super::service::accepting(daemon)?;
-    F::produce(arguments, daemon, context, output)
 }
 
 /// The caller as handlers see it: its surface, working directory and output.
