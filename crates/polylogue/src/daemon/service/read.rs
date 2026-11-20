@@ -193,7 +193,7 @@ impl ReadServices for Daemon {
                     near: Some(near),
                     fields: &[],
                 };
-                let options = crate::daemon::query::options(reader, &ask, seed)
+                let options = crate::daemon::query::execution_options(reader, &ask, seed)
                     .map_err(|failure| Error::Operation(failure.error))?;
                 run(Compile {
                     options,

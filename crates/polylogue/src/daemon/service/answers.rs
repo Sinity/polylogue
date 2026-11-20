@@ -590,8 +590,11 @@ pub(crate) fn query_targets_in(
                 near: Some(near),
                 fields: &[],
             };
-            let options =
-                crate::daemon::query::options(reader, &ask, uuid::Uuid::new_v4().as_u128() as u64)?;
+            let options = crate::daemon::query::execution_options(
+                reader,
+                &ask,
+                uuid::Uuid::new_v4().as_u128() as u64,
+            )?;
             let selection = reader.prepare_query_selection(query, &options)?;
             if selection.program().shape != polylogue_query::Shape::Rows {
                 return Err(Failure::bad_request(
