@@ -321,11 +321,11 @@ async fn answer_as(
         }
         Run::Local(..) | Run::ConfiguredLocal(..) => return StatusCode::NOT_FOUND.into_response(),
     };
-    let policy = match registration.admit_request(&mut request, c, &caller) {
-        Ok(policy) => policy,
+    let (policy, stream) = match registration.admit_request(&mut request, c, &caller) {
+        Ok(admission) => admission,
         Err(failure) => return json_answer(web, failure.answer::<serde_json::Value>()),
     };
-    if policy.streaming {
+    if let Some(produce) = stream {
         let limit = execution::request_limit(
             request.deadline,
             c.latency,
@@ -333,18 +333,7 @@ async fn answer_as(
             parent_deadline,
             super::request_limit().cancellation,
         );
-        let arguments = request.arguments.clone();
-        return stream_as(
-            web,
-            policy.class,
-            limit,
-            request,
-            details.clone(),
-            Box::new(move |d, invocation, context, output| {
-                registration.produce(&arguments, c, d, invocation, &caller, context, output)
-            }),
-        )
-        .await;
+        return stream_as(web, policy.class, limit, request, details, produce).await;
     }
     let read_scope = if policy.read_only {
         match web.daemon.reads.scope_token() {

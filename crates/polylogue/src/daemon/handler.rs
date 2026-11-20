@@ -216,15 +216,12 @@ pub(crate) struct Policy {
     pub class: super::executor::Class,
 }
 
-type Produce = fn(
-    &Value,
-    &'static Command,
-    &Daemon,
-    &Invocation,
-    &Caller,
-    &Arc<Context>,
-    &mut dyn Write,
-) -> Result<(), Failure>;
+struct Admission {
+    policy: Policy,
+    stream: Option<super::streaming::Produce>,
+}
+
+type Admit = fn(&Value, &'static Command, &Caller, bool) -> Result<Admission, Failure>;
 
 /// One request answered on the calling thread, outside the runtime table:
 /// the daemon's own pages and tests.
@@ -243,9 +240,8 @@ pub(crate) struct Local<'a> {
 pub struct Registration {
     declare: fn(&mut DeclarationsBuilder, &'static Command),
     bind: fn(Arc<Daemon>, &mut OperationTable, &'static Command),
-    admit: fn(&Value, &'static Command, &Caller) -> Result<Policy, Failure>,
+    admit: Admit,
     answer: fn(&Value, &'static Command, &Local<'_>) -> Answer<Value>,
-    produce: Option<Produce>,
     tool_access: fn(&Value, &Command) -> Result<ToolAccess, Failure>,
 }
 
@@ -256,7 +252,6 @@ pub(crate) const fn daemon<H: Handler>() -> Registration {
         bind: bind::<H>,
         admit: admit::<H>,
         answer: answer_local::<H>,
-        produce: None,
         tool_access: tool_access::<H>,
     }
 }
@@ -268,7 +263,6 @@ pub(crate) const fn streams<H: Streams>() -> Registration {
         bind: bind::<H>,
         admit: admit_stream::<H>,
         answer: answer_local::<H>,
-        produce: Some(produce::<H>),
         tool_access: tool_access::<H>,
     }
 }
@@ -350,7 +344,7 @@ impl Registration {
         row: &'static Command,
         caller: &Caller,
     ) -> Result<Policy, Failure> {
-        (self.admit)(arguments, row, caller)
+        Ok((self.admit)(arguments, row, caller, false)?.policy)
     }
     /// Admit the typed arguments and set the read deadline the operation uses.
     pub(crate) fn admit_request(
@@ -358,8 +352,8 @@ impl Registration {
         request: &mut command_surface::RunnableRequest,
         row: &'static Command,
         caller: &Caller,
-    ) -> Result<Policy, Failure> {
-        let policy = self.admit(&request.arguments, row, caller)?;
+    ) -> Result<(Policy, Option<super::streaming::Produce>), Failure> {
+        let Admission { policy, stream } = (self.admit)(&request.arguments, row, caller, true)?;
         // A write without a read phase keeps its durable result. A stream
         // without a default deadline still takes an explicit one.
         if !policy.read_phase
@@ -367,7 +361,7 @@ impl Registration {
         {
             request.deadline = command_surface::Deadline::None;
         }
-        Ok(policy)
+        Ok((policy, stream))
     }
     /// Answers one request on the calling thread.
     pub(crate) fn answer(
@@ -377,26 +371,6 @@ impl Registration {
         local: &Local<'_>,
     ) -> Answer<Value> {
         (self.answer)(arguments, row, local)
-    }
-    /// Writes the stream a streaming request asks for.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn produce(
-        &self,
-        arguments: &Value,
-        row: &'static Command,
-        daemon: &Daemon,
-        invocation: &Invocation,
-        caller: &Caller,
-        context: &Arc<Context>,
-        output: &mut dyn Write,
-    ) -> Result<(), Failure> {
-        match self.produce {
-            Some(produce) => produce(arguments, row, daemon, invocation, caller, context, output),
-            None => Err(Failure::bad_request(format!(
-                "{} answers once; it has no stream",
-                row.name
-            ))),
-        }
     }
 }
 
@@ -499,15 +473,29 @@ fn admit<H: Handler>(
     arguments: &Value,
     row: &'static Command,
     caller: &Caller,
-) -> Result<Policy, Failure> {
+    _: bool,
+) -> Result<Admission, Failure> {
     let arguments: H::Arguments = decode(arguments)?;
-    H::validate(&arguments, caller)?;
+    let policy = policy::<H>(&arguments, row, caller, false)?;
+    Ok(Admission {
+        policy,
+        stream: None,
+    })
+}
+
+fn policy<H: Handler>(
+    arguments: &H::Arguments,
+    row: &'static Command,
+    caller: &Caller,
+    streaming: bool,
+) -> Result<Policy, Failure> {
+    H::validate(arguments, caller)?;
     Ok(Policy {
-        read_only: H::read_only(&arguments, row, caller),
-        read_phase: H::read_phase(&arguments, row, caller),
-        default_deadline: H::default_deadline(&arguments),
-        streaming: false,
-        class: H::class(&arguments),
+        read_only: H::read_only(arguments, row, caller),
+        read_phase: H::read_phase(arguments, row, caller),
+        default_deadline: H::default_deadline(arguments),
+        streaming,
+        class: H::class(arguments),
     })
 }
 
@@ -515,21 +503,26 @@ fn admit_stream<H: Streams>(
     arguments: &Value,
     row: &'static Command,
     caller: &Caller,
-) -> Result<Policy, Failure> {
+    prepare_stream: bool,
+) -> Result<Admission, Failure> {
     let arguments: H::Arguments = decode(arguments)?;
-    H::validate(&arguments, caller)?;
-    Ok(Policy {
-        read_only: H::read_only(&arguments, row, caller),
-        read_phase: H::read_phase(&arguments, row, caller),
-        default_deadline: H::default_deadline(&arguments),
-        streaming: H::streaming(&arguments),
-        class: H::class(&arguments),
-    })
+    let policy = policy::<H>(&arguments, row, caller, H::streaming(&arguments))?;
+    let stream = if prepare_stream && policy.streaming {
+        let caller = caller.clone();
+        let produce: super::streaming::Produce =
+            Box::new(move |daemon, invocation, context, output| {
+                produce::<H>(arguments, row, daemon, invocation, &caller, context, output)
+            });
+        Some(produce)
+    } else {
+        None
+    };
+    Ok(Admission { policy, stream })
 }
 
 #[allow(clippy::too_many_arguments)]
 fn produce<H: Streams>(
-    arguments: &Value,
+    arguments: H::Arguments,
     row: &'static Command,
     daemon: &Daemon,
     invocation: &Invocation,
@@ -537,7 +530,6 @@ fn produce<H: Streams>(
     context: &Arc<Context>,
     output: &mut dyn Write,
 ) -> Result<(), Failure> {
-    let arguments: H::Arguments = decode(arguments)?;
     #[cfg(test)]
     let acquired = std::sync::atomic::AtomicBool::new(false);
     let call = Call {

@@ -319,8 +319,8 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
             }
             continue;
         };
-        let policy = match registration.admit_request(&mut request, command, &caller) {
-            Ok(policy) => policy,
+        let (policy, stream) = match registration.admit_request(&mut request, command, &caller) {
+            Ok(admission) => admission,
             Err(failure) => {
                 if !write_answer(&mut out, &failure.answer()) {
                     return;
@@ -342,7 +342,7 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
             None
         };
         accepted.read_scope = read_scope.clone();
-        if policy.streaming {
+        if let Some(produce) = stream {
             let limit = execution::request_limit(
                 request.deadline,
                 command.latency,
@@ -350,26 +350,7 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
                 parent_deadline,
                 cancellation.clone(),
             );
-            let arguments = request.arguments.clone();
-            let produce_caller = caller.clone();
-            if !send_stream(
-                &mut out,
-                d,
-                policy.class,
-                &accepted,
-                limit,
-                Box::new(move |d, invocation, context, output| {
-                    registration.produce(
-                        &arguments,
-                        command,
-                        d,
-                        invocation,
-                        &produce_caller,
-                        context,
-                        output,
-                    )
-                }),
-            ) {
+            if !send_stream(&mut out, d, policy.class, &accepted, limit, produce) {
                 return;
             }
             continue;
