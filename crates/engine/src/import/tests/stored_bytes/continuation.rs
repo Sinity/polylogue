@@ -194,20 +194,19 @@ fn a_transiently_failed_import_range_resumes_from_its_committed_context() {
     fault::clear();
     // A later attempt must reopen the committed context. The previous
     // private scratch view cannot stand for a failed or restarted reading.
+    let resumed = format!("{input} at byte {};", before.parsed_upto);
     fault::arm(
         "parser_context.open_committed",
-        &input,
+        &resumed,
         Action::Fail,
         0,
         1000,
     );
     let unavailable = import(&mut engine, &path);
     assert!(
-        unavailable
-            .pass
-            .errors
-            .iter()
-            .any(|error| error.contains("parser_context.open_committed")),
+        unavailable.pass.errors.iter().any(|error| {
+            error.contains("parser_context.open_committed") && error.contains(&resumed)
+        }),
         "{unavailable:?}"
     );
     let after = engine
@@ -219,9 +218,19 @@ fn a_transiently_failed_import_range_resumes_from_its_committed_context() {
         .unwrap();
     assert_eq!(after.parsed_upto, before.parsed_upto);
     fault::clear();
+    rusqlite::Connection::open(home.index_db())
+        .unwrap()
+        .execute("DELETE FROM fixture_ranges", [])
+        .unwrap();
     let retry = import(&mut engine, &path);
     assert!(retry.pass.errors.is_empty(), "{retry:?}");
-    assert!(retry.pass.bytes_read < bytes.len() as u64, "{retry:?}");
+    // Submitted lookahead ranges can overlap when a record crosses a slice.
+    // The guarded native open above proves its exact resumed start; every
+    // later committed checkpoint must advance beyond that same cursor.
+    assert!(
+        home.count("SELECT min(cursor) AS n FROM fixture_ranges") > before.parsed_upto as i64,
+        "{retry:?}"
+    );
     assert_eq!(retry.pass.bytes_stored, 0);
     assert_reading(&engine, &bytes);
     assert_eq!(home.texts("seed"), ["Already indexed."]);
