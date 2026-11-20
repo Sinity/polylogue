@@ -102,7 +102,7 @@ pub(crate) fn prefetch_ranking(call: &super::handler::Call<'_>, query: &str) {
 /// The text a query's semantic ranking asks a vector for, once the query
 /// is prepared and validated as its run prepares it.
 fn ranking_text(reader: &Reader<'_>, ask: &Ask<'_>) -> Result<Option<String>, Failure> {
-    let opts = options(reader, ask, 0)?;
+    let opts = execution_options(reader, ask, 0)?;
     let plan = reader.prepare_query_plan(ask.text, &opts)?;
     let program = reader.lower_plan(&plan, &opts)?;
     validate(reader, &program)?;
@@ -112,7 +112,7 @@ fn ranking_text(reader: &Reader<'_>, ask: &Ask<'_>) -> Result<Option<String>, Fa
 /// Whether a query's rows are archive rows: not groups, a summary, the
 /// matches of a pattern or a measurement.
 pub(crate) fn selects_rows(reader: &Reader<'_>, ask: &Ask<'_>) -> Result<bool, Failure> {
-    let opts = options(reader, ask, 0)?;
+    let opts = execution_options(reader, ask, 0)?;
     let plan = reader.prepare_query_plan(ask.text, &opts)?;
     let program = reader.lower_plan(&plan, &opts)?;
     Ok(program.shape == Shape::Rows && program.measure.is_none())
@@ -127,17 +127,28 @@ fn with_similarity<T>(
     reader.with_query_context(program, near, read)
 }
 
-/// The options for `ask`, with the saved queries and kept results its text
-/// names, read from the same Store snapshot as selection preparation.
+/// Options for the compiler entry points that take text and definitions
+/// separately. Prepared Store queries load their own definitions.
 pub(crate) fn options(reader: &Reader<'_>, ask: &Ask<'_>, seed: u64) -> Result<Options, Failure> {
-    let origins: Vec<String> = polylogue_sources::origin::ORIGINS
-        .iter()
-        .map(|o| o.name.to_owned())
-        .collect();
-    let named = reader.selection_definitions(ask.text, &origins)?;
+    let mut options = execution_options(reader, ask, seed)?;
+    let named = reader.selection_definitions(ask.text, &options.origins)?;
+    options.saved = named.saved;
+    options.kept = named.kept;
+    Ok(options)
+}
+
+/// Invocation settings for a query whose names are bound by the Store.
+pub(crate) fn execution_options(
+    reader: &Reader<'_>,
+    ask: &Ask<'_>,
+    seed: u64,
+) -> Result<Options, Failure> {
     Ok(Options {
         clock: ask.context.clock.clone(),
-        origins,
+        origins: polylogue_sources::origin::ORIGINS
+            .iter()
+            .map(|o| o.name.to_owned())
+            .collect(),
         page_size: ask.page_size,
         random_seed: Some(seed),
         embeddings: ask.embeddings,
@@ -151,8 +162,8 @@ pub(crate) fn options(reader: &Reader<'_>, ask: &Ask<'_>, seed: u64) -> Result<O
             .map(|cwd| super::here::scope(cwd, reader))
             .transpose()?,
         seen_marks_of: Some(ask.context.authorship.author.to_string()),
-        saved: named.saved,
-        kept: named.kept,
+        saved: Default::default(),
+        kept: Default::default(),
         fields: ask.fields.to_vec(),
         provider_catalog: Some(polylogue_sources::origin::conversation_catalog()),
     })
@@ -755,7 +766,7 @@ pub fn prepare<'read, 'pool>(
     let seal = CursorSeal::new(reader.cursor_key()?);
     let position = reader.change_position()?;
     let index_file = reader.index_identity()?;
-    let mut opts = options(reader, &ask, 0)?;
+    let mut opts = execution_options(reader, &ask, 0)?;
     let plan = reader.prepare_query_plan(ask.text, &opts)?;
     let question = plan.question_id();
     let cursor = ask
