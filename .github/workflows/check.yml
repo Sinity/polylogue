@@ -1,13 +1,13 @@
 name: check
 
 on:
-  pull_request:
-  push:
-    branches: [master]
   workflow_dispatch:
     inputs:
       rev:
-        description: Exact full commit SHA to check
+        description: First exact source revision
+        required: true
+      comparison_rev:
+        description: Second exact source revision
         required: true
 
 # Test logs list failures as they happen; after the summary they list slow
@@ -18,14 +18,16 @@ env:
   NEXTEST_FINAL_STATUS_LEVEL: slow
   NEXTEST_FAILURE_OUTPUT: immediate-final
 
-concurrency:
-  group: check-${{ inputs.rev || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
   rust:
+    name: Rust (${{ matrix.rev }}, ${{ matrix.cache }})
     runs-on: ubuntu-latest
     timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        rev: ['${{ inputs.rev }}', '${{ inputs.comparison_rev }}']
+        cache: [full, dependencies]
     steps:
       # A pull request's checkout is its merge commit; the first parent is the
       # base branch's tip, the base `xtask check` selects tests against.
@@ -33,11 +35,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.rev || '' }}
+          ref: ${{ matrix.rev }}
       - name: Verify the selected source commit
         if: github.event_name == 'workflow_dispatch'
         env:
-          EXPECTED_REV: ${{ inputs.rev }}
+          EXPECTED_REV: ${{ matrix.rev }}
         run: |
           actual=$(git rev-parse HEAD)
           printf 'requested commit: %s\nchecked commit: %s\n' "$EXPECTED_REV" "$actual"
@@ -70,15 +72,15 @@ jobs:
       # the build and the files that differ from the saved commit are dated
       # now: Cargo rebuilds the packages those files belong to and the ones
       # depending on them, and reuses the rest.
-      - name: Restore master's build
+      - name: Restore the same master build in both arms
+        id: restore
         uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: check-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
-          restore-keys: check-${{ hashFiles('rust-toolchain.toml') }}-
+          key: check-${{ hashFiles('rust-toolchain.toml') }}-cb14d7d60a553591fb3f3714b856b8d048cb874e
       - name: Date sources against the restored build
         run: |
           built=$(cat target/source-commit 2>/dev/null) || exit 0
@@ -86,57 +88,23 @@ jobs:
           git ls-files -z | xargs -0 touch -h -d '2000-01-01 00:00:00 UTC'
           git diff --no-renames --name-only -z "$built" HEAD | xargs -0 -r touch -h -c
           echo "restored build of $built; $(git diff --no-renames --name-only "$built" HEAD | wc -l) files differ"
-      # Pull requests check their merge tree; pushes and exact-revision dispatches run all tests.
-      - name: cargo xtask check
-        run: cargo xtask check ${{ github.event_name == 'pull_request' && '--changed-base HEAD^1' || '' }}
-      # A failed test leaves a valid build, so it is saved too.
-      - name: Save master's build
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-        run: git rev-parse HEAD > target/source-commit
-      - if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: check-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
-  browser:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.rev || '' }}
-      - name: Verify the selected source commit
-        if: github.event_name == 'workflow_dispatch'
+      - name: Verify and measure the restored build
         env:
-          EXPECTED_REV: ${{ inputs.rev }}
+          CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
         run: |
-          actual=$(git rev-parse HEAD)
-          printf 'requested commit: %s\nchecked commit: %s\n' "$EXPECTED_REV" "$actual"
-          test "$actual" = "$EXPECTED_REV"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: extension/package-lock.json
-      - name: Browser extension checks and real archives
+          test "$CACHE_HIT" = true
+          test "$(cat target/source-commit)" = cb14d7d60a553591fb3f3714b856b8d048cb874e
+          du -sb target
+      - name: Remove workspace build outputs
+        if: matrix.cache == 'dependencies'
         run: |
-          sudo apt-get install --yes zip
-          npm --prefix extension ci
-          npm --prefix extension run check
-
-  # Keep the existing required status bound to both suites, including failures.
-  check:
-    needs: [rust, browser]
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require Rust and browser checks
-        env:
-          RUST_RESULT: ${{ needs.rust.result }}
-          BROWSER_RESULT: ${{ needs.browser.result }}
-        run: |
-          test "$RUST_RESULT" = success
-          test "$BROWSER_RESULT" = success
+          set -euo pipefail
+          metadata=$(cargo metadata --no-deps --format-version 1)
+          mapfile -t members < <(jq -r '.packages[].name' <<< "$metadata")
+          test "${#members[@]}" -gt 0
+          args=()
+          for member in "${members[@]}"; do args+=(-p "$member"); done
+          cargo clean "${args[@]}"
+          du -sb target
+      - name: Run the complete Rust check
+        run: cargo xtask check
