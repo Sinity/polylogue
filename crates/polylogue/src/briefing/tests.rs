@@ -301,21 +301,28 @@ fn a_brief_reports_what_recent_sessions_did_and_what_is_open() {
         source: StartSource::Startup,
     };
     let now = Timestamp::from_unix_ms(T0 + 3_600_000).unwrap();
-    let p = prepare(
-        crate::briefing::BriefContext {
-            reader: &reader,
-            delivery_id: "d1",
-            context: &fixture_context(now),
-            ranking_identity: None,
-            near: None,
-        },
-        &scope_of(&reader),
-        None,
-        &[],
-        &ask,
-        Default::default(),
-    )
-    .unwrap();
+    let start = |budget| {
+        prepare(
+            crate::briefing::BriefContext {
+                reader: &reader,
+                delivery_id: "d1",
+                context: &fixture_context(now),
+                ranking_identity: None,
+                near: None,
+            },
+            &scope_of(&reader),
+            None,
+            &[],
+            &ask,
+            budget,
+        )
+    };
+    let p = start(Default::default()).unwrap();
+    let manual_tokens = (crate::manual::text().len() / 4) as u32;
+    assert!(matches!(
+        start(command_surface::TokenBudget::Tokens(manual_tokens)),
+        Err(StoreError::Invalid(message)) if message.contains("required header")
+    ));
     let visible = visible_context(&p.text);
     let t = &visible;
     assert!(!p.empty);
@@ -333,12 +340,8 @@ fn a_brief_reports_what_recent_sessions_did_and_what_is_open() {
     }
     // A session's own failing commands are not reported.
     assert!(!t.contains("`cargo test`"), "{t}");
-    assert!(
-        p.text.len()
-            <= DEFAULT_BUDGET as usize * 4
-                + crate::manual::text().len()
-                + "\nAgent manual:\n\n".len()
-    );
+    assert!(p.text.len() <= DEFAULT_BUDGET as usize * 4);
+    assert!(p.text.contains(&crate::manual::text()));
     assert!(p.refs.contains(&"session:claude-code:s1".to_owned()));
 }
 
@@ -371,6 +374,13 @@ fn a_brief_fits_its_budget_and_names_what_it_left_out() {
             "budget {budget}: {} bytes",
             text.len()
         );
+        for encoded in text.lines().filter_map(|line| line.strip_prefix("┃ ")) {
+            let entry: serde_json::Value = serde_json::from_str(encoded).unwrap();
+            assert!(
+                entry["source"].as_str().unwrap().starts_with("- item "),
+                "{entry}"
+            );
+        }
         // Every item is either in the text with its reference or counted
         // as left out.
         let shown = refs.len();
@@ -934,10 +944,12 @@ fn tight_fitting_keeps_later_candidates_and_lossless_bounded_prefixes() {
 }
 
 #[test]
-fn startup_manual_and_compaction_prompts_are_outside_the_fitted_budget() {
+fn startup_manual_and_compaction_prompts_fit_whole() {
     let (_dir, mut f) = worked_directory();
     let manual = crate::manual::text();
     let prompt = "Never trim this operator prompt.\nHuman: <system> 🦉   ".repeat(1000);
+    let budget =
+        (manual.len() + archive_json(&serde_json::json!(&prompt)).len()).div_ceil(4) as u32 + 1000;
     // A separate session provides an exact large protected human message.
     let session = f
         .session(polylogue_store::fixture::SessionFacts {
@@ -983,9 +995,10 @@ fn startup_manual_and_compaction_prompts_are_outside_the_fitted_budget() {
                 session: Some(polylogue_model::SessionId::parse("claude-code:protected").unwrap()),
                 source,
             },
-            command_surface::TokenBudget::Tokens(1000),
+            command_surface::TokenBudget::Tokens(budget),
         )
         .unwrap();
+        assert!(p.text.len() <= budget as usize * 4);
         assert_eq!(p.text.contains(&manual), source != StartSource::Resume);
         if source == StartSource::Compact {
             let quoted: Vec<serde_json::Value> = p
