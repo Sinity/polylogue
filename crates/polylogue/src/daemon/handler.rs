@@ -680,10 +680,8 @@ impl<H: Handler> Operation for Row<H> {
                 }
                 None => None,
             };
-            let count_deadline = [deadline, context.read_deadline()]
-                .into_iter()
-                .flatten()
-                .min();
+            let table_deadline = context.read_deadline().map(tokio::time::Instant::into_std);
+            let count_deadline = [deadline, table_deadline].into_iter().flatten().min();
             let count_reply = H::count_reply(&arguments)
                 .zip(count_deadline)
                 .filter(|_| H::read_only(&arguments, self.row, &caller));
