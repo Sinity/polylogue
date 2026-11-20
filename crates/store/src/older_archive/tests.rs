@@ -141,8 +141,7 @@ fn a_broken_write_ahead_log_link_does_not_open_a_stale_database() {
             &mut None,
             scratch().path(),
         )
-        .err()
-        .expect("a broken log must stop the import");
+        .expect_err("a broken log must stop the import");
         assert!(matches!(error, crate::StoreError::Io(error)
             if error.raw_os_error() == expected.raw_os_error()));
         std::fs::remove_file(&wal).unwrap();
