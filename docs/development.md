@@ -62,7 +62,11 @@ nextest check runs the standalone workspace with the same engine and store
 fault features as `cargo xtask test`, without the real-process
 `polylogue::e2e` cases that need the operating system's machine identity. Its
 offline shell-completion cases remain included;
-`cargo xtask check` still runs every e2e and Sinex client test. The behavior VM
+`cargo xtask check` also runs the real Sinex rebuild and paired backup fixtures.
+It obtains the daemon and PostgreSQL with extensions from the Sinex revision
+in `Cargo.lock` through Nix, with local builds disabled. The check needs Nix
+and access to the Sinex package cache. `check --changed` skips these two
+real-stack fixtures for local edits. Hosted checks run them. The behavior VM
 runs the packaged daemon, CLI status, MCP initialization and a native-messaging
 exchange in a guest with private XDG and archive paths. Formatting, extension packaging, deployment-file rendering and Nix formatting
 are flake checks too. The `modules` check evaluates both deployment modules,

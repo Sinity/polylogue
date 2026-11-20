@@ -1,5 +1,6 @@
 mod bench;
 mod common_link;
+mod native_sinex;
 
 use clap::Parser;
 use devkit::{Nextest, Run};
@@ -272,7 +273,11 @@ fn main() -> ExitCode {
                 fmt_check(run)?;
                 clippy(run)?;
                 let arguments = test_arguments(&args, None).expect("the selection is valid");
-                run.nextest("test", &nextest(arguments))
+                run.nextest("test", &nextest(arguments))?;
+                if !changed {
+                    native_sinex::check(run)?;
+                }
+                Ok(())
             })
         }
         Cli::Warm => run("warm", &[], |run| {
