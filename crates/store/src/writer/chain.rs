@@ -642,7 +642,8 @@ impl Inner {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         crate::fault::check("write.replay_rows", "")?;
         let counter = bump_counter(&tx)?;
-        let changes = crate::change_summary::ChangeSummary::start(&tx)?;
+        let changes =
+            crate::change_summary::ChangeSummary::start_with_values(&tx, upkeep.at_build_end())?;
         let mut batch = Batch {
             required_outcome: None,
             input,

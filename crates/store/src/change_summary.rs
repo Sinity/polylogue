@@ -12,6 +12,7 @@ mod counts;
 
 pub(crate) struct ChangeSummary {
     changed: RefCell<Changed>,
+    defer_session_values: bool,
 }
 
 /// A message's place in session order (`message_session`): its
@@ -121,9 +122,14 @@ impl ChangeSummary {
     /// also records the version bodies, values and texts whose references
     /// it removes ([`crate::versions::remove_unreferenced`]).
     pub(crate) fn start(conn: &Connection) -> Result<Self> {
+        Self::start_with_values(conn, false)
+    }
+
+    pub(crate) fn start_with_values(conn: &Connection, defer_session_values: bool) -> Result<Self> {
         crate::versions::track_unreferenced(conn)?;
         Ok(Self {
             changed: RefCell::default(),
+            defer_session_values,
         })
     }
 
@@ -169,7 +175,9 @@ impl ChangeSummary {
             })
             .optional()?
             .map(|mut before| {
-                before.values = crate::session_values::of_message(conn, pk, before.session)?;
+                if !self.defer_session_values {
+                    before.values = crate::session_values::of_message(conn, pk, before.session)?;
+                }
                 before.counts = crate::derive::counts::message(conn, pk)?
                     .ok_or_else(|| {
                         crate::StoreError::Invalid("changed message disappeared".into())

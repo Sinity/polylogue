@@ -263,7 +263,8 @@ Building the archive overlaps every stage:
 - consumers of committed positions: derived data (computed on a thread of
   its own and written by the writer only if its inputs are unchanged), the
   request-log view and the completion catalog;
-- at the end of an index build, the writer fills both full-text tables in one
+- at the end of an index build, the writer computes completion values and
+  first prompts from the final session rows, then fills both full-text tables in one
   transaction in the private index. A bounded scan reads each referenced text
   group once per window and visits its texts in rowid order. Each table uses
   its installed schema's tokenizer and configuration. A stop or error rolls
