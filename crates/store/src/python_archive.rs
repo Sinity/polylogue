@@ -10,6 +10,18 @@ use std::fs::File;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
+/// Open the committed standalone observations without waiting for its index.
+/// A location match is only a hint. The writer verifies the bytes and receipt.
+pub fn import_locations(archive: &Archive) -> Result<impl Fn(&str, &[u8]) -> Result<bool>> {
+    let conn = crate::archive::open_read(&archive.archive_db())?;
+    Ok(move |machine, path| {
+        let mut statement = conn.prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM observation WHERE machine=?1 AND path_bytes=?2 AND class='imported')",
+        )?;
+        Ok(statement.query_row(rusqlite::params![machine, path], |row| row.get(0))?)
+    })
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Input {
     pub raw_id: String,
