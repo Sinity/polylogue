@@ -718,6 +718,7 @@ fn restore_without_vector_demand_never_starts_a_model_reload_per_commit() {
     );
     assert_eq!(warm.summary().vector_loads, 1);
     let revision = loaded.revision;
+    drop(reader);
     store.restore(&[restored_vector(1, 600, [1., 0.])]).unwrap();
     let next = reads.reader().unwrap();
     let repeated = warm
@@ -741,6 +742,8 @@ fn a_warmed_model_refreshes_mixed_restore_and_preserves_old_reader_values() {
     let warm = Warm::new(&daemon.daemon.archive, daemon.daemon.clock.clone());
     let old_reader = daemon.daemon.reads.reader().unwrap();
     let old = warm.vectors_of(&old_reader, key).unwrap();
+    // Keep the old transaction open even on hosts with a single reader slot.
+    let fresh_reads = polylogue_store::ReadPool::open(&daemon.daemon.archive).unwrap();
     store
         .restore(&[
             restored_vector(1, 20, [0., 1.]),
@@ -748,7 +751,7 @@ fn a_warmed_model_refreshes_mixed_restore_and_preserves_old_reader_values() {
             restored_vector(2, 30, [0., 1.]),
         ])
         .unwrap();
-    let reader = daemon.daemon.reads.reader().unwrap();
+    let reader = fresh_reads.reader().unwrap();
     let current = warm.vectors_of(&reader, key).unwrap();
     drop(reader);
     assert_eq!(
@@ -769,7 +772,7 @@ fn a_warmed_model_refreshes_mixed_restore_and_preserves_old_reader_values() {
     ));
     // A paid-time-only change still creates a truthful new snapshot.
     store.restore(&[restored_vector(1, 40, [0., 1.])]).unwrap();
-    let newer_reader = daemon.daemon.reads.reader().unwrap();
+    let newer_reader = fresh_reads.reader().unwrap();
     let newer = warm.vectors_of(&newer_reader, key).unwrap();
     drop(newer_reader);
     assert_eq!(newer.revision, current.revision + 1);
