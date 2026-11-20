@@ -90,8 +90,9 @@ Cargo's output directory is `target/` unless `CARGO_TARGET_DIR` is set.
 Declared AgentCTL operations clear an ambient `CARGO_TARGET_DIR` before entering
 the target workspace's shell. The `measure_run` operation sets an unused local
 target so a prebuilt measurement skips compiler cache selection and seeding.
-Untimed `import_preserved` runs use the background queue so a historical
-import can keep progressing while the measurement queue runs short benchmarks.
+Untimed `import_preserved` runs share the measurement queue with benchmarks,
+so these memory-heavy operations run one at a time. Their memory budget is
+admitted before they start; the parent job-plane protections remain in force.
 Coordinate runs that use the same disk before comparing timings.
 When the operation leaves the target unset, the shell can select that checkout's
 isolated host target and seed its dependency artifacts through `sinnix-cargo-target`.
