@@ -10,8 +10,8 @@ use super::query::{CountPageSender, CountReply};
 use super::service::Daemon;
 use crate::commands::{Caller, Command, Surface, ToolAccess};
 use command_surface::{
-    Access, Answer, DeclarationsBuilder, FailureKind, JsonSchema, Operation, OperationFuture,
-    OperationTable, RequestContext, TextStyle, TokenBudget,
+    Access, Answer, Deadline, DeclarationsBuilder, FailureKind, JsonSchema, Operation,
+    OperationFuture, OperationTable, RequestContext, RunnableRequest, TextStyle, TokenBudget, Via,
 };
 use polylogue_reading::operation::{Context, Invocation};
 use polylogue_store::{cancellation::Cancellation, read::limit::ReadLimit};
@@ -19,6 +19,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::io::Write;
 use std::marker::PhantomData;
+use std::ops::ControlFlow;
 use std::sync::Arc;
 
 pub(crate) type CountReplyMap<T> = fn(CountReply) -> Answer<T>;
@@ -216,12 +217,17 @@ pub(crate) struct Policy {
     pub class: super::executor::Class,
 }
 
-struct Admission {
-    policy: Policy,
-    stream: Option<super::streaming::Produce>,
+impl Policy {
+    pub(crate) fn deadline(self, deadline: Deadline) -> Deadline {
+        // Writes keep their durable result. An unbounded stream still takes
+        // an explicit caller deadline.
+        if !self.read_phase || (!self.default_deadline && deadline == Deadline::Default) {
+            Deadline::None
+        } else {
+            deadline
+        }
+    }
 }
-
-type Admit = fn(&Value, &'static Command, &Caller, bool) -> Result<Admission, Failure>;
 
 /// One request answered on the calling thread, outside the runtime table:
 /// the daemon's own pages and tests.
@@ -240,7 +246,7 @@ pub(crate) struct Local<'a> {
 pub struct Registration {
     declare: fn(&mut DeclarationsBuilder, &'static Command),
     bind: fn(Arc<Daemon>, &mut OperationTable, &'static Command),
-    admit: Admit,
+    admit: fn(&Value, &'static Command, &Caller) -> Result<Policy, Failure>,
     answer: fn(&Value, &'static Command, &Local<'_>) -> Answer<Value>,
     tool_access: fn(&Value, &Command) -> Result<ToolAccess, Failure>,
 }
@@ -344,24 +350,7 @@ impl Registration {
         row: &'static Command,
         caller: &Caller,
     ) -> Result<Policy, Failure> {
-        Ok((self.admit)(arguments, row, caller, false)?.policy)
-    }
-    /// Admit the typed arguments and set the read deadline the operation uses.
-    pub(crate) fn admit_request(
-        &self,
-        request: &mut command_surface::RunnableRequest,
-        row: &'static Command,
-        caller: &Caller,
-    ) -> Result<(Policy, Option<super::streaming::Produce>), Failure> {
-        let Admission { policy, stream } = (self.admit)(&request.arguments, row, caller, true)?;
-        // A write without a read phase keeps its durable result. A stream
-        // without a default deadline still takes an explicit one.
-        if !policy.read_phase
-            || (!policy.default_deadline && request.deadline == command_surface::Deadline::Default)
-        {
-            request.deadline = command_surface::Deadline::None;
-        }
-        Ok((policy, stream))
+        (self.admit)(arguments, row, caller)
     }
     /// Answers one request on the calling thread.
     pub(crate) fn answer(
@@ -473,14 +462,9 @@ fn admit<H: Handler>(
     arguments: &Value,
     row: &'static Command,
     caller: &Caller,
-    _: bool,
-) -> Result<Admission, Failure> {
+) -> Result<Policy, Failure> {
     let arguments: H::Arguments = decode(arguments)?;
-    let policy = policy::<H>(&arguments, row, caller, false)?;
-    Ok(Admission {
-        policy,
-        stream: None,
-    })
+    policy::<H>(&arguments, row, caller, false)
 }
 
 fn policy<H: Handler>(
@@ -503,21 +487,17 @@ fn admit_stream<H: Streams>(
     arguments: &Value,
     row: &'static Command,
     caller: &Caller,
-    prepare_stream: bool,
-) -> Result<Admission, Failure> {
+) -> Result<Policy, Failure> {
     let arguments: H::Arguments = decode(arguments)?;
-    let policy = policy::<H>(&arguments, row, caller, H::streaming(&arguments))?;
-    let stream = if prepare_stream && policy.streaming {
-        let caller = caller.clone();
-        let produce: super::streaming::Produce =
-            Box::new(move |daemon, invocation, context, output| {
-                produce::<H>(arguments, row, daemon, invocation, &caller, context, output)
-            });
-        Some(produce)
-    } else {
-        None
-    };
-    Ok(Admission { policy, stream })
+    stream_policy::<H>(&arguments, row, caller)
+}
+
+fn stream_policy<H: Streams>(
+    arguments: &H::Arguments,
+    row: &'static Command,
+    caller: &Caller,
+) -> Result<Policy, Failure> {
+    policy::<H>(arguments, row, caller, H::streaming(arguments))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -545,6 +525,185 @@ fn produce<H: Streams>(
     };
     super::service::accepting(daemon)?;
     H::produce(arguments, &call, context, output)
+}
+
+pub(crate) enum NativeReply {
+    Refused(Answer<Value>),
+    Answer(NativeAnswer, Answer<Value>),
+    Stream {
+        request: RunnableRequest,
+        accepted: Box<crate::operation::Accepted>,
+        policy: Policy,
+        produce: super::streaming::Produce,
+    },
+}
+
+pub(crate) struct NativeAnswer {
+    pub web_request: Option<Arc<RunnableRequest>>,
+    pub scope: Option<polylogue_store::ReadScopeToken>,
+    pub publication_deadline: Option<std::time::Instant>,
+}
+
+/// Select native framing before finite execution. Rows use the arguments
+/// already decoded by the binding, including for an HTTP GET check.
+pub(crate) async fn dispatch_native(
+    daemon: &Daemon,
+    table: &OperationTable,
+    row: &'static Command,
+    mut request: RunnableRequest,
+    mut accepted: crate::operation::Accepted,
+    via: Via,
+    http_get: bool,
+) -> NativeReply {
+    use crate::daemon::service::line::Line;
+    use crate::protocol::line::{Rows, Step};
+    let surface = match via {
+        Via::Web => Surface::Http,
+        Via::Mcp => Surface::Mcp,
+        Via::Hook => Surface::Hook,
+        _ => Surface::Cli,
+    };
+    let table_via = match via {
+        Via::Web | Via::Mcp => via,
+        _ => Via::Cli,
+    };
+    let caller = Caller {
+        surface,
+        cwd: accepted.working_directory.clone(),
+    };
+    if row.name != "rows" {
+        let registration = row.registration().expect("native daemon command");
+        let policy = match registration.admit(&request.arguments, row, &caller) {
+            Ok(policy) => policy,
+            Err(failure) => return NativeReply::Refused(failure.answer()),
+        };
+        request.deadline = policy.deadline(request.deadline);
+        let (trusted, ready) = match prepare_native_answer(
+            daemon,
+            row,
+            &request,
+            request.deadline,
+            accepted,
+            via,
+            policy,
+        ) {
+            Ok(call) => call,
+            Err(error) => return NativeReply::Refused(super::service::store_error(&error)),
+        };
+        let answer = table
+            .call_as(request, table_via, trusted, Default::default())
+            .await;
+        return NativeReply::Answer(ready, answer);
+    }
+
+    let mut ready = None;
+    let answer = table
+        .call_with_admission(
+            request,
+            table_via,
+            Default::default(),
+            |rows: &Rows, raw| {
+                let admit = || -> Result<_, Failure> {
+                    if http_get
+                        && (rows.steps.len() > 1
+                            || rows
+                                .steps
+                                .iter()
+                                .any(|step| !matches!(step, Step::Read(_) | Step::Brief(_))))
+                    {
+                        return Err(Failure::bad_request("use POST /api/v1/rows"));
+                    }
+                    let policy = stream_policy::<Line>(rows, row, &caller)?;
+                    let deadline = policy.deadline(raw.deadline);
+                    if policy.streaming {
+                        if policy.read_only && via != Via::Web {
+                            accepted.read_scope = Some(daemon.reads.scope_token()?);
+                        }
+                        let mut request = raw.clone();
+                        request.deadline = deadline;
+                        let rows = rows.clone();
+                        return Ok(ControlFlow::Break(NativeReply::Stream {
+                            request,
+                            accepted: Box::new(accepted),
+                            policy,
+                            produce: Box::new(move |daemon, invocation, context, output| {
+                                produce::<Line>(
+                                    rows, row, daemon, invocation, &caller, context, output,
+                                )
+                            }),
+                        }));
+                    }
+                    let (trusted, finite) =
+                        prepare_native_answer(daemon, row, raw, deadline, accepted, via, policy)?;
+                    ready = Some(finite);
+                    Ok(ControlFlow::Continue((trusted, deadline)))
+                };
+                admit().unwrap_or_else(|failure| {
+                    ControlFlow::Break(NativeReply::Refused(failure.answer()))
+                })
+            },
+        )
+        .await;
+    match answer {
+        Err(error) => NativeReply::Refused(Failure::bad_request(error).answer()),
+        Ok(ControlFlow::Break(reply)) => reply,
+        Ok(ControlFlow::Continue(answer)) => match ready {
+            Some(ready) => NativeReply::Answer(ready, answer),
+            None => NativeReply::Refused(answer),
+        },
+    }
+}
+
+fn prepare_native_answer(
+    daemon: &Daemon,
+    row: &'static Command,
+    request: &RunnableRequest,
+    deadline: Deadline,
+    mut accepted: crate::operation::Accepted,
+    via: Via,
+    policy: Policy,
+) -> polylogue_store::Result<(command_surface::Caller, NativeAnswer)> {
+    if policy.read_only {
+        accepted.read_scope = Some(daemon.reads.scope_token()?);
+    }
+    let (web_request, publication_deadline) = if via == Via::Web {
+        let mut request = request.clone();
+        request.deadline = deadline;
+        let request = Arc::new(request);
+        accepted.invocation = Some(
+            daemon
+                .invocation(&accepted.authorship)
+                .with_accepted_request(Some(request.clone()))
+                .with_calling_session(accepted.calling_session.clone())
+                .with_parent(accepted.parent.clone()),
+        );
+        (Some(request), None)
+    } else {
+        let parent = accepted
+            .parent
+            .as_ref()
+            .and_then(|parent| parent.read_limit(accepted.cancellation.clone()).deadline());
+        let publication_deadline = super::execution::request_limit(
+            deadline,
+            row.latency,
+            true,
+            parent,
+            accepted.cancellation.clone(),
+        )
+        .deadline();
+        (None, publication_deadline)
+    };
+    let scope = accepted.read_scope.clone();
+    let trusted = command_surface::Caller::authenticated(accepted.scope(), accepted)
+        .with_access(Access::Write);
+    Ok((
+        trusted,
+        NativeAnswer {
+            web_request,
+            scope,
+            publication_deadline,
+        },
+    ))
 }
 
 /// The caller as handlers see it: its surface, working directory and output.

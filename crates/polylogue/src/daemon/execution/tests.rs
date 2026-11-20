@@ -160,11 +160,11 @@ fn streamed_read_has_no_default_deadline_and_explicit_deadlines_still_apply() {
         surface: crate::commands::Surface::Cli,
         cwd: None,
     };
-    let (policy, stream) = registration
-        .admit_request(&mut request, row, &caller)
+    let policy = registration
+        .admit(&request.arguments, row, &caller)
         .unwrap();
     assert!(policy.read_phase && policy.streaming && !policy.default_deadline);
-    assert!(stream.is_some());
+    request.deadline = policy.deadline(request.deadline);
     let limit_for = |deadline, parent| {
         request_limit(
             deadline,
@@ -177,11 +177,7 @@ fn streamed_read_has_no_default_deadline_and_explicit_deadlines_still_apply() {
     assert_eq!(request.deadline, Deadline::None);
     assert!(limit_for(request.deadline, None).deadline().is_none());
 
-    request.deadline = Deadline::Milliseconds(5_000);
-    let (_, stream) = registration
-        .admit_request(&mut request, row, &caller)
-        .unwrap();
-    assert!(stream.is_some());
+    request.deadline = policy.deadline(Deadline::Milliseconds(5_000));
     assert_eq!(request.deadline, Deadline::Milliseconds(5_000));
     assert!(limit_for(request.deadline, None).deadline().is_some());
     let parent = Instant::now();

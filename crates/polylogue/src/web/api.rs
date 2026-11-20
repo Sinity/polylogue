@@ -5,7 +5,7 @@
 //! its arguments as query parameters (a list argument repeats its name).
 
 use super::{Web, json_answer};
-use crate::commands::{COMMANDS, Caller, Command, Run, Surface};
+use crate::commands::{COMMANDS, Command, Run};
 use crate::daemon::execution;
 use axum::Router;
 use axum::extract::{Query, State};
@@ -54,6 +54,7 @@ pub fn routes() -> Router<Arc<Web>> {
                         Ok(HttpCall {
                             request,
                             caller: Default::default(),
+                            get: true,
                         })
                     });
                     answer_as(&web, c, request, &headers).await
@@ -68,6 +69,7 @@ pub fn routes() -> Router<Arc<Web>> {
 struct HttpCall {
     request: command_surface::RunnableRequest,
     caller: command_surface::CallerEvidence,
+    get: bool,
 }
 
 /// A POST takes the shared request or the operation's arguments. The calling
@@ -111,7 +113,11 @@ fn body_request(c: &Command, body: &str) -> Result<HttpCall, String> {
     let request = crate::commands::declarations()
         .parse_http_call(Value::Object(object), &author)
         .map_err(|failure| failure.message)?;
-    Ok(HttpCall { request, caller })
+    Ok(HttpCall {
+        request,
+        caller,
+        get: false,
+    })
 }
 
 /// GET carries a listing or one read step. Each step's values use the same
@@ -133,11 +139,9 @@ fn query_request(
         .map(|(_, value)| value.as_str())
         .collect();
     if verbs.is_empty() {
-        let request = declarations
+        return declarations
             .parse_http_query("rows", pairs, id)
-            .map_err(|failure| failure.message)?;
-        check_get_rows(&request)?;
-        return Ok(request);
+            .map_err(|failure| failure.message);
     }
     let [verb @ ("read" | "brief")] = verbs.as_slice() else {
         return Err("use POST /api/v1/rows".into());
@@ -185,24 +189,7 @@ fn query_request(
         .as_object_mut()
         .expect("rows arguments")
         .insert("steps".into(), serde_json::json!([step]));
-    check_get_rows(&request)?;
     Ok(request)
-}
-
-fn check_get_rows(request: &command_surface::RunnableRequest) -> Result<(), String> {
-    let rows: crate::protocol::line::Rows =
-        serde_json::from_value(request.arguments.clone()).map_err(|error| error.to_string())?;
-    if rows.steps.len() > 1
-        || rows.steps.iter().any(|step| {
-            !matches!(
-                step,
-                crate::protocol::line::Step::Read(_) | crate::protocol::line::Step::Brief(_)
-            )
-        })
-    {
-        return Err("use POST /api/v1/rows".into());
-    }
-    Ok(())
 }
 
 fn step_query_declarations() -> &'static command_surface::OperationDeclarations {
@@ -256,6 +243,7 @@ async fn answer(
         request.map(|request| HttpCall {
             request,
             caller: Default::default(),
+            get: false,
         }),
         headers,
     )
@@ -269,13 +257,10 @@ async fn answer_as(
     request: Result<HttpCall, String>,
     headers: &HeaderMap,
 ) -> HttpResponse {
-    let caller = Caller {
-        surface: Surface::Http,
-        cwd: None,
-    };
     let HttpCall {
-        mut request,
+        request,
         caller: details,
+        get,
     } = match request {
         Ok(call) if call.request.operation == c.name => call,
         Ok(_) => {
@@ -295,8 +280,8 @@ async fn answer_as(
         }
     };
     let parent_deadline = super::parent_deadline();
-    let registration = match c.run {
-        Run::Daemon(registration) => registration,
+    match c.run {
+        Run::Daemon(_) => {}
         Run::Feed { registration, .. } => {
             let produce = match registration.prepare(&request) {
                 Ok(produce) => produce,
@@ -309,68 +294,55 @@ async fn answer_as(
                 parent_deadline,
                 super::request_limit().cancellation,
             );
+            let accepted = accepted(web, &details, limit.cancellation.clone());
             return stream_as(
                 web,
                 crate::daemon::executor::Class::Ordinary,
                 limit,
                 request,
-                details,
+                accepted,
                 produce,
             )
             .await;
         }
         Run::Local(..) | Run::ConfiguredLocal(..) => return StatusCode::NOT_FOUND.into_response(),
     };
-    let (policy, stream) = match registration.admit_request(&mut request, c, &caller) {
-        Ok(admission) => admission,
-        Err(failure) => return json_answer(web, failure.answer::<serde_json::Value>()),
-    };
-    if let Some(produce) = stream {
-        let limit = execution::request_limit(
-            request.deadline,
-            c.latency,
-            policy.default_deadline,
-            parent_deadline,
-            super::request_limit().cancellation,
-        );
-        return stream_as(web, policy.class, limit, request, details, produce).await;
-    }
-    let read_scope = if policy.read_only {
-        match web.daemon.reads.scope_token() {
-            Ok(scope) => Some(scope),
-            Err(error) => return json_answer(web, crate::daemon::service::store_error(&error)),
-        }
-    } else {
-        None
-    };
     let table = &web.operations;
-    let limit = super::request_limit();
-    let mut accepted = crate::operation::Accepted::new(
-        &web.daemon.callers,
-        &details,
+    let accepted = accepted(web, &details, super::request_limit().cancellation);
+    use crate::daemon::handler::{NativeReply, dispatch_native};
+    let (request, read_scope, dispatched) = match dispatch_native(
+        &web.daemon,
+        table,
+        c,
+        request,
+        accepted,
         command_surface::Via::Web,
-        limit.cancellation,
-    );
-    accepted.parent = super::parent_lifetime();
-    accepted.read_scope = read_scope.clone();
-    accepted.invocation = Some(
-        web.daemon
-            .invocation(&accepted.authorship)
-            .with_accepted_request(Some(Arc::new(request.clone())))
-            .with_calling_session(accepted.calling_session.clone())
-            .with_parent(accepted.parent.clone()),
-    );
-    let scope = accepted.scope();
-    let trusted = command_surface::Caller::authenticated(scope, accepted)
-        .with_access(command_surface::Access::Write);
-    let dispatched = table
-        .call_as(
-            request.clone(),
-            command_surface::Via::Web,
-            trusted,
-            Default::default(),
-        )
-        .await;
+        get,
+    )
+    .await
+    {
+        NativeReply::Refused(answer) => return json_answer(web, answer),
+        NativeReply::Stream {
+            request,
+            accepted,
+            policy,
+            produce,
+        } => {
+            let limit = execution::request_limit(
+                request.deadline,
+                c.latency,
+                policy.default_deadline,
+                parent_deadline,
+                super::request_limit().cancellation,
+            );
+            return stream_as(web, policy.class, limit, request, *accepted, produce).await;
+        }
+        NativeReply::Answer(ready, answer) => (
+            ready.web_request.expect("web replies retain their request"),
+            ready.scope,
+            answer,
+        ),
+    };
     let scopes = crate::protocol::ReadScopes::single(read_scope.clone());
     let answer = crate::protocol::scope_answer(dispatched, &scopes);
     let line = answer
@@ -568,7 +540,23 @@ async fn stream(
     request: command_surface::RunnableRequest,
     produce: crate::daemon::streaming::Produce,
 ) -> HttpResponse {
-    stream_as(web, class, limit, request, Default::default(), produce).await
+    let accepted = accepted(web, &Default::default(), limit.cancellation.clone());
+    stream_as(web, class, limit, request, accepted, produce).await
+}
+
+fn accepted(
+    web: &Web,
+    details: &command_surface::CallerEvidence,
+    cancellation: polylogue_store::cancellation::Cancellation,
+) -> crate::operation::Accepted {
+    let mut accepted = crate::operation::Accepted::new(
+        &web.daemon.callers,
+        details,
+        command_surface::Via::Web,
+        cancellation,
+    );
+    accepted.parent = super::parent_lifetime();
+    accepted
 }
 
 /// Headers are committed on the first produced bytes. Subsequent failures
@@ -578,22 +566,16 @@ async fn stream_as(
     class: crate::daemon::executor::Class,
     limit: polylogue_store::read::limit::ReadLimit,
     accepted_request: command_surface::RunnableRequest,
-    details: command_surface::CallerEvidence,
+    accepted: crate::operation::Accepted,
     produce: crate::daemon::streaming::Produce,
 ) -> HttpResponse {
     let cancellation = limit.cancellation.clone();
-    let accepted = crate::operation::Accepted::new(
-        &web.daemon.callers,
-        &details,
-        command_surface::Via::Web,
-        cancellation.clone(),
-    );
     let invocation = web
         .daemon
         .invocation(&accepted.authorship)
         .with_accepted_request(Some(Arc::new(accepted_request)))
         .with_calling_session(accepted.calling_session.clone())
-        .with_parent(super::parent_lifetime());
+        .with_parent(accepted.parent);
     let mut cancel = super::CancelRead(Some(cancellation.clone()));
     let input =
         match crate::daemon::streaming::start(&web.daemon, class, limit, invocation, produce) {
