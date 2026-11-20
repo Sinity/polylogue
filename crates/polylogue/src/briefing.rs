@@ -1215,17 +1215,16 @@ fn session_start(
         })?
         .unwrap_or_default();
 
-    let mut fit = Fitter::new(budget, header)?;
-    let with_manual = matches!(
+    if matches!(
         source,
         StartSource::Startup | StartSource::Clear | StartSource::Compact
-    );
-    if with_manual {
-        fit.text.push_str("\nAgent manual:\n");
-        fit.text.push_str(&crate::manual::text());
-        fit.text.push('\n');
+    ) {
+        header.push_str("\nAgent manual:\n");
+        header.push_str(&crate::manual::text());
+        header.push('\n');
     }
-    fit.text.push_str(&protected_prompts);
+    header.push_str(&protected_prompts);
+    let mut fit = Fitter::new(budget, header)?;
     fit.refs.extend(prompt_refs);
 
     fit.section(

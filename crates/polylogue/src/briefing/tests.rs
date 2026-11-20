@@ -301,21 +301,28 @@ fn a_brief_reports_what_recent_sessions_did_and_what_is_open() {
         source: StartSource::Startup,
     };
     let now = Timestamp::from_unix_ms(T0 + 3_600_000).unwrap();
-    let p = prepare(
-        crate::briefing::BriefContext {
-            reader: &reader,
-            delivery_id: "d1",
-            context: &fixture_context(now),
-            ranking_identity: None,
-            near: None,
-        },
-        &scope_of(&reader),
-        None,
-        &[],
-        &ask,
-        Default::default(),
-    )
-    .unwrap();
+    let start = |budget| {
+        prepare(
+            crate::briefing::BriefContext {
+                reader: &reader,
+                delivery_id: "d1",
+                context: &fixture_context(now),
+                ranking_identity: None,
+                near: None,
+            },
+            &scope_of(&reader),
+            None,
+            &[],
+            &ask,
+            budget,
+        )
+    };
+    let p = start(Default::default()).unwrap();
+    let manual_tokens = (crate::manual::text().len() / 4) as u32;
+    assert!(matches!(
+        start(command_surface::TokenBudget::Tokens(manual_tokens)),
+        Err(StoreError::Invalid(message)) if message.contains("required header")
+    ));
     let visible = visible_context(&p.text);
     let t = &visible;
     assert!(!p.empty);
@@ -333,12 +340,8 @@ fn a_brief_reports_what_recent_sessions_did_and_what_is_open() {
     }
     // A session's own failing commands are not reported.
     assert!(!t.contains("`cargo test`"), "{t}");
-    assert!(
-        p.text.len()
-            <= DEFAULT_BUDGET as usize * 4
-                + crate::manual::text().len()
-                + "\nAgent manual:\n\n".len()
-    );
+    assert!(p.text.len() <= DEFAULT_BUDGET as usize * 4);
+    assert!(p.text.contains(&crate::manual::text()));
     assert!(p.refs.contains(&"session:claude-code:s1".to_owned()));
 }
 
