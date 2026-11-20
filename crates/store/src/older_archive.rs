@@ -260,7 +260,12 @@ pub(crate) fn open_source(
     scratch: &Path,
 ) -> Result<Connection> {
     let log = PathBuf::from(format!("{}-wal", path.display()));
-    let logged = std::fs::metadata(&log).is_ok_and(|meta| meta.len() > 0);
+    let logged = match std::fs::symlink_metadata(&log) {
+        Ok(meta) if meta.is_symlink() => std::fs::metadata(&log)?.len() > 0,
+        Ok(meta) => meta.len() > 0,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.into()),
+    };
     let conn = if logged {
         if copies.is_none() {
             std::fs::create_dir_all(scratch)?;
