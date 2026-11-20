@@ -84,6 +84,9 @@ impl Engine {
         report: &mut ImportReport,
     ) -> Result<(), EngineError> {
         let archive = self.archive.clone();
+        let import_locations = (!options.explain && !archive.is_primary())
+            .then(|| polylogue_store::python_archive::import_locations(&archive))
+            .transpose()?;
         let mut ids = Vec::new();
         let mut package = ImportPackage {
             path: root.to_path_buf(),
@@ -97,26 +100,20 @@ impl Engine {
             let item = match item {
                 Member::Prepared(member) => Pending::Staged(member),
                 Member::Raw(raw) => {
-                    let eligible = !options.explain
-                        && !archive.is_primary()
+                    // A path match saves no verification and acknowledges no bytes.
+                    let predicted = if let Some(imported_at) = &import_locations
                         && raw
                             .origin
-                            .is_some_and(|origin| origin.name != "polylogue-bundle");
-                    // A path match saves no verification and acknowledges no bytes.
-                    let predicted = eligible
-                        && match self.reads.reader() {
-                            Ok(reader) => reader
-                                .has_import_at(
-                                    &self.config.machine,
-                                    raw.path.as_os_str().as_encoded_bytes(),
-                                )
-                                .map_err(std::io::Error::other)?,
-                            Err(
-                                polylogue_store::StoreError::IndexBuilding(_)
-                                | polylogue_store::StoreError::ReadIndexReplaced,
-                            ) => false,
-                            Err(error) => return Err(std::io::Error::other(error)),
-                        };
+                            .is_some_and(|origin| origin.name != "polylogue-bundle")
+                    {
+                        imported_at(
+                            &self.config.machine,
+                            raw.path.as_os_str().as_encoded_bytes(),
+                        )
+                        .map_err(std::io::Error::other)?
+                    } else {
+                        false
+                    };
                     if predicted {
                         Pending::Checked(raw.check(root)?)
                     } else {
