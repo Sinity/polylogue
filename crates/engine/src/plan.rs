@@ -131,6 +131,9 @@ pub(crate) struct Plan {
     pub(crate) parser_state: Option<Json>,
     /// The selected source chain for parser context, kept across jobs.
     pub(crate) parser_chain: Option<i64>,
+    /// Private values for this uninterrupted reading of an immutable input.
+    /// Committed parser checkpoints remain the restart authority.
+    pub(crate) parser_context: Option<polylogue_store::parser_context::Overlay>,
     pub(crate) tail: Option<Vec<u8>>,
     pub(crate) span: u64,
     pub(crate) chunk: u64,
@@ -205,6 +208,7 @@ impl Plan {
             parser_deferred: false,
             parser_state: None,
             parser_chain,
+            parser_context: None,
             tail: None,
             chunk,
             priority: Priority::Bulk,
@@ -308,7 +312,7 @@ impl Plan {
             length,
             parser_state: self.parser_state.take(),
             parser_chain: self.parser_chain,
-            parser_context: None,
+            parser_context: self.parser_context.clone(),
             parser_deferred: self.parser_deferred,
             priority: self.priority,
             source: self.source.clone(),
@@ -316,6 +320,13 @@ impl Plan {
     }
 
     pub(crate) fn apply(&mut self, d: Done, parsed: bool) {
+        if d.error.is_some()
+            || d.continuation_missing
+            || d.chain
+                .is_some_and(|chain| Some(chain) != self.parser_chain)
+        {
+            self.parser_context = None;
+        }
         if let Some(chain) = d.chain {
             self.parser_chain = Some(chain);
         }

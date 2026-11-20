@@ -3,6 +3,8 @@ use polylogue_testkit::{ClaudeHome, claude_user};
 
 #[cfg(feature = "faults")]
 mod commits;
+#[cfg(feature = "faults")]
+mod continuation;
 mod pool;
 #[cfg(feature = "faults")]
 mod watched;

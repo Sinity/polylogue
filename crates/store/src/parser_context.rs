@@ -60,6 +60,7 @@ impl Overlay {
         let index = if base == 0 {
             None
         } else {
+            crate::fault::check("parser_context.open_committed", input)?;
             let index = archive.open_index_read()?;
             crate::read::limit::ReadLimit::observe_current(&index)?;
             // A build file has a rollback journal, where a read held across

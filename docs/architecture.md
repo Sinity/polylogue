@@ -211,8 +211,11 @@ Building the archive overlaps every stage:
   worker; a new input starts only when its first range can be queued at
   once, so the inputs a pass has started finish before it starts more, and
   the parser state kept between an input's ranges leaves out the keyed
-  context's changes, which the next range reads from the index. The same
-  pool replaces stored chains' readings: one task parses a chain's ranges
+  context's changes. A standalone immutable import read from byte zero
+  keeps its disk-backed private context across acknowledged ranges. It
+  releases that context when the attempt ends or fails; a resumed reading
+  restores the committed checkpoint and reads its context from the index.
+  The same pool replaces stored chains' readings: one task parses a chain's ranges
   in order into a staged reading and hands it to the writer for one commit.
   Its unparsed bytes count against the pool's memory budget until the
   reading is handed to the writer; only batches carrying decoded blobs
