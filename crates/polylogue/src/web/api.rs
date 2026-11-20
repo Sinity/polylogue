@@ -6,6 +6,7 @@
 
 use super::{Web, json_answer};
 use crate::commands::{COMMANDS, Caller, Command, Run, Surface};
+use crate::daemon::execution;
 use axum::Router;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -294,34 +295,19 @@ async fn answer_as(
         }
     };
     let parent_deadline = super::parent_deadline();
-    let stream_limit = |request: &command_surface::RunnableRequest, default_deadline: bool| {
-        let declared = crate::commands::deadlines().get(c.latency);
-        let duration = match request.deadline {
-            command_surface::Deadline::Default if !default_deadline => None,
-            command_surface::Deadline::Default if declared.is_none() => {
-                Some(crate::daemon::execution::timeout())
-            }
-            deadline => deadline.duration(declared),
-        };
-        let logical = duration.and_then(|duration| std::time::Instant::now().checked_add(duration));
-        let cancellation = super::request_limit().cancellation;
-        let deadline = match (parent_deadline, logical) {
-            (Some(parent), Some(logical)) => Some(parent.min(logical)),
-            (parent, None) => parent,
-            (None, logical) => logical,
-        };
-        match deadline {
-            Some(deadline) => polylogue_store::read::limit::ReadLimit::at(deadline, cancellation),
-            None => polylogue_store::read::limit::ReadLimit::without_deadline(cancellation),
-        }
-    };
     let registration = match c.run {
         Run::Daemon(registration) => registration,
         Run::Feed { registration, .. } => {
             if let Err(failure) = registration.admit(&request) {
                 return json_answer(web, failure.answer::<serde_json::Value>());
             }
-            let limit = stream_limit(&request, true);
+            let limit = execution::request_limit(
+                request.deadline,
+                c.latency,
+                true,
+                parent_deadline,
+                super::request_limit().cancellation,
+            );
             let arguments = request.arguments.clone();
             return stream_as(
                 web,
@@ -337,17 +323,18 @@ async fn answer_as(
         }
         Run::Local(..) | Run::ConfiguredLocal(..) => return StatusCode::NOT_FOUND.into_response(),
     };
-    let policy = match registration.admit(&request.arguments, c, &caller) {
+    let policy = match registration.admit_request(&mut request, c, &caller) {
         Ok(policy) => policy,
         Err(failure) => return json_answer(web, failure.answer::<serde_json::Value>()),
     };
-    if !policy.read_phase
-        || (!policy.default_deadline && request.deadline == command_surface::Deadline::Default)
-    {
-        request.deadline = command_surface::Deadline::None;
-    }
     if policy.streaming {
-        let limit = stream_limit(&request, policy.default_deadline);
+        let limit = execution::request_limit(
+            request.deadline,
+            c.latency,
+            policy.default_deadline,
+            parent_deadline,
+            super::request_limit().cancellation,
+        );
         let arguments = request.arguments.clone();
         return stream_as(
             web,

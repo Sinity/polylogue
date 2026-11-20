@@ -8,6 +8,7 @@
 //! client until the request's deadline, or until the client hangs up, and
 //! never while holding a reader or an executor place.
 
+use super::execution;
 use super::service::{self, Daemon, error};
 use polylogue_model::LockExt as _;
 use std::io::{BufRead, BufReader, Write};
@@ -248,9 +249,11 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
             peer(&out, &caller).unwrap_or_else(|_| (Default::default(), command_surface::Via::Cli));
         let mut accepted =
             crate::operation::Accepted::new(&d.callers, &details, via, cancellation.clone());
-        accepted.parent = parent_deadline_ms.map(|deadline| {
+        let parent_deadline = parent_deadline_ms
+            .and_then(|deadline| execution::limit(Some(deadline), cancellation.clone()).deadline());
+        accepted.parent = parent_deadline_ms.map(|_| {
             polylogue_reading::operation::ParentLifetime::capture(
-                super::execution::limit(Some(deadline), cancellation.clone()).deadline(),
+                parent_deadline,
                 cancellation.clone(),
             )
         });
@@ -284,7 +287,13 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
                 }
                 continue;
             }
-            let limit = stream_limit(&request, command, true, &accepted, &cancellation);
+            let limit = execution::request_limit(
+                request.deadline,
+                command.latency,
+                true,
+                parent_deadline,
+                cancellation.clone(),
+            );
             let arguments = request.arguments.clone();
             if !send_stream(
                 &mut out,
@@ -310,7 +319,7 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
             }
             continue;
         };
-        let policy = match registration.admit(&request.arguments, command, &caller) {
+        let policy = match registration.admit_request(&mut request, command, &caller) {
             Ok(policy) => policy,
             Err(failure) => {
                 if !write_answer(&mut out, &failure.answer()) {
@@ -319,12 +328,6 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
                 continue;
             }
         };
-        // A write keeps its result instead of inheriting a read deadline.
-        if !policy.read_phase
-            || (!policy.default_deadline && request.deadline == command_surface::Deadline::Default)
-        {
-            request.deadline = command_surface::Deadline::None;
-        }
         let read_scope = if policy.read_only {
             match d.reads.scope_token() {
                 Ok(scope) => Some(scope),
@@ -340,12 +343,12 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
         };
         accepted.read_scope = read_scope.clone();
         if policy.streaming {
-            let limit = stream_limit(
-                &request,
-                command,
+            let limit = execution::request_limit(
+                request.deadline,
+                command.latency,
                 policy.default_deadline,
-                &accepted,
-                &cancellation,
+                parent_deadline,
+                cancellation.clone(),
             );
             let arguments = request.arguments.clone();
             let produce_caller = caller.clone();
@@ -371,7 +374,14 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
             }
             continue;
         }
-        let deadline = stream_limit(&request, command, true, &accepted, &cancellation).deadline();
+        let deadline = execution::request_limit(
+            request.deadline,
+            command.latency,
+            true,
+            parent_deadline,
+            cancellation.clone(),
+        )
+        .deadline();
         let table_via = if via == command_surface::Via::Mcp {
             command_surface::Via::Mcp
         } else {
@@ -391,40 +401,6 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
             return;
         }
     }
-}
-
-/// The read limit of a stream: the request's deadline (the default one when
-/// it names none and its row has one), within the caller's own bound.
-fn stream_limit(
-    request: &command_surface::RunnableRequest,
-    command: &crate::commands::Command,
-    default_deadline: bool,
-    accepted: &crate::operation::Accepted,
-    cancellation: &polylogue_store::cancellation::Cancellation,
-) -> polylogue_store::read::limit::ReadLimit {
-    use polylogue_store::read::limit::ReadLimit;
-    let declared = crate::commands::deadlines().get(command.latency);
-    let duration = match request.deadline {
-        command_surface::Deadline::Default if !default_deadline => None,
-        command_surface::Deadline::Default if declared.is_none() => {
-            Some(super::execution::timeout())
-        }
-        deadline => deadline.duration(declared),
-    };
-    let mut limit = duration.map_or_else(
-        || ReadLimit::without_deadline(cancellation.clone()),
-        |duration| ReadLimit::new(duration, cancellation.clone()),
-    );
-    if let Some(parent) = &accepted.parent {
-        let parent_limit = parent.read_limit(cancellation.clone());
-        if parent_limit
-            .deadline()
-            .is_some_and(|parent| limit.deadline().is_none_or(|request| parent < request))
-        {
-            limit = parent_limit;
-        }
-    }
-    limit
 }
 
 /// Starts a stream on the executor and sends its events as they come,
