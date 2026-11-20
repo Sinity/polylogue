@@ -23,7 +23,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  check:
+  rust:
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
@@ -49,13 +49,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: npm
-          cache-dependency-path: extension/package-lock.json
-      - name: Browser extension checks and real archives
-        run: |
-          sudo apt-get install --yes zip zsh fish
-          npm --prefix extension ci
-          npm --prefix extension run check
+      - name: Shells for completion tests
+        run: sudo apt-get install --yes zip zsh fish
       - name: Rust toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - uses: taiki-e/install-action@nextest
@@ -101,3 +96,42 @@ jobs:
             ~/.cargo/git
             target
           key: check-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.rev || '' }}
+      - name: Verify the selected source commit
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          EXPECTED_REV: ${{ inputs.rev }}
+        run: |
+          actual=$(git rev-parse HEAD)
+          printf 'requested commit: %s\nchecked commit: %s\n' "$EXPECTED_REV" "$actual"
+          test "$actual" = "$EXPECTED_REV"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+      - name: Browser extension checks and real archives
+        run: |
+          sudo apt-get install --yes zip
+          npm --prefix extension ci
+          npm --prefix extension run check
+
+  # Keep the existing required status bound to both suites, including failures.
+  check:
+    needs: [rust, browser]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require Rust and browser checks
+        env:
+          RUST_RESULT: ${{ needs.rust.result }}
+          BROWSER_RESULT: ${{ needs.browser.result }}
+        run: |
+          test "$RUST_RESULT" = success
+          test "$BROWSER_RESULT" = success
