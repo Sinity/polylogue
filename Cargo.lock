@@ -199,7 +199,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 [[package]]
 name = "authored"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#5789afb2b9a8c5a4c1fe8bd1ac2dc09d73392ce1"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#0b83150f4d5de15abdaebf7323b6b54727ad698f"
 dependencies = [
  "blake3",
  "serde",
@@ -210,7 +210,7 @@ dependencies = [
 [[package]]
 name = "authored-generator"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#5789afb2b9a8c5a4c1fe8bd1ac2dc09d73392ce1"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#0b83150f4d5de15abdaebf7323b6b54727ad698f"
 dependencies = [
  "authored",
  "proptest",
@@ -406,7 +406,7 @@ dependencies = [
 [[package]]
 name = "canonical-json"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#5789afb2b9a8c5a4c1fe8bd1ac2dc09d73392ce1"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#0b83150f4d5de15abdaebf7323b6b54727ad698f"
 dependencies = [
  "blake3",
  "serde",
@@ -553,7 +553,7 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 [[package]]
 name = "command-surface"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#5789afb2b9a8c5a4c1fe8bd1ac2dc09d73392ce1"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#0b83150f4d5de15abdaebf7323b6b54727ad698f"
 dependencies = [
  "canonical-json",
  "http",
@@ -742,7 +742,7 @@ dependencies = [
 [[package]]
 name = "devkit"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#5789afb2b9a8c5a4c1fe8bd1ac2dc09d73392ce1"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#0b83150f4d5de15abdaebf7323b6b54727ad698f"
 dependencies = [
  "blake3",
  "clap",
@@ -760,7 +760,7 @@ dependencies = [
 [[package]]
 name = "devkit-macros"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#5789afb2b9a8c5a4c1fe8bd1ac2dc09d73392ce1"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#0b83150f4d5de15abdaebf7323b6b54727ad698f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1145,7 +1145,7 @@ dependencies = [
 [[package]]
 name = "git-identity"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#5789afb2b9a8c5a4c1fe8bd1ac2dc09d73392ce1"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#0b83150f4d5de15abdaebf7323b6b54727ad698f"
 dependencies = [
  "serde",
  "tempfile",
@@ -1174,7 +1174,7 @@ dependencies = [
 [[package]]
 name = "hashed-blobs"
 version = "0.1.1"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#5789afb2b9a8c5a4c1fe8bd1ac2dc09d73392ce1"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#0b83150f4d5de15abdaebf7323b6b54727ad698f"
 dependencies = [
  "blake3",
  "chacha20poly1305",
@@ -2397,7 +2397,7 @@ checksum = "007d8adb5ddab6f8e3f491ac63566a7d5002cc7ed73901f72057943fa71ae1ae"
 [[package]]
 name = "query-language"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#5789afb2b9a8c5a4c1fe8bd1ac2dc09d73392ce1"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#0b83150f4d5de15abdaebf7323b6b54727ad698f"
 dependencies = [
  "blake3",
  "canonical-json",
@@ -2615,7 +2615,7 @@ dependencies = [
 [[package]]
 name = "references"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#5789afb2b9a8c5a4c1fe8bd1ac2dc09d73392ce1"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#0b83150f4d5de15abdaebf7323b6b54727ad698f"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -3035,7 +3035,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 [[package]]
 name = "signal-delivery"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#5789afb2b9a8c5a4c1fe8bd1ac2dc09d73392ce1"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#0b83150f4d5de15abdaebf7323b6b54727ad698f"
 dependencies = [
  "futures-util",
  "serde_json",
@@ -3078,7 +3078,7 @@ dependencies = [
 [[package]]
 name = "signals"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#5789afb2b9a8c5a4c1fe8bd1ac2dc09d73392ce1"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#0b83150f4d5de15abdaebf7323b6b54727ad698f"
 dependencies = [
  "blake3",
  "jiff",
@@ -3097,7 +3097,7 @@ checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 [[package]]
 name = "sinex-macros"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=1aed2d03531a8d60b3ed090c5a46e75fc9dda665#1aed2d03531a8d60b3ed090c5a46e75fc9dda665"
+source = "git+https://github.com/Sinity/sinex?rev=2ea105800e3514a12f4381e3c1c9b7e010b18d6f#2ea105800e3514a12f4381e3c1c9b7e010b18d6f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3107,7 +3107,7 @@ dependencies = [
 [[package]]
 name = "sinex-model"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=1aed2d03531a8d60b3ed090c5a46e75fc9dda665#1aed2d03531a8d60b3ed090c5a46e75fc9dda665"
+source = "git+https://github.com/Sinity/sinex?rev=2ea105800e3514a12f4381e3c1c9b7e010b18d6f#2ea105800e3514a12f4381e3c1c9b7e010b18d6f"
 dependencies = [
  "authored",
  "blake3",
@@ -3128,7 +3128,7 @@ dependencies = [
 [[package]]
 name = "sinex-protocol"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=1aed2d03531a8d60b3ed090c5a46e75fc9dda665#1aed2d03531a8d60b3ed090c5a46e75fc9dda665"
+source = "git+https://github.com/Sinity/sinex?rev=2ea105800e3514a12f4381e3c1c9b7e010b18d6f#2ea105800e3514a12f4381e3c1c9b7e010b18d6f"
 dependencies = [
  "blake3",
  "canonical-json",
@@ -3144,7 +3144,7 @@ dependencies = [
 [[package]]
 name = "sinex-query"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=1aed2d03531a8d60b3ed090c5a46e75fc9dda665#1aed2d03531a8d60b3ed090c5a46e75fc9dda665"
+source = "git+https://github.com/Sinity/sinex?rev=2ea105800e3514a12f4381e3c1c9b7e010b18d6f#2ea105800e3514a12f4381e3c1c9b7e010b18d6f"
 dependencies = [
  "caseless",
  "command-surface",
@@ -3164,7 +3164,7 @@ dependencies = [
 [[package]]
 name = "sinex-transport"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/sinex?rev=1aed2d03531a8d60b3ed090c5a46e75fc9dda665#1aed2d03531a8d60b3ed090c5a46e75fc9dda665"
+source = "git+https://github.com/Sinity/sinex?rev=2ea105800e3514a12f4381e3c1c9b7e010b18d6f#2ea105800e3514a12f4381e3c1c9b7e010b18d6f"
 dependencies = [
  "async-nats",
  "base64 0.23.1",
@@ -3911,7 +3911,7 @@ dependencies = [
 [[package]]
 name = "web-shell"
 version = "0.1.0"
-source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#5789afb2b9a8c5a4c1fe8bd1ac2dc09d73392ce1"
+source = "git+https://github.com/Sinity/polylogue-sinex-common?branch=master#0b83150f4d5de15abdaebf7323b6b54727ad698f"
 dependencies = [
  "command-surface",
  "http",
