@@ -618,6 +618,17 @@ fn fit_prefix(item: &Item, start: usize, limit: usize, bytes: usize) -> usize {
     prefix(&item.text, low).len()
 }
 
+/// Reserve enough of the first line to identify an entry before admitting it.
+fn preview_len(text: &str) -> usize {
+    const PREVIEW_BYTES: usize = 48;
+    let first_line = text
+        .lines()
+        .next()
+        .filter(|line| !line.is_empty())
+        .unwrap_or(text);
+    prefix(first_line, PREVIEW_BYTES).len()
+}
+
 /// Spend cached first-line space fairly before reading any deferred body.
 fn first_lines(sections: &[Section], shown: &mut [Vec<Option<usize>>], available: &mut usize) {
     let mut remaining = shown
@@ -713,13 +724,12 @@ impl Fitter {
         }
         let mut available = self.room - tail.len();
         let mut shown: Vec<Vec<Option<usize>>> = Vec::new();
-        // First pass gives every affordable candidate one quoted source
-        // character. Section order and candidate order are unchanged.
+        // Admit a candidate only when its preview and attribution fit.
         for section in &self.sections {
             let mut lengths = vec![None; section.items.len()];
             let mut heading_added = false;
             for (item, length) in section.items.iter().zip(&mut lengths) {
-                let first = item.text.chars().next().map_or(0, char::len_utf8);
+                let first = preview_len(&item.text);
                 let cost = entry(item, first).len()
                     + if heading_added {
                         0
@@ -776,7 +786,7 @@ impl Fitter {
                         }
                     }
                 };
-                let first = expanded.text.chars().next().map_or(0, char::len_utf8);
+                let first = preview_len(&expanded.text);
                 let before = entry(item, start).len();
                 let after = entry(&expanded, first).len();
                 if after <= before + available {

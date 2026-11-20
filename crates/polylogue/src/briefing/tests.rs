@@ -374,6 +374,13 @@ fn a_brief_fits_its_budget_and_names_what_it_left_out() {
             "budget {budget}: {} bytes",
             text.len()
         );
+        for encoded in text.lines().filter_map(|line| line.strip_prefix("┃ ")) {
+            let entry: serde_json::Value = serde_json::from_str(encoded).unwrap();
+            assert!(
+                entry["source"].as_str().unwrap().starts_with("- item "),
+                "{entry}"
+            );
+        }
         // Every item is either in the text with its reference or counted
         // as left out.
         let shown = refs.len();
