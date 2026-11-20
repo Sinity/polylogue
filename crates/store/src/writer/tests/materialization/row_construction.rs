@@ -801,6 +801,13 @@ struct Measurement {
 
 fn run(fixture: &Cohort, staged: bool, disk: bool, fail_copy: bool) -> (Reading, Measurement) {
     crate::timing::set_workers_enabled(true);
+    let arm = if staged { "staged" } else { "ordinary" };
+    let phase = |name: &str| {
+        if disk {
+            eprintln!("ROW_CONSTRUCTION {arm}: {name}");
+        }
+    };
+    phase("capture originals");
     let mut w = archive(disk);
     let (batches, raw) = measured(|| capture(&mut w, fixture));
     let TestArchive {
@@ -809,6 +816,7 @@ fn run(fixture: &Cohort, staged: bool, disk: bool, fail_copy: bool) -> (Reading,
         _lock,
         _dir,
     } = w;
+    phase("open captured archive for row construction");
     drop(writer);
     let mut main = open_index_writer(&archive, true).unwrap();
     assert_eq!(
@@ -821,8 +829,10 @@ fn run(fixture: &Cohort, staged: bool, disk: bool, fail_copy: bool) -> (Reading,
     let mut seed = None;
     let mut copy = None;
     let (construction, build) = if staged {
-        let ((uri, mut memory), phase) = measured(|| memory_cohort(&main, &archive));
-        seed = Some(phase);
+        phase("prepare private cohort");
+        let ((uri, mut memory), preparation) = measured(|| memory_cohort(&main, &archive));
+        seed = Some(preparation);
+        phase("construct private rows");
         let (construction, build) = measured(|| construct(&mut memory, &batches, budget));
         assert_eq!(
             main.scalar::<u64>("SELECT count(*) FROM parse_state", [])
@@ -830,6 +840,7 @@ fn run(fixture: &Cohort, staged: bool, disk: bool, fail_copy: bool) -> (Reading,
             0,
             "completed private rows cannot advance the destination checkpoint"
         );
+        phase("digest private rows");
         let expected = snapshot(&memory, "main");
         if fail_copy {
             let before = snapshot(&main, "main");
@@ -848,9 +859,11 @@ fn run(fixture: &Cohort, staged: bool, disk: bool, fail_copy: bool) -> (Reading,
                 "failed copy damaged its cohort"
             );
         }
-        let (result, phase) = measured(|| transfer(&mut main, &uri, false));
+        phase("transfer private rows");
+        let (result, transfer_timing) = measured(|| transfer(&mut main, &uri, false));
         result.unwrap();
-        copy = Some(phase);
+        copy = Some(transfer_timing);
+        phase("verify transferred row digest");
         assert_eq!(
             snapshot(&main, "main"),
             expected,
@@ -859,13 +872,16 @@ fn run(fixture: &Cohort, staged: bool, disk: bool, fail_copy: bool) -> (Reading,
         drop(memory);
         (construction, build)
     } else {
+        phase("construct rows in the destination");
         measured(|| construct(&mut main, &batches, budget))
     };
+    phase("finalize and sync the destination");
     drop(main);
     let (archive, finalization) = measured(|| {
         crate::archive::index_build::keep_progress(&archive).unwrap();
         finalize(&archive)
     });
+    phase("verify search, membership, and citations");
     let result = reading(&archive, fixture);
     let measurement = Measurement {
         raw,
@@ -878,6 +894,12 @@ fn run(fixture: &Cohort, staged: bool, disk: bool, fail_copy: bool) -> (Reading,
         archive_bytes: std::fs::metadata(archive.archive_db()).unwrap().len(),
         cache_mib: budget.writer_cache_mib(),
     };
+    if disk {
+        eprintln!(
+            "ROW_CONSTRUCTION {arm} complete {}",
+            serde_json::to_string(&measurement).unwrap()
+        );
+    }
     (result, measurement)
 }
 
@@ -900,6 +922,7 @@ fn a_failed_graph_transfer_keeps_the_checkpoint_and_can_retry() {
 #[cfg(not(debug_assertions))]
 #[test]
 fn bounded_full_row_construction_reports_its_complete_transfer_cost() {
+    eprintln!("ROW_CONSTRUCTION: prepare the 32768-message fixture");
     let fixture = cohort(32_768, 96);
     let (ordinary, before) = run(&fixture, false, true, false);
     let (copied, after) = run(&fixture, true, true, false);
