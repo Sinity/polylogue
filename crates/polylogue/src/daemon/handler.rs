@@ -337,6 +337,23 @@ impl Registration {
     ) -> Result<Policy, Failure> {
         (self.admit)(arguments, row, caller)
     }
+    /// Admit the typed arguments and set the read deadline the operation uses.
+    pub(crate) fn admit_request(
+        &self,
+        request: &mut command_surface::RunnableRequest,
+        row: &'static Command,
+        caller: &Caller,
+    ) -> Result<Policy, Failure> {
+        let policy = self.admit(&request.arguments, row, caller)?;
+        // A write without a read phase keeps its durable result. A stream
+        // without a default deadline still takes an explicit one.
+        if !policy.read_phase
+            || (!policy.default_deadline && request.deadline == command_surface::Deadline::Default)
+        {
+            request.deadline = command_surface::Deadline::None;
+        }
+        Ok(policy)
+    }
     /// Answers one request on the calling thread.
     pub(crate) fn answer(
         &self,

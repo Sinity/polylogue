@@ -149,20 +149,45 @@ fn write_requests_do_not_enter_a_read_scope_even_with_an_expired_cancelled_limit
 
 #[test]
 fn streamed_read_has_no_default_deadline_and_explicit_deadlines_still_apply() {
-    let request = crate::test_daemon::Call::new(
+    let mut request = crate::client::request(
         "rows",
         serde_json::json!({"selection":"sessions", "steps":[{"verb":"read", "delivery":"stream", "format":"json"}]}),
+        "stream-deadline".into(),
     );
-    let policy = policy(&request);
+    let row = crate::commands::command("rows").unwrap();
+    let registration = row.registration().unwrap();
+    let caller = crate::commands::Caller {
+        surface: crate::commands::Surface::Cli,
+        cwd: None,
+    };
+    let policy = registration
+        .admit_request(&mut request, row, &caller)
+        .unwrap();
     assert!(policy.read_phase && policy.streaming && !policy.default_deadline);
-    let response = within_limit::<()>(
-        &ReadLimit::new(Duration::ZERO, Default::default()),
-        policy.read_phase,
-        false,
-        "read",
-        None,
-        || panic!("expired streamed read started"),
-    );
+    let limit_for = |deadline, parent| {
+        request_limit(
+            deadline,
+            row.latency,
+            policy.default_deadline,
+            parent,
+            Default::default(),
+        )
+    };
+    assert_eq!(request.deadline, Deadline::None);
+    assert!(limit_for(request.deadline, None).deadline().is_none());
+
+    request.deadline = Deadline::Milliseconds(5_000);
+    registration
+        .admit_request(&mut request, row, &caller)
+        .unwrap();
+    assert_eq!(request.deadline, Deadline::Milliseconds(5_000));
+    assert!(limit_for(request.deadline, None).deadline().is_some());
+    let parent = Instant::now();
+    let limit = limit_for(request.deadline, Some(parent));
+    assert_eq!(limit.deadline(), Some(parent));
+    let response = within_limit::<()>(&limit, policy.read_phase, false, "read", None, || {
+        panic!("expired streamed read started")
+    });
     assert!(
         matches!(&response, command_surface::Answer { outcome: command_surface::Outcome::Error(error), envelope: command_surface::Envelope { notes, .. }, .. } if error.code.as_deref() == Some("deadline_exceeded") && notes[0].starts_with("stopped during read "))
     );
