@@ -241,7 +241,7 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
             continue;
         }
         let crate::protocol::wire::Incoming {
-            mut request,
+            request,
             caller,
             parent_deadline_ms,
         } = incoming;
@@ -262,14 +262,6 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
                 .with_accepted_request(Some(Arc::new(request.clone()))),
         );
         accepted.working_directory = working_directory(&out).ok();
-        let caller = crate::commands::Caller {
-            surface: match via {
-                command_surface::Via::Mcp => crate::commands::Surface::Mcp,
-                command_surface::Via::Hook => crate::commands::Surface::Hook,
-                _ => crate::commands::Surface::Cli,
-            },
-            cwd: accepted.working_directory.clone(),
-        };
         let Some(command) = crate::commands::command(&request.operation) else {
             let answer = error(
                 polylogue_model::Code::BadRequest,
@@ -309,7 +301,7 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
             }
             continue;
         }
-        let Some(registration) = command.registration() else {
+        if command.registration().is_none() {
             let answer = error(
                 polylogue_model::Code::BadRequest,
                 format!("{} runs in the calling process", command.name),
@@ -318,64 +310,45 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
                 return;
             }
             continue;
-        };
-        let (policy, stream) = match registration.admit_request(&mut request, command, &caller) {
-            Ok(admission) => admission,
-            Err(failure) => {
-                if !write_answer(&mut out, &failure.answer()) {
+        }
+        use super::handler::NativeReply;
+        let (answer, read_scope, deadline) = match shared.runtime.block_on(
+            super::handler::dispatch_native(
+                d,
+                &shared.operations,
+                command,
+                request,
+                accepted,
+                via,
+                false,
+            ),
+        ) {
+            NativeReply::Refused(answer) => {
+                if !write_answer(&mut out, &answer) {
                     return;
                 }
                 continue;
             }
-        };
-        let read_scope = if policy.read_only {
-            match d.reads.scope_token() {
-                Ok(scope) => Some(scope),
-                Err(error) => {
-                    if !write_answer(&mut out, &service::store_error(&error)) {
-                        return;
-                    }
-                    continue;
+            NativeReply::Stream {
+                request,
+                accepted,
+                policy,
+                produce,
+            } => {
+                let limit = execution::request_limit(
+                    request.deadline,
+                    command.latency,
+                    policy.default_deadline,
+                    parent_deadline,
+                    cancellation.clone(),
+                );
+                if !send_stream(&mut out, d, policy.class, &accepted, limit, produce) {
+                    return;
                 }
+                continue;
             }
-        } else {
-            None
+            NativeReply::Answer(ready, answer) => (answer, ready.scope, ready.publication_deadline),
         };
-        accepted.read_scope = read_scope.clone();
-        if let Some(produce) = stream {
-            let limit = execution::request_limit(
-                request.deadline,
-                command.latency,
-                policy.default_deadline,
-                parent_deadline,
-                cancellation.clone(),
-            );
-            if !send_stream(&mut out, d, policy.class, &accepted, limit, produce) {
-                return;
-            }
-            continue;
-        }
-        let deadline = execution::request_limit(
-            request.deadline,
-            command.latency,
-            true,
-            parent_deadline,
-            cancellation.clone(),
-        )
-        .deadline();
-        let table_via = if via == command_surface::Via::Mcp {
-            command_surface::Via::Mcp
-        } else {
-            command_surface::Via::Cli
-        };
-        let trusted = command_surface::Caller::authenticated(accepted.scope(), accepted)
-            .with_access(command_surface::Access::Write);
-        let answer = shared.runtime.block_on(shared.operations.call_as(
-            request,
-            table_via,
-            trusted,
-            Default::default(),
-        ));
         let scopes = crate::protocol::ReadScopes::single(read_scope);
         let answer = crate::protocol::scope_answer(answer, &scopes);
         if send_answer(&mut out, &answer, &scopes, deadline).is_err() {
