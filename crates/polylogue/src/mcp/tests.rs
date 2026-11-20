@@ -536,9 +536,11 @@ fn a_tool_call_names_one_of_its_operations() {
         None, &tokio_util::sync::CancellationToken::new(), None,
     ).unwrap();
     assert!(!failed, "{answer}");
+    let manual = format!("\nAgent manual:\n{}\n", crate::manual::text());
+    let budget = manual.len().div_ceil(4) + 300;
     let (_, lifted, failed) = call_with_limit(
         &live.daemon.archive, "polylogue_read",
-        json!({"operation":"rows", "arguments":{"steps":[{"verb":"brief","cwd":"/synthetic"}]}, "request_id":"lifted", "deadline":null, "budget_tokens":300}).as_object().unwrap().clone(),
+        json!({"operation":"rows", "arguments":{"steps":[{"verb":"brief","cwd":"/synthetic"}]}, "request_id":"lifted", "deadline":null, "budget_tokens":budget}).as_object().unwrap().clone(),
         None, &tokio_util::sync::CancellationToken::new(), None,
     ).unwrap();
     assert!(!failed, "{lifted}");
@@ -546,9 +548,8 @@ fn a_tool_call_names_one_of_its_operations() {
     let text = value["reply"]["steps"][0]["outcome"]["reply"]["reply"]["prepared"]["text"]
         .as_str()
         .unwrap();
-    let manual = format!("\nAgent manual:\n{}\n", crate::manual::text());
     assert!(text.contains(&manual));
-    assert!(text.replacen(&manual, "", 1).len() <= 1200);
+    assert!(text.len() <= budget * 4);
 }
 
 mod cancellation;

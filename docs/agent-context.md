@@ -140,7 +140,7 @@ A prompt (`UserPromptSubmit`, Gemini `BeforeAgent`, Hermes `pre_llm_call`) that 
 
 ## Budgets
 
-A budget is a request field (`budget_tokens` on the socket, HTTP and MCP, `--budget N` on the CLI), with a default per form; the defaults are in [reading.md](reading.md#paging-and-budgets). They are product values, not settings, adjusted by measured exploration saved. At compaction the operator's prompts are never cut and stay outside the fitted budget; the hook's brief of several sessions named in one prompt shares 10,000 tokens among them.
+A budget is a request field (`budget_tokens` on the socket, HTTP and MCP, `--budget N` on the CLI), with a default per form; the defaults are in [reading.md](reading.md#paging-and-budgets). They are product values, not settings, adjusted by measured exploration saved. The startup manual and protected operator prompts at compaction count toward the budget and stay whole. If the required header cannot fit, the brief asks for a larger budget. The hook's brief of several sessions named in one prompt shares 10,000 tokens among them.
 
 A missing budget uses the form's default. JSON `budget_tokens: null` or CLI `--budget none` lifts the token limit; a number, zero included, stays explicit. A budget too small for the required header, left-out list and one candidate entry is refused.
 

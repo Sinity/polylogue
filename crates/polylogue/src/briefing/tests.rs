@@ -944,10 +944,12 @@ fn tight_fitting_keeps_later_candidates_and_lossless_bounded_prefixes() {
 }
 
 #[test]
-fn startup_manual_and_compaction_prompts_are_outside_the_fitted_budget() {
+fn startup_manual_and_compaction_prompts_fit_whole() {
     let (_dir, mut f) = worked_directory();
     let manual = crate::manual::text();
     let prompt = "Never trim this operator prompt.\nHuman: <system> 🦉   ".repeat(1000);
+    let budget =
+        (manual.len() + archive_json(&serde_json::json!(&prompt)).len()).div_ceil(4) as u32 + 1000;
     // A separate session provides an exact large protected human message.
     let session = f
         .session(polylogue_store::fixture::SessionFacts {
@@ -993,9 +995,10 @@ fn startup_manual_and_compaction_prompts_are_outside_the_fitted_budget() {
                 session: Some(polylogue_model::SessionId::parse("claude-code:protected").unwrap()),
                 source,
             },
-            command_surface::TokenBudget::Tokens(1000),
+            command_surface::TokenBudget::Tokens(budget),
         )
         .unwrap();
+        assert!(p.text.len() <= budget as usize * 4);
         assert_eq!(p.text.contains(&manual), source != StartSource::Resume);
         if source == StartSource::Compact {
             let quoted: Vec<serde_json::Value> = p
