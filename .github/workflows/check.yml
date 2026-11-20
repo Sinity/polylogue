@@ -14,6 +14,8 @@ on:
 # tests and repeat each failure's full output.
 env:
   CARGO_TERM_COLOR: always
+  FULL_CACHE_KEY: check-5b0b7132464dd934727761cce6beddaa55b9fb62f3271ee003da4f75b1e8faf3-bc714b3f0f8230be86895f38233571be805a1118
+  FULL_CACHE_REV: bc714b3f0f8230be86895f38233571be805a1118
   NEXTEST_STATUS_LEVEL: fail
   NEXTEST_FINAL_STATUS_LEVEL: slow
   NEXTEST_FAILURE_OUTPUT: immediate-final
@@ -23,7 +25,38 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Restore the exact comparison cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ env.FULL_CACHE_KEY }}
+          fail-on-cache-miss: true
+      - name: Verify the cache revision and bound the smaller archive size
+        run: |
+          test "$(cat target/source-commit)" = "$FULL_CACHE_REV"
+          sizes=$(du -sbc "$HOME/.cargo/registry" "$HOME/.cargo/git")
+          bytes=$(tail -n 1 <<< "$sizes" | cut -f1)
+          printf 'Dependency cache unpacked bytes: %s\n' "$bytes"
+          test "$bytes" -lt 1200000000
+      - name: Seed the dependency-only cache from the same archive
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: dependency-only-${{ github.run_id }}-${{ github.run_attempt }}
   rust:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        cache: [full, dependencies]
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
@@ -66,14 +99,33 @@ jobs:
       # now: Cargo rebuilds the packages those files belong to and the ones
       # depending on them, and reuses the rest.
       - name: Restore master's build
+        if: matrix.cache == 'full'
         uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: check-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
-          restore-keys: check-${{ hashFiles('rust-toolchain.toml') }}-
+          key: ${{ env.FULL_CACHE_KEY }}
+          fail-on-cache-miss: true
+      - name: Restore the dependency-only cache
+        if: matrix.cache == 'dependencies'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: dependency-only-${{ github.run_id }}-${{ github.run_attempt }}
+          fail-on-cache-miss: true
+      - name: Verify which build outputs were restored
+        env:
+          VARIANT: ${{ matrix.cache }}
+        run: |
+          if [[ "$VARIANT" == full ]]; then
+            test "$(cat target/source-commit)" = "$FULL_CACHE_REV"
+          else
+            test ! -e target
+          fi
       - name: Date sources against the restored build
         run: |
           built=$(cat target/source-commit 2>/dev/null) || exit 0
