@@ -194,7 +194,7 @@ pub(crate) trait Streams: Handler {
     ) -> Result<(), Failure>;
 }
 
-/// A stream the command line follows over the socket; it has no finite answer.
+/// A stream-only operation with no finite answer.
 pub(crate) trait Feed: Send + Sync + 'static {
     type Arguments: Serialize + DeserializeOwned + JsonSchema + Send + 'static;
     fn produce(
@@ -277,12 +277,14 @@ pub(crate) const fn streams<H: Streams>() -> Registration {
 #[derive(Clone, Copy)]
 pub struct FeedRegistration {
     declare: fn(&mut DeclarationsBuilder, &'static Command),
+    validate: fn(&command_surface::RunnableRequest) -> Result<(), Failure>,
     prepare: fn(&command_surface::RunnableRequest) -> Result<super::streaming::Produce, Failure>,
 }
 
 pub(crate) const fn feed<F: Feed>() -> FeedRegistration {
     FeedRegistration {
         declare: declare_feed::<F>,
+        validate: |request| feed_arguments::<F>(request).map(drop),
         prepare: prepare_feed::<F>,
     }
 }
@@ -300,6 +302,23 @@ fn declare_feed<F: Feed>(declarations: &mut DeclarationsBuilder, row: &'static C
 impl FeedRegistration {
     pub(crate) fn declare(&self, declarations: &mut DeclarationsBuilder, row: &'static Command) {
         (self.declare)(declarations, row);
+    }
+
+    /// Check a feed request before sending it or offering it as a link.
+    pub(crate) fn validate(
+        &self,
+        request: &command_surface::RunnableRequest,
+    ) -> Result<(), Failure> {
+        (self.validate)(request)
+    }
+
+    /// Check the envelope and decode the feed's arguments before opening a
+    /// stream. Feed positions belong to those arguments, outside page cursors.
+    pub(crate) fn prepare(
+        &self,
+        request: &command_surface::RunnableRequest,
+    ) -> Result<super::streaming::Produce, Failure> {
+        (self.prepare)(request)
     }
 }
 
@@ -381,17 +400,6 @@ impl Registration {
     }
 }
 
-impl FeedRegistration {
-    /// Check the envelope and decode the feed's arguments before opening a
-    /// stream. Feed positions belong to those arguments, outside page cursors.
-    pub(crate) fn prepare(
-        &self,
-        request: &command_surface::RunnableRequest,
-    ) -> Result<super::streaming::Produce, Failure> {
-        (self.prepare)(request)
-    }
-}
-
 fn decode<T: DeserializeOwned>(arguments: &Value) -> Result<T, Failure> {
     T::deserialize(arguments).map_err(Failure::bad_request)
 }
@@ -455,9 +463,9 @@ fn answer_local<H: Handler>(
     }
 }
 
-fn prepare_feed<F: Feed>(
+fn feed_arguments<F: Feed>(
     request: &command_surface::RunnableRequest,
-) -> Result<super::streaming::Produce, Failure> {
+) -> Result<F::Arguments, Failure> {
     if request.request_id.is_empty() {
         return Err(Failure::bad_request("request_id must not be empty"));
     }
@@ -474,7 +482,13 @@ fn prepare_feed<F: Feed>(
             option.name()
         )));
     }
-    let arguments = decode::<F::Arguments>(&request.arguments)?;
+    decode(&request.arguments)
+}
+
+fn prepare_feed<F: Feed>(
+    request: &command_surface::RunnableRequest,
+) -> Result<super::streaming::Produce, Failure> {
+    let arguments = feed_arguments::<F>(request)?;
     Ok(Box::new(move |daemon, _, context, output| {
         super::service::accepting(daemon)?;
         F::produce(arguments, daemon, context, output)

@@ -17,7 +17,7 @@ fn feed_refuses_unsupported_envelopes_before_production() {
     ] {
         let mut allowed = original.clone();
         allowed.deadline = deadline;
-        registration.admit(&allowed).unwrap();
+        registration.validate(&allowed).unwrap();
     }
     let mut refused = Vec::new();
     let mut selected = original.clone();
@@ -49,7 +49,7 @@ fn feed_refuses_unsupported_envelopes_before_production() {
         .insert("author".into(), json!("operator"));
     refused.push((selected, "author"));
     for (envelope, field) in refused {
-        let failure = registration.admit(&envelope).unwrap_err();
+        let failure = registration.validate(&envelope).unwrap_err();
         assert_eq!(failure.error.kind, command_surface::FailureKind::BadRequest);
         assert!(failure.error.message.contains(field), "{failure:?}");
         let failure = daemon.daemon.ready_call(&envelope).unwrap_err();

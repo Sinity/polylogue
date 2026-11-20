@@ -513,7 +513,7 @@ pub fn run(
         deliver,
     } = cmd.run
     {
-        if let Err(failure) = registration.admit(call) {
+        if let Err(failure) = registration.validate(call) {
             return fail(
                 policy,
                 json,
