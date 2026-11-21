@@ -733,6 +733,24 @@ fn selected_message_context_keeps_its_prefix_and_existing_parent_branch_cut() {
         headers(&legacy),
         ["message:claude-code:r1", "message:claude-code:r2"]
     );
+    let legacy_window = read(
+        &d,
+        "message:claude-code:r2",
+        ReadOptions {
+            view: View::Context,
+            around: Some(1),
+            at: Some(polylogue_model::read::ReadAt::try_from("claude-code:r3".to_owned()).unwrap()),
+            ..ReadOptions::default()
+        },
+    );
+    assert_eq!(
+        headers(&legacy_window),
+        [
+            "message:claude-code:r1",
+            "message:claude-code:r2",
+            "message:claude-code:r3"
+        ]
+    );
     // Transcript message ranges keep their original one-message meaning.
     let transcript = read(&d, "message:claude-code:r2", ReadOptions::default());
     assert_eq!(headers(&transcript), ["message:claude-code:r2"]);

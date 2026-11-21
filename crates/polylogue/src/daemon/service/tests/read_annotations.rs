@@ -981,3 +981,80 @@ fn session_context_keeps_the_legacy_missing_message_refusal() {
         "message claude-code:missing is not in the reading"
     );
 }
+
+#[test]
+fn current_and_stored_legacy_context_streams_keep_the_preexisting_projection_path() {
+    let d = test_daemon::start("neutral target text");
+    let actor = polylogue_model::authorship::Authorship {
+        author: polylogue_model::Author::Operator,
+        via: polylogue_model::authorship::Channel::Cli,
+    };
+    let operation = d.daemon.operation_context(&actor).unwrap();
+    for at in [None, Some("claude-code:u1")] {
+        let request = crate::daemon::service::read::request_of(
+            crate::daemon::verbs::read::arguments(
+                &crate::protocol::steps::ReadStep {
+                    view: View::Context,
+                    at: at.map(str::to_owned),
+                    delivery: ReadDelivery::Stream,
+                    format: Some("jsonl".into()),
+                    ..Default::default()
+                },
+                "session:claude-code:s1".into(),
+            )
+            .unwrap(),
+            None,
+        )
+        .unwrap();
+        let reader = d.daemon.reads.reader().unwrap();
+        let mut bytes = Vec::new();
+        let error =
+            polylogue_reading::stream(&reader, d.daemon.as_ref(), &request, &operation, &mut bytes)
+                .unwrap_err();
+        // Existing SSE does not prepare composed context membership. Preserve
+        // that projection result here; this slice only completes paged context.
+        assert_eq!(error.code(), "not_yet_available");
+        assert_eq!(
+            error.to_string(),
+            "context needs prepared context membership for message:claude-code:u1"
+        );
+        assert!(
+            !bytes.is_empty(),
+            "the existing stream began before message projection"
+        );
+    }
+}
+
+#[test]
+fn an_explicit_context_message_keeps_the_matching_legacy_anchor_and_refuses_a_double_anchor() {
+    let d = test_daemon::start("neutral target text");
+    let page = crate::test_answers::read(
+        historical_call(
+            "message:claude-code:u1",
+            &"claude-code:u1",
+            100000,
+            View::Context,
+        )
+        .answer(&d.daemon),
+    );
+    assert!(
+        page.document
+            .items
+            .iter()
+            .any(|item| item.source.reference == "message:claude-code:u1")
+    );
+    let error = crate::test_answers::refusal(
+        historical_call(
+            "message:claude-code:u1",
+            &"claude-code:another",
+            100000,
+            View::Context,
+        )
+        .answer(&d.daemon),
+    );
+    assert_eq!(error.code.as_deref(), Some("bad_request"));
+    assert_eq!(
+        error.message,
+        "context has two different message anchors; select one message"
+    );
+}

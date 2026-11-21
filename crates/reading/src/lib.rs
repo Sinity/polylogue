@@ -495,19 +495,31 @@ fn resolve_at<'a>(
     operation: &Context,
 ) -> Result<std::borrow::Cow<'a, ReadRequest>, Error> {
     if request.options.view == View::Context
-        && session::scope(reader, &request.target)?.is_some_and(|scope| scope.range.is_none())
+        && let Some(scope) = session::scope(reader, &request.target)?
     {
-        // Unambiguous legacy coordinates keep their existing not-found policy.
-        // Only overlapping time/position spellings need a stored-message lookup.
-        if matches!(request.options.at, Some(ReadAt::Message(_))) {
-            return Ok(std::borrow::Cow::Borrowed(request));
-        }
-        if let Some(message) = request.options.context_message_candidate()
-            && reader.message_session(&message)?.is_some()
-        {
-            let mut request = request.clone();
-            request.options.at = Some(ReadAt::Message(message));
-            return Ok(std::borrow::Cow::Owned(request));
+        let candidate = request.options.context_message_candidate();
+        let legacy = scope.range.as_ref().is_none_or(|(first, last)| {
+            first != last
+                || candidate.as_ref() == Some(first)
+                || request.options.around.is_some_and(|n| n > 0)
+        });
+        // Preserve the meaningful legacy anchor/window cases. Only overlapping
+        // time/position spellings need the pinned reader's stored-message lookup.
+        if legacy {
+            if matches!(request.options.at, Some(ReadAt::Message(_))) {
+                return Ok(std::borrow::Cow::Borrowed(request));
+            }
+            if let Some(message) = candidate
+                && reader.message_session(&message)?.is_some()
+            {
+                let mut request = request.clone();
+                request.options.at = Some(ReadAt::Message(message));
+                return Ok(std::borrow::Cow::Owned(request));
+            }
+        } else if matches!(request.options.at, Some(ReadAt::Message(_))) {
+            return Err(Error::bad_request(
+                "context has two different message anchors; select one message",
+            ));
         }
     }
     let text = match request.options.at.as_ref() {
