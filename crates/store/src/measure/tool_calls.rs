@@ -4,7 +4,7 @@
 use super::Selection;
 use crate::{Reader, Result};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Tool outcomes kept apart: they never collapse into one success figure.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -46,6 +46,68 @@ pub fn outcomes(reader: &Reader<'_>, selection: &Selection) -> Result<Outcomes> 
             })
         },
     )?)
+}
+
+/// Normalized stages extracted from the submitted text of recorded shell calls.
+#[derive(Debug, Default, Serialize)]
+pub struct ShellStages {
+    pub shell_calls: u64,
+    pub calls_without_recognized_stages: u64,
+    pub stages: BTreeMap<String, StageCount>,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct StageCount {
+    pub occurrences: u64,
+    pub calls: u64,
+    pub sessions: u64,
+    #[serde(skip)]
+    last_seen: Option<(i64, i64)>,
+}
+
+pub fn shell_stages(reader: &Reader<'_>, selection: &Selection) -> Result<ShellStages> {
+    let (condition, params) = selection.condition();
+    // Visit the selected sessions in index order without sorting their command text.
+    let mut statement = reader.conn()?.prepare(&format!(
+        "SELECT t.session_pk, t.pk, t.command
+         FROM tool_call t INDEXED BY tool_call_session
+         JOIN block b ON b.pk = t.call_block_pk
+         JOIN message m ON m.pk = b.message_pk AND m.session_pk = t.session_pk
+         WHERE t.action = 'shell' AND {condition}
+         ORDER BY t.session_pk"
+    ))?;
+    let mut rows = statement.query(rusqlite::params_from_iter(params))?;
+    let mut report = ShellStages::default();
+    while let Some(row) = rows.next()? {
+        reader.check()?;
+        let session: i64 = row.get(0)?;
+        let call: i64 = row.get(1)?;
+        let command: Option<String> = row.get(2)?;
+        let stages = command
+            .as_deref()
+            .map(polylogue_model::command::effective_stages)
+            .unwrap_or_default();
+        report.shell_calls += 1;
+        if stages.is_empty() {
+            report.calls_without_recognized_stages += 1;
+        }
+        for stage in stages {
+            let count = report.stages.entry(stage.normalized()).or_default();
+            count.occurrences += 1;
+            // A call contributes one row, and the rows of a session are contiguous.
+            if count.last_seen != Some((session, call)) {
+                count.calls += 1;
+                if count
+                    .last_seen
+                    .is_none_or(|(previous, _)| previous != session)
+                {
+                    count.sessions += 1;
+                }
+                count.last_seen = Some((session, call));
+            }
+        }
+    }
+    Ok(report)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
