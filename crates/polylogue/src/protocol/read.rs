@@ -8,6 +8,13 @@ use std::num::NonZeroU64;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Arguments {
+    /// Start after this reader's seen mark
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// This page is being displayed by the command-line consumer
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[schemars(extend("unlisted" = true))]
+    pub displayed: bool,
     /// A query or a reference
     #[schemars(extend("argument_form" = "positional"))]
     pub target: String,

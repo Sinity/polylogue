@@ -325,7 +325,15 @@ fn through_pager(
                     Err(error) => Err(error.to_string().into()),
                 };
             };
-            let call = next.request;
+            let mut call = next.request;
+            let mut rows: crate::protocol::line::Rows =
+                serde_json::from_value(call.arguments).map_err(|e| e.to_string())?;
+            for step in &mut rows.steps {
+                if let crate::protocol::line::Step::Read(read) = step {
+                    read.displayed = true;
+                }
+            }
+            call.arguments = serde_json::to_value(rows).map_err(|e| e.to_string())?;
             answer = crate::client::call_ready(archive, &call).map_err(|e| e.to_string())?;
             code = code.max(answer.exit_code());
             page_notes(startup, &answer);

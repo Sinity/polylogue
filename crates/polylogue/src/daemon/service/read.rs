@@ -14,6 +14,8 @@ pub(crate) fn request_of(
 ) -> Result<ReadRequest, String> {
     let crate::protocol::read::Arguments {
         target,
+        from,
+        displayed: _,
         view,
         format,
         delivery,
@@ -47,6 +49,11 @@ pub(crate) fn request_of(
         .map_err(|error| error.to_string())?;
     options.validate().map_err(|error| error.to_string())?;
     Ok(ReadRequest {
+        start: match from.as_deref() {
+            None => polylogue_reading::ReadStart::Beginning,
+            Some("seen") => polylogue_reading::ReadStart::Seen,
+            Some(_) => return Err("only --from seen is supported".into()),
+        },
         references: None,
         target,
         options,
@@ -76,6 +83,8 @@ pub(crate) fn arguments_of(
     let (show, hide) = options.show_hide_words();
     Ok(crate::protocol::read::Arguments {
         target: target.clone(),
+        from: request.start.uses_seen().then(|| "seen".to_owned()),
+        displayed: false,
         view: options.view,
         format: Some(Format::parse(format).ok_or_else(|| format!("unknown format {format:?}"))?),
         delivery: *delivery,
@@ -104,6 +113,11 @@ pub(crate) fn page(
     call: &crate::daemon::handler::Call<'_>,
     references: Option<&[polylogue_model::Reference]>,
 ) -> Result<Answer<ReadPage>, Failure> {
+    let displayed = match call.caller.surface {
+        crate::commands::Surface::Mcp => true,
+        crate::commands::Surface::Cli => arguments.displayed,
+        crate::commands::Surface::Http | crate::commands::Surface::Hook => false,
+    };
     let mut request =
         request_of(arguments, call.cursor.map(str::to_owned)).map_err(Failure::bad_request)?;
     request.references = references.map(<[_]>::to_vec);
@@ -117,6 +131,7 @@ pub(crate) fn page(
         None
     };
     let reader = call.reader()?;
+    resolve_start(&reader, call, &mut request)?;
     let context = call.context()?;
     let services = &crate::daemon::verbs::read::LineReads {
         daemon: call.daemon,
@@ -124,8 +139,11 @@ pub(crate) fn page(
     };
     let request = polylogue_reading::with_variants(&reader, services, request.clone())
         .map_err(|error| failure(error, &request))?;
-    let page = polylogue_reading::page(&reader, services, &request, &context, history)
+    let (page, mark) = polylogue_reading::page(&reader, services, &request, &context, history)
         .map_err(|error| failure(error, &request))?;
+    if displayed {
+        crate::daemon::seen::record(call.daemon, call.invocation, mark.into_iter().collect());
+    }
     let freshness = page.snapshot.freshness.clone();
     Ok(crate::protocol::read(page, &freshness))
 }
@@ -143,6 +161,7 @@ pub(crate) fn stream(
     request.references = references.map(<[_]>::to_vec);
     super::accepting(call.daemon)?;
     let reader = call.reader()?;
+    resolve_start(&reader, call, &mut request)?;
     let request = polylogue_reading::with_variants(&reader, services, request.clone())
         .map_err(|error| failure(error, &request))?;
     let freshness = services.freshness(&reader)?;
@@ -156,6 +175,86 @@ pub(crate) fn stream(
     } else {
         Ok(crate::protocol::read(complete, &freshness))
     }
+}
+
+/// Resolve only physical session starts. The sealed continuation owns its
+/// original target and lower bound; it never consults a newer seen mark.
+fn resolve_start(
+    reader: &Reader<'_>,
+    call: &crate::daemon::handler::Call<'_>,
+    request: &mut ReadRequest,
+) -> Result<(), Failure> {
+    use polylogue_model::Reference;
+    use polylogue_reading::ReadStart;
+    let from_seen = request.start.uses_seen();
+    if from_seen
+        && !matches!(
+            request.options.view,
+            View::Transcript | View::Dialogue | View::Context | View::Raw | View::Changes
+        )
+    {
+        return Err(Failure::bad_request(
+            "read --from seen needs a session content view",
+        ));
+    }
+    if let Some(cursor) = &request.cursor {
+        let seal = CursorSeal {
+            key: reader.cursor_key()?,
+            generation: reader.change_position()?.generation,
+        };
+        let opened = PageCursor::open(cursor, &seal).map_err(|error| {
+            failure(
+                match error {
+                    CursorError::Stale => Error::StaleCursor {
+                        changed: "the index was rebuilt since this page was issued".into(),
+                    },
+                    other => Error::InvalidCursor(other.to_string()),
+                },
+                request,
+            )
+        })?;
+        if let Some(bound) = opened.session_read {
+            if bound.from_seen != from_seen {
+                return Err(failure(
+                    Error::InvalidCursor("the cursor belongs to another read start".into()),
+                    request,
+                ));
+            }
+            request.start = ReadStart::Bound(bound);
+            return Ok(());
+        }
+        if from_seen {
+            return Err(failure(
+                Error::InvalidCursor("the cursor has no accepted seen start".into()),
+                request,
+            ));
+        }
+    }
+    let target = Reference::parse(&request.target)
+        .ok()
+        .and_then(|target| ReadTarget::try_from(target).ok());
+    if let Some(ReadTarget::Session(session)) = target {
+        let after = if from_seen {
+            crate::daemon::seen::mark_of(
+                reader,
+                &call.invocation.authorship.author.to_string(),
+                &Reference::Session(session.clone()),
+            )?
+            .and_then(|mark| mark.item)
+        } else {
+            None
+        };
+        request.start = ReadStart::Bound(SessionRead {
+            session,
+            from_seen,
+            after,
+        });
+    } else if from_seen {
+        return Err(Failure::bad_request(
+            "read --from seen needs one physical session reference",
+        ));
+    }
+    Ok(())
 }
 
 impl ReadServices for Daemon {
@@ -254,7 +353,13 @@ fn failure(error: Error, request: &ReadRequest) -> Failure {
         }
         let mut repeated = request.clone();
         repeated.cursor = None;
-        let target = polylogue_render::shell_quote(&request.target);
+        if let polylogue_reading::ReadStart::Bound(bound) = &repeated.start
+            && bound.from_seen
+        {
+            repeated.target =
+                polylogue_model::Reference::Session(bound.session.clone()).to_string();
+        }
+        let target = polylogue_render::shell_quote(&repeated.target);
         let view = if request.options.view == View::Transcript {
             String::new()
         } else {

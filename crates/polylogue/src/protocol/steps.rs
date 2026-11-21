@@ -18,6 +18,10 @@ pub const fn usual_read_selection(follow: bool) -> &'static str {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadStep {
+    /// The command-line consumer displays this page
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[schemars(extend("unlisted" = true))]
+    pub displayed: bool,
     /// The reading view
     #[serde(default)]
     pub view: View,

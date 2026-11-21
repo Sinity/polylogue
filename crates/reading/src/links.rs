@@ -479,6 +479,7 @@ pub(super) fn page(
     let items: Vec<ReadItem> = steps.into_iter().flatten().collect();
     let call = |place: &LinksPlace, direction: ReadDirection| -> Result<ReadyCall, Error> {
         let next = PageCursor {
+            session_read: None,
             target: target.clone(),
             options: digest.clone(),
             variants: request.options.variants.clone(),

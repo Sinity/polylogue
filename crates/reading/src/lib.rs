@@ -28,8 +28,30 @@ mod saved_query;
 mod session;
 mod trace;
 
+/// A caller's start, resolved once against its authenticated read.
+#[derive(Debug, Clone, Default)]
+pub enum ReadStart {
+    #[default]
+    Beginning,
+    Seen,
+    Bound(SessionRead),
+}
+impl ReadStart {
+    pub fn uses_seen(&self) -> bool {
+        matches!(
+            self,
+            Self::Seen
+                | Self::Bound(SessionRead {
+                    from_seen: true,
+                    ..
+                })
+        )
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ReadRequest {
+    pub start: ReadStart,
     pub target: String,
     pub references: Option<Vec<polylogue_model::Reference>>,
     pub options: ReadOptions,
@@ -576,13 +598,15 @@ fn validate_at(reader: &Reader<'_>, request: &ReadRequest) -> Result<(), Error> 
     Ok(())
 }
 
+/// One page and its completed physical-session progress, from the same
+/// pinned reader. The consumer decides whether this delivery acknowledges it.
 pub fn page(
     reader: &Reader<'_>,
     d: &impl ReadServices,
     request: &ReadRequest,
     operation: &Arc<Context>,
     history: Option<HistorySlot>,
-) -> Result<ReadPage, Error> {
+) -> Result<(ReadPage, Option<polylogue_model::user::SeenMark>), Error> {
     let resolved = resolve_at(reader, request, operation)?;
     let request = resolved.as_ref();
     validate_at(reader, request)?;
@@ -590,10 +614,10 @@ pub fn page(
         return Err(Error::bad_request("with_blobs requires streaming delivery"));
     }
     if request.options.view == View::Trace {
-        return trace::page(reader, d, request, operation, history);
+        return trace::page(reader, d, request, operation, history).map(|page| (page, None));
     }
     if let Some(response) = object::page(reader, d, request, operation) {
-        return response;
+        return response.map(|page| (page, None));
     }
     let (reading, cursor) = reading(request)?;
     if reading.budget.is_none() {
@@ -611,7 +635,7 @@ pub fn page(
             session::page(reader, d, request, operation, scope)?
         }
         Some(scope) if reading.options.view == View::Links => {
-            links::page(reader, d, request, operation, scope)?
+            (links::page(reader, d, request, operation, scope)?, None)
         }
         _ => {
             return prepared(
@@ -648,7 +672,7 @@ pub fn page(
                             reader, d, operation, request, &reading, compiled, history,
                         );
                     }
-                    Ok(page)
+                    Ok((page, None))
                 },
             );
         }
@@ -815,6 +839,7 @@ fn rows_page(
         let mut place = *place;
         place.selection.row = 0;
         let cursor = PageCursor {
+            session_read: None,
             target: reading.target.clone(),
             options: reading.digest.clone(),
             variants: reading.options.variants.clone(),
@@ -893,7 +918,7 @@ pub fn stream(
         operation,
         &reading,
         |compiled, snapshot, header, near| {
-            if reading.options.view == View::Context
+            if (reading.options.view == View::Context || request.start.uses_seen())
                 && let Some(scope) = session::scope(reader, &reading.target)?
             {
                 return session::stream(reader, d, request, operation, scope, snapshot, output);

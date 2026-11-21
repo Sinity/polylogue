@@ -2,6 +2,7 @@ use super::*;
 
 fn cursor() -> PageCursor {
     PageCursor {
+        session_read: None,
         variants: vec![],
         target: "session:test:one".into(),
         options: options_digest(&("transcript", 4000)),
@@ -126,4 +127,20 @@ fn a_cursor_sealed_with_the_same_key_for_another_generation_is_stale() {
         PageCursor::open(&sealed, &seal(7, "g2")),
         Err(CursorError::Stale)
     );
+}
+
+#[test]
+fn physical_session_lower_bound_is_authenticated_and_old_default_encoding_opens() {
+    let key = seal(7, "g1");
+    let ordinary = cursor();
+    let old = serde_json::to_value(&ordinary).unwrap();
+    assert!(old.get("session_read").is_none());
+    assert_eq!(serde_json::from_value::<PageCursor>(old).unwrap(), ordinary);
+    let mut bound = ordinary;
+    bound.session_read = Some(SessionRead {
+        session: crate::SessionId::parse("test:one").unwrap(),
+        from_seen: true,
+        after: Some("block:test:one:m1#0".into()),
+    });
+    assert_eq!(PageCursor::open(&bound.seal(&key), &key).unwrap(), bound);
 }

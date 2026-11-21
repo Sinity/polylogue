@@ -948,6 +948,7 @@ pub(super) fn context_stream(
     ReadComplete,
 ) {
     let request = polylogue_reading::ReadRequest {
+        start: Default::default(),
         references: None,
         target: target.into(),
         options,
@@ -1156,6 +1157,7 @@ fn context_stream_stops_on_scope_reset_and_cancellation_before_source_frames() {
                 &reader,
                 d.daemon.as_ref(),
                 &polylogue_reading::ReadRequest {
+                    start: Default::default(),
                     references: None,
                     target: "session:claude-code:s1".into(),
                     options: ReadOptions {

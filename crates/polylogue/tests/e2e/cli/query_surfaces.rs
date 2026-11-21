@@ -6,7 +6,7 @@ use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::process::{ChildStdin, ChildStdout};
 
-struct Mcp {
+pub(super) struct Mcp {
     _process: Daemon,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
@@ -14,7 +14,7 @@ struct Mcp {
 }
 
 impl Mcp {
-    fn start(env: &crate::Fixture) -> Self {
+    pub(super) fn start(env: &crate::Fixture) -> Self {
         let mut command = env.command();
         command
             .arg("mcp")
@@ -47,7 +47,7 @@ impl Mcp {
         mcp
     }
 
-    fn request(&mut self, method: &str, params: Value) -> Value {
+    pub(super) fn request(&mut self, method: &str, params: Value) -> Value {
         self.next += 1;
         writeln!(
             self.input,

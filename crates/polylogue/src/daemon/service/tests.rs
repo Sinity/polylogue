@@ -26,6 +26,7 @@ fn read(
         crate::test_daemon::Call::from_request(&resume)
     } else {
         crate::test_daemon::read(polylogue_reading::ReadRequest {
+            start: Default::default(),
             references: None,
             target: "session:claude-code:s1".into(),
             options: polylogue_model::read::ReadOptions {
@@ -145,6 +146,7 @@ fn reading_variants_setting_is_the_default_and_is_bound_in_the_cursor() {
     // `none` asks for the originals whatever the setting holds.
     set(r#"["translation:pl"]"#);
     let originals = crate::test_daemon::read(polylogue_reading::ReadRequest {
+        start: Default::default(),
         references: None,
         target: "session:claude-code:s1".into(),
         options: polylogue_model::read::ReadOptions {
@@ -517,6 +519,7 @@ fn read_and_query_share_stored_titles() {
 mod mode;
 
 mod read_pages;
+mod read_seen;
 
 mod reading_shapes;
 
