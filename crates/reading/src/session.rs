@@ -733,6 +733,7 @@ fn card(
     let reference = format!("session:{child}");
     let open = d.continuation(
         &ReadRequest {
+            start: Default::default(),
             references: None,
             target: reference.clone(),
             options: ReadOptions {
@@ -998,6 +999,7 @@ pub(super) fn stream(
     if options.annotation_at().is_some() {
         bind_context(reader, request, &mut composed)?;
     }
+    trim_start(reader, request, &mut composed)?;
     still_wanted()?;
     let runs = runs(reader, &composed, options)?;
     let shown = ShownEntries::new(reader, &composed, &runs, ShowProfile::of(options))?;
@@ -1078,6 +1080,7 @@ pub(super) fn stream(
             options,
             operation.ran_at,
             &mut cache,
+            request.start.uses_seen(),
             true,
         )?;
         decorate(
@@ -1133,13 +1136,69 @@ pub(super) fn stream(
     stream.finish(ReadFooter::default())
 }
 
+fn session_read(request: &ReadRequest) -> Option<&SessionRead> {
+    match &request.start {
+        crate::ReadStart::Bound(bound) => Some(bound),
+        crate::ReadStart::Beginning | crate::ReadStart::Seen => None,
+    }
+}
+
+/// Cut the existing composition at the accepted message/block, preserving
+/// its source order and membership; pagination then uses its normal index.
+fn trim_start(
+    reader: &Reader<'_>,
+    request: &ReadRequest,
+    composed: &mut Composed,
+) -> Result<(), Error> {
+    let Some(bound) = session_read(request) else {
+        return Ok(());
+    };
+    let Some(after) = &bound.after else {
+        return Ok(());
+    };
+    let (key, whole_message) = match Reference::parse_stored(after).map_err(Error::bad_request)? {
+        Reference::Message(message) => (EntryKey::header(&message), true),
+        Reference::Block { message, n } => (
+            EntryKey::Message {
+                message,
+                block: Some(n),
+            },
+            false,
+        ),
+        _ => return Err(Error::conflict("the seen mark is not a message or block")),
+    };
+    for at in 0..composed.parts.len() {
+        let index = &composed.indexes[at];
+        if let Some(seq) = reader.item_place(index.pk, &key)? {
+            let part = &composed.parts[at];
+            if seq as usize >= part.end && part.session != bound.session {
+                continue;
+            }
+            let end = if whole_message {
+                reader.item_unit_end(index.pk, seq)?
+            } else {
+                seq + 1
+            } as usize;
+            for before in &mut composed.parts[..at] {
+                before.end = before.start;
+            }
+            let part = &mut composed.parts[at];
+            part.start = part.start.max(end).min(part.end);
+            return Ok(());
+        }
+    }
+    Err(Error::conflict(
+        "the seen mark is no longer in this physical session",
+    ))
+}
+
 pub(super) fn page(
     reader: &Reader<'_>,
     d: &impl ReadServices,
     request: &ReadRequest,
     operation: &Arc<crate::operation::Context>,
     scope: Scope,
-) -> Result<ReadPage, Error> {
+) -> Result<(ReadPage, Option<polylogue_model::user::SeenMark>), Error> {
     let ReadRequest {
         target,
         options,
@@ -1184,6 +1243,7 @@ pub(super) fn page(
         None
     };
     let continuation = bound.as_ref().unwrap_or(request);
+    trim_start(reader, request, &mut composed)?;
     still_wanted()?;
     let read_session = reader
         .session(&scope.session)?
@@ -1333,6 +1393,7 @@ pub(super) fn page(
         options,
         operation.ran_at,
         &mut cache,
+        request.start.uses_seen(),
         false,
     )?
     .items;
@@ -1425,6 +1486,7 @@ pub(super) fn page(
     let after_page = page_entries.get(keep.end).or(next_entry.as_ref());
     let call = |entry: &PageEntry, direction: ReadDirection| -> Result<ReadyCall, Error> {
         let next = PageCursor {
+            session_read: session_read(request).cloned(),
             target: continuation.target.clone(),
             options: digest.clone(),
             variants: request.options.variants.clone(),
@@ -1437,10 +1499,41 @@ pub(super) fn page(
         };
         super::next_call(d, continuation, next.seal(&key), super::deadline(operation))
     };
+    let positions = reader.change_position()?;
+    let mark = session_read(request).and_then(|bound| {
+        kept.iter().rev().find_map(|entry| {
+            if unfinished
+                .as_ref()
+                .is_some_and(|(key, _)| *key == entry.entry.key)
+            {
+                return None;
+            }
+            match &entry.entry.key {
+                EntryKey::Message { message, block } => {
+                    if block.is_none()
+                        && (after_page
+                            .is_some_and(|next| next.entry.key.message() == Some(message))
+                            || unfinished
+                                .as_ref()
+                                .is_some_and(|(key, _)| key.message() == Some(message)))
+                    {
+                        return None;
+                    }
+                    Some(polylogue_model::user::SeenMark {
+                        target: Reference::Session(bound.session.clone()).to_string(),
+                        item: Some(entry.entry.key.reference()),
+                        at: positions.clone(),
+                    })
+                }
+                EntryKey::Event { .. } => None,
+            }
+        })
+    });
     let finished = unfinished.is_none();
     let next = match unfinished {
         Some((entry_key, place)) => {
             let cursor = PageCursor {
+                session_read: session_read(request).cloned(),
                 target: continuation.target.clone(),
                 options: digest.clone(),
                 variants: request.options.variants.clone(),
@@ -1479,23 +1572,25 @@ pub(super) fn page(
         count: ValueState::known(shown.len()),
         ..ReadFooter::default()
     };
-    let positions = reader.change_position()?;
     let snapshot = ReadPageSnapshot {
         query: target.clone(),
         ran_at: operation.ran_at,
         read_at: positions,
         freshness: d.freshness(reader)?,
     };
-    Ok(ReadPage {
-        format,
-        snapshot,
-        records: vec![],
-        document: ReadDocument {
-            header,
-            items: items_out,
-            footer,
+    Ok((
+        ReadPage {
+            format,
+            snapshot,
+            records: vec![],
+            document: ReadDocument {
+                header,
+                items: items_out,
+                footer,
+            },
         },
-    })
+        mark,
+    ))
 }
 
 use super::cursor_failure;
@@ -1787,6 +1882,7 @@ fn lay_out(
     options: &ReadOptions,
     at: polylogue_model::Timestamp,
     cache: &mut Option<PreparedRecord>,
+    bounded: bool,
     originals: bool,
 ) -> Result<LaidOut, Error> {
     let mut laid = LaidOut {
@@ -1857,6 +1953,7 @@ fn lay_out(
                 options,
                 at,
                 &selected,
+                bounded,
                 &ready_attachment,
                 &mut footer,
                 &mut |item| {
@@ -2184,6 +2281,7 @@ fn project_layout(
     options: &ReadOptions,
     at: polylogue_model::Timestamp,
     selected: &dyn Fn(&Source) -> Result<bool, Error>,
+    bounded: bool,
     ready_attachment: &super::attachment_facts::ReadyAttachment<'_>,
     footer: &mut ReadFooter,
     out: &mut dyn FnMut(ReadItem),
@@ -2194,7 +2292,7 @@ fn project_layout(
     let mut record = record;
     // The index owns block membership. Preserve source ordinals and identity
     // while excluding evicted blocks from the original frame as well as layout.
-    if options.view == View::Context
+    if (options.view == View::Context || bounded)
         && let Record::Message(row) = &mut record
     {
         let mut blocks = Vec::new();

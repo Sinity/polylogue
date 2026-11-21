@@ -151,6 +151,7 @@ fn family(d: &test_daemon::TestDaemon) {
 
 fn read(d: &test_daemon::TestDaemon, target: &str, options: ReadOptions) -> ReadPage {
     let response = (crate::test_daemon::read(polylogue_reading::ReadRequest {
+        start: Default::default(),
         references: None,
         target: target.into(),
         options,
@@ -912,6 +913,7 @@ fn context_result_data_and_attachments_survive_entry_windows_and_page_boundaries
         if tools == Expansion::Full {
             assert!(items.iter().any(|item| matches!(&item.kind, ItemKind::Call { call } if call.output.as_deref() == Some("neutral paired output"))));
             let request = polylogue_reading::ReadRequest {
+                start: Default::default(),
                 references: None,
                 target: target.into(),
                 options,

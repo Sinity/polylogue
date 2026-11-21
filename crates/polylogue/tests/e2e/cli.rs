@@ -738,6 +738,7 @@ mod structured_json;
 
 mod read_current;
 mod read_pages;
+mod seen;
 
 mod stored_text;
 

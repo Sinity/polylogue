@@ -95,7 +95,7 @@ fn cli_read_pages_cover_utf8_once_and_refuse_malformed_and_revoked_cursors() {
 }
 
 /// A session of three short prompts, read in pages too small for all three.
-fn three_prompts(dir: &std::path::Path) -> (crate::Fixture, super::Daemon) {
+pub(super) fn three_prompts(dir: &std::path::Path) -> (crate::Fixture, super::Daemon) {
     let home = dir.join("home");
     let project = home.join(".claude/projects/-pager");
     std::fs::create_dir_all(&project).unwrap();
@@ -223,4 +223,27 @@ fn read_on_terminal_shows_whole_session_through_pager() {
         assert_eq!(shown.matches(marker).count(), 1, "{marker} in {shown}");
     }
     assert!(!String::from_utf8_lossy(&output.stderr).contains("continue:"));
+    assert_eq!(
+        super::seen::count(&env),
+        1,
+        "all pager pages acknowledge display"
+    );
+    let after = cli(
+        &env,
+        &[
+            "--json",
+            "session:claude-code:pager",
+            "read",
+            "--from",
+            "seen",
+        ],
+    );
+    let page = read_page(json(&after));
+    assert!(
+        !page
+            .document
+            .items
+            .iter()
+            .any(|item| item.source.message.is_some())
+    );
 }

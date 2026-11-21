@@ -613,3 +613,33 @@ fn finite_http_context_streams_share_paged_items_and_require_read_authority() {
         }
     });
 }
+
+#[test]
+fn http_get_pages_and_streams_never_acknowledge_display() {
+    let r = reader();
+    rt().block_on(async {
+        for delivery in ["page", "stream"] {
+            let path = read_url(
+                "session:claude-code:s1",
+                &[
+                    ("delivery", delivery),
+                    ("from", "seen"),
+                    ("displayed", "true"),
+                ],
+            );
+            let (status, _, body) = send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
+            assert_eq!(status, StatusCode::OK, "{delivery}: {body}");
+        }
+    });
+    r.w.set("browser.actions", "on");
+    let answer = crate::test_daemon::Call::new(
+        "rows",
+        serde_json::json!({"selection":"annotations where kind:seen"}),
+    )
+    .answer(&r.w.daemon);
+    let rows = crate::test_answers::ok(crate::test_answers::listing(answer));
+    assert_eq!(
+        rows["count"], 0,
+        "GET cannot turn a caller flag into an authored mark"
+    );
+}

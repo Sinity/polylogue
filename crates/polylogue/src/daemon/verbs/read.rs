@@ -70,6 +70,7 @@ pub(crate) fn arguments(
 ) -> Result<crate::protocol::read::Arguments, Failure> {
     let ReadStep {
         view,
+        displayed,
         show,
         hide,
         from,
@@ -94,7 +95,7 @@ pub(crate) fn arguments(
         delivery,
     } = step;
     for (given, option) in [
-        (from.is_some(), "from"),
+        (from.as_deref().is_some_and(|from| from != "seen"), "from"),
         (until.is_some(), "until"),
         (first.is_some(), "first"),
         (last.is_some(), "last"),
@@ -122,6 +123,8 @@ pub(crate) fn arguments(
         .transpose()?;
     Ok(crate::protocol::read::Arguments {
         target,
+        from: from.clone(),
+        displayed: *displayed,
         view: *view,
         format,
         delivery: *delivery,
@@ -148,6 +151,8 @@ pub(crate) fn step_of(
 ) -> Result<ReadStep, Failure> {
     let crate::protocol::read::Arguments {
         target: _,
+        from,
+        displayed,
         view,
         format,
         delivery,
@@ -175,6 +180,8 @@ pub(crate) fn step_of(
         }
     };
     Ok(ReadStep {
+        from,
+        displayed,
         at,
         view,
         show,
