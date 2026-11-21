@@ -156,6 +156,7 @@ fn a_new_binary_recovers_originals_and_admission_after_the_old_binary_refuses_it
         refused.to_string().contains("inherited"),
         "unexpected old-binary refusal: {refused}"
     );
+    eprintln!("older binary declaration refusal: {refused}");
     assert_eq!(originals(&running), original);
     running.real_sinex.stop_cleanly();
 
@@ -176,6 +177,7 @@ fn a_new_binary_recovers_originals_and_admission_after_the_old_binary_refuses_it
     }
     assert_eq!(broad_rows(&running).len(), 2);
     assert_eq!(running.real_sinex.sql("SELECT count(*) FROM core.ingress_frames WHERE producer='evidence' AND refusal IS NOT NULL"),"0");
+    eprintln!("recovered producer acknowledgments: {}",running.real_sinex.sql("SELECT json_agg(json_build_object('frame',frame,'commit',commit_seq,'admitted',admitted,'refusal',refusal) ORDER BY number) FROM core.ingress_frames WHERE producer='evidence' AND frame LIKE 'after-recovery/%'"));
     running.real_sinex.stop_cleanly();
     eprintln!(
         "binary recovery: original1event/1material unchanged; recovered2events/2materials; protocol7 admission; schema47; normal shutdowns"
