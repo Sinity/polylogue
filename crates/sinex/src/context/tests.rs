@@ -219,6 +219,44 @@ fn context_refreshes_an_expired_observation_on_the_same_connection_and_keeps_ref
         sinex.context(resolve).unwrap().observed_at,
         next.observed_at
     );
+    let limit = polylogue_store::read::limit::ReadLimit::new(
+        Duration::from_millis(10),
+        polylogue_store::cancellation::Cancellation::default(),
+    );
+    let timed_out = limit
+        .scope(|| sinex.read_client(async |_| std::future::pending::<crate::Result<()>>().await));
+    assert!(matches!(
+        timed_out,
+        Err(crate::Error::Store(
+            polylogue_store::StoreError::ReadDeadlineExceeded
+        ))
+    ));
+    let cancellation = polylogue_store::cancellation::Cancellation::default();
+    let limit = polylogue_store::read::limit::ReadLimit::without_deadline(cancellation.clone());
+    let cancelled = limit.scope(|| {
+        sinex.read_client(async |_| {
+            cancellation.cancel();
+            std::future::pending::<crate::Result<()>>().await
+        })
+    });
+    assert!(matches!(
+        cancelled,
+        Err(crate::Error::Store(
+            polylogue_store::StoreError::ReadCancelled
+        ))
+    ));
+    let held = sinex.client.locked();
+    let expired = polylogue_store::read::limit::ReadLimit::at(
+        Instant::now() - Duration::from_secs(1),
+        polylogue_store::cancellation::Cancellation::default(),
+    );
+    assert!(matches!(
+        expired.scope(|| sinex.read_client(async |_| Ok(()))),
+        Err(crate::Error::Store(
+            polylogue_store::StoreError::ReadDeadlineExceeded
+        ))
+    ));
+    drop(held);
     expire();
     let error = sinex.context(resolve).unwrap_err();
     assert_eq!(error.kind, ContextFailureKind::Refused);

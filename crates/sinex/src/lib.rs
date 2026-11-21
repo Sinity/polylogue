@@ -281,37 +281,75 @@ impl Sinex {
 
     /// Executes one operation under this connection's lock. Sending uses its own connection.
     fn client_operation<T>(&self, work: impl AsyncFnOnce(&mut Client) -> Result<T>) -> Result<T> {
-        let mut client = self.client.locked();
-        if client.is_none() {
-            let connect = Client::connect_shared(
-                &self.config,
-                &self.authentication,
-                Arc::clone(&self.spool),
-                Arc::clone(&self.health),
-                self.publication.clone(),
-                self.stopping.is_some(),
-            );
-            let connected = self.runtime.block_on(async {
-                match &self.stopping {
-                    Some(stop) => stop.until(connect).await,
-                    None => connect.await,
-                }
-            });
-            match connected {
-                Ok(connected) => *client = Some(connected),
-                Err(error) => {
-                    {
-                        let mut health = self.health.locked();
-                        health.reachable = Some(!matches!(error, Error::Unreachable(_)));
+        let limit = polylogue_store::read::limit::ReadLimit::current();
+        let mut client = match &limit {
+            Some(limit) => {
+                let waiting = std::thread::current();
+                let _wake = limit.cancellation.on_cancel(move || waiting.unpark());
+                loop {
+                    limit.check()?;
+                    match self.client.try_lock() {
+                        Ok(client) => break client,
+                        Err(std::sync::TryLockError::Poisoned(error)) => break error.into_inner(),
+                        Err(std::sync::TryLockError::WouldBlock) => {
+                            let poll = std::time::Duration::from_millis(5);
+                            std::thread::park_timeout(
+                                limit.remaining().map_or(poll, |left| left.min(poll)),
+                            );
+                        }
                     }
-                    return Err(error);
                 }
             }
-        }
-        let future = work(client.as_mut().expect("connected client"));
+            None => self.client.locked(),
+        };
+        let future = async {
+            if client.is_none() {
+                *client = Some(
+                    Client::connect_shared(
+                        &self.config,
+                        &self.authentication,
+                        Arc::clone(&self.spool),
+                        Arc::clone(&self.health),
+                        self.publication.clone(),
+                        self.stopping.is_some(),
+                    )
+                    .await?,
+                );
+            }
+            work(client.as_mut().expect("connected client")).await
+        };
         let result = self.runtime.block_on(async {
-            match &self.stopping {
-                Some(stop) => stop.until(future).await,
+            let future = async {
+                match &self.stopping {
+                    Some(stop) => stop.until(future).await,
+                    None => future.await,
+                }
+            };
+            match &limit {
+                Some(limit) => {
+                    let cancelled = Arc::new(tokio::sync::Notify::new());
+                    let wake = Arc::clone(&cancelled);
+                    let _wake = limit.cancellation.on_cancel(move || wake.notify_one());
+                    let deadline = async {
+                        match limit.deadline() {
+                            Some(at) => tokio::time::sleep_until(at.into()).await,
+                            None => std::future::pending().await,
+                        }
+                    };
+                    limit.check()?;
+                    tokio::select! {
+                        biased;
+                        _ = cancelled.notified() => {
+                            limit.check()?;
+                            unreachable!("a cancellation wake has a stopped request")
+                        }
+                        _ = deadline => Err(polylogue_store::StoreError::ReadDeadlineExceeded.into()),
+                        result = future => {
+                            limit.check()?;
+                            result
+                        }
+                    }
+                }
                 None => future.await,
             }
         });
