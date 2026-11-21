@@ -52,7 +52,6 @@ pub(super) fn load(
         let pk: i64 = row.get(0)?;
         let version = row.get(1)?;
         let member = MessageMember {
-            version: Some(version),
             input: row.get(2)?,
             input_id: String::new(),
             chain: row.get(3)?,

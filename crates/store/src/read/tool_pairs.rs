@@ -236,10 +236,11 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let mut input = conn.prepare_cached(
             "SELECT b.pk,b.idx,coalesce(b.ordinal,cast(b.idx AS TEXT)),m.id,s.id,b.call_id,
-                    (SELECT version_hash FROM message_version WHERE pk=m.source_version_pk),block_selection.layout,(SELECT count(*) FROM block WHERE message_pk=m.pk)
+                    (SELECT version_hash FROM message_version WHERE pk=shown.version_pk),block_selection.layout,(SELECT count(*) FROM block WHERE message_pk=m.pk)
              FROM message m JOIN session s ON s.pk=m.session_pk
              JOIN block b ON b.message_pk=m.pk AND b.session_pk=m.session_pk
-             LEFT JOIN message_block_selection block_selection ON block_selection.version_pk=m.source_version_pk
+             LEFT JOIN message_source shown ON shown.message_pk=m.pk AND shown.input_pk=m.input_pk AND shown.chain=m.source_chain
+             LEFT JOIN message_block_selection block_selection ON block_selection.version_pk=shown.version_pk
              WHERE m.id=?1 AND m.duplicate_of IS NULL AND coalesce(b.ordinal,cast(b.idx AS TEXT))=?2",
         )?;
         let mut rows = input.query(params![message.to_string(), ordinal.to_string()])?;
@@ -259,20 +260,22 @@ impl Reader<'_> {
         self.check()?;
         let mut statement = conn.prepare_cached(
             "SELECT cb.pk,cb.idx,coalesce(cb.ordinal,cast(cb.idx AS TEXT)),cm.id,cs.id,cb.call_id,
-                    (SELECT version_hash FROM message_version WHERE pk=cm.source_version_pk),block_selection.layout,(SELECT count(*) FROM block WHERE message_pk=cm.pk),
+                    (SELECT version_hash FROM message_version WHERE pk=shown.version_pk),block_selection.layout,(SELECT count(*) FROM block WHERE message_pk=cm.pk),
                     rb.pk,rb.idx,coalesce(rb.ordinal,cast(rb.idx AS TEXT)),rm.id,rs.id,rb.call_id,
-                    (SELECT version_hash FROM message_version WHERE pk=rm.source_version_pk),rblock_selection.layout,(SELECT count(*) FROM block WHERE message_pk=rm.pk),
+                    (SELECT version_hash FROM message_version WHERE pk=rshown.version_pk),rblock_selection.layout,(SELECT count(*) FROM block WHERE message_pk=rm.pk),
                     rb.kind='tool_result' AND rb.session_pk=t.session_pk AND rm.session_pk=t.session_pk
                       AND rm.duplicate_of IS NULL AND cb.call_id IS NOT NULL AND rb.call_id=cb.call_id AS matched
              FROM tool_call t
              JOIN block cb ON cb.pk=t.call_block_pk AND cb.session_pk=t.session_pk AND cb.kind='tool_call'
              JOIN message cm ON cm.pk=cb.message_pk AND cm.session_pk=t.session_pk
              JOIN session cs ON cs.pk=cm.session_pk
-             LEFT JOIN message_block_selection block_selection ON block_selection.version_pk=cm.source_version_pk
+             LEFT JOIN message_source shown ON shown.message_pk=cm.pk AND shown.input_pk=cm.input_pk AND shown.chain=cm.source_chain
+             LEFT JOIN message_block_selection block_selection ON block_selection.version_pk=shown.version_pk
              LEFT JOIN block rb ON rb.pk=t.result_block_pk
              LEFT JOIN message rm ON rm.pk=rb.message_pk
              LEFT JOIN session rs ON rs.pk=rm.session_pk
-             LEFT JOIN message_block_selection rblock_selection ON rblock_selection.version_pk=rm.source_version_pk
+             LEFT JOIN message_source rshown ON rshown.message_pk=rm.pk AND rshown.input_pk=rm.input_pk AND rshown.chain=rm.source_chain
+             LEFT JOIN message_block_selection rblock_selection ON rblock_selection.version_pk=rshown.version_pk
              WHERE (t.call_block_pk=?1 OR t.result_block_pk=?1) AND cm.duplicate_of IS NULL AND t.call_id IS cb.call_id",
         )?;
         let mut rows = statement.query([input.pk])?;

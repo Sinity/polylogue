@@ -510,8 +510,6 @@ fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
     const MESSAGES: usize = 34;
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
-    let started = std::time::Instant::now();
-    eprintln!("building briefing fixture: {SESSIONS} sessions, {MESSAGES} messages each");
     let pks = f
         .many_sessions(ManySessions {
             prefix: "/work/dense",
@@ -521,7 +519,6 @@ fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
             last: T0 - 60_000,
         })
         .unwrap();
-    eprintln!("briefing fixture built in {:?}", started.elapsed());
     const { assert!(SESSIONS * MESSAGES >= 1_000_000) };
     // Three of the newest are working there now.
     for &pk in &pks[SESSIONS - 3..] {
@@ -535,8 +532,6 @@ fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
         let pool = f.reads().unwrap();
         let reader = pool.reader().unwrap();
         reader.take_page_reads().unwrap();
-        let prepared_at = std::time::Instant::now();
-        eprintln!("preparing briefing at {cwd}");
         let p = prepare(
             crate::briefing::BriefContext {
                 reader: &reader,
@@ -557,10 +552,6 @@ fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
         )
         .unwrap();
         let pages = reader.take_page_reads().unwrap();
-        eprintln!(
-            "briefing at {cwd}: {:?}, {pages} pages",
-            prepared_at.elapsed()
-        );
         assert!(pages <= 100, "{cwd}: {pages} pages read\n{}", p.text);
         if cwd == "/unvisited/place" {
             assert!(

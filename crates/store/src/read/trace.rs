@@ -89,7 +89,7 @@ impl Reader<'_> {
             });
         }
         let message = crate::parser_context::resolved_message(conn, &message)?;
-        let mut statement=conn.prepare("SELECT i.id,s.chain,s.source_start,s.source_end,s.route,(s.input_pk=m.input_pk AND s.chain=m.source_chain),p.reading_version,p.status,p.parsed_upto FROM message m JOIN message_source s ON s.message_pk=m.pk JOIN input_ref i ON i.pk=s.input_pk LEFT JOIN parse_state p ON p.input_pk=s.input_pk AND p.chain=s.chain WHERE m.id=?1 AND s.message_pk=(SELECT pk FROM message WHERE id=?1) ORDER BY 6 DESC,i.id,s.chain")?;
+        let mut statement=conn.prepare("SELECT i.id,s.chain,s.source_start,s.source_end,s.route,(s.input_pk=m.input_pk AND s.chain=m.source_chain),p.reading_version,p.status,p.parsed_upto FROM message m JOIN message_source s ON s.message_pk=m.pk JOIN input_ref i ON i.pk=s.input_pk LEFT JOIN parse_state p ON p.input_pk=s.input_pk AND p.chain=s.chain WHERE m.id=?1 ORDER BY 6 DESC,i.id,s.chain")?;
         let sources = statement
             .query_map([message.to_string()], |row| {
                 <(

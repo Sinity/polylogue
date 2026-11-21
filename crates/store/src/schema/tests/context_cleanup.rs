@@ -18,9 +18,8 @@ fn repeated_source_upserts_keep_context_bodies_until_the_context_goes() {
                  INSERT INTO message(pk,id,session_pk,session_order,role,written_by,input_pk)
                     VALUES(1,'claude-code:response',1,'0','assistant','model',1);
                  INSERT INTO message_version VALUES(1,x'01'),(2,x'02'); INSERT INTO message_version_body VALUES(1,x'616263'),(2,x'646566');
-                 UPDATE message SET source_chain=17,source_start=0,source_end=4,source_id_kind='native',
-                    source_session_pk=1,source_main=1,source_route='live',source_seq=0,
-                    source_record_position=0,source_completion='finished',source_version_pk=1 WHERE pk=1;
+                 INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,session_pk,version_pk,route,completion)
+                    VALUES(1,1,17,0,4,'native',1,1,'live','finished');
                  INSERT INTO parser_context_state VALUES(1,17,'reading=1',4);
                  INSERT INTO parser_context_response VALUES(1,17,'','claude-code:context','kept-key',1,0,4);
                  INSERT INTO parse_state(input_pk,chain,status,parsed_upto,reading_version,checkpoint)
@@ -30,11 +29,13 @@ fn repeated_source_upserts_keep_context_bodies_until_the_context_goes() {
         ensure(&conn).unwrap();
         assert_eq!(version(&conn).unwrap(), index_version(primary));
         assert_eq!(snapshot(&conn), kept);
-        // This is the same default-source update used for an assembled response.
+        // This is the same source-key UPSERT used for an assembled response.
         // Moving off a version the context keeps leaves its body.
         for hash in [vec![2u8], vec![1], vec![2]] {
             conn.execute(
-                    "UPDATE message SET source_version_pk=(SELECT pk FROM message_version WHERE version_hash=?1) WHERE pk=1",
+                    "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,session_pk,version_pk,route,completion)
+                     VALUES(1,1,17,0,4,'native',1,(SELECT pk FROM message_version WHERE version_hash=?1),'live','finished')
+                     ON CONFLICT(message_pk,input_pk,chain) DO UPDATE SET version_pk=excluded.version_pk",
                     [hash],
                 ).unwrap();
         }

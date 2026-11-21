@@ -12,7 +12,7 @@ pub(crate) fn remove(i: &Transaction<'_>, pk: i64, id: &str, counter: i64) -> Re
         params![id, counter],
     )?;
     i.execute(
-        "DELETE FROM message_source_extra WHERE message_pk IN (SELECT pk FROM message WHERE session_pk=?1)",
+        "DELETE FROM message_source WHERE message_pk IN (SELECT pk FROM message WHERE session_pk=?1)",
         [pk],
     )?;
     // Search entries go before their tool-call rows. Only one command/path pair

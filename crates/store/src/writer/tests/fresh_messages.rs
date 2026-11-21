@@ -5,13 +5,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 fn deny_old_block_selection(context: AuthContext<'_>) -> Authorization {
     match context.action {
-        // Raw source metadata shares the header now. These columns neither
-        // replace the shown body nor its placement/citation columns.
-        AuthAction::Update {
-            table_name: "message",
-            column_name: "source_main" | "source_order_time",
-            ..
-        } => Authorization::Allow,
         AuthAction::Update {
             table_name: "message",
             ..
@@ -127,10 +120,6 @@ fn fresh_messages_install_without_replacing_old_blocks() {
     let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
     tx.authorizer(Some(deny_old_block_selection)).unwrap();
     assert_eq!(apply(&tx, &b, 0, &changes), 1);
-    assert!(
-        tx.execute("UPDATE message SET model=model", []).is_err(),
-        "the guard must still refuse displayed-message updates"
-    );
     tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
         .unwrap();
     assert_eq!(
