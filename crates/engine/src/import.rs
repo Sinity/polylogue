@@ -91,7 +91,19 @@ impl Engine {
         report.user_state.present += report.pass.authored.present;
         report.user_state.pending += report.pass.authored.pending;
         self.refresh_import_assets(&mut report.pass)?;
-        report.pass.sessions_derived = self.derive()?;
+        let changed = !report.imported.is_empty()
+            || report.pass.bytes_stored != 0
+            || report.pass.inputs_seen != 0
+            || report.pass.inputs_changed != 0
+            || report.pass.bytes_read != 0
+            || report.pass.messages_written != 0
+            || report.pass.readings_copied != 0
+            || report.user_state.applied != 0;
+        if changed || self.archive.index_build().is_some() {
+            report.pass.sessions_derived = self.derive()?;
+        } else {
+            report.pass.derivation_pending = self.writer.derive_in_background()?;
+        }
         report.pass.seconds = started.elapsed().as_secs_f64();
         Ok(report)
     }

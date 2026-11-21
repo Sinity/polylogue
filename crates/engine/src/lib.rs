@@ -279,6 +279,9 @@ pub struct Pass {
     pub bytes_copied: u64,
     /// Sessions whose derived products the pass recomputed.
     pub sessions_derived: u64,
+    /// An import left previously queued derived values to the background worker.
+    #[serde(default)]
+    pub derivation_pending: bool,
     pub seconds: f64,
     pub unreadable_roots: Vec<PathBuf>,
     pub errors: Vec<String>,
@@ -306,6 +309,7 @@ impl Pass {
         self.readings_copied += next.readings_copied;
         self.bytes_copied += next.bytes_copied;
         self.sessions_derived += next.sessions_derived;
+        self.derivation_pending = next.derivation_pending;
         self.seconds += next.seconds;
         for root in next.unreadable_roots {
             if !self.unreadable_roots.contains(&root) {

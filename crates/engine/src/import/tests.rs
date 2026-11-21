@@ -591,6 +591,7 @@ mod browser_files;
 mod replay;
 
 mod assets;
+mod derivation;
 mod empty_assets;
 mod stored_bytes;
 
