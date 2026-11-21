@@ -487,6 +487,29 @@ pub fn is_object_read(request: &ReadRequest) -> bool {
     object::target(request).is_some()
 }
 
+fn validate_at(reader: &Reader<'_>, request: &ReadRequest) -> Result<(), Error> {
+    let Some(position) = request.options.annotation_position() else {
+        return Ok(());
+    };
+    let current = reader.change_position()?;
+    if position.generation != current.generation {
+        return Err(Error::bad_request(
+            "read --at position belongs to another index generation",
+        ));
+    }
+    if position.index > current.index || position.archive > current.archive {
+        return Err(Error::bad_request(
+            "read --at position is ahead of this reader",
+        ));
+    }
+    if session::scope(reader, &request.target)?.is_none() {
+        return Err(Error::bad_request(
+            "historical read --at currently takes a session or message",
+        ));
+    }
+    Ok(())
+}
+
 pub fn page(
     reader: &Reader<'_>,
     d: &impl ReadServices,
@@ -494,6 +517,7 @@ pub fn page(
     operation: &Arc<Context>,
     history: Option<HistorySlot>,
 ) -> Result<ReadPage, Error> {
+    validate_at(reader, request)?;
     if request.with_blobs {
         return Err(Error::bad_request("with_blobs requires streaming delivery"));
     }
@@ -780,6 +804,7 @@ pub fn stream(
     operation: &Arc<Context>,
     output: &mut dyn Write,
 ) -> Result<ReadComplete, Error> {
+    validate_at(reader, request)?;
     if request.delivery != ReadDelivery::Stream {
         return Err(Error::bad_request(
             "streaming reads require stream delivery",

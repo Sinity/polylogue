@@ -543,3 +543,34 @@ fn comparison_values_use_the_normalized_conditions_binding() {
         "`invalid` is not a Number value for `exit_code`"
     );
 }
+
+#[test]
+fn annotation_history_roots_bind_natural_references_to_the_stored_family_identity() {
+    let bare = prepare(
+        "annotations where root:first withdrawn:*",
+        &Bindings::default(),
+        |_| Ok(()),
+    )
+    .unwrap();
+    for text in [
+        "annotations where root:annotation:first withdrawn:*",
+        "annotations where root:annotation:first@revision withdrawn:*",
+    ] {
+        let reference = prepare(text, &Bindings::default(), |_| Ok(())).unwrap();
+        assert_eq!(reference.question_id(), bare.question_id(), "{text}");
+    }
+    for root in ["session:claude-code:first", "assertion:opaque"] {
+        let opaque = prepare(
+            &format!("annotations where root:{root}"),
+            &Bindings::default(),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(
+            serde_json::to_string(opaque.identity_query())
+                .unwrap()
+                .contains(root),
+            "opaque roots keep their bytes: {root}"
+        );
+    }
+}

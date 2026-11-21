@@ -1149,7 +1149,7 @@ fields! {
         "root",
         Prefix,
         "the first note of its revisions",
-    ),
+    ).reference_argument(),
     AnnotationsCurrent = f(
         Annotations,
         "current",

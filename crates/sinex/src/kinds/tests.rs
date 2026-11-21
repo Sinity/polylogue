@@ -507,3 +507,29 @@ fn trace_view_versions_only_its_three_reachable_declarations() {
         }
     }
 }
+
+#[test]
+fn historical_annotation_positions_keep_the_published_execution_string_schema() {
+    // This is the at field from the preserved SOURCE12 declaration. SOURCE13
+    // changed View only; at's nullable-string codec is still unchanged.
+    let old = serde_json::json!({
+        "description":"The message a context reading is taken at; the latest when absent.",
+        "anyOf":[{"$ref":"#/$defs/MessageId"},{"type":"null"}]
+    });
+    for kind in declarations("polylogue") {
+        let schema = kind.payload_schema.as_ref().unwrap();
+        if let Some(options) = schema["$defs"].get("ReadOptions") {
+            assert_eq!(options["properties"]["at"], old, "{}", kind.kind.name);
+            assert_eq!(
+                schema["$defs"]["MessageId"],
+                serde_json::json!({"type":"string"})
+            );
+            assert!(
+                schema["$defs"].get("ReadAt").is_none(),
+                "{}",
+                kind.kind.name
+            );
+        }
+    }
+    assert_eq!(crate::source_reference().version, 13);
+}

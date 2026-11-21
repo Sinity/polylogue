@@ -375,7 +375,13 @@ impl Walk<'_, '_, '_, '_> {
             if options.assertions
                 && let records::SelectedRecord::Original(original) = &record
             {
-                layout_facts::annotate(reader, original, &mut facts, rendering.at)?;
+                layout_facts::annotate(
+                    reader,
+                    original,
+                    &mut facts,
+                    rendering.at,
+                    options.annotation_position(),
+                )?;
             }
             polylogue_store::read::limit::ReadLimit::set_stage("read layout");
             let Some(record) = output::project(record, options, &facts, mixed, footer)? else {

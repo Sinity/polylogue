@@ -374,6 +374,7 @@ pub(crate) struct StoredLinks<'a> {
     conn: &'a Connection,
     source: Source,
     until: Option<Until>,
+    through: Option<i64>,
 }
 
 #[derive(Clone, Copy)]
@@ -388,7 +389,18 @@ impl<'a> StoredLinks<'a> {
             conn,
             source: Source::reading(conn)?,
             until: None,
+            through: None,
         })
+    }
+    /// Facts accepted through one local archive write counter.
+    pub(crate) fn at_commit(conn: &'a Connection, through: i64) -> Result<Self> {
+        Ok(Self {
+            through: Some(through),
+            ..Self::new(conn)?
+        })
+    }
+    fn committed(&self, commit: i64) -> bool {
+        self.through.is_none_or(|through| commit <= through)
     }
     /// Records written at or before `until`, by the writer's clock.
     pub(crate) fn as_of(conn: &'a Connection, until: Timestamp) -> Result<Self> {
@@ -426,13 +438,13 @@ impl<'a> StoredLinks<'a> {
     fn incoming(&self, reference: &Reference, role: LinkRole) -> Result<Vec<Revision>> {
         check_read()?;
         let mut statement = self.conn.prepare_cached(&self.source.sql(
-            "SELECT a.root,a.id,a.created_at FROM @source.link l JOIN @source.assertion a ON a.id=l.record WHERE l.ref=?1 AND l.role=?2 ORDER BY a.root,a.id",
+            "SELECT a.root,a.id,a.created_at,a.commit_seq FROM @source.link l JOIN @source.assertion a ON a.id=l.record WHERE l.ref=?1 AND l.role=?2 ORDER BY a.root,a.id",
         ))?;
         let mut rows = statement.query(params![reference.stored_form(), role.as_str()])?;
         let mut incoming = Vec::new();
         while let Some(row) = rows.next()? {
             check_read()?;
-            if self.in_view(row.get(2)?) {
+            if self.in_view(row.get(2)?) && self.committed(row.get(3)?) {
                 incoming.push(Revision::new(
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -447,15 +459,13 @@ impl Links for StoredLinks<'_> {
     type Error = StoreError;
     fn revisions(&mut self, root: &str) -> Result<Vec<Revision>> {
         check_read()?;
-        let mut statement = self.conn.prepare_cached(
-            &self
-                .source
-                .sql("SELECT id,created_at FROM @source.assertion WHERE root=?1 ORDER BY id"),
-        )?;
+        let mut statement = self.conn.prepare_cached(&self.source.sql(
+            "SELECT id,created_at,commit_seq FROM @source.assertion WHERE root=?1 ORDER BY id",
+        ))?;
         let mut rows = statement.query([root])?;
         let mut result = Vec::new();
         while let Some(row) = rows.next()? {
-            if self.in_view(row.get(1)?) {
+            if self.in_view(row.get(1)?) && self.committed(row.get(2)?) {
                 result.push(Revision::new(root, row.get::<_, String>(0)?));
             }
         }

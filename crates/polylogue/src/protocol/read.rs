@@ -47,7 +47,7 @@ pub struct Arguments {
     #[serde(default)]
     #[schemars(extend("unlisted" = true))]
     pub with_blobs: bool,
-    /// The message a context reading is taken at
+    /// A context message or exact local annotation revision position
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(extend("unlisted" = true))]
     pub at: Option<String>,

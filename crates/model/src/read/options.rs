@@ -2,6 +2,39 @@ use super::ReadError;
 use crate::{Block, BlockKind, Message, PromptKind, Role};
 use serde::{Deserialize, Serialize};
 
+/// A context message or an exact local archive position. The wire form remains
+/// one string, including for stored reads accepted before historical reading.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(try_from = "String", into = "String")]
+pub enum ReadAt {
+    Message(crate::MessageId),
+    Position(crate::ChangePosition),
+}
+impl TryFrom<String> for ReadAt {
+    type Error = String;
+    fn try_from(text: String) -> Result<Self, String> {
+        if let Some(position) = crate::ChangePosition::parse(&text) {
+            return Ok(Self::Position(position));
+        }
+        crate::MessageId::parse(&text).map(Self::Message).map_err(|_| {
+            "read --at takes GENERATION:INDEX:ARCHIVE, or a message in the context view; time selection is not built".into()
+        })
+    }
+}
+impl From<ReadAt> for String {
+    fn from(at: ReadAt) -> Self {
+        at.to_string()
+    }
+}
+impl std::fmt::Display for ReadAt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Message(message) => message.fmt(f),
+            Self::Position(position) => position.fmt(f),
+        }
+    }
+}
+
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
 )]
@@ -115,9 +148,15 @@ pub struct ReadOptions {
     /// For `root:REF`: read only the named physical session.
     #[serde(default)]
     pub physical: bool,
-    /// The message a context reading is taken at; the latest when absent.
+    /// A context message or an exact local annotation revision position.
+    // The existing published nullable-string codec and its declaration text
+    // stay immutable; Rust parses the same string into the appropriate case.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub at: Option<crate::MessageId>,
+    #[schemars(
+        with = "Option<crate::MessageId>",
+        description = "The message a context reading is taken at; the latest when absent."
+    )]
+    pub at: Option<ReadAt>,
     /// The other place of a context difference: a message, or `compaction`
     /// or `compaction:N` for just before the last or the Nth-last boundary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -392,7 +431,33 @@ impl ReadOptions {
     pub fn harness(&self) -> Expansion {
         self.harness.unwrap_or(Expansion::Collapsed)
     }
+    /// The context view retains the original message-coordinate grammar,
+    /// even when an opaque native ID also resembles an archive counter.
+    pub fn context_message(&self) -> Result<Option<crate::MessageId>, ReadError> {
+        if self.view != View::Context {
+            return Ok(None);
+        }
+        self.at
+            .as_ref()
+            .map(|at| {
+                crate::MessageId::parse(&at.to_string())
+                    .map_err(|error| ReadError::invalid(error.to_string()))
+            })
+            .transpose()
+    }
+
+    pub fn annotation_position(&self) -> Option<&crate::ChangePosition> {
+        if self.view == View::Context {
+            return None;
+        }
+        match &self.at {
+            Some(ReadAt::Position(position)) => Some(position),
+            _ => None,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), ReadError> {
+        self.context_message()?;
         let prose = matches!(self.view, View::Transcript | View::Context);
         for (supplied, option, accepted) in [
             (
@@ -440,7 +505,7 @@ impl ReadOptions {
                 "transcript, dialogue, changes, raw",
             ),
             (
-                self.at.is_some() && self.view != View::Context,
+                matches!(self.at, Some(ReadAt::Message(_))) && self.view != View::Context,
                 "at",
                 "context",
             ),
