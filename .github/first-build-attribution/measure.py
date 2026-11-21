@@ -497,7 +497,7 @@ def main(args: argparse.Namespace) -> int:
                       'candidate_not_started': 'baseline did not complete normally',
                       'appliance_timing_or_release_acceptance': False}
             write_json(results / 'paired-summary.json', report)
-            print('HOSTED_CHECKPOINT_PAIR_JSON=' + json.dumps(report), flush=True)
+            print('HOSTED_STATE_BUFFER_PAIR_JSON=' + json.dumps(report), flush=True)
             return 1
         candidate_args = argparse.Namespace(**vars(args))
         candidate_args.binary = args.candidate_binary
@@ -509,7 +509,7 @@ def main(args: argparse.Namespace) -> int:
         report = {'baseline': baseline, 'candidate': candidate, 'search_and_context_model_parity': parity,
                   'appliance_timing_or_release_acceptance': False}
         write_json(results / 'paired-summary.json', report)
-        print('HOSTED_CHECKPOINT_PAIR_JSON=' + json.dumps(report), flush=True)
+        print('HOSTED_STATE_BUFFER_PAIR_JSON=' + json.dumps(report), flush=True)
         return 0 if parity else 1
     summary = run_arm(args, work / 'measurement', home, files, 'single')
     return 0 if summary['complete'] and summary['failure'] is None else 1
@@ -549,7 +549,7 @@ def run_arm(args: argparse.Namespace, work: Path, home: Path,
     existing = show_unit(unit)
     if existing.get('LoadState') != 'not-found':
         raise RuntimeError(f'the system manager is unavailable or the exact unit exists: {existing}')
-    summary = {'kind': 'hosted_checkpoint_cpu_pair_arm', 'revision': args.revision,
+    summary = {'kind': 'hosted_state_buffer_pair_arm', 'revision': args.revision,
                'diagnostic_source': command(['git', 'rev-parse', 'HEAD']).stdout.strip(),
                'measurement_script_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                'generator_sha256': hashlib.sha256(Path(args.generator).read_bytes()).hexdigest(),
