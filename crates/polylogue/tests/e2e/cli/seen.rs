@@ -189,3 +189,92 @@ fn actual_mcp_returned_page_marks_and_from_seen_reads_the_remainder() {
             .any(|item| item.source.message.is_some())
     );
 }
+
+#[test]
+fn logical_read_reuses_physical_progress_through_cli_and_actual_mcp() {
+    let dir = tempfile::tempdir().unwrap();
+    let (env, _daemon) = super::read_pages::three_prompts(dir.path());
+    let project = dir.path().join("home/.claude/projects/-pager");
+    let mut source = std::fs::OpenOptions::new()
+        .append(true)
+        .open(project.join("pager.jsonl"))
+        .unwrap();
+    writeln!(
+        source,
+        "{}",
+        json!({"type":"continued-in","sessionId":"pager","continuedInSessionId":"cont"})
+    )
+    .unwrap();
+    drop(source);
+    std::fs::write(
+        project.join("cont.jsonl"),
+        line("c1", "cont", "already read continuation"),
+    )
+    .unwrap();
+    wait_status(&env, |status| {
+        status["store"]["messages"] == 4 && status["store"]["search_pending"] == 0
+    });
+    let displayed = env
+        .command()
+        .env("PAGER", "cat")
+        .args(["session:claude-code:cont", "read", "--to", "pager"])
+        .output()
+        .unwrap();
+    assert!(displayed.status.success(), "{displayed:?}");
+    assert_eq!(count(&env), 1);
+    let target = "root:claude-code:pager";
+    let pipe = cli(
+        &env,
+        &[
+            "--json", target, "read", "--from", "seen", "--budget", "100000",
+        ],
+    );
+    let mut items = super::read_current::Items::default();
+    items.push(&read_page(json(&pipe)));
+    assert_eq!(
+        items.text(),
+        "opening questionsecond marker betathird marker gamma"
+    );
+    assert_eq!(count(&env), 1);
+    let bundle = format!("{}/logical-bundle/", dir.path().display());
+    let stream = cli(&env, &[target, "read", "--from", "seen", "--to", &bundle]);
+    assert!(stream.status.success(), "{stream:?}");
+    assert_eq!(
+        count(&env),
+        1,
+        "exporting a composed stream cannot mark its unread root"
+    );
+    let mut mcp = super::query_surfaces::Mcp::start(&env);
+    let request = command_surface::RunnableRequest::new(
+        "rows",
+        json!({"selection":target,"steps":[{"verb":"read","from":"seen","budget":100000}]}),
+        uuid::Uuid::now_v7().to_string(),
+    );
+    let reply = mcp.request(
+        "tools/call",
+        json!({"name":"polylogue_read","arguments":request}),
+    );
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    let answer: command_surface::Answer<Value> =
+        serde_json::from_value(reply["result"]["structuredContent"].clone()).unwrap();
+    let mut items = super::read_current::Items::default();
+    items.push(&read_page(answer.value().unwrap().clone()));
+    assert_eq!(
+        items.text(),
+        "opening questionsecond marker betathird marker gamma"
+    );
+    assert_eq!(
+        count(&env),
+        2,
+        "MCP advances the existing root physical mark"
+    );
+    let again = cli(
+        &env,
+        &[
+            "--json", target, "read", "--from", "seen", "--budget", "100000",
+        ],
+    );
+    let mut items = super::read_current::Items::default();
+    items.push(&read_page(json(&again)));
+    assert_eq!(items.text(), "");
+}

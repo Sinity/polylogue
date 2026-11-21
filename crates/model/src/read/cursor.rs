@@ -145,13 +145,25 @@ pub struct PageCursor {
     pub direction: ReadDirection,
 }
 
-/// One physical reading's accepted start. A later display acknowledgement
+/// One session reading's accepted start. A later display acknowledgement
 /// never changes the lower bound of its next or previous pages.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionRead {
     pub session: SessionId,
     pub from_seen: bool,
+    pub after: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub logical: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<SessionSeen>,
+}
+
+/// Accepted physical marks of a composed reading, including absent marks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionSeen {
+    pub session: SessionId,
     pub after: Option<String>,
 }
 

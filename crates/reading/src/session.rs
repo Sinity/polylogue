@@ -939,19 +939,35 @@ fn bind_context(
     request: &ReadRequest,
     composed: &mut Composed,
 ) -> Result<Option<ReadRequest>, Error> {
+    let anchor = match Reference::parse(&request.target).ok() {
+        Some(Reference::Message(message)) => Some(message),
+        _ => None,
+    };
     for part in (0..composed.parts.len()).rev() {
         let range = &composed.parts[part];
         let index = &composed.indexes[part];
-        let Some(header) = reader
-            .item_window(
-                index.pk,
-                range.start as u64..range.end as u64,
-                false,
-                1,
-                EntryClass::is_header,
-            )?
-            .pop()
-        else {
+        let header = if let Some(anchor) = &anchor {
+            let Some(seq) = reader.item_place(index.pk, &EntryKey::header(anchor))? else {
+                continue;
+            };
+            if !(range.start as u64..range.end as u64).contains(&seq) {
+                continue;
+            }
+            reader
+                .item_window(index.pk, seq..seq + 1, true, 1, EntryClass::is_header)?
+                .pop()
+        } else {
+            reader
+                .item_window(
+                    index.pk,
+                    range.start as u64..range.end as u64,
+                    false,
+                    1,
+                    EntryClass::is_header,
+                )?
+                .pop()
+        };
+        let Some(header) = header else {
             continue;
         };
         let Some(message) = header.entry.key.message().cloned() else {
@@ -996,6 +1012,8 @@ pub(super) fn stream(
         ..scope
     };
     let mut composed = compose(d, reader, &scope, options)?;
+    let accepted = bind_seen(reader, request, operation, &composed)?;
+    let request = &accepted;
     if options.annotation_at().is_some() {
         bind_context(reader, request, &mut composed)?;
     }
@@ -1143,6 +1161,59 @@ fn session_read(request: &ReadRequest) -> Option<&SessionRead> {
     }
 }
 
+/// Snapshot each physical owner's mark once. Root and continuation content
+/// remains independently unread even when a later part has already been read.
+fn bind_seen(
+    reader: &Reader<'_>,
+    request: &ReadRequest,
+    operation: &crate::operation::Context,
+    composed: &Composed,
+) -> Result<ReadRequest, Error> {
+    let mut request = request.clone();
+    if request.cursor.is_none()
+        && let crate::ReadStart::Bound(bound) = &mut request.start
+        && bound.logical
+    {
+        let mut seen = HashSet::new();
+        let owners: Vec<_> = composed
+            .parts
+            .iter()
+            .filter(|part| !spawned(part))
+            .map(|part| {
+                if part.inherited {
+                    &bound.session
+                } else {
+                    &part.session
+                }
+            })
+            .filter(|session| seen.insert((*session).clone()))
+            .cloned()
+            .collect();
+        let targets: Vec<_> = owners.iter().cloned().map(Reference::Session).collect();
+        let mut marks = std::collections::HashMap::new();
+        if bound.from_seen {
+            for mark in reader.seen_marks(&operation.authorship.author.to_string(), &targets)? {
+                if marks.insert(mark.target.clone(), mark.item).is_some() {
+                    return Err(Error::conflict(format!(
+                        "multiple current seen marks for {}",
+                        mark.target
+                    )));
+                }
+            }
+        }
+        bound.parts = owners
+            .into_iter()
+            .map(|session| {
+                let after = marks
+                    .remove(&Reference::Session(session.clone()).to_string())
+                    .flatten();
+                SessionSeen { session, after }
+            })
+            .collect();
+    }
+    Ok(request)
+}
+
 /// Cut the existing composition at the accepted message/block, preserving
 /// its source order and membership; pagination then uses its normal index.
 fn trim_start(
@@ -1153,8 +1224,51 @@ fn trim_start(
     let Some(bound) = session_read(request) else {
         return Ok(());
     };
-    let Some(after) = &bound.after else {
+    if bound.logical {
+        for owner in &bound.parts {
+            trim_owner(
+                reader,
+                composed,
+                &bound.session,
+                &owner.session,
+                owner.after.as_deref(),
+                true,
+            )?;
+        }
         return Ok(());
+    }
+    trim_owner(
+        reader,
+        composed,
+        &bound.session,
+        &bound.session,
+        bound.after.as_deref(),
+        false,
+    )
+}
+
+fn trim_owner(
+    reader: &Reader<'_>,
+    composed: &mut Composed,
+    root: &SessionId,
+    owner: &SessionId,
+    after: Option<&str>,
+    logical: bool,
+) -> Result<(), Error> {
+    let Some(after) = after else {
+        return Ok(());
+    };
+    let owns = |part: &Part| {
+        if logical {
+            !spawned(part)
+                && if part.inherited {
+                    owner == root
+                } else {
+                    &part.session == owner
+                }
+        } else {
+            true
+        }
     };
     let (key, whole_message) = match Reference::parse_stored(after).map_err(Error::bad_request)? {
         Reference::Message(message) => (EntryKey::header(&message), true),
@@ -1167,11 +1281,16 @@ fn trim_start(
         ),
         _ => return Err(Error::conflict("the seen mark is not a message or block")),
     };
-    for at in 0..composed.parts.len() {
+    // Inline children can split one physical owner into several parts.
+    // Find the last such segment beginning no later than the accepted item.
+    for at in (0..composed.parts.len()).rev() {
+        if !owns(&composed.parts[at]) {
+            continue;
+        }
         let index = &composed.indexes[at];
         if let Some(seq) = reader.item_place(index.pk, &key)? {
             let part = &composed.parts[at];
-            if seq as usize >= part.end && part.session != bound.session {
+            if (seq as usize) < part.start || seq as usize >= part.end && &part.session != owner {
                 continue;
             }
             let end = if whole_message {
@@ -1180,12 +1299,26 @@ fn trim_start(
                 seq + 1
             } as usize;
             for before in &mut composed.parts[..at] {
-                before.end = before.start;
+                if owns(before) {
+                    before.end = before.start;
+                }
             }
             let part = &mut composed.parts[at];
             part.start = part.start.max(end).min(part.end);
             return Ok(());
         }
+    }
+    // A continuation's physical mark can still name its copied prefix;
+    // logical composition shows only that continuation's own entries.
+    if logical
+        && owner != root
+        && let Some(message) = key.message()
+        && reader
+            .select_messages(owner, true)?
+            .message_key(message)?
+            .is_some()
+    {
+        return Ok(());
     }
     Err(Error::conflict(
         "the seen mark is no longer in this physical session",
@@ -1198,7 +1331,7 @@ pub(super) fn page(
     request: &ReadRequest,
     operation: &Arc<crate::operation::Context>,
     scope: Scope,
-) -> Result<(ReadPage, Option<polylogue_model::user::SeenMark>), Error> {
+) -> Result<(ReadPage, Vec<polylogue_model::user::SeenMark>), Error> {
     let ReadRequest {
         target,
         options,
@@ -1232,11 +1365,20 @@ pub(super) fn page(
             "--physical applies to root:REF; a session reference is already one physical session",
         ));
     }
-    let scope = Scope {
-        logical: scope.logical && !options.physical,
-        ..scope
+    let scope = match session_read(request).filter(|bound| opened.is_some() && bound.logical) {
+        Some(bound) => Scope {
+            session: bound.session.clone(),
+            range: None,
+            logical: true,
+        },
+        None => Scope {
+            logical: scope.logical && !options.physical,
+            ..scope
+        },
     };
     let mut composed = compose(d, reader, &scope, options)?;
+    let accepted = bind_seen(reader, request, operation, &composed)?;
+    let request = &accepted;
     let bound = if options.view == View::Context && options.annotation_at().is_some() {
         bind_context(reader, request, &mut composed)?
     } else {
@@ -1500,13 +1642,29 @@ pub(super) fn page(
         super::next_call(d, continuation, next.seal(&key), super::deadline(operation))
     };
     let positions = reader.change_position()?;
-    let mut mark = None;
+    let mut marks = Vec::new();
+    let mut marked = HashSet::new();
     if let Some(bound) = session_read(request) {
         for entry in kept.iter().rev() {
             let part = &composed.parts[entry.part];
             // Inline children have their own identities. A physical mark
             // belongs to this session and its recorded inherited prefix.
-            if part.session != bound.session && !part.inherited {
+            let owner = if bound.logical {
+                if spawned(part) {
+                    continue;
+                }
+                if part.inherited {
+                    &bound.session
+                } else {
+                    &part.session
+                }
+            } else {
+                if part.session != bound.session && !part.inherited {
+                    continue;
+                }
+                &bound.session
+            };
+            if marked.contains(owner) {
                 continue;
             }
             if unfinished
@@ -1541,12 +1699,12 @@ pub(super) fn page(
                     continue;
                 }
             }
-            mark = Some(polylogue_model::user::SeenMark {
-                target: Reference::Session(bound.session.clone()).to_string(),
+            marks.push(polylogue_model::user::SeenMark {
+                target: Reference::Session(owner.clone()).to_string(),
                 item: Some(entry.entry.key.reference()),
                 at: positions.clone(),
             });
-            break;
+            marked.insert(owner.clone());
         }
     }
     let finished = unfinished.is_none();
@@ -1609,7 +1767,7 @@ pub(super) fn page(
                 footer,
             },
         },
-        mark,
+        marks,
     ))
 }
 

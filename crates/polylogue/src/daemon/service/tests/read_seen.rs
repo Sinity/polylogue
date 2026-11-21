@@ -278,3 +278,255 @@ fn inline_child_last_keeps_the_latest_rendered_physical_parent_progress() {
         "a child is not marked as a separate read"
     );
 }
+
+fn composed_call(target: &str, step: serde_json::Value) -> Call {
+    Call::new("rows", json!({"selection":target,"steps":[step]}))
+}
+fn body_text(page: &ReadPage) -> Vec<String> {
+    page.document
+        .items
+        .iter()
+        .filter_map(|item| match &item.kind {
+            ItemKind::Text { text } => Some(text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn logical_seen_keeps_unread_root_when_its_continuation_was_read_first() {
+    let d = test_daemon::start("placeholder");
+    super::reading_shapes::family(&d);
+    let step = json!({"verb":"read","from":"seen","budget":100000,"hide":["tools"]});
+    let continuation = crate::test_answers::read(
+        composed_call("session:claude-code:cont", step.clone())
+            .surface(Surface::Mcp)
+            .answer(&d.daemon),
+    );
+    assert_eq!(body_text(&continuation), ["continuation question"]);
+    assert!(marks_of(&d, "session:claude-code:root").is_empty());
+    let root = crate::test_answers::read(
+        composed_call("root:claude-code:root", step.clone()).answer(&d.daemon),
+    );
+    assert_eq!(body_text(&root), ["root question"]);
+    assert!(
+        marks_of(&d, "session:claude-code:root").is_empty(),
+        "piped CLI does not acknowledge the root"
+    );
+    let root = crate::test_answers::read(
+        composed_call("root:claude-code:root", step.clone())
+            .surface(Surface::Mcp)
+            .answer(&d.daemon),
+    );
+    assert_eq!(body_text(&root), ["root question"]);
+    assert_eq!(marks_of(&d, "session:claude-code:root").len(), 1);
+    assert_eq!(marks_of(&d, "session:claude-code:cont").len(), 1);
+    let empty =
+        crate::test_answers::read(composed_call("root:claude-code:root", step).answer(&d.daemon));
+    assert!(body_text(&empty).is_empty());
+}
+
+#[test]
+fn logical_seen_keeps_copied_prefix_progress_on_its_physical_owner() {
+    let d = test_daemon::start("placeholder");
+    super::reading_shapes::family(&d);
+    let step =
+        json!({"verb":"read","from":"seen","budget":100000,"show":["inherited"],"hide":["tools"]});
+    let inherited = crate::test_answers::read(
+        composed_call(
+            "session:claude-code:fork",
+            json!({"verb":"read","view":"context","at":"claude-code:f1","budget":100000}),
+        )
+        .surface(Surface::Mcp)
+        .answer(&d.daemon),
+    );
+    assert_eq!(body_text(&inherited), ["root question"]);
+    assert_eq!(
+        marks_of(&d, "session:claude-code:fork")[0].item.as_deref(),
+        Some("block:claude-code:r1#0")
+    );
+    let fork = crate::test_answers::read(
+        composed_call("root:claude-code:fork", step.clone())
+            .surface(Surface::Mcp)
+            .answer(&d.daemon),
+    );
+    assert_eq!(body_text(&fork), ["forked question"]);
+    assert!(
+        marks_of(&d, "session:claude-code:root").is_empty(),
+        "an inherited prefix belongs to the accepted fork reading"
+    );
+    assert_eq!(
+        marks_of(&d, "session:claude-code:fork")[0].item.as_deref(),
+        Some("block:claude-code:f1#0")
+    );
+    let again =
+        crate::test_answers::read(composed_call("root:claude-code:fork", step).answer(&d.daemon));
+    assert!(body_text(&again).is_empty());
+    let root = crate::test_answers::read(
+        composed_call(
+            "root:claude-code:root",
+            json!({"verb":"read","from":"seen","budget":100000,"hide":["tools"]}),
+        )
+        .answer(&d.daemon),
+    );
+    assert_eq!(body_text(&root), ["root question", "continuation question"]);
+}
+
+#[test]
+fn logical_seen_cursor_keeps_all_accepted_bounds_through_parent_append_and_restart() {
+    use std::io::Write;
+    let mut d = test_daemon::start_with_sources_and_workers(
+        "placeholder",
+        &|home| {
+            let dir = home.join(".claude/projects/-p");
+            let root = (1..=8)
+                .map(|n| {
+                    polylogue_testkit::claude_user(
+                        &format!("r{n}"),
+                        "root",
+                        &format!("root {n} {}", "synthetic text ".repeat(150)),
+                    )
+                })
+                .collect::<String>();
+            std::fs::write(
+                dir.join("root.jsonl"),
+                format!(
+                    "{root}{}\n",
+                    json!({"type":"continued-in","sessionId":"root","continuedInSessionId":"cont"})
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join("cont.jsonl"),
+                polylogue_testkit::claude_user("c1", "cont", "continuation body"),
+            )
+            .unwrap();
+        },
+        9,
+        2,
+    );
+    let first = crate::test_answers::read(
+        composed_call(
+            "root:claude-code:root",
+            json!({"verb":"read","from":"seen","budget":1000,"hide":["annotations"]}),
+        )
+        .surface(Surface::Mcp)
+        .answer(&d.daemon),
+    );
+    let next = first
+        .document
+        .footer
+        .next
+        .clone()
+        .expect("large root crosses pages");
+    // A newer display updates both durable marks after the first cursor captured
+    // their absent bounds. That cursor must continue the original population.
+    let _ = crate::test_answers::read(
+        composed_call(
+            "root:claude-code:root",
+            json!({"verb":"read","budget":100000,"hide":["annotations"]}),
+        )
+        .surface(Surface::Mcp)
+        .answer(&d.daemon),
+    );
+    assert_eq!(marks_of(&d, "session:claude-code:cont").len(), 1);
+    let second = crate::test_answers::read(Call::from_request(&next.request).answer(&d.daemon));
+    let mut source = std::fs::OpenOptions::new()
+        .append(true)
+        .open(d.home.join(".claude/projects/-p/root.jsonl"))
+        .unwrap();
+    writeln!(source, "{}", json!({"type":"user","uuid":"r9","sessionId":"root","timestamp":"2026-12-01T00:00:00Z","message":{"role":"user","content":"parent appended after acceptance"}})).unwrap();
+    drop(source);
+    d.wait_for(|_| {
+        d.daemon
+            .reads
+            .reader()
+            .unwrap()
+            .message_session(&polylogue_model::MessageId::parse("claude-code:r9").unwrap())
+            .unwrap()
+            .is_some()
+    });
+    d.restart();
+    let reopened = crate::test_answers::read(Call::from_request(&next.request).answer(&d.daemon));
+    assert_eq!(reopened.document.items, second.document.items);
+    let previous = reopened
+        .document
+        .footer
+        .previous
+        .as_ref()
+        .expect("second page has a previous page");
+    let back = crate::test_answers::read(Call::from_request(&previous.request).answer(&d.daemon));
+    assert_eq!(back.document.items, first.document.items);
+    let mut rest = body_text(&reopened);
+    let mut page = reopened;
+    let mut visited = std::collections::BTreeSet::new();
+    while let Some(next) = page.document.footer.next {
+        assert!(visited.insert(serde_json::to_string(&next.request).unwrap()));
+        page = crate::test_answers::read(Call::from_request(&next.request).answer(&d.daemon));
+        rest.extend(body_text(&page));
+    }
+    assert_eq!(
+        rest.iter()
+            .filter(|text| text.as_str() == "parent appended after acceptance")
+            .count(),
+        1
+    );
+    assert_eq!(
+        rest.last().map(String::as_str),
+        Some("continuation body"),
+        "parent appends retain composed part order"
+    );
+    let fresh = crate::test_answers::read(
+        composed_call(
+            "root:claude-code:root",
+            json!({"verb":"read","from":"seen","budget":100000,"hide":["annotations"]}),
+        )
+        .answer(&d.daemon),
+    );
+    assert_eq!(
+        body_text(&fresh),
+        ["parent appended after acceptance"],
+        "new root content remains available even though the continuation was already read"
+    );
+}
+
+#[test]
+fn logical_historical_context_continuation_retains_root_without_a_copied_prefix_claim() {
+    let mut d = test_daemon::start("placeholder");
+    super::reading_shapes::family(&d);
+    let at = d
+        .daemon
+        .reads
+        .reader()
+        .unwrap()
+        .change_position()
+        .unwrap()
+        .to_string();
+    let step = json!({"verb":"read","view":"context","at":at,"from":"seen","budget":12,"hide":["annotations","tools"]});
+    let first =
+        crate::test_answers::read(composed_call("root:claude-code:root", step).answer(&d.daemon));
+    let whole = crate::test_answers::read(composed_call("root:claude-code:root", json!({"verb":"read","view":"context","at":at,"from":"seen","budget":100000,"hide":["annotations","tools"]})).answer(&d.daemon));
+    assert_eq!(
+        body_text(&whole),
+        ["root question", "continuation question"]
+    );
+    let mut items = first.document.items.clone();
+    let next = first
+        .document
+        .footer
+        .next
+        .clone()
+        .expect("small context needs continuation");
+    d.restart();
+    let mut page = crate::test_answers::read(Call::from_request(&next.request).answer(&d.daemon));
+    items.extend(page.document.items.clone());
+    let mut visited = std::collections::BTreeSet::new();
+    while let Some(next) = page.document.footer.next {
+        assert!(visited.insert(serde_json::to_string(&next.request).unwrap()));
+        page = crate::test_answers::read(Call::from_request(&next.request).answer(&d.daemon));
+        items.extend(page.document.items.clone());
+    }
+    assert_eq!(items, whole.document.items);
+    assert!(marks_of(&d, "session:claude-code:root").is_empty());
+    assert!(marks_of(&d, "session:claude-code:cont").is_empty());
+}

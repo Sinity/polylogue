@@ -140,7 +140,44 @@ fn physical_session_lower_bound_is_authenticated_and_old_default_encoding_opens(
     bound.session_read = Some(SessionRead {
         session: crate::SessionId::parse("test:one").unwrap(),
         from_seen: true,
+        logical: false,
+        parts: vec![],
         after: Some("block:test:one:m1#0".into()),
     });
+    assert_eq!(PageCursor::open(&bound.seal(&key), &key).unwrap(), bound);
+}
+
+#[test]
+fn composed_session_bounds_survive_sealing_without_changing_physical_defaults() {
+    let physical = SessionRead {
+        session: crate::SessionId::parse("test:root").unwrap(),
+        from_seen: true,
+        after: None,
+        logical: false,
+        parts: vec![],
+    };
+    let value = serde_json::to_value(&physical).unwrap();
+    assert!(value.get("logical").is_none());
+    assert!(value.get("parts").is_none());
+    assert_eq!(
+        serde_json::from_value::<SessionRead>(value).unwrap(),
+        physical
+    );
+    let mut bound = cursor();
+    bound.session_read = Some(SessionRead {
+        logical: true,
+        parts: vec![
+            SessionSeen {
+                session: physical.session.clone(),
+                after: None,
+            },
+            SessionSeen {
+                session: crate::SessionId::parse("test:continuation").unwrap(),
+                after: Some("block:test:continued#0".into()),
+            },
+        ],
+        ..physical
+    });
+    let key = seal(7, "g1");
     assert_eq!(PageCursor::open(&bound.seal(&key), &key).unwrap(), bound);
 }
