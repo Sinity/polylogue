@@ -44,9 +44,6 @@ fn locality(unrelated: usize) -> (u64, u64) {
     let pool = ReadPool::open(&w.archive).unwrap();
     let reader = pool.reader().unwrap();
     let conn = reader.conn().unwrap();
-    // Mapped reads bypass SQLite's cache-miss counter. This control counts
-    // logical page loads, including structured overflow pages, through the pager.
-    conn.pragma_update(None, "mmap_size", 0).unwrap();
     let pk: i64 = conn
         .query_row(
             "SELECT pk FROM message WHERE id=?1",
@@ -54,6 +51,20 @@ fn locality(unrelated: usize) -> (u64, u64) {
             |r| r.get(0),
         )
         .unwrap();
+    let data_bytes: i64 = conn
+        .query_row(
+            "SELECT length(v.data) FROM block b JOIN message_version_block v ON v.pk=b.payload_pk WHERE b.message_pk=?1",
+            [pk],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let page_size: i64 = conn
+        .pragma_query_value(None, "page_size", |r| r.get(0))
+        .unwrap();
+    assert!(
+        data_bytes > page_size * 8,
+        "the structured fixture must span overflow pages: {data_bytes}/{page_size}"
+    );
     conn.flush_prepared_statement_cache();
     conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
         AuthAction::Read {
@@ -63,6 +74,9 @@ fn locality(unrelated: usize) -> (u64, u64) {
         _ => Authorization::Allow,
     }))
     .unwrap();
+    // Compare cold pager loads with the same configured cache. The later
+    // warm repeat keeps its pages; each cold observation releases them first.
+    conn.execute_batch("PRAGMA shrink_memory").unwrap();
     reader.take_page_reads().unwrap();
     let unstructured = reader.message_blocks(pk, false).unwrap();
     let text_pages = reader.take_page_reads().unwrap();
@@ -76,12 +90,13 @@ fn locality(unrelated: usize) -> (u64, u64) {
     conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
         .unwrap();
     conn.flush_prepared_statement_cache();
+    conn.execute_batch("PRAGMA shrink_memory").unwrap();
     reader.take_page_reads().unwrap();
     assert_eq!(reader.message_blocks(pk, true).unwrap(), original.blocks);
     let structured_pages = reader.take_page_reads().unwrap();
     assert!(
         structured_pages > text_pages + 8,
-        "structured overflow pages were not discriminated: {text_pages}/{structured_pages}"
+        "structured overflow pages were not discriminated: {text_pages}/{structured_pages}, stored data={data_bytes}, page={page_size}"
     );
     assert_eq!(reader.message_blocks(pk, true).unwrap(), original.blocks);
     assert!(
