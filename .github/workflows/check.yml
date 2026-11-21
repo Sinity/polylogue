@@ -92,6 +92,22 @@ jobs:
         run: >-
           cargo xtask test -p polylogue
           -E 'test(read_seen::) | test(cli::seen::) | test(http_get_pages_and_streams_never_acknowledge_display) | test(read_on_terminal_shows_whole_session_through_pager)'
+      - name: Prove old physical progress rejects the final child
+        run: |
+          cp crates/reading/src/session.rs "$RUNNER_TEMP/seen-session.rs"
+          trap 'cp "$RUNNER_TEMP/seen-session.rs" crates/reading/src/session.rs' EXIT
+          git show 3c0fa6a6ec9736610d627b118741dc9d83d1dec5:crates/reading/src/session.rs > crates/reading/src/session.rs
+          set +e
+          cargo xtask test -p polylogue --bin polylogue -E 'test(inline_child_last_keeps_the_latest_rendered_physical_parent_progress)' > "$RUNNER_TEMP/seen-old-source.log" 2>&1
+          seen_control_status=$?
+          set -e
+          cat "$RUNNER_TEMP/seen-old-source.log"
+          test "$seen_control_status" -ne 0
+          python3 -c 'import os,re; from pathlib import Path; s=re.sub(r"\x1b\[[0-9;]*[mK]", "", (Path(os.environ["RUNNER_TEMP"])/"seen-old-source.log").read_text()); assert "inline_child_last_keeps_the_latest_rendered_physical_parent_progress" in s; assert "the eligible rendered parent still advances" in s; assert "test result: FAILED. 0 passed; 1 failed" in s'
+          cp "$RUNNER_TEMP/seen-session.rs" crates/reading/src/session.rs
+          cmp "$RUNNER_TEMP/seen-session.rs" crates/reading/src/session.rs
+          git diff --exit-code -- crates/reading/src/session.rs
+          trap - EXIT
       # A failed test leaves a valid build, so it is saved too.
       - name: Save master's build
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
