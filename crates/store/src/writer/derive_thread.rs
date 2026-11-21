@@ -13,7 +13,7 @@ pub(super) enum Waiting {
     Derive(SyncSender<Result<u64>>),
     /// A flush that also derives: its report, sent once the pass is done.
     Flush(SyncSender<Result<WriteReport>>, Box<WriteReport>),
-    /// Nobody: a pass after a page of the confirmed stream.
+    /// A background pass, requested without waiting for its derived values.
     Nobody,
 }
 

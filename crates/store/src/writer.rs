@@ -173,6 +173,7 @@ enum Msg {
     /// Run the derive step over sessions whose derived rows are stale;
     /// answered with the number of sessions derived.
     Derive(SyncSender<Result<u64>>),
+    DeriveInBackground(SyncSender<Result<bool>>),
     /// One wave of derived values from the derive thread, answered with
     /// which sessions it applied.
     DeriveWrite(Box<crate::derive::Write>, SyncSender<Result<Vec<bool>>>),
@@ -839,6 +840,13 @@ impl WriterSender {
         self.0.ask(Msg::Derive)
     }
 
+    /// Continue pending derivations without waiting for their computation.
+    /// Returns whether derived values remain pending at this queue boundary.
+    /// This does not finalize a first build; [`Self::derive`] owns that boundary.
+    pub fn derive_in_background(&self) -> Result<bool> {
+        self.0.ask(Msg::DeriveInBackground)
+    }
+
     /// Installs export associations derived from committed source observations.
     pub fn import_assets(&self, staged: crate::export_items::ExportItems) -> Result<()> {
         self.0.ask(|reply| Msg::Assets(Box::new(staged), reply))
@@ -998,6 +1006,7 @@ impl Inner {
         let mut flushes = Vec::new();
         let mut primary_finish = None;
         let mut derives = Vec::new();
+        let mut background_derives = Vec::new();
         let mut derive_writes = Vec::new();
         let mut single_files = Vec::new();
         let mut file_groups = Vec::new();
@@ -1155,6 +1164,10 @@ impl Inner {
                         derives.push(reply);
                         false
                     }
+                    Msg::DeriveInBackground(reply) => {
+                        background_derives.push(reply);
+                        false
+                    }
                     Msg::DeriveWrite(write, reply) => {
                         derive_writes.push((write, reply));
                         false
@@ -1254,6 +1267,16 @@ impl Inner {
                         .committed(crate::completion::Committed::CONTENT);
                 }
                 let _ = reply.send(result);
+            }
+            for reply in background_derives.drain(..) {
+                let pending = crate::derive::caught_up(&self.index).map(|current| !current);
+                let requested = pending.as_ref().is_ok_and(|pending| *pending);
+                // A caller with no new reading must not wait for an unrelated
+                // computation, including the work preparing that computation.
+                let _ = reply.send(pending);
+                if requested && !self.resolver.upkeep().at_build_end() {
+                    self.request_derive(derive_thread::Waiting::Nobody);
+                }
             }
             for (fact, reply) in coverage.drain(..) {
                 let _ = reply.send(self.write_coverage(*fact));
