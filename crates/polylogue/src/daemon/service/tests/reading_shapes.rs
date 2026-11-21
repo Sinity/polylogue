@@ -662,3 +662,83 @@ fn the_context_meter_estimates_from_stored_sums_what_context_at_computes() {
     assert_eq!(meters.len(), 4, "{meters:?}");
     assert!(meters[2] < meters[1] && meters[3] < meters[2], "{meters:?}");
 }
+
+#[test]
+fn selected_message_context_keeps_its_prefix_and_existing_parent_branch_cut() {
+    let d = test_daemon::start("placeholder");
+    family(&d);
+    let position = d.daemon.reads.reader().unwrap().change_position().unwrap();
+    let options = ReadOptions {
+        view: View::Context,
+        at: Some(polylogue_model::read::ReadAt::try_from(position.to_string()).unwrap()),
+        ..ReadOptions::default()
+    };
+    let headers = |page: &ReadPage| {
+        page.document
+            .items
+            .iter()
+            .filter_map(|item| match &item.kind {
+                ItemKind::MessageHeader { .. } => Some(item.source.reference.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let context = read(&d, "message:claude-code:r2", options.clone());
+    assert_eq!(
+        headers(&context),
+        ["message:claude-code:r1", "message:claude-code:r2"]
+    );
+    assert!(texts(&context).iter().any(|text| text == "root question"));
+    for excluded in [
+        "continuation question",
+        "forked question",
+        "do the subtask",
+        "the nested subtask",
+    ] {
+        assert!(!texts(&context).iter().any(|text| text == excluded));
+    }
+    let fork = read(&d, "message:claude-code:f1", options);
+    assert_eq!(
+        headers(&fork),
+        ["message:claude-code:r1", "message:claude-code:f1"]
+    );
+    let around = read(
+        &d,
+        "message:claude-code:r2",
+        ReadOptions {
+            view: View::Context,
+            around: Some(1),
+            ..ReadOptions::default()
+        },
+    );
+    assert_eq!(
+        headers(&around),
+        [
+            "message:claude-code:r1",
+            "message:claude-code:r2",
+            "message:claude-code:r3"
+        ]
+    );
+    let legacy = read(
+        &d,
+        "session:claude-code:root",
+        ReadOptions {
+            view: View::Context,
+            around: Some(1),
+            at: Some(polylogue_model::read::ReadAt::try_from("claude-code:r2".to_owned()).unwrap()),
+            ..ReadOptions::default()
+        },
+    );
+    assert_eq!(
+        headers(&legacy),
+        ["message:claude-code:r1", "message:claude-code:r2"]
+    );
+    // Transcript message ranges keep their original one-message meaning.
+    let transcript = read(&d, "message:claude-code:r2", ReadOptions::default());
+    assert_eq!(headers(&transcript), ["message:claude-code:r2"]);
+    assert!(
+        !texts(&transcript)
+            .iter()
+            .any(|text| text == "root question")
+    );
+}
