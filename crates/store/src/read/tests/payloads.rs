@@ -18,7 +18,31 @@ fn block() -> Block {
     .unwrap()
 }
 
-fn locality(unrelated: usize) -> (u64, u64) {
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct ReadWork {
+    text_pages: u64,
+    structured_pages: u64,
+    text_bytes: u64,
+    structured_bytes: u64,
+    warm_bytes: u64,
+    page_size: u64,
+}
+
+#[cfg(target_os = "linux")]
+fn logical_read_bytes() -> u64 {
+    std::fs::read_to_string("/proc/self/io")
+        .unwrap()
+        .lines()
+        .find_map(|line| line.strip_prefix("rchar:"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+#[cfg(target_os = "linux")]
+fn locality(unrelated: usize) -> ReadWork {
     let mut w = WriterArchive::new();
     let original = message("one", "s", Role::Assistant, 1000, vec![block()]);
     w.write("s", vec![original.clone()]);
@@ -78,7 +102,9 @@ fn locality(unrelated: usize) -> (u64, u64) {
     // warm repeat keeps its pages; each cold observation releases them first.
     conn.execute_batch("PRAGMA shrink_memory").unwrap();
     reader.take_page_reads().unwrap();
+    let before = logical_read_bytes();
     let unstructured = reader.message_blocks(pk, false).unwrap();
+    let text_bytes = logical_read_bytes() - before;
     let text_pages = reader.take_page_reads().unwrap();
     let mut expected = original.blocks.clone();
     let Block::ToolResult { data, .. } = &mut expected[0] else {
@@ -92,38 +118,66 @@ fn locality(unrelated: usize) -> (u64, u64) {
     conn.flush_prepared_statement_cache();
     conn.execute_batch("PRAGMA shrink_memory").unwrap();
     reader.take_page_reads().unwrap();
+    let before = logical_read_bytes();
     assert_eq!(reader.message_blocks(pk, true).unwrap(), original.blocks);
+    let structured_bytes = logical_read_bytes() - before;
     let structured_pages = reader.take_page_reads().unwrap();
+    // SQLite's direct overflow reads bypass its page cache. Logical file
+    // bytes include those reads even when the OS already caches the file.
     assert!(
-        structured_pages > text_pages + 8,
-        "structured overflow pages were not discriminated: {text_pages}/{structured_pages}, stored data={data_bytes}, page={page_size}"
+        text_bytes < data_bytes as u64 / 2,
+        "unstructured read fetched structured bytes: {text_bytes}/{data_bytes}"
     );
+    assert!(
+        structured_bytes > text_bytes + data_bytes as u64 / 2,
+        "structured overflow reads were not discriminated: {text_bytes}/{structured_bytes}, stored data={data_bytes}, page={page_size}"
+    );
+    let before = logical_read_bytes();
     assert_eq!(reader.message_blocks(pk, true).unwrap(), original.blocks);
+    let warm_bytes = logical_read_bytes() - before;
     assert!(
         reader.take_page_reads().unwrap() <= 2,
-        "warm structured payload should stay local"
+        "warm repeat should not load additional lookup pages"
     );
     assert_eq!(
         reader.messages(&sid("s"), false).unwrap(),
         std::slice::from_ref(&original)
     );
     assert_eq!(reader.messages(&sid("s"), false).unwrap(), [original]);
-    (text_pages, structured_pages)
+    ReadWork {
+        text_pages,
+        structured_pages,
+        text_bytes,
+        structured_bytes,
+        warm_bytes,
+        page_size: page_size as u64,
+    }
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn canonical_payload_reads_keep_structured_data_separate_and_ignore_unrelated_history() {
     let small = locality(0);
     let large = locality(1024);
     assert!(
-        large.0 <= small.0 + 8,
+        large.text_pages <= small.text_pages + 8,
         "unstructured pages grew with unrelated history: {small:?} -> {large:?}"
     );
     assert!(
-        large.1 <= small.1 + 8,
+        large.structured_pages <= small.structured_pages + 8,
         "structured pages grew with unrelated history: {small:?} -> {large:?}"
     );
-    println!("canonical payload cache misses small={small:?} unrelated1024={large:?}");
+    for (before, after) in [
+        (small.text_bytes, large.text_bytes),
+        (small.structured_bytes, large.structured_bytes),
+        (small.warm_bytes, large.warm_bytes),
+    ] {
+        assert!(
+            after <= before + 8 * small.page_size,
+            "logical reads grew with unrelated history: {small:?} -> {large:?}"
+        );
+    }
+    println!("canonical payload read work small={small:?} unrelated1024={large:?}");
 }
 
 #[test]
