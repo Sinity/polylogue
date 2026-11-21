@@ -4,20 +4,24 @@ use serde_json::{Value, json};
 use sinex_model::EventPayload;
 use std::process::Command;
 
-fn reply(running: &Running, body: Value) -> Value {
+fn response(running: &Running, body: Value) -> Result<Value, String> {
     let started = Instant::now();
     loop {
         match real_sinex::request(&running.socket, "read", "/v1", body.clone()) {
-            Ok(answer) => return answer,
-            Err(error) => {
+            Err(error) if error.starts_with("connect Sinex ") => {
                 assert!(
                     started.elapsed() < Duration::from_secs(20),
                     "Sinex API readiness: {error}"
                 );
                 std::thread::sleep(Duration::from_millis(20));
             }
+            answer => return answer,
         }
     }
+}
+
+fn reply(running: &Running, body: Value) -> Value {
+    response(running, body).unwrap_or_else(|error| panic!("{error}"))
 }
 
 fn originals(running: &Running) -> Value {
@@ -144,16 +148,21 @@ fn a_new_binary_recovers_originals_and_admission_after_the_old_binary_refuses_it
 
     apply(&before, &running);
     running.real_sinex.restart_using(&before);
-    let refused = reply(
+    let refused = match response(
         &running,
         json!({"method":"query","query":"events | fields id, event_type, source, payload"}),
-    );
-    assert_ne!(
-        refused["outcome"], "ok",
-        "old binary must diagnose unsupported declaration: {refused}"
-    );
+    ) {
+        Ok(answer) => {
+            assert_ne!(
+                answer["outcome"], "ok",
+                "old binary must diagnose unsupported declaration: {answer}"
+            );
+            answer.to_string()
+        }
+        Err(error) => error,
+    };
     assert!(
-        refused.to_string().contains("inherited"),
+        refused.contains("inherited"),
         "unexpected old-binary refusal: {refused}"
     );
     eprintln!("older binary declaration refusal: {refused}");
