@@ -69,6 +69,7 @@ fn pending_current_chains(engine: &Engine, inputs: &[String]) -> usize {
 /// A real import arrives while the next planning statement is held. Joining the
 /// enqueueing thread before rearming the fault makes both interruptions exact.
 fn interrupt(engine: &mut Engine, send: Sender<LoopMsg>, request: PathBuf) -> Pass {
+    engine.load().unwrap();
     fault::arm("read.chains_behind_index", "", Action::Hold, 1, 1);
     let finished = Arc::new(AtomicBool::new(false));
     let done = Arc::clone(&finished);
@@ -249,6 +250,7 @@ fn a_failed_planning_page_retries_without_repeating_completed_pages() {
     let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
     engine.config.workers = 1;
     engine.config.reads_sources = false;
+    engine.load().unwrap();
     polylogue_store::fixture::older_reading(&engine.archive, "claude-code").unwrap();
     let ids = engine
         .reads
