@@ -16,8 +16,7 @@ impl TryFrom<String> for ReadAt {
         if let Some(position) = crate::ChangePosition::parse(&text) {
             return Ok(Self::Position(position));
         }
-        let message = text.strip_prefix("message:").unwrap_or(&text);
-        crate::MessageId::parse(message).map(Self::Message).map_err(|_| {
+        crate::MessageId::parse(&text).map(Self::Message).map_err(|_| {
             "read --at takes GENERATION:INDEX:ARCHIVE, or a message in the context view; time selection is not built".into()
         })
     }

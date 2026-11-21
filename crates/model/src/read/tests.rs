@@ -596,6 +596,12 @@ fn read_at_keeps_the_declared_string_format_and_context_message_behavior() {
         serde_json::to_value(&options).unwrap()["at"],
         "claude-code:u1"
     );
+    let opaque: ReadAt = serde_json::from_value(serde_json::json!("message:opaque")).unwrap();
+    assert_eq!(
+        opaque,
+        ReadAt::Message(MessageId::parse("message:opaque").unwrap())
+    );
+    assert_eq!(serde_json::to_value(&opaque).unwrap(), "message:opaque");
     let historical = serde_json::json!({"at":"generation:2:3"});
     let options: ReadOptions = serde_json::from_value(historical).unwrap();
     options.validate().unwrap();
