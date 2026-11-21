@@ -1,0 +1,19 @@
+[package]
+name = "compact-sqlite-versions"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+polylogue-sources = { git = "https://github.com/Sinity/polylogue", rev = "51cbed4d96c2dc24bff41be87c3a5093eeb854b8" }
+polylogue-model = { git = "https://github.com/Sinity/polylogue", rev = "51cbed4d96c2dc24bff41be87c3a5093eeb854b8" }
+serde_json = "1"
+blake3 = "1"
+zstd = "0.13"
+rusqlite = { version = "=0.40.2", features = ["bundled", "fallible_uint"] }
+
+[[bin]]
+name = "sqlite-versions"
+path = "versions.rs"
