@@ -103,6 +103,8 @@ fn context_refreshes_an_expired_observation_on_the_same_connection_and_keeps_ref
     })
     .unwrap();
     let url = server.url().to_owned();
+    let slow_context = polylogue_store::cancellation::Cancellation::default();
+    let cancel_context = slow_context.clone();
     let (ready, started) = mpsc::channel();
     let fake = std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -142,23 +144,27 @@ fn context_refreshes_an_expired_observation_on_the_same_connection_and_keeps_ref
                     *observed_at = sinex_model::Timestamp::from_unix_secs(101).unwrap();
                 }
                 for reply in [
-                    available(),
-                    refreshed,
-                    PublicContext::Refused {
+                    Some(available()),
+                    Some(refreshed),
+                    None,
+                    Some(PublicContext::Refused {
                         reason: "public context grant denied".into(),
-                    },
+                    }),
                 ] {
                     let request = contexts.next().await.unwrap();
                     let _: sinex_protocol::PublicContextRequest =
                         serde_json::from_slice(&request.payload).unwrap();
-                    sinex_transport::replies::publish_json(
-                        &nats,
-                        request.reply.unwrap().to_string(),
-                        reply,
-                        Duration::from_secs(2),
-                    )
-                    .await
-                    .unwrap();
+                    match reply {
+                        Some(reply) => sinex_transport::replies::publish_json(
+                            &nats,
+                            request.reply.unwrap().to_string(),
+                            reply,
+                            Duration::from_secs(2),
+                        )
+                        .await
+                        .unwrap(),
+                        None => cancel_context.cancel(),
+                    }
                 }
             })
             .await
@@ -197,6 +203,7 @@ fn context_refreshes_an_expired_observation_on_the_same_connection_and_keeps_ref
         host: "fixture-host".into(),
     };
     let resolve = |name: &str| jiff::tz::TimeZone::get(name).map_err(|error| error.to_string());
+    sinex.read_client(async |_| Ok(())).unwrap();
     let first = sinex.context(resolve).unwrap();
     let expire = || {
         let mut health = sinex.health.locked();
@@ -213,8 +220,8 @@ fn context_refreshes_an_expired_observation_on_the_same_connection_and_keeps_ref
     assert!(
         next.received_seconds_ago <= polylogue_model::freshness::SINEX_OBSERVATION_MAX_AGE_SECONDS
     );
-    // A fresh call reuses the observation. The server expects only the next
-    // expired call, whose changed authorization must refuse the old context.
+    // A fresh call reuses the observation. Expired calls still obey the
+    // caller's cancellation and current authorization.
     assert_eq!(
         sinex.context(resolve).unwrap().observed_at,
         next.observed_at
@@ -257,6 +264,16 @@ fn context_refreshes_an_expired_observation_on_the_same_connection_and_keeps_ref
         ))
     ));
     drop(held);
+    expire();
+    let limit = polylogue_store::read::limit::ReadLimit::without_deadline(slow_context);
+    assert_eq!(
+        limit.scope(|| sinex.context(resolve)).unwrap_err().kind,
+        ContextFailureKind::Unavailable
+    );
+    assert!(matches!(
+        limit.check(),
+        Err(polylogue_store::StoreError::ReadCancelled)
+    ));
     expire();
     let error = sinex.context(resolve).unwrap_err();
     assert_eq!(error.kind, ContextFailureKind::Refused);
