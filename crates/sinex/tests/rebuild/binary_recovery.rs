@@ -126,10 +126,11 @@ fn a_new_binary_recovers_originals_and_admission_after_the_old_binary_refuses_it
     assert_eq!(
         running
             .real_sinex
-            .sql("SELECT max(version) FROM sinex_schema.applied"),
+            .sql("SELECT max(version) FROM sinex_schema.applied")
+            .trim(),
         "47"
     );
-    assert_eq!(running.real_sinex.sql("SELECT current_setting('fsync'),current_setting('synchronous_commit'),current_setting('full_page_writes')"),"on|on|on");
+    assert_eq!(running.real_sinex.sql("SELECT current_setting('fsync'),current_setting('synchronous_commit'),current_setting('full_page_writes')").trim(),"on|on|on");
     drop(connect(&running.config)); // SDK producer hello over the same protocol-7 bus.
     seed(&running, "before-transition");
     let original = originals(&running);
@@ -194,10 +195,10 @@ fn a_new_binary_recovers_originals_and_admission_after_the_old_binary_refuses_it
         }
     }
     assert_eq!(original_rows(&running).len(), 2);
-    assert_eq!(running.real_sinex.sql("SELECT count(*) FROM core.ingress_frames WHERE producer='evidence' AND refusal IS NOT NULL"),"0");
+    assert_eq!(running.real_sinex.sql("SELECT count(*) FROM core.ingress_frames WHERE producer='evidence' AND refusal IS NOT NULL").trim(),"0");
     eprintln!("recovered producer acknowledgments: {}",running.real_sinex.sql("SELECT json_agg(json_build_object('frame',frame,'commit',commit_seq,'admitted',admitted,'refusal',refusal) ORDER BY number) FROM core.ingress_frames WHERE producer='evidence' AND frame LIKE 'after-recovery/%'"));
     running.real_sinex.stop_cleanly();
     eprintln!(
-        "binary recovery: original1event/1material unchanged; recovered2events/2materials; protocol7 admission; schema47; normal shutdowns"
+        "binary recovery: original event payload and material identity/hash/length unchanged; recovered2events/2materials; protocol7 admission; schema47; normal shutdowns"
     );
 }
