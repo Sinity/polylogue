@@ -986,6 +986,15 @@ impl RowWriter<'_, '_> {
         if received_default && let Some(write) = write {
             write.default_claim.set(DefaultClaimWrite::Received);
         }
+        #[cfg(test)]
+        eprintln!(
+            "claim write: message={source_pk} input={} chain={} new={new} selected_here={selected_here} selected={:?}",
+            self.input_pk,
+            self.chain,
+            write
+                .and_then(|write| write.choice)
+                .map(|choice| &choice.reading)
+        );
         if !selected_here && !new {
             crate::message_source::Claim {
                 message: pk,

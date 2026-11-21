@@ -14,11 +14,18 @@ fn deny_old_block_selection(context: AuthContext<'_>) -> Authorization {
         } => Authorization::Allow,
         AuthAction::Update {
             table_name: "message",
+            column_name,
             ..
+        } => {
+            eprintln!("fresh-row guard denied UPDATE message.{column_name}");
+            Authorization::Deny
         }
-        | AuthAction::Delete {
-            table_name: "block" | "tool_call" | "message_route",
-        } => Authorization::Deny,
+        AuthAction::Delete {
+            table_name: table @ ("block" | "tool_call" | "message_route"),
+        } => {
+            eprintln!("fresh-row guard denied DELETE {table}");
+            Authorization::Deny
+        }
         _ => Authorization::Allow,
     }
 }
