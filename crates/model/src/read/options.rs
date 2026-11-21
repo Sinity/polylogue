@@ -20,6 +20,17 @@ pub enum ReadAt {
 impl TryFrom<String> for ReadAt {
     type Error = String;
     fn try_from(text: String) -> Result<Self, String> {
+        // Local clock/date-time spellings can also have three colon-separated
+        // parts. The shared time grammar owns those words; context reads still
+        // recover the original opaque message coordinate from this string.
+        if query_language::time::is_time_expression(&text) {
+            if crate::MessageId::parse(&text).is_err()
+                && let Some(at) = crate::Timestamp::parse_rfc3339(&text)
+            {
+                return Ok(Self::Time(at));
+            }
+            return Ok(Self::TimeExpression(text));
+        }
         if let Some(position) = crate::ChangePosition::parse(&text) {
             return Ok(Self::Position {
                 position,
@@ -28,9 +39,6 @@ impl TryFrom<String> for ReadAt {
         }
         if let Ok(message) = crate::MessageId::parse(&text) {
             return Ok(Self::Message(message));
-        }
-        if let Some(at) = crate::Timestamp::parse_rfc3339(&text) {
-            return Ok(Self::Time(at));
         }
         if text.trim().is_empty() {
             return Err("read --at requires a time, local position or context message".into());

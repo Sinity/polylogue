@@ -545,16 +545,18 @@ fn ordinary_session_annotation_times_keep_old_new_withdrawn_and_expired_versions
             }
         }
     }
-    // A local clock time goes through the same resolver and UTC day setting.
-    let page =
-        crate::test_answers::read(historical_call(target, &"08:00", 100000).answer(&d.daemon));
-    assert_eq!(
-        annotations(&page, "claude-code:u1")
-            .iter()
-            .map(|a| a.value.clone())
-            .collect::<Vec<_>>(),
-        cases[0].1
-    );
+    // Include the local spellings that also resemble three-part positions.
+    for at in ["08:00", "08:00:00", "2026-11-21T08:00:00"] {
+        let page =
+            crate::test_answers::read(historical_call(target, &at, 100000).answer(&d.daemon));
+        assert_eq!(
+            annotations(&page, "claude-code:u1")
+                .iter()
+                .map(|a| a.value.clone())
+                .collect::<Vec<_>>(),
+            cases[0].1
+        );
+    }
 }
 
 #[test]
@@ -593,6 +595,7 @@ fn session_annotation_time_continuations_freeze_relative_time_through_edit_and_r
     d.restart();
     d.pause_signals();
     let mut next = Some(resume);
+    let mut previous = None;
     let mut seen = std::collections::BTreeSet::new();
     let mut items = first.document.items;
     while let Some(ready) = next {
@@ -605,9 +608,24 @@ fn session_annotation_time_continuations_freeze_relative_time_through_edit_and_r
         let repeated =
             crate::test_answers::read(Call::from_request(&ready.request).answer(&d.daemon));
         assert_eq!(page.document.items, repeated.document.items);
+        previous = page.document.footer.previous.or(previous);
         next = page.document.footer.next;
         items.extend(page.document.items);
     }
+    let previous = previous.expect("a later page has an executable previous page");
+    assert_eq!(
+        previous.request.arguments["steps"][0]["at"],
+        "2026-11-21T11:00:00Z"
+    );
+    let page = crate::test_answers::read(Call::from_request(&previous.request).answer(&d.daemon));
+    let repeated =
+        crate::test_answers::read(Call::from_request(&previous.request).answer(&d.daemon));
+    assert_eq!(page.document.items, repeated.document.items);
+    assert!(
+        !serde_json::to_string(&page.document.items)
+            .unwrap()
+            .contains("a later timed note")
+    );
     let notes = items
         .iter()
         .filter_map(|item| match &item.kind {
