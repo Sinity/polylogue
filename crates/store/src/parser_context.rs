@@ -292,13 +292,12 @@ impl Overlay {
                 .query_row([serde_json::to_string(key)?], |row| row.get(0))
                 .optional();
             statement.clear_bindings();
-            let value = value?;
             #[cfg(test)]
             scratch::work(|w| {
                 w.scratch_reads += 1;
                 w.read_vm_steps += statement.reset_status(rusqlite::StatementStatus::VmStep) as u64;
             });
-            value
+            value?
         };
         if let Some(bytes) = changed {
             let value = scratch::decode(&bytes)?;
