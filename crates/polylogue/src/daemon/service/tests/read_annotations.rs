@@ -401,38 +401,43 @@ fn context_read_at_keeps_opaque_numeric_message_coordinates() {
         &|home| {
             std::fs::write(
                 home.join(".claude/projects/-p/numeric.jsonl"),
-                polylogue_testkit::claude_user("2:3", "numeric", "numeric message"),
+                ["2:3", "02:03"]
+                    .iter()
+                    .map(|id| polylogue_testkit::claude_user(id, "numeric", "numeric message"))
+                    .collect::<String>(),
             )
             .unwrap();
         },
         1,
-        2,
+        3,
     );
     d.pause_signals();
-    let words = [
-        "session:claude-code:numeric",
-        "read",
-        "--view",
-        "context",
-        "--at",
-        "claude-code:2:3",
-        "--budget",
-        "100000",
-    ]
-    .map(str::to_owned);
-    let parsed = crate::cli::line::parse(
-        &words,
-        &crate::cli::line::FirstWordCatalog::default(),
-        false,
-    )
-    .unwrap();
-    let page = crate::test_answers::read(Call::new("rows", json!({"selection":"session:claude-code:numeric", "steps":parsed.steps.into_iter().map(|step|step.step).collect::<Vec<_>>()})).answer(&d.daemon));
-    assert!(
-        page.document
-            .items
-            .iter()
-            .any(|item| item.source.reference == "message:claude-code:2:3")
-    );
+    for message in ["claude-code:2:3", "claude-code:02:03"] {
+        let words = [
+            "session:claude-code:numeric",
+            "read",
+            "--view",
+            "context",
+            "--at",
+            message,
+            "--budget",
+            "100000",
+        ]
+        .map(str::to_owned);
+        let parsed = crate::cli::line::parse(
+            &words,
+            &crate::cli::line::FirstWordCatalog::default(),
+            false,
+        )
+        .unwrap();
+        let page = crate::test_answers::read(Call::new("rows", json!({"selection":"session:claude-code:numeric", "steps":parsed.steps.into_iter().map(|step|step.step).collect::<Vec<_>>()})).answer(&d.daemon));
+        assert!(
+            page.document
+                .items
+                .iter()
+                .any(|item| item.source.reference == format!("message:{message}"))
+        );
+    }
 }
 
 fn time(text: &str) -> Timestamp {

@@ -8,7 +8,12 @@ use serde::{Deserialize, Serialize};
 #[serde(try_from = "String", into = "String")]
 pub enum ReadAt {
     Message(crate::MessageId),
-    Position(crate::ChangePosition),
+    Position {
+        position: crate::ChangePosition,
+        // Context message IDs are opaque: numeric components may have leading
+        // zeroes even when the same word also parses as a local position.
+        spelling: String,
+    },
     Time(crate::Timestamp),
     TimeExpression(String),
 }
@@ -16,7 +21,10 @@ impl TryFrom<String> for ReadAt {
     type Error = String;
     fn try_from(text: String) -> Result<Self, String> {
         if let Some(position) = crate::ChangePosition::parse(&text) {
-            return Ok(Self::Position(position));
+            return Ok(Self::Position {
+                position,
+                spelling: text,
+            });
         }
         if let Ok(message) = crate::MessageId::parse(&text) {
             return Ok(Self::Message(message));
@@ -39,7 +47,7 @@ impl std::fmt::Display for ReadAt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Message(message) => message.fmt(f),
-            Self::Position(position) => position.fmt(f),
+            Self::Position { spelling, .. } => f.write_str(spelling),
             Self::Time(at) => at.fmt(f),
             Self::TimeExpression(text) => f.write_str(text),
         }
@@ -469,7 +477,7 @@ impl ReadOptions {
             return None;
         }
         match &self.at {
-            Some(ReadAt::Position(position)) => Some(position),
+            Some(ReadAt::Position { position, .. }) => Some(position),
             _ => None,
         }
     }
@@ -479,7 +487,7 @@ impl ReadOptions {
             return None;
         }
         match self.at.as_ref()? {
-            ReadAt::Position(position) => Some(AnnotationAt::Position(position.archive)),
+            ReadAt::Position { position, .. } => Some(AnnotationAt::Position(position.archive)),
             ReadAt::Time(at) => Some(AnnotationAt::Time(*at)),
             _ => None,
         }

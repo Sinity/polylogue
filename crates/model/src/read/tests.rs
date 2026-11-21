@@ -611,6 +611,17 @@ fn read_at_keeps_the_declared_string_format_and_context_message_behavior() {
         Some(MessageId::parse("claude-code:2:3").unwrap())
     );
     assert!(numeric.annotation_position().is_none());
+    let padded: ReadOptions =
+        serde_json::from_value(serde_json::json!({"view":"context","at":"claude-code:02:03"}))
+            .unwrap();
+    assert_eq!(
+        padded.context_message().unwrap(),
+        Some(MessageId::parse("claude-code:02:03").unwrap())
+    );
+    assert_eq!(
+        serde_json::to_value(&padded).unwrap()["at"],
+        "claude-code:02:03"
+    );
     let historical = serde_json::json!({"at":"generation:2:3"});
     let options: ReadOptions = serde_json::from_value(historical).unwrap();
     options.validate().unwrap();
