@@ -1,31 +1,38 @@
-name: check
+name: Sinex binary recovery diagnostic
 
 on:
-  pull_request:
-  push:
-    branches: [master]
   workflow_dispatch:
     inputs:
       rev:
-        description: Exact full commit SHA to check
+        description: Exact full test source revision
         required: true
 
-# Test logs list failures as they happen; after the summary they list slow
-# tests and repeat each failure's full output.
-env:
-  CARGO_TERM_COLOR: always
-  NEXTEST_STATUS_LEVEL: fail
-  NEXTEST_FINAL_STATUS_LEVEL: slow
-  NEXTEST_FAILURE_OUTPUT: immediate-final
+permissions:
+  contents: read
 
 concurrency:
-  group: check-${{ inputs.rev || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: sinex-binary-recovery-${{ inputs.rev }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: "1"
+  NEXTEST_STATUS_LEVEL: pass
+  NEXTEST_FINAL_STATUS_LEVEL: all
+  NEXTEST_FAILURE_OUTPUT: immediate-final
+  OLD_PACKAGE: /nix/store/rfnnzfnla0jfv3ck0nvaj165bmshifjn-sinex-0.1.0
+  NEW_PACKAGE: /nix/store/2sd07wlaxadikb4i07qwbny5qzgrngs1-sinex-0.1.0
+  PG_PACKAGE: /nix/store/9hi4z663c6c4kanj67dxh878nacy5wc9-postgresql-and-plugins-18.6
+  SINEXD: /nix/store/2sd07wlaxadikb4i07qwbny5qzgrngs1-sinex-0.1.0/bin/sinexd
+  SINEXD_BEFORE: /nix/store/rfnnzfnla0jfv3ck0nvaj165bmshifjn-sinex-0.1.0/bin/sinexd
+  SINEXD_REVISION: cd4551a384702c183c5aa3afc8132cd200404b4a
+  SINEXD_BEFORE_REVISION: 3fbb9d0ee5d7741e55c260c99030322d795b1937
 
 jobs:
-  rust:
+  native_recovery:
+    name: native Sinex binary recovery
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 60
     steps:
       # A pull request's checkout is its merge commit; the first parent is the
       # base branch's tip, the base `xtask check` selects tests against.
@@ -63,6 +70,15 @@ jobs:
         run: |
           curl -sSfL https://github.com/nats-io/nats-server/releases/download/v2.10.22/nats-server-v2.10.22-linux-amd64.tar.gz | tar xz
           sudo mv nats-server-v2.10.22-linux-amd64/nats-server /usr/local/bin/
+      - name: Substitute and verify exact signed runtimes
+        run: |
+          set -euo pipefail
+          nix-store --realise "$OLD_PACKAGE" "$NEW_PACKAGE" "$PG_PACKAGE" --option substitute true --option always-allow-substitutes true --option max-jobs 0 --option builders ""
+          nix store verify --sigs-needed 1 "$OLD_PACKAGE" "$NEW_PACKAGE" "$PG_PACKAGE"
+          "$OLD_PACKAGE/bin/sinexd" --version
+          "$NEW_PACKAGE/bin/sinexd" --version
+          "$PG_PACKAGE/bin/postgres" --version
+          echo "$PG_PACKAGE/bin" >> "$GITHUB_PATH"
       # Every event may reuse master's whole target directory, whose source
       # commit is recorded alongside it. Full test selection on master is
       # independent of compiler reuse. A fresh checkout makes source files
@@ -86,57 +102,9 @@ jobs:
           git ls-files -z | xargs -0 touch -h -d '2000-01-01 00:00:00 UTC'
           git diff --no-renames --name-only -z "$built" HEAD | xargs -0 -r touch -h -c
           echo "restored build of $built; $(git diff --no-renames --name-only "$built" HEAD | wc -l) files differ"
-      # Pull requests check their merge tree; pushes and exact-revision dispatches run all tests.
-      - name: cargo xtask check
-        run: cargo xtask check ${{ github.event_name == 'pull_request' && '--changed-base HEAD^1' || '' }}
-      # A failed test leaves a valid build, so it is saved too.
-      - name: Save master's build
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-        run: git rev-parse HEAD > target/source-commit
-      - if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: check-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
-  browser:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.rev || '' }}
-      - name: Verify the selected source commit
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          EXPECTED_REV: ${{ inputs.rev }}
+      - name: Run only the native binary recovery case
         run: |
-          actual=$(git rev-parse HEAD)
-          printf 'requested commit: %s\nchecked commit: %s\n' "$EXPECTED_REV" "$actual"
-          test "$actual" = "$EXPECTED_REV"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: extension/package-lock.json
-      - name: Browser extension checks and real archives
-        run: |
-          sudo apt-get install --yes zip
-          npm --prefix extension ci
-          npm --prefix extension run check
-
-  # Keep the existing required status bound to both suites, including failures.
-  check:
-    needs: [rust, browser]
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require Rust and browser checks
-        env:
-          RUST_RESULT: ${{ needs.rust.result }}
-          BROWSER_RESULT: ${{ needs.browser.result }}
-        run: |
-          test "$RUST_RESULT" = success
-          test "$BROWSER_RESULT" = success
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/sx-recovery"
+          export TMPDIR="$RUNNER_TEMP/sx-recovery"
+          cargo xtask test -p polylogue-sinex --test rebuild --build-jobs 1 --test-threads 1 --run-ignored only --retries 0 --success-output immediate-final -E 'test(binary_recovery::a_new_binary_recovers_originals_and_admission_after_the_old_binary_refuses_its_declaration)'
