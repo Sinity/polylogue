@@ -135,6 +135,7 @@ impl Builder {
                 work.claims += 1;
             }
         }
+        db.execute_batch("CREATE INDEX by_session ON message(session,start,id)")?;
         let mut transitions = Vec::new();
         for (input, id, observed, selected) in self.controls {
             transitions.push(json!({"input":input,"message":id,
