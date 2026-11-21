@@ -95,6 +95,7 @@ fn checkpoints_hash_only_final_responses_without_decoding_lookup_payloads() {
         ),
         (0, 0, 1)
     );
+    assert_eq!(checkpoint.response_views, 1);
     assert_eq!(
         checkpoint.hashed_response_bytes,
         canonical_json::canonical_json(&response(15).message)
@@ -171,6 +172,7 @@ fn a_fresh_checkpoint_hashes_each_distinct_dirty_response_once() {
         (checkpoint.response_decodes, checkpoint.response_hashes),
         (0, 8)
     );
+    assert_eq!(checkpoint.response_views, 8);
     for row in rows {
         assert_reference(&delta, &row);
     }

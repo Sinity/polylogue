@@ -172,7 +172,7 @@ impl Overlay {
         let mut entries = Vec::new();
         while let Some(row) = rows.next()? {
             let key: Key = serde_json::from_str(&row.get::<_, String>(0)?)?;
-            let value = scratch::reference(&row.get::<_, Vec<u8>>(1)?)?;
+            let value = scratch::reference(&key, &row.get::<_, Vec<u8>>(1)?)?;
             entries.push(Entry { key, value });
         }
         drop(rows);

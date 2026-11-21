@@ -69,35 +69,42 @@ struct CheckpointRow<'a> {
     message: &'a RawValue,
 }
 
-pub(super) fn reference(packed: &[u8]) -> Result<Reference> {
+pub(super) fn reference(key: &Key, packed: &[u8]) -> Result<Reference> {
     let bytes = crate::encoding::unpack_bytes(packed)?;
-    let mut reader = serde_json::Deserializer::from_slice(&bytes);
-    reader.disable_recursion_limit();
-    let value = CheckpointValue::deserialize(&mut reader)?;
-    reader.end()?;
-    if value.kind == "response" {
-        let row = value.row.or_invalid("parser scratch response has no row")?;
-        let message = row.message.get().as_bytes();
+    // Alias and state values keep their single ordinary decode. A mismatched
+    // value still reaches the existing key/value-kind validation on application.
+    if matches!(key, Key::Response { .. }) {
         #[cfg(test)]
-        work(|w| {
-            w.response_hashes += 1;
-            w.hashed_response_bytes += message.len() as u64;
-        });
-        return Ok(Reference::Response {
-            message: row.message_id,
-            version: BlobHash::of(message),
-            offset: row.offset,
-            end: row.end,
-        });
+        work(|w| w.response_views += 1);
+        let mut reader = serde_json::Deserializer::from_slice(&bytes);
+        reader.disable_recursion_limit();
+        let value = CheckpointValue::deserialize(&mut reader)?;
+        reader.end()?;
+        if value.kind == "response" {
+            let row = value.row.or_invalid("parser scratch response has no row")?;
+            let message = row.message.get().as_bytes();
+            #[cfg(test)]
+            work(|w| {
+                w.response_hashes += 1;
+                w.hashed_response_bytes += message.len() as u64;
+            });
+            return Ok(Reference::Response {
+                message: row.message_id,
+                version: BlobHash::of(message),
+                offset: row.offset,
+                end: row.end,
+            });
+        }
     }
     Ok(match decode_json(&bytes)? {
         Value::Alias { target } => Reference::Alias { target },
         Value::State { value } => Reference::State { value },
-        Value::Response { .. } => {
-            return Err(StoreError::Invalid(
-                "parser scratch response has another value kind".into(),
-            ));
-        }
+        Value::Response { row } => Reference::Response {
+            version: row.message.content_hash()?,
+            message: row.message.id,
+            offset: row.offset,
+            end: row.end,
+        },
     })
 }
 
@@ -107,6 +114,7 @@ pub(super) struct Work {
     pub response_encodes: u64,
     pub encoded_response_bytes: u64,
     pub response_decodes: u64,
+    pub response_views: u64,
     pub response_hashes: u64,
     pub hashed_response_bytes: u64,
 }
@@ -114,7 +122,7 @@ pub(super) struct Work {
 thread_local! {
     static WORK: std::cell::Cell<Work> = const { std::cell::Cell::new(Work {
         response_encodes: 0, encoded_response_bytes: 0, response_decodes: 0,
-        response_hashes: 0, hashed_response_bytes: 0,
+        response_views: 0, response_hashes: 0, hashed_response_bytes: 0,
     }) };
 }
 #[cfg(test)]
