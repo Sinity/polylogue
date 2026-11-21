@@ -16,7 +16,7 @@ on:
         description: Commit to build, or diagnostic script revision
         required: true
       first_build_cpu:
-        description: Run the unmerged synthetic writer CPU diagnostic
+        description: Run the unmerged full synthetic checkpoint CPU comparison
         type: boolean
         default: false
 
@@ -63,7 +63,7 @@ jobs:
         if: ${{ inputs.first_build_cpu }}
         run: |
           test "$(git rev-parse HEAD)" = "$REV"
-          for binding in baseline:7f6ee22afb7945d7ebb82947f034f27869804570 candidate:ceec95f0488e8279bace8e30d1079e6fba7a1d91; do
+          for binding in baseline:c596ec32214060b7e01f1ea04870ab0c81c7d8c0 candidate:bcd7c6669a17f58babbf5c1111302b1cfd1101d5; do
             label="${binding%%:*}"
             commit="${binding#*:}"
             runtime=$(nix build --no-link --print-out-paths --option max-jobs 0 "github:${GITHUB_REPOSITORY}/${commit}#default")
@@ -95,10 +95,9 @@ jobs:
           python3 -I -m unittest discover -s .github/first-build-attribution -p 'test_*.py'
           nix develop --command python3 -I .github/first-build-attribution/measure.py \
             --binary "$baseline_runtime/bin/polylogue" \
-            --revision 7f6ee22afb7945d7ebb82947f034f27869804570 \
+            --revision c596ec32214060b7e01f1ea04870ab0c81c7d8c0 \
             --candidate-binary "$candidate_runtime/bin/polylogue" \
-            --candidate-revision ceec95f0488e8279bace8e30d1079e6fba7a1d91 \
-            --pair-files .github/first-build-attribution/pair-files.json \
+            --candidate-revision bcd7c6669a17f58babbf5c1111302b1cfd1101d5 \
             --generator "$RUNNER_TEMP/first-build-generator" \
             --lengths .github/first-build-attribution/synthetic-lengths.txt \
             --expected .github/first-build-attribution/synthetic-samples.json \

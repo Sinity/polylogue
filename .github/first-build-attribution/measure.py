@@ -147,6 +147,26 @@ def checkpoint_databases(archive: Path) -> dict[str, object]:
         os.close(directory)
     return {'seconds': time.monotonic() - started, 'databases': databases}
 
+def own_io_cut() -> dict:
+    """A final block-accounting cut before the helper exits, after checkpoint."""
+    try:
+        group = next(line.split('::', 1)[1] for line in
+                     Path('/proc/self/cgroup').read_text().splitlines()
+                     if line.startswith('0::'))
+        rows = (Path('/sys/fs/cgroup') / group.lstrip('/') / 'io.stat').read_text()
+        devices = {}
+        for line in rows.splitlines():
+            device, *fields = line.split()
+            devices[device] = {'kernel_name': (Path('/sys/dev/block') / device).resolve().name,
+                               **{key: int(value) for key, value in
+                                  (field.split('=', 1) for field in fields)}}
+        return {'devices': devices, 'failure': None,
+                'cut': 'after final checkpoint, before the small helper receipt/teardown',
+                'meaning': 'Linux block accounting on hosted virtual devices, not appliance physical disk timing'}
+    except (OSError, StopIteration, ValueError) as error:
+        return {'devices': None, 'failure': repr(error)}
+
+
 def child(args: argparse.Namespace) -> int:
     """The unit helper keeps exact wait4 RSS, including a daemon's final allocation."""
     phase = Path(args.child)
@@ -181,6 +201,7 @@ def child(args: argparse.Namespace) -> int:
         'seconds': time.monotonic() - started, 'daemon_seconds': daemon_seconds,
         'checkpoint': paid, 'checkpoint_error': checkpoint_error,
         'checkpoint_seconds': checkpoint_seconds,
+        'final_io_cut': own_io_cut(),
         'peak_rss_bytes': usage.ru_maxrss * 1024,
         'user_seconds': usage.ru_utime, 'system_seconds': usage.ru_stime,
         'block_inputs': usage.ru_inblock, 'block_outputs': usage.ru_oublock,
@@ -376,16 +397,74 @@ def search_signature(archive: Path) -> dict[str, str]:
     return signatures
 
 
+def context_and_model_signature(archive: Path) -> dict:
+    # Compare natural identities and citation spans; allocator-assigned row keys
+    # and text-group packing can differ between independently scheduled builds.
+    queries = {
+        'responses': """SELECT i.id,r.namespace,r.session,r.key,hex(v.version_hash),
+                         r.source_start,r.source_end FROM parser_context_response r
+                         JOIN input_ref i ON i.pk=r.input_pk
+                         JOIN parse_state p ON p.input_pk=r.input_pk AND p.chain=r.chain
+                         JOIN message_version v ON v.pk=r.version_pk
+                         ORDER BY i.id,r.namespace,r.session,r.key""",
+        'aliases': """SELECT i.id,r.namespace,r.uuid,r.target FROM parser_context_alias r
+                       JOIN input_ref i ON i.pk=r.input_pk
+                       JOIN parse_state p ON p.input_pk=r.input_pk AND p.chain=r.chain
+                       ORDER BY i.id,r.namespace,r.uuid""",
+        'states': """SELECT i.id,r.namespace,r.key,hex(r.value) FROM parser_context_value r
+                      JOIN input_ref i ON i.pk=r.input_pk
+                      JOIN parse_state p ON p.input_pk=r.input_pk AND p.chain=r.chain
+                      ORDER BY i.id,r.namespace,r.key""",
+        'selected_messages': """SELECT s.id,m.id,m.parent_id,m.role,i.id,
+                      m.source_start,m.source_end,m.session_order,m.in_progress,hex(v.version_hash)
+                      FROM message m JOIN session s ON s.pk=m.session_pk
+                      JOIN input_ref i ON i.pk=m.input_pk
+                      JOIN message_source r ON r.message_pk=m.pk AND r.input_pk=m.input_pk
+                                               AND r.chain=m.source_chain
+                      JOIN message_version v ON v.pk=r.version_pk ORDER BY s.id,m.id""",
+    }
+    result = {}
+    with database(archive / 'index.db') as conn:
+        for name, query in queries.items():
+            digest, count = hashlib.sha256(), 0
+            for row in conn.execute(query):
+                digest.update(json.dumps(list(row), ensure_ascii=False, separators=(',', ':')).encode())
+                digest.update(b'\n')
+                count += 1
+            result[name] = {'rows': count, 'sha256': digest.hexdigest()}
+    return result
+
+
+def worker_cpu(profile: dict) -> dict:
+    workers = profile['workers']
+    parsers = {name: worker['cpu_seconds'] for name, worker in workers.items()
+               if name.startswith('polylogue-parse-')}
+    if len(parsers) != 4 or any(value is None or value < 0 for value in parsers.values()):
+        raise RuntimeError('four complete parser-worker CPU clocks are required')
+    writer = workers.get('polylogue-writer', {}).get('cpu_seconds')
+    if writer is None or writer < 0:
+        raise RuntimeError('the complete writer CPU clock is required')
+    return {'parser_worker_cpu_seconds': sum(parsers.values()),
+            'writer_cpu_seconds': writer,
+            'worker_cpu_seconds': {name: worker['cpu_seconds'] for name, worker in workers.items()},
+            'overlapping_stage_seconds': profile['pipeline_timings'],
+            'parser_cpu_scope': 'whole worker: provider parsing, custody/packing, scratch/checkpoint and resolution; stage values remain overlapping wall times'}
+
+
 def main(args: argparse.Namespace) -> int:
     if os.environ.get('GITHUB_ACTIONS') != 'true':
         raise RuntimeError('this temporary entry point is for a hosted workflow only')
+    if bool(args.candidate_binary) != bool(args.candidate_revision):
+        raise RuntimeError('matched comparison needs both candidate binary and revision')
+    if args.pair_files and not args.candidate_binary:
+        raise RuntimeError('the optional small filter requires a matched pair')
     work = Path(args.work).resolve()
     runner_temp = Path(os.environ['RUNNER_TEMP']).resolve()
     if not work.is_relative_to(runner_temp) or work == runner_temp or work.exists():
         raise RuntimeError('the diagnostic needs a fresh directory inside RUNNER_TEMP')
     print('HOSTED_PREFLIGHT_JSON=' + json.dumps({'free_bytes': available_space(runner_temp), 'MemAvailable': available_memory(), 'available_cpus': len(os.sched_getaffinity(0))}), flush=True)
-    if available_space(runner_temp) < 32 * 1024**3:
-        raise RuntimeError('less than 32 GiB is available for generation and build output')
+    if available_space(runner_temp) < 48 * 1024**3:
+        raise RuntimeError('less than 48 GiB is available for the full paired generated outputs')
     if available_memory() < 8 * 1024**3:
         raise RuntimeError('less than 8 GiB MemAvailable before preparation')
     command(['sudo', '-n', 'true'])
@@ -410,18 +489,27 @@ def main(args: argparse.Namespace) -> int:
             if name not in selected:
                 Path(path).unlink()
         files = {by_name[name]: size for name, size in selected.items()}
-        if not args.candidate_binary or not args.candidate_revision:
-            raise RuntimeError('matched comparison needs both exact binary revisions')
+    if args.candidate_binary and args.candidate_revision:
         baseline = run_arm(args, work / 'baseline', home, files, 'baseline')
+        if not baseline['complete'] or baseline['failure'] is not None:
+            report = {'baseline': baseline, 'candidate': None,
+                      'search_and_context_model_parity': False,
+                      'candidate_not_started': 'baseline did not complete normally',
+                      'appliance_timing_or_release_acceptance': False}
+            write_json(results / 'paired-summary.json', report)
+            print('HOSTED_CHECKPOINT_PAIR_JSON=' + json.dumps(report), flush=True)
+            return 1
         candidate_args = argparse.Namespace(**vars(args))
         candidate_args.binary = args.candidate_binary
         candidate_args.revision = args.candidate_revision
         candidate = run_arm(candidate_args, work / 'candidate', home, files, 'candidate')
         complete = all(arm['complete'] and arm['failure'] is None for arm in (baseline, candidate))
-        parity = complete and baseline['search_signature'] == candidate['search_signature']
-        report = {'baseline': baseline, 'candidate': candidate, 'search_parity': parity,
+        parity = (complete and baseline['search_signature'] == candidate['search_signature']
+                  and baseline['context_and_model_signature'] == candidate['context_and_model_signature'])
+        report = {'baseline': baseline, 'candidate': candidate, 'search_and_context_model_parity': parity,
                   'appliance_timing_or_release_acceptance': False}
-        print('HOSTED_SEARCH_PAIR_JSON=' + json.dumps(report), flush=True)
+        write_json(results / 'paired-summary.json', report)
+        print('HOSTED_CHECKPOINT_PAIR_JSON=' + json.dumps(report), flush=True)
         return 0 if parity else 1
     summary = run_arm(args, work / 'measurement', home, files, 'single')
     return 0 if summary['complete'] and summary['failure'] is None else 1
@@ -450,7 +538,9 @@ def run_arm(args: argparse.Namespace, work: Path, home: Path,
     minimum_space = (8 if args.pair_files else 24) * 1024**3
     if available_space(work) < minimum_space or available_memory() < 8 * 1024**3:
         raise RuntimeError('insufficient disk or available RAM after generation')
-    cpus = min(8, len(os.sched_getaffinity(0)))
+    if len(os.sched_getaffinity(0)) < 4:
+        raise RuntimeError('the matched CPU diagnostic requires four available CPUs')
+    cpus = 4
     run_id = os.environ['GITHUB_RUN_ID']
     attempt = os.environ['GITHUB_RUN_ATTEMPT']
     if not run_id.isdecimal() or not attempt.isdecimal():
@@ -459,12 +549,13 @@ def run_arm(args: argparse.Namespace, work: Path, home: Path,
     existing = show_unit(unit)
     if existing.get('LoadState') != 'not-found':
         raise RuntimeError(f'the system manager is unavailable or the exact unit exists: {existing}')
-    summary = {'kind': 'hosted_writer_cpu_attribution', 'revision': args.revision,
+    summary = {'kind': 'hosted_checkpoint_cpu_pair_arm', 'revision': args.revision,
                'diagnostic_source': command(['git', 'rev-parse', 'HEAD']).stdout.strip(),
                'measurement_script_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                'generator_sha256': hashlib.sha256(Path(args.generator).read_bytes()).hexdigest(),
                'binary': str(binary), 'version': version,
                'input_files': len(files), 'input_bytes': sum(files.values()),
+               'input_cache_preparation': 'fsync and DONTNEED per file before each arm; residency not independently verified',
                'cpu_quota': cpus, 'memory_max_bytes': 4 * 1024**3,
                'swap_max_bytes': 1024**3, 'timer_overhead_included': True,
                'appliance_timing_or_release_acceptance': False,
@@ -532,12 +623,13 @@ def run_arm(args: argparse.Namespace, work: Path, home: Path,
         profile = pipeline_profile(phase)
         if profile is None:
             raise RuntimeError('the daemon did not report its worker profile')
-        if args.pair_files:
+        summary['workers'] = profile['workers']
+        summary.update(worker_cpu(profile))
+        if args.candidate_binary:
             summary['search_signature'] = search_signature(archive)
-            summary['workers'] = profile['workers']
-            summary['overlapping_stage_seconds'] = profile['pipeline_timings']
-        else:
-            records = json.loads((phase / 'pipeline-profile.json').read_text())
+            summary['context_and_model_signature'] = context_and_model_signature(archive)
+        records = json.loads((phase / 'pipeline-profile.json').read_text())
+        if any('first_build_attribution' in record for record in records):
             summary.update(summarize(profile, records))
         summary['source_files_unchanged'] = all(
             (Path(path).stat().st_ino, Path(path).stat().st_size, Path(path).stat().st_mtime_ns) == stamp
