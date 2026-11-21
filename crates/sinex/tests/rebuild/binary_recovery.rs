@@ -57,6 +57,15 @@ fn broad_rows(running: &Running) -> Vec<Value> {
         .clone()
 }
 
+fn original_rows(running: &Running) -> Vec<Value> {
+    // Keep the query broad. Normal startup also reads the daemon's own
+    // telemetry, which is independent of the originals whose custody is checked.
+    broad_rows(running)
+        .into_iter()
+        .filter(|row| row["source"] == "synthetic-evidence")
+        .collect()
+}
+
 fn apply(binary: &Path, running: &Running) {
     assert!(
         Command::new(binary)
@@ -126,7 +135,7 @@ fn a_new_binary_recovers_originals_and_admission_after_the_old_binary_refuses_it
     let original = originals(&running);
     assert_eq!(original["events"].as_array().unwrap().len(), 1);
     assert_eq!(original["materials"].as_array().unwrap().len(), 1);
-    let expected = broad_rows(&running);
+    let expected = original_rows(&running);
     assert_eq!(expected.len(), 1);
     running.real_sinex.stop_cleanly();
 
@@ -142,7 +151,7 @@ fn a_new_binary_recovers_originals_and_admission_after_the_old_binary_refuses_it
             .any(|row| row["declaration"]["time_rule"]["rule"] == "inherited"),
         "{kinds}"
     );
-    assert_eq!(broad_rows(&running), expected);
+    assert_eq!(original_rows(&running), expected);
     assert_eq!(originals(&running), original);
     running.real_sinex.stop_cleanly();
 
@@ -171,7 +180,7 @@ fn a_new_binary_recovers_originals_and_admission_after_the_old_binary_refuses_it
 
     apply(&next, &running);
     running.real_sinex.restart_using(&next);
-    assert_eq!(broad_rows(&running), expected);
+    assert_eq!(original_rows(&running), expected);
     let kinds = reply(&running, json!({"method":"kinds","kind":"state.interval"}));
     assert_eq!(kinds["outcome"], "ok", "{kinds}");
     drop(connect(&running.config)); // A new SDK session must complete producer hello after recovery.
@@ -184,7 +193,7 @@ fn a_new_binary_recovers_originals_and_admission_after_the_old_binary_refuses_it
             assert!(rows.contains(row), "original {name} changed: {recovered}");
         }
     }
-    assert_eq!(broad_rows(&running).len(), 2);
+    assert_eq!(original_rows(&running).len(), 2);
     assert_eq!(running.real_sinex.sql("SELECT count(*) FROM core.ingress_frames WHERE producer='evidence' AND refusal IS NOT NULL"),"0");
     eprintln!("recovered producer acknowledgments: {}",running.real_sinex.sql("SELECT json_agg(json_build_object('frame',frame,'commit',commit_seq,'admitted',admitted,'refusal',refusal) ORDER BY number) FROM core.ingress_frames WHERE producer='evidence' AND frame LIKE 'after-recovery/%'"));
     running.real_sinex.stop_cleanly();
