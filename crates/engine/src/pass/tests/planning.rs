@@ -24,6 +24,28 @@ fn histories(n: usize) -> ClaudeHome {
     home
 }
 
+fn kept_request(engine: &mut Engine, home: &ClaudeHome) -> PathBuf {
+    let request = home.dir.path().join("request.json");
+    std::fs::write(
+        &request,
+        serde_json::to_vec(&serde_json::json!({
+            "uuid": "queued-import", "chat_messages": [{
+                "uuid": "imported-message", "sender": "human", "text": "explicit request body"
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let kept = engine
+        .import_with_options(std::slice::from_ref(&request), &ImportOptions::default())
+        .unwrap();
+    assert!(kept.pass.errors.is_empty(), "{kept:?}");
+    assert!(kept.refused.is_empty(), "{kept:?}");
+    assert_eq!(kept.imported.len(), 1, "{kept:?}");
+    assert!(kept.pass.bytes_stored > 0, "{kept:?}");
+    request
+}
+
 fn pending_current_chains(engine: &Engine, inputs: &[String]) -> usize {
     engine
         .reads
@@ -61,7 +83,7 @@ fn interrupt(engine: &mut Engine, send: Sender<LoopMsg>, request: PathBuf) -> Pa
         let (reply, wait) = sync_channel(1);
         send.send(LoopMsg::Import {
             paths: vec![request],
-            format: Some("export-file".into()),
+            format: None,
             from_archive: None,
             dry_run: false,
             authorship: Authorship {
@@ -88,6 +110,7 @@ fn interrupt(engine: &mut Engine, send: Sender<LoopMsg>, request: PathBuf) -> Pa
         .expect("catch-up reached another bounded planning page")
         .unwrap();
     assert!(reply.pass.errors.is_empty(), "{reply:?}");
+    assert!(reply.refused.is_empty(), "{reply:?}");
     assert_eq!(reply.already_stored.len(), 1, "{reply:?}");
     assert_eq!((reply.pass.bytes_read, reply.pass.bytes_stored), (0, 0));
     pass
@@ -107,18 +130,7 @@ fn queued_imports_resume_catchup_without_restarting_completed_pages() {
         .map(|input| input.input_id.clone())
         .collect();
     assert_eq!(ids.len(), n);
-    let request = home.dir.path().join("request.txt");
-    std::fs::write(&request, "one kept request").unwrap();
-    let kept = engine
-        .import_with_options(
-            std::slice::from_ref(&request),
-            &ImportOptions {
-                format: Some("export-file".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    assert!(kept.pass.errors.is_empty(), "{kept:?}");
+    let request = kept_request(&mut engine, &home);
     polylogue_store::fixture::older_reading(&engine.archive, "claude-code").unwrap();
     engine.discard_confirmed_state();
     engine.config.reads_sources = false;
@@ -272,22 +284,7 @@ fn a_scope_reset_revisits_readings_before_the_planning_bookmark() {
     let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
     engine.config.workers = 1;
     engine.config.reads_sources = false;
-    let request = home.dir.path().join("request.txt");
-    std::fs::write(&request, "kept request across a scope reset").unwrap();
-    assert!(
-        engine
-            .import_with_options(
-                std::slice::from_ref(&request),
-                &ImportOptions {
-                    format: Some("export-file".into()),
-                    ..Default::default()
-                }
-            )
-            .unwrap()
-            .pass
-            .errors
-            .is_empty()
-    );
+    let request = kept_request(&mut engine, &home);
     polylogue_store::fixture::older_reading(&engine.archive, "claude-code").unwrap();
     let ids = engine
         .reads
@@ -315,22 +312,7 @@ fn the_daemon_loop_keeps_its_planning_page_when_refreshing_committed_progress() 
     let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
     engine.config.workers = 1;
     engine.config.reads_sources = false;
-    let request = home.dir.path().join("request.txt");
-    std::fs::write(&request, "kept request through the daemon loop").unwrap();
-    assert!(
-        engine
-            .import_with_options(
-                std::slice::from_ref(&request),
-                &ImportOptions {
-                    format: Some("export-file".into()),
-                    ..Default::default()
-                }
-            )
-            .unwrap()
-            .pass
-            .errors
-            .is_empty()
-    );
+    let request = kept_request(&mut engine, &home);
     polylogue_store::fixture::older_reading(&engine.archive, "claude-code").unwrap();
     let first = engine
         .reads
@@ -366,7 +348,7 @@ fn the_daemon_loop_keeps_its_planning_page_when_refreshing_committed_progress() 
         incoming
             .send(LoopMsg::Import {
                 paths: vec![request],
-                format: Some("export-file".into()),
+                format: None,
                 from_archive: None,
                 dry_run: false,
                 authorship: Authorship {
@@ -386,7 +368,8 @@ fn the_daemon_loop_keeps_its_planning_page_when_refreshing_committed_progress() 
     let summary = result.unwrap();
     assert!(summary.work.errors.is_empty(), "{summary:?}");
     assert_eq!(summary.imports, 1);
-    assert_eq!(reply.already_stored.len(), 1);
+    assert!(reply.refused.is_empty(), "{reply:?}");
+    assert_eq!(reply.already_stored.len(), 1, "{reply:?}");
     assert_eq!((reply.pass.bytes_read, reply.pass.bytes_stored), (0, 0));
     let ids = engine
         .reads
