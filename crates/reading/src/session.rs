@@ -1,4 +1,4 @@
-//! Paged session reads over the session item index. A page is a run of
+//! Session pages and finite context streams over the session item index. A page is a run of
 //! shown entries read in windows from its first entry; where it sits among the
 //! shown entries, and the counts a reading shows, come from the counts the
 //! writer stores per entry class, so a page reads its own entries and the
@@ -2237,6 +2237,7 @@ fn project_layout(
         facts: &facts,
         selected,
         ready_attachment,
+        by_source: true,
         backwards: false,
         page_start: None,
     };
