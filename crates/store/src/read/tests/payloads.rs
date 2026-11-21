@@ -87,7 +87,7 @@ fn locality(unrelated: usize) -> (u64, u64) {
     );
     assert_eq!(
         reader.messages(&sid("s"), false).unwrap(),
-        [original.clone()]
+        std::slice::from_ref(&original)
     );
     assert_eq!(reader.messages(&sid("s"), false).unwrap(), [original]);
     (text_pages, structured_pages)
