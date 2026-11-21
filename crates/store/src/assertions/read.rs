@@ -60,12 +60,12 @@ impl Reader<'_> {
         self.visit_message_annotation_references_at(message, None, visit)
     }
 
-    /// At a local counter, use the same About candidates and revision graph
-    /// over only facts accepted through that counter.
+    /// The same About candidates and revision graph, bounded by local commit
+    /// position or known authored time. Unknown authored times stay unknown.
     pub fn visit_message_annotation_references_at(
         &self,
         message: &polylogue_model::MessageId,
-        through: Option<i64>,
+        at: Option<polylogue_model::read::AnnotationAt>,
         mut visit: impl FnMut(RevisionReference) -> Result<ControlFlow<()>>,
     ) -> Result<ControlFlow<()>> {
         let conn = self.conn()?;
@@ -75,14 +75,19 @@ impl Reader<'_> {
         let block_prefix = format!("span:block:{message}#");
         let message_end = format!("span:{}$", reference.stored_form());
         let block_end = format!("span:block:{message}$");
-        let sql = if through.is_some() {
-            "SELECT a.root,a.id,l.ref FROM @source.link l JOIN @source.assertion a ON a.id=l.record WHERE l.role='about' AND a.commit_seq<=?6 AND (l.ref=?1 OR (l.ref>=?2 AND l.ref<?3) OR (l.ref>=?4 AND l.ref<?5)) ORDER BY a.root,a.id,l.ref"
+        let (through, until) = match at {
+            Some(polylogue_model::read::AnnotationAt::Position(through)) => (Some(through), None),
+            Some(polylogue_model::read::AnnotationAt::Time(until)) => (None, Some(until.unix_ms())),
+            None => (None, None),
+        };
+        let sql = if at.is_some() {
+            "SELECT a.root,a.id,l.ref FROM @source.link l JOIN @source.assertion a ON a.id=l.record WHERE l.role='about' AND (?6 IS NULL OR a.commit_seq<=?6) AND (?7 IS NULL OR a.created_at<=?7) AND (l.ref=?1 OR (l.ref>=?2 AND l.ref<?3) OR (l.ref>=?4 AND l.ref<?5)) ORDER BY a.root,a.id,l.ref"
         } else {
-            "SELECT a.root,a.id,l.ref FROM @source.link l JOIN @source.assertion a ON a.id=l.record JOIN @source.revision_state r ON r.id=a.id WHERE l.role='about' AND r.current=1 AND r.withdrawn=0 AND ?6 IS NULL AND (l.ref=?1 OR (l.ref>=?2 AND l.ref<?3) OR (l.ref>=?4 AND l.ref<?5)) ORDER BY a.root,a.id,l.ref"
+            "SELECT a.root,a.id,l.ref FROM @source.link l JOIN @source.assertion a ON a.id=l.record JOIN @source.revision_state r ON r.id=a.id WHERE l.role='about' AND r.current=1 AND r.withdrawn=0 AND ?6 IS NULL AND ?7 IS NULL AND (l.ref=?1 OR (l.ref>=?2 AND l.ref<?3) OR (l.ref>=?4 AND l.ref<?5)) ORDER BY a.root,a.id,l.ref"
         };
         let mut statement = conn.prepare_cached(&source.sql(sql))?;
-        let mut links = through
-            .map(|through| StoredLinks::at_commit(conn, through))
+        let mut links = at
+            .map(|at| StoredLinks::at_annotation(conn, at))
             .transpose()?;
         let mut graph = links.as_mut().map(Currency::new);
         let mut rows = statement.query(params![
@@ -91,7 +96,8 @@ impl Reader<'_> {
             message_end,
             block_prefix,
             block_end,
-            through
+            through,
+            until
         ])?;
         let mut previous = None;
         while let Some(row) = rows.next()? {
@@ -203,19 +209,24 @@ impl Reader<'_> {
         &self,
         reference: &Reference,
         roles: &[LinkRole],
-        through: Option<i64>,
+        at: Option<polylogue_model::read::AnnotationAt>,
         mut visit: impl FnMut(RevisionReference) -> Result<ControlFlow<()>>,
     ) -> Result<ControlFlow<()>> {
         let conn = self.conn()?;
         let source = Source::reading(conn)?;
+        let (through, until) = match at {
+            Some(polylogue_model::read::AnnotationAt::Position(through)) => (Some(through), None),
+            Some(polylogue_model::read::AnnotationAt::Time(until)) => (None, Some(until.unix_ms())),
+            None => (None, None),
+        };
         let mut statement = conn.prepare_cached(&source.sql(
-            "SELECT DISTINCT a.root,a.id FROM @source.link l JOIN @source.assertion a ON a.id=l.record WHERE l.ref=?1 AND l.role IN (SELECT value FROM json_each(?2)) AND (?3 IS NULL OR a.commit_seq<=?3) ORDER BY a.root,a.id",
+            "SELECT DISTINCT a.root,a.id FROM @source.link l JOIN @source.assertion a ON a.id=l.record WHERE l.ref=?1 AND l.role IN (SELECT value FROM json_each(?2)) AND (?3 IS NULL OR a.commit_seq<=?3) AND (?4 IS NULL OR a.created_at<=?4) ORDER BY a.root,a.id",
         ))?;
         let roles =
             serde_json::to_string(&roles.iter().map(|role| role.as_str()).collect::<Vec<_>>())?;
-        let mut rows = statement.query(params![reference.stored_form(), roles, through])?;
-        let mut links = through
-            .map(|through| StoredLinks::at_commit(conn, through))
+        let mut rows = statement.query(params![reference.stored_form(), roles, through, until])?;
+        let mut links = at
+            .map(|at| StoredLinks::at_annotation(conn, at))
             .transpose()?;
         let mut graph = links.as_mut().map(Currency::new);
         while let Some(row) = rows.next()? {

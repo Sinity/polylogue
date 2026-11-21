@@ -611,6 +611,26 @@ fn read_at_keeps_the_declared_string_format_and_context_message_behavior() {
         Some(MessageId::parse("claude-code:2:3").unwrap())
     );
     assert!(numeric.annotation_position().is_none());
+    let padded: ReadOptions =
+        serde_json::from_value(serde_json::json!({"view":"context","at":"claude-code:02:03"}))
+            .unwrap();
+    assert_eq!(
+        padded.context_message().unwrap(),
+        Some(MessageId::parse("claude-code:02:03").unwrap())
+    );
+    assert_eq!(
+        serde_json::to_value(&padded).unwrap()["at"],
+        "claude-code:02:03"
+    );
+    for text in ["08:00:00", "2026-11-21t08:00:00z"] {
+        let context: ReadOptions =
+            serde_json::from_value(serde_json::json!({"view":"context","at":text})).unwrap();
+        assert_eq!(
+            context.context_message().unwrap(),
+            Some(MessageId::parse(text).unwrap())
+        );
+        assert_eq!(serde_json::to_value(&context).unwrap()["at"], text);
+    }
     let historical = serde_json::json!({"at":"generation:2:3"});
     let options: ReadOptions = serde_json::from_value(historical).unwrap();
     options.validate().unwrap();
@@ -639,4 +659,20 @@ fn read_at_keeps_the_declared_string_format_and_context_message_behavior() {
         serde_json::json!({"type":"string"})
     );
     assert!(schema["$defs"].get("ReadAt").is_none());
+}
+
+#[test]
+fn annotation_times_keep_the_same_read_option_string_codec() {
+    for text in [
+        "2026-11-21T10:00:00Z",
+        "1h",
+        "08:00",
+        "08:00:00",
+        "2026-11-21T09:00:00",
+    ] {
+        let options: ReadOptions = serde_json::from_value(serde_json::json!({"at":text})).unwrap();
+        options.validate().unwrap();
+        assert_eq!(serde_json::to_value(&options).unwrap()["at"], text);
+        assert!(options.annotation_position().is_none());
+    }
 }

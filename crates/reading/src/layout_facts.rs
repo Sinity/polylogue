@@ -5,13 +5,29 @@ use polylogue_model::{MessageId, PromptKind, Role, read::*};
 use polylogue_store::Reader;
 use std::ops::ControlFlow;
 
+pub(super) fn annotation_notice(options: &ReadOptions) -> Option<String> {
+    match options.annotation_at()? {
+        AnnotationAt::Position(_) => Some(format!(
+            "Annotations as of {}; expiry uses this read's clock.",
+            options.at.as_ref()?
+        )),
+        AnnotationAt::Time(at) => Some(format!(
+            "Annotations as of {at}, by authored time; approximate across machines. Unknown authored times are omitted. Expiry uses this time."
+        )),
+    }
+}
+
 /// Current visible annotations share their target’s pinned reader.
 pub(super) fn annotations(
     reader: &Reader<'_>,
     reference: &polylogue_model::Reference,
     at: polylogue_model::Timestamp,
-    position: Option<&polylogue_model::ChangePosition>,
+    bound: Option<AnnotationAt>,
 ) -> Result<Vec<Annotation>, Error> {
+    let at = match bound {
+        Some(AnnotationAt::Time(at)) => at,
+        _ => at,
+    };
     let mut annotations = Vec::new();
     let mut visit = |revision: polylogue_model::RevisionReference| {
         // Both visitors select current revisions before loading their bodies.
@@ -31,16 +47,12 @@ pub(super) fn annotations(
         Ok(ControlFlow::Continue(()))
     };
     if let polylogue_model::Reference::Message(message) = reference {
-        let _ = reader.visit_message_annotation_references_at(
-            message,
-            position.map(|position| position.archive),
-            &mut visit,
-        )?;
+        let _ = reader.visit_message_annotation_references_at(message, bound, &mut visit)?;
     } else {
         let _ = reader.visit_assertion_references_linked_at(
             reference,
             &[polylogue_model::assertion::LinkRole::About],
-            position.map(|position| position.archive),
+            bound,
             &mut visit,
         )?;
     }
@@ -52,7 +64,7 @@ pub(super) fn annotate(
     record: &polylogue_model::bundle::Record,
     facts: &mut LayoutFacts,
     at: polylogue_model::Timestamp,
-    position: Option<&polylogue_model::ChangePosition>,
+    bound: Option<AnnotationAt>,
 ) -> Result<(), Error> {
     if matches!(
         record,
@@ -62,7 +74,7 @@ pub(super) fn annotate(
             record.reference().expect("selected record has a reference"),
         )
         .map_err(Error::internal)?;
-        facts.assertions = annotations(reader, &reference, at, position)?;
+        facts.assertions = annotations(reader, &reference, at, bound)?;
     }
     Ok(())
 }

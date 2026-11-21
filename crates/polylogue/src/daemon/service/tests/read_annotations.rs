@@ -203,7 +203,7 @@ fn message_annotations_include_original_spans_once_and_keep_current_user_facts()
     );
 }
 
-fn historical_call(target: &str, position: &polylogue_model::ChangePosition, budget: u64) -> Call {
+fn historical_call(target: &str, position: &impl std::fmt::Display, budget: u64) -> Call {
     let words = [
         target.to_string(),
         "read".into(),
@@ -401,36 +401,277 @@ fn context_read_at_keeps_opaque_numeric_message_coordinates() {
         &|home| {
             std::fs::write(
                 home.join(".claude/projects/-p/numeric.jsonl"),
-                polylogue_testkit::claude_user("2:3", "numeric", "numeric message"),
+                ["2:3", "02:03"]
+                    .iter()
+                    .map(|id| polylogue_testkit::claude_user(id, "numeric", "numeric message"))
+                    .collect::<String>(),
             )
             .unwrap();
         },
-        1,
+        2,
         2,
     );
     d.pause_signals();
-    let words = [
-        "session:claude-code:numeric",
-        "read",
-        "--view",
-        "context",
-        "--at",
-        "claude-code:2:3",
-        "--budget",
-        "100000",
-    ]
-    .map(str::to_owned);
-    let parsed = crate::cli::line::parse(
-        &words,
-        &crate::cli::line::FirstWordCatalog::default(),
-        false,
-    )
-    .unwrap();
-    let page = crate::test_answers::read(Call::new("rows", json!({"selection":"session:claude-code:numeric", "steps":parsed.steps.into_iter().map(|step|step.step).collect::<Vec<_>>()})).answer(&d.daemon));
-    assert!(
-        page.document
-            .items
-            .iter()
-            .any(|item| item.source.reference == "message:claude-code:2:3")
+    for message in ["claude-code:2:3", "claude-code:02:03"] {
+        let words = [
+            "session:claude-code:numeric",
+            "read",
+            "--view",
+            "context",
+            "--at",
+            message,
+            "--budget",
+            "100000",
+        ]
+        .map(str::to_owned);
+        let parsed = crate::cli::line::parse(
+            &words,
+            &crate::cli::line::FirstWordCatalog::default(),
+            false,
+        )
+        .unwrap();
+        let page = crate::test_answers::read(Call::new("rows", json!({"selection":"session:claude-code:numeric", "steps":parsed.steps.into_iter().map(|step|step.step).collect::<Vec<_>>()})).answer(&d.daemon));
+        assert!(
+            page.document
+                .items
+                .iter()
+                .any(|item| item.source.reference == format!("message:{message}"))
+        );
+    }
+}
+
+fn time(text: &str) -> Timestamp {
+    Timestamp::parse_rfc3339(text).unwrap()
+}
+
+fn write_at(d: &Daemon, id: &str, assertion: NewAssertion, at: Timestamp) {
+    let mut request = polylogue_store::fixture::authored::operator_request(
+        id.into(),
+        UserWrite::Assert {
+            assertions: vec![assertion],
+        },
     );
+    request.at = at;
+    d.writes.as_ref().unwrap().user(request).unwrap();
+}
+
+#[test]
+fn ordinary_session_annotation_times_keep_old_new_withdrawn_and_expired_versions() {
+    let now = time("2026-11-21T12:00:00Z");
+    let mut d = test_daemon::start_with_clock_and_day(
+        "neutral target text",
+        polylogue_model::WallClock::new(move || now.into()),
+        query_language::time::DaySetting::new(jiff::tz::TimeZone::UTC, "00:00".parse().unwrap())
+            .unwrap(),
+    );
+    d.pause_signals();
+    let first = time("2026-11-21T08:00:00Z");
+    let second = time("2026-11-21T09:00:00Z");
+    let withdrawn = time("2026-11-21T10:00:00Z");
+    let expired = time("2026-11-21T11:00:00Z");
+    let target = "session:claude-code:s1";
+    write_at(
+        &d.daemon,
+        "time-message",
+        note("old message", &["message:claude-code:u1"]),
+        first,
+    );
+    let mut span = note("old span", &["span:block:claude-code:u1#0#c=0-6"]);
+    span.valid_until = Some(expired);
+    write_at(&d.daemon, "time-span", span, first);
+
+    // Restore an actual undated authored record through the product writer.
+    // Its receipt time must never become the fact's authored time.
+    let mut unknown = d
+        .daemon
+        .reads
+        .reader()
+        .unwrap()
+        .assertion(&polylogue_model::RevisionReference::exact(
+            "time-message".into(),
+            "time-message".into(),
+        ))
+        .unwrap()
+        .unwrap()
+        .fact;
+    unknown.id = "time-unknown".into();
+    unknown.root = unknown.id.clone();
+    unknown.created_at = None;
+    unknown.value = Some(json!("undated note"));
+    d.daemon
+        .writes
+        .as_ref()
+        .unwrap()
+        .restore_assertion(unknown, None)
+        .unwrap();
+
+    let mut invocation = d
+        .daemon
+        .invocation(&Call::new("rows", json!({})).authorship);
+    invocation.at = second;
+    for (root, text) in [("time-message", "new message"), ("time-span", "new span")] {
+        let _ = crate::test_answers::step(Call::new("rows", json!({"selection":format!("annotation:{root}@{root}"),"steps":[{"verb":"edit","text":text}]})).answer_with(&d.daemon, &invocation));
+    }
+    invocation.at = withdrawn;
+    let _ = crate::test_answers::step(Call::new("rows", json!({"selection":"annotation:time-message","steps":[{"verb":"withdraw","reason":"no longer current"}]})).answer_with(&d.daemon, &invocation));
+    // Current reads still expose unknown authored time, and apply current expiry.
+    assert_eq!(
+        annotations(&read(&d.daemon, target, false), "claude-code:u1")[0].value,
+        json!("undated note")
+    );
+    let cases = [
+        (first, vec![json!("old message"), json!("old span")]),
+        (second, vec![json!("new message"), json!("new span")]),
+        (withdrawn, vec![json!("new span")]),
+        (expired, vec![]),
+    ];
+    for restart in [false, true] {
+        if restart {
+            d.restart();
+            d.pause_signals();
+        }
+        for (at, expected) in &cases {
+            let call = historical_call(target, at, 100000);
+            for page in [call.clone().answer(&d.daemon), call.answer(&d.daemon)] {
+                let page = crate::test_answers::read(page);
+                assert_eq!(
+                    annotations(&page, "claude-code:u1")
+                        .iter()
+                        .map(|a| a.value.clone())
+                        .collect::<Vec<_>>(),
+                    *expected
+                );
+                assert!(page.document.items.iter().any(|item| matches!(&item.kind, ItemKind::Text { text } if text.contains("approximate across machines") && text.contains("Unknown authored times are omitted"))));
+            }
+        }
+    }
+    // Include the local spellings that also resemble three-part positions.
+    for at in ["08:00", "08:00:00", "2026-11-21T08:00:00"] {
+        let page =
+            crate::test_answers::read(historical_call(target, &at, 100000).answer(&d.daemon));
+        assert_eq!(
+            annotations(&page, "claude-code:u1")
+                .iter()
+                .map(|a| a.value.clone())
+                .collect::<Vec<_>>(),
+            cases[0].1
+        );
+    }
+    // A written second and its fractional instant choose the same boundary.
+    // The immediately preceding/following milliseconds straddle a real edit.
+    for (at, expected) in [
+        ("2026-11-21T08:59:59.999Z", &cases[0].1),
+        ("2026-11-21T09:00:00Z", &cases[1].1),
+        ("2026-11-21T09:00:00.000Z", &cases[1].1),
+        ("2026-11-21T09:00:00.001Z", &cases[1].1),
+        ("2026-11-21T10:59:59.999Z", &cases[2].1),
+        ("2026-11-21T11:00:00.000Z", &cases[3].1),
+    ] {
+        let page =
+            crate::test_answers::read(historical_call(target, &at, 100000).answer(&d.daemon));
+        assert_eq!(
+            &annotations(&page, "claude-code:u1")
+                .iter()
+                .map(|a| a.value.clone())
+                .collect::<Vec<_>>(),
+            expected,
+            "{at}"
+        );
+    }
+    // Calendar periods use the same lower-bound rule, in the configured day.
+    for at in ["today", "2026-11-21"] {
+        let page =
+            crate::test_answers::read(historical_call(target, &at, 100000).answer(&d.daemon));
+        assert!(annotations(&page, "claude-code:u1").is_empty());
+    }
+}
+
+#[test]
+fn session_annotation_time_continuations_freeze_relative_time_through_edit_and_restart() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicI64, Ordering},
+    };
+    let original_now = time("2026-11-21T12:00:00Z");
+    let clock = Arc::new(AtomicI64::new(original_now.unix_ms()));
+    let read_clock = clock.clone();
+    let mut d = test_daemon::start_with_clock(
+        "neutral target text",
+        polylogue_model::WallClock::new(move || {
+            jiff::Timestamp::from_millisecond(read_clock.load(Ordering::SeqCst)).unwrap()
+        }),
+    );
+    d.pause_signals();
+    write_at(
+        &d.daemon,
+        "time-page",
+        note("the original timed note", &["message:claude-code:u1"]),
+        time("2026-11-21T10:00:00Z"),
+    );
+    let first = crate::test_answers::read(
+        historical_call("session:claude-code:s1", &"1h", 1).answer(&d.daemon),
+    );
+    let resume = first
+        .document
+        .footer
+        .next
+        .clone()
+        .expect("the small page continues");
+    let _ = crate::test_answers::step(Call::new("rows", json!({"selection":"annotation:time-page","steps":[{"verb":"edit","text":"a later timed note"}]})).answer(&d.daemon));
+    clock.store(time("2026-11-22T12:00:00Z").unix_ms(), Ordering::SeqCst);
+    d.restart();
+    d.pause_signals();
+    let mut next = Some(resume);
+    let mut previous = None;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut items = first.document.items;
+    while let Some(ready) = next {
+        assert_eq!(
+            ready.request.arguments["steps"][0]["at"],
+            "2026-11-21T11:00:00Z"
+        );
+        assert!(seen.insert(serde_json::to_string(&ready.request).unwrap()));
+        let page = crate::test_answers::read(Call::from_request(&ready.request).answer(&d.daemon));
+        let repeated =
+            crate::test_answers::read(Call::from_request(&ready.request).answer(&d.daemon));
+        assert_eq!(page.document.items, repeated.document.items);
+        previous = page.document.footer.previous.or(previous);
+        next = page.document.footer.next;
+        items.extend(page.document.items);
+    }
+    let previous = previous.expect("a later page has an executable previous page");
+    assert_eq!(
+        previous.request.arguments["steps"][0]["at"],
+        "2026-11-21T11:00:00Z"
+    );
+    let page = crate::test_answers::read(Call::from_request(&previous.request).answer(&d.daemon));
+    let repeated =
+        crate::test_answers::read(Call::from_request(&previous.request).answer(&d.daemon));
+    assert_eq!(page.document.items, repeated.document.items);
+    assert!(
+        !serde_json::to_string(&page.document.items)
+            .unwrap()
+            .contains("a later timed note")
+    );
+    let notes = items
+        .iter()
+        .filter_map(|item| match &item.kind {
+            ItemKind::MessageHeader { header } => Some(&header.assertions),
+            _ => None,
+        })
+        .flatten()
+        .collect::<Vec<_>>();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].value, json!("the original timed note"));
+}
+
+#[test]
+fn annotation_time_selection_preserves_invalid_time_refusals() {
+    let d = test_daemon::start("neutral target text");
+    for at in ["not-a-time", "last 0h", "2026-13-01"] {
+        let refusal = crate::test_answers::refusal(
+            historical_call("session:claude-code:s1", &at, 100000).answer(&d.daemon),
+        );
+        assert_eq!(refusal.code.as_deref(), Some("bad_request"), "{refusal:?}");
+    }
 }
