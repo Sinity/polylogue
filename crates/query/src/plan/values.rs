@@ -179,10 +179,10 @@ fn values(
         if normalize {
             if let Origin::Catalog { unit, field } = &typed.result.origin
                 && let Some(unit) = Unit::from_bound_name(unit)
-                && crate::fields::lookup(unit, field)
-                    .is_some_and(|field| field.declaration().reference_argument)
+                && let Some(field) = crate::fields::lookup(unit, field)
+                && field.declaration().reference_argument
             {
-                return reference_values(value, position);
+                return reference_values(value, position, field);
             }
             return Ok(());
         }
@@ -219,9 +219,27 @@ fn values(
 }
 
 /// Reference fields keep their storage identity while the query uses human names.
-fn reference_values(value: &mut Value, position: usize) -> Result<(), QueryError> {
+fn reference_values(
+    value: &mut Value,
+    position: usize,
+    field: crate::fields::FieldId,
+) -> Result<(), QueryError> {
     match value {
         Value::Scalar { text, .. } => match polylogue_model::Reference::parse(text) {
+            Ok(polylogue_model::Reference::Assertion(revision))
+                if field == crate::fields::FieldId::AnnotationsRoot =>
+            {
+                *text = revision.root;
+            }
+            Ok(_) if field == crate::fields::FieldId::AnnotationsRoot => {
+                return Err(QueryError::BadValue {
+                    field: "root".into(),
+                    value: text.clone(),
+                    position,
+                    message: "an annotation root takes an annotation reference or root ID prefix"
+                        .into(),
+                });
+            }
             Ok(reference) => *text = reference.stored_form(),
             Err(error @ polylogue_model::ReferenceError::StoredSpelling { .. }) => {
                 return Err(QueryError::Invalid {
@@ -233,7 +251,7 @@ fn reference_values(value: &mut Value, position: usize) -> Result<(), QueryError
         },
         Value::Set { values } => {
             for value in values {
-                reference_values(value, position)?;
+                reference_values(value, position, field)?;
             }
         }
         _ => {}

@@ -302,6 +302,18 @@ fn ordinary_session_reads_keep_message_and_span_revisions_at_two_positions() {
     for root in ["message-original", "span-original"] {
         let history = crate::test_answers::listing(Call::new("rows", json!({"selection":format!("annotations where root:annotation:{root} withdrawn:*")})).answer(&d.daemon));
         assert_eq!(history.value().unwrap()["count"], 2, "{history:?}");
+        let raw_root = crate::test_answers::listing(
+            Call::new(
+                "rows",
+                json!({"selection":format!("annotations where root:{root} withdrawn:*")}),
+            )
+            .answer(&d.daemon),
+        );
+        assert_eq!(raw_root.value().unwrap()["count"], 2, "{raw_root:?}");
+        assert_eq!(
+            history.value().unwrap()["rows"],
+            raw_root.value().unwrap()["rows"]
+        );
     }
     d.restart();
     d.pause_signals();

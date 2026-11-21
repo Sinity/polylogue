@@ -543,3 +543,27 @@ fn comparison_values_use_the_normalized_conditions_binding() {
         "`invalid` is not a Number value for `exit_code`"
     );
 }
+
+#[test]
+fn annotation_history_roots_bind_natural_references_to_the_stored_family_identity() {
+    let bare = prepare(
+        "annotations where root:first withdrawn:*",
+        &Bindings::default(),
+        |_| Ok(()),
+    )
+    .unwrap();
+    for text in [
+        "annotations where root:annotation:first withdrawn:*",
+        "annotations where root:annotation:first@revision withdrawn:*",
+    ] {
+        let reference = prepare(text, &Bindings::default(), |_| Ok(())).unwrap();
+        assert_eq!(reference.question_id(), bare.question_id(), "{text}");
+    }
+    let refused = prepare(
+        "annotations where root:session:claude-code:first",
+        &Bindings::default(),
+        |_| Ok(()),
+    )
+    .unwrap_err();
+    assert_eq!(refused.kind(), polylogue_model::Code::BadValue);
+}
