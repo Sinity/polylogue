@@ -18,6 +18,8 @@ mod identical_chains;
 #[cfg(feature = "faults")]
 mod live_queue;
 #[cfg(feature = "faults")]
+mod planning;
+#[cfg(feature = "faults")]
 mod standings;
 
 #[test]
