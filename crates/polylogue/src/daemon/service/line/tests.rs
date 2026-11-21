@@ -317,12 +317,31 @@ fn listing_wait_returns_when_rows_match() {
 }
 
 #[test]
-fn mcp_wait_returns_empty_with_same_call_after_cap() {
+fn listing_wait_caps_long_mcp_requests() {
+    use crate::commands::Surface;
+    use std::time::Duration;
+
+    assert_eq!(
+        super::listing_wait("1h", Surface::Mcp).unwrap(),
+        Duration::from_secs(50)
+    );
+    assert_eq!(
+        super::listing_wait("25ms", Surface::Mcp).unwrap(),
+        Duration::from_millis(25)
+    );
+    assert_eq!(
+        super::listing_wait("1h", Surface::Cli).unwrap(),
+        Duration::from_secs(3600)
+    );
+}
+
+#[test]
+fn mcp_wait_returns_empty_with_same_call() {
     let d = test_daemon::start("first prompt");
     let request = command_surface::RunnableRequest {
         operation: "rows".into(),
-        arguments: json!({"selection": "sessions where tag:later", "wait": "1h", "fields": [], "all": false}),
-        request_id: "wait-cap".into(),
+        arguments: json!({"selection": "sessions where tag:later", "wait": "25ms", "fields": [], "all": false}),
+        request_id: "wait-retry".into(),
         deadline: command_surface::Deadline::None,
         budget_tokens: Default::default(),
         cursor: None,
