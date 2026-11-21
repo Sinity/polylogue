@@ -797,7 +797,11 @@ fn historical_context_pages_bind_the_message_and_cutoff_through_append_and_reope
             forged.request.arguments["steps"][0]["physical"] = json!(true);
             let error =
                 crate::test_answers::refusal(Call::from_request(&forged.request).answer(&d.daemon));
-            assert_eq!(error.code.as_deref(), Some("invalid_cursor"));
+            assert_eq!(error.code.as_deref(), Some("invalid_query"));
+            assert_eq!(
+                error.message,
+                "the read cursor belongs to another reading: the reading options differ"
+            );
         }
         let _ = crate::test_answers::step(Call::new("rows", json!({"selection":"annotation:context-note","steps":[{"verb":"edit","text":"a later context note"}]})).answer_with(&d.daemon, &invocation));
         std::fs::OpenOptions::new()
