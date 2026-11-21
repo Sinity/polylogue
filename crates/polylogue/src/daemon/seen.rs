@@ -1,11 +1,8 @@
 //! Display acknowledgements use the ordinary authored writer, without waiting.
-use super::{Failure, service::Daemon};
-use polylogue_model::{
-    Reference,
-    user::{SeenMark, UserWrite},
-};
+use super::service::Daemon;
+use polylogue_model::user::{SeenMark, UserWrite};
 use polylogue_reading::operation::Invocation;
-use polylogue_store::{Reader, writer::Queued};
+use polylogue_store::writer::Queued;
 
 pub fn record(daemon: &Daemon, invocation: &Invocation, marks: Vec<SeenMark>) {
     if marks.is_empty() {
@@ -25,18 +22,4 @@ pub fn record(daemon: &Daemon, invocation: &Invocation, marks: Vec<SeenMark>) {
         Ok(Queued::Full(_)) => eprintln!("polylogue: seen marks: writer queue is full"),
         Err(error) => eprintln!("polylogue: seen marks: {error}"),
     }
-}
-
-pub fn mark_of(
-    reader: &Reader<'_>,
-    author: &str,
-    target: &Reference,
-) -> Result<Option<SeenMark>, Failure> {
-    let mut marks = reader.seen_marks(author, std::slice::from_ref(target))?;
-    if marks.len() > 1 {
-        return Err(Failure::conflict(format!(
-            "multiple current seen marks for {target}"
-        )));
-    }
-    Ok(marks.pop())
 }

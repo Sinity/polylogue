@@ -61,6 +61,90 @@ pub struct ReadRequest {
     pub with_blobs: bool,
     pub cursor: Option<String>,
 }
+/// Resolve the authenticated session start before accepting a page or stream.
+/// Composition captures logical parts' marks against this same pinned reader.
+pub fn resolve_start(
+    reader: &Reader<'_>,
+    operation: &Context,
+    request: &mut ReadRequest,
+) -> Result<(), Error> {
+    let from_seen = request.start.uses_seen();
+    if from_seen
+        && !matches!(
+            request.options.view,
+            View::Transcript | View::Dialogue | View::Context | View::Raw | View::Changes
+        )
+    {
+        return Err(Error::bad_request(
+            "read --from seen needs a session content view",
+        ));
+    }
+    if let Some(cursor) = &request.cursor {
+        let opened = PageCursor::open(cursor, &cursor_seal(reader)?).map_err(cursor_failure)?;
+        if let Some(bound) = opened.session_read {
+            if bound.from_seen != from_seen {
+                return Err(Error::invalid_query(
+                    "the cursor belongs to another read start",
+                ));
+            }
+            request.start = ReadStart::Bound(bound);
+            return Ok(());
+        }
+        if from_seen {
+            return Err(Error::invalid_query(
+                "the cursor has no accepted seen start",
+            ));
+        }
+    }
+    // Fixed populations retain their grains and order. Their joined display
+    // question is not a single session or message selector.
+    if request
+        .references
+        .as_ref()
+        .is_some_and(|references| references.len() != 1)
+    {
+        return if from_seen {
+            Err(Error::bad_request(
+                "read --from seen needs one session or logical-root reference",
+            ))
+        } else {
+            Ok(())
+        };
+    }
+    if let Some(scope) =
+        session::scope(reader, &request.target)?.filter(|scope| scope.range.is_none())
+    {
+        let logical = scope.logical && !request.options.physical;
+        let after = if from_seen && !logical {
+            let target = polylogue_model::Reference::Session(scope.session.clone());
+            let mut marks = reader.seen_marks(
+                &operation.authorship.author.to_string(),
+                std::slice::from_ref(&target),
+            )?;
+            if marks.len() > 1 {
+                return Err(Error::conflict(format!(
+                    "multiple current seen marks for {target}"
+                )));
+            }
+            marks.pop().and_then(|mark| mark.item)
+        } else {
+            None
+        };
+        request.start = ReadStart::Bound(SessionRead {
+            session: scope.session,
+            from_seen,
+            after,
+            logical,
+            parts: vec![],
+        });
+    } else if from_seen {
+        return Err(Error::bad_request(
+            "read --from seen needs one session or logical-root reference",
+        ));
+    }
+    Ok(())
+}
+
 pub trait ReadServices {
     fn requests(&self) -> &polylogue_model::user::RequestMetadata;
     fn freshness(&self, reader: &Reader<'_>) -> polylogue_store::Result<ReadFreshness>;
@@ -606,7 +690,7 @@ pub fn page(
     request: &ReadRequest,
     operation: &Arc<Context>,
     history: Option<HistorySlot>,
-) -> Result<(ReadPage, Option<polylogue_model::user::SeenMark>), Error> {
+) -> Result<(ReadPage, Vec<polylogue_model::user::SeenMark>), Error> {
     let resolved = resolve_at(reader, request, operation)?;
     let request = resolved.as_ref();
     validate_at(reader, request)?;
@@ -614,10 +698,10 @@ pub fn page(
         return Err(Error::bad_request("with_blobs requires streaming delivery"));
     }
     if request.options.view == View::Trace {
-        return trace::page(reader, d, request, operation, history).map(|page| (page, None));
+        return trace::page(reader, d, request, operation, history).map(|page| (page, vec![]));
     }
     if let Some(response) = object::page(reader, d, request, operation) {
-        return response.map(|page| (page, None));
+        return response.map(|page| (page, vec![]));
     }
     let (reading, cursor) = reading(request)?;
     if reading.budget.is_none() {
@@ -635,7 +719,7 @@ pub fn page(
             session::page(reader, d, request, operation, scope)?
         }
         Some(scope) if reading.options.view == View::Links => {
-            (links::page(reader, d, request, operation, scope)?, None)
+            (links::page(reader, d, request, operation, scope)?, vec![])
         }
         _ => {
             return prepared(
@@ -672,7 +756,7 @@ pub fn page(
                             reader, d, operation, request, &reading, compiled, history,
                         );
                     }
-                    Ok((page, None))
+                    Ok((page, vec![]))
                 },
             );
         }

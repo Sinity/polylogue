@@ -618,38 +618,42 @@ fn finite_http_context_streams_share_paged_items_and_require_read_authority() {
 fn http_get_pages_and_streams_never_acknowledge_display() {
     let r = reader();
     rt().block_on(async {
-        for delivery in ["page", "stream"] {
-            let path = read_url(
-                "session:claude-code:s1",
-                &[
-                    ("delivery", delivery),
-                    ("from", "seen"),
-                    ("displayed", "true"),
-                ],
-            );
-            let (status, _, body) = send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
-            assert_eq!(status, StatusCode::OK, "{delivery}: {body}");
-            if delivery == "page" {
-                let page: polylogue_model::read::ReadPage = serde_json::from_str(&body).unwrap();
-                assert_eq!(page.document.header.target, "session:claude-code:s1");
-                assert!(
-                    !page.document.items.is_empty(),
-                    "GET actually reads the stored session"
+        for target in ["session:claude-code:s1", "root:claude-code:s1"] {
+            for delivery in ["page", "stream"] {
+                let path = read_url(
+                    target,
+                    &[
+                        ("delivery", delivery),
+                        ("from", "seen"),
+                        ("displayed", "true"),
+                    ],
                 );
-            } else {
-                let frames = command_surface::SseDecoder::new()
-                    .push(body.as_bytes())
-                    .unwrap();
-                let complete = frames
-                    .iter()
-                    .find(|frame| frame.event == "complete")
-                    .unwrap();
-                let complete: polylogue_model::read::ReadComplete =
-                    serde_json::from_str(&complete.data).unwrap();
-                assert_eq!(
-                    complete.counts.messages, 1,
-                    "the stream actually delivers the stored message"
-                );
+                let (status, _, body) =
+                    send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
+                assert_eq!(status, StatusCode::OK, "{delivery}: {body}");
+                if delivery == "page" {
+                    let page: polylogue_model::read::ReadPage =
+                        serde_json::from_str(&body).unwrap();
+                    assert_eq!(page.document.header.target, target);
+                    assert!(
+                        !page.document.items.is_empty(),
+                        "GET actually reads the stored session"
+                    );
+                } else {
+                    let frames = command_surface::SseDecoder::new()
+                        .push(body.as_bytes())
+                        .unwrap();
+                    let complete = frames
+                        .iter()
+                        .find(|frame| frame.event == "complete")
+                        .unwrap();
+                    let complete: polylogue_model::read::ReadComplete =
+                        serde_json::from_str(&complete.data).unwrap();
+                    assert_eq!(
+                        complete.counts.messages, 1,
+                        "the stream actually delivers the stored message"
+                    );
+                }
             }
         }
     });
