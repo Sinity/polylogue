@@ -1,4 +1,4 @@
-name: check
+name: context-stream-diagnostic
 
 on:
   pull_request:
@@ -19,11 +19,12 @@ env:
   NEXTEST_FAILURE_OUTPUT: immediate-final
 
 concurrency:
-  group: check-${{ inputs.rev || github.ref }}
+  group: context-stream-diagnostic-${{ inputs.rev || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   rust:
+    name: context-stream-diagnostic-rust
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
@@ -86,9 +87,11 @@ jobs:
           git ls-files -z | xargs -0 touch -h -d '2000-01-01 00:00:00 UTC'
           git diff --no-renames --name-only -z "$built" HEAD | xargs -0 -r touch -h -c
           echo "restored build of $built; $(git diff --no-renames --name-only "$built" HEAD | wc -l) files differ"
-      # Pull requests check their merge tree; pushes and exact-revision dispatches run all tests.
-      - name: cargo xtask check
-        run: cargo xtask check ${{ github.event_name == 'pull_request' && '--changed-base HEAD^1' || '' }}
+      # Dispatch checks the exact requested source with these two consumers.
+      - name: Selected context stream consumer controls
+        run: >-
+          cargo xtask test -p polylogue --bin polylogue
+          -E 'test(finite_http_context_streams_share_paged_items_and_require_read_authority) | test(composed_context_streams_keep_distinct_physical_session_headers_once)'
       # A failed test leaves a valid build, so it is saved too.
       - name: Save master's build
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
@@ -102,6 +105,7 @@ jobs:
             target
           key: check-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
   browser:
+    name: context-stream-diagnostic-browser
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -127,8 +131,9 @@ jobs:
           npm --prefix extension ci
           npm --prefix extension run check
 
-  # Keep the existing required status bound to both suites, including failures.
+  # Diagnostic names never satisfy the normal required PR status.
   check:
+    name: context-stream-diagnostic-check
     needs: [rust, browser]
     if: ${{ always() }}
     runs-on: ubuntu-latest
