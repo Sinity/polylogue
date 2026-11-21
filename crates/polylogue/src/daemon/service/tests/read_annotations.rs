@@ -381,3 +381,44 @@ fn historical_session_positions_refuse_another_generation_and_future_counters() 
         assert_eq!(refusal.code.as_deref(), Some("bad_request"));
     }
 }
+
+#[test]
+fn context_read_at_keeps_opaque_numeric_message_coordinates() {
+    let mut d = test_daemon::start_with_sources_and_workers(
+        "first prompt",
+        &|home| {
+            std::fs::write(
+                home.join(".claude/projects/-p/numeric.jsonl"),
+                polylogue_testkit::claude_user("2:3", "numeric", "numeric message"),
+            )
+            .unwrap();
+        },
+        1,
+        2,
+    );
+    d.pause_signals();
+    let words = [
+        "session:claude-code:numeric",
+        "read",
+        "--view",
+        "context",
+        "--at",
+        "claude-code:2:3",
+        "--budget",
+        "100000",
+    ]
+    .map(str::to_owned);
+    let parsed = crate::cli::line::parse(
+        &words,
+        &crate::cli::line::FirstWordCatalog::default(),
+        false,
+    )
+    .unwrap();
+    let page = crate::test_answers::read(Call::new("rows", json!({"selection":"session:claude-code:numeric", "steps":parsed.steps.into_iter().map(|step|step.step).collect::<Vec<_>>()})).answer(&d.daemon));
+    assert!(
+        page.document
+            .items
+            .iter()
+            .any(|item| item.source.reference == "message:claude-code:2:3")
+    );
+}
