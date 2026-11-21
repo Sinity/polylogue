@@ -99,6 +99,23 @@ impl Engine {
         let found = visit(root, &archive, |item| {
             let item = match item {
                 Member::Prepared(member) => Pending::Staged(member),
+                Member::Database(original, reading) => {
+                    // A member points to its parent within this import group.
+                    self.flush_python_members(root, &mut pending, options, report, &mut package)?;
+                    pending_bytes = 0;
+                    ids.push(original.bytes.hash().to_string());
+                    if reading.origin.is_some() {
+                        ids.push(reading.bytes.hash().to_string());
+                    }
+                    self.import_members(root, vec![*original, *reading], options, report)
+                        .map_err(std::io::Error::other)?;
+                    package.assets += report
+                        .packages
+                        .pop()
+                        .expect("database member package")
+                        .assets;
+                    return Ok(());
+                }
                 Member::Raw(raw) => {
                     // A path match saves no verification and acknowledges no bytes.
                     let predicted = if let Some(imported_at) = &import_locations
@@ -362,12 +379,23 @@ fn visit(
                 continue;
             }
         };
-        accept(Member::Raw(RawMember {
+        let origin = polylogue_store::python_polylogue::origin(&input.origin)
+            .and_then(polylogue_sources::origin::by_name);
+        let source_path = Path::new(&input.source_path);
+        let raw = RawMember {
             path: at,
             parts,
-            origin: polylogue_store::python_polylogue::origin(&input.origin)
-                .and_then(polylogue_sources::origin::by_name),
-        }))?;
+            origin,
+        };
+        if let Some(origin) = origin.filter(|spec| spec.is_row_dump(source_path))
+            && source_path
+                .extension()
+                .is_some_and(|ext| matches!(ext.to_str(), Some("db" | "sqlite" | "vscdb")))
+        {
+            accept(stage_database(root, archive, raw, input, origin)?)?;
+        } else {
+            accept(Member::Raw(raw))?;
+        }
     }
     // Every blob no raw session cites, checked against its name.
     let cited: BTreeSet<String> = inputs
@@ -432,6 +460,7 @@ fn visit(
 }
 enum Member {
     Prepared(Box<package::Member>),
+    Database(Box<package::Member>, Box<package::Member>),
     Raw(RawMember),
 }
 
@@ -538,6 +567,73 @@ impl RawMember {
     }
 }
 
+/// Materialize an exact native SQLite snapshot privately, then save the
+/// common row encoding as a linked reading of the unchanged original bytes.
+fn stage_database(
+    root: &Path,
+    archive: &Archive,
+    raw: RawMember,
+    input: &Input,
+    origin: &'static OriginSpec,
+) -> std::io::Result<Member> {
+    let mut original = raw.prepare(root, archive)?;
+    let mut reader = original.bytes.reader().map_err(std::io::Error::other)?;
+    const MAGIC: &[u8] = b"SQLite format 3\0";
+    let mut magic = Vec::with_capacity(MAGIC.len());
+    (&mut reader)
+        .take(MAGIC.len() as u64)
+        .read_to_end(&mut magic)?;
+    if magic != MAGIC {
+        return Ok(Member::Prepared(Box::new(original)));
+    }
+    let scratch = tempfile::tempdir_in(archive.staging_dir())?;
+    let recorded = Path::new(&input.source_path);
+    let database = scratch
+        .path()
+        .join(recorded.file_name().expect("database filename"));
+    let mut file = std::fs::File::create_new(&database)?;
+    use std::io::Write as _;
+    file.write_all(&magic)?;
+    std::io::copy(&mut reader, &mut file)?;
+    drop(file);
+
+    original.origin = polylogue_sources::origin::by_name(KEPT);
+    original.container = true;
+    let mut reading_path = original.path.as_os_str().to_owned();
+    reading_path.push(".jsonl");
+    let encoded = archive.prepare_write(|output| {
+        polylogue_store::tool_databases::read_snapshot(
+            &database,
+            recorded,
+            input.acquired_at_ms,
+            |group| Ok(output.write_all(&group)?),
+        )
+        .map_err(std::io::Error::other)?;
+        Ok(())
+    });
+    let (bytes, format, refusal) = match encoded {
+        Ok((bytes, ())) => (bytes, Some(origin), None),
+        Err(error) => (
+            archive
+                .prepare_bytes(std::io::empty())
+                .map_err(std::io::Error::other)?,
+            None,
+            Some(format!("cannot read retained SQLite snapshot: {error}")),
+        ),
+    };
+    let reading = package::Member {
+        path: reading_path.into(),
+        bytes,
+        container: false,
+        origin: format,
+        parent: Some((0, 0)),
+        container_kind: Some("sqlite".into()),
+        member_path_bytes: Some(b"rows.jsonl".to_vec()),
+        refusal,
+    };
+    Ok(Member::Database(Box::new(original), Box::new(reading)))
+}
+
 /// Validate the source bytes while producing this member. No staged
 /// copy of every source blob is kept alongside the joined readings.
 fn copy_blob(
@@ -592,10 +688,15 @@ fn blob_path(root: &Path, hash: &str) -> PathBuf {
 fn stage(root: &Path, archive: &Archive) -> std::io::Result<Option<Vec<package::Member>>> {
     let mut members = Vec::new();
     let found = visit(root, archive, |member| {
-        members.push(match member {
-            Member::Prepared(member) => *member,
-            Member::Raw(raw) => raw.prepare(root, archive)?,
-        });
+        match member {
+            Member::Prepared(member) => members.push(*member),
+            Member::Raw(raw) => members.push(raw.prepare(root, archive)?),
+            Member::Database(original, mut reading) => {
+                reading.parent = Some((members.len(), 0));
+                members.push(*original);
+                members.push(*reading);
+            }
+        }
         Ok(())
     })?;
     Ok(found.then_some(members))

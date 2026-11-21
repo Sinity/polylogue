@@ -177,9 +177,9 @@ impl DatabaseReader {
         let mut sent = false;
         let done = read_rows(
             db,
-            archive,
-            input,
-            &observation,
+            Some((archive, input.id.as_str())),
+            json!({"machine": observation.machine, "path": observation.path}),
+            Some(observation.seen_at_ms),
             self.stop.as_deref(),
             &mut |bytes| {
                 sent = true;
@@ -419,11 +419,32 @@ fn header_current(db: &Path, archive: &Archive, input: &InputKey) -> Result<bool
     Ok(schema.as_ref() == Some(&signature(&tables)))
 }
 
+/// Reads every row of a retained snapshot using the live database row format.
+///
+/// `db` is a private, stable materialization of the original. `source_path`
+/// is the recorded path, which can carry provider identity such as a profile.
+pub fn read_snapshot(
+    db: &Path,
+    source_path: &Path,
+    captured_at_ms: Option<i64>,
+    mut send: impl FnMut(Vec<u8>) -> Result<(), DatabaseError>,
+) -> Result<(), DatabaseError> {
+    read_rows(
+        db,
+        None,
+        json!({"path": source_path}),
+        captured_at_ms,
+        None,
+        &mut send,
+    )?;
+    Ok(())
+}
+
 fn read_rows(
     db: &Path,
-    archive: &Archive,
-    input: &InputKey,
-    observation: &Observation,
+    previous: Option<(&Archive, &str)>,
+    source_identity: Value,
+    at_ms: Option<i64>,
     stop: Option<&std::sync::atomic::AtomicBool>,
     send: &mut dyn FnMut(Vec<u8>) -> Result<(), DatabaseError>,
 ) -> Result<ReadReport, DatabaseError> {
@@ -447,15 +468,16 @@ fn read_rows(
         .map_err(sql_err)?;
     source.execute_batch("BEGIN").map_err(sql_err)?;
     let tables = tables(&source).map_err(sql_err)?;
-    let catalog = catalog::Catalog::open(archive, &input.id)?;
+    let catalog = previous
+        .map(|(archive, input)| catalog::Catalog::open(archive, input))
+        .transpose()?;
     let signature = signature(&tables);
     let (schema, table_metadata) = (&signature["schema"], &signature["table_metadata"]);
-    let changed_schema = catalog.schema.as_ref() != Some(&signature);
-    // The accepting engine supplied this observation from its injected clock.
-    let at_ms = observation.seen_at_ms;
+    let changed_schema =
+        catalog.as_ref().and_then(|catalog| catalog.schema.as_ref()) != Some(&signature);
     let mut bytes = Vec::new();
     if changed_schema {
-        serde_json::to_writer(&mut bytes, &json!({"db":db.file_name().map(|n| n.to_string_lossy()), "at_ms":at_ms, "schema":schema, "table_metadata":table_metadata, "source":{"machine":observation.machine,"path":observation.path}})).map_err(std::io::Error::from)?;
+        serde_json::to_writer(&mut bytes, &json!({"db":db.file_name().map(|n| n.to_string_lossy()), "at_ms":at_ms, "schema":schema, "table_metadata":table_metadata, "source":source_identity})).map_err(std::io::Error::from)?;
         bytes.push(b'\n');
     }
     let mut done = ReadReport {
@@ -508,7 +530,10 @@ fn read_rows(
                 json!({"position":position})
             };
             let encoded = Value::Object(values);
-            if catalog.changed(&table.name, &key, &encoded)? {
+            if match &catalog {
+                Some(catalog) => catalog.changed(&table.name, &key, &encoded)?,
+                None => true,
+            } {
                 serde_json::to_writer(
                     &mut bytes,
                     &json!({"t":table.name,"k":key,"r":encoded,"at_ms":at_ms,"encoding":"sqlite"}),
@@ -522,39 +547,43 @@ fn read_rows(
                 send(std::mem::take(&mut bytes))?;
             }
         }
-        catalog.gone(&table.name, &mut |key| {
-            stopped()?;
-            serde_json::to_writer(
-                &mut bytes,
-                &json!({"t":table.name,"k":key,"gone":true,"at_ms":at_ms}),
-            )
-            .map_err(std::io::Error::from)?;
-            bytes.push(b'\n');
-            done.gone += 1;
-            crate::fault::check("database.after_gone", &table.name)?;
-            if bytes.len() >= APPEND_BYTES {
-                send(std::mem::take(&mut bytes))?;
-            }
-            Ok(())
-        })?;
+        if let Some(catalog) = &catalog {
+            catalog.gone(&table.name, &mut |key| {
+                stopped()?;
+                serde_json::to_writer(
+                    &mut bytes,
+                    &json!({"t":table.name,"k":key,"gone":true,"at_ms":at_ms}),
+                )
+                .map_err(std::io::Error::from)?;
+                bytes.push(b'\n');
+                done.gone += 1;
+                crate::fault::check("database.after_gone", &table.name)?;
+                if bytes.len() >= APPEND_BYTES {
+                    send(std::mem::take(&mut bytes))?;
+                }
+                Ok(())
+            })?;
+        }
     }
-    catalog.dropped(
-        &tables.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
-        &mut |table, key| {
-            stopped()?;
-            serde_json::to_writer(
-                &mut bytes,
-                &json!({"t":table,"k":key,"gone":true,"at_ms":at_ms}),
-            )
-            .map_err(std::io::Error::from)?;
-            bytes.push(b'\n');
-            done.gone += 1;
-            if bytes.len() >= APPEND_BYTES {
-                send(std::mem::take(&mut bytes))?;
-            }
-            Ok(())
-        },
-    )?;
+    if let Some(catalog) = &catalog {
+        catalog.dropped(
+            &tables.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+            &mut |table, key| {
+                stopped()?;
+                serde_json::to_writer(
+                    &mut bytes,
+                    &json!({"t":table,"k":key,"gone":true,"at_ms":at_ms}),
+                )
+                .map_err(std::io::Error::from)?;
+                bytes.push(b'\n');
+                done.gone += 1;
+                if bytes.len() >= APPEND_BYTES {
+                    send(std::mem::take(&mut bytes))?;
+                }
+                Ok(())
+            },
+        )?;
+    }
     stopped()?;
     if !bytes.is_empty() {
         send(bytes)?;

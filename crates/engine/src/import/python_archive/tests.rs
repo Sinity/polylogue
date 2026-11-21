@@ -808,3 +808,91 @@ fn a_raw_session_of_an_unnamed_origin_is_read_by_its_structure_or_kept() {
     assert_eq!(origin("chat"), "chatgpt");
     assert_eq!(origin("opaque"), KEPT);
 }
+
+#[test]
+fn retained_hermes_verification_database_rebuilds_from_linked_rows() {
+    let w = polylogue_testkit::ClaudeHome::new();
+    let old = w.dir.path().join("python-archive");
+    std::fs::create_dir_all(old.join("blob")).unwrap();
+    let native = w.dir.path().join("verification_evidence.db");
+    rusqlite::Connection::open(&native)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+             INSERT INTO meta VALUES ('schema_version','1');
+             CREATE TABLE verification_events(id INTEGER PRIMARY KEY,created_at TEXT);
+             INSERT INTO verification_events VALUES (1,'2026-11-21T00:00:00Z');
+             CREATE TABLE verification_state(id INTEGER PRIMARY KEY,last_edit_at TEXT);
+             INSERT INTO verification_state VALUES (2,'2026-11-21T00:00:01Z');",
+        )
+        .unwrap();
+    let bytes = std::fs::read(&native).unwrap();
+    let hash = Sha256::digest(&bytes);
+    let name = format!("{hash:x}");
+    let blob = old.join("blob").join(&name[..2]).join(&name[2..]);
+    std::fs::create_dir_all(blob.parent().unwrap()).unwrap();
+    std::fs::write(blob, &bytes).unwrap();
+    let db = rusqlite::Connection::open(old.join("source.db")).unwrap();
+    db.execute_batch(
+        "CREATE TABLE raw_sessions(raw_id TEXT PRIMARY KEY, origin TEXT, source_path TEXT,
+            blob_hash BLOB, blob_size INTEGER, acquired_at_ms INTEGER);",
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO raw_sessions VALUES
+            ('db','hermes-session','/original/.hermes/verification_evidence.db',?1,?2,123)",
+        rusqlite::params![hash.as_slice(), bytes.len() as i64],
+    )
+    .unwrap();
+    drop(db);
+    std::fs::remove_file(native).unwrap();
+    let raw = polylogue_model::BlobHash::of(&bytes).to_string();
+    let events = "SELECT id,kind,at FROM event WHERE kind IN
+                     ('hermes_verification_event','hermes_verification_state') ORDER BY kind";
+    let expected;
+    {
+        let (mut engine, _lock) = crate::import::tests::engine(&w, 64);
+        let report = engine
+            .import_with_options(std::slice::from_ref(&old), &archive_format())
+            .unwrap();
+        assert!(
+            report.pass.errors.is_empty() && report.refused.is_empty(),
+            "{report:?}"
+        );
+        expected = w.read(|reader| reader.query(events, &[]));
+        assert_eq!(expected.len(), 2, "{expected:?}");
+        assert_ne!(expected[0]["at"], expected[1]["at"]);
+        let reader = engine.reads.reader().unwrap();
+        let input = reader.input_progress(&raw).unwrap().unwrap();
+        assert_eq!(
+            reader
+                .stored_range(&raw, input.chain, 0, input.length, &engine.blobs)
+                .unwrap(),
+            bytes
+        );
+        let linked = reader
+            .query(
+                "SELECT count(DISTINCT o.input) AS n FROM a.observation_container c
+             JOIN a.observation o ON o.id=c.observation_id
+             WHERE c.container_input=?1 AND c.kind='sqlite'",
+                &[polylogue_store::SqlValue::Text(raw.clone())],
+            )
+            .unwrap();
+        assert_eq!(linked[0]["n"], 1);
+        drop(reader);
+
+        let repeat = engine
+            .import_with_options(std::slice::from_ref(&old), &archive_format())
+            .unwrap();
+        assert!(
+            repeat.imported.is_empty() && repeat.pass.errors.is_empty(),
+            "{repeat:?}"
+        );
+        assert_eq!(w.read(|reader| reader.query(events, &[])), expected);
+    }
+    std::fs::remove_dir_all(old).unwrap();
+    polylogue_testkit::delete_index(&w.root);
+    let (mut engine, _lock) = crate::import::tests::engine(&w, 64);
+    assert!(engine.run_pass().unwrap().errors.is_empty());
+    assert_eq!(w.read(|reader| reader.query(events, &[])), expected);
+}

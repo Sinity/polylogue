@@ -528,3 +528,47 @@ fn row_dump_header_keeps_source_columns_unguessed() {
         2
     );
 }
+
+#[test]
+fn retained_sqlite_snapshot_uses_the_live_row_encoding() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("verification_evidence.db");
+    Connection::open(&db)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+             INSERT INTO meta VALUES ('schema_version', '1');
+             CREATE TABLE verification_events(id INTEGER PRIMARY KEY, body BLOB);
+             INSERT INTO verification_events VALUES (3, x'00ff');",
+        )
+        .unwrap();
+    let before = std::fs::read(&db).unwrap();
+    let recorded_path = Path::new("/original/.hermes/verification_evidence.db");
+    let rows = || {
+        let mut bytes = Vec::new();
+        read_snapshot(&db, recorded_path, Some(123), |group| {
+            bytes.extend(group);
+            Ok(())
+        })
+        .unwrap();
+        bytes
+    };
+    let dumped = rows();
+    assert_eq!(dumped, rows());
+    assert_eq!(before, std::fs::read(&db).unwrap());
+    let records: Vec<Value> = dumped
+        .split(|&byte| byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0]["source"], json!({"path": recorded_path}));
+    assert_eq!(records[0]["at_ms"], json!(123));
+    assert_eq!(
+        records[1]["r"],
+        json!({"key": "schema_version", "value": "1"})
+    );
+    assert_eq!(records[2]["t"], json!("verification_events"));
+    assert_eq!(records[2]["k"], json!([3]));
+    assert_eq!(records[2]["encoding"], json!("sqlite"));
+}
