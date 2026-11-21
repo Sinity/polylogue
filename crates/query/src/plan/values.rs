@@ -231,15 +231,9 @@ fn reference_values(
             {
                 *text = revision.root;
             }
-            Ok(_) if field == crate::fields::FieldId::AnnotationsRoot => {
-                return Err(QueryError::BadValue {
-                    field: "root".into(),
-                    value: text.clone(),
-                    position,
-                    message: "an annotation root takes an annotation reference or root ID prefix"
-                        .into(),
-                });
-            }
+            // Root IDs remain opaque. Only an annotation reference names the
+            // family through its public reference instead of its raw root ID.
+            _ if field == crate::fields::FieldId::AnnotationsRoot => {}
             Ok(reference) => *text = reference.stored_form(),
             Err(error @ polylogue_model::ReferenceError::StoredSpelling { .. }) => {
                 return Err(QueryError::Invalid {

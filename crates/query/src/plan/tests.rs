@@ -559,11 +559,18 @@ fn annotation_history_roots_bind_natural_references_to_the_stored_family_identit
         let reference = prepare(text, &Bindings::default(), |_| Ok(())).unwrap();
         assert_eq!(reference.question_id(), bare.question_id(), "{text}");
     }
-    let refused = prepare(
-        "annotations where root:session:claude-code:first",
-        &Bindings::default(),
-        |_| Ok(()),
-    )
-    .unwrap_err();
-    assert_eq!(refused.kind(), polylogue_model::Code::BadValue);
+    for root in ["session:claude-code:first", "assertion:opaque"] {
+        let opaque = prepare(
+            &format!("annotations where root:{root}"),
+            &Bindings::default(),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(
+            serde_json::to_string(opaque.identity_query())
+                .unwrap()
+                .contains(root),
+            "opaque roots keep their bytes: {root}"
+        );
+    }
 }
