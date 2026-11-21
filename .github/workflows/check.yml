@@ -18,7 +18,6 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       CARGO_NET_GIT_FETCH_WITH_CLI: true
-      CARGO_TARGET_DIR: ${{ runner.temp }}/sqlite-versions-target
     steps:
       - uses: actions/checkout@v4
         with:
@@ -31,9 +30,9 @@ jobs:
       - name: Rust toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - name: Build the synthetic-only native experiment
-        run: cargo build --release --locked -j 2 --manifest-path experiment/Cargo.toml
+        run: CARGO_TARGET_DIR="$RUNNER_TEMP/sqlite-versions-target" cargo build --release --locked -j 2 --manifest-path experiment/Cargo.toml
       - name: Version selection, original citations and interrupted publication
-        run: python3 -I experiment/check.py --root "$RUNNER_TEMP/sqlite-versions-case" --binary "$CARGO_TARGET_DIR/release/sqlite-versions"
+        run: python3 -I experiment/check.py --root "$RUNNER_TEMP/sqlite-versions-case" --binary "$RUNNER_TEMP/sqlite-versions-target/release/sqlite-versions"
       - name: Retain synthetic receipts and final partitions
         if: always()
         uses: actions/upload-artifact@v4
