@@ -4,6 +4,7 @@ use rusqlite::trace::{TraceEvent, TraceEventCodes};
 use std::cell::Cell;
 
 mod ownership;
+mod transaction;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Work {
@@ -123,14 +124,24 @@ fn apply_with_upkeep(
     b: Batch,
     upkeep: &resolve::IndexUpkeep,
 ) -> (Result<u64>, Work) {
-    let tx = conn.transaction().unwrap();
-    let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
     let texts = crate::text_rows::TextIds::new(
-        &tx,
+        conn,
         upkeep.at_build_end(),
         crate::archive::MemoryBudget::default().keys() / 3,
     )
     .unwrap();
+    apply_with_texts(conn, b, upkeep, &texts)
+}
+
+fn apply_with_texts(
+    conn: &mut Connection,
+    b: Batch,
+    upkeep: &resolve::IndexUpkeep,
+    texts: &crate::text_rows::TextIds,
+) -> (Result<u64>, Work) {
+    let text_transaction = texts.transaction();
+    let tx = conn.transaction().unwrap();
+    let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
     WORK.with(|w| w.set(Work::default()));
     tx.trace_v2(
         TraceEventCodes::SQLITE_TRACE_PROFILE | TraceEventCodes::SQLITE_TRACE_ROW,
@@ -142,7 +153,7 @@ fn apply_with_upkeep(
         &b,
         p,
         rows::ReadingWrite {
-            texts: &texts,
+            texts,
             resolution: p.resolution.as_ref().unwrap(),
             counter: 1,
             upkeep,
@@ -157,6 +168,7 @@ fn apply_with_upkeep(
     if result.is_ok() {
         crate::items::refresh(&tx, &changes).unwrap();
         tx.commit().unwrap();
+        text_transaction.commit();
     } else {
         tx.rollback().unwrap();
     }
@@ -469,6 +481,12 @@ fn sparse_registered_context_keeps_full_hash_and_enriches_block_positions() {
 fn a_new_version_with_reused_text_keeps_stored_payload_validation() {
     for corrupt in [false, true] {
         let mut conn = database();
+        let texts = crate::text_rows::TextIds::new(
+            &conn,
+            false,
+            crate::archive::MemoryBudget::default().keys() / 3,
+        )
+        .unwrap();
         let original = text_message(
             "original",
             "s",
@@ -476,13 +494,18 @@ fn a_new_version_with_reused_text_keeps_stored_payload_validation() {
             "shared response text",
             Some("end_turn"),
         );
-        apply(
+        let mut first = reading(
+            "original",
+            vec![original.clone()],
+            vec![reference(&original, "original")],
+        );
+        resolve::prepare_index(&conn, &mut first, 1, &resolve::IndexUpkeep::PerTransaction)
+            .unwrap();
+        apply_with_texts(
             &mut conn,
-            reading(
-                "original",
-                vec![original.clone()],
-                vec![reference(&original, "original")],
-            ),
+            first,
+            &resolve::IndexUpkeep::PerTransaction,
+            &texts,
         )
         .0
         .unwrap();
@@ -496,9 +519,14 @@ fn a_new_version_with_reused_text_keeps_stored_payload_validation() {
             "shared response text",
             Some("end_turn"),
         );
-        let (result, work) = apply(
+        let mut second = reading("next", vec![next.clone()], vec![reference(&next, "next")]);
+        resolve::prepare_index(&conn, &mut second, 1, &resolve::IndexUpkeep::PerTransaction)
+            .unwrap();
+        let (result, work) = apply_with_texts(
             &mut conn,
-            reading("next", vec![next.clone()], vec![reference(&next, "next")]),
+            second,
+            &resolve::IndexUpkeep::PerTransaction,
+            &texts,
         );
         assert_eq!(
             (work.message_reads, work.text_queries, work.text_rows),

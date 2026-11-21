@@ -241,16 +241,18 @@ Building the archive overlaps every stage:
   without reserving text rows; the writer stores a group with the first of
   its texts the index lacks. Registering a version returns its row
   key and the text references it just wrote; selected blocks consume those
-  references. When that call also wrote every text payload, parser continuation
-  checks consume its prepared identity rather than reading and decoding its
-  body again. Resolver preparation and version registration share one immutable
-  message value. An uncomplicated complete selection refers to that version
+  references. When every text payload was supplied in the same transaction,
+  parser continuation checks consume its prepared identity rather than reading
+  and decoding its body again. The writer's bounded text-mark cache keeps this
+  proof until commit, rollback, removal or scope invalidation; evicted proofs
+  use full stored-message validation. Resolver preparation and version
+  registration share one immutable message value. An uncomplicated complete selection refers to that version
   entry in the same prepared unit instead of copying its body and encoded rows;
   the reference survives a staged reading's disk roundtrip. Composition and
   sparse enrichment keep their owned selected value and time/item overlays.
   Missing or mismatched selected references refuse the transaction normally.
-  Older, unchanged or reused-text versions keep full payload,
-  hash and layout validation. A new message is inserted with its resolved
+  Older and unchanged bodies, and texts from earlier transactions, keep full
+  payload, hash and layout validation. A new message is inserted with its resolved
   selected metadata before stated sources refer to it. During a private build,
   an ordinary fresh reservation lets the insert check for the row itself. A
   split write retry can then reuse a row installed by an earlier retry. The
