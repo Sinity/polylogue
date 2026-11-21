@@ -408,8 +408,8 @@ fn context_read_at_keeps_opaque_numeric_message_coordinates() {
             )
             .unwrap();
         },
-        1,
-        3,
+        2,
+        2,
     );
     d.pause_signals();
     for message in ["claude-code:2:3", "claude-code:02:03"] {
@@ -557,6 +557,33 @@ fn ordinary_session_annotation_times_keep_old_new_withdrawn_and_expired_versions
             cases[0].1
         );
     }
+    // A written second and its fractional instant choose the same boundary.
+    // The immediately preceding/following milliseconds straddle a real edit.
+    for (at, expected) in [
+        ("2026-11-21T08:59:59.999Z", &cases[0].1),
+        ("2026-11-21T09:00:00Z", &cases[1].1),
+        ("2026-11-21T09:00:00.000Z", &cases[1].1),
+        ("2026-11-21T09:00:00.001Z", &cases[1].1),
+        ("2026-11-21T10:59:59.999Z", &cases[2].1),
+        ("2026-11-21T11:00:00.000Z", &cases[3].1),
+    ] {
+        let page =
+            crate::test_answers::read(historical_call(target, &at, 100000).answer(&d.daemon));
+        assert_eq!(
+            &annotations(&page, "claude-code:u1")
+                .iter()
+                .map(|a| a.value.clone())
+                .collect::<Vec<_>>(),
+            expected,
+            "{at}"
+        );
+    }
+    // Calendar periods use the same lower-bound rule, in the configured day.
+    for at in ["today", "2026-11-21"] {
+        let page =
+            crate::test_answers::read(historical_call(target, &at, 100000).answer(&d.daemon));
+        assert!(annotations(&page, "claude-code:u1").is_empty());
+    }
 }
 
 #[test]
@@ -639,9 +666,9 @@ fn session_annotation_time_continuations_freeze_relative_time_through_edit_and_r
 }
 
 #[test]
-fn annotation_time_selection_refuses_whole_periods_and_invalid_times() {
+fn annotation_time_selection_preserves_invalid_time_refusals() {
     let d = test_daemon::start("neutral target text");
-    for at in ["today", "not-a-time"] {
+    for at in ["not-a-time", "last 0h", "2026-13-01"] {
         let refusal = crate::test_answers::refusal(
             historical_call("session:claude-code:s1", &at, 100000).answer(&d.daemon),
         );

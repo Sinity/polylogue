@@ -499,14 +499,16 @@ fn resolve_at<'a>(
     let text = match request.options.at.as_ref() {
         Some(ReadAt::TimeExpression(text)) => text.clone(),
         Some(ReadAt::Message(message)) => message.to_string(),
+        Some(ReadAt::Time(at)) => at.to_string(),
         _ => return Ok(std::borrow::Cow::Borrowed(request)),
     };
     let resolved = query_language::time::resolve(&text, &operation.clock)
         .map_err(|error| Error::bad_request(error.to_string()))?;
-    let query_language::time::Time::Instant { at } = resolved.value else {
-        return Err(Error::bad_request(
-            "read --at requires an instant; supply a clock time or an RFC 3339 timestamp instead of a whole period",
-        ));
+    // A snapshot names one boundary. Query predicates still match the whole
+    // written period; here its resolved lower bound is the chosen instant.
+    let at = match resolved.value {
+        query_language::time::Time::Instant { at } => at,
+        query_language::time::Time::Span { start, .. } => start,
     };
     let mut request = request.clone();
     request.options.at = Some(ReadAt::Time(at.into()));
