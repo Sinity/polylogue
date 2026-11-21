@@ -47,7 +47,7 @@ pub(super) struct ShownEntries<'r, 'c> {
 }
 
 /// Rows read per window at first; later windows of one page read more.
-const FIRST_WINDOW: usize = 16;
+pub(super) const FIRST_WINDOW: usize = 16;
 
 impl<'r, 'c> ShownEntries<'r, 'c> {
     pub(super) fn new(

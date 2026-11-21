@@ -147,7 +147,7 @@ pub(super) fn reference(
 }
 
 /// One message, or one of its blocks, with its commit position and reading order.
-fn message(
+pub(super) fn message(
     reader: &Reader<'_>,
     id: &polylogue_model::MessageId,
     block: Option<u64>,

@@ -760,3 +760,90 @@ fn selected_message_context_keeps_its_prefix_and_existing_parent_branch_cut() {
             .any(|text| text == "root question")
     );
 }
+
+#[test]
+fn finite_context_streams_use_the_same_lineage_compaction_and_tool_projection_as_pages() {
+    let d = test_daemon::start("placeholder");
+    family(&d);
+    for (target, diff, around) in [
+        ("root:claude-code:root", None, None),
+        ("message:claude-code:r2", None, None),
+        ("message:claude-code:f1", None, None),
+        ("message:claude-code:r2", None, Some(1)),
+        ("session:claude-code:cmp", None, None),
+        ("session:claude-code:cmp", Some("compaction"), None),
+        ("session:claude-code:micro", None, None),
+    ] {
+        let options = ReadOptions {
+            view: View::Context,
+            tools: Some(polylogue_model::read::Expansion::Full),
+            diff: diff.map(str::to_owned),
+            around,
+            ..Default::default()
+        };
+        let expected = read(&d, target, options.clone());
+        let (items, originals, _) =
+            super::read_annotations::context_stream(&d.daemon, target, options);
+        assert_eq!(
+            items, expected.document.items,
+            "{target}, {diff:?}, {around:?}"
+        );
+        for original in &originals {
+            if let polylogue_model::bundle::Record::Message(message) = original {
+                message.validate().unwrap();
+            }
+        }
+        let encoded = serde_json::to_string(&originals).unwrap();
+        if target == "session:claude-code:micro" {
+            assert!(
+                !encoded.contains("cleared listing"),
+                "evicted blocks must also be absent from original frames: {encoded}"
+            );
+        }
+        if target == "session:claude-code:cmp" && diff.is_none() {
+            assert!(!encoded.contains("before compaction"), "{encoded}");
+        }
+    }
+}
+
+#[test]
+fn a_context_stream_crosses_entry_windows_without_duplicating_its_source_message() {
+    let d = test_daemon::start_with_sources_and_workers(
+        "placeholder",
+        &|home| {
+            let blocks: Vec<_> = (0..40)
+                .map(|i| json!({"type":"text","text":format!("neutral block {i}")}))
+                .collect();
+            std::fs::write(home.join(".claude/projects/-p/wide.jsonl"), line(json!({
+            "type":"assistant", "uuid":"wide", "sessionId":"wide", "timestamp":"2026-03-01T10:00:00Z",
+            "message":{"id":"msg_wide", "role":"assistant", "stop_reason":"end_turn", "content":blocks}
+        }))).unwrap();
+        },
+        1,
+        1,
+    );
+    let options = ReadOptions {
+        view: View::Context,
+        ..Default::default()
+    };
+    let expected = read(&d, "session:claude-code:wide", options.clone());
+    assert!(
+        expected.document.items.len() > 32,
+        "the fixture crosses two entry windows"
+    );
+    let (items, originals, complete) =
+        super::read_annotations::context_stream(&d.daemon, "session:claude-code:wide", options);
+    assert_eq!(items, expected.document.items);
+    assert_eq!(complete.counts.messages, 1);
+    let messages: Vec<_> = originals
+        .iter()
+        .filter_map(|record| match record {
+            polylogue_model::bundle::Record::Message(message) => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].block_count, 40);
+    assert_eq!(messages[0].block_ordinals, (0..40).collect::<Vec<u64>>());
+    messages[0].validate().unwrap();
+}
