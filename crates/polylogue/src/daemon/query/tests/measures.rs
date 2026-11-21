@@ -37,7 +37,7 @@ fn shell_stages_count_occurrences_calls_and_sessions_in_the_query_population() {
             .unwrap();
         for (i, (action, command, day)) in calls.iter().enumerate() {
             let when = at(*day, 12);
-            let message_id = scoped(id, &format!("stage-{i}"));
+            let message_id = scoped(id, &format!("{id}-stage-{i}"));
             let message = fx
                 .message(session, msg(&message_id, "assistant", "model", "", when))
                 .unwrap();
