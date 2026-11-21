@@ -341,7 +341,7 @@ fn kept_fragments_share_parser_workers_but_a_repeated_join_waits() {
                 "SELECT m.id,s.source_start,s.source_end FROM message_source s
                  JOIN message m ON m.pk=s.message_pk JOIN input_ref i ON i.pk=s.input_pk
                  WHERE i.id=?1 ORDER BY s.source_start",
-                &[polylogue_store::SqlValue::Text(input)],
+                &[polylogue_store::SqlValue::Text(input.clone())],
             )
         });
         assert_eq!(
