@@ -971,7 +971,7 @@ fn populated_hermes_import_keeps_original_and_rebuilds_from_linked_rows() {
     .unwrap();
     drop(db);
     let raw = polylogue_model::BlobHash::of(&bytes).to_string();
-    let malformed = b"this is not a Hermes row dump";
+    let malformed = b"this is not a Hermes row dump\n";
     let refused = polylogue_model::BlobHash::of(malformed).to_string();
     let sources = [raw.clone(), refused.clone()];
     let observations = |engine: &Engine| {
@@ -997,10 +997,19 @@ fn populated_hermes_import_keeps_original_and_rebuilds_from_linked_rows() {
             } else {
                 let reading = reading.unwrap();
                 assert!(
-                    matches!(reading.progress, ParseProgress::Refused { length: at, .. }
-                        if at == length as u64),
+                    matches!(&reading.progress, ParseProgress::Refused { length: at, .. }
+                        if *at == length as u64),
                     "{reading:?}"
                 );
+                if input == &refused {
+                    assert_eq!(
+                        reading.progress,
+                        ParseProgress::Refused {
+                            reason: "expected ident at line 1 column 2".into(),
+                            length: malformed.len() as u64,
+                        }
+                    );
+                }
             }
             assert_eq!(
                 reader
@@ -1140,9 +1149,16 @@ fn populated_hermes_import_keeps_original_and_rebuilds_from_linked_rows() {
     let (mut engine, _lock) = crate::import::tests::engine(&w, 64);
     engine.config.reads_sources = false;
     let rebuilt = engine.run_pass().unwrap();
-    assert_eq!(rebuilt.errors.len(), 1, "{rebuilt:?}");
-    assert!(rebuilt.errors[0].contains("legacy-corrupt"), "{rebuilt:?}");
+    assert!(rebuilt.errors.is_empty(), "{rebuilt:?}");
     check_progress(&engine, true);
+    let raw_checkpoints = w.read(|reader| {
+        reader.query(
+            "SELECT i.id FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk
+             WHERE i.id IN (?1,?2)",
+            &sources.clone().map(polylogue_store::SqlValue::Text),
+        )
+    });
+    assert_eq!(raw_checkpoints, [serde_json::json!({"id": refused})]);
     assert_eq!(observations(&engine), history);
     assert_eq!(w.read(|reader| reader.query(events, &[])), expected);
 }
