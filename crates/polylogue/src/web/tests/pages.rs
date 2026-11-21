@@ -629,6 +629,28 @@ fn http_get_pages_and_streams_never_acknowledge_display() {
             );
             let (status, _, body) = send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
             assert_eq!(status, StatusCode::OK, "{delivery}: {body}");
+            if delivery == "page" {
+                let page: polylogue_model::read::ReadPage = serde_json::from_str(&body).unwrap();
+                assert_eq!(page.document.header.target, "session:claude-code:s1");
+                assert!(
+                    !page.document.items.is_empty(),
+                    "GET actually reads the stored session"
+                );
+            } else {
+                let frames = command_surface::SseDecoder::new()
+                    .push(body.as_bytes())
+                    .unwrap();
+                let complete = frames
+                    .iter()
+                    .find(|frame| frame.event == "complete")
+                    .unwrap();
+                let complete: polylogue_model::read::ReadComplete =
+                    serde_json::from_str(&complete.data).unwrap();
+                assert_eq!(
+                    complete.counts.messages, 1,
+                    "the stream actually delivers the stored message"
+                );
+            }
         }
     });
     r.w.set("browser.actions", "on");
@@ -637,7 +659,7 @@ fn http_get_pages_and_streams_never_acknowledge_display() {
         serde_json::json!({"selection":"annotations where kind:seen"}),
     )
     .answer(&r.w.daemon);
-    let rows = crate::test_answers::ok(crate::test_answers::listing(answer));
+    let rows = crate::test_answers::empty(crate::test_answers::listing(answer));
     assert_eq!(
         rows["count"], 0,
         "GET cannot turn a caller flag into an authored mark"

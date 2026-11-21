@@ -69,11 +69,26 @@ fn from_seen_keeps_its_accepted_bound_through_both_directions_and_reopen() {
         "a non-displayed CLI page must not mark"
     );
 
-    // Display only the first message through the normal context selector.
+    // The anchor's header is displayed before its body enters the context.
     page(
         &d,
         json!({"verb":"read", "view":"context", "at":"claude-code:u1", "displayed":true, "budget":100000}),
     );
+    assert!(
+        marks(&d).is_empty(),
+        "a header alone cannot consume its unread body"
+    );
+    // At u2 the first message's body is present; the u2 body is still unread.
+    let displayed = page(
+        &d,
+        json!({"verb":"read", "view":"context", "at":"claude-code:u2", "displayed":true, "budget":100000}),
+    );
+    assert!(displayed.document.items.iter().any(
+        |item| matches!(&item.kind, ItemKind::Text { text } if text.starts_with("message 1 "))
+    ));
+    assert!(!displayed.document.items.iter().any(
+        |item| matches!(&item.kind, ItemKind::Text { text } if text.starts_with("message 2 "))
+    ));
     let before = marks(&d);
     assert_eq!(before.len(), 1);
     assert_eq!(before[0].item.as_deref(), Some("block:claude-code:u1#0"));
@@ -145,15 +160,27 @@ fn from_seen_keeps_its_accepted_bound_through_both_directions_and_reopen() {
 
 #[test]
 fn displayed_progress_is_surface_bound_and_partial_entries_remain_unseen() {
-    let d = test_daemon::start(&"unread remainder ".repeat(1000));
+    let text = "unread remainder ".repeat(2000);
+    assert!(
+        text.len() > PageBudget::default().bytes.get(),
+        "fixture must require transfer fragments"
+    );
+    let d = test_daemon::start(&text);
     for surface in [Surface::Cli, Surface::Http, Surface::Hook] {
         let displayed = surface != Surface::Cli;
-        crate::test_answers::read(
-            request(json!({"verb":"read", "displayed":displayed, "budget":100000}))
-                .surface(surface)
-                .answer(&d.daemon),
-        );
-        assert!(marks(&d).is_empty(), "{surface:?} cannot mark this page");
+        let mut next = Some(request(
+            json!({"verb":"read", "displayed":displayed, "budget":100000}),
+        ));
+        let mut calls = std::collections::BTreeSet::new();
+        while let Some(mut call) = next.take() {
+            call.arguments["steps"][0]["displayed"] = displayed.into();
+            let page = crate::test_answers::read(call.surface(surface).answer(&d.daemon));
+            assert!(marks(&d).is_empty(), "{surface:?} cannot mark this page");
+            if let Some(ready) = page.document.footer.next {
+                assert!(calls.insert(serde_json::to_string(&ready.request).unwrap()));
+                next = Some(Call::from_request(&ready.request));
+            }
+        }
     }
     let mut next = Some(request(json!({"verb":"read", "budget":1})));
     let mut saw_fragment = false;
@@ -180,14 +207,31 @@ fn displayed_progress_is_surface_bound_and_partial_entries_remain_unseen() {
             .map(|call| Call::from_request(&call.request));
     }
     assert!(saw_fragment);
-    crate::test_answers::read(
-        request(json!({"verb":"read", "budget":100000}))
-            .surface(Surface::Mcp)
-            .answer(&d.daemon),
+    let mut next = Some(request(json!({"verb":"read", "budget":100000})));
+    let mut calls = std::collections::BTreeSet::new();
+    while let Some(call) = next.take() {
+        let page = crate::test_answers::read(call.surface(Surface::Mcp).answer(&d.daemon));
+        if let Some(ready) = &page.document.footer.next {
+            assert!(
+                calls.insert(serde_json::to_string(&ready.request).unwrap()),
+                "continuation must advance"
+            );
+            assert!(
+                marks(&d).is_empty(),
+                "unfinished message remains unseen until final MCP continuation"
+            );
+            next = Some(Call::from_request(&ready.request));
+        }
+    }
+    assert!(
+        !calls.is_empty(),
+        "the full-budget read still exceeds its byte transfer bound"
     );
+    let completed = marks(&d);
     assert_eq!(
-        marks(&d).len(),
+        completed.len(),
         1,
-        "a returned MCP page marks its completed item"
+        "the final returned MCP continuation marks the completed block"
     );
+    assert_eq!(completed[0].item.as_deref(), Some("block:claude-code:u1#0"));
 }

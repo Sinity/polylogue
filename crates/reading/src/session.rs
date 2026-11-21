@@ -1500,35 +1500,49 @@ pub(super) fn page(
         super::next_call(d, continuation, next.seal(&key), super::deadline(operation))
     };
     let positions = reader.change_position()?;
-    let mark = session_read(request).and_then(|bound| {
-        kept.iter().rev().find_map(|entry| {
+    let mut mark = None;
+    if let Some(bound) = session_read(request) {
+        for entry in kept.iter().rev() {
             if unfinished
                 .as_ref()
                 .is_some_and(|(key, _)| *key == entry.entry.key)
             {
-                return None;
+                continue;
             }
-            match &entry.entry.key {
-                EntryKey::Message { message, block } => {
-                    if block.is_none()
-                        && (after_page
-                            .is_some_and(|next| next.entry.key.message() == Some(message))
-                            || unfinished
-                                .as_ref()
-                                .is_some_and(|(key, _)| key.message() == Some(message)))
-                    {
-                        return None;
-                    }
-                    Some(polylogue_model::user::SeenMark {
-                        target: Reference::Session(bound.session.clone()).to_string(),
-                        item: Some(entry.entry.key.reference()),
-                        at: positions.clone(),
-                    })
+            let EntryKey::Message { message, block } = &entry.entry.key else {
+                continue;
+            };
+            if options.view == View::Raw {
+                // The original message is displayed at its header. Its index
+                // block slots account for size but display nothing themselves.
+                if block.is_some() {
+                    continue;
                 }
-                EntryKey::Event { .. } => None,
+            } else if block.is_none() {
+                // Context can stop at the anchor's header, before its body.
+                // A complete header must not consume those unread blocks.
+                let index = &composed.indexes[entry.part];
+                let next = reader.item_window(
+                    index.pk,
+                    entry.seq as u64 + 1..index.entries,
+                    true,
+                    1,
+                    |_| true,
+                )?;
+                if next.first().is_some_and(|next| {
+                    next.entry.key.message() == Some(message) && next.entry.key != entry.entry.key
+                }) {
+                    continue;
+                }
             }
-        })
-    });
+            mark = Some(polylogue_model::user::SeenMark {
+                target: Reference::Session(bound.session.clone()).to_string(),
+                item: Some(entry.entry.key.reference()),
+                at: positions.clone(),
+            });
+            break;
+        }
+    }
     let finished = unfinished.is_none();
     let next = match unfinished {
         Some((entry_key, place)) => {

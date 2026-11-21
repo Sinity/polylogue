@@ -45,7 +45,7 @@ fn pipe_file_and_finite_stream_do_not_mark_but_explicit_pager_does() {
             "--view",
             "context",
             "--at",
-            "claude-code:u1",
+            "claude-code:u2",
             "--to",
             "pager",
         ])
@@ -108,14 +108,31 @@ fn pipe_file_and_finite_stream_do_not_mark_but_explicit_pager_does() {
 fn actual_mcp_returned_page_marks_and_from_seen_reads_the_remainder() {
     let dir = tempfile::tempdir().unwrap();
     let (env, _daemon) = super::read_pages::three_prompts(dir.path());
+    let large = "large native MCP remainder ".repeat(2000);
+    assert!(large.len() > polylogue_model::read::PageBudget::default().bytes.get());
+    let mut capture = std::fs::OpenOptions::new()
+        .append(true)
+        .open(dir.path().join("home/.claude/projects/-pager/pager.jsonl"))
+        .unwrap();
+    capture
+        .write_all(line("u4", "pager", &large).as_bytes())
+        .unwrap();
+    drop(capture);
+    wait_status(&env, |status| {
+        status["store"]["messages"] == 4 && status["store"]["search_pending"] == 0
+    });
     let mut mcp = super::query_surfaces::Mcp::start(&env);
-    let mut read = |step: Value| {
+    let request = |step: Value| {
+        command_surface::RunnableRequest::new(
+            "rows",
+            json!({"selection":"session:claude-code:pager", "steps":[step]}),
+            uuid::Uuid::now_v7().to_string(),
+        )
+    };
+    let mut read = |call: command_surface::RunnableRequest| {
         let reply = mcp.request(
             "tools/call",
-            json!({"name":"polylogue_read", "arguments":{
-                "operation":"rows", "request_id":uuid::Uuid::now_v7().to_string(),
-                "arguments":{"selection":"session:claude-code:pager", "steps":[step]},
-            }}),
+            json!({"name":"polylogue_read", "arguments":call}),
         );
         assert!(reply["error"].is_null(), "{reply}");
         assert_eq!(reply["result"]["isError"], false, "{reply}");
@@ -123,22 +140,48 @@ fn actual_mcp_returned_page_marks_and_from_seen_reads_the_remainder() {
             serde_json::from_value(reply["result"]["structuredContent"].clone()).unwrap();
         read_page(answer.value().unwrap().clone())
     };
-    let first =
-        read(json!({"verb":"read", "view":"context", "at":"claude-code:u1", "budget":100000}));
-    assert!(
-        first
+    let first = read(request(
+        json!({"verb":"read", "view":"context", "at":"claude-code:u2", "budget":100000}),
+    ));
+    let mut text = super::read_current::Items::default();
+    text.push(&first);
+    assert_eq!(text.text(), "opening question");
+    assert_eq!(count(&env), 1);
+    let mut page = read(request(
+        json!({"verb":"read", "from":"seen", "budget":100000}),
+    ));
+    let mut items = super::read_current::Items::default();
+    let mut saw_fragment = false;
+    let mut cursors = std::collections::BTreeSet::new();
+    loop {
+        saw_fragment |= page
             .document
             .items
             .iter()
-            .any(|item| item.source.message.is_some())
+            .any(|item| matches!(item.kind, polylogue_model::read::ItemKind::Fragment { .. }));
+        items.push(&page);
+        let Some(next) = page.document.footer.next else {
+            break;
+        };
+        assert!(
+            cursors.insert(serde_json::to_string(&next.request).unwrap()),
+            "native MCP continuation advances"
+        );
+        page = read(next.request);
+    }
+    assert!(
+        saw_fragment,
+        "the actual MCP body must cross its byte transfer bound"
+    );
+    assert!(!cursors.is_empty());
+    assert_eq!(
+        items.text(),
+        format!("second marker betathird marker gamma{large}")
     );
     assert_eq!(count(&env), 1);
-    let after = read(json!({"verb":"read", "from":"seen", "budget":100000}));
-    let mut text = super::read_current::Items::default();
-    text.push(&after);
-    assert_eq!(text.text(), "second marker betathird marker gamma");
-    assert_eq!(count(&env), 1);
-    let end = read(json!({"verb":"read", "from":"seen", "budget":100000}));
+    let end = read(request(
+        json!({"verb":"read", "from":"seen", "budget":100000}),
+    ));
     assert!(
         !end.document
             .items
