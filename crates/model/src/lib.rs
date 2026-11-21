@@ -117,3 +117,6 @@ string_schema!(
 );
 
 pub mod signal;
+
+// Temporary unmerged diagnostic, never part of a production delivery.
+pub mod parser_cpu;

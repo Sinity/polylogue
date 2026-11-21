@@ -90,6 +90,18 @@ pub fn add(stage: Stage, spent: Duration) {
 
 /// Times `f` as `stage`.
 pub fn time<T>(stage: Stage, f: impl FnOnce() -> T) -> T {
+    let _parser = match stage {
+        Stage::Read => Some(polylogue_model::parser_cpu::part(
+            polylogue_model::parser_cpu::Part::Read,
+        )),
+        Stage::Store => Some(polylogue_model::parser_cpu::part(
+            polylogue_model::parser_cpu::Part::Custody,
+        )),
+        Stage::Parse => Some(polylogue_model::parser_cpu::part(
+            polylogue_model::parser_cpu::Part::Provider,
+        )),
+        _ => None,
+    };
     let started = Instant::now();
     let out = f();
     add(stage, started.elapsed());

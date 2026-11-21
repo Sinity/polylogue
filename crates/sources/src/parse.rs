@@ -98,7 +98,12 @@ pub fn run_to<P: Parser>(
     let mut output = Output::default();
     let mut sink = Records::lines(records.len() as u64);
     for record in records {
-        match serde_json::from_slice::<Json>(record.bytes) {
+        let decoded = {
+            let _cpu =
+                polylogue_model::parser_cpu::part(polylogue_model::parser_cpu::Part::JsonDecode);
+            serde_json::from_slice::<Json>(record.bytes)
+        };
+        match decoded {
             Ok(value) => {
                 let kind = parser.kind(&value);
                 let field_checks = sink.field_checks();

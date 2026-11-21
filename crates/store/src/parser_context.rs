@@ -242,6 +242,8 @@ impl Context for Overlay {
         value: Value,
     ) -> std::result::Result<(), polylogue_model::parser_context::Error> {
         let put = || -> Result<()> {
+            let _cpu =
+                polylogue_model::parser_cpu::part(polylogue_model::parser_cpu::Part::ContextPut);
             if let Some(limit) = crate::read::limit::ReadLimit::current() {
                 limit.check()?;
             }
@@ -260,6 +262,7 @@ impl Context for Overlay {
 }
 impl Overlay {
     fn lookup(&self, key: &Key) -> Result<Option<Value>> {
+        let _cpu = polylogue_model::parser_cpu::part(polylogue_model::parser_cpu::Part::ContextGet);
         if let Some(limit) = crate::read::limit::ReadLimit::current() {
             limit.check()?;
         }

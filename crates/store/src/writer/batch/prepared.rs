@@ -112,6 +112,7 @@ impl ParseStep {
     /// Packs complete rows off the writer thread. A second call keeps the
     /// original hashes and payloads, which parsed values no longer contain.
     pub fn prepare(&mut self) {
+        let _cpu = polylogue_model::parser_cpu::part(polylogue_model::parser_cpu::Part::Pack);
         if self.prepared.released {
             return;
         }

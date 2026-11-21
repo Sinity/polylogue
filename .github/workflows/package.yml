@@ -13,8 +13,12 @@ on:
   workflow_dispatch:
     inputs:
       rev:
-        description: Commit to build and publish
+        description: Commit to build, or diagnostic script revision
         required: true
+      first_build_cpu:
+        description: Run the unmerged full synthetic parser CPU attribution
+        type: boolean
+        default: false
 
 env:
   REV: ${{ inputs.rev || github.sha }}
@@ -30,7 +34,7 @@ jobs:
       - name: Free disk space for the build
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc
-          sudo nohup rm -rf /usr/local/lib/android /opt/hostedtoolcache/CodeQL >/dev/null 2>&1 &
+          sudo rm -rf /usr/local/lib/android /opt/hostedtoolcache/CodeQL
       - uses: cachix/install-nix-action@v31
       - uses: cachix/cachix-action@v17
         with:
@@ -38,6 +42,7 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           skipPush: true
       - name: Build the package
+        if: ${{ !inputs.first_build_cpu }}
         run: |
           ref="github:${GITHUB_REPOSITORY}/${REV}"
           nix flake metadata --json "$ref"
@@ -45,6 +50,84 @@ jobs:
           echo "built $out"
           echo "out=$out" >> "$GITHUB_ENV"
       - name: Publish the package and its compiler dependencies to sinity.cachix.org
+        if: ${{ !inputs.first_build_cpu }}
         run: |
           dependencies=$(nix build --no-link --print-out-paths "github:${GITHUB_REPOSITORY}/${REV}#polylogue-dependencies")
           cachix push sinity "$out" "$dependencies"
+
+      - uses: actions/checkout@v4
+        if: ${{ inputs.first_build_cpu }}
+        with:
+          ref: ${{ inputs.rev }}
+      - name: Verify the diagnostic source and realize its signed runtime
+        if: ${{ inputs.first_build_cpu }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$REV"
+          runtime=$(nix build --no-link --print-out-paths --option max-jobs 0 "github:${GITHUB_REPOSITORY}/${REV}#default")
+          nix store verify --sigs-needed 1 "$runtime"
+          version=$("$runtime/bin/polylogue" --version)
+          [[ "$version" == *"$REV"* ]]
+          echo "baseline_runtime=$runtime" >> "$GITHUB_ENV"
+      - name: Build and check the existing synthetic generator
+        if: ${{ inputs.first_build_cpu }}
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/first-build-generator-target
+        run: |
+          nix develop --command cargo test --locked --release -p polylogue-model parser_cpu -- --nocapture --test-threads=1 | tee "$RUNNER_TEMP/parser-controls.log"
+          python3 - "$RUNNER_TEMP/parser-controls.log" <<'PYCONTROL'
+          import json,sys
+          rows=[json.loads(line.split('PARSER_CPU_CONTROL_JSON=',1)[1]) for line in open(sys.argv[1]) if 'PARSER_CPU_CONTROL_JSON=' in line]
+          assert len(rows)==1
+          row=rows[0]
+          assert row['guard_pair_cpu_ns']*50_000_000/1e9 < 0.05*1561.395, 'fifty-million-guard CPU envelope exceeds five percent of prior whole-worker CPU'
+          measured=row['short_worker_cpu_ns']/1e9
+          assert 0.95 <= row['accounted_cpu_seconds']/measured <= 1.01, 'short-worker CPU does not reconcile'
+          assert row['idle_cpu_ns']/1e9 < 0.005, 'idle guard consumed material CPU'
+          PYCONTROL
+          nix develop --command cargo test --locked --release -p polylogue-engine --example first_build synthetic_lengths_reproduce_every_original_generated_byte
+          nix develop --command cargo build --locked --release -p polylogue-engine --example first_build
+          cp "$CARGO_TARGET_DIR/release/examples/first_build" "$RUNNER_TEMP/first-build-generator"
+          python3 - <<'PY'
+          import os, shutil
+          from pathlib import Path
+          target = Path(os.environ['CARGO_TARGET_DIR']).resolve()
+          expected = Path(os.environ['RUNNER_TEMP']).resolve() / 'first-build-generator-target'
+          assert target == expected and target.is_dir()
+          assert (expected.parent / 'first-build-generator').is_file()
+          shutil.rmtree(target)
+          PY
+      - name: Measure exclusive parser CPU through normal daemon completion
+        if: ${{ inputs.first_build_cpu }}
+        run: |
+          python3 -I -m unittest discover -s .github/first-build-attribution -p 'test_*.py'
+          nix develop --command python3 -I - <<'PYSMOKE'
+          import os,sys
+          from pathlib import Path
+          from types import SimpleNamespace
+          sys.path.insert(0,str(Path.cwd()/'.github/first-build-attribution'))
+          import measure
+          root=Path(os.environ['RUNNER_TEMP'])/'parser-route-smoke'
+          root.mkdir()
+          lengths=root/'lengths.txt'
+          lengths.write_text(' '.join(Path('.github/first-build-attribution/synthetic-lengths.txt').read_text().split()[:2]))
+          generator=str(Path(os.environ['RUNNER_TEMP'])/'first-build-generator')
+          measure.command([generator,'--synthetic-lengths',str(lengths),'--dir',str(root/'corpus'),'--generate-only'])
+          home=root/'corpus/home'
+          files={str(p):p.stat().st_size for p in home.rglob('*.jsonl')}
+          assert len(files)==2 and sum(files.values())==791815
+          args=SimpleNamespace(binary=os.environ['baseline_runtime']+'/bin/polylogue', revision=os.environ['REV'],
+              generator=generator,pair_files=None,candidate_binary=None)
+          result=measure.run_arm(args,root/'measurement',home,files,'route-smoke',deadline_seconds=180)
+          assert result['complete'] and result['failure'] is None,result
+          parts=result['parser_attribution']['parts']
+          for name in ['input_read','raw_custody','provider_semantics','json_decode','context_put','checkpoint','prepare_rows']:
+              assert parts[name]['calls']>0,(name,parts)
+          print('PARSER_REAL_ROUTE_SMOKE_PASS',flush=True)
+          PYSMOKE
+          nix develop --command python3 -I .github/first-build-attribution/measure.py \
+            --binary "$baseline_runtime/bin/polylogue" \
+            --revision "$REV" \
+            --generator "$RUNNER_TEMP/first-build-generator" \
+            --lengths .github/first-build-attribution/synthetic-lengths.txt \
+            --expected .github/first-build-attribution/synthetic-samples.json \
+            --work "$RUNNER_TEMP/first-build-attribution"

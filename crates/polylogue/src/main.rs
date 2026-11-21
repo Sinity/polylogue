@@ -68,6 +68,7 @@ pub const EXIT_STORAGE_FAILED: u8 = 74;
 fn main() -> ExitCode {
     let timing = std::env::var_os("POLYLOGUE_TIMING_WORKERS").is_some();
     polylogue_store::timing::set_workers_enabled(timing);
+    polylogue_model::parser_cpu::set_enabled(timing);
     let result = run();
     if timing {
         eprintln!(
@@ -77,6 +78,7 @@ fn main() -> ExitCode {
                     .map(|(stage, seconds)| (stage.name(), seconds))
                     .collect::<std::collections::BTreeMap<_, _>>(),
                 "workers": polylogue_store::timing::workers(),
+                "parser_attribution": polylogue_model::parser_cpu::records(),
                 "sqlite_memory_peak_bytes": polylogue_store::timing::sqlite_memory_peak(),
             })
         );

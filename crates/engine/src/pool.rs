@@ -391,6 +391,7 @@ fn work(
     chains: &ChainSettings,
 ) {
     let _worker = polylogue_store::timing::worker();
+    let _parser_cpu = polylogue_model::parser_cpu::part(polylogue_model::parser_cpu::Part::Other);
     let mut group = Group {
         waiting: Vec::new(),
         bytes: 0,
@@ -692,7 +693,10 @@ fn flush(
             release(shared, *size);
         }
     }
-    let results = writer.enqueue_group(batches, Arc::clone(store));
+    let results = {
+        let _cpu = polylogue_model::parser_cpu::part(polylogue_model::parser_cpu::Part::Resolve);
+        writer.enqueue_group(batches, Arc::clone(store))
+    };
     group.bytes = 0;
     let waiting = waiting.into_iter().map(|(_, result, _)| result).collect();
     acknowledge
@@ -934,6 +938,7 @@ pub(crate) fn run(
     }
     let started = std::time::Instant::now();
     let mut file_snapshot = None;
+    let _read_cpu = polylogue_model::parser_cpu::part(polylogue_model::parser_cpu::Part::Read);
     let read = match &job.source {
         Bytes::Import(source) => source.locked().read_range(job.start, job.end),
         Bytes::Stored(chain) => chain
@@ -952,6 +957,7 @@ pub(crate) fn run(
         )),
     };
     add(Stage::Read, started.elapsed());
+    drop(_read_cpu);
     let bytes = match read {
         Ok(b) => b,
         Err(e) => {
@@ -1203,6 +1209,7 @@ pub(crate) fn run(
                     }
                     if let Some(last) = parsed.last_mut()
                         && !matches!(last.progress, polylogue_model::batch::StepProgress::NoParserYet { .. }) {
+                        let _cpu = polylogue_model::parser_cpu::part(polylogue_model::parser_cpu::Part::Checkpoint);
                         if let Some(overlay) = &context_overlay {
                             match overlay.checkpoint_delta(out.parsed_upto) {
                                 Ok(delta) => {
