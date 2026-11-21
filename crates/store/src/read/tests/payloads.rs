@@ -44,6 +44,9 @@ fn locality(unrelated: usize) -> (u64, u64) {
     let pool = ReadPool::open(&w.archive).unwrap();
     let reader = pool.reader().unwrap();
     let conn = reader.conn().unwrap();
+    // Mapped reads bypass SQLite's cache-miss counter. This control counts
+    // logical page loads, including structured overflow pages, through the pager.
+    conn.pragma_update(None, "mmap_size", 0).unwrap();
     let pk: i64 = conn
         .query_row(
             "SELECT pk FROM message WHERE id=?1",

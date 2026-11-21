@@ -92,6 +92,10 @@ pub(super) fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
         let columns = names.iter().map(|name| {
             if name == "version_pk" || (table == "message_version" && name == "pk") {
                 format!("(SELECT v.version_hash FROM message_version v WHERE v.pk=t.\"{name}\") AS \"{name}\"")
+            } else if name == "payload_pk" || (table == "message_version_block" && name == "pk") {
+                // Canonical payload row keys also follow write order. Compare
+                // the exact version/ordinal they name, including each reference.
+                format!("(SELECT json_array(hex(v.version_hash),b.idx) FROM message_version_block b JOIN message_version v ON v.pk=b.version_pk WHERE b.pk=t.\"{name}\") AS \"{name}\"")
             } else if matches!(table.as_str(), "wire_shape" | "wire_type") && matches!(name.as_str(), "first" | "last") {
                 // The chain the occurrence record cites, not the read range it took.
                 format!("(SELECT json_extract(r.occurrence,'$.chain') FROM wire_occurrence r WHERE r.input_pk=t.input_pk AND r.chain=t.chain AND r.reading_version=t.reading_version AND r.number=t.\"{name}\") AS \"{name}\"")

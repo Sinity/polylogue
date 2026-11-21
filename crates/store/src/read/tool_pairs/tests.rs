@@ -137,7 +137,7 @@ fn metadata_and_collapsed_view_skip_remote_output_and_data() {
     // Shape must not attempt to decode this deliberately poisoned data payload.
     let conn = index(&archive);
     conn.execute(
-        "UPDATE block SET data=?1 WHERE message_pk=(SELECT pk FROM message WHERE id=?2)",
+        "UPDATE message_version_block SET data=?1 WHERE pk IN(SELECT payload_pk FROM block WHERE message_pk=(SELECT pk FROM message WHERE id=?2))",
         params![vec![255u8], result.id.to_string()],
     )
     .unwrap();
@@ -198,7 +198,7 @@ fn metadata_and_collapsed_view_skip_remote_output_and_data() {
             if matches!(
                 context.action,
                 AuthAction::Read {
-                    table_name: "block",
+                    table_name: "message_version_block",
                     column_name: "body" | "data"
                 } | AuthAction::Read {
                     table_name: "text",
