@@ -607,15 +607,16 @@ fn read_at_keeps_the_declared_string_format_and_context_message_behavior() {
             .unwrap();
     numeric.validate().unwrap();
     assert_eq!(
-        numeric.context_message().unwrap(),
+        numeric.context_message_candidate(),
         Some(MessageId::parse("claude-code:2:3").unwrap())
     );
-    assert!(numeric.annotation_position().is_none());
+    // The reading owner resolves this ambiguous word against stored messages.
+    assert_eq!(numeric.at.as_ref().unwrap().to_string(), "claude-code:2:3");
     let padded: ReadOptions =
         serde_json::from_value(serde_json::json!({"view":"context","at":"claude-code:02:03"}))
             .unwrap();
     assert_eq!(
-        padded.context_message().unwrap(),
+        padded.context_message_candidate(),
         Some(MessageId::parse("claude-code:02:03").unwrap())
     );
     assert_eq!(
@@ -626,7 +627,7 @@ fn read_at_keeps_the_declared_string_format_and_context_message_behavior() {
         let context: ReadOptions =
             serde_json::from_value(serde_json::json!({"view":"context","at":text})).unwrap();
         assert_eq!(
-            context.context_message().unwrap(),
+            context.context_message_candidate(),
             Some(MessageId::parse(text).unwrap())
         );
         assert_eq!(serde_json::to_value(&context).unwrap()["at"], text);

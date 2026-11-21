@@ -30,6 +30,15 @@ pub(super) struct Scope {
     pub logical: bool,
 }
 
+impl Scope {
+    /// A context is anchored by one selected message, or a session's latest.
+    pub(super) fn has_context_anchor(&self) -> bool {
+        self.range
+            .as_ref()
+            .is_none_or(|(first, last)| first == last)
+    }
+}
+
 /// The session read a reference names, when it names one. `root:REF` names
 /// the logical session whose root is REF.
 pub(super) fn scope(reader: &Reader<'_>, target: &str) -> Result<Option<Scope>, Error> {
@@ -386,7 +395,10 @@ fn compose(
         after: Vec::new(),
     };
     // The prefix is composed always: hidden, it is one `continues` line.
-    if scope.range.is_none() {
+    let context = options.view == View::Context
+        && scope.has_context_anchor()
+        && options.around.unwrap_or(0) == 0;
+    if scope.range.is_none() || context {
         prefix(reader, &scope.session, &mut composed)?;
     }
     let (start, end) = match &scope.range {
@@ -420,7 +432,7 @@ fn compose(
                 (start, last_at)
             };
             (
-                start,
+                if context { 0 } else { start },
                 reader.item_unit_end(own.pk, last_at as u64)? as usize,
             )
         }
@@ -833,9 +845,9 @@ fn runs(reader: &Reader<'_>, composed: &Composed, options: &ReadOptions) -> Resu
         find(&composed.parts, entries, &EntryKey::header(message))
             .ok_or_else(|| Error::not_found(format!("message {message} is not in the reading")))
     };
-    let at = match options.context_message().map_err(Error::bad_request)? {
-        Some(message) => place_of(&message)?,
-        None => latest,
+    let at = match &options.at {
+        Some(ReadAt::Message(message)) => place_of(message)?,
+        _ => latest,
     };
     let context = context_at(&composed.parts, entries, at);
     let Some(diff) = &options.diff else {
@@ -919,6 +931,47 @@ fn still_wanted() -> Result<(), Error> {
     Ok(())
 }
 
+/// A historical context has two coordinates: its message and its annotation
+/// cutoff. Keep the first in the existing replay selector, so appending a later
+/// message cannot move the context while a client follows its pages.
+fn bind_context(
+    reader: &Reader<'_>,
+    request: &ReadRequest,
+    composed: &mut Composed,
+) -> Result<Option<ReadRequest>, Error> {
+    for part in (0..composed.parts.len()).rev() {
+        let range = &composed.parts[part];
+        let index = &composed.indexes[part];
+        let Some(header) = reader
+            .item_window(
+                index.pk,
+                range.start as u64..range.end as u64,
+                false,
+                1,
+                EntryClass::is_header,
+            )?
+            .pop()
+        else {
+            continue;
+        };
+        let Some(message) = header.entry.key.message().cloned() else {
+            return Err(Error::internal(
+                "a context header has no message coordinate",
+            ));
+        };
+        let end = reader.item_unit_end(index.pk, header.seq)? as usize;
+        composed.parts.truncate(part + 1);
+        composed.indexes.truncate(part + 1);
+        composed.parts[part].end = end;
+        let mut bound = request.clone();
+        let reference = Reference::Message(message);
+        bound.target = reference.to_string();
+        bound.references = Some(vec![reference]);
+        return Ok(Some(bound));
+    }
+    Ok(None)
+}
+
 pub(super) fn page(
     reader: &Reader<'_>,
     d: &impl ReadServices,
@@ -950,7 +1003,11 @@ pub(super) fn page(
             Ok::<_, Error>(opened)
         })
         .transpose()?;
-    if options.physical && !target.starts_with("root:") {
+    // Only an authenticated continuation may carry the original root's
+    // physical option onto its already-bound message selector.
+    let bound_physical =
+        opened.is_some() && options.view == View::Context && options.annotation_at().is_some();
+    if options.physical && !target.starts_with("root:") && !bound_physical {
         return Err(Error::bad_request(
             "--physical applies to root:REF; a session reference is already one physical session",
         ));
@@ -959,7 +1016,13 @@ pub(super) fn page(
         logical: scope.logical && !options.physical,
         ..scope
     };
-    let composed = compose(d, reader, &scope, options)?;
+    let mut composed = compose(d, reader, &scope, options)?;
+    let bound = if options.view == View::Context && options.annotation_at().is_some() {
+        bind_context(reader, request, &mut composed)?
+    } else {
+        None
+    };
+    let continuation = bound.as_ref().unwrap_or(request);
     still_wanted()?;
     let read_session = reader
         .session(&scope.session)?
@@ -1197,7 +1260,7 @@ pub(super) fn page(
     let after_page = page_entries.get(keep.end).or(next_entry.as_ref());
     let call = |entry: &PageEntry, direction: ReadDirection| -> Result<ReadyCall, Error> {
         let next = PageCursor {
-            target: target.clone(),
+            target: continuation.target.clone(),
             options: digest.clone(),
             variants: request.options.variants.clone(),
             versions,
@@ -1207,13 +1270,13 @@ pub(super) fn page(
             },
             direction,
         };
-        super::next_call(d, request, next.seal(&key), super::deadline(operation))
+        super::next_call(d, continuation, next.seal(&key), super::deadline(operation))
     };
     let finished = unfinished.is_none();
     let next = match unfinished {
         Some((entry_key, place)) => {
             let cursor = PageCursor {
-                target: target.clone(),
+                target: continuation.target.clone(),
                 options: digest.clone(),
                 variants: request.options.variants.clone(),
                 versions,
@@ -1225,7 +1288,7 @@ pub(super) fn page(
             };
             Some(super::next_call(
                 d,
-                request,
+                continuation,
                 cursor.seal(&key),
                 super::deadline(operation),
             )?)

@@ -203,12 +203,19 @@ fn message_annotations_include_original_spans_once_and_keep_current_user_facts()
     );
 }
 
-fn historical_call(target: &str, position: &impl std::fmt::Display, budget: u64) -> Call {
+fn historical_call(
+    target: &str,
+    position: &impl std::fmt::Display,
+    budget: u64,
+    view: View,
+) -> Call {
     let words = [
         target.to_string(),
         "read".into(),
         "--at".into(),
         position.to_string(),
+        "--view".into(),
+        view.name().into(),
         "--budget".into(),
         budget.to_string(),
     ];
@@ -228,98 +235,102 @@ fn historical_call(target: &str, position: &impl std::fmt::Display, budget: u64)
 
 #[test]
 fn ordinary_session_reads_keep_message_and_span_revisions_at_two_positions() {
-    let mut d = test_daemon::start("neutral target text");
-    d.pause_signals();
-    let target = "session:claude-code:s1";
-    let message = "message:claude-code:u1";
-    let span = "span:block:claude-code:u1#0#c=0-6";
-    let before = d.daemon.reads.reader().unwrap().change_position().unwrap();
-    write(
-        &d.daemon,
-        "message-original",
-        note("original message note", &[message]),
-    );
-    write(
-        &d.daemon,
-        "span-original",
-        note("original span note", &[span]),
-    );
-    let first = d.daemon.reads.reader().unwrap().change_position().unwrap();
-    let original_call = historical_call(target, &first, 100000);
-    let original = crate::test_answers::read(original_call.clone().answer(&d.daemon));
-    let original_notes = annotations(&original, "claude-code:u1");
-    assert_eq!(
-        original_notes
-            .iter()
-            .map(|note| note.value.clone())
-            .collect::<Vec<_>>(),
-        [json!("original message note"), json!("original span note")]
-    );
-
-    // Issue both edits through the ordinary line executor, then retry the
-    // accepted old-position read after the predicate's visible facts changed.
-    for (root, text) in [
-        ("message-original", "edited message note"),
-        ("span-original", "edited span note"),
-    ] {
-        let answer = Call::new("rows", json!({"selection":format!("annotation:{root}@{root}"),"steps":[{"verb":"edit","text":text}]})).answer(&d.daemon);
-        let _ = crate::test_answers::step(answer);
-    }
-    let second = d.daemon.reads.reader().unwrap().change_position().unwrap();
-    assert!(second.archive > first.archive);
-    let edited_call = historical_call(target, &second, 100000);
-    let edited = crate::test_answers::read(edited_call.clone().answer(&d.daemon));
-    let edited_notes = annotations(&edited, "claude-code:u1");
-    assert_eq!(
-        edited_notes
-            .iter()
-            .map(|note| note.value.clone())
-            .collect::<Vec<_>>(),
-        [json!("edited message note"), json!("edited span note")]
-    );
-    assert_eq!(
-        annotations(
-            &crate::test_answers::read(original_call.clone().answer(&d.daemon)),
-            "claude-code:u1"
-        ),
-        original_notes
-    );
-    assert!(
-        annotations(
-            &crate::test_answers::read(historical_call(target, &before, 100000).answer(&d.daemon)),
-            "claude-code:u1"
-        )
-        .is_empty()
-    );
-
-    // A later withdrawal must not erase either past revision, and both
-    // revisions remain addressable through the ordinary annotation query.
-    let _ = crate::test_answers::step(Call::new("rows", json!({"selection":"annotation:message-original","steps":[{"verb":"withdraw","reason":"no longer current"}]})).answer(&d.daemon));
-    assert_eq!(
-        annotations(&read(&d.daemon, target, false), "claude-code:u1").len(),
-        1
-    );
-    for root in ["message-original", "span-original"] {
-        let history = crate::test_answers::listing(Call::new("rows", json!({"selection":format!("annotations where root:annotation:{root} withdrawn:*")})).answer(&d.daemon));
-        assert_eq!(history.value().unwrap()["count"], 2, "{history:?}");
-        let raw_root = crate::test_answers::listing(
-            Call::new(
-                "rows",
-                json!({"selection":format!("annotations where root:{root} withdrawn:*")}),
-            )
-            .answer(&d.daemon),
+    for view in [View::Transcript, View::Context] {
+        let mut d = test_daemon::start("neutral target text");
+        d.pause_signals();
+        let target = "session:claude-code:s1";
+        let message = "message:claude-code:u1";
+        let span = "span:block:claude-code:u1#0#c=0-6";
+        let before = d.daemon.reads.reader().unwrap().change_position().unwrap();
+        write(
+            &d.daemon,
+            "message-original",
+            note("original message note", &[message]),
         );
-        assert_eq!(raw_root.value().unwrap()["count"], 2, "{raw_root:?}");
+        write(
+            &d.daemon,
+            "span-original",
+            note("original span note", &[span]),
+        );
+        let first = d.daemon.reads.reader().unwrap().change_position().unwrap();
+        let original_call = historical_call(target, &first, 100000, view);
+        let original = crate::test_answers::read(original_call.clone().answer(&d.daemon));
+        let original_notes = annotations(&original, "claude-code:u1");
         assert_eq!(
-            history.value().unwrap()["rows"],
-            raw_root.value().unwrap()["rows"]
+            original_notes
+                .iter()
+                .map(|note| note.value.clone())
+                .collect::<Vec<_>>(),
+            [json!("original message note"), json!("original span note")]
         );
-    }
-    d.restart();
-    d.pause_signals();
-    for (call, expected) in [(original_call, original_notes), (edited_call, edited_notes)] {
-        let page = crate::test_answers::read(call.answer(&d.daemon));
-        assert_eq!(annotations(&page, "claude-code:u1"), expected);
+
+        // Issue both edits through the ordinary line executor, then retry the
+        // accepted old-position read after the predicate's visible facts changed.
+        for (root, text) in [
+            ("message-original", "edited message note"),
+            ("span-original", "edited span note"),
+        ] {
+            let answer = Call::new("rows", json!({"selection":format!("annotation:{root}@{root}"),"steps":[{"verb":"edit","text":text}]})).answer(&d.daemon);
+            let _ = crate::test_answers::step(answer);
+        }
+        let second = d.daemon.reads.reader().unwrap().change_position().unwrap();
+        assert!(second.archive > first.archive);
+        let edited_call = historical_call(target, &second, 100000, view);
+        let edited = crate::test_answers::read(edited_call.clone().answer(&d.daemon));
+        let edited_notes = annotations(&edited, "claude-code:u1");
+        assert_eq!(
+            edited_notes
+                .iter()
+                .map(|note| note.value.clone())
+                .collect::<Vec<_>>(),
+            [json!("edited message note"), json!("edited span note")]
+        );
+        assert_eq!(
+            annotations(
+                &crate::test_answers::read(original_call.clone().answer(&d.daemon)),
+                "claude-code:u1"
+            ),
+            original_notes
+        );
+        assert!(
+            annotations(
+                &crate::test_answers::read(
+                    historical_call(target, &before, 100000, view).answer(&d.daemon)
+                ),
+                "claude-code:u1"
+            )
+            .is_empty()
+        );
+
+        // A later withdrawal must not erase either past revision, and both
+        // revisions remain addressable through the ordinary annotation query.
+        let _ = crate::test_answers::step(Call::new("rows", json!({"selection":"annotation:message-original","steps":[{"verb":"withdraw","reason":"no longer current"}]})).answer(&d.daemon));
+        assert_eq!(
+            annotations(&read(&d.daemon, target, false), "claude-code:u1").len(),
+            1
+        );
+        for root in ["message-original", "span-original"] {
+            let history = crate::test_answers::listing(Call::new("rows", json!({"selection":format!("annotations where root:annotation:{root} withdrawn:*")})).answer(&d.daemon));
+            assert_eq!(history.value().unwrap()["count"], 2, "{history:?}");
+            let raw_root = crate::test_answers::listing(
+                Call::new(
+                    "rows",
+                    json!({"selection":format!("annotations where root:{root} withdrawn:*")}),
+                )
+                .answer(&d.daemon),
+            );
+            assert_eq!(raw_root.value().unwrap()["count"], 2, "{raw_root:?}");
+            assert_eq!(
+                history.value().unwrap()["rows"],
+                raw_root.value().unwrap()["rows"]
+            );
+        }
+        d.restart();
+        d.pause_signals();
+        for (call, expected) in [(original_call, original_notes), (edited_call, edited_notes)] {
+            let page = crate::test_answers::read(call.answer(&d.daemon));
+            assert_eq!(annotations(&page, "claude-code:u1"), expected);
+        }
     }
 }
 
@@ -334,7 +345,7 @@ fn historical_session_continuations_keep_the_position_after_new_revisions_and_re
     );
     let position = d.daemon.reads.reader().unwrap().change_position().unwrap();
     let first = crate::test_answers::read(
-        historical_call("session:claude-code:s1", &position, 1).answer(&d.daemon),
+        historical_call("session:claude-code:s1", &position, 1, View::Transcript).answer(&d.daemon),
     );
     let resume = first
         .document
@@ -388,7 +399,13 @@ fn historical_session_positions_refuse_another_generation_and_future_counters() 
     future_archive.archive += 1000;
     for position in [foreign, future_index, future_archive] {
         let refusal = crate::test_answers::refusal(
-            historical_call("session:claude-code:s1", &position, 100000).answer(&d.daemon),
+            historical_call(
+                "session:claude-code:s1",
+                &position,
+                100000,
+                View::Transcript,
+            )
+            .answer(&d.daemon),
         );
         assert_eq!(refusal.code.as_deref(), Some("bad_request"));
     }
@@ -457,132 +474,140 @@ fn write_at(d: &Daemon, id: &str, assertion: NewAssertion, at: Timestamp) {
 
 #[test]
 fn ordinary_session_annotation_times_keep_old_new_withdrawn_and_expired_versions() {
-    let now = time("2026-11-21T12:00:00Z");
-    let mut d = test_daemon::start_with_clock_and_day(
-        "neutral target text",
-        polylogue_model::WallClock::new(move || now.into()),
-        query_language::time::DaySetting::new(jiff::tz::TimeZone::UTC, "00:00".parse().unwrap())
+    for view in [View::Transcript, View::Context] {
+        let now = time("2026-11-21T12:00:00Z");
+        let mut d = test_daemon::start_with_clock_and_day(
+            "neutral target text",
+            polylogue_model::WallClock::new(move || now.into()),
+            query_language::time::DaySetting::new(
+                jiff::tz::TimeZone::UTC,
+                "00:00".parse().unwrap(),
+            )
             .unwrap(),
-    );
-    d.pause_signals();
-    let first = time("2026-11-21T08:00:00Z");
-    let second = time("2026-11-21T09:00:00Z");
-    let withdrawn = time("2026-11-21T10:00:00Z");
-    let expired = time("2026-11-21T11:00:00Z");
-    let target = "session:claude-code:s1";
-    write_at(
-        &d.daemon,
-        "time-message",
-        note("old message", &["message:claude-code:u1"]),
-        first,
-    );
-    let mut span = note("old span", &["span:block:claude-code:u1#0#c=0-6"]);
-    span.valid_until = Some(expired);
-    write_at(&d.daemon, "time-span", span, first);
+        );
+        d.pause_signals();
+        let first = time("2026-11-21T08:00:00Z");
+        let second = time("2026-11-21T09:00:00Z");
+        let withdrawn = time("2026-11-21T10:00:00Z");
+        let expired = time("2026-11-21T11:00:00Z");
+        let target = "session:claude-code:s1";
+        write_at(
+            &d.daemon,
+            "time-message",
+            note("old message", &["message:claude-code:u1"]),
+            first,
+        );
+        let mut span = note("old span", &["span:block:claude-code:u1#0#c=0-6"]);
+        span.valid_until = Some(expired);
+        write_at(&d.daemon, "time-span", span, first);
 
-    // Restore an actual undated authored record through the product writer.
-    // Its receipt time must never become the fact's authored time.
-    let mut unknown = d
-        .daemon
-        .reads
-        .reader()
-        .unwrap()
-        .assertion(&polylogue_model::RevisionReference::exact(
-            "time-message".into(),
-            "time-message".into(),
-        ))
-        .unwrap()
-        .unwrap()
-        .fact;
-    unknown.id = "time-unknown".into();
-    unknown.root = unknown.id.clone();
-    unknown.created_at = None;
-    unknown.value = Some(json!("undated note"));
-    d.daemon
-        .writes
-        .as_ref()
-        .unwrap()
-        .restore_assertion(unknown, None)
-        .unwrap();
+        // Restore an actual undated authored record through the product writer.
+        // Its receipt time must never become the fact's authored time.
+        let mut unknown = d
+            .daemon
+            .reads
+            .reader()
+            .unwrap()
+            .assertion(&polylogue_model::RevisionReference::exact(
+                "time-message".into(),
+                "time-message".into(),
+            ))
+            .unwrap()
+            .unwrap()
+            .fact;
+        unknown.id = "time-unknown".into();
+        unknown.root = unknown.id.clone();
+        unknown.created_at = None;
+        unknown.value = Some(json!("undated note"));
+        d.daemon
+            .writes
+            .as_ref()
+            .unwrap()
+            .restore_assertion(unknown, None)
+            .unwrap();
 
-    let mut invocation = d
-        .daemon
-        .invocation(&Call::new("rows", json!({})).authorship);
-    invocation.at = second;
-    for (root, text) in [("time-message", "new message"), ("time-span", "new span")] {
-        let _ = crate::test_answers::step(Call::new("rows", json!({"selection":format!("annotation:{root}@{root}"),"steps":[{"verb":"edit","text":text}]})).answer_with(&d.daemon, &invocation));
-    }
-    invocation.at = withdrawn;
-    let _ = crate::test_answers::step(Call::new("rows", json!({"selection":"annotation:time-message","steps":[{"verb":"withdraw","reason":"no longer current"}]})).answer_with(&d.daemon, &invocation));
-    // Current reads still expose unknown authored time, and apply current expiry.
-    assert_eq!(
-        annotations(&read(&d.daemon, target, false), "claude-code:u1")[0].value,
-        json!("undated note")
-    );
-    let cases = [
-        (first, vec![json!("old message"), json!("old span")]),
-        (second, vec![json!("new message"), json!("new span")]),
-        (withdrawn, vec![json!("new span")]),
-        (expired, vec![]),
-    ];
-    for restart in [false, true] {
-        if restart {
-            d.restart();
-            d.pause_signals();
+        let mut invocation = d
+            .daemon
+            .invocation(&Call::new("rows", json!({})).authorship);
+        invocation.at = second;
+        for (root, text) in [("time-message", "new message"), ("time-span", "new span")] {
+            let _ = crate::test_answers::step(Call::new("rows", json!({"selection":format!("annotation:{root}@{root}"),"steps":[{"verb":"edit","text":text}]})).answer_with(&d.daemon, &invocation));
         }
-        for (at, expected) in &cases {
-            let call = historical_call(target, at, 100000);
-            for page in [call.clone().answer(&d.daemon), call.answer(&d.daemon)] {
-                let page = crate::test_answers::read(page);
-                assert_eq!(
-                    annotations(&page, "claude-code:u1")
-                        .iter()
-                        .map(|a| a.value.clone())
-                        .collect::<Vec<_>>(),
-                    *expected
-                );
-                assert!(page.document.items.iter().any(|item| matches!(&item.kind, ItemKind::Text { text } if text.contains("approximate across machines") && text.contains("Unknown authored times are omitted"))));
+        invocation.at = withdrawn;
+        let _ = crate::test_answers::step(Call::new("rows", json!({"selection":"annotation:time-message","steps":[{"verb":"withdraw","reason":"no longer current"}]})).answer_with(&d.daemon, &invocation));
+        // Current reads still expose unknown authored time, and apply current expiry.
+        assert_eq!(
+            annotations(&read(&d.daemon, target, false), "claude-code:u1")[0].value,
+            json!("undated note")
+        );
+        let cases = [
+            (first, vec![json!("old message"), json!("old span")]),
+            (second, vec![json!("new message"), json!("new span")]),
+            (withdrawn, vec![json!("new span")]),
+            (expired, vec![]),
+        ];
+        for restart in [false, true] {
+            if restart {
+                d.restart();
+                d.pause_signals();
+            }
+            for (at, expected) in &cases {
+                let call = historical_call(target, at, 100000, view);
+                for page in [call.clone().answer(&d.daemon), call.answer(&d.daemon)] {
+                    let page = crate::test_answers::read(page);
+                    assert_eq!(
+                        annotations(&page, "claude-code:u1")
+                            .iter()
+                            .map(|a| a.value.clone())
+                            .collect::<Vec<_>>(),
+                        *expected
+                    );
+                    assert!(page.document.items.iter().any(|item| matches!(&item.kind, ItemKind::Text { text } if text.contains("approximate across machines") && text.contains("Unknown authored times are omitted"))));
+                }
             }
         }
-    }
-    // Include the local spellings that also resemble three-part positions.
-    for at in ["08:00", "08:00:00", "2026-11-21T08:00:00"] {
-        let page =
-            crate::test_answers::read(historical_call(target, &at, 100000).answer(&d.daemon));
-        assert_eq!(
-            annotations(&page, "claude-code:u1")
-                .iter()
-                .map(|a| a.value.clone())
-                .collect::<Vec<_>>(),
-            cases[0].1
-        );
-    }
-    // A written second and its fractional instant choose the same boundary.
-    // The immediately preceding/following milliseconds straddle a real edit.
-    for (at, expected) in [
-        ("2026-11-21T08:59:59.999Z", &cases[0].1),
-        ("2026-11-21T09:00:00Z", &cases[1].1),
-        ("2026-11-21T09:00:00.000Z", &cases[1].1),
-        ("2026-11-21T09:00:00.001Z", &cases[1].1),
-        ("2026-11-21T10:59:59.999Z", &cases[2].1),
-        ("2026-11-21T11:00:00.000Z", &cases[3].1),
-    ] {
-        let page =
-            crate::test_answers::read(historical_call(target, &at, 100000).answer(&d.daemon));
-        assert_eq!(
-            &annotations(&page, "claude-code:u1")
-                .iter()
-                .map(|a| a.value.clone())
-                .collect::<Vec<_>>(),
-            expected,
-            "{at}"
-        );
-    }
-    // Calendar periods use the same lower-bound rule, in the configured day.
-    for at in ["today", "2026-11-21"] {
-        let page =
-            crate::test_answers::read(historical_call(target, &at, 100000).answer(&d.daemon));
-        assert!(annotations(&page, "claude-code:u1").is_empty());
+        // Include the local spellings that also resemble three-part positions.
+        for at in ["08:00", "08:00:00", "2026-11-21T08:00:00"] {
+            let page = crate::test_answers::read(
+                historical_call(target, &at, 100000, view).answer(&d.daemon),
+            );
+            assert_eq!(
+                annotations(&page, "claude-code:u1")
+                    .iter()
+                    .map(|a| a.value.clone())
+                    .collect::<Vec<_>>(),
+                cases[0].1
+            );
+        }
+        // A written second and its fractional instant choose the same boundary.
+        // The immediately preceding/following milliseconds straddle a real edit.
+        for (at, expected) in [
+            ("2026-11-21T08:59:59.999Z", &cases[0].1),
+            ("2026-11-21T09:00:00Z", &cases[1].1),
+            ("2026-11-21T09:00:00.000Z", &cases[1].1),
+            ("2026-11-21T09:00:00.001Z", &cases[1].1),
+            ("2026-11-21T10:59:59.999Z", &cases[2].1),
+            ("2026-11-21T11:00:00.000Z", &cases[3].1),
+        ] {
+            let page = crate::test_answers::read(
+                historical_call(target, &at, 100000, view).answer(&d.daemon),
+            );
+            assert_eq!(
+                &annotations(&page, "claude-code:u1")
+                    .iter()
+                    .map(|a| a.value.clone())
+                    .collect::<Vec<_>>(),
+                expected,
+                "{at}"
+            );
+        }
+        // Calendar periods use the same lower-bound rule, in the configured day.
+        for at in ["today", "2026-11-21"] {
+            let page = crate::test_answers::read(
+                historical_call(target, &at, 100000, view).answer(&d.daemon),
+            );
+            assert!(annotations(&page, "claude-code:u1").is_empty());
+        }
     }
 }
 
@@ -609,7 +634,7 @@ fn session_annotation_time_continuations_freeze_relative_time_through_edit_and_r
         time("2026-11-21T10:00:00Z"),
     );
     let first = crate::test_answers::read(
-        historical_call("session:claude-code:s1", &"1h", 1).answer(&d.daemon),
+        historical_call("session:claude-code:s1", &"1h", 1, View::Transcript).answer(&d.daemon),
     );
     let resume = first
         .document
@@ -670,8 +695,370 @@ fn annotation_time_selection_preserves_invalid_time_refusals() {
     let d = test_daemon::start("neutral target text");
     for at in ["not-a-time", "last 0h", "2026-13-01"] {
         let refusal = crate::test_answers::refusal(
-            historical_call("session:claude-code:s1", &at, 100000).answer(&d.daemon),
+            historical_call("session:claude-code:s1", &at, 100000, View::Transcript)
+                .answer(&d.daemon),
         );
         assert_eq!(refusal.code.as_deref(), Some("bad_request"), "{refusal:?}");
     }
+}
+
+#[test]
+fn historical_context_pages_bind_the_message_and_cutoff_through_append_and_reopen() {
+    use std::io::Write;
+    for (by_time, physical) in [(false, false), (true, false), (true, true)] {
+        let now = time("2026-11-21T12:00:00Z");
+        let mut d = test_daemon::start_with_sources_and_workers(
+            "neutral prior text",
+            &|home| {
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(home.join(".claude/projects/-p/s1.jsonl"))
+                    .unwrap()
+                    .write_all(
+                        polylogue_testkit::claude_assistant(
+                            "a1",
+                            "s1",
+                            "the accepted context anchor",
+                        )
+                        .as_bytes(),
+                    )
+                    .unwrap();
+            },
+            1,
+            2,
+        );
+        let path = d.home.join(".claude/projects/-p/s1.jsonl");
+        d.pause_signals();
+        write_at(
+            &d.daemon,
+            "context-note",
+            note("the original context note", &["message:claude-code:u1"]),
+            time("2026-11-21T10:00:00Z"),
+        );
+        write_at(
+            &d.daemon,
+            "context-span",
+            note(
+                "the original context span",
+                &["span:block:claude-code:u1#0#c=0-6"],
+            ),
+            time("2026-11-21T10:00:00Z"),
+        );
+        let position = d.daemon.reads.reader().unwrap().change_position().unwrap();
+        let at = if by_time {
+            "1h".into()
+        } else {
+            position.to_string()
+        };
+        let expected_at = if by_time {
+            "2026-11-21T11:00:00Z".into()
+        } else {
+            position.to_string()
+        };
+        if !by_time {
+            let range = Reference::MessageRange {
+                first: polylogue_model::MessageId::parse("claude-code:u1").unwrap(),
+                last: polylogue_model::MessageId::parse("claude-code:a1").unwrap(),
+            }
+            .to_string();
+            let error = crate::test_answers::refusal(
+                historical_call(&range, &at, 100000, View::Context).answer(&d.daemon),
+            );
+            assert_eq!(error.code.as_deref(), Some("bad_request"));
+            assert!(
+                error
+                    .message
+                    .starts_with("historical context takes one message or a session")
+            );
+        }
+        let target = if physical {
+            "root:claude-code:s1"
+        } else {
+            "session:claude-code:s1"
+        };
+        let mut call = historical_call(target, &at, 1, View::Context);
+        call.arguments["steps"][0]["physical"] = json!(physical);
+        let mut invocation = d.daemon.invocation(&call.authorship);
+        invocation.at = now;
+        let first = crate::test_answers::read(call.answer_with(&d.daemon, &invocation));
+        assert_eq!(
+            first.snapshot.query, target,
+            "the acknowledged reading retains its original selector"
+        );
+        assert_eq!(first.document.header.target, target);
+        let resume = first
+            .document
+            .footer
+            .next
+            .clone()
+            .expect("the context needs more than one tiny page");
+        if !physical {
+            let mut forged = resume.clone();
+            forged.request.arguments["steps"][0]["physical"] = json!(true);
+            let error =
+                crate::test_answers::refusal(Call::from_request(&forged.request).answer(&d.daemon));
+            assert_eq!(error.code.as_deref(), Some("invalid_query"));
+            assert_eq!(
+                error.message,
+                "the read cursor belongs to another reading: the reading options differ"
+            );
+        }
+        let _ = crate::test_answers::step(Call::new("rows", json!({"selection":"annotation:context-note","steps":[{"verb":"edit","text":"a later context note"}]})).answer_with(&d.daemon, &invocation));
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(
+                polylogue_testkit::claude_user(
+                    "u2",
+                    "s1",
+                    "a later message outside the accepted context",
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        d.restart();
+        d.wait_for(|status| {
+            status["store"]["messages"] == 3 && status["store"]["search_pending"] == 0
+        });
+        d.pause_signals();
+        let mut next = Some(resume);
+        let mut previous = None;
+        let mut items = first.document.items;
+        let mut seen = std::collections::BTreeSet::new();
+        while let Some(ready) = next {
+            assert_eq!(
+                ready.request.arguments["references"],
+                json!(["message:claude-code:a1"])
+            );
+            assert_eq!(ready.request.arguments["steps"][0]["at"], expected_at);
+            assert_eq!(ready.request.arguments["steps"][0]["view"], "context");
+            let rows: crate::protocol::line::Rows =
+                serde_json::from_value(ready.request.arguments.clone()).unwrap();
+            let [crate::protocol::line::Step::Read(step)] = rows.steps.as_slice() else {
+                panic!("one bound read")
+            };
+            assert_eq!(step.physical, physical);
+            assert!(
+                seen.insert(serde_json::to_string(&ready.request).unwrap()),
+                "the context continuation advances"
+            );
+            let page =
+                crate::test_answers::read(Call::from_request(&ready.request).answer(&d.daemon));
+            let repeat =
+                crate::test_answers::read(Call::from_request(&ready.request).answer(&d.daemon));
+            assert_eq!(page.document.items, repeat.document.items);
+            previous = page.document.footer.previous.or(previous);
+            next = page.document.footer.next;
+            items.extend(page.document.items);
+        }
+        let headers = items
+            .iter()
+            .filter_map(|item| {
+                matches!(&item.kind, ItemKind::MessageHeader { .. })
+                    .then_some(item.source.reference.as_str())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            headers,
+            ["message:claude-code:u1", "message:claude-code:a1"]
+        );
+        let notes = items
+            .iter()
+            .filter_map(|item| match &item.kind {
+                ItemKind::MessageHeader { header } => Some(&header.assertions),
+                _ => None,
+            })
+            .flatten()
+            .map(|note| note.value.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            notes,
+            [
+                json!("the original context note"),
+                json!("the original context span")
+            ]
+        );
+        let previous = previous.expect("the accepted context has an executable previous page");
+        assert_eq!(
+            previous.request.arguments["references"],
+            json!(["message:claude-code:a1"])
+        );
+        assert_eq!(previous.request.arguments["steps"][0]["at"], expected_at);
+        let page =
+            crate::test_answers::read(Call::from_request(&previous.request).answer(&d.daemon));
+        assert!(
+            !serde_json::to_string(&page.document.items)
+                .unwrap()
+                .contains("a later context note")
+        );
+        let fresh = crate::test_answers::read(
+            historical_call(target, &at, 100000, View::Context).answer(&d.daemon),
+        );
+        assert!(
+            fresh
+                .document
+                .items
+                .iter()
+                .any(|item| item.source.reference == "message:claude-code:u2"),
+            "a new request may choose the now-latest context"
+        );
+    }
+}
+
+#[test]
+fn historical_context_streams_refuse_before_emitting_partial_context() {
+    let d = test_daemon::start("neutral target text");
+    let request = crate::daemon::service::read::request_of(
+        crate::daemon::verbs::read::arguments(
+            &crate::protocol::steps::ReadStep {
+                view: View::Context,
+                at: Some("2026-11-21T10:00:00Z".into()),
+                delivery: ReadDelivery::Stream,
+                ..Default::default()
+            },
+            "message:claude-code:u1".into(),
+        )
+        .unwrap(),
+        None,
+    )
+    .unwrap();
+    let actor = polylogue_model::authorship::Authorship {
+        author: polylogue_model::Author::Operator,
+        via: polylogue_model::authorship::Channel::Cli,
+    };
+    let operation = d.daemon.operation_context(&actor).unwrap();
+    let reader = d.daemon.reads.reader().unwrap();
+    let mut bytes = Vec::new();
+    let error =
+        polylogue_reading::stream(&reader, d.daemon.as_ref(), &request, &operation, &mut bytes)
+            .unwrap_err();
+    assert_eq!(error.code(), "bad_request");
+    assert_eq!(
+        error.to_string(),
+        "historical context currently uses page delivery"
+    );
+    assert!(bytes.is_empty());
+}
+
+#[test]
+fn historical_context_refuses_around_and_fresh_physical_message_options() {
+    let d = test_daemon::start("neutral target text");
+    let mut around = historical_call(
+        "message:claude-code:u1",
+        &"2026-11-21T10:00:00Z",
+        100000,
+        View::Context,
+    );
+    around.arguments["steps"][0]["around"] = json!(1);
+    let error = crate::test_answers::refusal(around.answer(&d.daemon));
+    assert_eq!(error.code.as_deref(), Some("bad_request"));
+    assert_eq!(
+        error.message,
+        "historical context does not accept around; select its context message"
+    );
+    let mut physical = historical_call(
+        "message:claude-code:u1",
+        &"2026-11-21T10:00:00Z",
+        100000,
+        View::Context,
+    );
+    physical.arguments["steps"][0]["physical"] = json!(true);
+    let error = crate::test_answers::refusal(physical.answer(&d.daemon));
+    assert_eq!(error.code.as_deref(), Some("bad_request"));
+    assert!(error.message.starts_with("--physical applies to root:REF"));
+}
+
+#[test]
+fn session_context_keeps_the_legacy_missing_message_refusal() {
+    let d = test_daemon::start("neutral target text");
+    let call = historical_call(
+        "session:claude-code:s1",
+        &"claude-code:missing",
+        100000,
+        View::Context,
+    );
+    let error = crate::test_answers::refusal(call.answer(&d.daemon));
+    assert_eq!(error.code.as_deref(), Some("not_found"));
+    assert_eq!(
+        error.message,
+        "message claude-code:missing is not in the reading"
+    );
+}
+
+#[test]
+fn current_and_stored_legacy_context_streams_keep_the_preexisting_projection_path() {
+    let d = test_daemon::start("neutral target text");
+    let actor = polylogue_model::authorship::Authorship {
+        author: polylogue_model::Author::Operator,
+        via: polylogue_model::authorship::Channel::Cli,
+    };
+    let operation = d.daemon.operation_context(&actor).unwrap();
+    for at in [None, Some("claude-code:u1")] {
+        let request = crate::daemon::service::read::request_of(
+            crate::daemon::verbs::read::arguments(
+                &crate::protocol::steps::ReadStep {
+                    view: View::Context,
+                    at: at.map(str::to_owned),
+                    delivery: ReadDelivery::Stream,
+                    format: Some("jsonl".into()),
+                    ..Default::default()
+                },
+                "session:claude-code:s1".into(),
+            )
+            .unwrap(),
+            None,
+        )
+        .unwrap();
+        let reader = d.daemon.reads.reader().unwrap();
+        let mut bytes = Vec::new();
+        let error =
+            polylogue_reading::stream(&reader, d.daemon.as_ref(), &request, &operation, &mut bytes)
+                .unwrap_err();
+        // Existing SSE does not prepare composed context membership. Preserve
+        // that projection result here; this slice only completes paged context.
+        assert_eq!(error.code(), "not_yet_available");
+        assert_eq!(
+            error.to_string(),
+            "context needs prepared context membership for message:claude-code:u1"
+        );
+        assert!(
+            !bytes.is_empty(),
+            "the existing stream began before message projection"
+        );
+    }
+}
+
+#[test]
+fn an_explicit_context_message_keeps_the_matching_legacy_anchor_and_refuses_a_double_anchor() {
+    let d = test_daemon::start("neutral target text");
+    let page = crate::test_answers::read(
+        historical_call(
+            "message:claude-code:u1",
+            &"claude-code:u1",
+            100000,
+            View::Context,
+        )
+        .answer(&d.daemon),
+    );
+    assert!(
+        page.document
+            .items
+            .iter()
+            .any(|item| item.source.reference == "message:claude-code:u1")
+    );
+    let error = crate::test_answers::refusal(
+        historical_call(
+            "message:claude-code:u1",
+            &"claude-code:another",
+            100000,
+            View::Context,
+        )
+        .answer(&d.daemon),
+    );
+    assert_eq!(error.code.as_deref(), Some("bad_request"));
+    assert_eq!(
+        error.message,
+        "context has two different message anchors; select one message"
+    );
 }

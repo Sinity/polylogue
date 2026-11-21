@@ -490,11 +490,37 @@ pub fn is_object_read(request: &ReadRequest) -> bool {
 /// Resolve against the accepted query clock before sealing a page cursor. Ready
 /// calls carry the absolute instant, so a relative time cannot drift on replay.
 fn resolve_at<'a>(
+    reader: &Reader<'_>,
     request: &'a ReadRequest,
     operation: &Context,
 ) -> Result<std::borrow::Cow<'a, ReadRequest>, Error> {
-    if request.options.view == View::Context {
-        return Ok(std::borrow::Cow::Borrowed(request));
+    if request.options.view == View::Context
+        && let Some(scope) = session::scope(reader, &request.target)?
+    {
+        let candidate = request.options.context_message_candidate();
+        let legacy = scope.range.as_ref().is_none_or(|(first, last)| {
+            first != last
+                || candidate.as_ref() == Some(first)
+                || request.options.around.is_some_and(|n| n > 0)
+        });
+        // Preserve the meaningful legacy anchor/window cases. Only overlapping
+        // time/position spellings need the pinned reader's stored-message lookup.
+        if legacy {
+            if matches!(request.options.at, Some(ReadAt::Message(_))) {
+                return Ok(std::borrow::Cow::Borrowed(request));
+            }
+            if let Some(message) = candidate
+                && reader.message_session(&message)?.is_some()
+            {
+                let mut request = request.clone();
+                request.options.at = Some(ReadAt::Message(message));
+                return Ok(std::borrow::Cow::Owned(request));
+            }
+        } else if matches!(request.options.at, Some(ReadAt::Message(_))) {
+            return Err(Error::bad_request(
+                "context has two different message anchors; select one message",
+            ));
+        }
     }
     let text = match request.options.at.as_ref() {
         Some(ReadAt::TimeExpression(text)) => text.clone(),
@@ -519,6 +545,16 @@ fn validate_at(reader: &Reader<'_>, request: &ReadRequest) -> Result<(), Error> 
     if request.options.annotation_at().is_none() {
         return Ok(());
     }
+    if request.options.view == View::Context && request.delivery == ReadDelivery::Stream {
+        return Err(Error::bad_request(
+            "historical context currently uses page delivery",
+        ));
+    }
+    if request.options.view == View::Context && request.options.around.is_some_and(|n| n > 0) {
+        return Err(Error::bad_request(
+            "historical context does not accept around; select its context message",
+        ));
+    }
     if let Some(position) = request.options.annotation_position() {
         let current = reader.change_position()?;
         if position.generation != current.generation {
@@ -532,9 +568,14 @@ fn validate_at(reader: &Reader<'_>, request: &ReadRequest) -> Result<(), Error> 
             ));
         }
     }
-    if session::scope(reader, &request.target)?.is_none() {
+    let Some(scope) = session::scope(reader, &request.target)? else {
         return Err(Error::bad_request(
             "historical read --at currently takes a session or message",
+        ));
+    };
+    if request.options.view == View::Context && !scope.has_context_anchor() {
+        return Err(Error::bad_request(
+            "historical context takes one message or a session; select its context message",
         ));
     }
     Ok(())
@@ -547,7 +588,7 @@ pub fn page(
     operation: &Arc<Context>,
     history: Option<HistorySlot>,
 ) -> Result<ReadPage, Error> {
-    let resolved = resolve_at(request, operation)?;
+    let resolved = resolve_at(reader, request, operation)?;
     let request = resolved.as_ref();
     validate_at(reader, request)?;
     if request.with_blobs {
@@ -836,7 +877,7 @@ pub fn stream(
     operation: &Arc<Context>,
     output: &mut dyn Write,
 ) -> Result<ReadComplete, Error> {
-    let resolved = resolve_at(request, operation)?;
+    let resolved = resolve_at(reader, request, operation)?;
     let request = resolved.as_ref();
     validate_at(reader, request)?;
     if request.delivery != ReadDelivery::Stream {
