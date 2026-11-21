@@ -477,3 +477,139 @@ fn live_initial_queries_page_through_the_real_http_api() {
         assert_eq!(distinct.len(), ids.len());
     });
 }
+
+#[test]
+fn finite_http_context_streams_share_paged_items_and_require_read_authority() {
+    use polylogue_model::read::{ReadComplete, ReadPart, ReadRecord};
+    let r = reader();
+    let position =
+        r.w.daemon
+            .reads
+            .reader()
+            .unwrap()
+            .change_position()
+            .unwrap()
+            .to_string();
+    rt().block_on(async {
+        for at in [
+            None,
+            Some("claude-code:u1"),
+            Some("2026-11-21T10:00:00Z"),
+            Some(position.as_str()),
+        ] {
+            let mut options = vec![("view", "context"), ("format", "jsonl")];
+            if let Some(at) = at {
+                options.push(("at", at));
+            }
+            let mut paged = options.clone();
+            paged.retain(|(key, _)| *key != "format");
+            let expected = read_page(&r, "session:claude-code:s1", &paged).await;
+            options.push(("delivery", "stream"));
+            let path = read_url("session:claude-code:s1", &options);
+            assert_eq!(
+                send(&r, get(&path).body(Body::empty()).unwrap()).await.0,
+                StatusCode::UNAUTHORIZED
+            );
+            let (status, headers, body) =
+                send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(headers[header::CONTENT_TYPE], "text/event-stream");
+            let frames = command_surface::SseDecoder::new()
+                .push(body.as_bytes())
+                .unwrap();
+            assert_eq!(frames.first().unwrap().event, "begin");
+            assert_eq!(frames.last().unwrap().event, "answer");
+            let completion = &frames[frames.len() - 3];
+            assert_eq!(completion.event, "complete");
+            let report = &frames[frames.len() - 2];
+            assert_eq!(report.event, "steps");
+            assert_eq!(
+                frames.iter().filter(|frame| frame.event == "steps").count(),
+                1
+            );
+            assert_eq!(
+                frames
+                    .iter()
+                    .filter(|frame| frame.event == "answer")
+                    .count(),
+                1
+            );
+            assert_eq!(
+                frames.iter().filter(|frame| frame.event == "begin").count(),
+                1
+            );
+            assert_eq!(
+                frames
+                    .iter()
+                    .filter(|frame| frame.event == "complete")
+                    .count(),
+                1
+            );
+            let mut items = Vec::new();
+            let mut messages = 0;
+            for frame in &frames[1..frames.len() - 3] {
+                assert_eq!(frame.event, "record");
+                let record: ReadRecord = serde_json::from_str(&frame.data).unwrap();
+                if matches!(
+                    record.record(),
+                    Some(polylogue_model::bundle::Record::Message(_))
+                ) {
+                    messages += 1;
+                }
+                for part in record.parts() {
+                    if let ReadPart::Item(item) = part {
+                        items.push(item.clone());
+                    }
+                }
+            }
+            assert_eq!(messages, 1);
+            assert_eq!(items, expected.document.items);
+            let complete: ReadComplete = serde_json::from_str(&completion.data).unwrap();
+            assert_eq!(complete.counts.messages, messages);
+            assert_eq!(complete.footer.shown, items.len() as u64);
+            let answer: command_surface::Answer<crate::protocol::line::LineAnswer> =
+                serde_json::from_str(&report.data).unwrap();
+            let crate::protocol::line::LineAnswer::Steps(steps) = answer.value().unwrap() else {
+                panic!("the line must report its streamed read: {answer:?}");
+            };
+            assert_eq!(steps.steps.len(), 1);
+            assert_eq!(steps.steps[0].verb, "read");
+            let crate::protocol::line::StepOutcome::Done {
+                reply: crate::protocol::line::StepAnswer::Streamed(reported),
+                undo,
+            } = &steps.steps[0].outcome
+            else {
+                panic!("the read must finish successfully: {steps:?}");
+            };
+            assert_eq!(reported.as_ref(), &complete);
+            assert!(undo.is_empty());
+            let final_answer: command_surface::Answer<crate::protocol::line::LineAnswer> =
+                serde_json::from_str(&frames.last().unwrap().data).unwrap();
+            let crate::protocol::line::LineAnswer::Steps(final_steps) =
+                final_answer.value().unwrap()
+            else {
+                panic!("the line must close successfully: {final_answer:?}");
+            };
+            assert!(
+                final_steps.steps.is_empty(),
+                "the completed read is reported once"
+            );
+            assert_eq!(final_steps.resolved, steps.resolved);
+            let deadline =
+                crate::daemon::execution::deadline(std::time::Duration::ZERO).to_string();
+            let (status, _, body) = send(
+                &r,
+                authed(get(&path))
+                    .header("x-polylogue-deadline-ms", deadline)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::GATEWAY_TIMEOUT, "{body}");
+            assert!(
+                !body.contains("event: begin"),
+                "expired requests must not begin a stream"
+            );
+        }
+    });
+}

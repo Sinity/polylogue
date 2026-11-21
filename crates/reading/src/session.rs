@@ -1,4 +1,4 @@
-//! Paged session reads over the session item index. A page is a run of
+//! Session pages and finite context streams over the session item index. A page is a run of
 //! shown entries read in windows from its first entry; where it sits among the
 //! shown entries, and the counts a reading shows, come from the counts the
 //! writer stores per entry class, so a page reads its own entries and the
@@ -7,7 +7,7 @@
 //! of every composed session, so appends never stale it and rewrites always
 //! do. Nothing is written.
 use super::ReadRequest;
-use super::records::{SelectedRecord, message_record};
+use super::records::SelectedRecord;
 use super::{layout_facts, output};
 use crate::{Error, ReadServices};
 use polylogue_model::{MessageId, Reference, SessionId, bundle::Record, read::*};
@@ -15,7 +15,6 @@ use polylogue_store::Reader;
 use polylogue_store::items::{ItemLookup, ItemVersions};
 use polylogue_store::read::limit::ReadLimit;
 use std::collections::HashSet;
-use std::ops::ControlFlow;
 use std::sync::Arc;
 
 mod entries;
@@ -972,6 +971,168 @@ fn bind_context(
     Ok(None)
 }
 
+/// Finite context SSE visits the same composed entries, projection and
+/// decorations as pages. Only a small entry window and its current source body
+/// are held; emitted source identities contain no message bodies.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn stream(
+    reader: &Reader<'_>,
+    d: &impl ReadServices,
+    request: &ReadRequest,
+    operation: &Arc<crate::operation::Context>,
+    scope: Scope,
+    snapshot: polylogue_model::bundle::ReadSnapshot,
+    output: &mut dyn std::io::Write,
+) -> Result<ReadComplete, Error> {
+    let options = &request.options;
+    if options.physical && !scope.logical {
+        return Err(Error::bad_request(
+            "--physical applies to root:REF; a session reference is already one physical session",
+        ));
+    }
+    let scope = Scope {
+        logical: scope.logical && !options.physical,
+        ..scope
+    };
+    let mut composed = compose(d, reader, &scope, options)?;
+    if options.annotation_at().is_some() {
+        bind_context(reader, request, &mut composed)?;
+    }
+    still_wanted()?;
+    let runs = runs(reader, &composed, options)?;
+    let shown = ShownEntries::new(reader, &composed, &runs, ShowProfile::of(options))?;
+    let session = reader
+        .session(&scope.session)?
+        .ok_or_else(|| Error::not_found(format!("no session {}", scope.session)))?;
+    let mut header = header(reader, &scope.session, &request.target, options)?;
+    if scope.logical {
+        header.kind = logical_header(reader, &scope.session, &composed)?;
+    }
+    let lead = lead_items(
+        &composed,
+        &runs,
+        options,
+        &request.target,
+        &session,
+        0,
+        if options.assertions {
+            layout_facts::annotations(
+                reader,
+                &Reference::Session(session.id.clone()),
+                operation.ran_at,
+                options.annotation_at(),
+            )?
+        } else {
+            vec![]
+        },
+    );
+    let token = reader.scope_token();
+    let check = || {
+        token.check()?;
+        reader.check()?;
+        still_wanted()
+    };
+    let begin = ReadBegin {
+        format: Format::parse(&request.format)
+            .ok_or_else(|| Error::bad_request("unknown read format"))?,
+        snapshot,
+        header,
+        options: options.clone(),
+    };
+    let mut stream = output::Stream::begin(output, &check, &begin)?;
+    let mut emitted = HashSet::new();
+    // A composed header does not replace its physical sources' metadata. The
+    // main session may occur again in the parts; send its original only once.
+    for id in std::iter::once(&scope.session).chain(composed.parts.iter().map(|part| &part.session))
+    {
+        if emitted.insert(format!("session:{id}")) {
+            stream.record(&ReadRecord::Original {
+                record: Box::new(super::records::session_record(reader, id)?),
+                parts: vec![],
+            })?;
+        }
+    }
+    for item in lead {
+        stream.record(&ReadRecord::Presentation {
+            parts: vec![ReadPart::Item(item)],
+        })?;
+    }
+    let mut blobs = request
+        .with_blobs
+        .then(|| super::blobs::Blobs::new(reader))
+        .transpose()?;
+    let mut cache = None;
+    let mut from = shown.start();
+    loop {
+        check()?;
+        let page = shown.page_after(from, u64::MAX, entries::FIRST_WINDOW)?;
+        if page.entries.is_empty() {
+            break;
+        }
+        let mut laid = lay_out(
+            reader,
+            d,
+            &composed,
+            &runs,
+            &page.entries,
+            options,
+            operation.ran_at,
+            &mut cache,
+            true,
+        )?;
+        decorate(
+            reader,
+            &composed,
+            &shown,
+            &page.entries,
+            &mut laid.items,
+            options,
+        )?;
+        let mut records = laid.records.into_iter().peekable();
+        for (slot, items) in laid.items.into_iter().enumerate() {
+            if records.peek().is_some_and(|(at, _)| *at == slot) {
+                let (_, record) = records.next().expect("the slot has its prepared record");
+                let reference = record
+                    .record()
+                    .and_then(Record::reference)
+                    .ok_or_else(|| Error::internal("a composed context source has no reference"))?;
+                if emitted.insert(reference.to_owned()) {
+                    // Copied membership can name a canonical source session
+                    // outside the display parts. Preserve that source header too.
+                    let source_session = match record.record() {
+                        Some(Record::Message(row)) => Some(&row.message.session),
+                        Some(Record::Event(row)) => row.event.session.as_ref(),
+                        _ => None,
+                    };
+                    if let Some(id) = source_session
+                        && emitted.insert(format!("session:{id}"))
+                    {
+                        stream.record(&ReadRecord::Original {
+                            record: Box::new(super::records::session_record(reader, id)?),
+                            parts: vec![],
+                        })?;
+                    }
+                    stream.record(&record)?;
+                    if let Some(blobs) = &mut blobs {
+                        blobs.record(&record, &mut stream, &check)?;
+                    }
+                }
+            }
+            for item in items {
+                stream.record(&ReadRecord::Presentation {
+                    parts: vec![ReadPart::Item(item)],
+                })?;
+            }
+        }
+        match page.next {
+            Some(next) => from = next.place(),
+            None => break,
+        }
+    }
+    check()?;
+    stream.finish(ReadFooter::default())
+}
+
 pub(super) fn page(
     reader: &Reader<'_>,
     d: &impl ReadServices,
@@ -1162,6 +1323,7 @@ pub(super) fn page(
     if start == 0 && !continues_forward {
         items_out.extend(lead);
     }
+    let mut cache = None;
     let mut laid = lay_out(
         reader,
         d,
@@ -1170,7 +1332,10 @@ pub(super) fn page(
         &page_entries,
         options,
         operation.ran_at,
-    )?;
+        &mut cache,
+        false,
+    )?
+    .items;
     still_wanted()?;
     decorate(reader, &composed, &shown, &page_entries, &mut laid, options)?;
     still_wanted()?;
@@ -1596,8 +1761,23 @@ fn item_key(item: &ReadItem) -> Option<EntryKey> {
     }
 }
 
-/// Lay out the page's entries, grouped by entry in page order. Only the
-/// messages and events of the page are read.
+/// Keep only the current source body while traversing its indexed entries.
+/// Page and stream layout share this cache; neither retains the reading's bodies.
+struct PreparedRecord {
+    key: EntryKey,
+    inherited: bool,
+    record: Option<ReadRecord>,
+    items: std::collections::HashMap<EntryKey, Vec<ReadItem>>,
+}
+
+struct LaidOut {
+    items: Vec<Vec<ReadItem>>,
+    records: Vec<(usize, ReadRecord)>,
+}
+
+/// Lay out indexed entries in order through the same record projection. Streams
+/// retain original frames beside their first entry; pages transfer the items.
+#[allow(clippy::too_many_arguments)]
 fn lay_out(
     reader: &Reader<'_>,
     d: &impl ReadServices,
@@ -1606,23 +1786,16 @@ fn lay_out(
     page: &[PageEntry],
     options: &ReadOptions,
     at: polylogue_model::Timestamp,
-) -> Result<Vec<Vec<ReadItem>>, Error> {
+    cache: &mut Option<PreparedRecord>,
+    originals: bool,
+) -> Result<LaidOut, Error> {
+    let mut laid = LaidOut {
+        items: vec![Vec::new(); page.len()],
+        records: Vec::new(),
+    };
     // A raw reading is the stored records, which `decorate` adds.
     if options.view == View::Raw {
-        return Ok(vec![Vec::new(); page.len()]);
-    }
-    let mut slots: Vec<Vec<ReadItem>> = vec![Vec::new(); page.len()];
-    let mut wanted: std::collections::HashMap<EntryKey, usize> = std::collections::HashMap::new();
-    for (slot, entry) in page.iter().enumerate() {
-        wanted.insert(entry.entry.key.clone(), slot);
-    }
-    // The page's entries grouped into runs of one part.
-    let mut runs: Vec<(usize, Vec<&IndexEntry>)> = Vec::new();
-    for entry in page {
-        match runs.last_mut() {
-            Some((part, entries)) if *part == entry.part => entries.push(&entry.entry),
-            _ => runs.push((entry.part, vec![&entry.entry])),
-        }
+        return Ok(laid);
     }
     let selected = |source: &Source| -> Result<bool, Error> {
         let Some(message) = &source.message else {
@@ -1632,9 +1805,6 @@ fn lay_out(
             message: message.clone(),
             block: source.block,
         };
-        if wanted.contains_key(&key) {
-            return Ok(true);
-        }
         for (part, start, end) in &reading.spans {
             if reader
                 .item_place(composed.indexes[*part].pk, &key)?
@@ -1654,112 +1824,66 @@ fn lay_out(
         })
     };
     let mut footer = ReadFooter::default();
-    // Each item goes to the entry its source names; items of entries not on
-    // this page are left for the page that holds them.
-    let mut place = |item: ReadItem, _: &mut Option<usize>| {
-        if let Some(slot) = item_key(&item).and_then(|key| wanted.get(&key).copied()) {
-            slots[slot].push(item);
-        }
-    };
-    // A message split across pieces (a spawning call inside it) is laid
-    // out once: its items go to every slot of the page that holds them.
-    let mut laid_messages: HashSet<MessageId> = HashSet::new();
-    for (run_part, run_entries) in runs {
-        let part = &composed.parts[run_part];
-        let inherited = part.inherited;
-        let mut messages: Vec<MessageId> = Vec::new();
-        for entry in run_entries {
-            match &entry.key {
+    let mut captured = HashSet::new();
+    for (slot, entry) in page.iter().enumerate() {
+        still_wanted()?;
+        let inherited = composed.parts[entry.part].inherited;
+        let key = match &entry.entry.key {
+            EntryKey::Message { message, .. } => EntryKey::header(message),
+            key => key.clone(),
+        };
+        if cache
+            .as_ref()
+            .is_none_or(|cached| cached.key != key || cached.inherited != inherited)
+        {
+            let record = match &key {
                 EntryKey::Message { message, .. } => {
-                    if messages.last() != Some(message) {
-                        messages.push(message.clone());
-                    }
+                    super::records::message(reader, message, None)?
                 }
                 EntryKey::Event { event } => {
-                    let record = reader.event_record(event)?.ok_or_else(|| {
+                    Record::Event(reader.event_record(event)?.ok_or_else(|| {
                         Error::stale_cursor(format!("event {event} is no longer in this session"))
-                    })?;
-                    emit(
-                        reader,
-                        Record::Event(record),
-                        LayoutFacts::default(),
-                        options,
-                        at,
-                        &selected,
-                        &ready_attachment,
-                        &mut footer,
-                        &mut |item| {
-                            let mut last = None;
-                            place(item, &mut last);
-                        },
-                    )?;
+                    })?)
                 }
-            }
-        }
-        messages.retain(|message| laid_messages.insert(message.clone()));
-        if messages.is_empty() {
-            continue;
-        }
-        let selection = reader.select_messages(&part.session, false)?;
-        let start = selection.locate(Some(&messages[0]))?.ok_or_else(|| {
-            Error::stale_cursor(format!(
-                "message {} is no longer in this session",
-                messages[0]
-            ))
-        })?;
-        let wanted_messages: HashSet<&MessageId> = messages.iter().collect();
-        let last_message = messages.last().expect("one message").clone();
-        let mut result = Ok(());
-        selection.visit_with_sources(
-            start,
-            |message,
-             polylogue_store::read::MessageSource {
-                 blocks: block_selection,
-                 committed: commit,
-                 ordinal: order,
-             }| {
-                let id = message.id.clone();
-                if wanted_messages.contains(&id) {
-                    let step = (|| {
-                        let commit = commit.ok_or_else(|| {
-                            Error::not_yet_available(format!(
-                                "message:{id} has no stored commit position for its source"
-                            ))
-                        })?;
-                        let record =
-                            message_record(reader, message, block_selection, commit, order)?;
-                        let facts = LayoutFacts {
-                            inherited,
-                            ..Default::default()
-                        };
-                        let mut last = None;
-                        emit(
-                            reader,
-                            record,
-                            facts,
-                            options,
-                            at,
-                            &selected,
-                            &ready_attachment,
-                            &mut footer,
-                            &mut |item| place(item, &mut last),
-                        )
-                    })();
-                    if let Err(error) = step {
-                        result = Err(error);
-                        return ControlFlow::Break(());
+            };
+            let mut items: std::collections::HashMap<EntryKey, Vec<ReadItem>> = Default::default();
+            let record = project_layout(
+                reader,
+                record,
+                LayoutFacts {
+                    inherited: inherited && matches!(&key, EntryKey::Message { .. }),
+                    ..Default::default()
+                },
+                options,
+                at,
+                &selected,
+                &ready_attachment,
+                &mut footer,
+                &mut |item| {
+                    if let Some(key) = item_key(&item) {
+                        items.entry(key).or_default().push(item);
                     }
-                }
-                if id == last_message {
-                    ControlFlow::Break(())
-                } else {
-                    ControlFlow::Continue(())
-                }
-            },
-        )?;
-        result?;
+                },
+            )?;
+            *cache = Some(PreparedRecord {
+                key: key.clone(),
+                inherited,
+                record,
+                items,
+            });
+        }
+        let cached = cache.as_ref().expect("the entry's source was prepared");
+        if originals
+            && captured.insert(key)
+            && let Some(record) = &cached.record
+        {
+            laid.records.push((slot, record.clone()));
+        }
+        if let Some(items) = cached.items.get(&entry.entry.key) {
+            laid.items[slot].extend(items.iter().cloned());
+        }
     }
-    Ok(slots)
+    Ok(laid)
 }
 
 /// What a reading adds around laid-out entries: `continues` lines and
@@ -2053,7 +2177,7 @@ fn place_cards(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn emit(
+fn project_layout(
     reader: &Reader<'_>,
     record: Record,
     facts: LayoutFacts,
@@ -2063,10 +2187,39 @@ fn emit(
     ready_attachment: &super::attachment_facts::ReadyAttachment<'_>,
     footer: &mut ReadFooter,
     out: &mut dyn FnMut(ReadItem),
-) -> Result<(), Error> {
+) -> Result<Option<ReadRecord>, Error> {
     // A context reading's entries were chosen from the index as members, so
     // each one laid out is selected; what it leaves out is said once, in
     // the reading's first lines.
+    let mut record = record;
+    // The index owns block membership. Preserve source ordinals and identity
+    // while excluding evicted blocks from the original frame as well as layout.
+    if options.view == View::Context
+        && let Record::Message(row) = &mut record
+    {
+        let mut blocks = Vec::new();
+        let mut ordinals = Vec::new();
+        for (block, ordinal) in std::mem::take(&mut row.message.blocks)
+            .into_iter()
+            .zip(std::mem::take(&mut row.block_ordinals))
+        {
+            if selected(&Source::block(
+                &row.message.id,
+                &row.message.session,
+                ordinal,
+                facts.inherited,
+            ))? {
+                blocks.push(block);
+                ordinals.push(ordinal);
+            }
+        }
+        row.message.blocks = blocks;
+        row.block_ordinals = ordinals;
+        row.injections
+            .retain(|item| row.block_ordinals.binary_search(&item.block).is_ok());
+        row.bindings
+            .retain(|item| row.block_ordinals.binary_search(&item.block).is_ok());
+    }
     let mut facts = facts;
     if options.assertions {
         layout_facts::annotate(reader, &record, &mut facts, at, options.annotation_at())?;
@@ -2088,13 +2241,14 @@ fn emit(
         footer,
     )?
     else {
-        return Ok(());
+        return Ok(None);
     };
     let layout = layout_facts::Layout {
         options,
         facts: &facts,
         selected,
         ready_attachment,
+        by_source: true,
         backwards: false,
         page_start: None,
     };
@@ -2102,5 +2256,5 @@ fn emit(
         out(item);
         Ok(true)
     })?;
-    Ok(())
+    Ok(Some(record))
 }

@@ -84,6 +84,9 @@ pub(super) struct Layout<'a> {
     pub facts: &'a LayoutFacts,
     pub selected: &'a dyn Fn(&Source) -> Result<bool, Error>,
     pub ready_attachment: &'a super::attachment_facts::ReadyAttachment<'a>,
+    /// Indexed session entries transfer each item at its own source address.
+    /// A paired call keeps its output text, while result extras stay at the result.
+    pub by_source: bool,
     pub backwards: bool,
     pub page_start: Option<u64>,
 }
@@ -162,11 +165,21 @@ fn segments(
                 // The source's result extras are replaced by the same indexed pair's
                 // extras, or suppressed with its already-selected call.
                 replaced = Some(item.source.reference.clone());
+                if layout.by_source && call.reference != item.source.reference {
+                    // The call's combined presentation was emitted at the call.
+                    // Keep this result's ordinary typed data and attachment items
+                    // here, rather than buffering them from that earlier message.
+                    if layout.options.tools() == Expansion::Full {
+                        replaced = None;
+                    }
+                    continue;
+                }
                 if call.reference != item.source.reference && (layout.selected)(&call)? {
                     continue;
                 }
                 pair_at = Some((message.clone(), ordinal));
-                if layout.options.tools() == Expansion::Full
+                if !layout.by_source
+                    && layout.options.tools() == Expansion::Full
                     && let Some(result) = &result
                     && (layout.options.view != View::Context || (layout.selected)(result)?)
                 {
@@ -264,6 +277,9 @@ fn pair_parts(
     let mut continuing = true;
     let mut attachment_index = 0u64;
     polylogue_render::visit_source_block(&source, layout.options, &detail, |mut item| {
+        if layout.by_source && item.source.reference != segment.item.source.reference {
+            return true;
+        }
         if item.source.reference == segment.item.source.reference
             && let ItemKind::Call { call: selected } = &segment.item.kind
             && let ItemKind::Call { call } = &mut item.kind

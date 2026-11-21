@@ -69,6 +69,7 @@ pub(crate) fn visit_rows(
                 facts: rendering.object_facts.unwrap_or(&empty_facts),
                 selected: &selected,
                 ready_attachment: rendering.ready_attachment,
+                by_source: false,
                 backwards,
                 page_start: start.place.map(|place| place.item),
             };
@@ -252,6 +253,7 @@ fn visit_history(
                 facts: &facts,
                 selected: &selected,
                 ready_attachment: rendering.ready_attachment,
+                by_source: false,
                 backwards,
                 page_start: from.filter(|_| index == first).map(|place| place.item),
             };
@@ -326,6 +328,7 @@ impl Walk<'_, '_, '_, '_> {
                 facts: &facts,
                 selected: &selected,
                 ready_attachment: self.rendering.ready_attachment,
+                by_source: false,
                 backwards,
                 page_start: None,
             };
@@ -411,6 +414,7 @@ impl Walk<'_, '_, '_, '_> {
                 facts: &facts,
                 selected: &selected,
                 ready_attachment: rendering.ready_attachment,
+                by_source: false,
                 backwards,
                 page_start: place
                     .filter(|place| place.selection == at)

@@ -545,11 +545,6 @@ fn validate_at(reader: &Reader<'_>, request: &ReadRequest) -> Result<(), Error> 
     if request.options.annotation_at().is_none() {
         return Ok(());
     }
-    if request.options.view == View::Context && request.delivery == ReadDelivery::Stream {
-        return Err(Error::bad_request(
-            "historical context currently uses page delivery",
-        ));
-    }
     if request.options.view == View::Context && request.options.around.is_some_and(|n| n > 0) {
         return Err(Error::bad_request(
             "historical context does not accept around; select its context message",
@@ -898,6 +893,11 @@ pub fn stream(
         operation,
         &reading,
         |compiled, snapshot, header, near| {
+            if reading.options.view == View::Context
+                && let Some(scope) = session::scope(reader, &reading.target)?
+            {
+                return session::stream(reader, d, request, operation, scope, snapshot, output);
+            }
             rows_stream(
                 reader,
                 d,

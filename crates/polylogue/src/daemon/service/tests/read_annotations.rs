@@ -275,6 +275,23 @@ fn ordinary_session_reads_keep_message_and_span_revisions_at_two_positions() {
         }
         let second = d.daemon.reads.reader().unwrap().change_position().unwrap();
         assert!(second.archive > first.archive);
+        if view == View::Context {
+            for position in [&first, &second] {
+                let expected = crate::test_answers::read(
+                    historical_call(target, position, 100000, view).answer(&d.daemon),
+                );
+                let (items, _, _) = context_stream(
+                    &d.daemon,
+                    target,
+                    ReadOptions {
+                        view,
+                        at: Some(ReadAt::try_from(position.to_string()).unwrap()),
+                        ..Default::default()
+                    },
+                );
+                assert_eq!(items, expected.document.items);
+            }
+        }
         let edited_call = historical_call(target, &second, 100000, view);
         let edited = crate::test_answers::read(edited_call.clone().answer(&d.daemon));
         let edited_notes = annotations(&edited, "claude-code:u1");
@@ -553,6 +570,19 @@ fn ordinary_session_annotation_times_keep_old_new_withdrawn_and_expired_versions
             }
             for (at, expected) in &cases {
                 let call = historical_call(target, at, 100000, view);
+                if view == View::Context {
+                    let expected = crate::test_answers::read(call.clone().answer(&d.daemon));
+                    let (items, _, _) = context_stream(
+                        &d.daemon,
+                        target,
+                        ReadOptions {
+                            view,
+                            at: Some(ReadAt::Time(*at)),
+                            ..Default::default()
+                        },
+                    );
+                    assert_eq!(items, expected.document.items);
+                }
                 for page in [call.clone().answer(&d.daemon), call.answer(&d.daemon)] {
                     let page = crate::test_answers::read(page);
                     assert_eq!(
@@ -906,39 +936,72 @@ fn historical_context_pages_bind_the_message_and_cutoff_through_append_and_reope
     }
 }
 
-#[test]
-fn historical_context_streams_refuse_before_emitting_partial_context() {
-    let d = test_daemon::start("neutral target text");
-    let request = crate::daemon::service::read::request_of(
-        crate::daemon::verbs::read::arguments(
-            &crate::protocol::steps::ReadStep {
-                view: View::Context,
-                at: Some("2026-11-21T10:00:00Z".into()),
-                delivery: ReadDelivery::Stream,
-                ..Default::default()
-            },
-            "message:claude-code:u1".into(),
-        )
-        .unwrap(),
-        None,
-    )
-    .unwrap();
+/// Decode the finite read protocol, preserving original frames independently
+/// from presentation so a hidden block cannot pass a layout-only assertion.
+pub(super) fn context_stream(
+    d: &Daemon,
+    target: &str,
+    options: ReadOptions,
+) -> (
+    Vec<ReadItem>,
+    Vec<polylogue_model::bundle::Record>,
+    ReadComplete,
+) {
+    let request = polylogue_reading::ReadRequest {
+        references: None,
+        target: target.into(),
+        options,
+        delivery: ReadDelivery::Stream,
+        format: "jsonl".into(),
+        budget: None,
+        with_blobs: false,
+        cursor: None,
+    };
     let actor = polylogue_model::authorship::Authorship {
         author: polylogue_model::Author::Operator,
         via: polylogue_model::authorship::Channel::Cli,
     };
-    let operation = d.daemon.operation_context(&actor).unwrap();
-    let reader = d.daemon.reads.reader().unwrap();
+    let operation = d.operation_context(&actor).unwrap();
+    let reader = d.reads.reader().unwrap();
     let mut bytes = Vec::new();
-    let error =
-        polylogue_reading::stream(&reader, d.daemon.as_ref(), &request, &operation, &mut bytes)
-            .unwrap_err();
-    assert_eq!(error.code(), "bad_request");
+    let complete = polylogue_reading::stream(&reader, d, &request, &operation, &mut bytes).unwrap();
+    let frames = command_surface::SseDecoder::new().push(&bytes).unwrap();
+    assert_eq!(frames.first().unwrap().event, "begin");
+    assert_eq!(frames.last().unwrap().event, "complete");
     assert_eq!(
-        error.to_string(),
-        "historical context currently uses page delivery"
+        frames.iter().filter(|frame| frame.event == "begin").count(),
+        1
     );
-    assert!(bytes.is_empty());
+    assert_eq!(
+        frames
+            .iter()
+            .filter(|frame| frame.event == "complete")
+            .count(),
+        1
+    );
+    let mut items = Vec::new();
+    let mut originals = Vec::new();
+    for frame in &frames[1..frames.len() - 1] {
+        assert_eq!(frame.event, "record");
+        let record: ReadRecord = serde_json::from_str(&frame.data).unwrap();
+        if let Some(original) = record.record() {
+            originals.push(original.clone());
+        }
+        for part in record.parts() {
+            if let ReadPart::Item(item) = part {
+                items.push(item.clone());
+            }
+        }
+    }
+    assert_eq!(complete.footer.shown, items.len() as u64);
+    assert_eq!(
+        serde_json::from_str::<ReadComplete>(&frames.last().unwrap().data).unwrap(),
+        complete
+    );
+    let refs: std::collections::HashSet<_> =
+        originals.iter().map(|record| record.reference()).collect();
+    assert_eq!(refs.len(), originals.len(), "each original is emitted once");
+    (items, originals, complete)
 }
 
 #[test]
@@ -987,45 +1050,29 @@ fn session_context_keeps_the_legacy_missing_message_refusal() {
 }
 
 #[test]
-fn current_and_stored_legacy_context_streams_keep_the_preexisting_projection_path() {
+fn current_legacy_and_historical_context_streams_share_the_page_projection() {
     let d = test_daemon::start("neutral target text");
-    let actor = polylogue_model::authorship::Authorship {
-        author: polylogue_model::Author::Operator,
-        via: polylogue_model::authorship::Channel::Cli,
-    };
-    let operation = d.daemon.operation_context(&actor).unwrap();
-    for at in [None, Some("claude-code:u1")] {
-        let request = crate::daemon::service::read::request_of(
-            crate::daemon::verbs::read::arguments(
-                &crate::protocol::steps::ReadStep {
-                    view: View::Context,
-                    at: at.map(str::to_owned),
-                    delivery: ReadDelivery::Stream,
-                    format: Some("jsonl".into()),
-                    ..Default::default()
-                },
-                "session:claude-code:s1".into(),
-            )
-            .unwrap(),
-            None,
-        )
-        .unwrap();
-        let reader = d.daemon.reads.reader().unwrap();
-        let mut bytes = Vec::new();
-        let error =
-            polylogue_reading::stream(&reader, d.daemon.as_ref(), &request, &operation, &mut bytes)
-                .unwrap_err();
-        // Existing SSE does not prepare composed context membership. Preserve
-        // that projection result here; this slice only completes paged context.
-        assert_eq!(error.code(), "not_yet_available");
-        assert_eq!(
-            error.to_string(),
-            "context needs prepared context membership for message:claude-code:u1"
+    for at in [None, Some("claude-code:u1"), Some("2026-11-21T10:00:00Z")] {
+        let call = match at {
+            Some(at) => historical_call("session:claude-code:s1", &at, 100000, View::Context),
+            None => Call::new(
+                "rows",
+                json!({"selection":"session:claude-code:s1","steps":[{"verb":"read","view":"context","budget":100000}]}),
+            ),
+        };
+        let page = crate::test_answers::read(call.answer(&d.daemon));
+        let (items, _, complete) = context_stream(
+            &d.daemon,
+            "session:claude-code:s1",
+            ReadOptions {
+                view: View::Context,
+                at: at.map(|at| ReadAt::try_from(at.to_owned()).unwrap()),
+                ..Default::default()
+            },
         );
-        assert!(
-            !bytes.is_empty(),
-            "the existing stream began before message projection"
-        );
+        assert_eq!(items, page.document.items);
+        assert_eq!(complete.counts.sessions, 1);
+        assert_eq!(complete.counts.messages, 1);
     }
 }
 
@@ -1061,4 +1108,87 @@ fn an_explicit_context_message_keeps_the_matching_legacy_anchor_and_refuses_a_do
         error.message,
         "context has two different message anchors; select one message"
     );
+}
+
+#[test]
+fn context_stream_stops_on_scope_reset_and_cancellation_before_source_frames() {
+    use std::io::Write;
+    struct Interrupt<'a> {
+        bytes: Vec<u8>,
+        action: Option<Box<dyn FnOnce() + 'a>>,
+    }
+    impl Write for Interrupt<'_> {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.bytes.extend_from_slice(bytes);
+            if let Some(action) = self.action.take() {
+                action();
+            }
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    for scope_reset in [false, true] {
+        let mut d = test_daemon::start("neutral context text");
+        d.pause_signals();
+        let actor = polylogue_model::authorship::Authorship {
+            author: polylogue_model::Author::Operator,
+            via: polylogue_model::authorship::Channel::Cli,
+        };
+        let operation = d.daemon.operation_context(&actor).unwrap();
+        let limit = crate::daemon::execution::limit(None, Default::default());
+        let cancellation = limit.cancellation.clone();
+        let archive = &d.daemon.archive;
+        let mut output = Interrupt {
+            bytes: vec![],
+            action: Some(Box::new(move || {
+                if scope_reset {
+                    archive.advance_generation_for_test().unwrap();
+                } else {
+                    cancellation.cancel();
+                }
+            })),
+        };
+        let result = limit.scope(|| {
+            let reader = d.daemon.reads.reader()?;
+            polylogue_reading::stream(
+                &reader,
+                d.daemon.as_ref(),
+                &polylogue_reading::ReadRequest {
+                    references: None,
+                    target: "session:claude-code:s1".into(),
+                    options: ReadOptions {
+                        view: View::Context,
+                        ..Default::default()
+                    },
+                    delivery: ReadDelivery::Stream,
+                    format: "jsonl".into(),
+                    budget: None,
+                    with_blobs: false,
+                    cursor: None,
+                },
+                &operation,
+                &mut output,
+            )
+        });
+        assert_eq!(
+            result.unwrap_err().code(),
+            if scope_reset {
+                "scope_changed"
+            } else {
+                "cancelled"
+            }
+        );
+        let frames = command_surface::SseDecoder::new()
+            .push(&output.bytes)
+            .unwrap();
+        assert_eq!(
+            frames
+                .iter()
+                .map(|frame| frame.event.as_str())
+                .collect::<Vec<_>>(),
+            ["begin"]
+        );
+    }
 }

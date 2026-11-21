@@ -760,3 +760,282 @@ fn selected_message_context_keeps_its_prefix_and_existing_parent_branch_cut() {
             .any(|text| text == "root question")
     );
 }
+
+#[test]
+fn finite_context_streams_use_the_same_lineage_compaction_and_tool_projection_as_pages() {
+    let d = test_daemon::start("placeholder");
+    family(&d);
+    for (target, diff, around) in [
+        ("root:claude-code:root", None, None),
+        ("message:claude-code:r2", None, None),
+        ("message:claude-code:f1", None, None),
+        ("message:claude-code:r2", None, Some(1)),
+        ("session:claude-code:cmp", None, None),
+        ("session:claude-code:cmp", Some("compaction"), None),
+        ("session:claude-code:micro", None, None),
+    ] {
+        let options = ReadOptions {
+            view: View::Context,
+            tools: Some(polylogue_model::read::Expansion::Full),
+            diff: diff.map(str::to_owned),
+            around,
+            ..Default::default()
+        };
+        let expected = read(&d, target, options.clone());
+        let (items, originals, _) =
+            super::read_annotations::context_stream(&d.daemon, target, options);
+        assert_eq!(
+            items, expected.document.items,
+            "{target}, {diff:?}, {around:?}"
+        );
+        for original in &originals {
+            if let polylogue_model::bundle::Record::Message(message) = original {
+                message.validate().unwrap();
+            }
+        }
+        let encoded = serde_json::to_string(&originals).unwrap();
+        if target == "session:claude-code:micro" {
+            assert!(
+                !encoded.contains("cleared listing"),
+                "evicted blocks must also be absent from original frames: {encoded}"
+            );
+        }
+        if target == "session:claude-code:cmp" && diff.is_none() {
+            assert!(!encoded.contains("before compaction"), "{encoded}");
+        }
+    }
+}
+
+#[test]
+fn a_context_stream_crosses_entry_windows_without_duplicating_its_source_message() {
+    let d = test_daemon::start_with_sources_and_workers(
+        "placeholder",
+        &|home| {
+            let blocks: Vec<_> = (0..40)
+                .map(|i| json!({"type":"text","text":format!("neutral block {i}")}))
+                .collect();
+            std::fs::write(home.join(".claude/projects/-p/wide.jsonl"), line(json!({
+            "type":"assistant", "uuid":"wide", "sessionId":"wide", "timestamp":"2026-03-01T10:00:00Z",
+            "message":{"id":"msg_wide", "role":"assistant", "stop_reason":"end_turn", "content":blocks}
+        }))).unwrap();
+        },
+        1,
+        1,
+    );
+    let options = ReadOptions {
+        view: View::Context,
+        ..Default::default()
+    };
+    let expected = read(&d, "session:claude-code:wide", options.clone());
+    assert!(
+        expected.document.items.len() > 32,
+        "the fixture crosses two entry windows"
+    );
+    let (items, originals, complete) =
+        super::read_annotations::context_stream(&d.daemon, "session:claude-code:wide", options);
+    assert_eq!(items, expected.document.items);
+    assert_eq!(complete.counts.messages, 1);
+    let messages: Vec<_> = originals
+        .iter()
+        .filter_map(|record| match record {
+            polylogue_model::bundle::Record::Message(message) => Some(message),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].block_count, 40);
+    assert_eq!(messages[0].block_ordinals, (0..40).collect::<Vec<u64>>());
+    messages[0].validate().unwrap();
+}
+
+#[test]
+fn context_result_data_and_attachments_survive_entry_windows_and_page_boundaries_once() {
+    use polylogue_model::read::Expansion;
+    let d = test_daemon::start_with_sources_and_workers(
+        "placeholder",
+        &|home| {
+            let mut blocks =
+                vec![json!({"type":"tool_use","id":"capture-1","name":"capture","input":{}})];
+            blocks.extend(
+                (0..20).map(
+                    |i| json!({"type":"text","text":format!("neutral intervening block {i}")}),
+                ),
+            );
+            let call = line(json!({
+                "type":"assistant","uuid":"capture-call","sessionId":"capture","timestamp":"2026-03-01T10:00:00Z",
+                "message":{"id":"msg_capture","role":"assistant","stop_reason":"tool_use","content":blocks}
+            }));
+            let result = line(json!({
+                "type":"user","uuid":"capture-result","parentUuid":"capture-call","sessionId":"capture","timestamp":"2026-03-01T10:00:01Z",
+                "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"capture-1","content":[
+                    {"type":"text","text":"neutral paired output"},
+                    {"type":"document","source":{"type":"base64","media_type":"application/octet-stream","data":"YWJj"}}
+                ]}]}, "toolUseResult":{"status":"complete"}
+            }));
+            std::fs::write(
+                home.join(".claude/projects/-p/capture.jsonl"),
+                call + &result,
+            )
+            .unwrap();
+        },
+        2,
+        1,
+    );
+    for tools in [Expansion::Full, Expansion::Collapsed, Expansion::None] {
+        let options = ReadOptions {
+            view: View::Context,
+            tools: Some(tools),
+            ..Default::default()
+        };
+        let target = "session:claude-code:capture";
+        let expected = read(&d, target, options.clone());
+        let (items, _, _) =
+            super::read_annotations::context_stream(&d.daemon, target, options.clone());
+        assert_eq!(items, expected.document.items);
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| matches!(&item.kind, ItemKind::Call { .. }))
+                .count(),
+            usize::from(tools != Expansion::None)
+        );
+        let data: Vec<_> = items.iter().filter(|item| matches!(&item.kind, ItemKind::Other { type_name, .. } if type_name == "tool result data")).collect();
+        let attachments: Vec<_> = items
+            .iter()
+            .filter(|item| matches!(&item.kind, ItemKind::Attachment { .. }))
+            .collect();
+        assert_eq!(data.len(), usize::from(tools == Expansion::Full));
+        assert_eq!(attachments.len(), usize::from(tools == Expansion::Full));
+        for item in data.into_iter().chain(attachments) {
+            assert_eq!(item.source.reference, "block:claude-code:capture-result#0");
+        }
+        if tools == Expansion::Full {
+            assert!(items.iter().any(|item| matches!(&item.kind, ItemKind::Call { call } if call.output.as_deref() == Some("neutral paired output"))));
+            let request = polylogue_reading::ReadRequest {
+                references: None,
+                target: target.into(),
+                options,
+                delivery: polylogue_model::read::ReadDelivery::Page,
+                format: "json".into(),
+                budget: Some(64),
+                with_blobs: false,
+                cursor: None,
+            };
+            let mut page = crate::test_answers::read(
+                crate::test_daemon::read(request.clone()).answer(&d.daemon),
+            );
+            let mut all = page.document.items;
+            let mut seen = std::collections::BTreeSet::new();
+            while let Some(next) = page.document.footer.next {
+                assert!(
+                    seen.insert(serde_json::to_string(&next.request).unwrap()),
+                    "pages advance"
+                );
+                page = crate::test_answers::read(
+                    crate::test_daemon::Call::from_request(&next.request).answer(&d.daemon),
+                );
+                all.extend(page.document.items);
+            }
+            assert!(!seen.is_empty(), "the fixture must cross page boundaries");
+            assert_eq!(all, items);
+        }
+    }
+}
+
+#[test]
+fn composed_context_streams_keep_distinct_physical_session_headers_once() {
+    use polylogue_model::bundle::Record;
+    let d = test_daemon::start("placeholder");
+    family(&d);
+    let cases: &[(&str, &[&str], &[&str])] = &[
+        (
+            "message:claude-code:f1",
+            &["claude-code:fork", "claude-code:root"],
+            &["root question", "forked question"],
+        ),
+        // A bare continued-in marker has no branch point or copied-prefix
+        // claim. A physical read must not invent its parent's context.
+        (
+            "session:claude-code:cont",
+            &["claude-code:cont"],
+            &["continuation question"],
+        ),
+        // The logical root deliberately follows that recorded continuation.
+        (
+            "root:claude-code:root",
+            &["claude-code:root", "claude-code:cont"],
+            &["root question", "continuation question"],
+        ),
+    ];
+    for &(target, expected, expected_text) in cases {
+        let options = ReadOptions {
+            view: View::Context,
+            ..Default::default()
+        };
+        let page = read(&d, target, options.clone());
+        let (items, originals, complete) =
+            super::read_annotations::context_stream(&d.daemon, target, options);
+        assert_eq!(items, page.document.items);
+        let body_text: Vec<_> = items
+            .iter()
+            .filter_map(|item| match &item.kind {
+                ItemKind::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        for text in expected_text {
+            assert!(
+                body_text.contains(text),
+                "{target} must retain {text}: {body_text:?}"
+            );
+        }
+        if target == "session:claude-code:cont" {
+            assert!(
+                !body_text.contains(&"root question"),
+                "a missing branch point is not a copied prefix"
+            );
+        }
+        let headers: Vec<_> = originals
+            .iter()
+            .filter_map(|record| match record {
+                Record::Session(row) => Some(row),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            headers
+                .iter()
+                .map(|row| row.session.id.to_string())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(complete.counts.sessions, expected.len() as u64);
+        let reader = d.daemon.reads.reader().unwrap();
+        for header in &headers {
+            assert_eq!(header.reference, format!("session:{}", header.session.id));
+            assert_eq!(
+                header.session,
+                reader.session(&header.session.id).unwrap().unwrap()
+            );
+            assert_eq!(
+                Some(header.commit),
+                reader.session_commit(&header.session.id).unwrap()
+            );
+            assert_eq!(
+                header.copied_prefixes,
+                reader.copied_prefixes(&header.session.id).unwrap()
+            );
+        }
+        for record in &originals {
+            if let Record::Message(row) = record {
+                assert!(
+                    headers
+                        .iter()
+                        .any(|header| header.session.id == row.message.session),
+                    "the source of {} needs its own physical header",
+                    row.reference
+                );
+            }
+        }
+    }
+}
