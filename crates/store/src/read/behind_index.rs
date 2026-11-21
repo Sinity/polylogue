@@ -79,7 +79,7 @@ const CHAINS_BEHIND: &str = r#"first_paths AS MATERIALIZED (
                 OR EXISTS(SELECT 1 FROM json_each(?1) expected
                     WHERE json_extract(expected.value, '$[0]') = COALESCE(f.format, i.format)
                       AND json_extract(expected.value, '$[1]') IS NOT p.reading_version)))
-            ORDER BY 5,(SELECT max(o.seen_at) FROM observations o WHERE o.input=c.input) DESC,c.input,c.chain DESC"#;
+            "#;
 
 fn planning_sql(selected: bool, chains: RevisionChains) -> String {
     // Restrict histories before aggregating them. All-input planning
@@ -109,6 +109,7 @@ fn planning_sql(selected: bool, chains: RevisionChains) -> String {
             CROSS JOIN revisions r ON r.input=s.input WHERE r.chain<>l.chain
             GROUP BY r.input,r.chain",
     };
+    let database = crate::source::database_original("c.input");
     format!(
         "WITH chosen AS MATERIALIZED (SELECT DISTINCT value AS input FROM json_each(?3)),
          revisions AS NOT MATERIALIZED ({revisions}),
@@ -116,7 +117,9 @@ fn planning_sql(selected: bool, chains: RevisionChains) -> String {
          inputs AS MATERIALIZED (
              SELECT input,max(number) AS number,max(produced='imported') AS imported
              FROM revisions GROUP BY input
-         ), chains AS MATERIALIZED ({chain_rows}), {CHAINS_BEHIND}"
+         ), chains AS MATERIALIZED ({chain_rows}), {CHAINS_BEHIND}
+         AND NOT {database}
+         ORDER BY 5,(SELECT max(o.seen_at) FROM observations o WHERE o.input=c.input) DESC,c.input,c.chain DESC"
     )
 }
 
@@ -149,8 +152,9 @@ impl Reader<'_> {
     /// Bytes the newest readable chains hold and their committed parser positions.
     pub fn newest_parse_bytes(&self, versions: &[(String, String)]) -> Result<(u64, u64)> {
         let token = self.scope_token();
+        let database = crate::source::database_original("c.input");
         let progress = self.conn()?.query_row(
-            "WITH latest AS (
+            &format!("WITH latest AS (
                  SELECT input,max(number) AS number FROM source_revision GROUP BY input
              ), newest AS (
                  SELECT r.input,r.chain,
@@ -172,7 +176,8 @@ impl Reader<'_> {
              FROM newest c JOIN formats f ON f.id=c.input
              JOIN json_each(?1) e ON json_extract(e.value,'$[0]')=f.format
              LEFT JOIN input_ref i ON i.id=c.input
-             LEFT JOIN parse_state p ON p.input_pk=i.pk AND p.chain=c.chain",
+             LEFT JOIN parse_state p ON p.input_pk=i.pk AND p.chain=c.chain
+             WHERE NOT {database}"),
             [serde_json::to_string(versions)?],
             |row| Ok((row.get(0)?,row.get(1)?)),
         )?;

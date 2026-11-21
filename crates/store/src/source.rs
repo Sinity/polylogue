@@ -8,6 +8,32 @@ mod boundary;
 pub use boundary::SourceBoundary;
 mod confirmed;
 
+/// The link made by the native SQLite decoder after storing its row stream.
+/// A generic container, an import format hint or a failed decode does not make
+/// the original a kept database.
+pub(crate) fn database_rows(link: &str) -> String {
+    format!(
+        "{link}.kind = 'sqlite' AND {link}.member_index = 0
+            AND {link}.path_bytes = CAST('rows.jsonl' AS BLOB)"
+    )
+}
+
+/// Committed imported row streams and the originals they represent. The
+/// caller can restrict the original by `container_input` on its existing index.
+pub(crate) fn database_links() -> String {
+    let rows = database_rows("member");
+    format!(
+        "SELECT member.container_input FROM source_observation_container member
+         JOIN source_observation child ON child.id = member.observation_id
+         WHERE {rows} AND child.class = 'imported' AND child.input <> member.container_input"
+    )
+}
+
+pub(crate) fn database_original(input: &str) -> String {
+    let links = database_links();
+    format!("EXISTS({links} AND member.container_input = {input})")
+}
+
 pub(crate) struct SourceSchema {
     views: String,
     pub ddl: String,
