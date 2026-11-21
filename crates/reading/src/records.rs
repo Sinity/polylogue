@@ -178,6 +178,22 @@ pub(super) fn message(
     message_record(reader, message, block_selection, commit, order)
 }
 
+/// A physical session's original metadata, using its own stored identity and
+/// commit even when a composed reading reaches it through another session.
+pub(super) fn session_record(reader: &Reader<'_>, id: &SessionId) -> Result<Record, Error> {
+    let reference = format!("session:{id}");
+    let session = reader
+        .session(id)?
+        .ok_or_else(|| Error::not_found(format!("no session {id}")))?;
+    let commit = required_commit(reader.session_commit(id)?, &reference)?;
+    Ok(Record::Session(SessionRecord {
+        copied_prefixes: reader.copied_prefixes(id)?,
+        reference,
+        commit,
+        session,
+    }))
+}
+
 fn session(
     reader: &Reader<'_>,
     id: &SessionId,
@@ -193,21 +209,9 @@ fn session(
         return Err(stale_record());
     }
     let selected = reader.select_messages(id, inherited).map_err(Error::from)?;
-    let reference = format!("session:{id}");
-    if start.is_none_or(|start| start.kind == Session) {
-        let session = reader
-            .session(id)
-            .map_err(Error::from)?
-            .ok_or_else(|| Error::not_found(format!("no session {id}")))?;
-        let commit = required_commit(reader.session_commit(id).map_err(Error::from)?, &reference)?;
-        if !visit(
-            Record::Session(SessionRecord {
-                copied_prefixes: reader.copied_prefixes(id).map_err(Error::from)?,
-                reference,
-                commit,
-                session,
-            })
-            .into(),
+    if start.is_none_or(|start| start.kind == Session)
+        && !visit(
+            session_record(reader, id)?.into(),
             LayoutFacts {
                 lineage_complete: if inherited {
                     polylogue_model::read::ValueState::known(selected.parents().complete)
@@ -217,9 +221,9 @@ fn session(
                 ..Default::default()
             },
             locator(Session, 0),
-        )? {
-            return Ok(false);
-        }
+        )?
+    {
+        return Ok(false);
     }
     if inherited && start.is_none_or(|start| matches!(start.kind, Session | LinkIssue)) {
         let from = start

@@ -1040,21 +1040,18 @@ pub(super) fn stream(
         options: options.clone(),
     };
     let mut stream = output::Stream::begin(output, &check, &begin)?;
-    let reference = format!("session:{}", session.id);
-    let commit = reader.session_commit(&session.id)?.ok_or_else(|| {
-        Error::not_yet_available(format!(
-            "{reference} has no stored commit position for its source"
-        ))
-    })?;
-    stream.record(&ReadRecord::Original {
-        record: Box::new(Record::Session(polylogue_model::bundle::SessionRecord {
-            copied_prefixes: reader.copied_prefixes(&session.id)?,
-            reference,
-            commit,
-            session,
-        })),
-        parts: vec![],
-    })?;
+    let mut emitted = HashSet::new();
+    // A composed header does not replace its physical sources' metadata. The
+    // main session may occur again in the parts; send its original only once.
+    for id in std::iter::once(&scope.session).chain(composed.parts.iter().map(|part| &part.session))
+    {
+        if emitted.insert(format!("session:{id}")) {
+            stream.record(&ReadRecord::Original {
+                record: Box::new(super::records::session_record(reader, id)?),
+                parts: vec![],
+            })?;
+        }
+    }
     for item in lead {
         stream.record(&ReadRecord::Presentation {
             parts: vec![ReadPart::Item(item)],
@@ -1064,7 +1061,6 @@ pub(super) fn stream(
         .with_blobs
         .then(|| super::blobs::Blobs::new(reader))
         .transpose()?;
-    let mut emitted = HashSet::new();
     let mut cache = None;
     let mut from = shown.start();
     loop {
@@ -1101,6 +1097,21 @@ pub(super) fn stream(
                     .and_then(Record::reference)
                     .ok_or_else(|| Error::internal("a composed context source has no reference"))?;
                 if emitted.insert(reference.to_owned()) {
+                    // Copied membership can name a canonical source session
+                    // outside the display parts. Preserve that source header too.
+                    let source_session = match record.record() {
+                        Some(Record::Message(row)) => Some(&row.message.session),
+                        Some(Record::Event(row)) => row.event.session.as_ref(),
+                        _ => None,
+                    };
+                    if let Some(id) = source_session
+                        && emitted.insert(format!("session:{id}"))
+                    {
+                        stream.record(&ReadRecord::Original {
+                            record: Box::new(super::records::session_record(reader, id)?),
+                            parts: vec![],
+                        })?;
+                    }
                     stream.record(&record)?;
                     if let Some(blobs) = &mut blobs {
                         blobs.record(&record, &mut stream, &check)?;

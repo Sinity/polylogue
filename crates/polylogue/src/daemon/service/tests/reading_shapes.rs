@@ -941,3 +941,75 @@ fn context_result_data_and_attachments_survive_entry_windows_and_page_boundaries
         }
     }
 }
+
+#[test]
+fn composed_context_streams_keep_distinct_physical_session_headers_once() {
+    use polylogue_model::bundle::Record;
+    let d = test_daemon::start("placeholder");
+    family(&d);
+    for (target, expected) in [
+        (
+            "message:claude-code:f1",
+            ["claude-code:fork", "claude-code:root"],
+        ),
+        (
+            "session:claude-code:cont",
+            ["claude-code:cont", "claude-code:root"],
+        ),
+        (
+            "root:claude-code:root",
+            ["claude-code:root", "claude-code:cont"],
+        ),
+    ] {
+        let options = ReadOptions {
+            view: View::Context,
+            ..Default::default()
+        };
+        let page = read(&d, target, options.clone());
+        let (items, originals, complete) =
+            super::read_annotations::context_stream(&d.daemon, target, options);
+        assert_eq!(items, page.document.items);
+        let headers: Vec<_> = originals
+            .iter()
+            .filter_map(|record| match record {
+                Record::Session(row) => Some(row),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            headers
+                .iter()
+                .map(|row| row.session.id.to_string())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(complete.counts.sessions, 2);
+        let reader = d.daemon.reads.reader().unwrap();
+        for header in &headers {
+            assert_eq!(header.reference, format!("session:{}", header.session.id));
+            assert_eq!(
+                header.session,
+                reader.session(&header.session.id).unwrap().unwrap()
+            );
+            assert_eq!(
+                Some(header.commit),
+                reader.session_commit(&header.session.id).unwrap()
+            );
+            assert_eq!(
+                header.copied_prefixes,
+                reader.copied_prefixes(&header.session.id).unwrap()
+            );
+        }
+        for record in &originals {
+            if let Record::Message(row) = record {
+                assert!(
+                    headers
+                        .iter()
+                        .any(|header| header.session.id == row.message.session),
+                    "the source of {} needs its own physical header",
+                    row.reference
+                );
+            }
+        }
+    }
+}

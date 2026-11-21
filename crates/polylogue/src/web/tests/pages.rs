@@ -518,7 +518,16 @@ fn finite_http_context_streams_share_paged_items_and_require_read_authority() {
                 .push(body.as_bytes())
                 .unwrap();
             assert_eq!(frames.first().unwrap().event, "begin");
-            assert_eq!(frames.last().unwrap().event, "complete");
+            assert_eq!(frames.last().unwrap().event, "answer");
+            let completion = &frames[frames.len() - 2];
+            assert_eq!(completion.event, "complete");
+            assert_eq!(
+                frames
+                    .iter()
+                    .filter(|frame| frame.event == "answer")
+                    .count(),
+                1
+            );
             assert_eq!(
                 frames.iter().filter(|frame| frame.event == "begin").count(),
                 1
@@ -532,7 +541,7 @@ fn finite_http_context_streams_share_paged_items_and_require_read_authority() {
             );
             let mut items = Vec::new();
             let mut messages = 0;
-            for frame in &frames[1..frames.len() - 1] {
+            for frame in &frames[1..frames.len() - 2] {
                 assert_eq!(frame.event, "record");
                 let record: ReadRecord = serde_json::from_str(&frame.data).unwrap();
                 if matches!(
@@ -549,10 +558,25 @@ fn finite_http_context_streams_share_paged_items_and_require_read_authority() {
             }
             assert_eq!(messages, 1);
             assert_eq!(items, expected.document.items);
-            let complete: ReadComplete =
-                serde_json::from_str(&frames.last().unwrap().data).unwrap();
+            let complete: ReadComplete = serde_json::from_str(&completion.data).unwrap();
             assert_eq!(complete.counts.messages, messages);
             assert_eq!(complete.footer.shown, items.len() as u64);
+            let answer: command_surface::Answer<crate::protocol::line::LineAnswer> =
+                serde_json::from_str(&frames.last().unwrap().data).unwrap();
+            let crate::protocol::line::LineAnswer::Steps(steps) = answer.value().unwrap() else {
+                panic!("the line must report its streamed read: {answer:?}");
+            };
+            assert_eq!(steps.steps.len(), 1);
+            assert_eq!(steps.steps[0].verb, "read");
+            let crate::protocol::line::StepOutcome::Done {
+                reply: crate::protocol::line::StepAnswer::Streamed(reported),
+                undo,
+            } = &steps.steps[0].outcome
+            else {
+                panic!("the read must finish successfully: {steps:?}");
+            };
+            assert_eq!(reported.as_ref(), &complete);
+            assert!(undo.is_empty());
             let deadline =
                 crate::daemon::execution::deadline(std::time::Duration::ZERO).to_string();
             let (status, _, body) = send(
