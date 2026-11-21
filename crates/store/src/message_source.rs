@@ -39,6 +39,12 @@ pub(crate) struct Claim {
     pub version: i64,
 }
 
+enum ClaimWrite {
+    Header,
+    UpsertExtra,
+    InsertExtra,
+}
+
 impl Claim {
     fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
         // Enum words in this relation are constrained by the schema.
@@ -79,19 +85,33 @@ impl Claim {
             "SELECT EXISTS(SELECT 1 FROM message WHERE pk=?1 AND input_pk=?2 AND source_chain=?3)",
             params![self.message, r.input, r.chain],
         )?;
-        self.write(conn, inline)
+        self.write(
+            conn,
+            if inline {
+                ClaimWrite::Header
+            } else {
+                ClaimWrite::UpsertExtra
+            },
+        )
     }
 
-    fn write(&self, conn: &Connection, inline: bool) -> Result<()> {
+    fn write(&self, conn: &Connection, destination: ClaimWrite) -> Result<()> {
         let r = &self.reading;
-        let sql = if inline {
-            "UPDATE message SET source_start=?4,source_end=?5,source_id_kind=?6,
+        let sql = match destination {
+            ClaimWrite::Header => {
+                "UPDATE message SET source_start=?4,source_end=?5,source_id_kind=?6,
              source_session_pk=?7,source_main=?8,source_route=?9,source_seq=?10,
              source_record_position=?11,source_order_time=?12,source_at=?13,
              source_completion=?14,source_version_pk=?15
              WHERE pk=?1 AND input_pk=?2 AND source_chain=?3"
-        } else {
-            "INSERT INTO message_source_extra(message_pk,input_pk,chain,source_start,source_end,
+            }
+            ClaimWrite::InsertExtra => {
+                "INSERT INTO message_source_extra(message_pk,input_pk,chain,source_start,source_end,
+             id_kind,session_pk,main,route,seq,record_position,order_time,at,completion,version_pk)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)"
+            }
+            ClaimWrite::UpsertExtra => {
+                "INSERT INTO message_source_extra(message_pk,input_pk,chain,source_start,source_end,
              id_kind,session_pk,main,route,seq,record_position,order_time,at,completion,version_pk)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
              ON CONFLICT(message_pk,input_pk,chain) DO UPDATE SET
@@ -100,6 +120,7 @@ impl Claim {
              route=excluded.route,seq=excluded.seq,record_position=excluded.record_position,
              order_time=excluded.order_time,at=excluded.at,completion=excluded.completion,
              version_pk=excluded.version_pk"
+            }
         };
         conn.prepare_cached(sql)?.execute(params![
             self.message,
@@ -122,15 +143,19 @@ impl Claim {
     }
 }
 
+fn header(conn: &Connection, message: i64) -> Result<Option<Claim>> {
+    conn.prepare_cached(
+        "SELECT pk,input_pk,source_chain,source_start,source_end,source_id_kind,source_session_pk,
+         source_main,source_route,source_seq,source_record_position,source_order_time,source_at,
+         source_completion,source_version_pk FROM message WHERE pk=?1 AND source_version_pk IS NOT NULL",
+    )?.query_row([message], Claim::read).optional().map_err(Into::into)
+}
+
 /// Before replacing the header's default reading, move the displaced reading
 /// to its sole extra row and remove the promoted extra row. No body is copied.
 /// This runs in the writer's transaction; its caller installs the new header.
 pub(crate) fn select(conn: &Connection, message: i64, input: i64, chain: i64) -> Result<()> {
-    let previous = conn.prepare_cached(
-        "SELECT pk,input_pk,source_chain,source_start,source_end,source_id_kind,source_session_pk,
-         source_main,source_route,source_seq,source_record_position,source_order_time,source_at,
-         source_completion,source_version_pk FROM message WHERE pk=?1 AND source_version_pk IS NOT NULL",
-    )?.query_row([message], Claim::read).optional()?;
+    let previous = header(conn, message)?;
     if previous
         .as_ref()
         .is_some_and(|old| (old.reading.input, old.reading.chain) == (input, chain))
@@ -144,7 +169,7 @@ pub(crate) fn select(conn: &Connection, message: i64, input: i64, chain: i64) ->
     if let Some(previous) = previous {
         conn.prepare_cached("UPDATE message SET source_version_pk=NULL,source_session_pk=NULL,source_seq=NULL WHERE pk=?1")?
             .execute([message])?;
-        previous.write(conn, false)?;
+        previous.write(conn, ClaimWrite::InsertExtra)?;
     }
     Ok(())
 }
@@ -202,30 +227,72 @@ pub(crate) fn move_session(conn: &Connection, from: i64, to: i64) -> Result<()> 
     Ok(())
 }
 
+/// Move claims with their original uniqueness rule. A fresh target can already
+/// contain its selected reading because its header was constructed from this
+/// move's resolved value. That one reading is received once, not inserted twice.
 pub(crate) fn move_message(
     conn: &Connection,
     from: i64,
     to: i64,
     only: Option<(i64, i64, i64)>,
-) -> Result<()> {
-    let claims = conn
-        .prepare_cached("SELECT * FROM message_source WHERE message_pk=?1")?
-        .query_map([from], Claim::read)?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    for mut claim in claims {
-        if let Some((input, chain, _)) = only
-            && (claim.reading.input, claim.reading.chain) != (input, chain)
-        {
-            continue;
+    receive_default: bool,
+) -> Result<bool> {
+    if from == to {
+        if let Some((input, chain, session)) = only {
+            conn.prepare_cached("UPDATE message SET source_session_pk=?4 WHERE pk=?1 AND input_pk=?2 AND source_chain=?3 AND source_version_pk IS NOT NULL")?
+                .execute(params![from,input,chain,session])?;
+            conn.prepare_cached("UPDATE message_source_extra SET session_pk=?4 WHERE message_pk=?1 AND input_pk=?2 AND chain=?3")?
+                .execute(params![from,input,chain,session])?;
         }
-        remove(conn, from, claim.reading.input, claim.reading.chain)?;
-        claim.message = to;
-        if let Some((_, _, session)) = only {
-            claim.reading.session = session;
-        }
-        claim.put(conn)?;
+        return Ok(false);
     }
-    Ok(())
+    let source = header(conn, from)?.filter(|claim| {
+        only.is_none_or(|(input, chain, _)| {
+            (claim.reading.input, claim.reading.chain) == (input, chain)
+        })
+    });
+    let target = header(conn, to)?;
+    let default_key = target
+        .as_ref()
+        .map(|claim| (claim.reading.input, claim.reading.chain));
+    let (input, chain, session) = match only {
+        Some((input, chain, session)) => (Some(input), Some(chain), Some(session)),
+        None => (None, None, None),
+    };
+    let scope = if only.is_some() {
+        " AND input_pk=?3 AND chain=?4"
+    } else {
+        ""
+    };
+    let values: [&dyn rusqlite::ToSql; 5] = [&from, &to, &input, &chain, &session];
+    let mut received = false;
+    if receive_default && default_key.is_some() {
+        let mut remove=conn.prepare_cached(&format!(
+            "DELETE FROM message_source_extra WHERE message_pk=?1 AND (input_pk,chain)=
+             (SELECT input_pk,source_chain FROM message WHERE pk=?2 AND source_version_pk IS NOT NULL){scope}"))?;
+        let count = remove.parameter_count();
+        received = remove.execute(&values[..count])? != 0;
+    }
+    // An UPDATE retains PK-conflict refusal and SQLite's cancellation boundary.
+    // Only the single header claim is decoded in Rust, never every extra claim.
+    conn.prepare_cached(&format!(
+        "UPDATE message_source_extra SET message_pk=?2,session_pk=coalesce(?5,session_pk)
+        WHERE message_pk=?1{scope}"
+    ))?
+    .execute(&values[..])?;
+    if let Some(mut claim) = source {
+        remove(conn, from, claim.reading.input, claim.reading.chain)?;
+        if receive_default && default_key == Some((claim.reading.input, claim.reading.chain)) {
+            received = true;
+        } else {
+            claim.message = to;
+            if let Some(session) = session {
+                claim.reading.session = session;
+            }
+            claim.write(conn, ClaimWrite::InsertExtra)?;
+        }
+    }
+    Ok(received)
 }
 
 pub(crate) fn copy_reading(conn: &Connection, input: i64, from: i64, to: i64) -> Result<()> {

@@ -1263,16 +1263,17 @@ fn overwritten_default_readings_release_unselected_versions_and_text() {
         "retained final body",
         Some("end_turn"),
     );
-    write(
-        &w,
-        [batch(
-            "live",
-            Route::Live,
-            0,
-            vec![row(1, first), row(50, last.clone())],
-            &["fold"],
-        )],
+    let mut repeated = batch(
+        "live",
+        Route::Live,
+        0,
+        vec![row(1, first), row(50, last.clone())],
+        &["fold"],
     );
+    // A complete conversation observation supersedes its earlier occurrence;
+    // an ordinary append stream retains the first record for that source key.
+    repeated.parse[0].repeats_whole_conversations = true;
+    write(&w, [repeated]);
     let pool = ReadPool::open(&w.archive).unwrap();
     let reader = pool.reader().unwrap();
     assert_eq!(reader.messages(&sid("fold"), false).unwrap(), [last]);

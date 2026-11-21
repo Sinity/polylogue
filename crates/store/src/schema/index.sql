@@ -99,7 +99,7 @@ CREATE TABLE message (
   source_at         INTEGER,
   source_completion TEXT CHECK (source_completion IN ('finished','unknown','in_progress')),
   source_version_pk INTEGER REFERENCES message_version(pk), -- NULL only when this row has no reading
-  in_progress       INTEGER NOT NULL DEFAULT 0, -- the shown message's completion is in_progress (message_source.completion)
+  in_progress       INTEGER NOT NULL DEFAULT 0, -- the shown completion, after stop-route composition
   on_active_path    INTEGER,                -- 1 on the path, 0 off, NULL unknown (no marked leaf);
                                             --   always written, no default
   duplicate_of      TEXT,                   -- derived (duplicates): natural message id of another input's message the
@@ -137,15 +137,12 @@ CREATE INDEX message_prose   ON message(session_pk) WHERE written_by = 'human' A
 CREATE INDEX message_branch  ON message(session_pk) WHERE on_active_path = 0;
 CREATE INDEX message_parent  ON message(session_pk, parent_id) WHERE duplicate_of IS NULL;   -- branch points
 
--- Every additional stored version that contributed to a message: one row per input chain
--- whose records hold a version of it. The shown message is composed field group
--- by field group from each input's latest chain (writer/compose.rs); the main
--- route's row is the one at the message's own (input_pk, source_chain). A citation names a row here, never
--- just an input and offsets, because a rewritten input's new chain puts other
--- bytes at the same offsets. Rebuilt with the
--- message. A message named by its content (id_kind 'content') keeps a row only
--- from its input's latest chain once that chain is read to its end: a rewrite
--- that no longer holds it no longer shows it.
+-- Every reading other than the header's content reading, once per input chain.
+-- message_source exposes both populations. A citation names a claim there,
+-- including its chain: rewritten bytes can occupy the same offsets in another
+-- chain. Composition considers each input's latest chain, while older native-ID
+-- claims remain available. Content-ID claims disappear once a complete newer
+-- chain of their input no longer contains them.
 CREATE TABLE message_source_extra (
   message_pk        INTEGER NOT NULL REFERENCES message(pk),
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
@@ -181,7 +178,8 @@ FROM message WHERE source_version_pk IS NOT NULL
 UNION ALL
 SELECT message_pk,input_pk,chain,source_start,source_end,id_kind,session_pk,main,route,
        seq,record_position,order_time,at,completion,version_pk FROM message_source_extra;
-CREATE INDEX message_source_input ON message(input_pk,source_chain,source_start);
+CREATE INDEX message_source_input ON message(input_pk,source_chain,source_start)
+WHERE source_version_pk IS NOT NULL;
 CREATE INDEX message_source_order ON message(input_pk,source_chain,source_session_pk,
     source_seq,source_record_position,source_order_time,source_at)
 WHERE source_version_pk IS NOT NULL;
@@ -973,7 +971,7 @@ CREATE INDEX message_version_blob_hash ON message_version_blob(blob_hash);
 CREATE INDEX document_version_blob_hash ON document_version_blob(blob_hash);
 
 CREATE INDEX message_source_extra_session ON message_source_extra(session_pk);
-CREATE INDEX message_source_session ON message(source_session_pk);
+CREATE INDEX message_source_session ON message(source_session_pk) WHERE source_session_pk IS NOT NULL;
 CREATE INDEX event_source_session ON event_source(session_pk);
 -- Recomputed comparison state for tool-database inputs.
 CREATE TABLE tool_row (

@@ -88,8 +88,18 @@ fn snapshot(conn: &Connection) -> Vec<String> {
 fn promotion_and_retraction_preserve_one_complete_claim_and_roll_back_together() {
     for primary in [false, true] {
         let conn = database(primary);
+        conn.execute_batch("BEGIN").unwrap();
         let first = claim(1, 1);
         first.put(&conn).unwrap();
+        conn.execute_batch("INSERT INTO session(pk,id,origin,native_id,kind,changed) VALUES(2,'codex:source-session','codex','source-session','main',1);
+            UPDATE message SET source_session_pk=2 WHERE pk=1;").unwrap();
+        // The displayed session remains 1. Only the raw inline claim protects 2.
+        assert!(conn.execute("DELETE FROM session WHERE pk=2", []).is_err());
+        conn.execute_batch(
+            "UPDATE message SET source_session_pk=1 WHERE pk=1; DELETE FROM session WHERE pk=2;",
+        )
+        .unwrap();
+
         let mut second = claim(2, 2);
         second.reading.completion = Completion::Finished;
         second.reading.route = Route::Export;
@@ -170,11 +180,57 @@ fn promotion_and_retraction_preserve_one_complete_claim_and_roll_back_together()
                 .unwrap(),
             0
         );
+        // Moving an identity is not an observation UPSERT. A target that
+        // already owns this claim refuses the move and rolls back its source.
+        conn.execute_batch("INSERT INTO message(pk,id,session_pk,session_order,role,written_by,input_pk,source_chain)
+            VALUES(2,'codex:target',1,'1','assistant','model',1,1);").unwrap();
+        let mut target = claim(1, 1);
+        target.message = 2;
+        install(&conn, &target).unwrap();
+        let before_move = snapshot(&conn);
+        conn.execute_batch("SAVEPOINT move_collision").unwrap();
+        assert!(move_message(&conn, 1, 2, None, false).is_err());
+        conn.execute_batch("ROLLBACK TO move_collision; RELEASE move_collision")
+            .unwrap();
+        assert_eq!(snapshot(&conn), before_move);
+        // Once the conflicting reading is actually withdrawn, the same move
+        // succeeds and its complete raw claim becomes the selected header.
+        remove(&conn, 2, 1, 1).unwrap();
+        assert!(!move_message(&conn, 1, 2, None, false).unwrap());
+        select(&conn, 2, 1, 1).unwrap();
+        install(&conn, &target).unwrap();
+        assert_eq!(snapshot(&conn), vec![before_move[1].clone()]);
+        assert_eq!(
+            conn.scalar::<i64>("SELECT count(*) FROM message_source_extra", [])
+                .unwrap(),
+            0
+        );
+        // A target projected from an extra reading receives that reading
+        // once. Its other claims move in SQL with their complete metadata.
+        let mut additional = claim(2, 3);
+        additional.message = 2;
+        additional.put(&conn).unwrap();
+        conn.execute_batch("INSERT INTO message(pk,id,session_pk,session_order,role,written_by,input_pk,source_chain)
+            VALUES(3,'codex:projected',1,'2','assistant','model',2,2);").unwrap();
+        let mut projected = claim(2, 3);
+        projected.message = 3;
+        install(&conn, &projected).unwrap();
+        assert!(move_message(&conn, 2, 3, None, true).unwrap());
+        let transferred: Vec<(i64, i64, i64)> = conn
+            .prepare("SELECT message_pk,input_pk,version_pk FROM message_source ORDER BY input_pk")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(transferred, [(3, 1, 1), (3, 2, 3)]);
+
         assert_eq!(
             conn.scalar::<i64>("SELECT count(*) FROM pragma_foreign_key_check", [])
                 .unwrap(),
             0
         );
+        conn.execute_batch("COMMIT").unwrap();
     }
 }
 
@@ -210,6 +266,10 @@ fn keyed_claims_predecessors_and_suffixes_do_not_visit_unrelated_readings() {
         (
             "SELECT s.* FROM json_each(?1) k CROSS JOIN message_source s ON s.message_pk=k.value ORDER BY s.message_pk,s.input_pk,s.chain",
             2u64,
+        ),
+        (
+            "SELECT pk FROM message WHERE source_session_pk=?1+998",
+            0u64,
         ),
         (
             "SELECT seq,record_position,order_time FROM message_source WHERE input_pk=?1 AND chain=1 AND session_pk=1 AND (seq,record_position)<(18,0) ORDER BY seq DESC,record_position DESC LIMIT 1",

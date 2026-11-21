@@ -137,6 +137,7 @@ fn apply_rows(
                         choice: choice.as_ref(),
                         value,
                         created: Cell::new(None),
+                        default_claim: Cell::new(DefaultClaimWrite::Existing),
                     },
                 ))
             })
@@ -357,7 +358,7 @@ fn apply_rows(
             {
                 written += u64::from(rows.refresh_message(*target)?);
             }
-            crate::message_source::move_message(tx, *source, *target, None)?;
+            rows.move_message_sources(*source, *target, None)?;
         }
         for (source, target, id) in &choices.moved_events {
             rows.copy_event(*source, *target, id, None)?;
@@ -380,12 +381,7 @@ fn apply_rows(
                     written += u64::from(rows.refresh_message(*target)?);
                 }
                 for (input, chain) in chains {
-                    crate::message_source::move_message(
-                        tx,
-                        *source,
-                        *target,
-                        Some((*input, *chain, *to)),
-                    )?;
+                    rows.move_message_sources(*source, *target, Some((*input, *chain, *to)))?;
                 }
             }
             for (source, target, id) in &choices.released_events {
@@ -614,9 +610,19 @@ struct MessageWrite<'a> {
     choice: Option<&'a resolve::membership::MessageChoice>,
     value: Option<&'a resolve::membership::MessageValue>,
     created: Cell<Option<CreatedMessage>>,
+    // A selected header may be constructed before the moved claim arrives.
+    // Real input rows and moves receive that claim once; later collisions refuse.
+    default_claim: Cell<DefaultClaimWrite>,
 }
 
 struct CreatedMessage;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DefaultClaimWrite {
+    Existing,
+    Constructed,
+    Received,
+}
 
 /// Raw content reading and composed display metadata, installed together.
 pub(super) struct Version {
@@ -653,6 +659,23 @@ pub(super) fn name<T: serde::Serialize>(v: &T) -> String {
 }
 
 impl RowWriter<'_, '_> {
+    fn move_message_sources(
+        &self,
+        from: i64,
+        to: i64,
+        only: Option<(i64, i64, i64)>,
+    ) -> Result<()> {
+        let write = self
+            .messages
+            .get(&to)
+            .or_invalid("unresolved moved message")?;
+        let receive = write.default_claim.get() == DefaultClaimWrite::Constructed;
+        if crate::message_source::move_message(self.tx, from, to, only, receive)? {
+            write.default_claim.set(DefaultClaimWrite::Received);
+        }
+        Ok(())
+    }
+
     fn write_prefix_copy(
         &self,
         parent: &str,
@@ -959,6 +982,10 @@ impl RowWriter<'_, '_> {
         let selected_here = write.and_then(|write| write.choice).is_some_and(|choice| {
             (choice.reading.input, choice.reading.chain) == (self.input_pk, self.chain)
         });
+        let received_default = selected_here || (new && choice.is_none());
+        if received_default && let Some(write) = write {
+            write.default_claim.set(DefaultClaimWrite::Received);
+        }
         if !selected_here && !new {
             crate::message_source::Claim {
                 message: pk,
@@ -1147,6 +1174,9 @@ impl RowWriter<'_, '_> {
             order,
             try_insert,
         )?;
+        if inserted && let Some(write) = self.messages.get(&pk) {
+            write.default_claim.set(DefaultClaimWrite::Constructed);
+        }
         Ok((pk, inserted))
     }
 
