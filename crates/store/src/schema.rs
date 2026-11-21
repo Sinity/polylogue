@@ -119,9 +119,9 @@ const EMBEDDINGS_ADDITIONS: &[&str] = &[
 pub const ARCHIVE_VERSION: u32 = 5;
 
 /// The index schema and row encoding version. Reading versions are independent.
-pub const INDEX_VERSION: u32 = 8;
+pub const INDEX_VERSION: u32 = 7;
 /// The primary cache's schema and row encoding version.
-pub const PRIMARY_INDEX_VERSION: u32 = 11;
+pub const PRIMARY_INDEX_VERSION: u32 = 10;
 
 pub const fn index_version(primary: bool) -> u32 {
     if primary {

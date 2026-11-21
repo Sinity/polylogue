@@ -35,9 +35,6 @@ impl VersionKind {
     }
 
     pub(crate) fn retract(self, conn: &Connection, input: i64, chain: i64) -> Result<()> {
-        if matches!(self, Self::Message) {
-            return crate::message_source::retract(conn, input, chain);
-        }
         let name = self.name();
         conn.prepare_cached(&format!(
             "DELETE FROM {name}_source WHERE input_pk=?1 AND chain=?2"
@@ -493,16 +490,9 @@ fn reference_triggers() -> String {
         Some("document"),
     );
     trigger(
-        "message_source_extra",
-        "message_source_extra",
+        "message_source",
+        "message_source",
         "version_pk",
-        "unreferenced_value",
-        Some("message"),
-    );
-    trigger(
-        "message_source_default",
-        "message",
-        "source_version_pk",
         "unreferenced_value",
         Some("message"),
     );
@@ -583,13 +573,10 @@ pub(crate) fn remove_unreferenced(
                 "unreferenced_value",
             )
         };
-        let references = if matches!(kind, VersionKind::Message) {
-            " AND NOT EXISTS(SELECT 1 FROM message s WHERE s.source_version_pk=t.pk)
-              AND NOT EXISTS(SELECT 1 FROM message_source_extra s WHERE s.version_pk=t.pk)
-              AND NOT EXISTS(SELECT 1 FROM parser_context_response c WHERE c.version_pk=t.pk)"
-                .to_owned()
+        let context = if matches!(kind, VersionKind::Message) {
+            " AND NOT EXISTS(SELECT 1 FROM parser_context_response c WHERE c.version_pk=t.pk)"
         } else {
-            format!(" AND NOT EXISTS(SELECT 1 FROM {name}_source s WHERE s.{key}=t.{stored_key})")
+            ""
         };
         let candidate_key = if candidates == "unreferenced_value" {
             "value_pk"
@@ -598,7 +585,7 @@ pub(crate) fn remove_unreferenced(
         };
         conn.prepare_cached(&format!(
             "DELETE FROM {table} AS t WHERE {stored_key} IN (SELECT {candidate_key} FROM temp.{candidates} WHERE kind=?1)
-             {references}"
+             AND NOT EXISTS(SELECT 1 FROM {name}_source s WHERE s.{key}=t.{stored_key}){context}"
         ))?
         .execute([name])?;
     }

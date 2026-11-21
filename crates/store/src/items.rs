@@ -243,7 +243,7 @@ impl EventRow {
 }
 
 const MESSAGE_COLUMNS: &str = "m.pk, m.id,
-    coalesce((SELECT version_hash FROM message_version WHERE pk=m.source_version_pk), (SELECT CAST(count(*) || ':' || coalesce(max(b.pk), 0) AS BLOB)
+    coalesce((SELECT version_hash FROM message_version WHERE pk=s.version_pk), (SELECT CAST(count(*) || ':' || coalesce(max(b.pk), 0) AS BLOB)
                               FROM block b WHERE b.message_pk = m.pk)),
     m.on_active_path, m.at,
     EXISTS(SELECT 1 FROM message c WHERE c.session_pk = m.session_pk AND c.parent_id = m.id
@@ -292,7 +292,7 @@ fn units_from(
         None => conn
             .prepare_cached(&format!(
                 "SELECT {MESSAGE_COLUMNS}
-                 FROM message m
+                 FROM message m LEFT JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
                  WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL
                  ORDER BY m.session_order, m.id"
             ))?
@@ -301,7 +301,7 @@ fn units_from(
         Some(start_point) => conn
             .prepare_cached(&format!(
                 "SELECT {MESSAGE_COLUMNS}
-                 FROM message a, message m
+                 FROM message a, message m LEFT JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
                  WHERE a.pk = ?2 AND m.session_pk = ?1 AND m.duplicate_of IS NULL
                    AND (m.session_order, m.id)
                        >= (a.session_order, a.id)
@@ -1130,8 +1130,9 @@ fn stored_message_entries(conn: &Connection, pk: i64) -> Result<Vec<IndexEntry>>
 pub(crate) fn prepare_stored_message(conn: &Connection, pk: i64) -> Result<Vec<IndexEntry>> {
     let (version, hash): (i64, Vec<u8>) = conn
         .prepare_cached(
-            "SELECT m.source_version_pk,v.version_hash FROM message m
-         JOIN message_version v ON v.pk=m.source_version_pk WHERE m.pk=?1",
+            "SELECT s.version_pk,v.version_hash FROM message m JOIN message_source s
+           ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
+         JOIN message_version v ON v.pk=s.version_pk WHERE m.pk=?1",
         )?
         .query_row([pk], |row| Ok((row.get(0)?, row.get(1)?)))?;
     let (mut message, block_selection) =

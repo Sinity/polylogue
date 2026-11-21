@@ -7,7 +7,7 @@ fn trace_maps_a_record_across_every_stored_extent() {
     archive.write("trace", prose("trace", 1, 1, "first"));
     archive.write("trace", prose("trace", 2, 2, "second"));
     let index = Connection::open(archive.archive.index_db()).unwrap();
-    index.execute("UPDATE message SET source_start=1,source_end=3 WHERE pk=(SELECT pk FROM message WHERE id='claude-code:trace-p1')",[]).unwrap();
+    index.execute("UPDATE message_source SET source_start=1,source_end=3 WHERE message_pk=(SELECT pk FROM message WHERE id='claude-code:trace-p1')",[]).unwrap();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let reader = pool.reader().unwrap();
     let card = reader
@@ -75,7 +75,7 @@ fn trace_preserves_missing_range_and_checks_block_span_and_call_identity() {
         );
     }
     let index = Connection::open(archive.archive.index_db()).unwrap();
-    index.execute("UPDATE message SET source_end=source_start WHERE pk=(SELECT pk FROM message WHERE id='claude-code:trace-p1')",[]).unwrap();
+    index.execute("UPDATE message_source SET source_end=source_start WHERE message_pk=(SELECT pk FROM message WHERE id='claude-code:trace-p1')",[]).unwrap();
     index.execute("UPDATE parse_state SET reading_version='' WHERE input_pk=(SELECT pk FROM input_ref WHERE id='input-trace')",[]).unwrap();
     let reader = pool.reader().unwrap();
     let card = reader

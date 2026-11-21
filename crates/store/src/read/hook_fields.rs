@@ -20,7 +20,7 @@ impl Reader<'_> {
              JOIN message m ON m.pk=f.message_pk
              JOIN message_block_selection p ON p.version_pk=f.version_pk
              JOIN message_source s ON s.message_pk=f.message_pk AND s.input_pk=f.input_pk AND s.chain=f.chain AND s.version_pk=f.version_pk
-             WHERE m.id=?1 AND s.message_pk=(SELECT pk FROM message WHERE id=?1) AND f.version_pk=(SELECT pk FROM message_version WHERE version_hash=?2) ORDER BY length(f.block_ordinal),f.block_ordinal,f.field",
+             WHERE m.id=?1 AND f.version_pk=(SELECT pk FROM message_version WHERE version_hash=?2) ORDER BY length(f.block_ordinal),f.block_ordinal,f.field",
         )?;
         let mut rows =
             statement.query(params![message.to_string(), source_version.0.as_slice()])?;

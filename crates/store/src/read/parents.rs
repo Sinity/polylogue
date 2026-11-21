@@ -204,7 +204,6 @@ fn parent_keys(conn: &Connection, pk: i64, id: &SessionId) -> Result<(Vec<Key>, 
                          JOIN message_source s ON s.message_pk = m.pk
                          JOIN input_ref ir ON ir.pk=s.input_pk
                          WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL
-                           AND s.message_pk IN (SELECT pk FROM message WHERE session_pk=?1)
                            AND EXISTS(SELECT 1 FROM prefix_copy p WHERE p.input_pk=s.input_pk AND p.chain=s.chain AND p.child_id=?2 AND p.parent_id=?3 AND p.explicit_members=0)
                            AND NOT EXISTS(SELECT 1 FROM prefix_copy p WHERE p.input_pk=s.input_pk AND p.chain=s.chain AND p.child_id=?2 AND p.parent_id=?3 AND p.explicit_members=1)
                          ORDER BY m.session_order, m.id",

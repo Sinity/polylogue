@@ -11,11 +11,12 @@ use polylogue_model::{Completion, FieldGroup, IdKind, MessageId, Route};
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct MessageChoice {
     /// The main route's reading: its version is the stored one.
-    pub reading: crate::message_source::Reading,
-    /// An existing body's key, read with the canonical claim in this snapshot.
-    /// New bodies get their key when this unit registers its versions.
-    pub version: Option<i64>,
+    pub input: i64,
+    pub chain: i64,
+    pub start: i64,
+    pub end: i64,
     pub hash: Vec<u8>,
+    pub session: i64,
     /// The shown message is still being produced: its main reading is in
     /// progress and no other reading supplies a stop reason.
     pub in_progress: bool,
@@ -286,7 +287,6 @@ struct MessageMember {
     /// This reading's own source time.
     at: Option<i64>,
     hash: Vec<u8>,
-    version: Option<i64>,
     /// The message is named by its content, not by the source.
     content: bool,
 }
@@ -1060,7 +1060,6 @@ impl<'a> MembershipState<'a> {
             self.messages.put(
                 pk,
                 MessageMember {
-                    version: None,
                     input,
                     input_id: input_key.id.clone(),
                     chain,
@@ -1343,7 +1342,7 @@ impl<'a> MembershipState<'a> {
         // input's latest chain is whichever is newest so far.
         let stored_latest: Option<i64> = self
             .index
-            .prepare_cached("SELECT (SELECT chain FROM message_source WHERE input_pk=?1 ORDER BY chain DESC LIMIT 1)")?
+            .prepare_cached("SELECT max(chain) FROM message_source WHERE input_pk=?1")?
             .query_row([input], |r| r.get(0))?;
         let latest = self
             .messages
@@ -1704,23 +1703,12 @@ impl<'a> MembershipState<'a> {
             choices.messages.insert(
                 pk,
                 Some(MessageChoice {
-                    reading: crate::message_source::Reading {
-                        input: main.input,
-                        chain: main.chain,
-                        start: main.start,
-                        end: main.end,
-                        session: main.session,
-                        main: main.main,
-                        route: main.route,
-                        completion: main.completion,
-                        seq: main.seq,
-                        position: main.position,
-                        order_time: main.order_time,
-                        at: main.at,
-                        content: main.content,
-                    },
-                    version: main.version,
+                    input: main.input,
+                    chain: main.chain,
+                    start: main.start,
+                    end: main.end,
                     hash: main.hash.clone(),
+                    session: main.session,
                     in_progress: main.completion == Completion::InProgress
                         && !routes.iter().any(|(group, ..)| *group == FieldGroup::Stop),
                     order: {

@@ -203,7 +203,8 @@ impl Reader<'_> {
         let mut statement = conn.prepare_cached(
             "SELECT DISTINCT im.import_id, coalesce(c.changed,0)
              FROM session s JOIN message m ON m.session_pk=s.pk
-             JOIN input_ref i ON i.pk=m.input_pk AND m.source_version_pk IS NOT NULL
+             JOIN message_source ms ON ms.message_pk=m.pk AND ms.input_pk=m.input_pk AND ms.chain=m.source_chain
+             JOIN input_ref i ON i.pk=ms.input_pk
              JOIN import_member im ON im.input=i.id
              LEFT JOIN import_change c ON c.import_id=im.import_id
              WHERE s.id=?1 ORDER BY im.import_id",

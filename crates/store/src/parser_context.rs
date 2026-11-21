@@ -563,7 +563,7 @@ pub(crate) fn resolved_message_sql(
     }
     let uuid = bind(id.native().as_str().to_owned());
     format!(
-        "CASE WHEN EXISTS(SELECT 1 FROM message direct WHERE direct.id={original} AND (direct.source_version_pk IS NOT NULL OR EXISTS(SELECT 1 FROM message_source_extra ds WHERE ds.message_pk=direct.pk))) THEN {original} ELSE pl_source_alias((SELECT json_group_array(DISTINCT pc.target) FROM parser_context_alias pc JOIN parser_context_state cs ON cs.input_pk=pc.input_pk AND cs.chain=pc.chain JOIN parse_state ps ON ps.input_pk=cs.input_pk AND ps.chain=cs.chain AND ps.reading_version=cs.reading_version WHERE pc.uuid={uuid}),{original}) END"
+        "CASE WHEN EXISTS(SELECT 1 FROM message direct JOIN message_source ds ON ds.message_pk=direct.pk WHERE direct.id={original}) THEN {original} ELSE pl_source_alias((SELECT json_group_array(DISTINCT pc.target) FROM parser_context_alias pc JOIN parser_context_state cs ON cs.input_pk=pc.input_pk AND cs.chain=pc.chain JOIN parse_state ps ON ps.input_pk=cs.input_pk AND ps.chain=cs.chain AND ps.reading_version=cs.reading_version WHERE pc.uuid={uuid}),{original}) END"
     )
 }
 pub(crate) fn resolved_message(

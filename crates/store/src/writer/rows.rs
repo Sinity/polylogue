@@ -137,7 +137,6 @@ fn apply_rows(
                         choice: choice.as_ref(),
                         value,
                         created: Cell::new(None),
-                        default_claim: Cell::new(DefaultClaimWrite::Existing),
                     },
                 ))
             })
@@ -239,12 +238,7 @@ fn apply_rows(
             version_pk,
             &mut sessions,
         )?;
-        let selected = choices.messages.get(&message_pk).and_then(Option::as_ref);
-        if selected
-            .is_none_or(|choice| (choice.reading.input, choice.reading.chain) != (input_pk, chain))
-        {
-            chosen.insert(version_pk);
-        }
+        chosen.insert(version_pk);
         super::hook_fields::write(
             tx,
             super::hook_fields::Source {
@@ -263,11 +257,6 @@ fn apply_rows(
             *last = (*last).max(at);
         }
     }
-    for choice in choices.messages.values().flatten() {
-        if let Some(version) = rows.versions.get(choice.hash.as_slice()) {
-            chosen.insert(version.pk());
-        }
-    }
     // A stored version no source row chose is deleted before the commit.
     for version in rows.versions.values() {
         if !chosen.contains(&version.pk()) {
@@ -277,7 +266,10 @@ fn apply_rows(
     // A message read again with another time changes the order times of the
     // chain's readings after it (membership `recompute_later`).
     for (message_pk, time) in &choices.recomputed_order_times {
-        crate::message_source::order_time(tx, *message_pk, input_pk, chain, *time)?;
+        tx.prepare_cached(
+            "UPDATE message_source SET order_time=?4 WHERE message_pk=?1 AND input_pk=?2 AND chain=?3",
+        )?
+        .execute(params![message_pk, input_pk, chain, time])?;
     }
     if b.input.route.lists_every_conversation(&b.input.format) {
         let mut latest = HashMap::<&str, i64>::new();
@@ -358,7 +350,8 @@ fn apply_rows(
             {
                 written += u64::from(rows.refresh_message(*target)?);
             }
-            rows.move_message_sources(*source, *target, None)?;
+            tx.prepare_cached("UPDATE message_source SET message_pk=?2 WHERE message_pk=?1")?
+                .execute(params![source, target])?;
         }
         for (source, target, id) in &choices.moved_events {
             rows.copy_event(*source, *target, id, None)?;
@@ -381,7 +374,11 @@ fn apply_rows(
                     written += u64::from(rows.refresh_message(*target)?);
                 }
                 for (input, chain) in chains {
-                    rows.move_message_sources(*source, *target, Some((*input, *chain, *to)))?;
+                    tx.prepare_cached(
+                        "UPDATE message_source SET message_pk=?2, session_pk=?5
+                         WHERE message_pk=?1 AND input_pk=?3 AND chain=?4",
+                    )?
+                    .execute(params![source, target, input, chain, to])?;
                 }
             }
             for (source, target, id) in &choices.released_events {
@@ -396,7 +393,10 @@ fn apply_rows(
             }
         }
         for (message_pk, source_input, source_chain) in &choices.dropped_message_sources {
-            crate::message_source::remove(tx, *message_pk, *source_input, *source_chain)?;
+            tx.prepare_cached(
+                "DELETE FROM message_source WHERE message_pk=?1 AND input_pk=?2 AND chain=?3",
+            )?
+            .execute(params![message_pk, source_input, source_chain])?;
         }
         for pk in choices.messages.keys() {
             written += u64::from(rows.refresh_message(*pk)?);
@@ -610,39 +610,32 @@ struct MessageWrite<'a> {
     choice: Option<&'a resolve::membership::MessageChoice>,
     value: Option<&'a resolve::membership::MessageValue>,
     created: Cell<Option<CreatedMessage>>,
-    // A selected header may be constructed before the moved claim arrives.
-    // Real input rows and moves receive that claim once; later collisions refuse.
-    default_claim: Cell<DefaultClaimWrite>,
 }
 
 struct CreatedMessage;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum DefaultClaimWrite {
-    Existing,
-    Constructed,
-    Received,
-}
-
-/// Raw content reading and composed display metadata, installed together.
+/// The main route's reading of a shown message.
 pub(super) struct Version {
     time: Vec<u8>,
-    reading: crate::message_source::Reading,
-    version_pk: i64,
+    input_pk: i64,
+    chain: i64,
+    start: i64,
+    end: i64,
     in_progress: bool,
 }
 
 fn selected_version(
     choice: &resolve::membership::MessageChoice,
     value: Option<&resolve::membership::MessageValue>,
-    version_pk: i64,
 ) -> Version {
     Version {
         time: value
             .map(|value| value.prepared.time.clone())
             .unwrap_or_default(),
-        reading: choice.reading.clone(),
-        version_pk,
+        input_pk: choice.input,
+        chain: choice.chain,
+        start: choice.start,
+        end: choice.end,
         in_progress: choice.in_progress,
     }
 }
@@ -659,23 +652,6 @@ pub(super) fn name<T: serde::Serialize>(v: &T) -> String {
 }
 
 impl RowWriter<'_, '_> {
-    fn move_message_sources(
-        &self,
-        from: i64,
-        to: i64,
-        only: Option<(i64, i64, i64)>,
-    ) -> Result<()> {
-        let write = self
-            .messages
-            .get(&to)
-            .or_invalid("unresolved moved message")?;
-        let receive = write.default_claim.get() == DefaultClaimWrite::Constructed;
-        if crate::message_source::move_message(self.tx, from, to, only, receive)? {
-            write.default_claim.set(DefaultClaimWrite::Received);
-        }
-        Ok(())
-    }
-
     fn write_prefix_copy(
         &self,
         parent: &str,
@@ -703,14 +679,19 @@ impl RowWriter<'_, '_> {
     /// statements and events, and links naming it. Its messages move with
     /// their readings (`Choices::moved_messages`).
     fn absorb_session(&self, from: i64, to: i64) -> Result<()> {
-        for table in ["session_record", "parsed", "event", "event_source"] {
+        for table in [
+            "session_record",
+            "parsed",
+            "message_source",
+            "event",
+            "event_source",
+        ] {
             self.tx
                 .prepare_cached(&format!(
                     "UPDATE {table} SET session_pk=?2 WHERE session_pk=?1"
                 ))?
                 .execute(params![from, to])?;
         }
-        crate::message_source::move_session(self.tx, from, to)?;
         let (copy, session): (String, String) = self.tx.query_row(
             "SELECT (SELECT id FROM session WHERE pk=?1),(SELECT id FROM session WHERE pk=?2)",
             params![from, to],
@@ -841,7 +822,8 @@ impl RowWriter<'_, '_> {
                 .execute(params![alias.to_string(), pk, self.input_pk, self.chain])?;
         }
         let main = merged.kind == polylogue_model::SessionKind::Main;
-        crate::message_source::session_kind(self.tx, pk, self.input_pk, self.chain, main)?;
+        self.tx.prepare_cached("UPDATE message_source SET main=?4 WHERE session_pk=?1 AND input_pk=?2 AND chain=?3 AND main<>?4")?
+            .execute(params![pk,self.input_pk,self.chain,main])?;
         self.changes.session(self.tx, pk)?;
         self.tx
             .prepare_cached("UPDATE session SET stub=0 WHERE pk=?1 AND stub IS NOT 0")?
@@ -917,22 +899,10 @@ impl RowWriter<'_, '_> {
         let at = ms(row.message.at);
         let v = Version {
             time: prepared.time.clone(),
-            reading: crate::message_source::Reading {
-                input: self.input_pk,
-                chain: self.chain,
-                start: row.offset as i64,
-                end: row.end.max(row.offset) as i64,
-                session: session_pk,
-                main,
-                route,
-                completion,
-                seq: position.0,
-                position: position.1,
-                order_time,
-                at,
-                content: row.id_kind == polylogue_model::IdKind::Content,
-            },
-            version_pk,
+            input_pk: self.input_pk,
+            chain: self.chain,
+            start: row.offset as i64,
+            end: row.end.max(row.offset) as i64,
             in_progress: completion == Completion::InProgress,
         };
         let (pk, new) = if missing {
@@ -948,8 +918,8 @@ impl RowWriter<'_, '_> {
                 self.session_pk(sessions, &selected.session)?;
                 let inserted = self.insert_message(
                     selected,
-                    choice.reading.session,
-                    &selected_version(choice, write.value, self.selected_version_pk(choice)?),
+                    choice.session,
+                    &selected_version(choice, write.value),
                     &choice.order,
                     reserved,
                     try_insert,
@@ -976,37 +946,23 @@ impl RowWriter<'_, '_> {
         } else {
             (source_pk, false)
         };
-        // The final content reading is already installed with a new header,
-        // or will be installed by refresh_message. Do not write it again as an
-        // extra row, including intermediate versions overwritten in this step.
-        let selected_here = write.and_then(|write| write.choice).is_some_and(|choice| {
-            (choice.reading.input, choice.reading.chain) == (self.input_pk, self.chain)
-        });
-        let received_default = selected_here || (new && choice.is_none());
-        if received_default && let Some(write) = write {
-            write.default_claim.set(DefaultClaimWrite::Received);
-        }
-        if !selected_here && !new {
-            crate::message_source::Claim {
-                message: pk,
-                reading: v.reading,
-                version: version_pk,
-            }
-            .put(self.tx)?;
-        } else if !selected_here {
-            // A new header can select another input's reading.
-            let selected = write.and_then(|write| write.choice);
-            if selected.is_some_and(|choice| {
-                (choice.reading.input, choice.reading.chain) != (self.input_pk, self.chain)
-            }) {
-                crate::message_source::Claim {
-                    message: pk,
-                    reading: v.reading,
-                    version: version_pk,
-                }
-                .put(self.tx)?;
-            }
-        }
+        let id_kind = row.id_kind.as_str();
+        let (route, completion) = (route.as_str(), completion.as_str());
+        let sql = if new {
+            "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_pk,session_pk,main,route,seq,record_position,order_time,at)
+                 VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12,?14,?15)"
+        } else {
+            "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_pk,session_pk,main,route,seq,record_position,order_time,at)
+             VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12,?14,?15)
+             ON CONFLICT(message_pk,input_pk,chain) DO UPDATE SET source_start=excluded.source_start,
+             source_end=excluded.source_end,id_kind=excluded.id_kind,completion=excluded.completion,version_pk=excluded.version_pk,
+             session_pk=excluded.session_pk,main=excluded.main,route=excluded.route,
+             seq=excluded.seq,record_position=excluded.record_position,order_time=excluded.order_time,at=excluded.at"
+        };
+        self.tx.prepare_cached(sql)?.execute(params![
+            pk, v.input_pk, v.chain, v.start, v.end, completion, version_pk, session_pk, main,
+            route, position.0, position.1, id_kind, order_time, at
+        ])?;
         Ok((source_pk, new))
     }
 
@@ -1018,14 +974,7 @@ impl RowWriter<'_, '_> {
         let choice = write.choice;
         let value = write.value;
         let created = write.created.take();
-        let winner = choice
-            .map(|choice| -> Result<_> {
-                Ok((
-                    selected_version(choice, value, self.selected_version_pk(choice)?),
-                    choice.reading.session,
-                ))
-            })
-            .transpose()?;
+        let winner = choice.map(|choice| (selected_version(choice, value), choice.session));
         let Some((v, session_pk)) = winner else {
             if !self
                 .tx
@@ -1050,33 +999,19 @@ impl RowWriter<'_, '_> {
                 .tx
                 .prepare_cached(
                     "SELECT input_pk IS ?2 AND source_chain IS ?3 AND source_start IS ?4
-                 AND source_end IS ?5 AND session_order IS ?6 AND in_progress IS ?7
-                 AND source_id_kind IS ?8 AND source_session_pk IS ?9 AND source_main IS ?10
-                 AND source_route IS ?11 AND source_seq IS ?12 AND source_record_position IS ?13
-                 AND source_order_time IS ?14 AND source_at IS ?15 AND source_completion IS ?16
-                 AND source_version_pk IS ?17,
+                 AND source_end IS ?5 AND session_order IS ?6 AND in_progress IS ?7,
                  session_order IS ?6 AND in_progress IS ?7
                  FROM message WHERE pk=?1",
                 )?
                 .query_row(
                     params![
                         pk,
-                        v.reading.input,
-                        v.reading.chain,
-                        v.reading.start,
-                        v.reading.end,
+                        v.input_pk,
+                        v.chain,
+                        v.start,
+                        v.end,
                         order,
-                        v.in_progress,
-                        v.reading.id_kind(),
-                        v.reading.session,
-                        v.reading.main,
-                        v.reading.route.as_str(),
-                        v.reading.seq,
-                        v.reading.position,
-                        v.reading.order_time,
-                        v.reading.at,
-                        v.reading.completion.as_str(),
-                        v.version_pk
+                        v.in_progress
                     ],
                     |row| <(bool, bool)>::try_from(row),
                 )?;
@@ -1086,25 +1021,19 @@ impl RowWriter<'_, '_> {
                 if !items_unchanged {
                     self.changes.message_metadata(self.tx, pk)?;
                 }
-                crate::message_source::select(self.tx, pk, v.reading.input, v.reading.chain)?;
                 self.tx
                     .prepare_cached(
                         "UPDATE message SET input_pk=?2,source_chain=?3,source_start=?4,source_end=?5,
-                     session_order=?6,in_progress=?7,
-                     source_id_kind=?8,source_session_pk=?9,source_main=?10,source_route=?11,
-                     source_seq=?12,source_record_position=?13,source_order_time=?14,source_at=?15,
-                     source_completion=?16,source_version_pk=?17 WHERE pk=?1",
+                     session_order=?6,in_progress=?7 WHERE pk=?1",
                     )?
                     .execute(params![
                         pk,
-                        v.reading.input,
-                        v.reading.chain,
-                        v.reading.start,
-                        v.reading.end,
+                        v.input_pk,
+                        v.chain,
+                        v.start,
+                        v.end,
                         order,
-                        v.in_progress, v.reading.id_kind(),v.reading.session,v.reading.main,
-                        v.reading.route.as_str(),v.reading.seq,v.reading.position,v.reading.order_time,
-                        v.reading.at,v.reading.completion.as_str(),v.version_pk
+                        v.in_progress
                     ],
                 )?;
             }
@@ -1174,9 +1103,6 @@ impl RowWriter<'_, '_> {
             order,
             try_insert,
         )?;
-        if inserted && let Some(write) = self.messages.get(&pk) {
-            write.default_claim.set(DefaultClaimWrite::Constructed);
-        }
         Ok((pk, inserted))
     }
 
@@ -1194,9 +1120,6 @@ impl RowWriter<'_, '_> {
         try_insert: bool,
     ) -> Result<bool> {
         self.changes.session(self.tx, session_pk)?;
-        if id.is_none() {
-            crate::message_source::select(self.tx, pk, v.reading.input, v.reading.chain)?;
-        }
         let author = polylogue_model::WrittenBy::of(m);
         let written_by = author.as_str();
         let parent = m.parent.as_ref().map(|p| {
@@ -1238,10 +1161,7 @@ impl RowWriter<'_, '_> {
                  service_tier = ?19, stop_reason = ?20, duration_ms = ?21, attrs_json = ?22,
                  words = ?23, cost_nusd = ?29, provider_cost_nusd = ?25,
                  cache_write_5m_tokens = ?26, cache_write_1h_tokens = ?27, speed = ?28,
-                 at_time = ?31,
-                 source_id_kind=?32,source_session_pk=?33,source_main=?34,source_route=?35,
-                 source_seq=?36,source_record_position=?37,source_order_time=?38,source_at=?39,
-                 source_completion=?40,source_version_pk=?41
+                 at_time = ?31
              WHERE pk = ?1 AND pk = ?30"
         } else {
             "INSERT INTO message(pk, id, session_pk, session_order, role, written_by,
@@ -1250,10 +1170,9 @@ impl RowWriter<'_, '_> {
                  cache_write_tokens, reasoning_tokens, service_tier, stop_reason, duration_ms,
                  attrs_json, words, provider_cost_nusd,
                  cache_write_5m_tokens, cache_write_1h_tokens, speed,
-                 cost_nusd, at_time,source_id_kind,source_session_pk,source_main,source_route,
-                 source_seq,source_record_position,source_order_time,source_at,source_completion,source_version_pk)
+                 cost_nusd, at_time)
              VALUES (?30, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?24, ?13, ?14,
-                 ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?25, ?26, ?27, ?28, ?29, ?31,?32,?33,?34,?35,?36,?37,?38,?39,?40,?41)
+                 ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?25, ?26, ?27, ?28, ?29, ?31)
              ON CONFLICT(pk) DO NOTHING"
         };
         let first: &dyn rusqlite::ToSql = match &id {
@@ -1270,9 +1189,9 @@ impl RowWriter<'_, '_> {
             m.model,
             ms(m.at),
             parent.as_deref(),
-            v.reading.input,
-            v.reading.chain,
-            v.reading.start,
+            v.input_pk,
+            v.chain,
+            v.start,
             i64::from(v.in_progress),
             n(u.input),
             n(u.output),
@@ -1284,7 +1203,7 @@ impl RowWriter<'_, '_> {
             n(m.duration_ms),
             attrs,
             words,
-            v.reading.end,
+            v.end,
             reported_nusd(m.reported_cost_usd.as_ref()),
             // The five-minute part is known only when the one-hour part is.
             u.cache_write_1h
@@ -1297,16 +1216,6 @@ impl RowWriter<'_, '_> {
             polylogue_model::Catalog::builtin().cost_nusd(m.model.as_deref(), u),
             pk,
             v.time,
-            v.reading.id_kind(),
-            v.reading.session,
-            v.reading.main,
-            v.reading.route.as_str(),
-            v.reading.seq,
-            v.reading.position,
-            v.reading.order_time,
-            v.reading.at,
-            v.reading.completion.as_str(),
-            v.version_pk,
         ])?;
         if id.is_some() {
             if written == 0 {
@@ -1345,10 +1254,12 @@ impl RowWriter<'_, '_> {
             .tx
             .prepare_cached(
                 "UPDATE event SET after_message_pk=m.pk,
-                 seq=CASE WHEN seq_from_message=1 THEN coalesce(m.source_seq,0) ELSE event.seq END
+                 seq=CASE WHEN seq_from_message=1 THEN coalesce(s.seq,0) ELSE event.seq END
              FROM json_each(?1) changed JOIN message m ON m.pk=changed.value
+             LEFT JOIN message_source s ON s.message_pk=m.pk
+                 AND s.input_pk=m.input_pk AND s.chain=m.source_chain
              WHERE event.after_message_id=m.id AND (event.after_message_pk IS NOT m.pk
-                 OR (event.seq_from_message=1 AND event.seq IS NOT coalesce(m.source_seq,0)))
+                 OR (event.seq_from_message=1 AND event.seq IS NOT coalesce(s.seq,0)))
              RETURNING pk,session_pk",
             )?
             .query_map([messages], |row| <(_, _)>::try_from(row))?
@@ -1464,30 +1375,10 @@ impl RowWriter<'_, '_> {
         bits
     }
 
-    fn selected_version_pk(&self, choice: &resolve::membership::MessageChoice) -> Result<i64> {
-        let hash: &[u8; 32] = choice
-            .hash
-            .as_slice()
-            .try_into()
-            .map_err(|_| StoreError::Invalid("invalid selected message hash".into()))?;
-        match self.versions.get(hash) {
-            Some(version) => Ok(version.pk()),
-            None => match choice.version {
-                Some(version) => Ok(version),
-                None => self.version_pk(hash),
-            },
-        }
-    }
-
     fn version_pk(&self, hash: &[u8; 32]) -> Result<i64> {
         match self.versions.get(hash) {
             Some(version) => Ok(version.pk()),
-            None => match self.upkeep.key_maps() {
-                Some(keys) => keys
-                    .message_version(self.tx, hash)?
-                    .or_invalid("an unregistered message version has no key"),
-                None => crate::versions::message_key(self.tx, hash),
-            },
+            None => crate::versions::message_key(self.tx, hash),
         }
     }
 
