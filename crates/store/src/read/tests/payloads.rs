@@ -1,6 +1,7 @@
 use super::*;
 use crate::fixture::writer::{WriterArchive, message, sid};
 use polylogue_model::{Block, Role};
+#[cfg(target_os = "linux")]
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 
 fn structured() -> String {
