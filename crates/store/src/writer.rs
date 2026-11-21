@@ -414,6 +414,7 @@ fn open_index_writer(archive: &Archive, building: bool) -> Result<Connection> {
         index.execute("ATTACH DATABASE ?1 AS a", [uri])?;
         crate::source::views(&index)?;
     }
+    crate::timing::sql::attach(&index);
     Ok(index)
 }
 
@@ -995,6 +996,7 @@ impl Inner {
 
     fn run(&mut self, rx: &Receiver<Msg>) {
         let _worker = crate::timing::worker();
+        let _sql = crate::timing::sql::worker(&self.index);
         let mut flushes = Vec::new();
         let mut primary_finish = None;
         let mut derives = Vec::new();
@@ -1972,7 +1974,7 @@ impl Inner {
             None
         };
         crate::fault::check("write.index_commit", "")?;
-        itx.commit()?;
+        crate::timing::sql::commit(itx, "row_commit")?;
         text_transaction.commit();
         if let Some(changed) = source_changed {
             crate::chain_progress::forget(&self.archive, &changed)?;

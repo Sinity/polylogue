@@ -1625,3 +1625,5 @@ fn a_stop_during_deferred_indexes_keeps_committed_rows_for_restart() {
         1
     );
 }
+
+mod sql_attribution;

@@ -5,6 +5,8 @@
 //! are thread-seconds and can exceed the wall time. Writer stages run on the
 //! writer thread. The writer total includes its specific stages, and the
 //! commit timer is part of rows; these timers must not be added together.
+pub(crate) mod sql;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 

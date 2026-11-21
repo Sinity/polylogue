@@ -64,6 +64,7 @@ fn apply_rows(
     p: &ParseStep,
     context: ReadingWrite<'_>,
 ) -> Result<u64> {
+    let _sql = crate::timing::sql::phase(tx, "row_apply");
     let ReadingWrite {
         resolution,
         texts,
@@ -527,17 +528,30 @@ pub(crate) fn finish(
     texts: &crate::text_rows::TextIds,
     counter: i64,
 ) -> Result<u64> {
-    changes.finish_summaries(tx, Some(counter))?;
-    changes.finish_links(tx)?;
-    let read = crate::items::refresh(tx, changes)?;
-    crate::session_values::refresh(tx, changes)?;
+    {
+        let _sql = crate::timing::sql::phase(tx, "row_counts");
+        changes.finish_summaries(tx, Some(counter))?;
+    }
+    let read = {
+        let _sql = crate::timing::sql::phase(tx, "row_links_items");
+        changes.finish_links(tx)?;
+        crate::items::refresh(tx, changes)?
+    };
+    {
+        let _sql = crate::timing::sql::phase(tx, "row_values");
+        crate::session_values::refresh(tx, changes)?;
+    }
     // A first build derives every session once, when it ends.
     if !upkeep.at_build_end() {
+        let _sql = crate::timing::sql::phase(tx, "row_derive_links");
         let sessions = changes.sessions(tx)?;
         crate::derive::links::add_finished_links(tx, &sessions)?;
         crate::measure::time::forget_settled(tx, changes, &sessions)?;
     }
-    crate::versions::remove_unreferenced(tx, upkeep, texts)?;
+    {
+        let _sql = crate::timing::sql::phase(tx, "row_cleanup");
+        crate::versions::remove_unreferenced(tx, upkeep, texts)?;
+    }
     Ok(read)
 }
 
