@@ -2,6 +2,33 @@ use super::*;
 use serde_json::json;
 
 #[test]
+fn repeated_text_blocks_reuse_the_same_frame_and_keep_distinct_text_ids() {
+    let blocks = [
+        Block::Text {
+            text: "first".into(),
+        },
+        Block::Text {
+            text: "second".into(),
+        },
+    ];
+    let expected = RowPacker::new()
+        .unwrap()
+        .pack_row(&block_bytes(&blocks[0]).unwrap())
+        .unwrap();
+    let mut packer = RowPacker::new().unwrap();
+    let packed = packer.pack_content(&blocks, [0; 32]).unwrap();
+    assert_eq!(packed.blocks, [expected.clone(), expected.clone()]);
+    assert_eq!(
+        packer.empty_text_block.as_deref(),
+        Some(expected.as_slice())
+    );
+    assert_ne!(packed.texts[0], packed.texts[1]);
+    let mut block = unpack_block(&packed.blocks[1]).unwrap();
+    restore_text(&mut block, "second".into());
+    assert_eq!(block, blocks[1]);
+}
+
+#[test]
 fn event_identity_depends_on_its_message_not_its_range() {
     let mut event = Event {
         at_quality: polylogue_model::TimeQuality::Unknown,
