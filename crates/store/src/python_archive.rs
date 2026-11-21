@@ -27,6 +27,7 @@ pub struct Input {
     pub raw_id: String,
     pub origin: String,
     pub source_path: String,
+    pub acquired_at_ms: Option<i64>,
     pub capture_mode: Option<String>,
     pub blob_hash: [u8; 32],
     pub blob_size: u64,
@@ -106,14 +107,15 @@ impl Catalog {
             }
         };
         let sql = format!(
-            "SELECT raw_id,origin,source_path,blob_hash,blob_size,{},{},{},{},{},{},{} FROM raw_sessions ORDER BY raw_id",
+            "SELECT raw_id,origin,source_path,blob_hash,blob_size,{},{},{},{},{},{},{},{} FROM raw_sessions ORDER BY raw_id",
             optional("capture_mode", "NULL"),
             optional("revision_kind", "'unknown'"),
             optional("predecessor_raw_id", "NULL"),
             optional("append_start_offset", "NULL"),
             optional("append_end_offset", "NULL"),
             optional("source_revision", "NULL"),
-            optional("predecessor_source_revision", "NULL")
+            optional("predecessor_source_revision", "NULL"),
+            optional("acquired_at_ms", "NULL")
         );
         let mut rows = conn.prepare(&sql)?;
         let inputs = rows
@@ -136,6 +138,7 @@ impl Catalog {
                     raw_id: row.get(0)?,
                     origin: row.get(1)?,
                     source_path: row.get(2)?,
+                    acquired_at_ms: row.get(12)?,
                     blob_hash,
                     blob_size: size as u64,
                     capture_mode: row.get(5)?,
