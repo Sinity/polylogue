@@ -13,5 +13,5 @@ CREATE TABLE extra_claim(
  start INTEGER NOT NULL,end INTEGER NOT NULL,priority INTEGER NOT NULL,
  UNIQUE(message,file,start,end));
 CREATE INDEX older_claim ON extra_claim(older,priority);
-CREATE TABLE hit(pk INTEGER PRIMARY KEY,message INTEGER NOT NULL REFERENCES message(pk),channel INTEGER);
-CREATE VIRTUAL TABLE terms USING fts5(body,content='',tokenize='unicode61 remove_diacritics 2');
+CREATE TABLE hit(pk INTEGER PRIMARY KEY,message INTEGER NOT NULL REFERENCES message(pk),channel INTEGER,text_id INTEGER NOT NULL,idx INTEGER NOT NULL);
+CREATE INDEX hit_text ON hit(text_id,channel);

@@ -12,6 +12,7 @@ use std::sync::{Arc, Barrier};
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 mod compact;
+mod search;
 
 const PARTS: usize = 2;
 const SCHEMA_LATEST: &str = include_str!("latest.sql");
@@ -171,46 +172,15 @@ struct Work {
     records: u64,
 }
 
-fn add_terms(
-    db: &Connection,
-    owner: i64,
-    message: &Message,
-    mode: &str,
-    work: &mut Work,
-) -> Result<()> {
-    for block in &message.blocks {
-        let (channel, value) = match block {
-            Block::ToolCall { written_text, .. } => (1, written_text.as_deref()),
-            Block::ToolResult { output, .. } => (1, output.as_deref()),
-            _ => (0, block.text()),
-        };
-        if let Some(value) = value.filter(|value| !value.is_empty()) {
-            let column = if mode == "versioned" {
-                "version"
-            } else {
-                "message"
-            };
-            db.execute(
-                &format!("INSERT INTO hit({column},channel) VALUES(?1,?2)"),
-                params![owner, channel],
-            )?;
-            db.execute(
-                "INSERT INTO terms(rowid,body) VALUES(?1,?2)",
-                params![db.last_insert_rowid(), value],
-            )?;
-            work.hits += 1;
-        }
-    }
-    Ok(())
-}
-
 fn partition(
     root: &Path,
     part: usize,
     mode: &str,
     inputs: Vec<Input>,
     ready: Option<Arc<Barrier>>,
+    search: search::Sender,
 ) -> Result<Value> {
+    let mut search = search.feed();
     let dir = root.join(part.to_string());
     fs::create_dir(&dir)?;
     let db_path = dir.join("index.db");
@@ -335,10 +305,10 @@ fn partition(
         for (version, packed) in selected {
             let message: Message =
                 serde_json::from_slice(&zstd::stream::decode_all(packed.as_slice())?)?;
-            add_terms(&db, version, &message, mode, &mut work)?;
+            search.message(&db, version, &message, mode, &mut work)?;
         }
     } else if mode == "compact" {
-        compact_stats = compact_builder.store(&db, &dir, &mut work)?;
+        compact_stats = compact_builder.store(&db, &dir, &mut work, &mut search)?;
         transitions = serde_json::from_value(compact_stats["selection_transitions"].clone())?;
     } else {
         for (_, (input, row, file)) in latest {
@@ -354,10 +324,11 @@ fn partition(
                     row.end
                 ],
             )? as u64;
-            add_terms(&db, db.last_insert_rowid(), &row.message, mode, &mut work)?;
+            search.message(&db, db.last_insert_rowid(), &row.message, mode, &mut work)?;
         }
         db.execute_batch("CREATE INDEX by_session ON message(session,start,id)")?;
     }
+    search.flush()?;
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
             .get::<_, i64>(
@@ -412,7 +383,7 @@ fn partition(
         "records":work.records,"parsed_messages":work.parsed_messages,"selected_messages":selected_count,
         "model_insert_attempts":work.model_attempts,"model_rows_inserted":work.model_rows,
         "observation_rows":work.claims,"selection_attempts":work.selection_attempts,
-        "selection_rows_changed":work.selections_changed,"hit_and_fts_rows_each":work.hits,
+        "selection_rows_changed":work.selections_changed,"hit_rows":work.hits,
         "packed_model_bytes":work.stored_model_bytes,"sqlite_total_changes_including_fts":changes,
         "cache_page_writes":cache_writes,"page_count":pages,"page_size":8192,
         "index_bytes":fs::metadata(&db_path)?.len(),"allocated_index_bytes":fs::metadata(&db_path)?.blocks()*512,
@@ -451,8 +422,9 @@ fn build(
         parts.iter().all(|p| !p.is_empty()),
         "fixture must populate both routable partitions"
     );
+    let search = search::Build::start(&path.join("search.db"))?;
     let reports = if interrupt {
-        let first = partition(&path, 0, mode, parts.remove(0), None)?;
+        let first = partition(&path, 0, mode, parts.remove(0), None, search.sender())?;
         println!(
             "{}",
             json!({"phase":"one-partition-committed","report":first})
@@ -471,7 +443,10 @@ fn build(
                 let path = path.clone();
                 let mode = mode.to_owned();
                 let barrier = barrier.clone();
-                std::thread::spawn(move || partition(&path, part, &mode, inputs, Some(barrier)))
+                let feed = search.sender();
+                std::thread::spawn(move || {
+                    partition(&path, part, &mode, inputs, Some(barrier), feed)
+                })
             })
             .collect();
         handles
@@ -479,6 +454,7 @@ fn build(
             .map(|h| h.join().map_err(|_| "partition panicked")?)
             .collect::<Result<Vec<_>>>()?
     };
+    let search = search.finish()?;
     fs::write(path.join("mode"), mode)?;
     sync(&path.join("mode"))?;
     sync(&path)?;
@@ -496,7 +472,8 @@ fn build(
         json!({"generation":generation,"mode":mode,"parts":reports,
         "process_io":fs::read_to_string("/proc/self/io").ok(),
         "original_prototype_adjustment":"latest map lifted from per-file to partition scope; final SQLite file opened directly",
-        "ranking":"current per-block hit membership only; ordinary distinct-text/global ranking is unimplemented"})
+        "search":search,
+        "ranking":"one global distinct-text native FTS population; compare production oracle"})
     );
     Ok(())
 }
@@ -595,31 +572,10 @@ fn search(root: &Path, term: &str) -> Result<Value> {
     {
         return Err("invalid publication pointer".into());
     }
-    let mut hits = std::collections::BTreeSet::new();
-    for part in 0..PARTS {
-        let path = root.join(&generation);
-        let mode = fs::read_to_string(path.join("mode"))?;
-        let db = Connection::open_with_flags(
-            path.join(part.to_string()).join("index.db"),
-            OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )?;
-        let query = if mode == "versioned" {
-            "SELECT v.session,v.id,h.channel FROM terms JOIN hit h ON h.pk=terms.rowid JOIN version v ON v.pk=h.version WHERE terms MATCH ?1"
-        } else {
-            "SELECT m.session,m.id,h.channel FROM terms JOIN hit h ON h.pk=terms.rowid JOIN message m ON m.pk=h.message WHERE terms MATCH ?1"
-        };
-        let mut query = db.prepare(query)?;
-        for row in query.query_map([term], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-            ))
-        })? {
-            hits.insert(row?);
-        }
-    }
-    Ok(json!({"generation":generation,"hits":hits,"ranking_qualified":false}))
+    let path = root.join(&generation);
+    let mut result = search::search(&path, term)?;
+    result["generation"] = generation.into();
+    Ok(result)
 }
 
 fn main() -> Result<()> {

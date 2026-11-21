@@ -1,5 +1,5 @@
 //! One immutable current body and source claim, with explicit older observations.
-use super::{Input, MessageRow, Result, Work, add_terms};
+use super::{Input, MessageRow, Result, Work};
 use polylogue_model::Message;
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
@@ -62,7 +62,13 @@ impl Builder {
         }
     }
 
-    pub fn store(self, db: &Connection, dir: &Path, work: &mut Work) -> Result<Value> {
+    pub fn store(
+        self,
+        db: &Connection,
+        dir: &Path,
+        work: &mut Work,
+        search: &mut super::search::Feed,
+    ) -> Result<Value> {
         let mut payload = OpenOptions::new()
             .create_new(true)
             .write(true)
@@ -90,7 +96,7 @@ impl Builder {
             work.model_attempts += 1;
             work.model_rows += 1;
             work.stored_model_bytes += packed.len() as u64;
-            add_terms(db, message, &current.row.message, "compact", work)?;
+            search.message(db, message, &current.row.message, "compact", work)?;
             let mut old_hashes: BTreeMap<Vec<u8>, i64> = BTreeMap::new();
             for old in entry.other {
                 let old_hash = if old.row.message == current.row.message {

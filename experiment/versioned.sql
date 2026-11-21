@@ -12,5 +12,5 @@ CREATE INDEX observation_version ON observation(version);
 CREATE TABLE selected(
  session TEXT NOT NULL,id TEXT NOT NULL,
  observation INTEGER NOT NULL REFERENCES observation(pk),PRIMARY KEY(session,id));
-CREATE TABLE hit(pk INTEGER PRIMARY KEY,version INTEGER NOT NULL REFERENCES version(pk),channel INTEGER);
-CREATE VIRTUAL TABLE terms USING fts5(body,content='',tokenize='unicode61 remove_diacritics 2');
+CREATE TABLE hit(pk INTEGER PRIMARY KEY,version INTEGER NOT NULL REFERENCES version(pk),channel INTEGER,text_id INTEGER NOT NULL,idx INTEGER NOT NULL);
+CREATE INDEX hit_text ON hit(text_id,channel);

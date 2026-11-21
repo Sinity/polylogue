@@ -35,8 +35,23 @@ jobs:
         run: CARGO_TARGET_DIR="$RUNNER_TEMP/sqlite-versions-target" cargo build --release --locked -j 2 --manifest-path experiment/Cargo.toml
       - name: Version selection, original citations and interrupted publication
         run: python3 -I experiment/check.py --root "$RUNNER_TEMP/sqlite-versions-case" --binary "$RUNNER_TEMP/sqlite-versions-target/release/sqlite-versions"
-      - name: Same-runner fixed-population direct final builds
-        run: python3 -I experiment/scale.py --root "$RUNNER_TEMP/sqlite-versions-scale" --binary "$RUNNER_TEMP/sqlite-versions-target/release/sqlite-versions" --generator "$RUNNER_TEMP/sqlite-versions-target/release/generate-synthetic"
+      - uses: cachix/install-nix-action@v31
+      - uses: cachix/cachix-action@v17
+        with:
+          name: sinity
+          skipPush: true
+      - name: Verify the frozen production ranking oracle
+        run: |
+          runtime=$(nix build --no-link --print-out-paths --option max-jobs 0 "github:${GITHUB_REPOSITORY}/df0f6aead03ee6329e8e768497b3d6688c5d9512#default")
+          nix store verify --sigs-needed 1 "$runtime"
+          "$runtime/bin/polylogue" --version | grep -F df0f6aead03ee6329e8e768497b3d6688c5d9512
+          echo "production_runtime=$runtime" >> "$GITHUB_ENV"
+      - name: Production distinct-text vocabulary and exact native ranking
+        run: |
+          python3 -I experiment/ranking.py --root "$RUNNER_TEMP/compact-ranking-screen" \
+            --binary "$RUNNER_TEMP/sqlite-versions-target/release/sqlite-versions" \
+            --production "$production_runtime/bin/polylogue" \
+            --revision df0f6aead03ee6329e8e768497b3d6688c5d9512
       - name: Retain synthetic receipts and final partitions
         if: always()
         uses: actions/upload-artifact@v4
@@ -45,11 +60,11 @@ jobs:
           path: ${{ runner.temp }}/sqlite-versions-case
           if-no-files-found: ignore
           retention-days: 7
-      - name: Retain scaled work and verification receipts
+      - name: Retain production parity screen
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: sqlite-version-scale
-          path: ${{ runner.temp }}/sqlite-versions-scale/results
+          name: compact-distinct-text-screen
+          path: ${{ runner.temp }}/compact-ranking-screen
           if-no-files-found: ignore
           retention-days: 7
