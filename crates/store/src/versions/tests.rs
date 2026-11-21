@@ -91,14 +91,14 @@ fn context_reference_cleanup_steps(unrelated: i64, without_index: bool) -> u64 {
         )
         .unwrap();
     }
-    conn.execute("INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,session_pk,route,completion,version_pk) VALUES(1,1,7,0,1,'native',1,'live','finished',(SELECT pk FROM message_version WHERE version_hash=?1))",[orphan]).unwrap();
+    conn.execute("UPDATE message SET source_chain=7,source_start=0,source_end=1,source_id_kind='native',source_session_pk=1,source_main=1,source_route='live',source_seq=0,source_record_position=0,source_completion='finished',source_version_pk=(SELECT pk FROM message_version WHERE version_hash=?1) WHERE pk=1",[orphan]).unwrap();
     let mut protected = [0u8; 32];
     protected[..8].copy_from_slice(&1i64.to_le_bytes());
     conn.execute_batch("SAVEPOINT reading").unwrap();
     // Changing the source reference queues both versions for collection.
     for hash in [protected, winner] {
         conn.execute(
-            "UPDATE message_source SET version_pk=(SELECT pk FROM message_version WHERE version_hash=?1) WHERE message_pk=1",
+            "UPDATE message SET source_version_pk=(SELECT pk FROM message_version WHERE version_hash=?1) WHERE pk=1",
             [hash],
         )
         .unwrap();
@@ -379,7 +379,7 @@ fn version_keys_and_payload_children_survive_failed_removal() {
     conn.execute_batch("INSERT INTO input_ref(pk,id) VALUES(1,'input');
         INSERT INTO session(pk,id,origin,native_id,kind,changed) VALUES(1,'codex:session','codex','session','main',1);
         INSERT INTO message(pk,id,session_pk,session_order,role,written_by,input_pk) VALUES(1,'codex:message',1,'0','assistant','model',1);").unwrap();
-    conn.execute("INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,session_pk,route,completion,version_pk) VALUES(1,1,1,4,91,'native',1,'live','finished',?1)",[keys[0]]).unwrap();
+    conn.execute("UPDATE message SET source_chain=1,source_start=4,source_end=91,source_id_kind='native',source_session_pk=1,source_main=1,source_route='live',source_seq=0,source_record_position=0,source_completion='finished',source_version_pk=?1 WHERE pk=1",[keys[0]]).unwrap();
     conn.execute(
         "INSERT INTO message_block_selection VALUES(?1,?2,7)",
         params![keys[0], serde_json::to_vec(&(9u64, vec![2u64, 8])).unwrap()],
@@ -409,7 +409,7 @@ fn version_keys_and_payload_children_survive_failed_removal() {
     assert_eq!(original.1, bodies[0]);
     assert_eq!((original.2, original.3), (4, 91));
     conn.execute_batch("SAVEPOINT change").unwrap();
-    conn.execute("UPDATE message_source SET version_pk=?1", [keys[1]])
+    conn.execute("UPDATE message SET source_version_pk=?1", [keys[1]])
         .unwrap();
     let ids = crate::text_rows::TextIds::new(
         &conn,

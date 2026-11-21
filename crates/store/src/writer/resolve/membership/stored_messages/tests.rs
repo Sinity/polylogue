@@ -52,12 +52,26 @@ fn message(conn: &Connection, id: i64, input: i64, chain: Option<i64>) {
 }
 
 fn source(conn: &Connection, message: i64, input: i64, chain: i64, version: i64) {
-    conn.execute(
-        "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,
-        id_kind,session_pk,main,route,seq,record_position,order_time,at,completion,version_pk)
-        VALUES(?1,?2,?3,11,29,'native',1,1,'live',17,2,41,37,'finished',?4)",
-        params![message, input, chain, version],
-    )
+    crate::message_source::Claim {
+        message,
+        reading: crate::message_source::Reading {
+            input,
+            chain,
+            start: 11,
+            end: 29,
+            content: false,
+            session: 1,
+            main: true,
+            route: polylogue_model::Route::Live,
+            completion: polylogue_model::Completion::Finished,
+            seq: 17,
+            position: 2,
+            order_time: Some(41),
+            at: Some(37),
+        },
+        version,
+    }
+    .put(conn)
     .unwrap();
 }
 
@@ -290,7 +304,12 @@ fn shared_snapshot_facts_are_read_once_per_key_group_not_per_source_claim() {
         message(&conn, id, 3, Some(1));
         source(&conn, id, 3, 1, id);
         conn.execute(
-            "UPDATE message_source SET session_pk=2 WHERE message_pk=?1",
+            "UPDATE message SET source_session_pk=2 WHERE pk=?1 AND source_version_pk IS NOT NULL",
+            [id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE message_source_extra SET session_pk=2 WHERE message_pk=?1",
             [id],
         )
         .unwrap();

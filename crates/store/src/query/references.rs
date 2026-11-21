@@ -116,7 +116,7 @@ pub(crate) fn membership(
 /// rather than only the session selected for the deduplicated shown message.
 pub(crate) fn message_sessions(message: &str) -> (&'static str, &str) {
     (
-        "SELECT DISTINCT session.id FROM message_source source JOIN message ON message.pk=source.message_pk JOIN session ON session.pk=source.session_pk WHERE message.id=?1 ORDER BY session.id",
+        "SELECT DISTINCT session.id FROM message_source source JOIN session ON session.pk=source.session_pk WHERE source.message_pk=(SELECT pk FROM message WHERE id=?1) ORDER BY session.id",
         message,
     )
 }

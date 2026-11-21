@@ -997,7 +997,7 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let id = crate::parser_context::resolved_message(conn, id)?;
         let hash = conn.query_row(
-            "SELECT (SELECT version_hash FROM message_version WHERE pk=s.version_pk) FROM message m LEFT JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
+            "SELECT (SELECT version_hash FROM message_version WHERE pk=m.source_version_pk) FROM message m
              WHERE m.id=?1",
             [id.to_string()], |row| row.get::<_, Option<Vec<u8>>>(0),
         ).optional()?;
@@ -1016,10 +1016,9 @@ impl Reader<'_> {
         let id = crate::parser_context::resolved_message(conn, id)?;
         let commit = conn
             .query_row(
-                "SELECT p.committed,i.id,s.chain,s.source_end FROM message m
-             JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
-             JOIN input_ref i ON i.pk=s.input_pk
-             LEFT JOIN message_block_selection p ON p.version_pk=s.version_pk WHERE m.id=?1",
+                "SELECT p.committed,i.id,m.source_chain,m.source_end FROM message m
+             JOIN input_ref i ON i.pk=m.input_pk
+             LEFT JOIN message_block_selection p ON p.version_pk=m.source_version_pk WHERE m.id=?1 AND m.source_version_pk IS NOT NULL",
                 [id.to_string()],
                 |row| {
                     Ok(MessageArrival {
@@ -1118,13 +1117,15 @@ impl Reader<'_> {
         const COLUMNS: &str = "m.pk, m.id, m.role, m.prompt_kind, m.model, m.at_time, m.parent_id,
             m.input_tokens, m.cache_read_tokens, m.cache_write_tokens, m.output_tokens,
             m.reasoning_tokens, m.service_tier, m.stop_reason, m.duration_ms, m.attrs_json,
-            m.cache_write_1h_tokens, m.speed, (SELECT version_hash FROM message_version WHERE pk=shown.version_pk), block_selection.layout,
+            m.cache_write_1h_tokens, m.speed, (SELECT version_hash FROM message_version WHERE pk=m.source_version_pk), block_selection.layout,
             CASE WHEN block_selection.layout IS NULL THEN
                 (SELECT count(*) FROM block WHERE message_pk=m.pk) ELSE 0 END,
-            block_selection.committed, source_input.id, shown.chain, shown.source_end";
-        const SOURCE: &str = "FROM message m LEFT JOIN message_source shown ON shown.message_pk=m.pk AND shown.input_pk=m.input_pk AND shown.chain=m.source_chain
-            LEFT JOIN message_block_selection block_selection ON block_selection.version_pk=shown.version_pk
-            LEFT JOIN input_ref source_input ON source_input.pk=shown.input_pk";
+            block_selection.committed, source_input.id,
+            CASE WHEN m.source_version_pk IS NOT NULL THEN m.source_chain END,
+            CASE WHEN m.source_version_pk IS NOT NULL THEN m.source_end END";
+        const SOURCE: &str = "FROM message m
+            LEFT JOIN message_block_selection block_selection ON block_selection.version_pk=m.source_version_pk
+            LEFT JOIN input_ref source_input ON source_input.pk=m.input_pk AND m.source_version_pk IS NOT NULL";
         const ORDER: &str = "ORDER BY m.session_order, m.id";
         let start: Option<(String, String)> = match from {
             Some(pk) => self

@@ -970,6 +970,22 @@ fn source_retraction_reselects_remaining_sources() {
         .batches(&mut sources.iter_mut().collect::<Vec<_>>())
         .unwrap();
     apply_source_batches(&mut index, &sources).unwrap();
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM message_source_extra", [], |row| row
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        index
+            .query_row("SELECT source_chain FROM message", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        7
+    );
     let mut retraction = batch("source-b", Route::Live, 0, Vec::new(), &[]);
     retraction.change = Change::Reparse { chain: 7 };
     retraction.observation = None;
@@ -983,7 +999,7 @@ fn source_retraction_reselects_remaining_sources() {
     drop(sources);
     let mut retractions = vec![retraction];
     prepare_source_retractions(&resolver, &mut retractions).unwrap();
-    index.execute_batch("CREATE TRIGGER refuse_retraction BEFORE DELETE ON message_source WHEN OLD.chain=7 BEGIN SELECT RAISE(ABORT,'synthetic retraction refusal'); END;").unwrap();
+    index.execute_batch("CREATE TRIGGER refuse_retraction BEFORE UPDATE OF source_version_pk ON message WHEN OLD.source_chain=7 AND OLD.source_version_pk IS NOT NULL AND NEW.source_version_pk IS NULL BEGIN SELECT RAISE(ABORT,'synthetic retraction refusal'); END;").unwrap();
     {
         let tx = index.transaction().unwrap();
         let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
@@ -1016,6 +1032,24 @@ fn source_retraction_reselects_remaining_sources() {
                 .get::<_, u64>(0))
             .unwrap(),
         2
+    );
+    assert_eq!(
+        index
+            .query_row("SELECT source_chain FROM message", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        7
+    );
+    let selected_text: i64 = index
+        .query_row(
+            "SELECT text_id FROM block WHERE text_id IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        crate::text_rows::read(&index, selected_text).unwrap(),
+        "complete"
     );
     index
         .execute_batch("DROP TRIGGER refuse_retraction")
@@ -1073,6 +1107,23 @@ fn source_retraction_reselects_remaining_sources() {
         )
         .unwrap();
     assert_eq!(crate::text_rows::read(&index, text).unwrap(), "partial");
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM message_source_extra", [], |row| row
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        0
+    );
     assert!(!directory.path().join("archive.db").exists());
 }
 

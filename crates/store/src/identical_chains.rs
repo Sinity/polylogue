@@ -48,12 +48,11 @@ impl ChainReading {
 
 /// The index tables that hold one chain's reading, keyed by `input_pk` and
 /// `chain`. Copying a reading copies each table's rows of the other chain.
-const READING_TABLES: [&str; 23] = [
+const READING_TABLES: [&str; 22] = [
     "parse_state",
     "parsed",
     "session_record",
     "session_alias",
-    "message_source",
     "document_source",
     "event_source",
     "link_source",
@@ -158,6 +157,8 @@ pub(crate) fn copy_reading(tx: &Connection, copy: &ReadingCopy, counter: i64) ->
     if !ready {
         return Ok(false);
     }
+    crate::fault::check("write.copy_table", "message_source")?;
+    crate::message_source::copy_reading(tx, input_pk, from, to)?;
     for table in READING_TABLES {
         let columns: Vec<String> = tx
             .prepare_cached(&format!("SELECT name FROM pragma_table_info('{table}')"))?

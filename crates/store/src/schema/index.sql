@@ -89,7 +89,17 @@ CREATE TABLE message (
                                             --   offsets are stable only within a chain, which only appends
   source_start      INTEGER,                -- byte range of its records in that chain (export `sources[0]`):
   source_end        INTEGER,                --   raw view and outside anchors; for a JSON export, the conversation object
-  in_progress       INTEGER NOT NULL DEFAULT 0, -- the shown message's completion is in_progress (message_source.completion)
+  source_id_kind    TEXT CHECK (source_id_kind IN ('native','content')),
+  source_session_pk INTEGER REFERENCES session(pk), -- the raw reading's session, before composition
+  source_main       INTEGER,
+  source_route      TEXT CHECK (source_route IN ('live','capture','recorded','export','copy','page_text')),
+  source_seq        INTEGER,
+  source_record_position INTEGER,
+  source_order_time INTEGER,
+  source_at         INTEGER,
+  source_completion TEXT CHECK (source_completion IN ('finished','unknown','in_progress')),
+  source_version_pk INTEGER REFERENCES message_version(pk), -- NULL only when this row has no reading
+  in_progress       INTEGER NOT NULL DEFAULT 0, -- the shown completion, after stop-route composition
   on_active_path    INTEGER,                -- 1 on the path, 0 off, NULL unknown (no marked leaf);
                                             --   always written, no default
   duplicate_of      TEXT,                   -- derived (duplicates): natural message id of another input's message the
@@ -112,6 +122,11 @@ CREATE TABLE message (
   stop_reason       TEXT,
   duration_ms       INTEGER,
   words             INTEGER NOT NULL DEFAULT 0, -- words in its text blocks
+  CHECK (source_version_pk IS NULL OR (source_chain IS NOT NULL
+         AND source_start IS NOT NULL AND source_end IS NOT NULL
+         AND source_id_kind IS NOT NULL AND source_session_pk IS NOT NULL
+         AND source_main IS NOT NULL AND source_route IS NOT NULL AND source_seq IS NOT NULL
+         AND source_record_position IS NOT NULL AND source_completion IS NOT NULL)),
   UNIQUE (pk, session_pk)                   -- lets children state their session once
 ) STRICT;
 -- A first build drops the three unique indexes on natural keys and builds
@@ -122,16 +137,13 @@ CREATE INDEX message_prose   ON message(session_pk) WHERE written_by = 'human' A
 CREATE INDEX message_branch  ON message(session_pk) WHERE on_active_path = 0;
 CREATE INDEX message_parent  ON message(session_pk, parent_id) WHERE duplicate_of IS NULL;   -- branch points
 
--- Every stored version that contributed to a message: one row per input chain
--- whose records hold a version of it. The shown message is composed field group
--- by field group from each input's latest chain (writer/compose.rs); the main
--- route's row is the one at the message's own (input_pk, source_chain). A citation names a row here, never
--- just an input and offsets, because a rewritten input's new chain puts other
--- bytes at the same offsets (an outside review, 2026-10-12). Rebuilt with the
--- message. A message named by its content (id_kind 'content') keeps a row only
--- from its input's latest chain once that chain is read to its end: a rewrite
--- that no longer holds it no longer shows it.
-CREATE TABLE message_source (
+-- Every reading other than the header's content reading, once per input chain.
+-- message_source exposes both populations. A citation names a claim there,
+-- including its chain: rewritten bytes can occupy the same offsets in another
+-- chain. Composition considers each input's latest chain, while older native-ID
+-- claims remain available. Content-ID claims disappear once a complete newer
+-- chain of their input no longer contains them.
+CREATE TABLE message_source_extra (
   message_pk        INTEGER NOT NULL REFERENCES message(pk),
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,       -- archive.db revision.chain
@@ -151,8 +163,39 @@ CREATE TABLE message_source (
   version_pk        INTEGER NOT NULL REFERENCES message_version(pk), -- the version hash lives in the narrow version row
   PRIMARY KEY (message_pk, input_pk, chain)
 ) STRICT;
-CREATE INDEX message_source_input ON message_source(input_pk, chain, source_start);   -- foreign-key check; the next record's start
-CREATE INDEX message_source_order ON message_source(input_pk, chain, session_pk, seq, record_position);   -- the order time before a step
+CREATE INDEX message_source_extra_input ON message_source_extra(input_pk, chain, source_start);   -- foreign-key check; the next record's start
+CREATE INDEX message_source_extra_order ON message_source_extra(input_pk, chain, session_pk, seq, record_position, order_time, at);   -- the order time before a step
+
+-- The content reading is stored with the shown header. Every other reading
+-- lives once in message_source_extra; consumers see one logical relation.
+CREATE VIEW message_source AS
+SELECT pk AS message_pk,input_pk,source_chain AS chain,source_start,source_end,
+       source_id_kind AS id_kind,source_session_pk AS session_pk,source_main AS main,
+       source_route AS route,source_seq AS seq,source_record_position AS record_position,
+       source_order_time AS order_time,source_at AS at,source_completion AS completion,
+       source_version_pk AS version_pk
+FROM message WHERE source_version_pk IS NOT NULL
+UNION ALL
+SELECT message_pk,input_pk,chain,source_start,source_end,id_kind,session_pk,main,route,
+       seq,record_position,order_time,at,completion,version_pk FROM message_source_extra;
+CREATE INDEX message_source_input ON message(input_pk,source_chain,source_start)
+WHERE source_version_pk IS NOT NULL;
+CREATE INDEX message_source_order ON message(input_pk,source_chain,source_session_pk,
+    source_seq,source_record_position,source_order_time,source_at)
+WHERE source_version_pk IS NOT NULL;
+-- A key has exactly one physical owner, including inside a transaction.
+CREATE TRIGGER message_source_extra_insert BEFORE INSERT ON message_source_extra
+WHEN EXISTS(SELECT 1 FROM message WHERE pk=NEW.message_pk AND input_pk=NEW.input_pk
+            AND source_chain=NEW.chain AND source_version_pk IS NOT NULL)
+BEGIN SELECT RAISE(ABORT,'message reading already belongs to its header'); END;
+CREATE TRIGGER message_source_extra_update BEFORE UPDATE OF message_pk,input_pk,chain ON message_source_extra
+WHEN EXISTS(SELECT 1 FROM message WHERE pk=NEW.message_pk AND input_pk=NEW.input_pk
+            AND source_chain=NEW.chain AND source_version_pk IS NOT NULL)
+BEGIN SELECT RAISE(ABORT,'message reading already belongs to its header'); END;
+CREATE TRIGGER message_source_default_update BEFORE UPDATE OF input_pk,source_chain,source_version_pk ON message
+WHEN NEW.source_version_pk IS NOT NULL AND EXISTS(SELECT 1 FROM message_source_extra
+     WHERE message_pk=NEW.pk AND input_pk=NEW.input_pk AND chain=NEW.source_chain)
+BEGIN SELECT RAISE(ABORT,'message reading already belongs to an extra source'); END;
 
 -- The newest message time in each chain of an export that lists every
 -- conversation of its account, by session origin. A session of that origin
@@ -909,7 +952,8 @@ CREATE TABLE link_source (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX link_source_input ON link_source(input_pk, chain);
 
-CREATE INDEX message_source_version ON message_source(version_pk);
+CREATE INDEX message_source_extra_version ON message_source_extra(version_pk);
+CREATE INDEX message_source_version ON message(source_version_pk) WHERE source_version_pk IS NOT NULL;
 CREATE INDEX document_source_version ON document_source(version_hash);
 CREATE INDEX event_source_value ON event_source(value_pk);
 CREATE INDEX link_source_value ON link_source(value_pk);
@@ -926,7 +970,8 @@ CREATE TABLE document_version_blob (
 CREATE INDEX message_version_blob_hash ON message_version_blob(blob_hash);
 CREATE INDEX document_version_blob_hash ON document_version_blob(blob_hash);
 
-CREATE INDEX message_source_session ON message_source(session_pk);
+CREATE INDEX message_source_extra_session ON message_source_extra(session_pk);
+CREATE INDEX message_source_session ON message(source_session_pk) WHERE source_session_pk IS NOT NULL;
 CREATE INDEX event_source_session ON event_source(session_pk);
 -- Recomputed comparison state for tool-database inputs.
 CREATE TABLE tool_row (

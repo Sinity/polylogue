@@ -46,9 +46,9 @@ impl RowWriter<'_, '_> {
             None => after
                 .map(|pk| {
                     self.tx.scalar(
-                            "SELECT coalesce(s.seq,0) FROM message m LEFT JOIN message_source s
-                             ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain WHERE m.pk=?1",
-                            [pk])
+                        "SELECT coalesce(m.source_seq,0) FROM message m WHERE m.pk=?1",
+                        [pk],
+                    )
                 })
                 .transpose()?
                 .unwrap_or(0),
