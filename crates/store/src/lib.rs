@@ -40,6 +40,7 @@ mod kept;
 pub(crate) mod key_maps;
 pub mod lineage;
 mod live;
+mod message_source;
 pub mod python_archive;
 pub use live::{
     FollowSnapshot, FollowedCall, FollowedMessage, LiveDetail, LiveEditedFiles, LiveRoot,

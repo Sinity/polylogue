@@ -109,7 +109,7 @@ fn repeated(conn: &Connection, session_pk: i64) -> Result<HashMap<i64, String>> 
         "SELECT m.pk, m.id, m.role, count(*), sum(r.format = ?2)
          FROM message m JOIN message_source s ON s.message_pk = m.pk
          JOIN input_ref r ON r.pk = s.input_pk
-         WHERE m.session_pk = ?1
+         WHERE m.session_pk = ?1 AND s.message_pk IN (SELECT pk FROM message WHERE session_pk=?1)
          GROUP BY m.pk
          ORDER BY m.session_order, m.id",
     )?;

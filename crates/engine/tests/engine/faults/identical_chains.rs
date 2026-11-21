@@ -73,7 +73,7 @@ pub(super) fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
         0
     );
     let tables: Vec<String> = conn
-        .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+        .prepare("SELECT name FROM sqlite_schema WHERE (type = 'table' OR name = 'message_source') AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .unwrap()
         .query_map([], |row| row.get(0))
         .unwrap()
@@ -90,7 +90,7 @@ pub(super) fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
         // Version row keys follow insertion order. Translate them, rather than
         // dropping them: a wrong payload/reference still names the wrong hash.
         let columns = names.iter().map(|name| {
-            if name == "version_pk" || (table == "message_version" && name == "pk") {
+            if name == "version_pk" || name == "source_version_pk" || (table == "message_version" && name == "pk") {
                 format!("(SELECT v.version_hash FROM message_version v WHERE v.pk=t.\"{name}\") AS \"{name}\"")
             } else if matches!(table.as_str(), "wire_shape" | "wire_type") && matches!(name.as_str(), "first" | "last") {
                 // The chain the occurrence record cites, not the read range it took.

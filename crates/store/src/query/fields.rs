@@ -919,7 +919,7 @@ fn session_first_seen(a: &Aliases) -> String {
          JOIN source_revision fr ON fr.input = fi.id AND fr.chain = fs.chain \
          AND fr.length > fs.source_start AND fr.length >= fs.source_end \
          JOIN source_observation fo ON fo.input = fr.input AND fo.revision = fr.number \
-         WHERE fm.session_pk = {}.pk)",
+         WHERE fm.session_pk = {0}.pk AND fs.message_pk IN (SELECT pk FROM message WHERE session_pk={0}.pk))",
         a.s
     )
 }
