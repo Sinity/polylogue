@@ -380,7 +380,7 @@ impl Walk<'_, '_, '_, '_> {
                     original,
                     &mut facts,
                     rendering.at,
-                    options.at.as_ref().and_then(ReadAt::position),
+                    options.annotation_position(),
                 )?;
             }
             polylogue_store::read::limit::ReadLimit::set_stage("read layout");

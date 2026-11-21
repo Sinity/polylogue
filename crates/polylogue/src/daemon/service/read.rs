@@ -35,17 +35,7 @@ pub(crate) fn request_of(
         output_lines,
         for_others,
         variants: variant,
-        at: at
-            .map(|at| {
-                if view == View::Context {
-                    polylogue_model::MessageId::parse(&at)
-                        .map(ReadAt::Message)
-                        .map_err(|error| error.to_string())
-                } else {
-                    ReadAt::try_from(at)
-                }
-            })
-            .transpose()?,
+        at: at.map(ReadAt::try_from).transpose()?,
         diff,
         around,
         latest,

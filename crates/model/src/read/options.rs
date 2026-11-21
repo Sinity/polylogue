@@ -34,14 +34,6 @@ impl std::fmt::Display for ReadAt {
         }
     }
 }
-impl ReadAt {
-    pub fn position(&self) -> Option<&crate::ChangePosition> {
-        match self {
-            Self::Position(position) => Some(position),
-            Self::Message(_) => None,
-        }
-    }
-}
 
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
@@ -439,7 +431,33 @@ impl ReadOptions {
     pub fn harness(&self) -> Expansion {
         self.harness.unwrap_or(Expansion::Collapsed)
     }
+    /// The context view retains the original message-coordinate grammar,
+    /// even when an opaque native ID also resembles an archive counter.
+    pub fn context_message(&self) -> Result<Option<crate::MessageId>, ReadError> {
+        if self.view != View::Context {
+            return Ok(None);
+        }
+        self.at
+            .as_ref()
+            .map(|at| {
+                crate::MessageId::parse(&at.to_string())
+                    .map_err(|error| ReadError::invalid(error.to_string()))
+            })
+            .transpose()
+    }
+
+    pub fn annotation_position(&self) -> Option<&crate::ChangePosition> {
+        if self.view == View::Context {
+            return None;
+        }
+        match &self.at {
+            Some(ReadAt::Position(position)) => Some(position),
+            _ => None,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), ReadError> {
+        self.context_message()?;
         let prose = matches!(self.view, View::Transcript | View::Context);
         for (supplied, option, accepted) in [
             (

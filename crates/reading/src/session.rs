@@ -833,9 +833,9 @@ fn runs(reader: &Reader<'_>, composed: &Composed, options: &ReadOptions) -> Resu
         find(&composed.parts, entries, &EntryKey::header(message))
             .ok_or_else(|| Error::not_found(format!("message {message} is not in the reading")))
     };
-    let at = match &options.at {
-        Some(ReadAt::Message(message)) => place_of(message)?,
-        Some(ReadAt::Position(_)) | None => latest,
+    let at = match options.context_message().map_err(Error::bad_request)? {
+        Some(message) => place_of(&message)?,
+        None => latest,
     };
     let context = context_at(&composed.parts, entries, at);
     let Some(diff) = &options.diff else {
@@ -1012,7 +1012,7 @@ pub(super) fn page(
                 reader,
                 &polylogue_model::Reference::Session(read_session.id.clone()),
                 operation.ran_at,
-                options.at.as_ref().and_then(ReadAt::position),
+                options.annotation_position(),
             )?
         } else {
             vec![]
@@ -1328,7 +1328,7 @@ fn lead_items(
             }),
         },
     }];
-    if let Some(ReadAt::Position(position)) = &options.at {
+    if let Some(position) = options.annotation_position() {
         out.push(ReadItem {
             source: Source::record(target),
             kind: ItemKind::Text {
@@ -2013,7 +2013,7 @@ fn emit(
             &record,
             &mut facts,
             at,
-            options.at.as_ref().and_then(ReadAt::position),
+            options.annotation_position(),
         )?;
     }
     if options.view == View::Context {

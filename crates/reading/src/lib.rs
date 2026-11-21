@@ -488,7 +488,7 @@ pub fn is_object_read(request: &ReadRequest) -> bool {
 }
 
 fn validate_at(reader: &Reader<'_>, request: &ReadRequest) -> Result<(), Error> {
-    let Some(ReadAt::Position(position)) = &request.options.at else {
+    let Some(position) = request.options.annotation_position() else {
         return Ok(());
     };
     let current = reader.change_position()?;

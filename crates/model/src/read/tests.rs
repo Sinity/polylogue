@@ -602,11 +602,20 @@ fn read_at_keeps_the_declared_string_format_and_context_message_behavior() {
         ReadAt::Message(MessageId::parse("message:opaque").unwrap())
     );
     assert_eq!(serde_json::to_value(&opaque).unwrap(), "message:opaque");
+    let numeric: ReadOptions =
+        serde_json::from_value(serde_json::json!({"view":"context","at":"claude-code:2:3"}))
+            .unwrap();
+    numeric.validate().unwrap();
+    assert_eq!(
+        numeric.context_message().unwrap(),
+        Some(MessageId::parse("claude-code:2:3").unwrap())
+    );
+    assert!(numeric.annotation_position().is_none());
     let historical = serde_json::json!({"at":"generation:2:3"});
     let options: ReadOptions = serde_json::from_value(historical).unwrap();
     options.validate().unwrap();
     assert_eq!(
-        options.at.as_ref().and_then(ReadAt::position),
+        options.annotation_position(),
         Some(&crate::ChangePosition {
             generation: "generation".into(),
             index: 2,
