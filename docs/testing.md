@@ -65,6 +65,17 @@ those real-stack cases ran. Test selection and service preparation belong to
 [development](development.md); generated command help describes the available
 runner options.
 
+The native binary-recovery case uses `SINEXD` and `SINEXD_BEFORE`, with
+`SINEXD_REVISION` and `SINEXD_BEFORE_REVISION` naming their verified source
+revisions. It keeps one seeded PostgreSQL database, NATS server and content
+store through normal stops and starts. It checks the older binary's explicit
+refusal of a new declaration, then the newer binary's ordinary reads and
+producer admission over the same originals. Its event payload and material
+identity/hash/length checks do not alone verify original-byte retrieval.
+PostgreSQL runs with fsync,
+synchronous commits and full-page writes enabled. This is a normal-restart
+recovery check; it does not establish crash or full-corpus restore behavior.
+
 ## Fuzzing
 
 Fuzzing runs as tests. Each fuzz target's corpus is replayed, bounded, by the default test run; longer runs are a test profile over the same harness, and a host may queue them through its own job runner.
