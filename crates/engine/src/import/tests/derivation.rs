@@ -135,13 +135,19 @@ fn changed_import_waits_for_its_derivation() {
     let initial = import(&mut engine, &path);
     assert!(initial.pass.errors.is_empty(), "{initial:?}");
     unrelated_reading(&engine, &home);
-    std::fs::write(&path, first + &claude_user("two", "selected", "second")).unwrap();
+    let changed_bytes = first + &claude_user("two", "selected", "second");
+    std::fs::write(&path, &changed_bytes).unwrap();
     let (returned, held) = held_derivation(&engine);
     let changed = import(&mut engine, &path);
     let _ = returned.send(());
     assert!(!held.join().unwrap(), "changed import skipped derivation");
     assert!(changed.pass.errors.is_empty(), "{changed:?}");
-    assert!(changed.pass.inputs_seen > 0, "{changed:?}");
+    assert_eq!(
+        changed.pass.bytes_read,
+        changed_bytes.len() as u64,
+        "{changed:?}"
+    );
+    assert_eq!(changed.pass.messages_written, 1, "{changed:?}");
     assert!(changed.pass.sessions_derived > 0, "{changed:?}");
     assert!(!changed.pass.derivation_pending, "{changed:?}");
     assert_eq!(home.texts("selected"), ["first", "second"]);
