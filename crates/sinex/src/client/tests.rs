@@ -126,11 +126,15 @@ fn registration_acknowledgment_establishes_family() {
             let request=recorded.next().await.unwrap();
             let query:sinex_protocol::RecordedQuery=serde_json::from_slice(&request.payload).unwrap();assert_eq!(query.numbers,[1]);
             sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),sinex_protocol::RecordedPage{acknowledgments:vec![acknowledgment],next:None,..Default::default()},Duration::from_secs(5)).await.unwrap();
-            let request=contexts.next().await.unwrap();
-            let _query:sinex_protocol::PublicContextRequest=serde_json::from_slice(&request.payload).unwrap();
-            assert!(request.reply.as_ref().unwrap().starts_with("_INBOX.polylogue."));
             let context:sinex_protocol::PublicContext=serde_json::from_value(serde_json::json!({"state":"available","settings_identity":"sinex-settings","settings_revision":7,"day":{"zone":"Europe/Warsaw","start":"04:00:00"},"quiet_hours":{"from":1320,"to":420},"interrupt_budget":{"per_hour":3,"used":1,"remaining":2,"window_ms":3600000},"observed_at":"2026-01-01T00:00:00Z"})).unwrap();
-            sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),context,Duration::from_secs(5)).await.unwrap();
+            let context_client=client.clone();
+            let context_task=tokio::spawn(async move {
+                while let Some(request)=contexts.next().await {
+                    let _:sinex_protocol::PublicContextRequest=serde_json::from_slice(&request.payload).unwrap();
+                    assert!(request.reply.as_ref().unwrap().starts_with("_INBOX.polylogue."));
+                    sinex_transport::replies::publish_json(&context_client,request.reply.unwrap().to_string(),context.clone(),Duration::from_secs(5)).await.unwrap();
+                }
+            });
             // Exercise real transmission/recorded-acknowledgment lookup for two
             // accepted frames which have no admitted-event position.
             for (number, expected) in [(5, "empty-events"), (6, "empty-kinds")] {
@@ -168,6 +172,7 @@ fn registration_acknowledgment_establishes_family() {
             assert_eq!(query.after,0,"an index that applied nothing reads the stream from its start");
             let reply=sinex_protocol::ConfirmedConsumerReply::Refused(sinex_protocol::FetchRefusal{kind:sinex_protocol::FetchRefusalKind::Denied,reason:"synthetic refusal".into()});
             sinex_transport::replies::publish_json(&client,request.reply.unwrap().to_string(),reply,Duration::from_secs(5)).await.unwrap();
+            context_task.abort();
         });
     });
     wait.recv().unwrap();

@@ -87,3 +87,142 @@ fn malformed_policy_never_reaches_query_or_signal_callers() {
         ContextFailureKind::Invalid
     );
 }
+
+#[test]
+fn context_refreshes_an_expired_observation_on_the_same_connection_and_keeps_refusals() {
+    use futures_util::StreamExt;
+    use std::sync::{Arc, Mutex, mpsc};
+
+    let subjects = sinex_protocol::Subjects::new("context");
+    let server = devkit::nats::Server::start_with(&devkit::nats::Options {
+        config: subjects.authorization(
+            ("daemon", "daemon-password"),
+            &[("polylogue", "producer-password")],
+            &[("polylogue", "fixture-scope".into())],
+        ),
+    })
+    .unwrap();
+    let url = server.url().to_owned();
+    let (ready, started) = mpsc::channel();
+    let fake = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            tokio::time::timeout(Duration::from_secs(10), async move {
+                let nats = async_nats::ConnectOptions::with_user_and_password(
+                    "daemon".into(),
+                    "daemon-password".into(),
+                )
+                .connect(url)
+                .await
+                .unwrap();
+                let mut hello = nats.subscribe("context.connect.polylogue").await.unwrap();
+                let mut contexts = nats
+                    .subscribe("context.public_context.polylogue")
+                    .await
+                    .unwrap();
+                nats.flush().await.unwrap();
+                ready.send(()).unwrap();
+                let hello = hello.next().await.unwrap();
+                sinex_transport::replies::publish_json(
+                    &nats,
+                    hello.reply.unwrap().to_string(),
+                    sinex_protocol::ProducerWelcome::Welcome {
+                        family: Some("polylogue".into()),
+                        canonical_publisher: true,
+                    },
+                    Duration::from_secs(2),
+                )
+                .await
+                .unwrap();
+                let mut refreshed = available();
+                if let PublicContext::Available { observed_at, .. } = &mut refreshed {
+                    *observed_at = sinex_model::Timestamp::from_unix_secs(101).unwrap();
+                }
+                for reply in [
+                    available(),
+                    refreshed,
+                    PublicContext::Refused {
+                        reason: "public context grant denied".into(),
+                    },
+                ] {
+                    let request = contexts.next().await.unwrap();
+                    let _: sinex_protocol::PublicContextRequest =
+                        serde_json::from_slice(&request.payload).unwrap();
+                    sinex_transport::replies::publish_json(
+                        &nats,
+                        request.reply.unwrap().to_string(),
+                        reply,
+                        Duration::from_secs(2),
+                    )
+                    .await
+                    .unwrap();
+                }
+            })
+            .await
+            .unwrap();
+        });
+    });
+    started.recv_timeout(Duration::from_secs(10)).unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let config = crate::Config {
+        mode: crate::Mode::Primary,
+        nats: server.url().into(),
+        producer: "polylogue".into(),
+        subject_root: "context".into(),
+        store: root.path().into(),
+        password_file: None,
+        upload_root: None,
+    };
+    let sinex = Sinex {
+        config,
+        authentication: crate::Authentication::Password("producer-password".into()),
+        health: Arc::new(Mutex::new(crate::status::Health::default())),
+        spool: Arc::new(Mutex::new(
+            crate::spool::Spool::open(root.path(), "polylogue").unwrap(),
+        )),
+        runtime: Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .unwrap(),
+        ),
+        publication: Default::default(),
+        sender: None,
+        stopping: None,
+        client: Mutex::new(None),
+        host: "fixture-host".into(),
+    };
+    let resolve = |name: &str| jiff::tz::TimeZone::get(name).map_err(|error| error.to_string());
+    let first = sinex.context(resolve).unwrap();
+    let expire = || {
+        let mut health = sinex.health.locked();
+        let old = Instant::now() - Duration::from_secs(10);
+        health.context.received = Some(old);
+        health.context.attempted = Some(old);
+    };
+    expire();
+    let next = sinex.context(resolve).unwrap();
+    assert_eq!(first.observed_at.unix_ns(), 100_000_000_000);
+    assert_eq!(next.observed_at.unix_ns(), 101_000_000_000);
+    assert_eq!(next.settings_identity, first.settings_identity);
+    assert_eq!(next.settings_revision, first.settings_revision);
+    assert!(
+        next.received_seconds_ago <= polylogue_model::freshness::SINEX_OBSERVATION_MAX_AGE_SECONDS
+    );
+    // A fresh call reuses the observation. The server expects only the next
+    // expired call, whose changed authorization must refuse the old context.
+    assert_eq!(
+        sinex.context(resolve).unwrap().observed_at,
+        next.observed_at
+    );
+    expire();
+    let error = sinex.context(resolve).unwrap_err();
+    assert_eq!(error.kind, ContextFailureKind::Refused);
+    assert_eq!(error.reason, "public context grant denied");
+    assert_eq!(error.last_known_identity.as_deref(), Some("settings-1"));
+    fake.join().unwrap();
+}
