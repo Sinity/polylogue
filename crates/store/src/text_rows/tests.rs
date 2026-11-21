@@ -125,7 +125,12 @@ fn a_later_decode_failure_rolls_back_earlier_search_entries_in_its_transaction()
         let second = intern(&conn, "narwhal", 1, None, &upkeep).unwrap();
         replace_group_body(&conn, second, b"\0");
         if at_build_end {
-            assert!(build_search_indexes(&conn).is_err());
+            assert!(
+                SearchBuild::start(&conn, &crate::cancellation::Cancellation::default(), 8)
+                    .unwrap()
+                    .finish(&conn)
+                    .is_err()
+            );
         } else {
             assert!(index_pending(&conn, || ()).is_err());
             assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 2);
@@ -155,7 +160,10 @@ fn build_and_pending_searches_keep_ascii_unicode_and_search_kinds() {
         intern(&tx, "notindexed", 0, None, &upkeep).unwrap();
         tx.commit().unwrap();
         if at_build_end {
-            build_search_indexes(&conn).unwrap();
+            SearchBuild::start(&conn, &crate::cancellation::Cancellation::default(), 8)
+                .unwrap()
+                .finish(&conn)
+                .unwrap();
         } else {
             assert_eq!(
                 index_pending(&conn, || ()).unwrap(),

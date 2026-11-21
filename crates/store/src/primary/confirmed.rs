@@ -997,7 +997,7 @@ pub(crate) fn apply_prepared(
     )?;
     crate::fault::check("primary.before_commit", "")?;
     tx.commit()?;
-    text_transaction.commit();
+    let _ = text_transaction.commit();
     drop(plan);
     self::next(index)
 }

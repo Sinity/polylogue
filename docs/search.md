@@ -52,16 +52,27 @@ Counting rows applies the query's filters and transform selections without evalu
 
 ## Index maintenance
 
-The full-text indexes are contentless, keyed by text ID, with contentless delete. A text enters an index when its first block of that kind is written and leaves with its last. Ranking after re-parse retractions equals a fresh build's: whenever retracted rows exceed 10% of an index's rows, the writer rebuilds that index's statistics in the same pass. This is part of the write path, not a command.
+The full-text indexes are contentless and keyed by distinct text ID. A text
+enters a corpus when its first block of that kind is written and leaves with
+its last. Removal supplies its original folded text to the native FTS delete
+command before releasing the stored body. This adjusts document and token
+counts as well as postings, so ranking agrees with a fresh index of the same
+surviving population, including after later reinsertion.
 
-A deferred first build writes both full-text indexes from all marked texts in
-one transaction, which first clears earlier derived postings and statistics:
-each search segment is written once, and an interruption or failure leaves the
-indexes as they were, so a retry, also after a later deferred-index failure,
-has the same ranking and vocabulary as a fresh build. Parsed rows, source progress
-and original bytes remain committed. A reopen repeats this work while
-the build is incomplete; search becomes ready after deferred finalization
-succeeds.
+During a first build, a bounded worker constructs both native search corpora
+while ordinary row groups continue committing. Only committed membership and
+compressed text reach that worker. A transaction owns old contents needed for
+deletion, spilling large retractions to disposable scratch; rollback discards
+them. The worker holds no reader or writer lease on the model database. Text
+IDs, corpus membership, tokenizer, folding and positional detail are the same
+as for ordinary incremental indexing.
+
+Finalization drains the committed feed and atomically copies the complete
+native trees into the private index. Search becomes ready only after all
+deferred indexes and the surrounding private index install succeed. A stop,
+worker error or failed copy leaves original bytes and committed parsed progress
+intact; ordinary reopen discards disposable postings and builds from the
+committed model. No search-worker checkpoint authorizes model progress.
 
 ## Semantic ranking
 

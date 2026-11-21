@@ -2,8 +2,6 @@
 use super::*;
 use crate::archive::{cache, open_write};
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 const TEXTS: usize = 32_000;
@@ -211,7 +209,14 @@ fn corruption() -> serde_json::Value {
     let conn = open_write(&w.archive.index_db(), cache::INDEX_WRITER).unwrap();
     let before = parsed(&conn);
     crate::text_rows::replace_group_body(&conn, 1000 + ROWS as i64 - 2, b"\0");
-    let failed = crate::text_rows::build_search_indexes(&conn).is_err();
+    let failed = crate::text_rows::SearchBuild::start(
+        &conn,
+        &crate::cancellation::Cancellation::default(),
+        8,
+    )
+    .unwrap()
+    .finish(&conn)
+    .is_err();
     let partial: i64 = conn
         .query_row("SELECT count(*) FROM text_fts", [], |r| r.get(0))
         .unwrap();
@@ -255,10 +260,6 @@ fn stopped() -> serde_json::Value {
     drop(conn);
     let stop = crate::cancellation::Cancellation::default();
     let stop_seen = stop.clone();
-    let commits = Arc::new(AtomicU64::new(0));
-    let documents = Arc::new(AtomicU64::new(0));
-    let committed = commits.clone();
-    let indexed = documents.clone();
     let file = path.clone();
     let run = std::thread::spawn(move || {
         // A small page cache, so the one search transaction spills pages
@@ -272,26 +273,8 @@ fn stopped() -> serde_json::Value {
             0,
             1,
         );
-        conn.commit_hook(Some(move || {
-            committed.fetch_add(1, Ordering::Relaxed);
-            false
-        }))
-        .unwrap();
-        conn.update_hook(Some(
-            move |_: rusqlite::hooks::Action, _: &str, table: &str, id: i64| {
-                if matches!(table, "text_fts_docsize" | "output_fts_docsize") && id > 10 {
-                    indexed.fetch_add(1, Ordering::Relaxed);
-                }
-            },
-        ))
-        .unwrap();
-        let progress = stop_seen.clone();
-        conn.progress_handler(1000, Some(move || progress.is_cancelled()))
-            .unwrap();
-        let result = crate::cancellation::under(&stop_seen, || {
-            crate::text_rows::build_search_indexes(&conn)
-        });
-        conn.progress_handler(0, None::<fn() -> bool>).unwrap();
+        let result = crate::text_rows::SearchBuild::start(&conn, &stop_seen, 8)
+            .and_then(|build| build.finish(&conn));
         result.map_err(|e| e.to_string())
     });
     let guard = Instant::now();
@@ -305,17 +288,18 @@ fn stopped() -> serde_json::Value {
             crate::fault::release();
             let result = run.join().unwrap();
             panic!(
-                "deferred search did not reach its stop boundary: result={result:?}, commits={}, documents={}, wal_bytes={}",
-                commits.load(Ordering::Relaxed),
-                documents.load(Ordering::Relaxed),
+                "search copy did not reach its commit boundary: result={result:?}, wal_bytes={}",
                 wal_bytes(&path)
             );
         }
         std::thread::yield_now();
     }
     let wal_at_stop = wal_bytes(&path);
-    let commits_at_stop = commits.load(Ordering::Relaxed);
-    let documents_at_stop = documents.load(Ordering::Relaxed);
+    let reader = crate::archive::open_read(&path).unwrap();
+    let visible_at_stop: i64 = reader
+        .query_row("SELECT count(*) FROM text_fts", [], |r| r.get(0))
+        .unwrap();
+    drop(reader);
     let not_ready_at_stop = w.archive.index_build().is_some();
     let started = Instant::now();
     stop.cancel();
@@ -337,7 +321,7 @@ fn stopped() -> serde_json::Value {
     drop(conn);
     drop(w);
     serde_json::json!({"interrupted":result.is_err(),"wal_at_stop":wal_at_stop,"stop_seconds":stop_seconds,
-        "commits_at_stop":commits_at_stop,"documents_at_stop":documents_at_stop,"not_ready_at_stop":not_ready_at_stop,
+        "visible_at_stop":visible_at_stop,"reached_copy_commit_boundary":true,"not_ready_at_stop":not_ready_at_stop,
         "partial_fts_rows":partial,"parsed_preserved":preserved,
         "reopen_ok":resumed.is_ok(),"reopen_result":resumed,"ready":ready,"normal_pending_exact":recovered==pending_signature(TEXTS)})
 }
@@ -351,11 +335,10 @@ fn deferred_search_replay_matches_live_ranking_after_interruption() {
         serde_json::json!({"stopped":stopped,"corruption":corruption})
     );
     assert_eq!(stopped["interrupted"], true);
-    // The search indexes are written in one transaction
-    // (docs/architecture.md, Pipeline): nothing of it has committed when the
-    // stop arrives, and the stop leaves no partial index behind.
-    assert_eq!(stopped["commits_at_stop"], 0);
-    assert!(stopped["documents_at_stop"].as_u64().unwrap() > 0);
+    // Both native trees have been copied but their one main-index transaction
+    // has not committed (docs/architecture.md, Pipeline). Readers see neither.
+    assert_eq!(stopped["reached_copy_commit_boundary"], true);
+    assert_eq!(stopped["visible_at_stop"], 0);
     assert_eq!(stopped["partial_fts_rows"], 0);
     assert_eq!(stopped["not_ready_at_stop"], true);
     assert_eq!(stopped["parsed_preserved"], true);
@@ -370,4 +353,254 @@ fn deferred_search_replay_matches_live_ranking_after_interruption() {
     assert_eq!(corruption["deferred_failure"], true);
     assert_eq!(corruption["not_ready_after_deferred_failure"], true);
     assert_eq!(corruption["normal_pending_exact"], true);
+}
+
+#[test]
+fn streamed_search_keeps_committed_membership_rank_positions_and_reopen() {
+    use crate::text_rows::{SearchBuild, insert_alone};
+    let dir = tempfile::tempdir().unwrap();
+    let mut built = open_write(&dir.path().join("built.db"), 8).unwrap();
+    let normal = open_write(&dir.path().join("normal.db"), 8).unwrap();
+    for conn in [&built, &normal] {
+        crate::schema::create_index(conn).unwrap();
+    }
+    let insert = |conn: &Connection, id: i64, bits: i64, text: &str| {
+        insert_alone(
+            conn,
+            Some(id),
+            blake3::hash(text.as_bytes()).as_bytes(),
+            &crate::encoding::normalized_text_hash(text),
+            text,
+            bits,
+        );
+    };
+    let stop = crate::cancellation::Cancellation::default();
+    let mut build = SearchBuild::start(&built, &stop, 8).unwrap();
+    build.capture(&built, None).unwrap();
+    let before = signature(&built); // Cache both native virtual-table structures.
+    for chunk in 0..4 {
+        let tx = built.transaction().unwrap();
+        for n in chunk * 64..(chunk + 1) * 64 {
+            insert(&tx, 1000 + n as i64, membership(n), &body(n));
+        }
+        assert!(
+            build.capture(&tx, None).is_err(),
+            "uncommitted rows cannot enter the feed"
+        );
+        tx.commit().unwrap();
+        build.capture(&built, None).unwrap();
+    }
+    assert_eq!(
+        signature(&built),
+        before,
+        "temporary postings are not published"
+    );
+    let texts = crate::text_rows::TextIds::new(&built, true, 1 << 20).unwrap();
+    let text_tx = texts.transaction();
+    let tx = built.transaction().unwrap();
+    insert(&tx, 900, 3, "anchor cedar birch Łódź Straße");
+    crate::text_rows::remove_unindexed(&tx, &texts, 1004).unwrap();
+    tx.execute("UPDATE text SET indexed=2 WHERE id=1001", [])
+        .unwrap();
+    tx.execute("UPDATE text SET indexed=3 WHERE id=1002", [])
+        .unwrap();
+    tx.commit().unwrap();
+    build.capture(&built, text_tx.commit()).unwrap();
+    build.capture(&built, None).unwrap();
+    let text_tx = texts.transaction();
+    let tx = built.transaction().unwrap();
+    crate::text_rows::remove_unindexed(&tx, &texts, 1003).unwrap();
+    insert(&tx, 9999, 3, "must never become searchable");
+    tx.rollback().unwrap();
+    drop(text_tx);
+    build.capture(&built, None).unwrap();
+    let oversized = format!("{} anchor cedar", "x".repeat((4 << 20) + 1));
+    insert(&built, 20000, 3, &oversized);
+    build.capture(&built, None).unwrap();
+    build.finish(&built).unwrap();
+
+    // The independent ordinary indexer sees only the hand-specified final
+    // population, not the builder's notices or reconstructed native trees.
+    for n in 0..256 {
+        if n == 4 {
+            continue;
+        }
+        let bits = match n {
+            1 => 2,
+            2 => 3,
+            _ => membership(n),
+        };
+        insert(&normal, 1000 + n as i64, bits, &body(n));
+    }
+    insert(&normal, 900, 3, "anchor cedar birch Łódź Straße");
+    insert(&normal, 20000, 3, &oversized);
+    normal
+        .execute_batch(
+            "INSERT INTO search_pending SELECT id,1 FROM text WHERE indexed&1<>0;
+        INSERT INTO search_pending SELECT id,2 FROM text WHERE indexed&2<>0;",
+        )
+        .unwrap();
+    crate::text_rows::index_pending(&normal, || ()).unwrap();
+    let reopened = crate::archive::open_read(&dir.path().join("built.db")).unwrap();
+    let positions = |conn: &Connection, table: &str| {
+        conn.execute_batch(&format!(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS temp.positions_{table}
+            USING fts5vocab(main,{table},instance)"
+        ))
+        .unwrap();
+        digest(
+            conn,
+            &format!(
+                "SELECT term,doc,col,offset FROM temp.positions_{table}
+            WHERE term IN ('anchor','cedar','lodz','strasse') ORDER BY term,doc,col,offset"
+            ),
+        )
+    };
+    for conn in [&built, &reopened] {
+        assert_eq!(signature(conn), signature(&normal));
+        for table in ["text_fts", "output_fts"] {
+            assert_eq!(positions(conn, table), positions(&normal, table));
+        }
+    }
+
+    // Installation must invalidate the original writer's cached FTS state,
+    // including before reopen, and leave the ordinary incremental route usable.
+    for conn in [&built, &normal] {
+        insert(conn, 30000, 2, "anchor cedar birch maple");
+        conn.execute("INSERT INTO search_pending VALUES(30000,2)", [])
+            .unwrap();
+        crate::text_rows::index_pending(conn, || ()).unwrap();
+        crate::text_rows::remove(conn, 1003, membership(3)).unwrap();
+    }
+    for conn in [&built, &reopened] {
+        assert_eq!(signature(conn), signature(&normal));
+    }
+    for conn in [&built, &normal] {
+        insert(conn, 1003, membership(3), &body(3));
+        for bit in [1, 2].into_iter().filter(|bit| membership(3) & bit != 0) {
+            conn.execute("INSERT INTO search_pending VALUES(?1,?2)", [1003, bit])
+                .unwrap();
+        }
+        crate::text_rows::index_pending(conn, || ()).unwrap();
+    }
+    for conn in [&built, &reopened] {
+        assert_eq!(signature(conn), signature(&normal));
+    }
+}
+
+#[test]
+fn a_search_worker_can_build_before_finalization_without_holding_the_row_writer() {
+    struct Release;
+    impl Drop for Release {
+        fn drop(&mut self) {
+            crate::fault::release();
+        }
+    }
+    let mut w = test_archive();
+    let path = w.archive.index_db();
+    crate::fault::arm(
+        "search.build_batch",
+        &path.to_string_lossy(),
+        crate::fault::Action::Hold,
+        0,
+        1,
+    );
+    let release = Release;
+    let reading = |name: &str| {
+        batch(
+            name,
+            Route::Live,
+            0,
+            vec![row(
+                0,
+                text_message(name, "streaming-session", Role::User, name, None),
+            )],
+            &["streaming-session"],
+        )
+    };
+    w.store_reading(reading("cedar"), Some(&SOURCE_RECORD))
+        .unwrap();
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    while !crate::fault::held() && Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    let held = crate::fault::held();
+    if !held {
+        drop(release);
+        panic!("the first committed group never reached native search construction");
+    }
+    // The first native batch is still held. Another group can commit using
+    // the real queue; the worker owns no private-index reader or writer lease.
+    let second = w.store_reading(reading("maple"), Some(&SOURCE_RECORD));
+    let still_building = w.archive.index_build().is_some();
+    drop(release);
+    assert!(second.is_ok(), "{second:?}");
+    assert!(still_building);
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    w.writer.stop();
+    w.archive = w.archive.reopened();
+    w.writer = Writer::start(&w.archive).unwrap();
+    w.writer.derive().unwrap();
+    crate::fault::clear();
+    assert!(w.archive.index_build().is_none());
+    let conn = crate::archive::open_read(&w.archive.index_db()).unwrap();
+    let texts: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM text_fts WHERE text_fts MATCH 'cedar OR maple'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(texts, 2);
+}
+
+#[test]
+fn an_early_search_failure_is_reported_before_an_explicit_build_retry() {
+    let w = test_archive();
+    crate::fault::arm(
+        "search.build_batch",
+        &w.archive.index_db().to_string_lossy(),
+        crate::fault::Action::Fail,
+        0,
+        1,
+    );
+    for name in ["cedar", "maple", "birch", "walnut"] {
+        w.store_reading(
+            batch(
+                name,
+                Route::Live,
+                0,
+                vec![row(
+                    0,
+                    text_message(name, "failed-search", Role::User, name, None),
+                )],
+                &["failed-search"],
+            ),
+            Some(&SOURCE_RECORD),
+        )
+        .unwrap();
+    }
+    let report = w.writer.flush().unwrap();
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| error.contains("search.build_batch")),
+        "{:?}",
+        report.errors
+    );
+    // Ordinary row turns must not silently rebuild a failed worker's prefix.
+    // The finalizer owns reporting its exact result before a new build retries.
+    let error = w.writer.derive().unwrap_err();
+    assert!(error.to_string().contains("search.build_batch"), "{error}");
+    assert!(w.archive.index_build().is_some());
+    w.writer.derive().unwrap();
+    crate::fault::clear();
+    assert!(w.archive.index_build().is_none());
+    let conn = crate::archive::open_read(&w.archive.index_db()).unwrap();
+    let texts: i64 = conn.query_row(
+        "SELECT count(*) FROM text_fts WHERE text_fts MATCH 'cedar OR maple OR birch OR walnut'",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(texts, 4);
 }

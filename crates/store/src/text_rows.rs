@@ -5,7 +5,7 @@ use crate::ConnExt as _;
 use crate::Result;
 mod groups;
 mod search_build;
-pub(crate) use search_build::build_search_indexes;
+pub(crate) use search_build::SearchBuild;
 mod identities;
 #[cfg(any(test, feature = "fixture"))]
 use crate::writer::resolve::IndexUpkeep;
@@ -17,7 +17,7 @@ use rusqlite::{Connection, TransactionBehavior, params};
 
 /// The text row for `body`, stored once per distinct content, and its
 /// entry in the search index `bit` names (1 prose, 2 tool output). During a
-/// build, its search membership is marked for the final scan.
+/// build, its membership feeds the independent native search builder.
 #[cfg(any(test, feature = "fixture"))]
 pub(crate) fn intern(
     conn: &Connection,
@@ -50,8 +50,8 @@ pub(crate) fn intern(
             let prepared = prepared
                 .get(hash.as_bytes())
                 .expect("the text was just prepared");
-            // A first build marks the text for its search index now and
-            // writes the entry when the build ends.
+            // A first build marks membership now; the committed snapshot
+            // feeds its independent native search builder.
             let marked = if at_build_end { bit } else { 0 };
             let id = groups::insert(
                 conn,
@@ -68,8 +68,8 @@ pub(crate) fn intern(
         }
     };
     // `indexed` marks a text for its search index; the entry itself is
-    // written after this transaction commits: by the search thread, or by
-    // the final build scan.
+    // written after this transaction commits: by the installed search thread
+    // or the independent first-build search worker.
     if bit != 0 && indexed & bit == 0 {
         join_index(conn, id, bit, at_build_end)?;
     }
@@ -78,8 +78,8 @@ pub(crate) fn intern(
 
 /// The search indexes new text rows join when they are written: those the
 /// blocks a step makes current name, by text hash (bit 1 prose, 2 tool
-/// output). A first build (`at_build_end`) writes the entries when it ends; otherwise
-/// they are queued for the search thread.
+/// output). A first build (`at_build_end`) feeds its committed snapshots to
+/// a native builder; otherwise entries are queued for the search thread.
 pub(crate) struct NewMembership<'a> {
     pub bits: &'a std::collections::HashMap<[u8; 32], i64>,
     pub at_build_end: bool,
@@ -209,6 +209,29 @@ fn insert_entry(conn: &Connection, id: i64, bit: i64, folded: &str) -> Result<()
     Ok(())
 }
 
+/// Native explicit deletion updates document/token totals as well as postings.
+/// The old content is still authoritative here, before its group is removed.
+pub(crate) fn delete_entry(conn: &Connection, id: i64, table: &str) -> Result<()> {
+    let present = conn
+        .prepare_cached(&format!(
+            "SELECT EXISTS(SELECT 1 FROM {table}_docsize WHERE id=?1)"
+        ))?
+        .query_row([id], |r| r.get::<_, bool>(0))?;
+    if present {
+        let (body, _) = folded_text(read(conn, id)?)?;
+        delete_with_body(conn, id, table, &body)?;
+    }
+    Ok(())
+}
+
+fn delete_with_body(conn: &Connection, id: i64, table: &str, body: &str) -> Result<()> {
+    conn.prepare_cached(&format!(
+        "INSERT INTO {table}({table},rowid,body) VALUES('delete',?1,?2)"
+    ))?
+    .execute(params![id, body])?;
+    Ok(())
+}
+
 /// Historical versions keep their text row, but only current blocks contribute
 /// documents to full-text ranking or embedding.
 pub(crate) fn unindex_unused(
@@ -224,7 +247,7 @@ pub(crate) fn unindex_unused(
         let used:bool=i.exists(&format!("SELECT EXISTS(SELECT 1 FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.text_id=?1 AND {kind}) OR (?2=1 AND EXISTS(SELECT 1 FROM document_block b JOIN document d ON d.pk=b.document_pk WHERE b.text_id=?1))"), params![id,bit])?;
         if !used {
             if !at_build_end {
-                i.execute(&format!("DELETE FROM {table} WHERE rowid=?1"), [id])?;
+                delete_entry(i, id, table)?;
             }
             i.execute(
                 "DELETE FROM search_pending WHERE text_id=?1 AND fts_table=?2",
@@ -242,18 +265,19 @@ pub(crate) fn unindex_unused(
 
 pub(crate) fn remove(i: &Connection, id: i64, indexed: i64) -> Result<()> {
     if indexed & 1 != 0 {
-        i.execute("DELETE FROM text_fts WHERE rowid = ?1", [id])?;
+        delete_entry(i, id, "text_fts")?;
     }
     if indexed & 2 != 0 {
-        i.execute("DELETE FROM output_fts WHERE rowid = ?1", [id])?;
+        delete_entry(i, id, "output_fts")?;
     }
     i.execute("DELETE FROM search_pending WHERE text_id = ?1", [id])?;
     groups::delete(i, id)
 }
 
-/// Removes a text row during a first build, whose search entries are written
-/// only when it ends.
-pub(crate) fn remove_unindexed(i: &Connection, id: i64) -> Result<()> {
+/// Removes a text row during a first build. Its committed absence removes
+/// the entry from the independent search builder.
+pub(crate) fn remove_unindexed(i: &Connection, texts: &TextIds, id: i64) -> Result<()> {
+    texts.removing(i, id)?;
     groups::delete(i, id)
 }
 

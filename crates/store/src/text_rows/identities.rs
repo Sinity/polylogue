@@ -19,6 +19,8 @@ pub(crate) struct TextIds {
     /// A positive ID has a row; its negative form keeps the allocation after
     /// removal or rollback, so a later text cannot reuse that identity.
     known: RefCell<KeyRows>,
+    /// Compressed deletion preimages belong only to the current transaction.
+    removed: RefCell<Option<super::search_build::RemovedTexts>>,
     marked: RefCell<HashMap<i64, i64>>,
     marked_entries: usize,
     groups: super::StoredGroups,
@@ -32,6 +34,7 @@ impl TextIds {
         let max: i64 = conn.scalar("SELECT coalesce(max(id),0) FROM text", [])?;
         let ids = Self {
             known: RefCell::new(KeyRows::new(bytes / 2)?),
+            removed: RefCell::new(None),
             marked: RefCell::new(HashMap::new()),
             marked_entries: (bytes / 4 / 64).max(1) as usize,
             groups: super::StoredGroups::new(bytes / 4),
@@ -177,6 +180,17 @@ impl TextIds {
         }
     }
 
+    pub(super) fn removing(&self, conn: &Connection, id: i64) -> Result<()> {
+        let mut removed = self.removed.borrow_mut();
+        if removed.is_none() {
+            *removed = Some(super::search_build::RemovedTexts::new()?);
+        }
+        removed
+            .as_mut()
+            .expect("created deletion spool")
+            .push(conn, id)
+    }
+
     pub(crate) fn transaction(&self) -> TextTransaction<'_> {
         TextTransaction {
             texts: self,
@@ -194,15 +208,17 @@ pub(crate) struct TextTransaction<'a> {
     committed: bool,
 }
 impl TextTransaction<'_> {
-    pub(crate) fn commit(mut self) {
+    pub(crate) fn commit(mut self) -> Option<super::search_build::RemovedTexts> {
         self.committed = true;
         self.texts.groups.clear();
+        self.texts.removed.borrow_mut().take()
     }
 }
 impl Drop for TextTransaction<'_> {
     fn drop(&mut self) {
         self.texts.marked.borrow_mut().clear();
         if !self.committed {
+            self.texts.removed.borrow_mut().take();
             self.texts.reload.set(true);
             self.texts.groups.clear();
         }

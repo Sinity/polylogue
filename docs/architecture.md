@@ -183,6 +183,11 @@ The active file changes with each rename under the same lock that selects
 read paths and reads their file identity, including when a following sync
 fails. A reader opened before a rename is refused as replaced before its
 first database read; an already-started read keeps its open snapshot.
+An independent first-build search worker receives bounded committed text batches
+and constructs disposable native postings during row ingestion. It holds no
+connection to the model file. Finalization drains that worker and installs its
+complete trees atomically before installing the private index; a reopen starts
+another disposable worker from the committed model ([search](search.md#index-maintenance)).
 Only the build pipeline opens the private file: the
 writer, its resolver and parser-context reads, the engine's planning reads
 and tool-database catalog reads. Readers of that owned private file permit

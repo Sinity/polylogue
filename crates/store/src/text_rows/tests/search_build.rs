@@ -1,6 +1,6 @@
 //! A first build has the same ranked search as incremental writes.
 use crate::archive::{cache, open_write};
-use crate::text_rows::{build_search_indexes, index_pending, insert_alone};
+use crate::text_rows::{SearchBuild, index_pending, insert_alone};
 use rusqlite::Connection;
 
 fn vocabulary(conn: &Connection, table: &str) -> Vec<(String, i64, i64)> {
@@ -68,23 +68,12 @@ fn built_search_vocabulary_matches_incremental_writes() {
             rusqlite::params![crate::encoding::pack_bytes(body.as_bytes()).unwrap(), group],
         )
         .unwrap();
-    // This limit creates several windows and makes the final text a singleton.
-    let mut visited = Vec::new();
-    super::super::search_build::visit_indexed_texts(&built, 26, |id, bits, text| {
-        visited.push((id, bits, text));
-        Ok(())
-    })
-    .unwrap();
-    let expected: Vec<_> = inputs
-        .into_iter()
-        .enumerate()
-        .filter(|(_, (_, bits))| *bits != 0)
-        .map(|(n, (text, bits))| (n as i64 + 1, bits, text.to_owned()))
-        .collect();
-    assert_eq!(visited, expected);
     index_pending(&incremental, || ()).unwrap();
     assert!(vocabulary(&built, "fts_vocab_output").is_empty());
-    build_search_indexes(&built).unwrap();
+    SearchBuild::start(&built, &crate::cancellation::Cancellation::default(), 8)
+        .unwrap()
+        .finish(&built)
+        .unwrap();
     for table in ["fts_vocab_text", "fts_vocab_output"] {
         assert_eq!(
             vocabulary(&built, table),
@@ -172,7 +161,9 @@ fn failed_search_rebuild_preserves_both_tables_and_reader_snapshots() {
         0,
         1,
     );
-    let result = build_search_indexes(&conn);
+    let result = SearchBuild::start(&conn, &crate::cancellation::Cancellation::default(), 8)
+        .unwrap()
+        .finish(&conn);
     crate::fault::clear();
     assert!(result.is_err());
     let reopened = crate::archive::open_read(&path).unwrap();
@@ -182,7 +173,10 @@ fn failed_search_rebuild_preserves_both_tables_and_reader_snapshots() {
     }
     reopened.execute_batch("BEGIN").unwrap();
     assert_eq!(vocabulary(&reopened, "fts_vocab_text"), before[0]);
-    build_search_indexes(&conn).unwrap();
+    SearchBuild::start(&conn, &crate::cancellation::Cancellation::default(), 8)
+        .unwrap()
+        .finish(&conn)
+        .unwrap();
     assert_eq!(vocabulary(&reopened, "fts_vocab_text"), before[0]);
     assert_eq!(vocabulary(&reopened, "fts_vocab_output"), before[1]);
     reopened.execute_batch("COMMIT").unwrap();
@@ -207,5 +201,133 @@ fn failed_search_rebuild_preserves_both_tables_and_reader_snapshots() {
                 .unwrap();
             assert_eq!(id, 2);
         }
+    }
+}
+
+#[test]
+fn ordinary_retraction_and_reinsertion_keep_fresh_population_ranking() {
+    let dir = tempfile::tempdir().unwrap();
+    let live = open_write(&dir.path().join("live.db"), 8).unwrap();
+    crate::schema::create_index(&live).unwrap();
+    let texts = ["cedar cedar birch", "cedar Łódź", "birch cedar cedar Łódź"];
+    let insert = |conn: &Connection, id: i64| {
+        let text = texts[id as usize - 1];
+        insert_alone(
+            conn,
+            Some(id),
+            blake3::hash(text.as_bytes()).as_bytes(),
+            &crate::encoding::normalized_text_hash(text),
+            text,
+            3,
+        );
+        for bit in [1, 2] {
+            conn.execute("INSERT INTO search_pending VALUES(?1,?2)", [id, bit])
+                .unwrap();
+        }
+    };
+    let ranked = |conn: &Connection, table: &str| {
+        conn.prepare(&format!("SELECT rowid,bm25({table}) FROM {table} WHERE {table} MATCH 'cedar OR lodz' ORDER BY rank,rowid"))
+            .unwrap().query_map([], |r| Ok((r.get::<_,i64>(0)?, r.get::<_,f64>(1)?.to_bits())))
+            .unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap()
+    };
+    let compare = |ids: &[i64], cut: &str| {
+        let fresh = open_write(&dir.path().join(format!("fresh-{cut}.db")), 8).unwrap();
+        crate::schema::create_index(&fresh).unwrap();
+        for &id in ids {
+            insert(&fresh, id);
+        }
+        index_pending(&fresh, || ()).unwrap();
+        for (table, vocab) in [
+            ("text_fts", "fts_vocab_text"),
+            ("output_fts", "fts_vocab_output"),
+        ] {
+            assert_eq!(ranked(&live, table), ranked(&fresh, table), "{cut}/{table}");
+            assert_eq!(
+                vocabulary(&live, vocab),
+                vocabulary(&fresh, vocab),
+                "{cut}/{vocab}"
+            );
+        }
+    };
+    for id in [1, 2, 3] {
+        insert(&live, id);
+    }
+    index_pending(&live, || ()).unwrap();
+    compare(&[1, 2, 3], "initial");
+    let tx = live.unchecked_transaction().unwrap();
+    crate::text_rows::remove(&tx, 3, 3).unwrap();
+    tx.rollback().unwrap();
+    compare(&[1, 2, 3], "rolled-back");
+    let tx = live.unchecked_transaction().unwrap();
+    crate::text_rows::remove(&tx, 3, 3).unwrap();
+    tx.commit().unwrap();
+    compare(&[1, 2], "removed");
+    insert(&live, 3);
+    index_pending(&live, || ()).unwrap();
+    compare(&[1, 2, 3], "reinserted");
+}
+
+#[test]
+fn deleting_a_streamed_text_without_its_old_contents_refuses_installation() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = open_write(&dir.path().join("missing-old-body.db"), 8).unwrap();
+    crate::schema::create_index(&conn).unwrap();
+    let text = "cedar birch cedar";
+    insert_alone(
+        &conn,
+        Some(1),
+        blake3::hash(text.as_bytes()).as_bytes(),
+        &crate::encoding::normalized_text_hash(text),
+        text,
+        3,
+    );
+    let stop = crate::cancellation::Cancellation::default();
+    let mut builder = SearchBuild::start(&conn, &stop, 8).unwrap();
+    builder.capture(&conn, None).unwrap();
+    // Deliberately bypass the production transaction's removal owner. A missing
+    // preimage must be diagnosed rather than corrupt native token statistics.
+    conn.execute("DELETE FROM text WHERE id=1", []).unwrap();
+    let result = builder
+        .capture(&conn, None)
+        .and_then(|()| builder.finish(&conn));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("no committed old contents")
+    );
+    for table in ["text_fts", "output_fts"] {
+        let count: i64 = conn
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+}
+
+#[test]
+fn an_unselected_new_text_does_not_enter_search_construction() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = open_write(&dir.path().join("historical-only.db"), 8).unwrap();
+    crate::schema::create_index(&conn).unwrap();
+    let stop = crate::cancellation::Cancellation::default();
+    let mut builder = SearchBuild::start(&conn, &stop, 8).unwrap();
+    builder.capture(&conn, None).unwrap();
+    let text = "historical text";
+    insert_alone(
+        &conn,
+        Some(1),
+        blake3::hash(text.as_bytes()).as_bytes(),
+        &crate::encoding::normalized_text_hash(text),
+        text,
+        0,
+    );
+    super::super::replace_group_body(&conn, 1, b"not a text frame");
+    builder.capture(&conn, None).unwrap();
+    builder.finish(&conn).unwrap();
+    for table in ["text_fts", "output_fts"] {
+        let count: i64 = conn
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
     }
 }

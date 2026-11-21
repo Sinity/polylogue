@@ -607,7 +607,7 @@ pub(crate) fn remove_unreferenced(
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for (id, indexed, hash) in unused_texts {
         if upkeep.at_build_end() {
-            crate::text_rows::remove_unindexed(conn, id)?;
+            crate::text_rows::remove_unindexed(conn, texts, id)?;
         } else {
             crate::text_rows::remove(conn, id, indexed)?;
         }

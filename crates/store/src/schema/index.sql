@@ -233,10 +233,11 @@ CREATE INDEX block_text   ON block(text_id) WHERE text_id IS NOT NULL;   -- sear
 -- Full-text search: two contentless indexes keyed by text.id, holding folded
 -- text. text_fts: prose (text and thinking blocks). output_fts: tool output
 -- (tool_result blocks, and bodies written through file-writing and file-editing
--- tool calls). Rules below.
-CREATE VIRTUAL TABLE text_fts USING fts5(body, content='', contentless_delete=1,
+-- tool calls). Explicit deletion supplies the old folded text, so document
+-- and token totals follow the surviving population.
+CREATE VIRTUAL TABLE text_fts USING fts5(body, content='',
                                          tokenize='unicode61 remove_diacritics 2');
-CREATE VIRTUAL TABLE output_fts USING fts5(body, content='', contentless_delete=1,
+CREATE VIRTUAL TABLE output_fts USING fts5(body, content='',
                                            tokenize='unicode61 remove_diacritics 2');
 -- Document frequency of each word, for the search planner.
 CREATE VIRTUAL TABLE fts_vocab_text USING fts5vocab(text_fts, 'row');
@@ -255,7 +256,7 @@ INSERT INTO output_fts(output_fts, rank) VALUES ('hashsize', 67108864);
 -- text here in the transaction that stores it, and the search thread writes
 -- the entry shortly after, outside the writer's transaction; a flush writes
 -- every waiting entry before it returns. A first build writes none: it
--- builds the search indexes in bulk when it ends.
+-- feeds committed text to its independent builder while rows continue.
 CREATE TABLE search_pending (
   text_id           INTEGER NOT NULL,       -- text.id
   fts_table         INTEGER NOT NULL,       -- which index: 1 text_fts, 2 output_fts (the bits of text.indexed)
