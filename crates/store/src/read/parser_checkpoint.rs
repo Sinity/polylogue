@@ -23,11 +23,15 @@ impl Reader<'_> {
     /// Completion checks need no parser-state bytes. Load the continuation only
     /// when the same reading will actually resume.
     pub fn parser_progress(&self, input: &str, chain: i64) -> Result<Option<StoredParserProgress>> {
+        let database = crate::source::database_original("?1");
         let row = self
             .conn()?
             .query_row(
-                "SELECT reading_version,parsed_upto,status,at_length,reason,stopped_attempt
-             FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1 AND p.chain=?2",
+                &format!(
+                    "SELECT reading_version,parsed_upto,status,at_length,reason,stopped_attempt
+             FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk
+             WHERE i.id=?1 AND p.chain=?2 AND NOT {database}"
+                ),
                 params![input, chain],
                 |r| {
                     <(
@@ -68,8 +72,11 @@ impl Reader<'_> {
             "parser.checkpoint",
             &format!("{}:{input}", self.pool.archive.root.display()),
         )?;
+        let database = crate::source::database_original("?1");
         let row = self.conn()?.query_row(
-            "SELECT reading_version,parsed_upto,checkpoint,status,at_length,reason,stopped_attempt FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1 AND p.chain=?2",
+            &format!("SELECT reading_version,parsed_upto,checkpoint,status,at_length,reason,stopped_attempt
+            FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk
+            WHERE i.id=?1 AND p.chain=?2 AND NOT {database}"),
             params![input, chain], |r| <(String, u64, Option<Vec<u8>>, String, Option<i64>, Option<String>, Option<Vec<u8>>)>::try_from(r)).optional()?;
         row.map(
             |(reading_version, cursor, bytes, status, at_length, reason, attempt)| {

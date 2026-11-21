@@ -935,7 +935,7 @@ fn a_raw_session_of_an_unnamed_origin_is_read_by_its_structure_or_kept() {
 }
 
 #[test]
-fn retained_hermes_verification_database_rebuilds_from_linked_rows() {
+fn populated_hermes_import_keeps_original_and_rebuilds_from_linked_rows() {
     let w = polylogue_testkit::ClaudeHome::new();
     let old = w.dir.path().join("python-archive");
     std::fs::create_dir_all(old.join("blob")).unwrap();
@@ -970,13 +970,102 @@ fn retained_hermes_verification_database_rebuilds_from_linked_rows() {
     )
     .unwrap();
     drop(db);
-    std::fs::remove_file(native).unwrap();
     let raw = polylogue_model::BlobHash::of(&bytes).to_string();
+    let malformed = b"this is not a Hermes row dump";
+    let refused = polylogue_model::BlobHash::of(malformed).to_string();
+    let sources = [raw.clone(), refused.clone()];
+    let observations = |engine: &Engine| {
+        engine
+            .reads
+            .reader()
+            .unwrap()
+            .query(
+                "SELECT * FROM a.observation WHERE input IN (?1,?2) ORDER BY id",
+                &sources.clone().map(polylogue_store::SqlValue::Text),
+            )
+            .unwrap()
+    };
+    let check_progress = |engine: &Engine, linked: bool| {
+        use polylogue_model::batch::ParseProgress;
+        let reader = engine.reads.reader().unwrap();
+        for (input, length) in [(&raw, bytes.len()), (&refused, malformed.len())] {
+            let progress = reader.input_progress(input).unwrap().unwrap();
+            let reading = reader.parser_progress(input, progress.chain).unwrap();
+            if linked && input == &raw {
+                assert!(!progress.parsed && !progress.waiting);
+                assert!(reading.is_none(), "{reading:?}");
+            } else {
+                let reading = reading.unwrap();
+                assert!(
+                    matches!(reading.progress, ParseProgress::Refused { length: at, .. }
+                        if at == length as u64),
+                    "{reading:?}"
+                );
+            }
+            assert_eq!(
+                reader
+                    .stored_range(input, progress.chain, 0, progress.length, &engine.blobs)
+                    .unwrap(),
+                if input == &raw {
+                    bytes.as_slice()
+                } else {
+                    malformed.as_slice()
+                }
+            );
+        }
+        let origin = reader
+            .query(
+                "SELECT origin FROM chain_progress WHERE input=?1",
+                &[polylogue_store::SqlValue::Text(raw.clone())],
+            )
+            .unwrap();
+        assert_eq!(
+            origin,
+            [serde_json::json!({"origin": if linked { KEPT } else { "hermes" }})]
+        );
+    };
     let events = "SELECT id,kind,at FROM event WHERE kind IN
                      ('hermes_verification_event','hermes_verification_state') ORDER BY kind";
     let expected;
+    let history;
     {
         let (mut engine, _lock) = crate::import::tests::engine(&w, 64);
+        // The previous catalog importer submitted native bytes directly as
+        // Hermes row input. Seed that exact writer and parser path.
+        let legacy = polylogue_sources::origin::by_name("hermes").unwrap();
+        for (path, data) in [
+            (
+                old.join("legacy/verification_evidence.db"),
+                bytes.as_slice(),
+            ),
+            (
+                old.join("legacy-corrupt/verification_evidence.db"),
+                malformed.as_slice(),
+            ),
+        ] {
+            let member = package::Member {
+                path,
+                bytes: engine.archive.prepare_bytes(data).unwrap(),
+                container: false,
+                origin: Some(legacy),
+                parent: None,
+                container_kind: None,
+                member_path_bytes: None,
+                refusal: None,
+            };
+            engine
+                .import_members(
+                    &old,
+                    vec![member],
+                    &archive_format(),
+                    &mut ImportReport::default(),
+                )
+                .unwrap();
+        }
+        std::fs::remove_file(native).unwrap();
+        check_progress(&engine, false);
+        let original_observations = observations(&engine);
+        assert_eq!(original_observations.len(), 2);
         let report = engine
             .import_with_options(std::slice::from_ref(&old), &archive_format())
             .unwrap();
@@ -987,14 +1076,15 @@ fn retained_hermes_verification_database_rebuilds_from_linked_rows() {
         expected = w.read(|reader| reader.query(events, &[]));
         assert_eq!(expected.len(), 2, "{expected:?}");
         assert_ne!(expected[0]["at"], expected[1]["at"]);
-        let reader = engine.reads.reader().unwrap();
-        let input = reader.input_progress(&raw).unwrap().unwrap();
-        assert_eq!(
-            reader
-                .stored_range(&raw, input.chain, 0, input.length, &engine.blobs)
-                .unwrap(),
-            bytes
+        check_progress(&engine, true);
+        history = observations(&engine);
+        assert_eq!(history.len(), 3);
+        assert!(
+            original_observations
+                .iter()
+                .all(|observation| history.contains(observation))
         );
+        let reader = engine.reads.reader().unwrap();
         let linked = reader
             .query(
                 "SELECT count(DISTINCT o.input) AS n FROM a.observation_container c
@@ -1010,14 +1100,49 @@ fn retained_hermes_verification_database_rebuilds_from_linked_rows() {
             .import_with_options(std::slice::from_ref(&old), &archive_format())
             .unwrap();
         assert!(
-            repeat.imported.is_empty() && repeat.pass.errors.is_empty(),
+            repeat.imported.is_empty()
+                && repeat.pass.errors.is_empty()
+                && repeat.pass.bytes_stored == 0,
             "{repeat:?}"
         );
+        assert_eq!(observations(&engine), history);
         assert_eq!(w.read(|reader| reader.query(events, &[])), expected);
     }
     std::fs::remove_dir_all(old).unwrap();
+    // A previous writer could already have stored the link while retaining
+    // the old chain count. Reopen the installed index before rebuilding it.
+    {
+        let index = rusqlite::Connection::open(w.root.join("index.db")).unwrap();
+        assert_eq!(
+            index
+                .execute(
+                    "UPDATE chain_progress SET origin='hermes' WHERE input=?1",
+                    [&raw],
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            index
+                .execute(
+                    "UPDATE meta SET value='kept' WHERE key='chain_progress'",
+                    []
+                )
+                .unwrap(),
+            1
+        );
+        drop(index);
+        let (engine, _lock) = crate::import::tests::engine(&w, 64);
+        check_progress(&engine, true);
+        assert_eq!(w.read(|reader| reader.query(events, &[])), expected);
+    }
     polylogue_testkit::delete_index(&w.root);
     let (mut engine, _lock) = crate::import::tests::engine(&w, 64);
-    assert!(engine.run_pass().unwrap().errors.is_empty());
+    engine.config.reads_sources = false;
+    let rebuilt = engine.run_pass().unwrap();
+    assert_eq!(rebuilt.errors.len(), 1, "{rebuilt:?}");
+    assert!(rebuilt.errors[0].contains("legacy-corrupt"), "{rebuilt:?}");
+    check_progress(&engine, true);
+    assert_eq!(observations(&engine), history);
     assert_eq!(w.read(|reader| reader.query(events, &[])), expected);
 }

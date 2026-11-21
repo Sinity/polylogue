@@ -1660,14 +1660,15 @@ impl Reader<'_> {
 
     /// The input's latest revision and its chain's parser progress.
     pub fn input_progress(&self, id: &str) -> Result<Option<ChainProgress>> {
+        let database = crate::source::database_original("r.input");
         let row = self
             .conn()?
             .prepare_cached(
-                "SELECT r.length, COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, r.produced, COALESCE(p.status IN ('waiting','refused','failed') AND p.at_length = r.length, 0), r.chain
+                &format!("SELECT r.length, COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, r.produced, COALESCE(p.status IN ('waiting','refused','failed') AND p.at_length = r.length, 0), r.chain
              FROM source_revision r
              LEFT JOIN input_ref i ON i.id = r.input
-             LEFT JOIN parse_state p ON p.input_pk = i.pk AND p.chain = r.chain
-             WHERE r.input = ?1 ORDER BY r.number DESC LIMIT 1",
+             LEFT JOIN parse_state p ON p.input_pk = i.pk AND p.chain = r.chain AND NOT {database}
+             WHERE r.input = ?1 ORDER BY r.number DESC LIMIT 1"),
             )?
             .query_row([id], |r| <(i64, i64, bool, String, bool, i64)>::try_from(r))
             .optional()?;

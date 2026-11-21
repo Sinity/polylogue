@@ -13,15 +13,16 @@
 //! record the chains and inputs a transaction changed ([`recorded`]), and
 //! the writer recomputes them in its next index transaction ([`refresh`])
 //! and then forgets them ([`forget`]). A writer that stops without doing so
-//! leaves `meta.chain_progress` other than `kept`, and the next writer
+//! leaves `meta.chain_progress` open, and the next writer
 //! start recomputes every chain ([`open`]).
 use crate::ConnExt as _;
 use crate::Result;
 use rusqlite::{Connection, params};
 
-/// The `meta` key whose value is `kept` while the rows reflect every
-/// committed source row.
-const KEPT: &str = "chain_progress";
+const PROGRESS: &str = "chain_progress";
+/// Earlier writers marked counts `kept` before they accounted for linked
+/// database originals.
+const CURRENT: &str = "kept_with_database_rows";
 
 /// The rows of the chains in `chains`, a subquery of `(input, chain,
 /// length)` over `source_revision`, in the order of `chain_progress`'s
@@ -33,15 +34,17 @@ const KEPT: &str = "chain_progress";
 /// recorded at the stored length). The origin is the format an import
 /// read the input as, else the input's own.
 fn chain_rows(chains: &str) -> String {
+    let database = crate::source::database_original("c.input");
     format!(
         "SELECT c.input, c.chain,
+            CASE WHEN {database} THEN 'export-file' ELSE
             COALESCE((SELECT json_extract(o.details_json, '$.import_format')
                 FROM source_observation o
                 WHERE o.input = c.input AND o.class = 'imported' AND json_valid(o.details_json)
                   AND json_type(o.details_json, '$.import_format') = 'text'
                 ORDER BY (json_extract(o.details_json, '$.import_format') = 'export-file'),
                          o.rowid DESC
-                LIMIT 1), i.format),
+                LIMIT 1), i.format) END,
             COALESCE(p.reading_version, ''),
             CASE WHEN p.input_pk IS NULL THEN 'no_checkpoint'
                  WHEN p.status = 'no_parser_yet' THEN 'no_parser'
@@ -86,21 +89,25 @@ fn one_chain(input: &str, chain: &str) -> String {
 /// run inside triggers.
 fn refresh_sql(chains: &str, scope: &str) -> [String; 2] {
     [
-        format!(
-            "INSERT INTO chain_progress(input, chain, origin, reading_version, state)
-             SELECT * FROM ({rows}) WHERE true
-             ON CONFLICT(input, chain) DO UPDATE SET origin = excluded.origin,
-                 reading_version = excluded.reading_version, state = excluded.state
-             WHERE chain_progress.origin <> excluded.origin
-                OR chain_progress.reading_version <> excluded.reading_version
-                OR chain_progress.state <> excluded.state",
-            rows = chain_rows(chains)
-        ),
+        update_counts(chains),
         format!(
             "DELETE FROM chain_progress WHERE {scope}
                  AND NOT EXISTS (SELECT 1 FROM ({chains}) c WHERE c.chain = chain_progress.chain)"
         ),
     ]
+}
+
+fn update_counts(chains: &str) -> String {
+    format!(
+        "INSERT INTO chain_progress(input, chain, origin, reading_version, state)
+         SELECT * FROM ({rows}) WHERE true
+         ON CONFLICT(input, chain) DO UPDATE SET origin = excluded.origin,
+             reading_version = excluded.reading_version, state = excluded.state
+         WHERE chain_progress.origin <> excluded.origin
+            OR chain_progress.reading_version <> excluded.reading_version
+            OR chain_progress.state <> excluded.state",
+        rows = chain_rows(chains)
+    )
 }
 
 /// The statements for one chain.
@@ -122,10 +129,9 @@ fn input_sql(input: &str) -> [String; 2] {
 /// so the rows are marked not kept until [`mark_current`].
 pub(crate) fn open(index: &Connection, standalone: bool) -> Result<()> {
     install_triggers(index, !standalone)?;
-    let kept: bool = index
-        .scalar_optional("SELECT value = 'kept' FROM meta WHERE key = ?1", [KEPT])?
-        .unwrap_or(false);
-    if kept && !standalone {
+    let kept: Option<String> =
+        index.scalar_optional("SELECT value FROM meta WHERE key = ?1", [PROGRESS])?;
+    if kept.as_deref() == Some(CURRENT) && !standalone {
         return Ok(());
     }
     // The mark must reach the disk before the archive changes: an index
@@ -133,14 +139,27 @@ pub(crate) fn open(index: &Connection, standalone: bool) -> Result<()> {
     let synchronous: i64 = index.pragma_query_value(None, "synchronous", |r| r.get(0))?;
     index.pragma_update(None, "synchronous", synchronous.max(2))?;
     let tx = rusqlite::Transaction::new_unchecked(index, rusqlite::TransactionBehavior::Immediate)?;
-    if !kept {
-        tx.execute_batch(&format!(
+    match kept.as_deref() {
+        Some(CURRENT) => {}
+        Some("kept") => {
+            // Upgrade only the parents of existing row links. The other
+            // cached counts are already current.
+            let links = crate::source::database_links();
+            let chains = format!(
+                "SELECT r.input, r.chain, max(r.length) AS length
+                 FROM (SELECT DISTINCT container_input FROM ({links})) d
+                 CROSS JOIN source_revision r ON r.input = d.container_input
+                 GROUP BY r.input, r.chain"
+            );
+            tx.execute(&update_counts(&chains), [])?;
+        }
+        _ => tx.execute_batch(&format!(
             "DELETE FROM chain_progress;
              INSERT INTO chain_progress(input, chain, origin, reading_version, state) {};",
             chain_rows(EVERY_CHAIN)
-        ))?;
+        ))?,
     }
-    crate::meta_set(&tx, KEPT, if standalone { "open" } else { "kept" })?;
+    crate::meta_set(&tx, PROGRESS, if standalone { "open" } else { CURRENT })?;
     tx.commit()?;
     index.pragma_update(None, "synchronous", synchronous)?;
     Ok(())
@@ -148,7 +167,7 @@ pub(crate) fn open(index: &Connection, standalone: bool) -> Result<()> {
 
 /// Marks counts current after committed source changes or an empty cache reset.
 pub(crate) fn mark_current(index: &Connection) -> Result<()> {
-    crate::meta_set(index, KEPT, "kept")
+    crate::meta_set(index, PROGRESS, CURRENT)
 }
 
 /// Temporary triggers on `index` that recompute a chain's row when its
@@ -210,6 +229,17 @@ pub(crate) fn install_triggers(index: &Connection, source: bool) -> Result<()> {
              BEGIN {upsert}; {stale}; END;\n"
         ));
     }
+    if source {
+        for (action, row) in [("INSERT", "NEW"), ("DELETE", "OLD")] {
+            let member = crate::source::database_rows(row);
+            let [upsert, stale] = input_sql(&format!("{row}.container_input"));
+            sql.push_str(&format!(
+                "CREATE TEMP TRIGGER IF NOT EXISTS chain_progress_database_{action}
+                 AFTER {action} ON main.source_observation_container WHEN {member}
+                 BEGIN {upsert}; {stale}; END;\n"
+            ));
+        }
+    }
     index.execute_batch(&sql)?;
     Ok(())
 }
@@ -220,7 +250,8 @@ pub(crate) fn install_triggers(index: &Connection, source: bool) -> Result<()> {
 /// nothing. The inserts use `ON CONFLICT DO NOTHING`: an `OR IGNORE` in a
 /// trigger gives way to the conflict policy of the statement that fired it.
 pub(crate) fn record_source_changes(archive: &Connection) -> Result<()> {
-    archive.execute_batch(
+    let database = crate::source::database_rows("NEW");
+    archive.execute_batch(&format!(
         "CREATE TEMP TABLE IF NOT EXISTS chain_progress_chains (input TEXT NOT NULL, chain INTEGER NOT NULL,
              PRIMARY KEY (input, chain)) WITHOUT ROWID;
          CREATE TEMP TABLE IF NOT EXISTS chain_progress_inputs (input TEXT PRIMARY KEY) WITHOUT ROWID;
@@ -230,8 +261,11 @@ pub(crate) fn record_source_changes(archive: &Connection) -> Result<()> {
          BEGIN INSERT INTO chain_progress_chains VALUES (NEW.input, NEW.chain) ON CONFLICT DO NOTHING; END;
          CREATE TEMP TRIGGER IF NOT EXISTS chain_progress_import_added AFTER INSERT ON main.observation
          WHEN NEW.class = 'imported'
-         BEGIN INSERT INTO chain_progress_inputs VALUES (NEW.input) ON CONFLICT DO NOTHING; END;",
-    )?;
+         BEGIN INSERT INTO chain_progress_inputs VALUES (NEW.input) ON CONFLICT DO NOTHING; END;
+         CREATE TEMP TRIGGER IF NOT EXISTS chain_progress_database_rows AFTER INSERT ON main.observation_container
+         WHEN {database}
+         BEGIN INSERT INTO chain_progress_inputs VALUES (NEW.container_input) ON CONFLICT DO NOTHING; END;"
+    ))?;
     Ok(())
 }
 
