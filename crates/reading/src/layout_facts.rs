@@ -10,6 +10,7 @@ pub(super) fn annotations(
     reader: &Reader<'_>,
     reference: &polylogue_model::Reference,
     at: polylogue_model::Timestamp,
+    position: Option<&polylogue_model::ChangePosition>,
 ) -> Result<Vec<Annotation>, Error> {
     let mut annotations = Vec::new();
     let mut visit = |revision: polylogue_model::RevisionReference| {
@@ -30,11 +31,16 @@ pub(super) fn annotations(
         Ok(ControlFlow::Continue(()))
     };
     if let polylogue_model::Reference::Message(message) = reference {
-        let _ = reader.visit_message_annotation_references(message, &mut visit)?;
+        let _ = reader.visit_message_annotation_references_at(
+            message,
+            position.map(|position| position.archive),
+            &mut visit,
+        )?;
     } else {
-        let _ = reader.visit_assertion_references_linked(
+        let _ = reader.visit_assertion_references_linked_at(
             reference,
             &[polylogue_model::assertion::LinkRole::About],
+            position.map(|position| position.archive),
             &mut visit,
         )?;
     }
@@ -46,6 +52,7 @@ pub(super) fn annotate(
     record: &polylogue_model::bundle::Record,
     facts: &mut LayoutFacts,
     at: polylogue_model::Timestamp,
+    position: Option<&polylogue_model::ChangePosition>,
 ) -> Result<(), Error> {
     if matches!(
         record,
@@ -55,7 +62,7 @@ pub(super) fn annotate(
             record.reference().expect("selected record has a reference"),
         )
         .map_err(Error::internal)?;
-        facts.assertions = annotations(reader, &reference, at)?;
+        facts.assertions = annotations(reader, &reference, at, position)?;
     }
     Ok(())
 }

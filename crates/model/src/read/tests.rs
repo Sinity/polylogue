@@ -582,3 +582,46 @@ fn full_tool_output_and_numeric_line_limits_round_trip_without_changing_stored_f
         );
     }
 }
+
+#[test]
+fn read_at_keeps_the_declared_string_format_and_context_message_behavior() {
+    let legacy = serde_json::json!({"view":"context","at":"claude-code:u1"});
+    let options: ReadOptions = serde_json::from_value(legacy).unwrap();
+    options.validate().unwrap();
+    assert_eq!(
+        options.at,
+        Some(ReadAt::Message(MessageId::parse("claude-code:u1").unwrap()))
+    );
+    assert_eq!(
+        serde_json::to_value(&options).unwrap()["at"],
+        "claude-code:u1"
+    );
+    let historical = serde_json::json!({"at":"generation:2:3"});
+    let options: ReadOptions = serde_json::from_value(historical).unwrap();
+    options.validate().unwrap();
+    assert_eq!(
+        options.at.as_ref().and_then(ReadAt::position),
+        Some(&crate::ChangePosition {
+            generation: "generation".into(),
+            index: 2,
+            archive: 3
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(&options).unwrap()["at"],
+        "generation:2:3"
+    );
+    let schema = schemars::schema_for!(ReadOptions).to_value();
+    assert_eq!(
+        schema["properties"]["at"],
+        serde_json::json!({
+            "description":"The message a context reading is taken at; the latest when absent.",
+            "anyOf":[{"$ref":"#/$defs/MessageId"},{"type":"null"}]
+        })
+    );
+    assert_eq!(
+        schema["$defs"]["MessageId"],
+        serde_json::json!({"type":"string"})
+    );
+    assert!(schema["$defs"].get("ReadAt").is_none());
+}

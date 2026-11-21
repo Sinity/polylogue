@@ -36,7 +36,7 @@ pub(crate) fn request_of(
         for_others,
         variants: variant,
         at: at
-            .map(|at| polylogue_model::MessageId::parse(&at))
+            .map(ReadAt::try_from)
             .transpose()
             .map_err(|error| error.to_string())?,
         diff,

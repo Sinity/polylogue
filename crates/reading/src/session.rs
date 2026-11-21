@@ -834,8 +834,8 @@ fn runs(reader: &Reader<'_>, composed: &Composed, options: &ReadOptions) -> Resu
             .ok_or_else(|| Error::not_found(format!("message {message} is not in the reading")))
     };
     let at = match &options.at {
-        Some(message) => place_of(message)?,
-        None => latest,
+        Some(ReadAt::Message(message)) => place_of(message)?,
+        Some(ReadAt::Position(_)) | None => latest,
     };
     let context = context_at(&composed.parts, entries, at);
     let Some(diff) = &options.diff else {
@@ -1012,6 +1012,7 @@ pub(super) fn page(
                 reader,
                 &polylogue_model::Reference::Session(read_session.id.clone()),
                 operation.ran_at,
+                options.at.as_ref().and_then(ReadAt::position),
             )?
         } else {
             vec![]
@@ -1327,6 +1328,14 @@ fn lead_items(
             }),
         },
     }];
+    if let Some(ReadAt::Position(position)) = &options.at {
+        out.push(ReadItem {
+            source: Source::record(target),
+            kind: ItemKind::Text {
+                text: format!("Annotations as of {position}; expiry uses this read's clock."),
+            },
+        });
+    }
     let source = Source::record(target);
     for issue in composed.issues.iter().filter(|_| options.inherited) {
         out.push(ReadItem {
@@ -1999,7 +2008,13 @@ fn emit(
     // the reading's first lines.
     let mut facts = facts;
     if options.assertions {
-        layout_facts::annotate(reader, &record, &mut facts, at)?;
+        layout_facts::annotate(
+            reader,
+            &record,
+            &mut facts,
+            at,
+            options.at.as_ref().and_then(ReadAt::position),
+        )?;
     }
     if options.view == View::Context {
         facts.context = Some(ContextState {

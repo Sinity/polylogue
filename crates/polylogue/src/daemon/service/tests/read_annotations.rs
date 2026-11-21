@@ -202,3 +202,182 @@ fn message_annotations_include_original_spans_once_and_keep_current_user_facts()
         shown
     );
 }
+
+fn historical_call(target: &str, position: &polylogue_model::ChangePosition, budget: u64) -> Call {
+    let words = [
+        target.to_string(),
+        "read".into(),
+        "--at".into(),
+        position.to_string(),
+        "--budget".into(),
+        budget.to_string(),
+    ];
+    let parsed = crate::cli::line::parse(
+        &words,
+        &crate::cli::line::FirstWordCatalog::default(),
+        false,
+    )
+    .unwrap();
+    let steps = parsed
+        .steps
+        .into_iter()
+        .map(|step| step.step)
+        .collect::<Vec<_>>();
+    Call::new("rows", json!({"selection":target,"steps":steps}))
+}
+
+#[test]
+fn ordinary_session_reads_keep_message_and_span_revisions_at_two_positions() {
+    let mut d = test_daemon::start("neutral target text");
+    d.pause_signals();
+    let target = "session:claude-code:s1";
+    let message = "message:claude-code:u1";
+    let span = "span:block:claude-code:u1#0#c=0-6";
+    let before = d.daemon.reads.reader().unwrap().change_position().unwrap();
+    write(
+        &d.daemon,
+        "message-original",
+        note("original message note", &[message]),
+    );
+    write(
+        &d.daemon,
+        "span-original",
+        note("original span note", &[span]),
+    );
+    let first = d.daemon.reads.reader().unwrap().change_position().unwrap();
+    let original_call = historical_call(target, &first, 100000);
+    let original = crate::test_answers::read(original_call.clone().answer(&d.daemon));
+    let original_notes = annotations(&original, "claude-code:u1");
+    assert_eq!(
+        original_notes
+            .iter()
+            .map(|note| note.value.clone())
+            .collect::<Vec<_>>(),
+        [json!("original message note"), json!("original span note")]
+    );
+
+    // Issue both edits through the ordinary line executor, then retry the
+    // accepted old-position read after the predicate's visible facts changed.
+    for (root, text) in [
+        ("message-original", "edited message note"),
+        ("span-original", "edited span note"),
+    ] {
+        let answer = Call::new("rows", json!({"selection":format!("annotation:{root}@{root}"),"steps":[{"verb":"edit","text":text}]})).answer(&d.daemon);
+        let _ = crate::test_answers::step(answer);
+    }
+    let second = d.daemon.reads.reader().unwrap().change_position().unwrap();
+    assert!(second.archive > first.archive);
+    let edited_call = historical_call(target, &second, 100000);
+    let edited = crate::test_answers::read(edited_call.clone().answer(&d.daemon));
+    let edited_notes = annotations(&edited, "claude-code:u1");
+    assert_eq!(
+        edited_notes
+            .iter()
+            .map(|note| note.value.clone())
+            .collect::<Vec<_>>(),
+        [json!("edited message note"), json!("edited span note")]
+    );
+    assert_eq!(
+        annotations(
+            &crate::test_answers::read(original_call.clone().answer(&d.daemon)),
+            "claude-code:u1"
+        ),
+        original_notes
+    );
+    assert!(
+        annotations(
+            &crate::test_answers::read(historical_call(target, &before, 100000).answer(&d.daemon)),
+            "claude-code:u1"
+        )
+        .is_empty()
+    );
+
+    // A later withdrawal must not erase either past revision, and both
+    // revisions remain addressable through the ordinary annotation query.
+    let _ = crate::test_answers::step(Call::new("rows", json!({"selection":"annotation:message-original","steps":[{"verb":"withdraw","reason":"no longer current"}]})).answer(&d.daemon));
+    assert_eq!(
+        annotations(&read(&d.daemon, target, false), "claude-code:u1").len(),
+        1
+    );
+    for root in ["message-original", "span-original"] {
+        let history = crate::test_answers::listing(Call::new("rows", json!({"selection":format!("annotations where root:annotation:{root} withdrawn:*")})).answer(&d.daemon));
+        assert_eq!(history.value().unwrap()["count"], 2, "{history:?}");
+    }
+    d.restart();
+    d.pause_signals();
+    for (call, expected) in [(original_call, original_notes), (edited_call, edited_notes)] {
+        let page = crate::test_answers::read(call.answer(&d.daemon));
+        assert_eq!(annotations(&page, "claude-code:u1"), expected);
+    }
+}
+
+#[test]
+fn historical_session_continuations_keep_the_position_after_new_revisions_and_restart() {
+    let mut d = test_daemon::start("neutral target text");
+    d.pause_signals();
+    write(
+        &d.daemon,
+        "paged-note",
+        note("the original paged note", &["message:claude-code:u1"]),
+    );
+    let position = d.daemon.reads.reader().unwrap().change_position().unwrap();
+    let first = crate::test_answers::read(
+        historical_call("session:claude-code:s1", &position, 1).answer(&d.daemon),
+    );
+    let resume = first
+        .document
+        .footer
+        .next
+        .clone()
+        .expect("the small page continues");
+    let _ = crate::test_answers::step(Call::new("rows", json!({"selection":"annotation:paged-note","steps":[{"verb":"edit","text":"a later paged note"}]})).answer(&d.daemon));
+    d.restart();
+    d.pause_signals();
+    let mut next = Some(resume);
+    let mut seen = std::collections::BTreeSet::new();
+    let mut items = first.document.items;
+    while let Some(ready) = next {
+        assert_eq!(
+            ready.request.arguments["steps"][0]["at"],
+            position.to_string()
+        );
+        assert!(
+            seen.insert(serde_json::to_string(&ready.request).unwrap()),
+            "continuation must advance"
+        );
+        let page = crate::test_answers::read(Call::from_request(&ready.request).answer(&d.daemon));
+        let repeated =
+            crate::test_answers::read(Call::from_request(&ready.request).answer(&d.daemon));
+        assert_eq!(page.document.items, repeated.document.items);
+        next = page.document.footer.next;
+        items.extend(page.document.items);
+    }
+    let notes = items
+        .iter()
+        .filter_map(|item| match &item.kind {
+            ItemKind::MessageHeader { header } => Some(&header.assertions),
+            _ => None,
+        })
+        .flatten()
+        .collect::<Vec<_>>();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].value, json!("the original paged note"));
+}
+
+#[test]
+fn historical_session_positions_refuse_another_generation_and_future_counters() {
+    let d = test_daemon::start("neutral target text");
+    let current = d.daemon.reads.reader().unwrap().change_position().unwrap();
+    let mut foreign = current.clone();
+    foreign.generation = "another-generation".into();
+    let mut future_index = current.clone();
+    future_index.index += 1000;
+    let mut future_archive = current;
+    future_archive.archive += 1000;
+    for position in [foreign, future_index, future_archive] {
+        let refusal = crate::test_answers::refusal(
+            historical_call("session:claude-code:s1", &position, 100000).answer(&d.daemon),
+        );
+        assert_eq!(refusal.code.as_deref(), Some("bad_request"));
+    }
+}

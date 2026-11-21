@@ -102,7 +102,6 @@ pub(crate) fn arguments(
         (*blind, "blind"),
         (seed.is_some(), "seed"),
         (*until_idle, "until-idle"),
-        (at.is_some(), "at"),
         (align.is_some(), "align"),
     ] {
         if given {
@@ -133,7 +132,7 @@ pub(crate) fn arguments(
         for_others: *neutral_names,
         variant: alternate.iter().cloned().collect(),
         with_blobs: false,
-        at: None,
+        at: at.clone(),
         diff: diff.clone(),
         around: *around,
         latest: false,
@@ -159,7 +158,7 @@ pub(crate) fn step_of(
         for_others,
         variant,
         with_blobs: _,
-        at: _,
+        at,
         diff,
         around,
         latest: _,
@@ -176,6 +175,7 @@ pub(crate) fn step_of(
         }
     };
     Ok(ReadStep {
+        at,
         view,
         show,
         hide,
