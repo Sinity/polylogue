@@ -844,6 +844,17 @@ fn listing_answer(answer: crate::daemon::query::CountReply) -> Answer<LineAnswer
     answer.map(|found| LineAnswer::Listing(Box::new(found)))
 }
 
+fn listing_wait(wait: &str, surface: Surface) -> Result<Duration, Failure> {
+    let millis = crate::signals::duration(wait)
+        .ok_or_else(|| Failure::bad_value("--wait needs a duration such as 30s or 30m"))?;
+    let duration = Duration::from_millis(millis as u64);
+    Ok(if surface == Surface::Mcp {
+        duration.min(Duration::from_secs(50))
+    } else {
+        duration
+    })
+}
+
 /// The selection alone: its rows, a page at a time.
 fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswer>, Failure> {
     let query = Selection {
@@ -864,12 +875,7 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
     let Some(wait) = rows.wait.as_deref() else {
         return handlers::Query::run(arguments, call).map(listing_answer);
     };
-    let wait = crate::signals::duration(wait)
-        .ok_or_else(|| Failure::bad_value("--wait needs a duration such as 30s or 30m"))?;
-    let mut duration = Duration::from_millis(wait as u64);
-    if call.caller.surface == Surface::Mcp {
-        duration = duration.min(Duration::from_secs(50));
-    }
+    let mut duration = listing_wait(wait, call.caller.surface)?;
     let limit = ReadLimit::current();
     if let Some(left) = limit.as_ref().and_then(ReadLimit::remaining) {
         duration = duration.min(left.saturating_sub(super::follow::REPLY_MARGIN));
