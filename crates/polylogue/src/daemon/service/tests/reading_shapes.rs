@@ -947,20 +947,27 @@ fn composed_context_streams_keep_distinct_physical_session_headers_once() {
     use polylogue_model::bundle::Record;
     let d = test_daemon::start("placeholder");
     family(&d);
-    for (target, expected) in [
+    let cases: &[(&str, &[&str], &[&str])] = &[
         (
             "message:claude-code:f1",
-            ["claude-code:fork", "claude-code:root"],
+            &["claude-code:fork", "claude-code:root"],
+            &["root question", "forked question"],
         ),
+        // A bare continued-in marker has no branch point or copied-prefix
+        // claim. A physical read must not invent its parent's context.
         (
             "session:claude-code:cont",
-            ["claude-code:cont", "claude-code:root"],
+            &["claude-code:cont"],
+            &["continuation question"],
         ),
+        // The logical root deliberately follows that recorded continuation.
         (
             "root:claude-code:root",
-            ["claude-code:root", "claude-code:cont"],
+            &["claude-code:root", "claude-code:cont"],
+            &["root question", "continuation question"],
         ),
-    ] {
+    ];
+    for &(target, expected, expected_text) in cases {
         let options = ReadOptions {
             view: View::Context,
             ..Default::default()
@@ -969,6 +976,25 @@ fn composed_context_streams_keep_distinct_physical_session_headers_once() {
         let (items, originals, complete) =
             super::read_annotations::context_stream(&d.daemon, target, options);
         assert_eq!(items, page.document.items);
+        let body_text: Vec<_> = items
+            .iter()
+            .filter_map(|item| match &item.kind {
+                ItemKind::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        for text in expected_text {
+            assert!(
+                body_text.contains(text),
+                "{target} must retain {text}: {body_text:?}"
+            );
+        }
+        if target == "session:claude-code:cont" {
+            assert!(
+                !body_text.contains(&"root question"),
+                "a missing branch point is not a copied prefix"
+            );
+        }
         let headers: Vec<_> = originals
             .iter()
             .filter_map(|record| match record {
@@ -983,7 +1009,7 @@ fn composed_context_streams_keep_distinct_physical_session_headers_once() {
                 .collect::<Vec<_>>(),
             expected
         );
-        assert_eq!(complete.counts.sessions, 2);
+        assert_eq!(complete.counts.sessions, expected.len() as u64);
         let reader = d.daemon.reads.reader().unwrap();
         for header in &headers {
             assert_eq!(header.reference, format!("session:{}", header.session.id));
