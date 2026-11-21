@@ -8,6 +8,8 @@ use polylogue_model::parser_context::{Context, Delta, Entry, Key, Reference, Val
 use rusqlite::{Connection, OptionalExtension, params};
 use std::sync::{Arc, Mutex};
 
+mod scratch;
+
 // A chain's context belongs to one reading, named once in its state row: a
 // reading from byte zero replaces the whole context, and an extension applies
 // only on top of a state row of its own reading version. Each key keeps only
@@ -170,17 +172,7 @@ impl Overlay {
         let mut entries = Vec::new();
         while let Some(row) = rows.next()? {
             let key: Key = serde_json::from_str(&row.get::<_, String>(0)?)?;
-            let value: Value = crate::encoding::unpack_json(&row.get::<_, Vec<u8>>(1)?)?;
-            let value = match value {
-                Value::Response { row } => Reference::Response {
-                    version: row.message.content_hash()?,
-                    message: row.message.id,
-                    offset: row.offset,
-                    end: row.end,
-                },
-                Value::Alias { target } => Reference::Alias { target },
-                Value::State { value } => Reference::State { value },
-            };
+            let value = scratch::reference(&key, &row.get::<_, Vec<u8>>(1)?)?;
             entries.push(Entry { key, value });
         }
         drop(rows);
@@ -259,7 +251,7 @@ impl Context for Overlay {
                 _ => None,
             };
             let key = serde_json::to_string(&key)?;
-            let bytes = crate::encoding::pack_json(&value)?;
+            let bytes = scratch::encode(&value)?;
             attempt.scratch.execute("INSERT INTO entry VALUES(?1,?2,1,?3) ON CONFLICT(key) DO UPDATE SET value=excluded.value,dirty=1,state_namespace=excluded.state_namespace",params![key,bytes,namespace])?;
             Ok(())
         };
@@ -277,7 +269,7 @@ impl Overlay {
             [serde_json::to_string(key)?],
         )?;
         if let Some(bytes) = changed {
-            let value = crate::encoding::unpack_json(&bytes)?;
+            let value = scratch::decode(&bytes)?;
             return Ok(match value {
                 Value::State { value } if value.is_null() => None,
                 value => Some(value),

@@ -87,6 +87,13 @@ Response-version references keep their reverse index during first build and
 parsing. Collecting a candidate version checks its references instead
 of scanning kept context.
 
+Private response scratch values hold one canonical lookup payload and its
+small message identity. Checkpointing hashes only the final dirty response for
+each key and reads its identity and source range without decoding the full
+message again. Overwriting a response computes no discarded version hashes;
+an actual parser lookup still decodes the complete saved response. Scratch
+progress does not advance the committed reading.
+
 A new reading version reconstructs missing historical context from stored bytes through a re-parse. Once recorded, a restart resumes directly at that checkpoint. Lost derived context can be rebuilt from the committed prefix. An absent context record means unrecorded context, not a complete empty map.
 
 ## Trace data
