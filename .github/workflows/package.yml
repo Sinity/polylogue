@@ -59,16 +59,19 @@ jobs:
         if: ${{ inputs.first_build_cpu }}
         with:
           ref: ${{ inputs.rev }}
-      - name: Verify the diagnostic source and realize its frozen runtime
+      - name: Verify the diagnostic source and realize both frozen runtimes
         if: ${{ inputs.first_build_cpu }}
         run: |
           test "$(git rev-parse HEAD)" = "$REV"
-          runtime=/nix/store/qi8bddixsrsa2dsrhip3gamwi0am6nr5-polylogue-0.1.0
-          nix-store --realise "$runtime" --option max-jobs 0
-          nix store verify --no-contents --sigs-needed 1 "$runtime"
-          version=$("$runtime/bin/polylogue" --version)
-          [[ "$version" == *06ec29daf5f74483d168bd612fd8b7971868f4ef* ]]
-          echo "runtime=$runtime" >> "$GITHUB_ENV"
+          for binding in baseline:7f6ee22afb7945d7ebb82947f034f27869804570 candidate:ceec95f0488e8279bace8e30d1079e6fba7a1d91; do
+            label="${binding%%:*}"
+            commit="${binding#*:}"
+            runtime=$(nix build --no-link --print-out-paths --option max-jobs 0 "github:${GITHUB_REPOSITORY}/${commit}#default")
+            nix store verify --sigs-needed 1 "$runtime"
+            version=$("$runtime/bin/polylogue" --version)
+            [[ "$version" == *"$commit"* ]]
+            echo "${label}_runtime=$runtime" >> "$GITHUB_ENV"
+          done
       - name: Build and check the existing synthetic generator
         if: ${{ inputs.first_build_cpu }}
         env:
@@ -86,13 +89,16 @@ jobs:
           assert (expected.parent / 'first-build-generator').is_file()
           shutil.rmtree(target)
           PY
-      - name: Measure the full synthetic population through normal daemon completion
+      - name: Compare both runtimes through normal daemon completion
         if: ${{ inputs.first_build_cpu }}
         run: |
           python3 -I -m unittest discover -s .github/first-build-attribution -p 'test_*.py'
           nix develop --command python3 -I .github/first-build-attribution/measure.py \
-            --binary "$runtime/bin/polylogue" \
-            --revision 06ec29daf5f74483d168bd612fd8b7971868f4ef \
+            --binary "$baseline_runtime/bin/polylogue" \
+            --revision 7f6ee22afb7945d7ebb82947f034f27869804570 \
+            --candidate-binary "$candidate_runtime/bin/polylogue" \
+            --candidate-revision ceec95f0488e8279bace8e30d1079e6fba7a1d91 \
+            --pair-files .github/first-build-attribution/pair-files.json \
             --generator "$RUNNER_TEMP/first-build-generator" \
             --lengths .github/first-build-attribution/synthetic-lengths.txt \
             --expected .github/first-build-attribution/synthetic-samples.json \

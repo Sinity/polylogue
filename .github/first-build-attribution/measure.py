@@ -358,6 +358,24 @@ def available_space(path: Path) -> int:
     return value.f_bavail * value.f_frsize
 
 
+def search_signature(archive: Path) -> dict[str, str]:
+    index = str(archive / 'index.db')
+    signatures = {}
+    for table, vocab in (('text_fts', 'fts_vocab_text'), ('output_fts', 'fts_vocab_output')):
+        vocabulary = command(['sqlite3', '-readonly', index,
+                              f'SELECT term,doc,cnt FROM {vocab} ORDER BY term;']).stdout
+        signatures[table + '_vocabulary'] = hashlib.sha256(vocabulary.encode()).hexdigest()
+        for term in ('parser', 'archive', '"search query"'):
+            query = (f"SELECT hex(text.hash), round(bm25({table}),12) "
+                     f"FROM {table} JOIN text ON text.id={table}.rowid "
+                     f"WHERE {table} MATCH '{term}' ORDER BY bm25({table}), hex(text.hash) LIMIT 40;")
+            ranked = command(['sqlite3', '-readonly', index, query]).stdout
+            if table == 'text_fts' and term == 'parser' and not ranked:
+                raise RuntimeError('the ranked prose probe matched no synthetic text')
+            signatures[table + ':' + term] = hashlib.sha256(ranked.encode()).hexdigest()
+    return signatures
+
+
 def main(args: argparse.Namespace) -> int:
     if os.environ.get('GITHUB_ACTIONS') != 'true':
         raise RuntimeError('this temporary entry point is for a hosted workflow only')
@@ -371,6 +389,46 @@ def main(args: argparse.Namespace) -> int:
     if available_memory() < 8 * 1024**3:
         raise RuntimeError('less than 8 GiB MemAvailable before preparation')
     command(['sudo', '-n', 'true'])
+    work.mkdir()
+    results = work / 'results'
+    results.mkdir()
+    home = work / 'corpus/home'
+    expected = json.loads(Path(args.expected).read_text())
+    generated = command([args.generator, '--synthetic-lengths', args.lengths,
+                         '--dir', str(work / 'corpus'), '--generate-only'])
+    (results / 'generation.log').write_text(generated.stdout)
+    files = generated_population(home, expected)
+    if args.pair_files:
+        selected = json.loads(Path(args.pair_files).read_text())
+        by_name = {Path(path).name: path for path in files}
+        if len(selected) != 497 or sum(selected.values()) != 533840740:
+            raise RuntimeError('the selected benchmark population differs')
+        for name, size in selected.items():
+            if name not in by_name or files[by_name[name]] != size:
+                raise RuntimeError('a selected synthetic file differs')
+        for name, path in by_name.items():
+            if name not in selected:
+                Path(path).unlink()
+        files = {by_name[name]: size for name, size in selected.items()}
+        if not args.candidate_binary or not args.candidate_revision:
+            raise RuntimeError('matched comparison needs both exact binary revisions')
+        baseline = run_arm(args, work / 'baseline', home, files, 'baseline')
+        candidate_args = argparse.Namespace(**vars(args))
+        candidate_args.binary = args.candidate_binary
+        candidate_args.revision = args.candidate_revision
+        candidate = run_arm(candidate_args, work / 'candidate', home, files, 'candidate')
+        complete = all(arm['complete'] and arm['failure'] is None for arm in (baseline, candidate))
+        parity = complete and baseline['search_signature'] == candidate['search_signature']
+        report = {'baseline': baseline, 'candidate': candidate, 'search_parity': parity,
+                  'appliance_timing_or_release_acceptance': False}
+        print('HOSTED_SEARCH_PAIR_JSON=' + json.dumps(report), flush=True)
+        return 0 if parity else 1
+    summary = run_arm(args, work / 'measurement', home, files, 'single')
+    return 0 if summary['complete'] and summary['failure'] is None else 1
+
+
+def run_arm(args: argparse.Namespace, work: Path, home: Path,
+            files: dict[str, int], label: str) -> dict:
     binary = Path(args.binary).resolve(strict=True)
     version = command([str(binary), '--version'], timeout=5).stdout.strip()
     if args.revision not in version:
@@ -382,27 +440,22 @@ def main(args: argparse.Namespace) -> int:
     phase.mkdir()
     (results / 'tmp').mkdir()
     (phase / 'runtime').mkdir(mode=0o700)
-    home = work / 'corpus/home'
     archive = work / 'archive'
-    expected = json.loads(Path(args.expected).read_text())
-    generated = command([args.generator, '--synthetic-lengths', args.lengths,
-                         '--dir', str(work / 'corpus'), '--generate-only'])
-    (results / 'generation.log').write_text(generated.stdout)
-    files = generated_population(home, expected)
     for path in files:
         with open(path, 'rb') as source:
             os.fsync(source.fileno())
             os.posix_fadvise(source.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
     stamps = {path: (Path(path).stat().st_ino, Path(path).stat().st_size,
                      Path(path).stat().st_mtime_ns) for path in files}
-    if available_space(work) < 24 * 1024**3 or available_memory() < 8 * 1024**3:
+    minimum_space = (8 if args.pair_files else 24) * 1024**3
+    if available_space(work) < minimum_space or available_memory() < 8 * 1024**3:
         raise RuntimeError('insufficient disk or available RAM after generation')
     cpus = min(8, len(os.sched_getaffinity(0)))
     run_id = os.environ['GITHUB_RUN_ID']
     attempt = os.environ['GITHUB_RUN_ATTEMPT']
     if not run_id.isdecimal() or not attempt.isdecimal():
         raise RuntimeError('invalid workflow identity')
-    unit = f'polylogue-first-build-cpu-{run_id}-{attempt}.service'
+    unit = f'polylogue-first-build-cpu-{run_id}-{attempt}-{label}.service'
     existing = show_unit(unit)
     if existing.get('LoadState') != 'not-found':
         raise RuntimeError(f'the system manager is unavailable or the exact unit exists: {existing}')
@@ -411,7 +464,7 @@ def main(args: argparse.Namespace) -> int:
                'measurement_script_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                'generator_sha256': hashlib.sha256(Path(args.generator).read_bytes()).hexdigest(),
                'binary': str(binary), 'version': version,
-               'input_files': expected['files'], 'input_bytes': expected['bytes'],
+               'input_files': len(files), 'input_bytes': sum(files.values()),
                'cpu_quota': cpus, 'memory_max_bytes': 4 * 1024**3,
                'swap_max_bytes': 1024**3, 'timer_overhead_included': True,
                'appliance_timing_or_release_acceptance': False,
@@ -479,8 +532,13 @@ def main(args: argparse.Namespace) -> int:
         profile = pipeline_profile(phase)
         if profile is None:
             raise RuntimeError('the daemon did not report its worker profile')
-        records = json.loads((phase / 'pipeline-profile.json').read_text())
-        summary.update(summarize(profile, records))
+        if args.pair_files:
+            summary['search_signature'] = search_signature(archive)
+            summary['workers'] = profile['workers']
+            summary['overlapping_stage_seconds'] = profile['pipeline_timings']
+        else:
+            records = json.loads((phase / 'pipeline-profile.json').read_text())
+            summary.update(summarize(profile, records))
         summary['source_files_unchanged'] = all(
             (Path(path).stat().st_ino, Path(path).stat().st_size, Path(path).stat().st_mtime_ns) == stamp
             for path, stamp in stamps.items())
@@ -501,8 +559,9 @@ def main(args: argparse.Namespace) -> int:
                 summary['complete'] = False
         summary['controller_end_at_utc'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         write_json(results / 'hosted-summary.json', summary)
-        print('HOSTED_WRITER_ATTRIBUTION_JSON=' + json.dumps(summary), flush=True)
-    return 0 if summary['complete'] and summary['failure'] is None else 1
+        if not args.pair_files:
+            print('HOSTED_WRITER_ATTRIBUTION_JSON=' + json.dumps(summary), flush=True)
+    return summary
 
 
 if __name__ == '__main__':
@@ -514,6 +573,9 @@ if __name__ == '__main__':
     parser.add_argument('--lengths')
     parser.add_argument('--expected')
     parser.add_argument('--archive')
+    parser.add_argument('--pair-files')
+    parser.add_argument('--candidate-binary')
+    parser.add_argument('--candidate-revision')
     parser.add_argument('--child', help=argparse.SUPPRESS)
     parser.add_argument('--stored', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
