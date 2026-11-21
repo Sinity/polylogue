@@ -18,6 +18,9 @@ struct ResponseRow<'a> {
 }
 
 pub(super) fn encode(value: &Value) -> Result<Vec<u8>> {
+    if let Value::State { value } = value {
+        return encode_state(value);
+    }
     let Value::Response { row } = value else {
         return crate::encoding::pack_json(value);
     };
@@ -40,11 +43,58 @@ pub(super) fn encode(value: &Value) -> Result<Vec<u8>> {
     Ok(crate::encoding::pack_bytes(&bytes)?)
 }
 
+#[derive(Serialize)]
+struct State<'a> {
+    kind: &'static str,
+    value: &'a polylogue_model::Json,
+}
+
+fn encode_state(value: &polylogue_model::Json) -> Result<Vec<u8>> {
+    #[cfg(test)]
+    work(|w| w.state_encodes += 1);
+    crate::encoding::pack_json(&State {
+        kind: "state",
+        value,
+    })
+}
+
+pub(super) fn write_state(
+    conn: &Connection,
+    key: &Key,
+    value: &polylogue_model::Json,
+) -> Result<()> {
+    write_packed(conn, key, &encode_state(value)?)
+}
+
+pub(super) fn write_value(conn: &Connection, key: &Key, value: &Value) -> Result<()> {
+    let bytes = encode(value)?;
+    write_packed(conn, key, &bytes)
+}
+
+fn write_packed(conn: &Connection, key: &Key, bytes: &[u8]) -> Result<()> {
+    let namespace = match key {
+        Key::State { namespace, .. } => Some(namespace.as_str()),
+        _ => None,
+    };
+    let mut statement = conn.prepare_cached("INSERT INTO entry VALUES(?1,?2,1,?3) ON CONFLICT(key) DO UPDATE SET value=excluded.value,dirty=1,state_namespace=excluded.state_namespace")?;
+    let result = statement.execute(params![serde_json::to_string(key)?, bytes, namespace]);
+    statement.clear_bindings();
+    result?;
+    #[cfg(test)]
+    work(|w| {
+        w.scratch_writes += 1;
+        w.write_vm_steps += statement.reset_status(rusqlite::StatementStatus::VmStep) as u64;
+    });
+    Ok(())
+}
+
 fn decode_json(bytes: &[u8]) -> Result<Value> {
     let value = crate::encoding::read_json(bytes)?;
     #[cfg(test)]
-    if matches!(value, Value::Response { .. }) {
-        work(|w| w.response_decodes += 1);
+    match &value {
+        Value::Response { .. } => work(|w| w.response_decodes += 1),
+        Value::State { .. } => work(|w| w.state_decodes += 1),
+        _ => {}
     }
     Ok(value)
 }
@@ -111,6 +161,12 @@ pub(super) fn reference(key: &Key, packed: &[u8]) -> Result<Reference> {
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Work {
+    pub state_encodes: u64,
+    pub state_decodes: u64,
+    pub scratch_reads: u64,
+    pub read_vm_steps: u64,
+    pub scratch_writes: u64,
+    pub write_vm_steps: u64,
     pub response_encodes: u64,
     pub encoded_response_bytes: u64,
     pub response_decodes: u64,
@@ -121,12 +177,13 @@ pub(super) struct Work {
 #[cfg(test)]
 thread_local! {
     static WORK: std::cell::Cell<Work> = const { std::cell::Cell::new(Work {
+        state_encodes: 0, state_decodes: 0, scratch_reads: 0, read_vm_steps: 0, scratch_writes: 0, write_vm_steps: 0,
         response_encodes: 0, encoded_response_bytes: 0, response_decodes: 0,
         response_views: 0, response_hashes: 0, hashed_response_bytes: 0,
     }) };
 }
 #[cfg(test)]
-fn work(update: impl FnOnce(&mut Work)) {
+pub(super) fn work(update: impl FnOnce(&mut Work)) {
     WORK.with(|work| {
         let mut value = work.get();
         update(&mut value);

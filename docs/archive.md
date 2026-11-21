@@ -94,6 +94,14 @@ message again. Overwriting a response computes no discarded version hashes;
 an actual parser lookup still decodes the complete saved response. Scratch
 progress does not advance the committed reading.
 
+An attempt keeps its latest speculative State values in a bounded write buffer.
+Repeated session-fact updates avoid scratch serialization and SQL until eviction
+or the existing checkpoint. The buffer and SQLite page cache share the existing
+scratch allowance. Oversized values spill directly; a checkpoint flushes every
+pending state before emitting its delta. Clears discard pending values in that
+namespace before later reinsertions. Committed lookups keep their selected
+snapshot and exact fallback; private buffering never advances durable progress.
+
 A new reading version reconstructs missing historical context from stored bytes through a re-parse. Once recorded, a restart resumes directly at that checkpoint. Lost derived context can be rebuilt from the committed prefix. An absent context record means unrecorded context, not a complete empty map.
 
 ## Trace data

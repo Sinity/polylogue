@@ -2,6 +2,7 @@ use super::*;
 use crate::archive::{cache, open_read, open_write, restart_full_log};
 
 mod scratch;
+mod state_buffer;
 
 #[test]
 fn fresh_context_leaves_checkpoint_free_while_resumed_context_keeps_its_snapshot() {
