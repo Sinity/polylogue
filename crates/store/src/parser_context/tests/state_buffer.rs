@@ -257,14 +257,17 @@ fn retained_capacity_deep_values_and_large_keys_bypass_the_bounded_buffer() {
     assert_eq!(state(&mut context, &key("memory", "deep")), Some(deep));
     let mut long = String::with_capacity(2 * super::super::state_buffer::LIMIT);
     long.push_str("key");
-    put(
-        &mut context,
-        &Key::State {
-            namespace: "memory".into(),
-            key: long,
-        },
-        json!(3),
-    );
+    // Preserve the caller's allocation. The ordinary borrowed-key helper
+    // clones strings and therefore cannot exercise retained key capacity.
+    context
+        .put(
+            Key::State {
+                namespace: "memory".into(),
+                key: long,
+            },
+            Value::State { value: json!(3) },
+        )
+        .unwrap();
     assert_eq!(usage(&context), 0);
     assert_eq!(context.checkpoint_delta(1).unwrap().entries.len(), 3);
 }
