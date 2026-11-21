@@ -133,6 +133,7 @@ struct State {
     dropped_active: u64,
     oversized_sql: u64,
     attach_failures: u64,
+    callback_errors: u64,
     output_bytes: u64,
     output_errors: u64,
     snapshots: usize,
@@ -149,6 +150,7 @@ impl Default for State {
             dropped_active: 0,
             oversized_sql: 0,
             attach_failures: 0,
+            callback_errors: 0,
             output_bytes: 0,
             output_errors: 0,
             snapshots: 0,
@@ -182,7 +184,7 @@ impl State {
             "statements":self.statements.values().collect::<Vec<_>>(),
             "phases":self.phases,"active":self.active.values().collect::<Vec<_>>(),
             "dropped_statements":self.dropped_statements,"dropped_active":self.dropped_active,
-            "oversized_sql":self.oversized_sql,"attach_failures":self.attach_failures,"observer_output_bytes":self.output_bytes,
+            "oversized_sql":self.oversized_sql,"attach_failures":self.attach_failures,"callback_errors":self.callback_errors,"observer_output_bytes":self.output_bytes,
             "output_errors":self.output_errors,"statement_time_is_exclusive":false,
             "cache_pages_are_physical_io":false}}));
     }
@@ -241,7 +243,7 @@ unsafe extern "C" fn observe(
     statement: *mut c_void,
     detail: *mut c_void,
 ) -> c_int {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let observed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         STATE.with(|state| {
             let mut state = state.borrow_mut();
             let Some(state) = state.as_mut() else {
@@ -329,6 +331,15 @@ unsafe extern "C" fn observe(
             }
         });
     }));
+    if observed.is_err() {
+        let _ = STATE.try_with(|state| {
+            if let Ok(mut state) = state.try_borrow_mut()
+                && let Some(state) = state.as_mut()
+            {
+                state.callback_errors += 1;
+            }
+        });
+    }
     0
 }
 

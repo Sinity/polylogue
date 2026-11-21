@@ -79,7 +79,7 @@ fn normal_writer_stop_emits_final_sql_work_before_process_exit() {
         .find(|r| r["final"] == true)
         .unwrap_or_else(|| panic!("no final SQL work: {log}"));
     assert_eq!(final_report["phases"]["row_apply"]["calls"], 1);
-    assert_eq!(final_report["phases"]["staged_row_commit"]["calls"], 1);
+    assert_eq!(final_report["phases"]["row_commit"]["calls"], 1);
     assert_eq!(final_report["statement_time_is_exclusive"], false);
     assert!(!final_report["statements"].as_array().unwrap().is_empty());
     for sql in records.iter().filter_map(|r| r.get("writer_sql_statement")) {
