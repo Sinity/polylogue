@@ -413,7 +413,8 @@ fn observation(input: &str, route: Route, start: u64, messages: Vec<Message>) ->
         value.end = end;
         rows.push(value);
     }
-    let mut batch = batch(input, route, start, rows, &["s"]);
+    let session = rows[0].message.session.native().as_str().to_owned();
+    let mut batch = batch(input, route, start, rows, &[&session]);
     batch.length = start + bytes.len() as u64;
     if route.is_imported() {
         assert_eq!(start, 0);
@@ -507,35 +508,52 @@ fn messages(count: usize, words: usize) -> Vec<Message> {
 
 struct Cohort {
     original_count: u64,
+    sessions: Vec<SessionId>,
     observations: Vec<Observation>,
     probes: Vec<(MessageId, String, Vec<u8>)>,
     sparse: Message,
 }
 
-fn cohort(count: usize, words: usize) -> Cohort {
-    assert!(count >= 8);
-    let original = messages(count, words);
+fn cohort(count: usize, words: usize, per_session: usize) -> Cohort {
+    assert!(count >= 8 && per_session >= 8);
+    let mut original = messages(count, words);
     let mut observations = Vec::new();
-    let mut start = 0;
     let mut probes = Vec::new();
+    let mut sessions = Vec::new();
     let wanted = [
         original[0].id.clone(),
         original[count / 2].id.clone(),
         original[count - 1].id.clone(),
     ];
-    for chunk in original.chunks(128) {
-        let input = observation("cohort-live", Route::Live, start, chunk.to_vec());
-        for row in &input.batch.parse[0].output.messages {
-            if wanted.contains(&row.message.id) {
-                probes.push((
-                    row.message.id.clone(),
-                    input.batch.input.id.clone(),
-                    input.bytes[(row.offset - start) as usize..(row.end - start) as usize].to_vec(),
-                ));
-            }
+    for (ordinal, messages) in original.chunks_mut(per_session).enumerate() {
+        let name = if ordinal == 0 {
+            "s".to_owned()
+        } else {
+            format!("s-{ordinal}")
+        };
+        let session = sid(&name);
+        sessions.push(session.clone());
+        let path = format!("cohort-live-{ordinal}");
+        messages[0].parent = None;
+        for message in messages.iter_mut() {
+            message.session = session.clone();
         }
-        start = input.batch.length;
-        observations.push(input);
+        let mut start = 0;
+        for chunk in messages.chunks(128) {
+            let input = observation(&path, Route::Live, start, chunk.to_vec());
+            for row in &input.batch.parse[0].output.messages {
+                if wanted.contains(&row.message.id) {
+                    probes.push((
+                        row.message.id.clone(),
+                        input.batch.input.id.clone(),
+                        input.bytes[(row.offset - start) as usize..(row.end - start) as usize]
+                            .to_vec(),
+                    ));
+                }
+            }
+            start = input.batch.length;
+            observations.push(input);
+        }
     }
     // The same native messages retain both provenance claims. This export
     // also fills an otherwise unknown model and usage field group.
@@ -599,6 +617,7 @@ fn cohort(count: usize, words: usize) -> Cohort {
     observations.push(rewritten);
     Cohort {
         original_count: count as u64,
+        sessions,
         observations,
         probes,
         sparse,
@@ -713,18 +732,20 @@ fn reading(archive: &Archive, fixture: &Cohort) -> Reading {
     let reader = pool.reader().unwrap();
     let mut model_hash = blake3::Hasher::new();
     let mut count = 0u64;
-    reader
-        .visit_messages(&sid("s"), false, |message| {
-            if message.id == MessageId::parse("claude-code:cohort-0").unwrap() {
-                assert_eq!(message.model.as_deref(), Some("claude-opus-4-1"));
-                assert_eq!(message.usage.input, Some(1000));
-                assert_eq!(message.usage.output, Some(100));
-            }
-            model_hash.update(&message.content_hash().unwrap().0);
-            count += 1;
-            std::ops::ControlFlow::Continue(())
-        })
-        .unwrap();
+    for session in &fixture.sessions {
+        reader
+            .visit_messages(session, false, |message| {
+                if message.id == MessageId::parse("claude-code:cohort-0").unwrap() {
+                    assert_eq!(message.model.as_deref(), Some("claude-opus-4-1"));
+                    assert_eq!(message.usage.input, Some(1000));
+                    assert_eq!(message.usage.output, Some(100));
+                }
+                model_hash.update(&message.content_hash().unwrap().0);
+                count += 1;
+                std::ops::ControlFlow::Continue(())
+            })
+            .unwrap();
+    }
     assert_eq!(count, fixture.original_count + 2);
     let messages = (count, model_hash.finalize().to_hex().to_string());
     let mut citations = Vec::new();
@@ -905,7 +926,7 @@ fn run(fixture: &Cohort, staged: bool, disk: bool, fail_copy: bool) -> (Reading,
 
 #[test]
 fn a_closed_native_row_graph_preserves_overlaps_ranks_and_original_citations() {
-    let fixture = cohort(16, 16);
+    let fixture = cohort(16, 16, 8);
     let (ordinary, _) = run(&fixture, false, false, false);
     let (copied, _) = run(&fixture, true, false, false);
     assert_eq!(ordinary, copied);
@@ -913,7 +934,7 @@ fn a_closed_native_row_graph_preserves_overlaps_ranks_and_original_citations() {
 
 #[test]
 fn a_failed_graph_transfer_keeps_the_checkpoint_and_can_retry() {
-    let fixture = cohort(8, 8);
+    let fixture = cohort(8, 8, 8);
     let (ordinary, _) = run(&fixture, false, false, false);
     let (retried, _) = run(&fixture, true, false, true);
     assert_eq!(ordinary, retried);
@@ -922,11 +943,10 @@ fn a_failed_graph_transfer_keeps_the_checkpoint_and_can_retry() {
 #[cfg(not(debug_assertions))]
 #[test]
 fn bounded_full_row_construction_reports_its_complete_transfer_cost() {
-    const MESSAGES: usize = 4_096;
-    // A larger single-session cohort already exceeded the runner's deadline
-    // in ordinary row construction. Keep a complete pair within this check.
-    eprintln!("ROW_CONSTRUCTION: prepare the {MESSAGES}-message fixture");
-    let fixture = cohort(MESSAGES, 96);
+    const MESSAGES: usize = 32_768;
+    const PER_SESSION: usize = 1_024;
+    eprintln!("ROW_CONSTRUCTION: prepare {MESSAGES} messages across multiple sessions");
+    let fixture = cohort(MESSAGES, 96, PER_SESSION);
     let (ordinary, before) = run(&fixture, false, true, false);
     let (copied, after) = run(&fixture, true, true, false);
     assert_eq!(ordinary, copied);
@@ -946,6 +966,7 @@ fn bounded_full_row_construction_reports_its_complete_transfer_cost() {
         "ROW_CONSTRUCTION {}",
         serde_json::json!({
             "base_messages": MESSAGES,
+            "messages_per_session": PER_SESSION,
             "all_observations": fixture.observations.len(),
             "captured_bytes": fixture.observations.iter().map(|o| o.bytes.len() as u64).sum::<u64>(),
             "baseline": before,
