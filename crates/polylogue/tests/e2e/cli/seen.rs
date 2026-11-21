@@ -245,29 +245,37 @@ fn logical_read_reuses_physical_progress_through_cli_and_actual_mcp() {
         "exporting a composed stream cannot mark its unread root"
     );
     let mut mcp = super::query_surfaces::Mcp::start(&env);
-    let request = command_surface::RunnableRequest::new(
-        "rows",
-        json!({"selection":target,"steps":[{"verb":"read","from":"seen","budget":100000}]}),
-        uuid::Uuid::now_v7().to_string(),
-    );
-    let reply = mcp.request(
-        "tools/call",
-        json!({"name":"polylogue_read","arguments":request}),
-    );
-    assert_eq!(reply["result"]["isError"], false, "{reply}");
-    let answer: command_surface::Answer<Value> =
-        serde_json::from_value(reply["result"]["structuredContent"].clone()).unwrap();
+    let mut read = |selection: &str| {
+        let request = command_surface::RunnableRequest::new(
+            "rows",
+            json!({"selection":selection,"steps":[{"verb":"read","from":"seen","budget":100000}]}),
+            uuid::Uuid::now_v7().to_string(),
+        );
+        let reply = mcp.request(
+            "tools/call",
+            json!({"name":"polylogue_read","arguments":request}),
+        );
+        assert_eq!(reply["result"]["isError"], false, "{reply}");
+        let answer: command_surface::Answer<Value> =
+            serde_json::from_value(reply["result"]["structuredContent"].clone()).unwrap();
+        read_page(answer.value().unwrap().clone())
+    };
+    // MCP's computed author is independent from the CLI's. Establish its own
+    // physical continuation progress before reading that author's logical root.
     let mut items = super::read_current::Items::default();
-    items.push(&read_page(answer.value().unwrap().clone()));
+    items.push(&read("session:claude-code:cont"));
+    assert_eq!(items.text(), "already read continuation");
+    assert_eq!(count(&env), 2);
+    let mut items = super::read_current::Items::default();
+    items.push(&read(target));
     assert_eq!(
         items.text(),
         "opening questionsecond marker betathird marker gamma"
     );
-    assert_eq!(
-        count(&env),
-        2,
-        "MCP advances the existing root physical mark"
-    );
+    assert_eq!(count(&env), 3, "MCP advances its own root physical mark");
+    let mut items = super::read_current::Items::default();
+    items.push(&read(target));
+    assert_eq!(items.text(), "");
     let again = cli(
         &env,
         &[
@@ -276,5 +284,9 @@ fn logical_read_reuses_physical_progress_through_cli_and_actual_mcp() {
     );
     let mut items = super::read_current::Items::default();
     items.push(&read_page(json(&again)));
-    assert_eq!(items.text(), "");
+    assert_eq!(
+        items.text(),
+        "opening questionsecond marker betathird marker gamma",
+        "MCP cannot consume the CLI reader's root progress"
+    );
 }

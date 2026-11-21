@@ -1258,18 +1258,19 @@ fn trim_owner(
     let Some(after) = after else {
         return Ok(());
     };
-    let owns = |part: &Part| {
-        if logical {
-            !spawned(part)
-                && if part.inherited {
-                    owner == root
-                } else {
-                    &part.session == owner
-                }
-        } else {
-            true
-        }
-    };
+    // Inline children travel inside their surrounding owner's transcript.
+    // They never supply its mark, but a later parent mark skips them too.
+    let mut current = root;
+    let owned: Vec<_> = composed
+        .parts
+        .iter()
+        .map(|part| {
+            if !spawned(part) {
+                current = if part.inherited { root } else { &part.session };
+            }
+            !logical || current == owner
+        })
+        .collect();
     let (key, whole_message) = match Reference::parse_stored(after).map_err(Error::bad_request)? {
         Reference::Message(message) => (EntryKey::header(&message), true),
         Reference::Block { message, n } => (
@@ -1284,7 +1285,7 @@ fn trim_owner(
     // Inline children can split one physical owner into several parts.
     // Find the last such segment beginning no later than the accepted item.
     for at in (0..composed.parts.len()).rev() {
-        if !owns(&composed.parts[at]) {
+        if !owned[at] || logical && spawned(&composed.parts[at]) {
             continue;
         }
         let index = &composed.indexes[at];
@@ -1298,8 +1299,8 @@ fn trim_owner(
             } else {
                 seq + 1
             } as usize;
-            for before in &mut composed.parts[..at] {
-                if owns(before) {
+            for (at, before) in composed.parts[..at].iter_mut().enumerate() {
+                if owned[at] {
                     before.end = before.start;
                 }
             }

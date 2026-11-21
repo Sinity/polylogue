@@ -286,6 +286,7 @@ fn body_text(page: &ReadPage) -> Vec<String> {
     page.document
         .items
         .iter()
+        .filter(|item| item.source.message.is_some())
         .filter_map(|item| match &item.kind {
             ItemKind::Text { text } => Some(text.clone()),
             _ => None,
@@ -421,7 +422,7 @@ fn logical_seen_cursor_keeps_all_accepted_bounds_through_parent_append_and_resta
         .expect("large root crosses pages");
     // A newer display updates both durable marks after the first cursor captured
     // their absent bounds. That cursor must continue the original population.
-    let _ = crate::test_answers::read(
+    let mut newer = crate::test_answers::read(
         composed_call(
             "root:claude-code:root",
             json!({"verb":"read","budget":100000,"hide":["annotations"]}),
@@ -429,6 +430,15 @@ fn logical_seen_cursor_keeps_all_accepted_bounds_through_parent_append_and_resta
         .surface(Surface::Mcp)
         .answer(&d.daemon),
     );
+    let mut accepted = std::collections::BTreeSet::new();
+    while let Some(next) = newer.document.footer.next {
+        assert!(accepted.insert(serde_json::to_string(&next.request).unwrap()));
+        newer = crate::test_answers::read(
+            Call::from_request(&next.request)
+                .surface(Surface::Mcp)
+                .answer(&d.daemon),
+        );
+    }
     assert_eq!(marks_of(&d, "session:claude-code:cont").len(), 1);
     let second = crate::test_answers::read(Call::from_request(&next.request).answer(&d.daemon));
     let mut source = std::fs::OpenOptions::new()
@@ -506,6 +516,8 @@ fn logical_historical_context_continuation_retains_root_without_a_copied_prefix_
     let first =
         crate::test_answers::read(composed_call("root:claude-code:root", step).answer(&d.daemon));
     let whole = crate::test_answers::read(composed_call("root:claude-code:root", json!({"verb":"read","view":"context","at":at,"from":"seen","budget":100000,"hide":["annotations","tools"]})).answer(&d.daemon));
+    assert!(whole.document.items.iter().any(|item| matches!(&item.kind,
+        ItemKind::Text { text } if text == &format!("Annotations as of {at}; expiry uses this read's clock."))));
     assert_eq!(
         body_text(&whole),
         ["root question", "continuation question"]
@@ -529,4 +541,60 @@ fn logical_historical_context_continuation_retains_root_without_a_copied_prefix_
     assert_eq!(items, whole.document.items);
     assert!(marks_of(&d, "session:claude-code:root").is_empty());
     assert!(marks_of(&d, "session:claude-code:cont").is_empty());
+}
+
+#[test]
+fn logical_seen_matches_physical_trimming_after_an_inline_spawn_and_parent_tail() {
+    use std::io::Write;
+    let d = test_daemon::start("placeholder");
+    super::reading_shapes::family(&d);
+    let mut source = std::fs::OpenOptions::new()
+        .append(true)
+        .open(d.home.join(".claude/projects/-p/root.jsonl"))
+        .unwrap();
+    writeln!(source, "{}", json!({"type":"user","uuid":"parent-tail","sessionId":"root","timestamp":"2026-03-02T00:00:00Z","message":{"role":"user","content":"parent after the inline children"}})).unwrap();
+    drop(source);
+    d.wait_for(|_| {
+        d.daemon
+            .reads
+            .reader()
+            .unwrap()
+            .message_session(&polylogue_model::MessageId::parse("claude-code:parent-tail").unwrap())
+            .unwrap()
+            .is_some()
+    });
+    let step = json!({"verb":"read","show":["spawns:full","harness:full"],"hide":["tools"],"budget":100000});
+    let displayed = crate::test_answers::read(
+        composed_call("session:claude-code:root", step.clone())
+            .surface(Surface::Mcp)
+            .answer(&d.daemon),
+    );
+    assert_eq!(
+        body_text(&displayed),
+        [
+            "root question",
+            "do the subtask",
+            "the nested subtask",
+            "parent after the inline children"
+        ]
+    );
+    assert_eq!(
+        marks_of(&d, "session:claude-code:root")[0].item.as_deref(),
+        Some("block:claude-code:parent-tail#0")
+    );
+    let mut seen = step;
+    seen["from"] = "seen".into();
+    let physical = crate::test_answers::read(
+        composed_call("session:claude-code:root", seen.clone()).answer(&d.daemon),
+    );
+    assert!(body_text(&physical).is_empty());
+    let logical =
+        crate::test_answers::read(composed_call("root:claude-code:root", seen).answer(&d.daemon));
+    assert_eq!(
+        body_text(&logical),
+        ["continuation question"],
+        "a logical reading must skip the same already-read inline prefix as its physical owner"
+    );
+    assert!(marks_of(&d, "session:claude-code:cont").is_empty());
+    assert!(marks_of(&d, "session:claude-code:agent-x1").is_empty());
 }

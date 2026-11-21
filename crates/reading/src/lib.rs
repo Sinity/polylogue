@@ -96,6 +96,21 @@ pub fn resolve_start(
             ));
         }
     }
+    // Fixed populations retain their grains and order. Their joined display
+    // question is not a single session or message selector.
+    if request
+        .references
+        .as_ref()
+        .is_some_and(|references| references.len() != 1)
+    {
+        return if from_seen {
+            Err(Error::bad_request(
+                "read --from seen needs one session or logical-root reference",
+            ))
+        } else {
+            Ok(())
+        };
+    }
     if let Some(scope) =
         session::scope(reader, &request.target)?.filter(|scope| scope.range.is_none())
     {
