@@ -1,3 +1,5 @@
+mod state_buffer;
+
 use super::*;
 use polylogue_testkit::{ClaudeHome, claude_user};
 

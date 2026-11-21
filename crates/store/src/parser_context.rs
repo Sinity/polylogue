@@ -9,6 +9,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::sync::{Arc, Mutex};
 
 mod scratch;
+mod state_buffer;
 
 // A chain's context belongs to one reading, named once in its state row: a
 // reading from byte zero replaces the whole context, and an extension applies
@@ -23,7 +24,8 @@ CREATE TABLE parser_context_value(input_pk INTEGER NOT NULL REFERENCES input_ref
 
 fn scratch_values() -> Result<Connection> {
     let scratch = Connection::open("")?;
-    scratch.execute_batch("PRAGMA cache_size=-256; PRAGMA mmap_size=0; PRAGMA temp_store=FILE; PRAGMA journal_mode=OFF; PRAGMA cache_spill=ON; CREATE TABLE entry(key TEXT PRIMARY KEY,value BLOB NOT NULL,dirty INTEGER NOT NULL,state_namespace TEXT) WITHOUT ROWID; CREATE INDEX entry_dirty ON entry(key) WHERE dirty=1; CREATE INDEX entry_state_namespace ON entry(state_namespace) WHERE state_namespace IS NOT NULL; CREATE TABLE cleared_state(namespace TEXT PRIMARY KEY,dirty INTEGER NOT NULL) WITHOUT ROWID; BEGIN;")?;
+    scratch.pragma_update(None, "cache_size", state_buffer::PAGE_CACHE_KIB)?;
+    scratch.execute_batch("PRAGMA mmap_size=0; PRAGMA temp_store=FILE; PRAGMA journal_mode=OFF; PRAGMA cache_spill=ON; CREATE TABLE entry(key TEXT PRIMARY KEY,value BLOB NOT NULL,dirty INTEGER NOT NULL,state_namespace TEXT) WITHOUT ROWID; CREATE INDEX entry_dirty ON entry(key) WHERE dirty=1; CREATE INDEX entry_state_namespace ON entry(state_namespace) WHERE state_namespace IS NOT NULL; CREATE TABLE cleared_state(namespace TEXT PRIMARY KEY,dirty INTEGER NOT NULL) WITHOUT ROWID; BEGIN;")?;
     Ok(scratch)
 }
 
@@ -31,6 +33,7 @@ fn scratch_values() -> Result<Connection> {
 pub struct Overlay(Arc<Mutex<Attempt>>);
 struct Attempt {
     scratch: Connection,
+    states: state_buffer::States,
     index: Option<Connection>,
     input: Option<i64>,
     chain: Option<i64>,
@@ -102,6 +105,7 @@ impl Overlay {
         let scratch = scratch_values()?;
         Ok(Self(Arc::new(Mutex::new(Attempt {
             scratch,
+            states: Default::default(),
             index,
             input: if base == 0 || replay_chain.is_some() {
                 None
@@ -121,6 +125,7 @@ impl Overlay {
     pub fn temporary() -> Result<Self> {
         Ok(Self(Arc::new(Mutex::new(Attempt {
             scratch: scratch_values()?,
+            states: Default::default(),
             index: None,
             input: None,
             chain: None,
@@ -165,6 +170,10 @@ impl Overlay {
                 "private parser context cursor moved backward".into(),
             ));
         }
+        let Attempt {
+            scratch, states, ..
+        } = &mut *attempt;
+        states.flush(scratch)?;
         let mut statement = attempt
             .scratch
             .prepare("SELECT key,value FROM entry WHERE dirty=1 ORDER BY key")?;
@@ -221,10 +230,11 @@ impl Context for Overlay {
             if let Some(limit) = crate::read::limit::ReadLimit::current() {
                 limit.check()?;
             }
-            let attempt = self.0.lock().or_invalid("parser context lock poisoned")?;
+            let mut attempt = self.0.lock().or_invalid("parser context lock poisoned")?;
             attempt
                 .scratch
                 .execute("DELETE FROM entry WHERE state_namespace=?1", [namespace])?;
+            attempt.states.clear(namespace);
             attempt.scratch.execute("INSERT INTO cleared_state VALUES(?1,1) ON CONFLICT(namespace) DO UPDATE SET dirty=1", [namespace])?;
             Ok(())
         };
@@ -245,14 +255,19 @@ impl Context for Overlay {
             if let Some(limit) = crate::read::limit::ReadLimit::current() {
                 limit.check()?;
             }
-            let attempt = self.0.lock().or_invalid("parser context lock poisoned")?;
-            let namespace = match &key {
-                Key::State { namespace, .. } => Some(namespace.clone()),
-                _ => None,
-            };
-            let key = serde_json::to_string(&key)?;
-            let bytes = scratch::encode(&value)?;
-            attempt.scratch.execute("INSERT INTO entry VALUES(?1,?2,1,?3) ON CONFLICT(key) DO UPDATE SET value=excluded.value,dirty=1,state_namespace=excluded.state_namespace",params![key,bytes,namespace])?;
+            let mut attempt = self.0.lock().or_invalid("parser context lock poisoned")?;
+            match (key, value) {
+                (key @ Key::State { .. }, Value::State { value }) => {
+                    let Attempt {
+                        scratch, states, ..
+                    } = &mut *attempt;
+                    states.put(scratch, key, value)?;
+                }
+                (key, value) => {
+                    scratch::write_value(&attempt.scratch, &key, &value)?;
+                    attempt.states.remove(&key);
+                }
+            }
             Ok(())
         };
         put().map_err(context_error)
@@ -264,10 +279,26 @@ impl Overlay {
             limit.check()?;
         }
         let attempt = self.0.lock().or_invalid("parser context lock poisoned")?;
-        let changed: Option<Vec<u8>> = attempt.scratch.scalar_optional(
-            "SELECT value FROM entry WHERE key=?1",
-            [serde_json::to_string(key)?],
-        )?;
+        if let Some(value) = attempt.states.get(key) {
+            return Ok((!value.is_null()).then(|| Value::State {
+                value: value.clone(),
+            }));
+        }
+        let changed: Option<Vec<u8>> = {
+            let mut statement = attempt
+                .scratch
+                .prepare_cached("SELECT value FROM entry WHERE key=?1")?;
+            let value = statement
+                .query_row([serde_json::to_string(key)?], |row| row.get(0))
+                .optional();
+            statement.clear_bindings();
+            #[cfg(test)]
+            scratch::work(|w| {
+                w.scratch_reads += 1;
+                w.read_vm_steps += statement.reset_status(rusqlite::StatementStatus::VmStep) as u64;
+            });
+            value?
+        };
         if let Some(bytes) = changed {
             let value = scratch::decode(&bytes)?;
             return Ok(match value {
