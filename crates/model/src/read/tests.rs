@@ -640,3 +640,12 @@ fn read_at_keeps_the_declared_string_format_and_context_message_behavior() {
     );
     assert!(schema["$defs"].get("ReadAt").is_none());
 }
+
+#[test]
+fn annotation_times_keep_the_same_read_option_string_codec() {
+    for text in ["2026-11-21T10:00:00Z", "1h", "08:00", "2026-11-21T09:00:00"] {
+        let options: ReadOptions = serde_json::from_value(serde_json::json!({"at":text})).unwrap();
+        options.validate().unwrap();
+        assert_eq!(serde_json::to_value(&options).unwrap()["at"], text);
+    }
+}

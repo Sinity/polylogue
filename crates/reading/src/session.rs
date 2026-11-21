@@ -1012,7 +1012,7 @@ pub(super) fn page(
                 reader,
                 &polylogue_model::Reference::Session(read_session.id.clone()),
                 operation.ran_at,
-                options.annotation_position(),
+                options.annotation_at(),
             )?
         } else {
             vec![]
@@ -1328,12 +1328,10 @@ fn lead_items(
             }),
         },
     }];
-    if let Some(position) = options.annotation_position() {
+    if let Some(text) = layout_facts::annotation_notice(options) {
         out.push(ReadItem {
             source: Source::record(target),
-            kind: ItemKind::Text {
-                text: format!("Annotations as of {position}; expiry uses this read's clock."),
-            },
+            kind: ItemKind::Text { text },
         });
     }
     let source = Source::record(target);
@@ -2008,13 +2006,7 @@ fn emit(
     // the reading's first lines.
     let mut facts = facts;
     if options.assertions {
-        layout_facts::annotate(
-            reader,
-            &record,
-            &mut facts,
-            at,
-            options.annotation_position(),
-        )?;
+        layout_facts::annotate(reader, &record, &mut facts, at, options.annotation_at())?;
     }
     if options.view == View::Context {
         facts.context = Some(ContextState {

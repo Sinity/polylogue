@@ -392,6 +392,17 @@ impl<'a> StoredLinks<'a> {
             through: None,
         })
     }
+    fn at_annotation(
+        conn: &'a Connection,
+        at: polylogue_model::read::AnnotationAt,
+    ) -> Result<Self> {
+        match at {
+            polylogue_model::read::AnnotationAt::Position(through) => {
+                Self::at_commit(conn, through)
+            }
+            polylogue_model::read::AnnotationAt::Time(until) => Self::as_of(conn, until),
+        }
+    }
     /// Facts accepted through one local archive write counter.
     pub(crate) fn at_commit(conn: &'a Connection, through: i64) -> Result<Self> {
         Ok(Self {

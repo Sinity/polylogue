@@ -487,20 +487,48 @@ pub fn is_object_read(request: &ReadRequest) -> bool {
     object::target(request).is_some()
 }
 
-fn validate_at(reader: &Reader<'_>, request: &ReadRequest) -> Result<(), Error> {
-    let Some(position) = request.options.annotation_position() else {
-        return Ok(());
-    };
-    let current = reader.change_position()?;
-    if position.generation != current.generation {
-        return Err(Error::bad_request(
-            "read --at position belongs to another index generation",
-        ));
+/// Resolve against the accepted query clock before sealing a page cursor. Ready
+/// calls carry the absolute instant, so a relative time cannot drift on replay.
+fn resolve_at<'a>(
+    request: &'a ReadRequest,
+    operation: &Context,
+) -> Result<std::borrow::Cow<'a, ReadRequest>, Error> {
+    if request.options.view == View::Context {
+        return Ok(std::borrow::Cow::Borrowed(request));
     }
-    if position.index > current.index || position.archive > current.archive {
+    let text = match request.options.at.as_ref() {
+        Some(ReadAt::TimeExpression(text)) => text.clone(),
+        Some(ReadAt::Message(message)) => message.to_string(),
+        _ => return Ok(std::borrow::Cow::Borrowed(request)),
+    };
+    let resolved = query_language::time::resolve(&text, &operation.clock)
+        .map_err(|error| Error::bad_request(error.to_string()))?;
+    let query_language::time::Time::Instant { at } = resolved.value else {
         return Err(Error::bad_request(
-            "read --at position is ahead of this reader",
+            "read --at requires an instant; supply a clock time or an RFC 3339 timestamp instead of a whole period",
         ));
+    };
+    let mut request = request.clone();
+    request.options.at = Some(ReadAt::Time(at.into()));
+    Ok(std::borrow::Cow::Owned(request))
+}
+
+fn validate_at(reader: &Reader<'_>, request: &ReadRequest) -> Result<(), Error> {
+    if request.options.annotation_at().is_none() {
+        return Ok(());
+    }
+    if let Some(position) = request.options.annotation_position() {
+        let current = reader.change_position()?;
+        if position.generation != current.generation {
+            return Err(Error::bad_request(
+                "read --at position belongs to another index generation",
+            ));
+        }
+        if position.index > current.index || position.archive > current.archive {
+            return Err(Error::bad_request(
+                "read --at position is ahead of this reader",
+            ));
+        }
     }
     if session::scope(reader, &request.target)?.is_none() {
         return Err(Error::bad_request(
@@ -517,6 +545,8 @@ pub fn page(
     operation: &Arc<Context>,
     history: Option<HistorySlot>,
 ) -> Result<ReadPage, Error> {
+    let resolved = resolve_at(request, operation)?;
+    let request = resolved.as_ref();
     validate_at(reader, request)?;
     if request.with_blobs {
         return Err(Error::bad_request("with_blobs requires streaming delivery"));
@@ -804,6 +834,8 @@ pub fn stream(
     operation: &Arc<Context>,
     output: &mut dyn Write,
 ) -> Result<ReadComplete, Error> {
+    let resolved = resolve_at(request, operation)?;
+    let request = resolved.as_ref();
     validate_at(reader, request)?;
     if request.delivery != ReadDelivery::Stream {
         return Err(Error::bad_request(
@@ -883,6 +915,14 @@ fn rows_stream(
         options: reading.options.clone(),
     };
     let mut stream = output::Stream::begin(output, &check, &begin)?;
+    if let Some(text) = layout_facts::annotation_notice(&reading.options) {
+        stream.record(&ReadRecord::Presentation {
+            parts: vec![ReadPart::Item(ReadItem {
+                source: Source::record(&reading.target),
+                kind: ItemKind::Text { text },
+            })],
+        })?;
+    }
     let mut blobs = if request.with_blobs {
         Some(blobs::Blobs::new(reader)?)
     } else {

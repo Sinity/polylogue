@@ -2,13 +2,15 @@ use super::ReadError;
 use crate::{Block, BlockKind, Message, PromptKind, Role};
 use serde::{Deserialize, Serialize};
 
-/// A context message or an exact local archive position. The wire form remains
+/// A context message, local archive position or annotation time. The wire form remains
 /// one string, including for stored reads accepted before historical reading.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "String", into = "String")]
 pub enum ReadAt {
     Message(crate::MessageId),
     Position(crate::ChangePosition),
+    Time(crate::Timestamp),
+    TimeExpression(String),
 }
 impl TryFrom<String> for ReadAt {
     type Error = String;
@@ -16,9 +18,16 @@ impl TryFrom<String> for ReadAt {
         if let Some(position) = crate::ChangePosition::parse(&text) {
             return Ok(Self::Position(position));
         }
-        crate::MessageId::parse(&text).map(Self::Message).map_err(|_| {
-            "read --at takes GENERATION:INDEX:ARCHIVE, or a message in the context view; time selection is not built".into()
-        })
+        if let Ok(message) = crate::MessageId::parse(&text) {
+            return Ok(Self::Message(message));
+        }
+        if let Some(at) = crate::Timestamp::parse_rfc3339(&text) {
+            return Ok(Self::Time(at));
+        }
+        if text.trim().is_empty() {
+            return Err("read --at requires a time, local position or context message".into());
+        }
+        Ok(Self::TimeExpression(text))
     }
 }
 impl From<ReadAt> for String {
@@ -31,6 +40,8 @@ impl std::fmt::Display for ReadAt {
         match self {
             Self::Message(message) => message.fmt(f),
             Self::Position(position) => position.fmt(f),
+            Self::Time(at) => at.fmt(f),
+            Self::TimeExpression(text) => f.write_str(text),
         }
     }
 }
@@ -103,6 +114,13 @@ impl std::str::FromStr for View {
     }
 }
 
+/// The resolved visibility bound for an annotation revision graph.
+#[derive(Debug, Clone, Copy)]
+pub enum AnnotationAt {
+    Position(i64),
+    Time(crate::Timestamp),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Expansion {
@@ -148,7 +166,7 @@ pub struct ReadOptions {
     /// For `root:REF`: read only the named physical session.
     #[serde(default)]
     pub physical: bool,
-    /// A context message or an exact local annotation revision position.
+    /// A context message, exact local annotation position or annotation time.
     // The existing published nullable-string codec and its declaration text
     // stay immutable; Rust parses the same string into the appropriate case.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -456,6 +474,17 @@ impl ReadOptions {
         }
     }
 
+    pub fn annotation_at(&self) -> Option<AnnotationAt> {
+        if self.view == View::Context {
+            return None;
+        }
+        match self.at.as_ref()? {
+            ReadAt::Position(position) => Some(AnnotationAt::Position(position.archive)),
+            ReadAt::Time(at) => Some(AnnotationAt::Time(*at)),
+            _ => None,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), ReadError> {
         self.context_message()?;
         let prose = matches!(self.view, View::Transcript | View::Context);
@@ -503,11 +532,6 @@ impl ReadOptions {
                 matches!(self.spawns, SpawnFold::Inline { .. }) && self.view == View::Context,
                 "spawns",
                 "transcript, dialogue, changes, raw",
-            ),
-            (
-                matches!(self.at, Some(ReadAt::Message(_))) && self.view != View::Context,
-                "at",
-                "context",
             ),
             (
                 self.diff.is_some() && self.view != View::Context,
