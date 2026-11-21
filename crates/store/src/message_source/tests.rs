@@ -149,6 +149,11 @@ fn promotion_and_retraction_preserve_one_complete_claim_and_roll_back_together()
             conn.execute("UPDATE message SET source_version_pk=999 WHERE pk=1", [])
                 .is_err()
         );
+        assert_eq!(
+            conn.scalar::<i64>("SELECT count(*) FROM parse_state", [])
+                .unwrap(),
+            0
+        );
         retract(&conn, 2, 2).unwrap();
         select(&conn, 1, 1, 1).unwrap();
         install(&conn, &first).unwrap();

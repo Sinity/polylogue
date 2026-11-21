@@ -185,8 +185,13 @@ pub(crate) fn remove(conn: &Connection, message: i64, input: i64, chain: i64) ->
 }
 
 pub(crate) fn retract(conn: &Connection, input: i64, chain: i64) -> Result<()> {
-    conn.prepare_cached("UPDATE message SET source_version_pk=NULL,source_session_pk=NULL,source_seq=NULL WHERE input_pk=?1 AND source_chain=?2 AND source_version_pk IS NOT NULL")?
-        .execute(params![input,chain])?;
+    // A new chain resets before its first insert. Avoid preparing a header
+    // mutation when it owns no inline claim; this is physical membership,
+    // independent of whether a parser checkpoint exists.
+    if conn.exists("SELECT EXISTS(SELECT 1 FROM message WHERE input_pk=?1 AND source_chain=?2 AND source_version_pk IS NOT NULL)",params![input,chain])? {
+        conn.prepare_cached("UPDATE message SET source_version_pk=NULL,source_session_pk=NULL,source_seq=NULL WHERE input_pk=?1 AND source_chain=?2 AND source_version_pk IS NOT NULL")?
+            .execute(params![input,chain])?;
+    }
     conn.prepare_cached("DELETE FROM message_source_extra WHERE input_pk=?1 AND chain=?2")?
         .execute(params![input, chain])?;
     Ok(())
