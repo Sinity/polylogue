@@ -5,7 +5,7 @@
 //! - `pl_text(body)`: a compressed UTF-8 body (a delivery's) decompressed;
 //! - `pl_text_at(group_body, start, length)`: a stored text, from its
 //!   `text_group` body and its `text` row's place in it;
-//! - `pl_block(body)`: a `block.body` decompressed to its JSON (text moved
+//! - `pl_block(body)`: a `message_version_block.body` decompressed to its JSON (text moved
 //!   to `text` is not in it);
 //! - `pl_fold(text)`: letters with a stroke folded, as the index does;
 //! - `pl_key(text)`: [`polylogue_model::text::key`], for case- and

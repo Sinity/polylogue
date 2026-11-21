@@ -1052,7 +1052,7 @@ fn unreferenced(w: &TestArchive) -> Json {
            (SELECT count(*) FROM text t
             WHERE NOT EXISTS(SELECT 1 FROM block b WHERE b.text_id = t.id)
               AND NOT EXISTS(SELECT 1 FROM document_block b WHERE b.text_id = t.id)
-              AND NOT EXISTS(SELECT 1 FROM message_version_text v WHERE v.text_id = t.id)
+              AND NOT EXISTS(SELECT 1 FROM message_version_block v WHERE v.text_id = t.id)
               AND NOT EXISTS(SELECT 1 FROM document_version_text v WHERE v.text_id = t.id))
              AS texts",
             &[]

@@ -37,7 +37,8 @@ fn many_tool_calls_remove_search_entries_and_keep_another_session() {
     message(&tx, 2, 2);
     for pk in 1..=4097 {
         let session = if pk == 4097 { 2 } else { 1 };
-        tx.execute("INSERT INTO block(pk,message_pk,session_pk,idx,kind,body) VALUES(?1,?2,?2,?1,'tool_call',x'00')",params![pk,session]).unwrap();
+        let payload = crate::fixture::block_payload(&tx, session, pk, None, &[0], None).unwrap();
+        tx.execute("INSERT INTO block(pk,message_pk,session_pk,idx,kind,payload_pk) VALUES(?1,?2,?2,?1,'tool_call',?3)",params![pk,session,payload]).unwrap();
         let command = format!("echo syntheticcommand{pk}");
         let path = format!("/synthetic/path/{pk}");
         tx.execute("INSERT INTO tool_call(pk,session_pk,call_block_pk,tool,command,path,outcome) VALUES(?1,?2,?1,'shell',?3,?4,'unknown')",params![pk,session,command,path]).unwrap();

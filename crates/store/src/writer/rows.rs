@@ -575,14 +575,6 @@ fn accept_step(previous: Option<&checkpoint::Stored>, step: &ParseStep) -> Resul
     Ok(true)
 }
 
-/// A block's packed body and structured value, as `block` stores them.
-#[derive(Clone, Copy)]
-struct StoredBlock<'a> {
-    body: &'a [u8],
-    data: Option<&'a [u8]>,
-    text_id: Option<i64>,
-}
-
 pub(super) struct RowWriter<'a, 't> {
     messages: BTreeMap<i64, MessageWrite<'a>>,
     /// Results of registering this transaction's message payloads.
@@ -1396,34 +1388,23 @@ impl RowWriter<'_, '_> {
         }
         prepared.block_selection.validate(m.blocks.len())?;
         let stored;
-        let stored_texts = match self.versions.get(&prepared.hash).and_then(|v| v.text_ids()) {
+        let references = match self.versions.get(&prepared.hash).and_then(|v| v.blocks()) {
             Some(ids) => ids,
             None => {
                 stored =
-                    crate::versions::message_text_ids(self.tx, self.version_pk(&prepared.hash)?)?;
+                    crate::versions::message_block_ids(self.tx, self.version_pk(&prepared.hash)?)?;
                 &stored
             }
         };
-        for (idx, ((block, body), data)) in m
-            .blocks
-            .iter()
-            .zip(&prepared.blocks)
-            .zip(&prepared.data)
-            .enumerate()
-        {
-            let text_id = prepared.texts[idx]
-                .as_ref()
-                .map(|_| {
-                    stored_texts.get(&idx).copied().ok_or_else(|| {
-                        StoreError::Invalid("stored message text reference is missing".into())
-                    })
-                })
-                .transpose()?;
-            let stored = StoredBlock {
-                body,
-                data: data.as_deref(),
-                text_id,
-            };
+        for (idx, block) in m.blocks.iter().enumerate() {
+            let stored = references.get(&idx).copied().ok_or_else(|| {
+                StoreError::Invalid("stored message block reference is missing".into())
+            })?;
+            if stored.text.is_some() != prepared.texts[idx].is_some() {
+                return Err(StoreError::Invalid(
+                    "stored message text reference differs from selection".into(),
+                ));
+            }
             self.insert_block(
                 message_pk,
                 session_pk,
@@ -1445,14 +1426,11 @@ impl RowWriter<'_, '_> {
         origin: &str,
         position: (i64, u64),
         block: &Block,
-        StoredBlock {
-            body,
-            data,
-            text_id,
-        }: StoredBlock<'_>,
+        stored: crate::versions::BlockReference,
         at: Option<i64>,
     ) -> Result<()> {
         let (idx, ordinal) = position;
+        let text_id = stored.text;
         let bit = search_bit(block);
         if let Some(id) = text_id {
             crate::text_rows::activate(self.tx, self.texts, id, bit, self.upkeep.at_build_end())?;
@@ -1484,10 +1462,10 @@ impl RowWriter<'_, '_> {
         };
         self.tx
             .prepare_cached(
-                "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, body, call_id,
+                "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, payload_pk, call_id,
                      blob_hash, media_type, file_name, size, url, direction, signature, encrypted,
-                     other_type, data, ordinal)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                     other_type, ordinal)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             )?
             .execute(params![
                 message_pk,
@@ -1495,7 +1473,7 @@ impl RowWriter<'_, '_> {
                 idx,
                 kind,
                 text_id,
-                body,
+                stored.pk,
                 call_id,
                 attachment.and_then(|a| a.blob).map(|h| h.0.to_vec()),
                 attachment.and_then(|a| a.media_type.as_deref()),
@@ -1506,7 +1484,6 @@ impl RowWriter<'_, '_> {
                 signature,
                 i64::from(encrypted),
                 other_type,
-                data,
                 ordinal.to_string(),
             ])?;
         let block_pk = self.tx.last_insert_rowid();
@@ -1607,7 +1584,7 @@ impl RowWriter<'_, '_> {
         let result: Option<(i64, Vec<u8>, Option<i64>)> = self
             .tx
             .prepare_cached(
-                "SELECT b.pk,b.body,m.at FROM block b JOIN message m ON m.pk=b.message_pk
+                "SELECT b.pk,b_payload.body,m.at FROM block b LEFT JOIN message_version_block b_payload ON b_payload.pk=b.payload_pk JOIN message m ON m.pk=b.message_pk
                  WHERE b.session_pk = ?1 AND b.call_id = ?2 AND b.kind = 'tool_result'
                  ORDER BY b.pk LIMIT 1",
             )?

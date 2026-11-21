@@ -240,8 +240,9 @@ Building the archive overlaps every stage:
   each step's texts together in groups ([text bodies](archive.md#evolution))
   without reserving text rows; the writer stores a group with the first of
   its texts the index lacks. Registering a version returns its row
-  key and the text references it just wrote; selected blocks consume those
-  references. When that call also wrote every text payload, parser continuation
+  key and canonical block references. The version owns each compressed block
+  payload and its text reference once; selected blocks consume those keys and
+  keep only the scalar query and citation facts locally. When that call also wrote every text payload, parser continuation
   checks consume its prepared identity rather than reading and decoding its
   body again. Resolver preparation and version registration share one immutable
   message value. An uncomplicated complete selection refers to that version

@@ -53,7 +53,7 @@ fn item_commit_uses_prepared_content_without_reading_payloads() {
     tx.flush_prepared_statement_cache();
     tx.authorizer(Some(|context: AuthContext<'_>| match context.action {
         AuthAction::Read {
-            table_name: "block" | "text" | "message_version_body",
+            table_name: "message_version_block" | "text" | "message_version_body",
             column_name: "body",
         } => Authorization::Deny,
         _ => Authorization::Allow,
@@ -85,7 +85,7 @@ fn item_commit_uses_prepared_content_without_reading_payloads() {
     tx.flush_prepared_statement_cache();
     tx.authorizer(Some(|context: AuthContext<'_>| match context.action {
         AuthAction::Read {
-            table_name: "block" | "text" | "message_version_body",
+            table_name: "message_version_block" | "text" | "message_version_body",
             column_name: "body",
         } => Authorization::Deny,
         _ => Authorization::Allow,

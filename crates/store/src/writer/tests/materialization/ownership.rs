@@ -305,3 +305,171 @@ fn referenced_complete_values_preserve_unknown_time_and_prepared_headers() {
         assert_eq!(stored, message);
     }
 }
+
+#[test]
+fn canonical_block_payloads_keep_historical_and_selected_values_exact() {
+    let mut conn = database();
+    let mut original = text_message(
+        "payload",
+        "s",
+        Role::Assistant,
+        "first exact text",
+        Some("end_turn"),
+    );
+    original.blocks.push(
+        serde_json::from_value(serde_json::json!({
+            "type":"tool_result", "call_id":"call", "outcome":{"kind":"ok"},
+            "output":"result text", "data":{"preserved":[null,false,"structured"]},
+            "attachments":[{"direction":"output","name":"artifact"}]
+        }))
+        .unwrap(),
+    );
+    let mut newer = original.clone();
+    newer.blocks[0] = Block::Text {
+        text: "changed selected text".into(),
+    };
+    let old_hash = original.content_hash().unwrap();
+    let new_hash = newer.content_hash().unwrap();
+    for (input, message) in [("old", original.clone()), ("new", newer.clone())] {
+        let (result, _) = apply(
+            &mut conn,
+            reading(
+                input,
+                vec![message.clone()],
+                vec![reference(&message, "key")],
+            ),
+        );
+        result.unwrap();
+    }
+    for (hash, expected) in [(old_hash, &original), (new_hash, &newer)] {
+        assert_eq!(
+            crate::versions::read_message(&conn, &hash.0)
+                .unwrap()
+                .unwrap()
+                .0,
+            *expected
+        );
+    }
+    let blocks: i64 = conn
+        .query_row("SELECT count(*) FROM message_version_block", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        blocks, 4,
+        "two canonical block positions per retained version"
+    );
+    let mismatches: i64 = conn.query_row("SELECT count(*) FROM block b JOIN message m ON m.pk=b.message_pk
+        JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
+        JOIN message_version_block p ON p.pk=b.payload_pk
+        WHERE p.version_pk<>s.version_pk OR p.idx<>b.idx OR p.text_id IS NOT b.text_id",[],|r|r.get(0)).unwrap();
+    assert_eq!(mismatches, 0);
+    let stored_bytes: i64 = conn
+        .query_row(
+            "SELECT sum(length(body)+coalesce(length(data),0)) FROM message_version_block",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let headers: i64 = conn
+        .query_row(
+            "SELECT sum(length(body)) FROM message_version_body",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let check: i64 = conn
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(check, 0);
+    println!(
+        "canonical retained_versions=2 blocks={blocks} block_payload_bytes={stored_bytes} header_bytes={headers} selected_payload_copies=0"
+    );
+}
+
+#[test]
+fn sparse_payload_enrichment_keeps_block_keys_and_rolls_back_atomically() {
+    let mut conn = database();
+    let mut complete = text_message(
+        "enrich",
+        "s",
+        Role::Assistant,
+        "first block",
+        Some("end_turn"),
+    );
+    complete.blocks.push(Block::Text {
+        text: "second block".into(),
+    });
+    let hash = complete.content_hash().unwrap();
+    let mut partial = complete.clone();
+    partial.blocks.truncate(1);
+    let projection = polylogue_model::bundle::MessageProjection {
+        source_version: hash,
+        block_count: 2,
+        block_ordinals: vec![0],
+    };
+    let prepared = crate::encoding::PreparedMessage::projected(&partial, &projection).unwrap();
+    let texts = crate::text_rows::TextIds::new(&conn, false, 1 << 20).unwrap();
+    let packed = crate::text_rows::PreparedTexts::pack(["first block"]).unwrap();
+    let registered = crate::versions::store_message(
+        &conn,
+        &partial,
+        &prepared,
+        crate::versions::TextRows {
+            packed: &packed,
+            texts: &texts,
+            membership: None,
+            upkeep: &resolve::IndexUpkeep::PerTransaction,
+        },
+        false,
+        None,
+    )
+    .unwrap();
+    let first = registered.blocks().unwrap()[&0].pk;
+    drop(registered);
+    let expected = crate::versions::read_message(&conn, &hash.0).unwrap();
+    {
+        let tx = conn.transaction().unwrap();
+        let identity_transaction = texts.transaction();
+        let all = crate::encoding::PreparedMessage::new(&complete).unwrap();
+        let packed =
+            crate::text_rows::PreparedTexts::pack(["first block", "second block"]).unwrap();
+        let registered = crate::versions::store_message(
+            &tx,
+            &complete,
+            &all,
+            crate::versions::TextRows {
+                packed: &packed,
+                texts: &texts,
+                membership: None,
+                upkeep: &resolve::IndexUpkeep::PerTransaction,
+            },
+            true,
+            None,
+        )
+        .unwrap();
+        assert_eq!(registered.blocks().unwrap()[&0].pk, first);
+        assert_eq!(
+            crate::versions::read_message(&tx, &hash.0)
+                .unwrap()
+                .unwrap()
+                .0,
+            complete
+        );
+        drop(registered);
+        tx.rollback().unwrap();
+        drop(identity_transaction);
+    }
+    assert_eq!(
+        crate::versions::read_message(&conn, &hash.0).unwrap(),
+        expected
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM message_version_block", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+}

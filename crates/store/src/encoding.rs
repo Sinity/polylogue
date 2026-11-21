@@ -249,7 +249,7 @@ pub(crate) fn read_time(
     })
 }
 
-/// One message's identity and packed rows, prepared together before its parsed
+/// One message's header and packed block rows, prepared together before its parsed
 /// payloads are released. The writer borrows these bytes without repacking.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PreparedMessage {
@@ -268,7 +268,7 @@ pub(crate) struct PreparedContent {
     pub(crate) hash: [u8; 32],
     pub(crate) blocks: Vec<Vec<u8>>,
     pub(crate) texts: Vec<Option<[u8; 32]>>,
-    /// Each block's structured value, packed for `block.data` ([`block_data`]).
+    /// Each block's structured value, packed for `message_version_block.data` ([`block_data`]).
     pub(crate) data: Vec<Option<Vec<u8>>>,
 }
 
@@ -332,6 +332,63 @@ pub(crate) fn read_json<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
 
 pub(crate) fn unpack_json<T: DeserializeOwned>(packed: &[u8]) -> Result<T> {
     read_json(&unpack_bytes(packed)?)
+}
+
+/// The canonical message header never serializes block values. Those frames
+/// already belong to `PreparedContent` and are stored once beside their text IDs.
+struct MessageHeader<'a>(&'a Message);
+
+impl Serialize for MessageHeader<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let m = self.0;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("id", &m.id)?;
+        map.serialize_entry("session", &m.session)?;
+        if m.parent.is_some() {
+            map.serialize_entry("parent", &m.parent)?;
+        }
+        map.serialize_entry("role", &m.role)?;
+        if m.at.is_some() {
+            map.serialize_entry("at", &m.at)?;
+        }
+        map.serialize_entry("at_quality", &m.at_quality)?;
+        if m.at_precision.is_some() {
+            map.serialize_entry("at_precision", &m.at_precision)?;
+        }
+        if m.at_until.is_some() {
+            map.serialize_entry("at_until", &m.at_until)?;
+        }
+        if m.model.is_some() {
+            map.serialize_entry("model", &m.model)?;
+        }
+        if m.prompt_kind.is_some() {
+            map.serialize_entry("prompt_kind", &m.prompt_kind)?;
+        }
+        map.serialize_entry("blocks", &[] as &[Block])?;
+        if !m.usage.is_empty() {
+            map.serialize_entry("usage", &m.usage)?;
+        }
+        if m.stop_reason.is_some() {
+            map.serialize_entry("stop_reason", &m.stop_reason)?;
+        }
+        if m.reported_cost_usd.is_some() {
+            map.serialize_entry("reported_cost_usd", &m.reported_cost_usd)?;
+        }
+        if m.duration_ms.is_some() {
+            map.serialize_entry("duration_ms", &m.duration_ms)?;
+        }
+        if !m.production.is_empty() {
+            map.serialize_entry("production", &m.production)?;
+        }
+        if !m.attrs.is_empty() {
+            map.serialize_entry("attrs", &m.attrs)?;
+        }
+        map.end()
+    }
 }
 
 /// One independent frame per row; both encoders are reused for the batch.
@@ -399,7 +456,7 @@ impl RowPacker {
             id: message.id.clone(),
             block_selection: block_selection.clone(),
             time: time_bytes(message.at, message.time_evidence())?,
-            body: self.pack_version(message, &message.blocks)?,
+            body: self.pack_json(&MessageHeader(message))?,
             items: polylogue_model::read::message_entries(
                 message,
                 &block_selection.block_ordinals,
@@ -594,7 +651,7 @@ fn reading_id(e: &Event) -> Option<String> {
     Some(h.finalize().to_hex().to_string())
 }
 
-/// Reads a block back from `block.body`.
+/// Reads a block back from `message_version_block.body`.
 pub(crate) fn unpack_block(packed: &[u8]) -> Result<Block> {
     unpack_json(packed)
 }
@@ -615,7 +672,7 @@ pub(crate) fn block_text(block: &Block) -> Option<&str> {
     }
 }
 
-/// The structured value a block keeps in `block.data` rather than its packed
+/// The structured value a block keeps in `message_version_block.data` rather than its packed
 /// body: a tool result's data. No text view shows it, and it can be most of
 /// a large message, so a text read never decodes it.
 pub(crate) fn block_data(block: &Block) -> Option<&serde_json::Value> {
@@ -627,7 +684,7 @@ pub(crate) fn block_data(block: &Block) -> Option<&serde_json::Value> {
     }
 }
 
-/// Puts a block's structured value back from `block.data`.
+/// Puts a block's structured value back from `message_version_block.data`.
 pub(crate) fn restore_data(block: &mut Block, packed: &[u8]) -> Result<()> {
     if let Block::ToolResult { data, .. } = block {
         *data = Some(unpack_json(packed)?);

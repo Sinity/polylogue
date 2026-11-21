@@ -29,6 +29,47 @@ pub fn primary_previous_index(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Add one canonical payload for a direct-row fixture. The fixture supplies
+/// selected rows without captured source claims; the normal writer constructs
+/// its complete version through `versions::store_message` instead.
+pub(crate) fn block_payload(
+    conn: &Connection,
+    message: i64,
+    idx: i64,
+    text: Option<i64>,
+    body: &[u8],
+    data: Option<&[u8]>,
+) -> Result<i64> {
+    let hash = blake3::derive_key(
+        "polylogue synthetic selected message",
+        &message.to_le_bytes(),
+    );
+    conn.execute(
+        "INSERT OR IGNORE INTO message_version(version_hash) VALUES(?1)",
+        [&hash[..]],
+    )?;
+    let version: i64 = conn.query_row(
+        "SELECT pk FROM message_version WHERE version_hash=?1",
+        [&hash[..]],
+        |r| r.get(0),
+    )?;
+    let (id, session, role): (String, String, String) = conn.query_row(
+        "SELECT m.id,s.id,m.role FROM message m JOIN session s ON s.pk=m.session_pk WHERE m.pk=?1",
+        [message],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    let header = crate::encoding::pack_json(
+        &serde_json::json!({"id":id,"session":session,"role":role,"at_quality":"unknown","blocks":[]}),
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO message_version_body VALUES(?1,?2)",
+        params![version, header],
+    )?;
+    Ok(conn.query_row("INSERT INTO message_version_block(version_pk,idx,text_id,body,data) VALUES(?1,?2,?3,?4,?5)
+        ON CONFLICT(version_pk,idx) DO UPDATE SET text_id=excluded.text_id,body=excluded.body,data=excluded.data RETURNING pk",
+        params![version,idx,text,body,data],|r|r.get(0))?)
+}
+
 pub struct Fixture {
     pub archive: Archive,
     _lock: ArchiveLock,
@@ -340,10 +381,11 @@ impl Fixture {
         body: serde_json::Value,
     ) -> Result<i64> {
         let packed = crate::encoding::pack_json(&body)?;
+        let payload = block_payload(&self.index, message_pk, idx, text_id, &packed, None)?;
         self.index.execute(
-            "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, body)
+            "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, payload_pk)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![message_pk, session_pk, idx, kind, text_id, packed],
+            params![message_pk, session_pk, idx, kind, text_id, payload],
         )?;
         let block = self.index.last_insert_rowid();
         Ok(block)
@@ -501,7 +543,7 @@ impl Fixture {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 3)",
             )?;
             let mut block = tx.prepare(
-                "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, body)
+                "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, payload_pk)
                  VALUES (?1, ?2, 0, 'text', ?3, ?4)",
             )?;
             let text_body =
@@ -545,7 +587,9 @@ impl Fixture {
                             None,
                             &crate::writer::resolve::IndexUpkeep::PerTransaction,
                         )?;
-                        block.execute(params![message_pk, pk, text, text_body])?;
+                        let payload =
+                            block_payload(&tx, message_pk, 0, Some(text), &text_body, None)?;
+                        block.execute(params![message_pk, pk, text, payload])?;
                     }
                 }
                 pks.push(pk);

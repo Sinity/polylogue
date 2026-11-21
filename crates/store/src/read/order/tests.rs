@@ -27,7 +27,7 @@ fn message_session_lookup_never_hydrates_the_endpoint_body() {
         crate::archive::open_write(&fixture.archive.index_db(), crate::archive::cache::SETUP)
             .unwrap();
     connection
-        .execute("UPDATE block SET body=X'00' WHERE message_pk=?1", [message])
+        .execute("UPDATE message_version_block SET body=X'00' WHERE pk IN(SELECT payload_pk FROM block WHERE message_pk=?1)", [message])
         .unwrap();
     drop(connection);
     let pool = fixture.reads().unwrap();
@@ -74,7 +74,7 @@ fn message_ordinal_seek_uses_stored_physical_order() {
         crate::archive::open_write(&fixture.archive.index_db(), crate::archive::cache::SETUP)
             .unwrap();
     connection
-        .execute("UPDATE block SET body=X'00' WHERE session_pk=?1", [session])
+        .execute("UPDATE message_version_block SET body=X'00' WHERE pk IN(SELECT payload_pk FROM block WHERE session_pk=?1)", [session])
         .unwrap();
     drop(connection);
     let pool = fixture.reads().unwrap();

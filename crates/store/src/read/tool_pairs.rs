@@ -106,7 +106,7 @@ impl Reader<'_> {
         };
         self.check()?;
         let (body, data): (Vec<u8>, bool) = self.conn()?.query_row(
-            "SELECT body,data IS NOT NULL FROM block WHERE pk=?1",
+            "SELECT p.body,p.data IS NOT NULL FROM block b LEFT JOIN message_version_block p ON p.pk=b.payload_pk WHERE b.pk=?1",
             [result.pk],
             |row| <(_, _)>::try_from(row),
         )?;
@@ -321,13 +321,13 @@ impl Reader<'_> {
         let mut block = if full {
             crate::ordered_blocks::one(conn, fact.pk)?
         } else {
-            let body: Vec<u8> = conn.scalar("SELECT body FROM block WHERE pk=?1", [fact.pk])?;
+            let body: Vec<u8> = conn.scalar("SELECT p.body FROM block b LEFT JOIN message_version_block p ON p.pk=b.payload_pk WHERE b.pk=?1", [fact.pk])?;
             crate::encoding::unpack_block(&body)?
         };
         if full && matches!(block, Block::ToolResult { .. }) {
             self.check()?;
             let data: Option<Vec<u8>> =
-                conn.scalar("SELECT data FROM block WHERE pk=?1", [fact.pk])?;
+                conn.scalar("SELECT p.data FROM block b LEFT JOIN message_version_block p ON p.pk=b.payload_pk WHERE b.pk=?1", [fact.pk])?;
             if let Some(data) = data {
                 crate::encoding::restore_data(&mut block, &data)?;
             }

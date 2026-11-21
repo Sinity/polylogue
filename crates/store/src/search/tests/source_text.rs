@@ -62,7 +62,7 @@ fn chosen_hit_batches_preserve_source_text_and_ignore_unselected_corruption() {
             .unwrap();
     write
         .execute(
-            "UPDATE block SET body=X'00' WHERE message_pk IN (?1,?2)",
+            "UPDATE message_version_block SET body=X'00' WHERE pk IN(SELECT payload_pk FROM block WHERE message_pk IN (?1,?2))",
             [late, unrelated],
         )
         .unwrap();
@@ -110,13 +110,13 @@ fn chosen_hit_batches_preserve_source_text_and_ignore_unselected_corruption() {
     drop(fresh);
     assert_eq!(reader.snippets(&queries, &scopes).unwrap(), snippets);
     write
-        .execute("UPDATE block SET body=X'00' WHERE message_pk=?1", [header])
+        .execute("UPDATE message_version_block SET body=X'00' WHERE pk IN(SELECT payload_pk FROM block WHERE message_pk=?1)", [header])
         .unwrap();
     let fresh = pool.reader().unwrap();
     assert_eq!(fresh.snippets(&queries, &scopes).unwrap(), snippets);
     drop(fresh);
     write
-        .execute("UPDATE block SET body=X'00' WHERE message_pk=?1", [message])
+        .execute("UPDATE message_version_block SET body=X'00' WHERE pk IN(SELECT payload_pk FROM block WHERE message_pk=?1)", [message])
         .unwrap();
     let fresh = pool.reader().unwrap();
     assert!(

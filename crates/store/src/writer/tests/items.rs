@@ -1146,7 +1146,7 @@ fn indexing_errors_abort_the_changed_rows_transaction() {
             if invalid_json {
                 let body =
                     crate::encoding::pack_json(&serde_json::json!({"type":"not-a-block"})).unwrap();
-                tx.execute("UPDATE block SET body = ?1", [body]).unwrap();
+                tx.execute("UPDATE message_version_block SET body = ?1 WHERE pk IN(SELECT payload_pk FROM block)", [body]).unwrap();
             } else {
                 tx.execute("UPDATE block SET idx = -1, ordinal = NULL", [])
                     .unwrap();

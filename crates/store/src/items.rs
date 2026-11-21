@@ -1189,8 +1189,8 @@ fn message_body(conn: &Connection, pk: i64) -> Result<(Message, Vec<u64>)> {
     let mut blocks = Vec::new();
     let mut ordinals = Vec::new();
     let mut statement = conn.prepare_cached(
-        "SELECT b.body, coalesce(CAST(b.ordinal AS INTEGER), b.idx), g.body, t.start, t.length
-         FROM block b LEFT JOIN text t ON t.id = b.text_id LEFT JOIN text_group g ON g.id = t.group_id
+        "SELECT b_payload.body, coalesce(CAST(b.ordinal AS INTEGER), b.idx), g.body, t.start, t.length
+         FROM block b LEFT JOIN message_version_block b_payload ON b_payload.pk=b.payload_pk LEFT JOIN text t ON t.id = b.text_id LEFT JOIN text_group g ON g.id = t.group_id
          WHERE b.message_pk = ?1 ORDER BY b.idx",
     )?;
     let mut rows = statement.query([pk])?;

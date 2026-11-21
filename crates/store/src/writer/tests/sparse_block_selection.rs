@@ -171,7 +171,10 @@ fn compatible_partials_union_without_downgrading_full_or_pinned_readings() {
     );
     assert_eq!(
         reader
-            .query("SELECT count(*) AS n FROM message_version_text", &[])
+            .query(
+                "SELECT count(*) AS n FROM message_version_block WHERE text_id IS NOT NULL",
+                &[]
+            )
             .unwrap()[0]["n"],
         2
     );

@@ -194,7 +194,8 @@ fn compound_commands_keep_text_and_result_source() {
                 &json!({"type":"tool_result", "outcome":{"kind":"ok"}, "output":output}),
             )
             .unwrap();
-            index.execute("UPDATE block SET text_id=NULL, body=?1 WHERE pk IN (SELECT result_block_pk FROM tool_call)", [body]).unwrap();
+            index.execute("UPDATE message_version_block SET body=?1 WHERE pk IN(SELECT payload_pk FROM block WHERE pk IN(SELECT result_block_pk FROM tool_call))", [body]).unwrap();
+            index.execute("UPDATE block SET text_id=NULL WHERE pk IN(SELECT result_block_pk FROM tool_call)",[]).unwrap();
         }
         let session_pk = index
             .query_row("SELECT pk FROM session WHERE id='claude-code:s'", [], |r| {

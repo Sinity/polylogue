@@ -207,8 +207,7 @@ CREATE TABLE block (
   idx               INTEGER,                -- compact position among the stored blocks, used for ordering
   kind              TEXT NOT NULL,          -- text | thinking | tool_call | tool_result | image | file | other
   text_id           INTEGER REFERENCES text(id),
-  body              BLOB NOT NULL,          -- the model Block as zstd-compressed JSON, with its prose or output
-                                            --   text moved to `text` (text_id): reading a block back is lossless
+  payload_pk        INTEGER NOT NULL REFERENCES message_version_block(pk) DEFERRABLE INITIALLY DEFERRED, -- canonical metadata and structured data
   call_id           TEXT,                   -- tool_call and tool_result: the provider's call id (unique only in a session)
   blob_hash         BLOB,                   -- image/file, large tool output: bytes in the blob store; export `blob`
   direction         TEXT,                   -- image/file: input | output | unknown
@@ -219,8 +218,6 @@ CREATE TABLE block (
   signature         TEXT,                   -- thinking
   encrypted         INTEGER NOT NULL DEFAULT 0,  -- thinking kept encrypted
   other_type        TEXT,                   -- other: the provider's content type name; export `type`
-  data              BLOB,                   -- tool_result: its structured data as zstd-compressed JSON, kept
-                                            --   out of body, so a text read never reads or decodes it
   ordinal           TEXT,                   -- original u64 source position; NULL means the dense index the source implies
   FOREIGN KEY (message_pk, session_pk) REFERENCES message(pk, session_pk),
   UNIQUE (pk, session_pk)
@@ -228,6 +225,7 @@ CREATE TABLE block (
 CREATE UNIQUE INDEX text_hash ON text(hash);
 CREATE INDEX text_group_member ON text(group_id);  -- whether a group still holds a text
 CREATE UNIQUE INDEX block_message ON block(message_pk, idx);
+CREATE INDEX block_payload_reference ON block(payload_pk); -- foreign-key checks stay proportional to changed versions
 CREATE INDEX block_text   ON block(text_id) WHERE text_id IS NOT NULL;   -- search hit -> blocks
 
 -- Full-text search: two contentless indexes keyed by text.id, holding folded
@@ -699,7 +697,7 @@ CREATE TABLE document_block (
   body BLOB NOT NULL,
   text_id INTEGER REFERENCES text(id),
   blob_hash BLOB,
-  data BLOB,                                -- as block.data
+  data BLOB,                                -- as message_version_block.data
   PRIMARY KEY(document_pk,idx)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX document_block_text ON document_block(text_id) WHERE text_id IS NOT NULL;
@@ -847,13 +845,19 @@ CREATE TABLE message_block_selection (
   layout BLOB NOT NULL, -- original u64 block count and aligned original ordinals
   committed INTEGER CHECK(committed > 0) -- latest commit position contributing these rows
 ) STRICT, WITHOUT ROWID;
-CREATE TABLE message_version_text (
+-- One immutable block payload per version position. Selected block rows keep
+-- queryable scalar facts locally and refer here instead of copying this body.
+CREATE TABLE message_version_block (
+  pk INTEGER PRIMARY KEY,
   version_pk INTEGER NOT NULL REFERENCES message_version(pk) ON DELETE CASCADE,
   idx INTEGER NOT NULL,
-  text_id INTEGER NOT NULL REFERENCES text(id),
-  PRIMARY KEY(version_pk, idx)
-) STRICT, WITHOUT ROWID;
-CREATE INDEX message_version_text_id ON message_version_text(text_id);
+  text_id INTEGER REFERENCES text(id),
+  body BLOB NOT NULL,
+  data BLOB,
+  UNIQUE(version_pk, idx)
+) STRICT;
+CREATE INDEX message_version_block_text ON message_version_block(text_id) WHERE text_id IS NOT NULL;
+
 -- Document payloads keep their own hash-addressed format.
 CREATE TABLE document_version (
   version_hash BLOB NOT NULL UNIQUE,

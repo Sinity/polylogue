@@ -485,9 +485,12 @@ fn new_versions_do_not_resolve_hashes_again_for_each_child() {
             1
         );
         assert_eq!(
-            tx.query_row("SELECT count(*) FROM message_version_text", [], |r| r
-                .get::<_, i64>(0))
-                .unwrap(),
+            tx.query_row(
+                "SELECT count(*) FROM message_version_block WHERE text_id IS NOT NULL",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
             blocks
         );
         assert_eq!(

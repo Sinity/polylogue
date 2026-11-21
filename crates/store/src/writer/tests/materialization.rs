@@ -8,9 +8,9 @@ mod ownership;
 #[derive(Clone, Copy, Debug, Default)]
 struct Work {
     message_reads: u64,
-    text_queries: u64,
-    text_rows: u64,
-    text_key_queries: u64,
+    block_queries: u64,
+    block_rows: u64,
+    block_key_queries: u64,
     version_key_queries: u64,
     vm_steps: u64,
 }
@@ -22,9 +22,11 @@ thread_local! {
 fn family(sql: &str) -> u8 {
     if sql.starts_with("SELECT b.body,p.layout,v.pk") {
         1
-    } else if sql.starts_with("SELECT v.idx,g.body,t.start,t.length FROM message_version_text") {
+    } else if sql.starts_with(
+        "SELECT v.idx,v.body,v.data,g.body,t.start,t.length FROM message_version_block",
+    ) {
         2
-    } else if sql.starts_with("SELECT idx,text_id FROM message_version_text") {
+    } else if sql.starts_with("SELECT idx,pk,text_id FROM message_version_block") {
         3
     } else if sql.starts_with("SELECT pk FROM message_version WHERE version_hash") {
         4
@@ -41,8 +43,8 @@ fn trace(event: TraceEvent<'_>) {
                 let kind = family(&statement.sql());
                 match kind {
                     1 => value.message_reads += 1,
-                    2 => value.text_queries += 1,
-                    3 => value.text_key_queries += 1,
+                    2 => value.block_queries += 1,
+                    3 => value.block_key_queries += 1,
                     4 => value.version_key_queries += 1,
                     _ => {}
                 }
@@ -54,7 +56,7 @@ fn trace(event: TraceEvent<'_>) {
                             .unwrap();
                 }
             }
-            TraceEvent::Row(statement) if family(&statement.sql()) == 2 => value.text_rows += 1,
+            TraceEvent::Row(statement) if family(&statement.sql()) == 2 => value.block_rows += 1,
             _ => {}
         }
         work.set(value);
@@ -193,10 +195,10 @@ fn registered_responses_and_selected_blocks_consume_the_written_keys() {
     );
     assert_eq!(written.unwrap(), 16);
     assert_eq!(
-        (fresh.message_reads, fresh.text_queries, fresh.text_rows),
+        (fresh.message_reads, fresh.block_queries, fresh.block_rows),
         (0, 0, 0)
     );
-    assert_eq!(fresh.text_key_queries, 0);
+    assert_eq!(fresh.block_key_queries, 0);
     // Existing versions were not written by this registration. This real
     // duplicate-source path is the independent full-validation control.
     let (written, duplicate) = apply(&mut conn, reading("copy", messages.clone(), entries));
@@ -204,8 +206,8 @@ fn registered_responses_and_selected_blocks_consume_the_written_keys() {
     assert_eq!(
         (
             duplicate.message_reads,
-            duplicate.text_queries,
-            duplicate.text_rows
+            duplicate.block_queries,
+            duplicate.block_rows
         ),
         (16, 16, 32)
     );
@@ -390,7 +392,7 @@ fn context_keeps_old_and_fresh_versions_of_the_same_message_distinct() {
         ),
     );
     result.unwrap();
-    assert_eq!((work.message_reads, work.text_queries), (1, 1));
+    assert_eq!((work.message_reads, work.block_queries), (1, 1));
     let input: i64 = conn
         .query_row("SELECT pk FROM input_ref WHERE id='new'", [], |r| r.get(0))
         .unwrap();
@@ -453,7 +455,7 @@ fn sparse_registered_context_keeps_full_hash_and_enriches_block_positions() {
         // Enrichment reuses the first block's older text row, so its
         // context takes full validation while still consuming returned IDs.
         assert_eq!(
-            (work.message_reads, work.text_key_queries),
+            (work.message_reads, work.block_key_queries),
             (u64::from(ordinal != 0), 0)
         );
     }
@@ -501,7 +503,7 @@ fn a_new_version_with_reused_text_keeps_stored_payload_validation() {
             reading("next", vec![next.clone()], vec![reference(&next, "next")]),
         );
         assert_eq!(
-            (work.message_reads, work.text_queries, work.text_rows),
+            (work.message_reads, work.block_queries, work.block_rows),
             (1, 1, 1)
         );
         if corrupt {
@@ -605,7 +607,7 @@ fn reused_response_validation_uses_known_rows_during_a_build() {
     let (result, work) = apply_with_upkeep(&mut conn, batch, &upkeep);
     assert_eq!(result.unwrap(), 1);
     assert_eq!(
-        (work.message_reads, work.text_queries, work.text_rows),
+        (work.message_reads, work.block_queries, work.block_rows),
         (1, 1, 1),
         "reused text still needs canonical validation"
     );

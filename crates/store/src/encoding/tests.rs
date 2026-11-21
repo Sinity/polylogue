@@ -346,3 +346,45 @@ proptest::proptest! {
         proptest::prop_assert_eq!(text(&a).cmp(&text(&b)), a.cmp(&b));
     }
 }
+
+#[test]
+fn canonical_message_header_keeps_all_metadata_without_block_payloads() {
+    let message: Message = serde_json::from_value(json!({
+        "id":"codex:metadata", "session":"codex:session", "parent":"codex:parent",
+        "role":"assistant", "at":"2025-01-02T03:04:05Z", "at_quality":"intrinsic",
+        "at_precision":"instant", "at_until":"2025-01-02T03:04:06Z",
+        "model":"synthetic", "prompt_kind":"model",
+        "blocks":[{"type":"text","text":"large unique content"},
+            {"type":"tool_result","call_id":"c","outcome":{"kind":"ok"},
+             "output":"output", "data":{"preserved":[false,null,42]}}],
+        "usage":{"input":7,"output":11,"cached_input":3,"reasoning":2,
+            "cache_write":5,"cache_write_1h":1,"service_tier":"batch","speed":"fast"},
+        "stop_reason":"end_turn", "reported_cost_usd":0.125, "duration_ms":53,
+        "production":{"effort":"high","request_id":"request","phase":"final"},
+        "attrs":{"exact":{"array":[1,null,"value"]}}
+    }))
+    .unwrap();
+    let mut expected = message.clone();
+    expected.blocks.clear();
+    let prepared = PreparedMessage::new(&message).unwrap();
+    assert_eq!(unpack_json::<Message>(&prepared.body).unwrap(), expected);
+    assert_eq!(
+        serde_json::to_value(MessageHeader(&message)).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+    // The document codec is an independent aggregate-body reference for the
+    // bytes removed from the old message representation, using the same codec.
+    let old = RowPacker::new()
+        .unwrap()
+        .pack_version(&message, &message.blocks)
+        .unwrap();
+    let frames: usize = prepared.blocks.iter().map(Vec::len).sum::<usize>()
+        + prepared.data.iter().flatten().map(Vec::len).sum::<usize>();
+    println!(
+        "canonical message header={} block_frames={} previous_aggregate={} selected_copy_eliminated={}",
+        prepared.body.len(),
+        frames,
+        old.len(),
+        frames
+    );
+}

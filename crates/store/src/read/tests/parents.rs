@@ -274,7 +274,7 @@ fn source_checkpoint_skips_prefix_hydration_in_physical_and_logical_order() {
     let conn =
         crate::archive::open_write(&fixture.archive.index_db(), crate::archive::cache::SETUP)
             .unwrap();
-    conn.execute("UPDATE block SET body=X'00' WHERE message_pk=(SELECT pk FROM message WHERE id='claude-code:prefix-0')", []).unwrap();
+    conn.execute("UPDATE message_version_block SET body=X'00' WHERE pk IN(SELECT payload_pk FROM block WHERE message_pk=(SELECT pk FROM message WHERE id='claude-code:prefix-0'))", []).unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
     for (id, with_parents, from, expected) in [

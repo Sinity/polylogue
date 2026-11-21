@@ -59,26 +59,39 @@ pub(crate) fn store_document(
     texts: &[Option<[u8; 32]>],
     text_rows: TextRows<'_>,
 ) -> Result<()> {
-    store_value(
-        conn,
-        VersionKind::Document,
-        ValueRows {
-            hash,
-            body,
-            blocks,
-            texts,
-        },
-        text_rows,
-        false,
-    )
-    .map(drop)
-}
-
-struct ValueRows<'a> {
-    hash: &'a [u8],
-    body: &'a [u8],
-    blocks: &'a [Block],
-    texts: &'a [Option<[u8; 32]>],
+    let TextRows {
+        packed,
+        texts: identities,
+        membership,
+        ..
+    } = text_rows;
+    if conn
+        .prepare_cached("INSERT OR IGNORE INTO document_version(version_hash,body) VALUES(?1,?2)")?
+        .execute(params![hash, body])?
+        == 0
+    {
+        return Ok(());
+    }
+    for (idx, text_hash) in texts.iter().enumerate() {
+        if let Some(text_hash) = text_hash {
+            let text = identities
+                .resolve(conn, text_hash, packed.get(text_hash), membership)?
+                .id;
+            conn.prepare_cached(
+                "INSERT INTO document_version_text(version_hash,idx,text_id) VALUES(?1,?2,?3)",
+            )?
+            .execute(params![hash, idx as i64, text])?;
+        }
+    }
+    for block in blocks {
+        for attachment in block.attachments() {
+            if let Some(blob) = attachment.blob {
+                conn.prepare_cached("INSERT OR IGNORE INTO document_version_blob(version_hash,blob_hash) VALUES(?1,?2)")?
+                    .execute(params![hash,blob.0.as_slice()])?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Resolve a canonical hash once at the boundary of the internal row graph.
@@ -86,14 +99,6 @@ pub(crate) fn message_key(conn: &Connection, hash: &[u8]) -> Result<i64> {
     Ok(conn
         .prepare_cached("SELECT pk FROM message_version WHERE version_hash=?1")?
         .query_row([hash], |row| row.get(0))?)
-}
-
-/// The body and text references written by this registration, if it changed
-/// the stored payload. An ignored duplicate validates nothing new.
-struct StoredValue {
-    message_pk: Option<i64>,
-    text_ids: Option<BTreeMap<usize, i64>>,
-    written_payload: bool,
 }
 
 /// Keys and identity from this registration. Context can trust the prepared
@@ -104,8 +109,14 @@ pub(crate) struct RegisteredMessage<'a> {
     pk: i64,
     message: &'a Message,
     hash: &'a [u8; 32],
-    text_ids: Option<BTreeMap<usize, i64>>,
+    blocks: Option<BTreeMap<usize, BlockReference>>,
     written_payload: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct BlockReference {
+    pub pk: i64,
+    pub text: Option<i64>,
 }
 
 impl RegisteredMessage<'_> {
@@ -126,125 +137,9 @@ impl RegisteredMessage<'_> {
             .then_some(self.pk)
     }
 
-    pub fn text_ids(&self) -> Option<&BTreeMap<usize, i64>> {
-        self.text_ids.as_ref()
+    pub fn blocks(&self) -> Option<&BTreeMap<usize, BlockReference>> {
+        self.blocks.as_ref()
     }
-}
-
-fn store_value(
-    conn: &Connection,
-    kind: VersionKind,
-    ValueRows {
-        hash,
-        body,
-        blocks,
-        texts,
-    }: ValueRows<'_>,
-    text_rows: TextRows<'_>,
-    replace: bool,
-) -> Result<StoredValue> {
-    let TextRows {
-        packed,
-        texts: identities,
-        membership,
-        upkeep,
-    } = text_rows;
-    let name = kind.name();
-    let (inserted, key, column) = if matches!(kind, VersionKind::Message) {
-        let pk = if let Some(keys) = upkeep.key_maps() {
-            match keys.message_version(conn, hash)? {
-                Some(pk) => pk,
-                None => {
-                    conn.prepare_cached("INSERT INTO message_version(version_hash) VALUES(?1)")?
-                        .execute([hash])?;
-                    let pk = conn.last_insert_rowid();
-                    keys.add_message_version(hash, pk)?;
-                    pk
-                }
-            }
-        } else {
-            let inserted = conn
-                .prepare_cached("INSERT OR IGNORE INTO message_version(version_hash) VALUES(?1)")?
-                .execute([hash])?;
-            if inserted == 1 {
-                conn.last_insert_rowid()
-            } else {
-                message_key(conn, hash)?
-            }
-        };
-        let sql = if replace {
-            "INSERT INTO message_version_body(version_pk,body) VALUES(?1,?2)
-             ON CONFLICT(version_pk) DO UPDATE SET body=excluded.body WHERE body IS NOT excluded.body"
-        } else {
-            "INSERT OR IGNORE INTO message_version_body(version_pk,body) VALUES(?1,?2)"
-        };
-        (
-            conn.prepare_cached(sql)?.execute(params![pk, body])?,
-            rusqlite::types::Value::Integer(pk),
-            "version_pk",
-        )
-    } else {
-        let sql = if replace {
-            format!("INSERT INTO {name}_version(version_hash,body) VALUES(?1,?2)
-                ON CONFLICT(version_hash) DO UPDATE SET body=excluded.body WHERE body IS NOT excluded.body")
-        } else {
-            format!("INSERT OR IGNORE INTO {name}_version(version_hash,body) VALUES(?1,?2)")
-        };
-        (
-            conn.prepare_cached(&sql)?.execute(params![hash, body])?,
-            rusqlite::types::Value::Blob(hash.to_vec()),
-            "version_hash",
-        )
-    };
-    let pk = match key {
-        rusqlite::types::Value::Integer(pk) => Some(pk),
-        _ => None,
-    };
-    if inserted == 0 {
-        return Ok(StoredValue {
-            message_pk: pk,
-            text_ids: None,
-            written_payload: false,
-        });
-    }
-    let mut text_ids = pk.map(|_| BTreeMap::new());
-    let mut written_payload = true;
-    if replace {
-        conn.prepare_cached(&format!(
-            "DELETE FROM {name}_version_text WHERE {column}=?1"
-        ))?
-        .execute([&key])?;
-    }
-    let mut text = conn.prepare_cached(&format!(
-        "INSERT INTO {name}_version_text({column},idx,text_id) VALUES(?1,?2,?3)"
-    ))?;
-    for (idx, hash) in texts.iter().enumerate() {
-        if let Some(hash) = hash {
-            let resolved = identities.resolve(conn, hash, packed.get(hash), membership)?;
-            let id = resolved.id;
-            written_payload &= resolved.written;
-            text.execute(params![key, idx as i64, id])?;
-            if let Some(ids) = &mut text_ids {
-                ids.insert(idx, id);
-            }
-        }
-    }
-    let mut blob = conn.prepare_cached(&format!(
-        "INSERT OR IGNORE INTO {name}_version_blob({column},blob_hash) VALUES(?1,?2)"
-    ))?;
-    for block in blocks {
-        let attachments = block.attachments();
-        for attachment in attachments {
-            if let Some(hash) = attachment.blob {
-                blob.execute(params![key, hash.0.as_slice()])?;
-            }
-        }
-    }
-    Ok(StoredValue {
-        message_pk: pk,
-        text_ids,
-        written_payload,
-    })
 }
 
 pub(crate) fn store_message<'a>(
@@ -264,21 +159,86 @@ pub(crate) fn store_message<'a>(
     if prepared.hash != prepared.block_selection.source_version.0 {
         return Err(polylogue_model::bundle::BundleError::SourceVersionMismatch.into());
     }
-    let stored = store_value(
-        conn,
-        VersionKind::Message,
-        ValueRows {
-            hash: &prepared.hash,
-            body: &prepared.body,
-            blocks: &message.blocks,
-            texts: &prepared.texts,
-        },
-        text_rows,
-        replace,
-    )?;
-    let pk = stored
-        .message_pk
-        .expect("message versions have integer keys");
+    let TextRows {
+        packed,
+        texts: identities,
+        membership,
+        upkeep,
+    } = text_rows;
+    let pk = if let Some(keys) = upkeep.key_maps() {
+        match keys.message_version(conn, &prepared.hash)? {
+            Some(pk) => pk,
+            None => {
+                conn.prepare_cached("INSERT INTO message_version(version_hash) VALUES(?1)")?
+                    .execute([&prepared.hash[..]])?;
+                let pk = conn.last_insert_rowid();
+                keys.add_message_version(&prepared.hash, pk)?;
+                pk
+            }
+        }
+    } else {
+        let inserted = conn
+            .prepare_cached("INSERT OR IGNORE INTO message_version(version_hash) VALUES(?1)")?
+            .execute([&prepared.hash[..]])?;
+        if inserted == 1 {
+            conn.last_insert_rowid()
+        } else {
+            message_key(conn, &prepared.hash)?
+        }
+    };
+    let sql = if replace {
+        "INSERT INTO message_version_body(version_pk,body) VALUES(?1,?2)
+         ON CONFLICT(version_pk) DO UPDATE SET body=excluded.body"
+    } else {
+        "INSERT OR IGNORE INTO message_version_body(version_pk,body) VALUES(?1,?2)"
+    };
+    let inserted = conn
+        .prepare_cached(sql)?
+        .execute(params![pk, prepared.body])?
+        != 0;
+    let mut references = None;
+    let mut written_payload = inserted;
+    if inserted {
+        if prepared.blocks.len() != message.blocks.len()
+            || prepared.data.len() != message.blocks.len()
+            || prepared.texts.len() != message.blocks.len()
+        {
+            return Err(crate::StoreError::Invalid(
+                "prepared version differs from its blocks".into(),
+            ));
+        }
+        let mut rows = BTreeMap::new();
+        for (idx, block) in message.blocks.iter().enumerate() {
+            let text = prepared.texts[idx]
+                .as_ref()
+                .map(|hash| {
+                    let resolved = identities.resolve(conn, hash, packed.get(hash), membership)?;
+                    written_payload &= resolved.written;
+                    Ok::<_, crate::StoreError>(resolved.id)
+                })
+                .transpose()?;
+            // Enrichment of a sparse version keeps each existing block key.
+            // Selected references are checked at commit after selection moves.
+            let block_pk = conn.prepare_cached(
+                "INSERT INTO message_version_block(version_pk,idx,text_id,body,data) VALUES(?1,?2,?3,?4,?5)
+                 ON CONFLICT(version_pk,idx) DO UPDATE SET text_id=excluded.text_id,body=excluded.body,data=excluded.data
+                 RETURNING pk")?.query_row(params![pk,idx as i64,text,prepared.blocks[idx],prepared.data[idx]],|row|row.get(0))?;
+            rows.insert(idx, BlockReference { pk: block_pk, text });
+            for attachment in block.attachments() {
+                if let Some(hash) = attachment.blob {
+                    conn.prepare_cached("INSERT OR IGNORE INTO message_version_blob(version_pk,blob_hash) VALUES(?1,?2)")?
+                        .execute(params![pk,hash.0.as_slice()])?;
+                }
+            }
+        }
+        if replace {
+            conn.prepare_cached(
+                "DELETE FROM message_version_block WHERE version_pk=?1 AND idx>=?2",
+            )?
+            .execute(params![pk, message.blocks.len() as i64])?;
+        }
+        references = Some(rows);
+    }
     let layout = message_layout(&prepared.block_selection)?;
     conn.prepare_cached(
         "INSERT INTO message_block_selection(version_pk,layout,committed) VALUES (?1,?2,?3)
@@ -301,8 +261,8 @@ pub(crate) fn store_message<'a>(
         pk,
         message,
         hash: &prepared.hash,
-        text_ids: stored.text_ids,
-        written_payload: stored.written_payload,
+        blocks: references,
+        written_payload,
     })
 }
 
@@ -338,11 +298,7 @@ fn read_body<T: DeserializeOwned>(
     body: &[u8],
 ) -> Result<T> {
     let mut value: serde_json::Value = encoding::unpack_json(body)?;
-    let column = if kind == "message" {
-        "version_pk"
-    } else {
-        "version_hash"
-    };
+    let column = "version_hash";
     let mut statement = conn.prepare_cached(&format!(
         "SELECT v.idx,g.body,t.start,t.length FROM {kind}_version_text v JOIN text t ON t.id=v.text_id
          JOIN text_group g ON g.id=t.group_id WHERE v.{column}=?1 ORDER BY v.idx"
@@ -413,7 +369,34 @@ fn decode_message(
     let body = body.ok_or_else(|| {
         crate::StoreError::Invalid("stored message version has no payload".into())
     })?;
-    let message: Message = read_body(conn, "message", &pk, &body)?;
+    let mut message: Message = encoding::unpack_json(&body)?;
+    if !message.blocks.is_empty() {
+        return Err(crate::StoreError::Invalid(
+            "a canonical message header contains block payloads".into(),
+        ));
+    }
+    let mut statement = conn.prepare_cached(
+        "SELECT v.idx,v.body,v.data,g.body,t.start,t.length FROM message_version_block v
+         LEFT JOIN text t ON t.id=v.text_id LEFT JOIN text_group g ON g.id=t.group_id
+         WHERE v.version_pk=?1 ORDER BY v.idx",
+    )?;
+    let mut rows = statement.query([pk])?;
+    while let Some(row) = rows.next()? {
+        let idx: usize = row.get(0)?;
+        if idx != message.blocks.len() {
+            return Err(crate::StoreError::Invalid(
+                "canonical message blocks are not dense".into(),
+            ));
+        }
+        let mut block = encoding::unpack_block(&row.get::<_, Vec<u8>>(1)?)?;
+        if let Some(text) = crate::text_rows::column(row, 3)? {
+            encoding::restore_text(&mut block, text);
+        }
+        if let Some(data) = row.get::<_, Option<Vec<u8>>>(2)? {
+            encoding::restore_data(&mut block, &data)?;
+        }
+        message.blocks.push(block);
+    }
     let block_selection = message_block_selection(hash, layout.as_deref(), message.blocks.len())?;
     block_selection.validate(message.blocks.len())?;
     if block_selection.block_count == message.blocks.len() as u64
@@ -517,7 +500,7 @@ fn reference_triggers() -> String {
     for table in [
         "block",
         "document_block",
-        "message_version_text",
+        "message_version_block",
         "document_version_text",
     ] {
         trigger(table, table, "text_id", "unreferenced_text", None);
@@ -600,7 +583,7 @@ pub(crate) fn remove_unreferenced(
             "SELECT t.id,t.indexed,t.hash FROM temp.unreferenced_text u CROSS JOIN text t ON t.id=u.text_id
              WHERE NOT EXISTS(SELECT 1 FROM block b WHERE b.text_id=t.id)
              AND NOT EXISTS(SELECT 1 FROM document_block b WHERE b.text_id=t.id)
-             AND NOT EXISTS(SELECT 1 FROM message_version_text v WHERE v.text_id=t.id)
+             AND NOT EXISTS(SELECT 1 FROM message_version_block v WHERE v.text_id=t.id)
              AND NOT EXISTS(SELECT 1 FROM document_version_text v WHERE v.text_id=t.id)",
         )?
         .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, crate::encoding::Columns::hash(r, 2)?)))?
@@ -631,12 +614,20 @@ pub(crate) fn document_text_ids(
 }
 
 /// Text references already registered by the writer; no natural-key lookup.
-pub(crate) fn message_text_ids(
+pub(crate) fn message_block_ids(
     conn: &Connection,
     pk: i64,
-) -> Result<std::collections::BTreeMap<usize, i64>> {
+) -> Result<BTreeMap<usize, BlockReference>> {
     Ok(conn
-        .prepare_cached("SELECT idx,text_id FROM message_version_text WHERE version_pk=?1")?
-        .query_map([pk], |row| <(_, _)>::try_from(row))?
+        .prepare_cached("SELECT idx,pk,text_id FROM message_version_block WHERE version_pk=?1")?
+        .query_map([pk], |row| {
+            Ok((
+                row.get(0)?,
+                BlockReference {
+                    pk: row.get(1)?,
+                    text: row.get(2)?,
+                },
+            ))
+        })?
         .collect::<rusqlite::Result<_>>()?)
 }

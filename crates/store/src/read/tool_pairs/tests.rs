@@ -226,7 +226,7 @@ fn call_coordinate_never_hydrates_other_calls_or_their_results() {
     first.blocks.push(second.blocks[0].clone());
     archive.write("s", vec![first.clone(), result, other_result.clone()]);
     let conn = index(&archive);
-    conn.execute("UPDATE block SET body=?1 WHERE (message_pk=(SELECT pk FROM message WHERE id=?2) AND idx=1) OR message_pk=(SELECT pk FROM message WHERE id=?3)", params![vec![255u8], first.id.to_string(), other_result.id.to_string()]).unwrap();
+    conn.execute("UPDATE message_version_block SET body=?1 WHERE pk IN(SELECT payload_pk FROM block WHERE (message_pk=(SELECT pk FROM message WHERE id=?2) AND idx=1) OR message_pk=(SELECT pk FROM message WHERE id=?3))", params![vec![255u8], first.id.to_string(), other_result.id.to_string()]).unwrap();
     drop(conn);
     let pool = ReadPool::open(&archive.archive).unwrap();
     let reader = pool.reader().unwrap();
@@ -291,7 +291,7 @@ fn hidden_current_blocks_never_fall_back_to_old_bodies() {
     let conn = index(&archive);
     conn.execute("UPDATE message_block_selection SET layout=?1 WHERE version_pk=(SELECT s.version_pk FROM message_source s JOIN message m ON m.pk=s.message_pk WHERE m.id=?2 AND s.input_pk=m.input_pk AND s.chain=m.source_chain)", params![serde_json::to_vec(&(8u64, vec![6u64])).unwrap(), result.id.to_string()]).unwrap();
     conn.execute(
-        "UPDATE block SET body=?1 WHERE message_pk=(SELECT pk FROM message WHERE id=?2)",
+        "UPDATE message_version_block SET body=?1 WHERE pk IN(SELECT payload_pk FROM block WHERE message_pk=(SELECT pk FROM message WHERE id=?2))",
         params![vec![255u8], result.id.to_string()],
     )
     .unwrap();
@@ -326,7 +326,7 @@ fn a_corrupt_cross_session_or_mismatched_id_relation_cannot_expose_a_result_body
         conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
         conn.execute("UPDATE tool_call SET result_block_pk=(SELECT b.pk FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.id=?1) WHERE call_block_pk IN (SELECT b.pk FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.id=?2)", params![other_result.id.to_string(), call.id.to_string()]).unwrap();
         conn.execute(
-            "UPDATE block SET body=?1 WHERE message_pk=(SELECT pk FROM message WHERE id=?2)",
+            "UPDATE message_version_block SET body=?1 WHERE pk IN(SELECT payload_pk FROM block WHERE message_pk=(SELECT pk FROM message WHERE id=?2))",
             params![vec![255u8], other_result.id.to_string()],
         )
         .unwrap();
