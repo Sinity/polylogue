@@ -64,6 +64,7 @@ fn apply_rows(
     p: &ParseStep,
     context: ReadingWrite<'_>,
 ) -> Result<u64> {
+    let _part = crate::timing::part(crate::timing::Part::RowOther);
     let ReadingWrite {
         resolution,
         texts,
@@ -160,6 +161,7 @@ fn apply_rows(
         at_build_end: upkeep.at_build_end(),
     };
     for version in choices.message_versions.values() {
+        let _part = crate::timing::part(crate::timing::Part::VersionText);
         let registered = crate::versions::store_message(
             tx,
             &version.value.message,
@@ -495,25 +497,34 @@ fn apply_rows(
     } else {
         crate::wire_shapes::apply
     };
-    apply_wire(
-        tx,
-        crate::wire_shapes::Source {
-            input_pk,
-            input: &b.input.id,
-            format: &b.input.format,
-            chain,
-            length: b.length,
-            commit_sequence: source_commit.sequence,
-            commit_id: source_commit.id.as_deref(),
-            observation: source_commit.observation.as_deref(),
-            observed_at_ms: source_commit.observed_at_ms,
-        },
-        p,
-    )?;
-    if !crate::parser_context::apply(tx, input_pk, chain, p, &rows.versions, upkeep)? {
-        rows.checkpoint.forget_context();
+    {
+        let _part = crate::timing::part(crate::timing::Part::WireShapes);
+        apply_wire(
+            tx,
+            crate::wire_shapes::Source {
+                input_pk,
+                input: &b.input.id,
+                format: &b.input.format,
+                chain,
+                length: b.length,
+                commit_sequence: source_commit.sequence,
+                commit_id: source_commit.id.as_deref(),
+                observation: source_commit.observation.as_deref(),
+                observed_at_ms: source_commit.observed_at_ms,
+            },
+            p,
+        )?;
     }
-    rows.write_parse_state(b, p)?;
+    {
+        let _part = crate::timing::part(crate::timing::Part::ParserContext);
+        if !crate::parser_context::apply(tx, input_pk, chain, p, &rows.versions, upkeep)? {
+            rows.checkpoint.forget_context();
+        }
+    }
+    {
+        let _part = crate::timing::part(crate::timing::Part::ParseState);
+        rows.write_parse_state(b, p)?;
+    }
     Ok(written)
 }
 
@@ -527,17 +538,32 @@ pub(crate) fn finish(
     texts: &crate::text_rows::TextIds,
     counter: i64,
 ) -> Result<u64> {
-    changes.finish_summaries(tx, Some(counter))?;
-    changes.finish_links(tx)?;
-    let read = crate::items::refresh(tx, changes)?;
-    crate::session_values::refresh(tx, changes)?;
+    {
+        let _part = crate::timing::part(crate::timing::Part::Counts);
+        changes.finish_summaries(tx, Some(counter))?;
+    }
+    {
+        let _part = crate::timing::part(crate::timing::Part::Links);
+        changes.finish_links(tx)?;
+    }
+    let read = {
+        let _part = crate::timing::part(crate::timing::Part::Items);
+        crate::items::refresh(tx, changes)?
+    };
+    {
+        let _part = crate::timing::part(crate::timing::Part::SessionValues);
+        crate::session_values::refresh(tx, changes)?;
+    }
     // A first build derives every session once, when it ends.
     if !upkeep.at_build_end() {
         let sessions = changes.sessions(tx)?;
         crate::derive::links::add_finished_links(tx, &sessions)?;
         crate::measure::time::forget_settled(tx, changes, &sessions)?;
     }
-    crate::versions::remove_unreferenced(tx, upkeep, texts)?;
+    {
+        let _part = crate::timing::part(crate::timing::Part::Cleanup);
+        crate::versions::remove_unreferenced(tx, upkeep, texts)?;
+    }
     Ok(read)
 }
 
@@ -797,6 +823,7 @@ impl RowWriter<'_, '_> {
     /// (derive/session.rs), so no arrival order decides them. Pending links
     /// naming the session as their child are resolved here.
     fn upsert_session(&self, s: &Session, committed: Option<i64>) -> Result<(i64, bool)> {
+        let _part = crate::timing::part(crate::timing::Part::SessionFacts);
         let pk = self.session_row(&s.id, false)?;
         let merged = self
             .choices
@@ -868,6 +895,7 @@ impl RowWriter<'_, '_> {
         version_pk: i64,
         sessions: &mut HashMap<String, i64>,
     ) -> Result<(i64, bool)> {
+        let _part = crate::timing::part(crate::timing::Part::MessageDispatch);
         let m = &row.message;
         let id = m.id.to_string();
         let key = self.keys.get(resolve::Kind::Message, id.as_bytes())?;
@@ -959,6 +987,7 @@ impl RowWriter<'_, '_> {
              session_pk=excluded.session_pk,main=excluded.main,route=excluded.route,
              seq=excluded.seq,record_position=excluded.record_position,order_time=excluded.order_time,at=excluded.at"
         };
+        let _part = crate::timing::part(crate::timing::Part::MessageClaim);
         self.tx.prepare_cached(sql)?.execute(params![
             pk, v.input_pk, v.chain, v.start, v.end, completion, version_pk, session_pk, main,
             route, position.0, position.1, id_kind, order_time, at
@@ -967,6 +996,7 @@ impl RowWriter<'_, '_> {
     }
 
     fn refresh_message(&self, pk: i64) -> Result<bool> {
+        let _part = crate::timing::part(crate::timing::Part::SelectedMessage);
         let write = self
             .messages
             .get(&pk)
@@ -1119,6 +1149,7 @@ impl RowWriter<'_, '_> {
         order: &str,
         try_insert: bool,
     ) -> Result<bool> {
+        let _part = crate::timing::part(crate::timing::Part::MessageHeader);
         self.changes.session(self.tx, session_pk)?;
         let author = polylogue_model::WrittenBy::of(m);
         let written_by = author.as_str();
@@ -1389,6 +1420,7 @@ impl RowWriter<'_, '_> {
         m: &Message,
         prepared: &PreparedMessage,
     ) -> Result<()> {
+        let _part = crate::timing::part(crate::timing::Part::SelectedBlocks);
         if prepared.blocks.len() != m.blocks.len() {
             return Err(StoreError::Invalid(
                 "prepared message differs from its parsed blocks".into(),

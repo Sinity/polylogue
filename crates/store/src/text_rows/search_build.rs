@@ -91,6 +91,7 @@ fn visit_batch(
 /// Rebuilds both declared FTS tables in one transaction in the private index.
 /// Reopening after a stop can build them again from the same committed texts.
 pub(crate) fn build_search_indexes(conn: &Connection) -> Result<()> {
+    let _part = crate::timing::part(crate::timing::Part::SearchBuild);
     crate::timing::time(crate::timing::Stage::SearchIndex, || {
         let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
         tx.execute_batch(

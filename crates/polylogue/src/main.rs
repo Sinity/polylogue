@@ -77,6 +77,7 @@ fn main() -> ExitCode {
                     .map(|(stage, seconds)| (stage.name(), seconds))
                     .collect::<std::collections::BTreeMap<_, _>>(),
                 "workers": polylogue_store::timing::workers(),
+                "first_build_attribution": polylogue_store::timing::first_build_attribution(),
                 "sqlite_memory_peak_bytes": polylogue_store::timing::sqlite_memory_peak(),
             })
         );

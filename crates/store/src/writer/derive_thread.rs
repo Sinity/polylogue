@@ -156,6 +156,7 @@ impl Worker {
     }
 
     fn pass(&mut self) -> Result<u64> {
+        let _part = crate::timing::part(crate::timing::Part::DeriveRead);
         if self.conn.is_none() {
             let conn = crate::archive::open_read(&self.index_db)?;
             conn.pragma_update(None, "cache_size", -(self.cache_mib * 1024))?;

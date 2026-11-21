@@ -8,6 +8,10 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+mod attribution;
+pub use attribution::records as first_build_attribution;
+pub(crate) use attribution::{Part, part};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
     /// Reading input bytes from files or stored blobs (pool threads).
@@ -106,6 +110,7 @@ pub fn stage_seconds() -> Vec<(Stage, f64)> {
 
 #[cfg(any(test, feature = "fixture"))]
 pub fn reset() {
+    attribution::reset();
     if let Ok(mut times) = WORKER_TIMES.lock() {
         times.clear();
     }
