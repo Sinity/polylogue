@@ -119,7 +119,7 @@ fn the_writer_stores_a_group_once_and_removes_it_with_its_last_text() {
         .unwrap();
     assert!(kept.written && removed.written);
     tx.commit().unwrap();
-    transaction.commit();
+    let _ = transaction.commit();
     assert_eq!(count(&conn, "text_group"), 1);
     assert_eq!(read(&conn, kept.id).unwrap(), "kept");
     assert_eq!(read(&conn, removed.id).unwrap(), "removed");
@@ -169,7 +169,7 @@ fn a_known_text_adds_no_group_and_a_rolled_back_group_is_stored_again() {
         .resolve(&tx, &hash("fresh"), later.get(&hash("fresh")), None)
         .unwrap();
     tx.commit().unwrap();
-    texts.commit();
+    let _ = texts.commit();
     assert_eq!(read(&conn, fresh.id).unwrap(), "fresh");
     assert_eq!(read(&conn, id).unwrap(), "shared");
     assert_eq!(count(&conn, "text_group"), 2);

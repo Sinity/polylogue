@@ -604,3 +604,52 @@ fn an_early_search_failure_is_reported_before_an_explicit_build_retry() {
     ).unwrap();
     assert_eq!(texts, 4);
 }
+
+#[test]
+fn a_staged_chain_replacement_keeps_final_population_search_during_a_build() {
+    let replaced = test_archive();
+    let fresh = test_archive();
+    let reading = |body: &str| {
+        batch(
+            "fts-chain",
+            Route::Live,
+            0,
+            vec![row(
+                0,
+                text_message("selected", "fts-session", Role::User, body, None),
+            )],
+            &["fts-session"],
+        )
+    };
+    replaced
+        .store_reading(reading("cedar cedar birch"), Some(&SOURCE_RECORD))
+        .unwrap();
+    assert!(replaced.writer.flush().unwrap().errors.is_empty());
+    assert!(replaced.archive.index_build().is_some());
+    let mut next = reading("maple maple birch");
+    let mut staged = ChainReading::new().unwrap();
+    staged.push(&mut next.parse[0]).unwrap();
+    replaced
+        .writer
+        .replace_chain(next.input, 1, next.length, staged)
+        .unwrap();
+    replaced.writer.derive().unwrap();
+    fresh
+        .store_reading(reading("maple maple birch"), Some(&SOURCE_RECORD))
+        .unwrap();
+    fresh.writer.derive().unwrap();
+    let left = crate::archive::open_read(&replaced.archive.index_db()).unwrap();
+    let right = crate::archive::open_read(&fresh.archive.index_db()).unwrap();
+    for (table, vocab) in [
+        ("text_fts", "fts_vocab_text"),
+        ("output_fts", "fts_vocab_output"),
+    ] {
+        let ranked = format!(
+            "SELECT hex(t.hash),bm25({table}) FROM {table} JOIN text t ON t.id={table}.rowid WHERE {table} MATCH 'cedar OR maple' ORDER BY hex(t.hash)"
+        );
+        assert_eq!(digest(&left, &ranked), digest(&right, &ranked));
+        let words = format!("SELECT term,doc,cnt FROM {vocab} ORDER BY term");
+        assert_eq!(digest(&left, &words), digest(&right, &words));
+    }
+    assert!(replaced.archive.index_build().is_none());
+}

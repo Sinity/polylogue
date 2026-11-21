@@ -1,10 +1,11 @@
 //! Time spent per stage of a build, summed over the process, so a benchmark
 //! can say where a first build's time goes instead of only how long it took.
 //!
-//! Pool stages (read, store, parse) run on many threads at once: their sums
-//! are thread-seconds and can exceed the wall time. Writer stages run on the
-//! writer thread. The writer total includes its specific stages, and the
-//! commit timer is part of rows; these timers must not be added together.
+//! Pool stages (read, store, parse) and first-build search construction can
+//! overlap: their sums are thread-seconds and can exceed the wall time.
+//! Other writer stages run on the writer thread. The writer total includes
+//! its specific stages, and the commit timer is part of rows; these timers
+//! must not be added together.
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -24,7 +25,7 @@ pub enum Stage {
     Writer,
     /// Committing a replacement transaction, including its SQLite sync wait.
     Commit,
-    /// A first build's full-text entries, written in bulk at its end.
+    /// First-build native postings plus committed feed and final tree copy.
     SearchIndex,
     /// A first build's trigram index rebuild.
     TrigramIndex,
@@ -71,11 +72,11 @@ impl Stage {
         }
     }
 
-    /// Runs on a pool thread, so its sum is thread-seconds.
+    /// Can overlap other work, so its sum is thread-seconds.
     pub fn parallel(self) -> bool {
         matches!(
             self,
-            Stage::Read | Stage::Store | Stage::Parse | Stage::Database
+            Stage::Read | Stage::Store | Stage::Parse | Stage::Database | Stage::SearchIndex
         )
     }
 

@@ -69,7 +69,7 @@ fn write_local(index: &mut Connection, archive: &Archive, mut batch: Batch) {
     )
     .unwrap();
     tx.commit().unwrap();
-    text_transaction.commit();
+    let _ = text_transaction.commit();
 }
 
 /// Applies one confirmed position holding `changes` for the event `event`.

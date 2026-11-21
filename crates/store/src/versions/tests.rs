@@ -351,7 +351,7 @@ fn build_cleanup_keeps_text_and_forgets_deleted_ids() {
         1
     );
     tx.commit().unwrap();
-    texts.commit();
+    let _ = texts.commit();
     assert_eq!(
         identities.resolve(&conn, &hash, None, None).unwrap().id,
         replacement

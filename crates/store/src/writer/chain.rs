@@ -711,7 +711,14 @@ impl Inner {
         crate::fault::check("write.index_commit", "")?;
         crate::fault::check("reparse.commit", &batch.input.id)?;
         crate::timing::time(crate::timing::Stage::Commit, || tx.commit())?;
-        text_transaction.commit();
+        let removed = text_transaction.commit();
+        if let Some(search) = &mut self.build_search
+            && let Err(error) = search.capture(&self.index, removed)
+        {
+            self.report
+                .errors
+                .push(format!("first-build search: {error}"));
+        }
         self.commits
             .committed(crate::completion::Committed::CONTENT);
         self.search.wake();

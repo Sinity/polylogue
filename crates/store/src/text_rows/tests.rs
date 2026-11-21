@@ -309,7 +309,7 @@ fn failed_text_transaction_reloads_presence_without_reassigning_known_ids() {
     assert_ne!(old, new);
     assert!(first.resolve(&tx, &gone, None, None).is_err());
     tx.commit().unwrap();
-    texts.commit();
+    let _ = texts.commit();
     assert_eq!(first.resolve(&conn, &kept, None, None).unwrap().id, new);
     assert_eq!(count(&conn, "SELECT count(*) FROM text"), 1);
     let transaction = first.transaction();
@@ -329,7 +329,7 @@ fn failed_text_transaction_reloads_presence_without_reassigning_known_ids() {
         old
     );
     tx.commit().unwrap();
-    transaction.commit();
+    let _ = transaction.commit();
     assert_eq!(count(&conn, "SELECT count(*) FROM text"), 2);
     let normalized: Vec<u8> = conn
         .query_row("SELECT normalized_hash FROM text WHERE id=?1", [old], |r| {
@@ -423,7 +423,7 @@ fn new_text_membership_follows_unindexing_and_rollback_within_the_writer() {
     assert_eq!(state(&tx, id), (2, 1));
     unindex_unused(&tx, &identities, id, false).unwrap();
     tx.commit().unwrap();
-    transaction.commit();
+    let _ = transaction.commit();
     assert_eq!(state(&conn, id), (0, 0));
 
     // Membership set in a transaction that rolls back is not assumed after it.
