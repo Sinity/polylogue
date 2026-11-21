@@ -127,6 +127,10 @@ pub struct LinksShown {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PageCursor {
+    /// The physical-session identity and accepted lower bound, even when a
+    /// context continuation binds its executable target to one message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_read: Option<SessionRead>,
     /// The reference or query text as the caller gave it.
     pub target: String,
     /// Digest of the reading options, the format and the enabled variants.
@@ -139,6 +143,16 @@ pub struct PageCursor {
     pub versions: BlobHash,
     pub position: PagePosition,
     pub direction: ReadDirection,
+}
+
+/// One physical reading's accepted start. A later display acknowledgement
+/// never changes the lower bound of its next or previous pages.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionRead {
+    pub session: SessionId,
+    pub from_seen: bool,
+    pub after: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

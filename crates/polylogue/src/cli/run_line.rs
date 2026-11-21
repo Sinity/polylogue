@@ -245,6 +245,27 @@ pub(crate) fn run(
     if let Err(error) = read_stdin(&mut parsed, &mut io::stdin().lock()) {
         return super::fail(startup.output, json, Code::Io, &error.to_string(), 4);
     }
+    for step in &mut parsed.steps {
+        if step.verb == "read" {
+            let displayed = if json {
+                io::stdout().is_terminal()
+            } else {
+                match step.to.as_ref() {
+                    None | Some(Destination::Stdout) => io::stdout().is_terminal(),
+                    Some(Destination::Pager) => true,
+                    _ => false,
+                }
+            };
+            if displayed {
+                step.step["displayed"] = serde_json::Value::Bool(true);
+            } else {
+                step.step
+                    .as_object_mut()
+                    .expect("a parsed step is an object")
+                    .remove("displayed");
+            }
+        }
+    }
     let mut request = match request(&parsed) {
         Ok(request) => request,
         Err(error) => return refusal(error, startup, json),
