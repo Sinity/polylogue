@@ -177,17 +177,31 @@ def verify(args, phase, preparation):
     assert (root / 'CURRENT').read_text() == 'g1'
     mode = (root / 'g1/mode').read_text()
     tuples = []
+    claim_tuples = []
     retained = {}
     versions = observations = 0
     for part in range(2):
         directory = root / 'g1' / str(part)
         with readonly(directory / 'index.db') as db:
-            if mode == 'versioned':
+            if mode == 'compact':
+                query = '''SELECT m.session,m.id,m.parent,f.name,m.start,m.end
+                           FROM message m JOIN file f ON f.id=m.file'''
+                versions += db.execute('SELECT (SELECT count(*) FROM message)+(SELECT count(*) FROM older)').fetchone()[0]
+                observations += db.execute('SELECT (SELECT count(*) FROM message)+(SELECT count(*) FROM extra_claim)').fetchone()[0]
+                claim_tuples.extend(db.execute('''SELECT m.session,m.id,hex(m.hash),f.name,m.start,m.end,m.priority
+                    FROM message m JOIN file f ON f.id=m.file
+                    UNION ALL
+                    SELECT m.session,m.id,hex(coalesce(o.hash,m.hash)),f.name,c.start,c.end,c.priority
+                    FROM extra_claim c JOIN message m ON m.pk=c.message
+                    LEFT JOIN older o ON o.pk=c.older JOIN file f ON f.id=c.file'''))
+            elif mode == 'versioned':
                 query = '''SELECT v.session,v.id,v.parent,f.name,o.start,o.end FROM selected s
                            JOIN observation o ON o.pk=s.observation JOIN version v ON v.pk=o.version
                            JOIN file f ON f.id=o.file'''
                 versions += db.execute('SELECT count(*) FROM version').fetchone()[0]
                 observations += db.execute('SELECT count(*) FROM observation').fetchone()[0]
+                claim_tuples.extend(db.execute('''SELECT v.session,v.id,hex(v.hash),f.name,o.start,o.end,o.priority
+                    FROM observation o JOIN version v ON v.pk=o.version JOIN file f ON f.id=o.file'''))
             else:
                 query = '''SELECT m.session,m.id,m.parent,f.name,m.start,m.end
                            FROM message m JOIN file f ON f.id=m.file'''
@@ -218,22 +232,36 @@ def verify(args, phase, preparation):
     assert sum(p['parsed_messages'] for p in parts) == preparation['total_parsed_messages']
     assert sum(p['selected_messages'] for p in parts) == BASE_MESSAGES
     assert all(p['index_wal_bytes'] == 0 and p['checkpoint'] == [0, 0, 0] for p in parts)
-    if mode == 'versioned':
+    if mode != 'latest':
         assert versions == BASE_MESSAGES + COHORT_SIZE
         assert observations == preparation['total_parsed_messages']
+    claim_fingerprint = hashlib.sha256()
+    for row in sorted(claim_tuples):
+        claim_fingerprint.update(json.dumps(row, ensure_ascii=False, separators=(',', ':')).encode() + b'\n')
+    if mode != 'latest':
+        assert len(claim_tuples) == preparation['total_parsed_messages']
     citations = []
+    native_reads = []
+    def read(argv, kind):
+        before = resource.getrusage(resource.RUSAGE_CHILDREN)
+        started = time.monotonic()
+        found = json.loads(subprocess.check_output(argv, text=True))
+        after = resource.getrusage(resource.RUSAGE_CHILDREN)
+        native_reads.append(dict(kind=kind, seconds=time.monotonic()-started,
+                                 cpu_seconds=after.ru_utime-before.ru_utime+after.ru_stime-before.ru_stime))
+        return found
     transitions = {t['input']: t for part in parts for t in part['selection_transitions']}
     for control in preparation['cohort']:
         argv = [str(args.binary), 'lookup', str(root), control['session'], control['message']]
-        current = json.loads(subprocess.check_output(argv, text=True))
+        current = read(argv, 'current')
         assert current['citation']['input'] == control['new_input']
         assert (current['citation']['start'], current['citation']['end']) == (control['new_start'], control['new_end'])
         assert json.loads(current['citation']['record'])['message']['content'] == control['new_text']
-        if mode == 'versioned':
+        if mode != 'latest':
             old_hash = transitions[control['old_input']]['observed_version']
             new_hash = transitions[control['new_input']]['observed_version']
             assert old_hash != new_hash == current['version']
-            old = json.loads(subprocess.check_output(argv + [old_hash], text=True))
+            old = read(argv + [old_hash], 'older')
             assert old['citation']['input'] == control['old_input']
             assert (old['citation']['start'], old['citation']['end']) == (control['old_start'], control['old_end'])
             assert old['model']['blocks'] == [dict(type='text', text=control['old_text'])]
@@ -245,9 +273,10 @@ def verify(args, phase, preparation):
         found = json.loads(subprocess.check_output([str(args.binary), 'search', str(root), phrase], text=True))
         assert len(found['hits']) == count
         searches[phrase] = hashlib.sha256(json.dumps(found['hits']).encode()).hexdigest()
-    return dict(messages=len(tuples), versions=versions if mode == 'versioned' else None,
+    return dict(messages=len(tuples), versions=versions if mode != 'latest' else None,
                 observations=observations, retained_files=len(retained), retained_bytes=sum(retained.values()),
-                current_tuple_sha256=fingerprint.hexdigest(), phrase_hit_hashes=searches, citations=citations,
+                current_tuple_sha256=fingerprint.hexdigest(), claim_tuple_sha256=claim_fingerprint.hexdigest(),
+                phrase_hit_hashes=searches, citations=citations, native_read_execution=native_reads,
                 build=report, execution=json.loads((phase / 'execution.json').read_text()))
 
 
@@ -270,7 +299,7 @@ def main(args):
     project, manifest, preparation = prepare(args, root, results)
     print('PREPARED=' + json.dumps({k: v for k, v in preparation.items() if k not in ('cohort', 'source_sha256')}), flush=True)
     cases = {}
-    for mode in ['latest', 'versioned']:
+    for mode in ['latest', 'versioned', 'compact']:
         phase = root / mode
         phase.mkdir()
         (phase / 'store').mkdir()
@@ -302,17 +331,25 @@ def main(args):
         cases[mode] = verify(args, phase, preparation)
         save(results / (mode + '-result.json'), cases[mode])
         print('COMPLETED=' + json.dumps(dict(mode=mode, execution=cases[mode]['execution'])), flush=True)
-    assert cases['latest']['current_tuple_sha256'] == cases['versioned']['current_tuple_sha256']
-    assert cases['latest']['phrase_hit_hashes'] == cases['versioned']['phrase_hit_hashes']
+    assert len({c['current_tuple_sha256'] for c in cases.values()}) == 1
+    assert all(c['phrase_hit_hashes'] == cases['latest']['phrase_hit_hashes'] for c in cases.values())
+    assert cases['compact']['claim_tuple_sha256'] == cases['versioned']['claim_tuple_sha256']
+    def written(case):
+        return sum(int(field.split('=')[1]) for line in case['execution']['cgroup']['io.stat'].splitlines()
+                   for field in line.split()[1:] if field.startswith('wbytes='))
+    def cpu(case):
+        return case['execution']['user_seconds'] + case['execution']['system_seconds']
+    gate = dict(cpu_reduced=cpu(cases['compact']) < cpu(cases['versioned']),
+                device_writes_reduced=written(cases['compact']) < written(cases['versioned']))
     for path in project.iterdir():
         assert hash_file(path) == preparation['source_sha256'][path.name]
-    value = dict(cases=cases, preparation=preparation, same_current_tuples=True, same_phrase_hit_sets=True,
+    value = dict(cases=cases, preparation=preparation, performance_gate=gate, same_current_tuples=True, same_phrase_hit_sets=True,
                  sources_unchanged=True, target_seconds=preparation['total_bytes'] / 40_000_000,
                  ordinary_ranking_qualified=False, product_parity=False,
                  note='Two final partitions/workers, 4GiB cgroup max/1GiB swap, 2 CPUs. Full generation/filter outside timing. Fixed eight full-file overlaps each alter only their first user message. No speed replication or production credit.')
     save(results / 'result.json', value)
     print('SCALE_RESULT=' + json.dumps(value), flush=True)
-    return 0
+    return 0 if all(gate.values()) else 1
 
 
 if __name__ == '__main__':

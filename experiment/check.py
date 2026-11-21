@@ -8,6 +8,7 @@ import resource
 import selectors
 import shutil
 import signal
+import sqlite3
 import subprocess
 import time
 
@@ -183,7 +184,7 @@ def native_control(binary, root, manifest, observations):
     independent = next(row for row in observations if row['input'] == 'gamma.jsonl')
     old = observations[0]
     hashes = {}
-    for mode, order in [('latest', 'forward'), ('versioned', 'forward'), ('versioned', 'reverse')]:
+    for mode, order in [('latest', 'forward'), ('versioned', 'forward'), ('versioned', 'reverse'), ('compact', 'forward'), ('compact', 'reverse')]:
         destination = root / (mode + '-' + order)
         destination.mkdir()
         result = call(['build', manifest, destination, 'g1', mode, order, 'complete'])
@@ -195,12 +196,12 @@ def native_control(binary, root, manifest, observations):
             assert (found['citation']['start'], found['citation']['end']) == (row['start'], row['end'])
             original = (manifest.parent / row['file']).read_bytes()
             assert found['citation']['record'].encode() == original[row['start']:row['end']]
-            if mode == 'versioned':
+            if mode != 'latest':
                 assert [block['text'] for block in found['model']['blocks']] == row['texts']
                 if row == current:
-                    hashes[order] = found['version']
+                    assert hashes.setdefault(order, found['version']) == found['version']
             lookups.append(found)
-        if mode == 'versioned':
+        if mode != 'latest':
             transitions = {item['input']: item for part in report['parts']
                            for item in part['selection_transitions']}
             old_hash = transitions[old['input']]['observed_version']
@@ -232,29 +233,70 @@ def native_control(binary, root, manifest, observations):
                               build_execution=result.accounting)), flush=True)
     assert hashes['forward'] == hashes['reverse']
 
-    destination = root / 'versioned-forward'
-    before = (destination / 'CURRENT').read_bytes()
-    process = subprocess.Popen([str(binary), 'build', str(manifest), str(destination), 'partial', 'versioned', 'forward', 'interrupt'],
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    with selectors.DefaultSelector() as selector:
-        selector.register(process.stdout, selectors.EVENT_READ)
-        if not selector.select(30):
-            process.kill()
-            stdout, stderr = process.communicate(timeout=10)
-            raise RuntimeError(dict(phase='no committed boundary', stdout=stdout, stderr=stderr))
-    boundary = json.loads(process.stdout.readline())
-    assert boundary['phase'] == 'one-partition-committed'
-    process.send_signal(signal.SIGKILL)
-    stdout, stderr = process.communicate(timeout=10)
-    assert process.returncode == -signal.SIGKILL
-    assert (destination / 'CURRENT').read_bytes() == before == b'g1'
-    assert (destination / 'partial/0/index.db').exists()
-    assert not (destination / 'partial/1').exists()
-    assert not (destination / 'partial/mode').exists()
-    found = json.loads(call(['lookup', destination, current['session'], current['message']]).stdout)
-    assert found['generation'] == 'g1' and found['version'] == hashes['forward']
-    receipts['interrupted'] = dict(boundary=boundary, exit=process.returncode, prior_generation_read=found,
-                                   current_pointer_unchanged=True, stderr=stderr)
+    for mode in ['versioned', 'compact']:
+        destination = root / (mode + '-forward')
+        before = (destination / 'CURRENT').read_bytes()
+        process = subprocess.Popen([str(binary), 'build', str(manifest), str(destination), 'partial', mode, 'forward', 'interrupt'],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            if not selector.select(30):
+                process.kill()
+                stdout, stderr = process.communicate(timeout=10)
+                raise RuntimeError(dict(phase='no committed boundary', stdout=stdout, stderr=stderr))
+        boundary = json.loads(process.stdout.readline())
+        assert boundary['phase'] == 'one-partition-committed'
+        process.send_signal(signal.SIGKILL)
+        stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == -signal.SIGKILL
+        assert (destination / 'CURRENT').read_bytes() == before == b'g1'
+        assert (destination / 'partial/0/index.db').exists()
+        assert not (destination / 'partial/1').exists()
+        assert not (destination / 'partial/mode').exists()
+        found = json.loads(call(['lookup', destination, current['session'], current['message']]).stdout)
+        assert found['generation'] == 'g1' and found['version'] == hashes['forward']
+        receipts['interrupted' if mode == 'versioned' else 'interrupted-compact'] = dict(boundary=boundary, exit=process.returncode, prior_generation_read=found,
+                                       current_pointer_unchanged=True, stderr=stderr)
+
+    # A later generation selects another body. Old patches retain their own
+    # immutable base coordinates, and no published g1 payload/DB is rewritten.
+    destination = root / 'compact-forward'
+    durable = [path for path in (destination / 'g1').rglob('*')
+               if path.name in ('index.db', 'originals.raw', 'bodies.zst')]
+    before_hashes = {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in durable}
+    final = dict(current)
+    final.update(input='alpha-final.jsonl', file='alpha-final.jsonl', priority=30, texts=['final fixture marker'])
+    value = json.loads((manifest.parent / current['file']).read_bytes())
+    value['message']['content'] = [dict(type='text', text='final fixture marker')]
+    raw = b'\n' + json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode() + b'\n'
+    (manifest.parent / final['file']).write_bytes(raw)
+    final.update(end=len(raw)-1, sha256=hashlib.sha256(raw).hexdigest())
+    new_manifest = manifest.parent / 'inputs-g2.json'
+    new_manifest.write_text(json.dumps(dict(observations=observations + [final])))
+    result = call(['build', new_manifest, destination, 'g2', 'compact', 'forward', 'complete'])
+    selected = json.loads(call(['lookup', destination, final['session'], final['message']]).stdout)
+    assert [block['text'] for block in selected['model']['blocks']] == final['texts']
+    assert selected['citation']['record'].encode() == raw[final['start']:final['end']]
+    transitions = {item['input']: item for part in receipts['compact-forward']['build']['parts']
+                   for item in part['selection_transitions']}
+    preserved = []
+    for previous in [old, current]:
+        version = transitions[previous['input']]['observed_version']
+        found = json.loads(call(['lookup', destination, previous['session'], previous['message'], version]).stdout)
+        assert found['version'] == version and found['citation']['input'] == previous['input']
+        assert [block['text'] for block in found['model']['blocks']] == previous['texts']
+        assert found['citation']['record'].encode() == (manifest.parent / previous['file']).read_bytes()[previous['start']:previous['end']]
+        preserved.append(found)
+    assert before_hashes == {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in durable}
+    part = route(current['session'])
+    with sqlite3.connect((destination / f'g1/{part}/index.db').as_uri() + '?mode=ro', uri=True) as db:
+        g1_bases = {row[0].hex() for row in db.execute('SELECT base_hash FROM older')}
+    with sqlite3.connect((destination / f'g2/{part}/index.db').as_uri() + '?mode=ro', uri=True) as db:
+        g2_bases = {row[0].hex() for row in db.execute('SELECT base_hash FROM older')}
+    assert g1_bases == {hashes['forward']} and g2_bases == {selected['version']}
+    receipts['later-selection'] = dict(g1_durable_hashes_unchanged=True, g1_base_hashes=sorted(g1_bases),
+                                      g2_base_hashes=sorted(g2_bases), historical_reads=preserved,
+                                      current=selected, build=json.loads(result.stdout))
     for row in observations:
         assert hashlib.sha256((manifest.parent / row['file']).read_bytes()).hexdigest() == row['sha256']
     return dict(kind='native_synthetic_version_control', cases=receipts,

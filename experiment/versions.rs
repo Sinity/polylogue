@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Barrier};
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
+mod compact;
+
 const PARTS: usize = 2;
 const SCHEMA_LATEST: &str = include_str!("latest.sql");
 const SCHEMA_VERSIONED: &str = include_str!("versioned.sql");
@@ -220,6 +222,8 @@ fn partition(
     )?;
     db.execute_batch(if mode == "versioned" {
         SCHEMA_VERSIONED
+    } else if mode == "compact" {
+        include_str!("compact.sql")
     } else {
         SCHEMA_LATEST
     })?;
@@ -236,6 +240,8 @@ fn partition(
     let mut work = Work::default();
     let mut latest: BTreeMap<(String, String), (Input, MessageRow, i64)> = BTreeMap::new();
     let mut transitions = Vec::new();
+    let mut compact_builder = compact::Builder::default();
+    let mut compact_stats = Value::Null;
     for input in inputs {
         let raw = fs::read(&input.path)?;
         let offset = work.raw_bytes;
@@ -299,6 +305,8 @@ fn partition(
                     transitions.push(json!({"input":input.name,"message":id,
                     "observed_version":hex(&hash.0),"selected_version":hex(&chosen)}));
                 }
+            } else if mode == "compact" {
+                compact_builder.observe(input.clone(), row, file);
             } else {
                 // The original prototype's map was per file. Lift only that map
                 // to the partition so its latest-only mode accepts this overlap.
@@ -329,6 +337,9 @@ fn partition(
                 serde_json::from_slice(&zstd::stream::decode_all(packed.as_slice())?)?;
             add_terms(&db, version, &message, mode, &mut work)?;
         }
+    } else if mode == "compact" {
+        compact_stats = compact_builder.store(&db, &dir, &mut work)?;
+        transitions = serde_json::from_value(compact_stats["selection_transitions"].clone())?;
     } else {
         for (_, (input, row, file)) in latest {
             work.model_attempts += 1;
@@ -408,7 +419,7 @@ fn partition(
         "raw_bytes":fs::metadata(dir.join("originals.raw"))?.len(),
         "allocated_raw_bytes":fs::metadata(dir.join("originals.raw"))?.blocks()*512,
         "wal_before_checkpoint":wal_before_checkpoint,"index_wal_bytes":0,
-        "checkpoint":checkpoint,"selection_transitions":transitions}),
+        "checkpoint":checkpoint,"selection_transitions":transitions,"compact":compact_stats}),
     )
 }
 
@@ -420,7 +431,7 @@ fn build(
     reverse: bool,
     interrupt: bool,
 ) -> Result<()> {
-    if !matches!(mode, "latest" | "versioned") {
+    if !matches!(mode, "latest" | "versioned" | "compact") {
         return Err("unknown mode".into());
     }
     if generation.is_empty()
@@ -511,7 +522,9 @@ fn lookup(root: &Path, session: &str, id: &str, version: Option<&str>) -> Result
         u64,
         Option<Vec<u8>>,
         Option<Vec<u8>>,
-    ) = if mode == "versioned" {
+    ) = if mode == "compact" {
+        compact::lookup(&db, &path, session, id, version)?
+    } else if mode == "versioned" {
         if let Some(version) = version {
             db.query_row(
                 "SELECT f.name,f.offset,f.bytes,f.hash,o.start,o.end,v.body,v.hash
@@ -553,8 +566,12 @@ fn lookup(root: &Path, session: &str, id: &str, version: Option<&str>) -> Result
     assert_eq!(blake3::hash(&original).as_bytes().as_slice(), file_hash);
     let model = body
         .map(|packed| -> Result<Value> {
-            let message: Message =
-                serde_json::from_slice(&zstd::stream::decode_all(packed.as_slice())?)?;
+            let decoded = if mode == "compact" {
+                packed
+            } else {
+                zstd::stream::decode_all(packed.as_slice())?
+            };
+            let message: Message = serde_json::from_slice(&decoded)?;
             assert_eq!(message.session.to_string(), session);
             assert_eq!(message.id.to_string(), id);
             assert_eq!(message.content_hash()?.0.as_slice(), hash.as_ref().unwrap());
