@@ -272,10 +272,22 @@ impl Engine {
         // Other formats keep their authored and document execution order.
         const LINE_PLANS: usize = 128;
         let mut lines: Vec<Plan> = Vec::with_capacity(LINE_PLANS);
+        let standalone = !self.archive.is_primary();
         for ((at, origin, facts, input), outcome) in metadata.into_iter().zip(outcomes) {
             let batch_lines = matches!(origin.name, "hook-spool" | "codex" | "claude-code")
                 && matches!((origin.open)(&at), Some(polylogue_sources::Parse::Lines(_)));
-            if !batch_lines
+            // The Python importer keeps the verified fragment before each
+            // joined reading. All members' raw bytes have already committed,
+            // and a kept fragment has no reading to run.
+            let kept_fragment = standalone
+                && origin.name == KEPT
+                && origin.support == Support::Kept
+                && at.to_str().is_some_and(|path| {
+                    path.rsplit_once("!/raw_sessions/")
+                        .and_then(|(_, member)| member.split_once('/'))
+                        .is_some_and(|(id, name)| !id.is_empty() && name == "fragment")
+                });
+            if (!batch_lines && !kept_fragment)
                 || outcome.is_err()
                 || lines.len() == LINE_PLANS
                 || lines
@@ -302,7 +314,11 @@ impl Engine {
                 report.imported.push(at.clone());
                 report.pass.bytes_stored += stored.length;
             }
-            if let Some(plan) = self.stored_import_plan(&at, origin, input, &stored, facts)? {
+            let plan = self.stored_import_plan(&at, origin, input, &stored, facts);
+            if plan.is_err() {
+                self.execute(std::mem::take(&mut lines), &mut report.pass)?;
+            }
+            if let Some(plan) = plan? {
                 executed.insert(plan.input.id.clone());
                 if batch_lines {
                     lines.push(plan);

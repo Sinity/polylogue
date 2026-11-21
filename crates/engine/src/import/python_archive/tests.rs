@@ -241,6 +241,131 @@ fn a_later_missing_or_changed_blob_stops_the_import_after_committed_members() {
 }
 
 #[test]
+fn kept_fragments_share_parser_workers_but_a_repeated_join_waits() {
+    // Worker lifetimes are process-wide. Run this one fixture in its own
+    // process so other tests cannot add workers to its count.
+    const CHILD: &str = "POLYLOGUE_PYTHON_APPEND_BATCH_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "import::python_archive::tests::kept_fragments_share_parser_workers_but_a_repeated_join_waits",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        assert!(
+            result.status.success() && stdout.contains("running 1 test"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+
+    let home = polylogue_testkit::ClaudeHome::new();
+    let root = home.dir.path().join("catalog");
+    fixture(&root);
+    let other = polylogue_testkit::claude_user("u2", "python", "third record");
+    let bad = b"retained fragment with a refused join";
+    let db = rusqlite::Connection::open(root.join("source.db")).unwrap();
+    for (id, bytes, start) in [
+        ("next-repeat", APPEND, FULL.len()),
+        ("other", other.as_bytes(), FULL.len()),
+        ("refused", bad.as_slice(), 1),
+    ] {
+        blob(&root, bytes);
+        db.execute(
+            "INSERT INTO raw_sessions SELECT ?1,origin,source_path,?2,?3,capture_mode,revision_kind,predecessor_raw_id,?4,?5
+             FROM raw_sessions WHERE raw_id='next'",
+            rusqlite::params![
+                id,
+                Sha256::digest(bytes).as_slice(),
+                bytes.len() as i64,
+                start as i64,
+                (start + bytes.len()) as i64,
+            ],
+        )
+        .unwrap();
+    }
+    drop(db);
+
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 1024);
+    let paths = [root.clone()];
+    let timing = || {
+        polylogue_store::timing::workers()
+            .iter()
+            .filter(|worker| worker.name == "polylogue-parse-0")
+            .count()
+    };
+    polylogue_store::timing::set_workers_enabled(true);
+    let report = engine
+        .import_with_options(&paths, &archive_format())
+        .unwrap();
+    // The full input and its first join share a pool. The duplicate join
+    // must see their checkpoint before the other branch starts another pool.
+    assert_eq!(timing(), 2);
+    assert!(report.pass.errors.is_empty(), "{report:?}");
+    assert_eq!(report.refused.len(), 1, "{report:?}");
+    assert_eq!(
+        report.refused[0].path,
+        PathBuf::from(format!(
+            "{}!/raw_sessions/refused/python.jsonl",
+            root.display()
+        ))
+    );
+    assert!(report.refused[0].reason.contains("offsets"));
+
+    let first_join = [FULL, APPEND].concat();
+    let other_join = [FULL, other.as_bytes()].concat();
+    let reader = engine.reads.reader().unwrap();
+    for bytes in [APPEND, other.as_bytes(), bad, &first_join, &other_join] {
+        let id = polylogue_model::BlobHash::of(bytes).to_string();
+        let progress = reader.input_progress(&id).unwrap().unwrap();
+        assert_eq!(
+            reader
+                .stored_range(&id, progress.chain, 0, progress.length, &engine.blobs)
+                .unwrap(),
+            bytes
+        );
+    }
+    drop(reader);
+    for (reading, message) in [
+        (&first_join, "claude-code:a1"),
+        (&other_join, "claude-code:u2"),
+    ] {
+        let input = polylogue_model::BlobHash::of(reading).to_string();
+        let citations = home.read(|reader| {
+            reader.query(
+                "SELECT m.id,s.source_start,s.source_end FROM message_source s
+                 JOIN message m ON m.pk=s.message_pk JOIN input_ref i ON i.pk=s.input_pk
+                 WHERE i.id=?1 ORDER BY s.source_start",
+                &[polylogue_store::SqlValue::Text(input.clone())],
+            )
+        });
+        assert_eq!(
+            citations,
+            [
+                serde_json::json!({"id":"claude-code:u1","source_start":0,"source_end":FULL.len()-1}),
+                serde_json::json!({"id":message,"source_start":FULL.len(),"source_end":reading.len()-1}),
+            ],
+        );
+    }
+
+    let repeat = engine
+        .import_with_options(&paths, &archive_format())
+        .unwrap();
+    assert!(repeat.imported.is_empty(), "{repeat:?}");
+    assert!(repeat.pass.errors.is_empty(), "{repeat:?}");
+    assert_eq!(repeat.pass.bytes_stored, 0);
+    assert_eq!(repeat.refused.len(), 1);
+    assert_eq!(repeat.refused[0].path, report.refused[0].path);
+    assert_eq!(repeat.refused[0].reason, report.refused[0].reason);
+    assert_eq!(timing(), 2);
+}
+
+#[test]
 fn older_archive_import_parses_original_sessions() {
     let w = polylogue_testkit::ClaudeHome::new();
     let old = w.dir.path().join("python-archive");
