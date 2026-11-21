@@ -49,7 +49,7 @@ pub struct Job {
     pub parser_state: Option<Json>,
     pub stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
     pub parser_chain: Option<i64>,
-    /// One privately staged replacement keeps its own context between jobs.
+    /// One uninterrupted stored reading keeps its private context between jobs.
     pub(crate) parser_context: Option<polylogue_store::parser_context::Overlay>,
     pub(crate) parser_deferred: bool,
     pub priority: Priority,

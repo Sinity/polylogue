@@ -1155,6 +1155,7 @@ impl Engine {
             parser_deferred: source_uncertain || never_parsed && st.stored > 0,
             parser_state,
             parser_chain,
+            parser_context: None,
             tail: None,
             span: span(st.origin, path, self.config.chunk),
             chunk: self.config.chunk,
@@ -2003,6 +2004,28 @@ impl Engine {
                         pass.capture_pending |= plan.pending.is_some();
                         self.finish_plan(plan);
                         continue;
+                    }
+                    if !self.archive.is_primary()
+                        && plan.input_finished
+                        && plan.parse_pos == 0
+                        && plan.parser_chain.is_some()
+                        && !plan.parser_deferred
+                        && plan.parser_context.is_none()
+                        && matches!(plan.source, pool::Bytes::Import(_))
+                        && (plan.origin.open)(&plan.path)
+                            .is_some_and(|parser| parser.uses_context())
+                    {
+                        // A fresh immutable reading knows every context value
+                        // from its own bytes. Keep that scratch view across
+                        // acknowledged ranges instead of reading it back from
+                        // the populated index. Resumes keep their short reads.
+                        plan.parser_context = Some(polylogue_store::parser_context::Overlay::open(
+                            &self.archive,
+                            &plan.input.id,
+                            plan.parser_chain,
+                            &plan.origin.reading_version(),
+                            0,
+                        )?);
                     }
                     let mut job = plan.next_job(&self.stopped_attempt);
                     if matches!(job.source, pool::Bytes::File) {
