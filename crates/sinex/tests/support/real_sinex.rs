@@ -161,6 +161,10 @@ impl RealSinex {
         ));
     }
 
+    #[allow(
+        dead_code,
+        reason = "used by the native binary-transition test, not the shared library fixture"
+    )]
     pub fn stop_cleanly(&mut self) {
         let mut daemon = self.daemon.take().expect("running daemon");
         assert!(
