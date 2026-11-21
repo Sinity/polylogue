@@ -1647,6 +1647,11 @@ impl Inner {
     fn build_deferred(&mut self) -> Result<()> {
         use crate::timing::{Stage, add};
         self.index.flush_prepared_statement_cache();
+        // An interrupted build can contain values from an earlier writer. Reconcile
+        // every session against its final rows, including those already materialized.
+        let tx = self.index.transaction()?;
+        crate::session_values::rebuild_all(&tx)?;
+        tx.commit()?;
         crate::text_rows::build_search_indexes(&self.index)?;
         let started = std::time::Instant::now();
         self.index.execute(
@@ -1944,7 +1949,8 @@ impl Inner {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         crate::fault::check("write.replay_rows", "")?;
         let counter = bump_counter(&itx)?;
-        let changes = crate::change_summary::ChangeSummary::start(&itx)?;
+        let changes =
+            crate::change_summary::ChangeSummary::start_with_values(&itx, upkeep.at_build_end())?;
         let mut stats = (0u64, 0u64);
         for (b, chain) in indexed.iter().zip(chains) {
             if let Some(chain) = chain {

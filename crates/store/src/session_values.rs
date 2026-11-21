@@ -130,6 +130,16 @@ fn refresh_session(
     Ok(())
 }
 
+/// Materializes completion before a private first build is installed.
+pub(crate) fn rebuild_all(conn: &Connection) -> Result<()> {
+    let counter = write_counter(conn)?;
+    let mut sessions = conn.prepare("SELECT pk FROM session ORDER BY pk")?;
+    for pk in sessions.query_map([], |row| row.get(0))? {
+        rebuild(conn, pk?, counter)?;
+    }
+    Ok(())
+}
+
 /// The session's values computed from all its rows: for a session first
 /// seen, or one whose rows changed in a way the summary does not describe.
 /// Only counts that differ from the stored ones are written.

@@ -76,3 +76,46 @@ fn stored_values_equal_a_recount_after_each_write() {
         "a value the session no longer has keeps its row at 0"
     );
 }
+
+#[test]
+fn resumed_first_build_recounts_completion_before_install() {
+    let mut archive = WriterArchive::new();
+    archive.write_underived("s", modelled("s", 1, "Read", "model-a"));
+    {
+        let index = crate::archive::open_write(
+            &archive.archive.index_db(),
+            crate::archive::cache::INDEX_WRITER,
+        )
+        .unwrap();
+        let count = |table: &str| {
+            index
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                    row.get::<_, u64>(0)
+                })
+                .unwrap()
+        };
+        assert_eq!(count("session_value"), 0);
+        assert_eq!(count("session_first_prompt"), 0);
+
+        // Simulate a retained build that already contains an earlier writer's
+        // materialized values. The next append must leave these rows alone.
+        let session = index
+            .query_row("SELECT pk FROM session", [], |row| row.get(0))
+            .unwrap();
+        super::rebuild(&index, session, super::write_counter(&index).unwrap()).unwrap();
+    }
+    archive.write_underived("s", modelled("s", 2, "Read", "model-a"));
+    archive.write_underived("s", prose("s", 3, 500, "a typed prompt"));
+    archive.write_underived("t", prose("t", 1, 100, "another session"));
+    crate::archive::index_build::keep_progress(&archive.archive).unwrap();
+    archive.restart();
+    assert!(archive.archive.index_build().is_some());
+    archive.writer.derive().unwrap();
+    assert!(archive.archive.index_build().is_none());
+    let (stored, recounted) = stored_and_recounted(&archive);
+    assert_eq!(stored, recounted);
+
+    archive.write("s", modelled("s", 3, "Bash", "model-b"));
+    let (stored, recounted) = stored_and_recounted(&archive);
+    assert_eq!(stored, recounted);
+}

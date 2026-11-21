@@ -530,9 +530,9 @@ pub(crate) fn finish(
     changes.finish_summaries(tx, Some(counter))?;
     changes.finish_links(tx)?;
     let read = crate::items::refresh(tx, changes)?;
-    crate::session_values::refresh(tx, changes)?;
-    // A first build derives every session once, when it ends.
+    // A first build prepares completion values once, before it is installed.
     if !upkeep.at_build_end() {
+        crate::session_values::refresh(tx, changes)?;
         let sessions = changes.sessions(tx)?;
         crate::derive::links::add_finished_links(tx, &sessions)?;
         crate::measure::time::forget_settled(tx, changes, &sessions)?;
