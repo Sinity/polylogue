@@ -15,6 +15,9 @@ fn page(d: &TestDaemon, step: serde_json::Value) -> ReadPage {
     crate::test_answers::read(request(step).answer(&d.daemon))
 }
 fn marks(d: &TestDaemon) -> Vec<SeenMark> {
+    marks_of(d, "session:claude-code:s1")
+}
+fn marks_of(d: &TestDaemon, target: &str) -> Vec<SeenMark> {
     // A synchronous write drains the earlier acknowledgement, without polling.
     d.set("browser.actions", "on");
     let author = request(json!({"verb":"read"}))
@@ -25,10 +28,7 @@ fn marks(d: &TestDaemon) -> Vec<SeenMark> {
         .reads
         .reader()
         .unwrap()
-        .seen_marks(
-            &author,
-            &[Reference::parse("session:claude-code:s1").unwrap()],
-        )
+        .seen_marks(&author, &[Reference::parse(target).unwrap()])
         .unwrap()
 }
 fn fixture() -> TestDaemon {
@@ -234,4 +234,47 @@ fn displayed_progress_is_surface_bound_and_partial_entries_remain_unseen() {
         "the final returned MCP continuation marks the completed block"
     );
     assert_eq!(completed[0].item.as_deref(), Some("block:claude-code:u1#0"));
+}
+
+#[test]
+fn inline_child_last_keeps_the_latest_rendered_physical_parent_progress() {
+    let d = test_daemon::start("placeholder");
+    super::reading_shapes::family(&d);
+    let target = "session:claude-code:root";
+    let page = crate::test_answers::read(Call::new("rows", json!({
+        "selection":target,
+        "steps":[{"verb":"read", "show":["spawns:full", "harness:full"], "hide":["tools"], "budget":100000}],
+    })).surface(Surface::Mcp).answer(&d.daemon));
+    assert!(
+        page.document.footer.next.is_none(),
+        "the small family must fit one page"
+    );
+    let text: Vec<&str> = page
+        .document
+        .items
+        .iter()
+        .filter_map(|item| {
+            if let ItemKind::Text { text } = &item.kind {
+                Some(text.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        text,
+        ["root question", "do the subtask", "the nested subtask"],
+        "the last displayed body belongs to a nested child"
+    );
+    let marks = marks_of(&d, target);
+    assert_eq!(
+        marks.len(),
+        1,
+        "the eligible rendered parent still advances"
+    );
+    assert_eq!(marks[0].item.as_deref(), Some("block:claude-code:r1#0"));
+    assert!(
+        marks_of(&d, "session:claude-code:agent-x1").is_empty(),
+        "a child is not marked as a separate read"
+    );
 }

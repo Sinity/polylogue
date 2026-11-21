@@ -17,7 +17,7 @@ fn user(uuid: &str, session: &str, at: &str, text: &str) -> String {
 /// A root with a spawned agent call and a continuation, the spawned agent
 /// with a nested spawn of its own, a fork of the root, the continuation
 /// itself, a session with a compaction, and one with a microcompaction.
-fn family(d: &test_daemon::TestDaemon) {
+pub(super) fn family(d: &test_daemon::TestDaemon) {
     let dir = d.home.join(".claude/projects/-p");
     let root = [
         user("r1", "root", "2026-03-01T10:00:00Z", "root question"),
