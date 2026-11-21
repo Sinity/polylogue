@@ -63,11 +63,11 @@ jobs:
         if: ${{ inputs.first_build_cpu }}
         run: |
           test "$(git rev-parse HEAD)" = "$REV"
-          runtime=/nix/store/qi8bddixsrsa2dsrhip3gamwi0am6nr5-polylogue-0.1.0
-          nix-store --realise "$runtime" --option max-jobs 0
-          nix store verify --no-contents --sigs-needed 1 "$runtime"
+          commit=c596ec32214060b7e01f1ea04870ab0c81c7d8c0
+          runtime=$(nix build --no-link --print-out-paths --option max-jobs 0 "github:${GITHUB_REPOSITORY}/${commit}#default")
+          nix store verify --sigs-needed 1 "$runtime"
           version=$("$runtime/bin/polylogue" --version)
-          [[ "$version" == *06ec29daf5f74483d168bd612fd8b7971868f4ef* ]]
+          [[ "$version" == *"$commit"* ]]
           echo "runtime=$runtime" >> "$GITHUB_ENV"
       - name: Build and check the existing synthetic generator
         if: ${{ inputs.first_build_cpu }}
@@ -92,7 +92,7 @@ jobs:
           python3 -I -m unittest discover -s .github/first-build-attribution -p 'test_*.py'
           nix develop --command python3 -I .github/first-build-attribution/measure.py \
             --binary "$runtime/bin/polylogue" \
-            --revision 06ec29daf5f74483d168bd612fd8b7971868f4ef \
+            --revision c596ec32214060b7e01f1ea04870ab0c81c7d8c0 \
             --generator "$RUNNER_TEMP/first-build-generator" \
             --lengths .github/first-build-attribution/synthetic-lengths.txt \
             --expected .github/first-build-attribution/synthetic-samples.json \

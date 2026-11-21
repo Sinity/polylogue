@@ -479,8 +479,11 @@ def main(args: argparse.Namespace) -> int:
         profile = pipeline_profile(phase)
         if profile is None:
             raise RuntimeError('the daemon did not report its worker profile')
+        summary['workers'] = profile['workers']
+        summary['overlapping_stage_seconds'] = profile['pipeline_timings']
         records = json.loads((phase / 'pipeline-profile.json').read_text())
-        summary.update(summarize(profile, records))
+        if any('first_build_attribution' in record for record in records):
+            summary.update(summarize(profile, records))
         summary['source_files_unchanged'] = all(
             (Path(path).stat().st_ino, Path(path).stat().st_size, Path(path).stat().st_mtime_ns) == stamp
             for path, stamp in stamps.items())
@@ -501,7 +504,7 @@ def main(args: argparse.Namespace) -> int:
                 summary['complete'] = False
         summary['controller_end_at_utc'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         write_json(results / 'hosted-summary.json', summary)
-        print('HOSTED_WRITER_ATTRIBUTION_JSON=' + json.dumps(summary), flush=True)
+        print('HOSTED_FIRST_BUILD_JSON=' + json.dumps(summary), flush=True)
     return 0 if summary['complete'] and summary['failure'] is None else 1
 
 
