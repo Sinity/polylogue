@@ -1,0 +1,32 @@
+{
+  "files": 7773,
+  "bytes": 8590127331,
+  "seed": "0x9E3779B97F4A7C15",
+  "samples": [
+    {
+      "name": "02d05208-gen1035.jsonl",
+      "bytes": 2840,
+      "sha256": "7e0623ff7c6ddcae5297a92252133549ed266b87869887093a6e4851c0682d0f"
+    },
+    {
+      "name": "705cf54a-gen1775.jsonl",
+      "bytes": 3260,
+      "sha256": "3b104155bafe28bfb67fc2bcf20bfdb9fe5e2269196d6dd9ba3a34ad0f5e689f"
+    },
+    {
+      "name": "93a0be2a-gen4005.jsonl",
+      "bytes": 2825,
+      "sha256": "5588aa00b797b94a7016712da83b4947e4825c2e9ee2d76c335564d94d7168c2"
+    },
+    {
+      "name": "6068da70-gen5812.jsonl",
+      "bytes": 3299,
+      "sha256": "a6f0f3e00d965c53069f17bd03e88ce6d00d6e00d325bcbb8c2f4723d7ec68f7"
+    },
+    {
+      "name": "1f872917-gen6349.jsonl",
+      "bytes": 3158,
+      "sha256": "de3202a3a84847539e63679802d3bc1a11e9efbd9459d45f2f99823fd66f7c2e"
+    }
+  ]
+}

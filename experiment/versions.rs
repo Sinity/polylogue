@@ -26,6 +26,8 @@ struct Input {
     end: u64,
     priority: i64,
     texts: Vec<String>,
+    many: bool,
+    control: Option<String>,
 }
 
 fn route(session: &str) -> usize {
@@ -52,16 +54,19 @@ fn inputs(path: &Path, reverse: bool) -> Result<Vec<Input>> {
                 .ok_or("manifest directory")?
                 .join(string("file")?),
             session: string("session")?,
-            id: string("message")?,
-            start: row["start"].as_u64().ok_or("missing start")?,
-            end: row["end"].as_u64().ok_or("missing end")?,
+            id: row["message"].as_str().unwrap_or_default().to_owned(),
+            start: row["start"].as_u64().unwrap_or_default(),
+            end: row["end"].as_u64().unwrap_or_default(),
             priority: row["priority"].as_i64().ok_or("missing priority")?,
             texts: row["texts"]
                 .as_array()
-                .ok_or("missing texts")?
+                .map(Vec::as_slice)
+                .unwrap_or_default()
                 .iter()
                 .map(|v| v.as_str().ok_or("non-string text").map(str::to_owned))
                 .collect::<std::result::Result<_, _>>()?,
+            many: row["many"].as_bool().unwrap_or(false),
+            control: row["control"].as_str().map(str::to_owned),
         });
     }
     if reverse {
@@ -79,26 +84,57 @@ fn texts(message: &Message) -> Vec<String> {
         .collect()
 }
 
-fn parse(input: &Input, raw: &[u8]) -> Result<MessageRow> {
+fn parse(input: &Input, raw: &[u8]) -> Result<(Vec<MessageRow>, u64)> {
     let parser = claude_code::open(&input.path).ok_or("not Claude JSONL")?;
-    let (steps, _) = parser.steps(None, raw, 0, true, &Handle::default())?;
+    let context = Handle::default();
     let mut latest = BTreeMap::new();
-    let mut consumed = 0;
-    for step in steps {
-        consumed += step.consumed;
-        assert_eq!(step.counts.unreadable.values().sum::<u64>(), 0);
-        for row in step.output.messages {
-            latest.insert(row.message.id.clone(), row);
+    let mut state = None;
+    let mut at = 0;
+    let mut records = 0;
+    while at < raw.len() {
+        let aim = (at + (1 << 20)).min(raw.len());
+        let end = if aim == raw.len() {
+            aim
+        } else {
+            raw[aim..]
+                .iter()
+                .position(|&b| b == b'\n')
+                .map_or(raw.len(), |n| aim + n + 1)
+        };
+        let (steps, next) = parser.steps(
+            state.as_ref(),
+            &raw[at..end],
+            at as u64,
+            end == raw.len(),
+            &context,
+        )?;
+        let mut consumed = 0;
+        for step in steps {
+            consumed += step.consumed;
+            records += step.counts.records;
+            assert_eq!(step.counts.unreadable.values().sum::<u64>(), 0);
+            for row in step.output.messages {
+                assert_eq!(
+                    row.message.session.to_string(),
+                    input.session,
+                    "input crosses its routed session"
+                );
+                latest.insert(row.message.id.clone(), row);
+            }
         }
+        assert_eq!(consumed, (end - at) as u64);
+        state = Some(next);
+        at = end;
     }
-    assert_eq!(consumed, raw.len() as u64);
-    assert_eq!(latest.len(), 1);
-    let row = latest.into_values().next().unwrap();
-    assert_eq!(row.message.id.to_string(), input.id);
-    assert_eq!(row.message.session.to_string(), input.session);
-    assert_eq!((row.offset, row.end), (input.start, input.end));
-    assert_eq!(texts(&row.message), input.texts);
-    Ok(row)
+    assert!(!latest.is_empty());
+    if !input.many {
+        assert_eq!(latest.len(), 1);
+        let row = latest.values().next().unwrap();
+        assert_eq!(row.message.id.to_string(), input.id);
+        assert_eq!((row.offset, row.end), (input.start, input.end));
+        assert_eq!(texts(&row.message), input.texts);
+    }
+    Ok((latest.into_values().collect(), records))
 }
 
 fn sync(path: &Path) -> Result<()> {
@@ -129,6 +165,8 @@ struct Work {
     hits: u64,
     raw_bytes: u64,
     stored_model_bytes: u64,
+    parsed_messages: u64,
+    records: u64,
 }
 
 fn add_terms(
@@ -215,55 +253,63 @@ fn partition(
         let file = db.last_insert_rowid();
         work.files += 1;
         work.raw_bytes += raw.len() as u64;
-        let row = parse(&input, &raw)?;
-        if mode == "versioned" {
-            let hash = row.message.content_hash()?;
-            let packed = zstd::stream::encode_all(serde_json::to_vec(&row.message)?.as_slice(), 1)?;
-            work.model_attempts += 1;
-            let inserted = db.execute(
+        let (rows, records) = parse(&input, &raw)?;
+        work.records += records;
+        work.parsed_messages += rows.len() as u64;
+        for row in rows {
+            let id = row.message.id.to_string();
+            if mode == "versioned" {
+                let hash = row.message.content_hash()?;
+                let packed =
+                    zstd::stream::encode_all(serde_json::to_vec(&row.message)?.as_slice(), 1)?;
+                work.model_attempts += 1;
+                let inserted = db.execute(
                 "INSERT OR IGNORE INTO version(hash,session,id,parent,body) VALUES(?1,?2,?3,?4,?5)",
                 params![
                     hash.0.as_slice(),
                     input.session,
-                    input.id,
+                    id,
                     row.message.parent.as_ref().map(ToString::to_string),
                     packed
                 ],
             )?;
-            work.model_rows += inserted as u64;
-            if inserted != 0 {
-                work.stored_model_bytes += packed.len() as u64;
-            }
-            let version: i64 = db.query_row(
-                "SELECT pk FROM version WHERE hash=?1",
-                [hash.0.as_slice()],
-                |r| r.get(0),
-            )?;
-            db.execute(
+                work.model_rows += inserted as u64;
+                if inserted != 0 {
+                    work.stored_model_bytes += packed.len() as u64;
+                }
+                let version: i64 = db.query_row(
+                    "SELECT pk FROM version WHERE hash=?1",
+                    [hash.0.as_slice()],
+                    |r| r.get(0),
+                )?;
+                db.execute(
                 "INSERT INTO observation(file,version,start,end,priority) VALUES(?1,?2,?3,?4,?5)",
                 params![file, version, row.offset, row.end, input.priority],
             )?;
-            work.claims += 1;
-            work.selection_attempts += 1;
-            work.selections_changed += db.execute(CHOOSE, params![input.session, input.id])? as u64;
-            let chosen: Vec<u8> = db.query_row(
-                "SELECT v.hash FROM selected s JOIN observation o ON o.pk=s.observation
+                work.claims += 1;
+                work.selection_attempts += 1;
+                work.selections_changed += db.execute(CHOOSE, params![input.session, id])? as u64;
+                let chosen: Vec<u8> = db.query_row(
+                    "SELECT v.hash FROM selected s JOIN observation o ON o.pk=s.observation
                 JOIN version v ON v.pk=o.version WHERE s.session=?1 AND s.id=?2",
-                params![input.session, input.id],
-                |r| r.get(0),
-            )?;
-            transitions.push(json!({"input":input.name,"message":input.id,
-                "observed_version":hex(&hash.0),"selected_version":hex(&chosen)}));
-        } else {
-            // The original prototype's map was per file. Lift only that map
-            // to the partition so its latest-only mode accepts this overlap.
-            let key = (input.session.clone(), input.id.clone());
-            let wins = latest.get(&key).is_none_or(|(old, _, _)| {
-                input.priority > old.priority
-                    || input.priority == old.priority && input.name < old.name
-            });
-            if wins {
-                latest.insert(key, (input, row, file));
+                    params![input.session, id],
+                    |r| r.get(0),
+                )?;
+                if !input.many || input.control.as_deref() == Some(id.as_str()) {
+                    transitions.push(json!({"input":input.name,"message":id,
+                    "observed_version":hex(&hash.0),"selected_version":hex(&chosen)}));
+                }
+            } else {
+                // The original prototype's map was per file. Lift only that map
+                // to the partition so its latest-only mode accepts this overlap.
+                let key = (input.session.clone(), id.clone());
+                let wins = latest.get(&key).is_none_or(|(old, _, _)| {
+                    input.priority > old.priority
+                        || input.priority == old.priority && input.name < old.name
+                });
+                if wins {
+                    latest.insert(key, (input.clone(), row, file));
+                }
             }
         }
     }
@@ -289,7 +335,7 @@ fn partition(
             work.model_rows += db.execute(
                 "INSERT INTO message(id,session,parent,file,start,end) VALUES(?1,?2,?3,?4,?5,?6)",
                 params![
-                    input.id,
+                    row.message.id.to_string(),
                     input.session,
                     row.message.parent.as_ref().map(ToString::to_string),
                     file,
@@ -310,6 +356,7 @@ fn partition(
     );
     raw_file.sync_all()?; // Custody before model commit.
     db.execute_batch("COMMIT")?;
+    let wal_before_checkpoint = fs::metadata(db_path.with_extension("db-wal"))?.len();
     let checkpoint: (i64, i64, i64) = db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
         Ok((r.get(0)?, r.get(1)?, r.get(2)?))
     })?;
@@ -334,6 +381,15 @@ fn partition(
         0
     );
     let changes = unsafe { rusqlite::ffi::sqlite3_total_changes64(db.handle()) };
+    let selected_count: i64 = db.query_row(
+        if mode == "versioned" {
+            "SELECT count(*) FROM selected"
+        } else {
+            "SELECT count(*) FROM message"
+        },
+        [],
+        |r| r.get(0),
+    )?;
     db.close().map_err(|(_, error)| error)?;
     sync(&db_path)?;
     sync(&dir)?;
@@ -342,13 +398,16 @@ fn partition(
     assert_eq!(fs::metadata(&wal).map(|m| m.len()).unwrap_or(0), 0);
     Ok(
         json!({"part":part,"mode":mode,"files":work.files,"retained_bytes":work.raw_bytes,
+        "records":work.records,"parsed_messages":work.parsed_messages,"selected_messages":selected_count,
         "model_insert_attempts":work.model_attempts,"model_rows_inserted":work.model_rows,
         "observation_rows":work.claims,"selection_attempts":work.selection_attempts,
         "selection_rows_changed":work.selections_changed,"hit_and_fts_rows_each":work.hits,
         "packed_model_bytes":work.stored_model_bytes,"sqlite_total_changes_including_fts":changes,
         "cache_page_writes":cache_writes,"page_count":pages,"page_size":8192,
         "index_bytes":fs::metadata(&db_path)?.len(),"allocated_index_bytes":fs::metadata(&db_path)?.blocks()*512,
-        "raw_bytes":fs::metadata(dir.join("originals.raw"))?.len(),"index_wal_bytes":0,
+        "raw_bytes":fs::metadata(dir.join("originals.raw"))?.len(),
+        "allocated_raw_bytes":fs::metadata(dir.join("originals.raw"))?.blocks()*512,
+        "wal_before_checkpoint":wal_before_checkpoint,"index_wal_bytes":0,
         "checkpoint":checkpoint,"selection_transitions":transitions}),
     )
 }
@@ -424,6 +483,7 @@ fn build(
     println!(
         "{}",
         json!({"generation":generation,"mode":mode,"parts":reports,
+        "process_io":fs::read_to_string("/proc/self/io").ok(),
         "original_prototype_adjustment":"latest map lifted from per-file to partition scope; final SQLite file opened directly",
         "ranking":"current per-block hit membership only; ordinary distinct-text/global ranking is unimplemented"})
     );

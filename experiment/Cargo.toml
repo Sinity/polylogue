@@ -17,3 +17,7 @@ rusqlite = { version = "=0.40.2", features = ["bundled", "fallible_uint"] }
 [[bin]]
 name = "sqlite-versions"
 path = "versions.rs"
+
+[[bin]]
+name = "generate-synthetic"
+path = "generate.rs"
