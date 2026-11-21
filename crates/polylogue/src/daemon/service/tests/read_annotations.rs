@@ -1150,8 +1150,8 @@ fn context_stream_stops_on_scope_reset_and_cancellation_before_source_frames() {
                 }
             })),
         };
-        let reader = d.daemon.reads.reader().unwrap();
-        let result = limit.with(|| {
+        let result = limit.scope(|| {
+            let reader = d.daemon.reads.reader()?;
             polylogue_reading::stream(
                 &reader,
                 d.daemon.as_ref(),
