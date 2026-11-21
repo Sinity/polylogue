@@ -13,8 +13,12 @@ on:
   workflow_dispatch:
     inputs:
       rev:
-        description: Commit to build and publish
+        description: Commit to build, or diagnostic script revision
         required: true
+      first_build_cpu:
+        description: Run the unmerged synthetic writer CPU diagnostic
+        type: boolean
+        default: false
 
 env:
   REV: ${{ inputs.rev || github.sha }}
@@ -30,7 +34,7 @@ jobs:
       - name: Free disk space for the build
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc
-          sudo nohup rm -rf /usr/local/lib/android /opt/hostedtoolcache/CodeQL >/dev/null 2>&1 &
+          sudo rm -rf /usr/local/lib/android /opt/hostedtoolcache/CodeQL
       - uses: cachix/install-nix-action@v31
       - uses: cachix/cachix-action@v17
         with:
@@ -38,6 +42,7 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           skipPush: true
       - name: Build the package
+        if: ${{ !inputs.first_build_cpu }}
         run: |
           ref="github:${GITHUB_REPOSITORY}/${REV}"
           nix flake metadata --json "$ref"
@@ -45,6 +50,50 @@ jobs:
           echo "built $out"
           echo "out=$out" >> "$GITHUB_ENV"
       - name: Publish the package and its compiler dependencies to sinity.cachix.org
+        if: ${{ !inputs.first_build_cpu }}
         run: |
           dependencies=$(nix build --no-link --print-out-paths "github:${GITHUB_REPOSITORY}/${REV}#polylogue-dependencies")
           cachix push sinity "$out" "$dependencies"
+
+      - uses: actions/checkout@v4
+        if: ${{ inputs.first_build_cpu }}
+        with:
+          ref: ${{ inputs.rev }}
+      - name: Verify the diagnostic source and realize its frozen runtime
+        if: ${{ inputs.first_build_cpu }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$REV"
+          runtime=/nix/store/qi8bddixsrsa2dsrhip3gamwi0am6nr5-polylogue-0.1.0
+          nix-store --realise "$runtime" --option max-jobs 0
+          nix store verify --no-contents --sigs-needed 1 "$runtime"
+          version=$("$runtime/bin/polylogue" --version)
+          [[ "$version" == *06ec29daf5f74483d168bd612fd8b7971868f4ef* ]]
+          echo "runtime=$runtime" >> "$GITHUB_ENV"
+      - name: Build and check the existing synthetic generator
+        if: ${{ inputs.first_build_cpu }}
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/first-build-generator-target
+        run: |
+          nix develop --command cargo test --locked --release -p polylogue-engine --example first_build synthetic_lengths_reproduce_every_original_generated_byte
+          nix develop --command cargo build --locked --release -p polylogue-engine --example first_build
+          cp "$CARGO_TARGET_DIR/release/examples/first_build" "$RUNNER_TEMP/first-build-generator"
+          python3 - <<'PY'
+          import os, shutil
+          from pathlib import Path
+          target = Path(os.environ['CARGO_TARGET_DIR']).resolve()
+          expected = Path(os.environ['RUNNER_TEMP']).resolve() / 'first-build-generator-target'
+          assert target == expected and target.is_dir()
+          assert (expected.parent / 'first-build-generator').is_file()
+          shutil.rmtree(target)
+          PY
+      - name: Measure the full synthetic population through normal daemon completion
+        if: ${{ inputs.first_build_cpu }}
+        run: |
+          python3 -I -m unittest discover -s .github/first-build-attribution -p 'test_*.py'
+          nix develop --command python3 -I .github/first-build-attribution/measure.py \
+            --binary "$runtime/bin/polylogue" \
+            --revision 06ec29daf5f74483d168bd612fd8b7971868f4ef \
+            --generator "$RUNNER_TEMP/first-build-generator" \
+            --lengths .github/first-build-attribution/synthetic-lengths.txt \
+            --expected .github/first-build-attribution/synthetic-samples.json \
+            --work "$RUNNER_TEMP/first-build-attribution"

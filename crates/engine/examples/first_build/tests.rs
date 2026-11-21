@@ -87,3 +87,56 @@ fn completed_build_measurement_pays_its_wal_and_refuses_a_live_reader() {
         2
     );
 }
+
+#[test]
+fn synthetic_lengths_reproduce_every_original_generated_byte() {
+    let directory = tempfile::tempdir().unwrap();
+    let sizes = directory.path().join("sizes.tsv");
+    fs::write(
+        &sizes,
+        "claude-jsonl\t900\nclaude-jsonl\t2200\nclaude-subagent\t5000\n",
+    )
+    .unwrap();
+    let original = directory.path().join("original");
+    let replay = directory.path().join("replay");
+    let total = generate(&original, &sizes, 1).unwrap();
+    let project = original.join(".claude/projects/-generated");
+    let mut files: Vec<_> = fs::read_dir(&project)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    files.sort_by_key(|path| {
+        path.file_stem()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .rsplit_once("-gen")
+            .unwrap()
+            .1
+            .parse::<usize>()
+            .unwrap()
+    });
+    let lengths = directory.path().join("lengths.txt");
+    fs::write(
+        &lengths,
+        files
+            .iter()
+            .map(|path| format!("{}\n", fs::metadata(path).unwrap().len()))
+            .collect::<String>(),
+    )
+    .unwrap();
+    assert_eq!(generate_from_lengths(&replay, &lengths).unwrap(), total);
+    for path in files {
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            fs::read(
+                replay
+                    .join(".claude/projects/-generated")
+                    .join(path.file_name().unwrap())
+            )
+            .unwrap()
+        );
+    }
+    fs::write(&lengths, "1\n").unwrap();
+    assert!(generate_from_lengths(&directory.path().join("invalid"), &lengths).is_err());
+}
