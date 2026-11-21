@@ -1503,6 +1503,12 @@ pub(super) fn page(
     let mut mark = None;
     if let Some(bound) = session_read(request) {
         for entry in kept.iter().rev() {
+            let part = &composed.parts[entry.part];
+            // Inline children have their own identities. A physical mark
+            // belongs to this session and its recorded inherited prefix.
+            if part.session != bound.session && !part.inherited {
+                continue;
+            }
             if unfinished
                 .as_ref()
                 .is_some_and(|(key, _)| *key == entry.entry.key)
