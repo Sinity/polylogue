@@ -338,6 +338,7 @@ pub(crate) fn unpack_json<T: DeserializeOwned>(packed: &[u8]) -> Result<T> {
 pub(crate) struct RowPacker {
     plain: zstd::bulk::Compressor<'static>,
     rows: zstd::bulk::Compressor<'static>,
+    empty_text_block: Option<Vec<u8>>,
 }
 
 impl RowPacker {
@@ -345,6 +346,7 @@ impl RowPacker {
         Ok(Self {
             plain: zstd::bulk::Compressor::new(LEVEL)?,
             rows: zstd::bulk::Compressor::with_prepared_dictionary(&ROW_ENCODER)?,
+            empty_text_block: None,
         })
     }
 
@@ -454,12 +456,25 @@ impl RowPacker {
         self.pack_json(&value)
     }
 
+    fn pack_block_body(&mut self, block: &Block) -> Result<Vec<u8>> {
+        if matches!(block, Block::Text { .. }) {
+            // The content is stored in text groups. Every prose block has the
+            // same packed body, regardless of its original text.
+            if let Some(body) = &self.empty_text_block {
+                return Ok(body.clone());
+            }
+            let body = self.pack_row(&block_bytes(block)?)?;
+            self.empty_text_block = Some(body.clone());
+            return Ok(body);
+        }
+        Ok(self.pack_row(&block_bytes(block)?)?)
+    }
+
     fn pack_content(&mut self, blocks: &[Block], hash: [u8; 32]) -> Result<PreparedContent> {
         let mut packed = Vec::with_capacity(blocks.len());
         let mut data = Vec::with_capacity(blocks.len());
         for block in blocks {
-            let bytes = block_bytes(block)?;
-            packed.push(self.pack_row(&bytes)?);
+            packed.push(self.pack_block_body(block)?);
             data.push(
                 block_data(block)
                     .map(|value| self.pack_json(value))
