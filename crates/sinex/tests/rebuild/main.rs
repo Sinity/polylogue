@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 // This shared fixture exposes restore phases exercised by the unit-level backup test.
+mod binary_recovery;
 #[allow(dead_code)]
 #[path = "../support/real_sinex.rs"]
 mod real_sinex;

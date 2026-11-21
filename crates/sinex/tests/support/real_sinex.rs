@@ -26,15 +26,44 @@ impl RealSinex {
         declarations: Vec<serde_json::Value>,
         cross_domain_evidence: bool,
     ) -> Self {
+        Self::start_using(
+            root,
+            declarations,
+            cross_domain_evidence,
+            Path::new(&binary()),
+            false,
+        )
+    }
+
+    /// A binary transition keeps one database, bus and store through normal stops.
+    pub fn start_using(
+        root: &Path,
+        declarations: Vec<serde_json::Value>,
+        cross_domain_evidence: bool,
+        executable: &Path,
+        durable_settings: bool,
+    ) -> Self {
         fs::create_dir_all(root).unwrap();
-        let pg = devkit::pg::Server::start(&devkit::pg::ClusterOptions {
+        let mut options = devkit::pg::ClusterOptions {
             required_extensions: vec!["timescaledb".into(), "vector".into()],
             preload: vec!["timescaledb".into()],
             settings: vec![("timescaledb.enable_chunk_skipping".into(), "on".into())],
-        })
-        .unwrap();
+        };
+        let pg = if durable_settings {
+            options.settings.extend([
+                ("fsync".into(), "on".into()),
+                ("synchronous_commit".into(), "on".into()),
+                ("full_page_writes".into(), "on".into()),
+                ("shared_buffers".into(), "128MB".into()),
+                ("maintenance_work_mem".into(), "32MB".into()),
+                ("max_connections".into(), "32".into()),
+            ]);
+            devkit::pg::Server::start_in(&options, root).unwrap()
+        } else {
+            devkit::pg::Server::start(&options).unwrap()
+        };
         pg.sql("postgres", "CREATE DATABASE sinex").unwrap();
-        let status = Command::new(binary())
+        let status = Command::new(executable)
             .args(["admin", "schema", "--database", &pg.url("sinex", None)])
             .status()
             .unwrap();
@@ -96,15 +125,19 @@ impl RealSinex {
             root: root.into(),
             daemon: None,
         };
-        real_sinex.restart();
+        real_sinex.restart_using(executable);
         real_sinex
     }
 
     pub fn restart(&mut self) {
+        self.restart_using(Path::new(&binary()));
+    }
+
+    pub fn restart_using(&mut self, executable: &Path) {
         assert!(self.daemon.is_none());
         self.daemon = Some(Daemon(
             polylogue_testkit::spawn_daemon(
-                Command::new(binary())
+                Command::new(executable)
                     .arg("run")
                     .args(["--database", &self.pg.url("sinex", None)])
                     .arg("--store")
@@ -126,6 +159,29 @@ impl RealSinex {
             )
             .unwrap(),
         ));
+    }
+
+    pub fn stop_cleanly(&mut self) {
+        let mut daemon = self.daemon.take().expect("running daemon");
+        assert!(
+            Command::new("kill")
+                .args(["-TERM", &daemon.0.id().to_string()])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let started = std::time::Instant::now();
+        loop {
+            if let Some(status) = daemon.0.try_wait().unwrap() {
+                assert!(status.success(), "normal Sinex shutdown: {status}");
+                break;
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(20),
+                "normal Sinex shutdown exceeded20s"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     }
 
     pub fn stop(&mut self) {
