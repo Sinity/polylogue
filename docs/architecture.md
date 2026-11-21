@@ -303,8 +303,13 @@ covers parser context, planning caches, SQLite bookkeeping and allocator
 retention; the process limit leaves a further quarter outside the allowance.
 Memory maps are disabled and temporary sorts spill to disk.
 
-Build planning takes fixed pages of input IDs in input order, newest chain
-first. Historical layouts, extents, comparisons and copy stops live on disk
+Stored-input planning takes fixed pages of input IDs in input order, newest
+chain first. Queued requests get a turn between planning queries. Catch-up
+resumes at the last completed page, retrying a partly handled page from its
+committed parser checkpoints. A finite scan retains its upper input key;
+sources admitted behind its bookmark are picked up by the next pass. The
+bookmark is discarded when the archive scope changes or the process stops.
+Historical layouts, extents, comparisons and copy stops live on disk
 with fixed page caches, so a large archive or one input's many revisions does
 not retain their complete plan in memory. Shared prefixes stay adjacent and
 are compared once. Progress reports committed parsed bytes out of the bytes

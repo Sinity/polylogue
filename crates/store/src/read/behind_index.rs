@@ -121,6 +121,16 @@ fn planning_sql(selected: bool, chains: RevisionChains) -> String {
 }
 
 impl Reader<'_> {
+    /// The upper input key of a bounded catch-up pass, from this read snapshot.
+    pub fn last_input_id(&self) -> Result<Option<String>> {
+        let token = self.scope_token();
+        let last = self
+            .conn()?
+            .scalar_optional("SELECT id FROM source_input ORDER BY id DESC LIMIT 1", [])?;
+        token.check()?;
+        Ok(last)
+    }
+
     /// One page of stored input identities, independent of their parsing progress.
     pub fn input_ids_after(&self, after: Option<&str>, limit: usize) -> Result<Vec<String>> {
         let token = self.scope_token();
@@ -199,14 +209,22 @@ impl Reader<'_> {
         visit: &mut dyn FnMut(BehindChain) -> Result<std::ops::ControlFlow<()>>,
     ) -> Result<()> {
         let token = self.scope_token();
-        crate::fault::check("read.chains_behind_index", "")?;
+        let selected_json = selected.map(serde_json::to_string).transpose()?;
+        #[cfg(feature = "faults")]
+        crate::fault::check(
+            "read.chains_behind_index",
+            &format!(
+                "{chains:?}:{}",
+                selected_json.as_deref().unwrap_or("all inputs")
+            ),
+        )?;
         let connection = self.conn()?;
         let sql = planning_sql(selected.is_some(), chains);
         let mut statement = connection.prepare(&sql)?;
         let mut rows = statement.query(params![
             serde_json::to_string(versions)?,
             matches!(stopped, StoppedChains::ForAttempt(_)),
-            selected.map(serde_json::to_string).transpose()?,
+            selected_json,
         ])?;
         while let Some(row) = rows.next()? {
             token.check()?;

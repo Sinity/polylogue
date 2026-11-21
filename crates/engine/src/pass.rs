@@ -15,6 +15,15 @@ const IN_POOL_PER_WORKER: usize = 64;
 /// A known file written this recently is live: the session being written.
 const RECENT_NS: i128 = 10 * 60 * 1_000_000_000;
 
+/// Only the next planning page, never parser progress. Committed checkpoints
+/// decide which chains in a repeated page still need work.
+pub(super) struct StoredPlanning {
+    phase: Option<RevisionChains>,
+    after: Option<String>,
+    through: Option<String>,
+    archive_counter: i64,
+}
+
 /// Why `origin`'s parser does not read the bytes recorded at `path`, when
 /// it does not.
 fn unread_path(origin: &OriginSpec, path: &Path) -> Option<String> {
@@ -294,14 +303,18 @@ impl Engine {
     }
 
     pub(super) fn discard_confirmed_state(&mut self) {
+        self.discard_confirmed_progress();
+        self.read_scope = None;
+        self.stored_planning = None;
+    }
+
+    fn discard_confirmed_progress(&mut self) {
         for state in self.inputs.values_mut() {
             state.discard_confirmed();
         }
-        self.read_scope = None;
         self.watched_loaded = false;
         self.readings_pending = true;
         self.pass_open = true;
-        self.identical_chains.clear();
         self.capture_checked = None;
         self.collectors_at = None;
         self.lookups = repo_lookup::Cache::default();
@@ -399,24 +412,7 @@ impl Engine {
         let started = Instant::now();
         self.load()?;
         if content_committed || (discover && !self.readings_pending) {
-            use polylogue_model::freshness::{CompletenessDimension, CompletenessReason};
-            self.readings_pending = match self
-                .reads
-                .reader()?
-                .completeness(&crate::reading_contracts())?
-                .parsing
-            {
-                CompletenessDimension::Incomplete(reasons)
-                | CompletenessDimension::Unknown(reasons) => reasons.into_iter().any(|reason| {
-                    matches!(
-                        reason,
-                        CompletenessReason::MissingCheckpoint
-                            | CompletenessReason::ReadingVersionChanged
-                            | CompletenessReason::ParserBehind
-                    )
-                }),
-                CompletenessDimension::Complete | CompletenessDimension::NotApplicable => false,
-            };
+            self.readings_pending = self.stored_readings_are_behind()?;
         }
         let collectors_due = self
             .collectors_at
@@ -521,7 +517,7 @@ impl Engine {
             self.refresh_import_assets(&mut pass)?;
         }
         if self.readings_pending {
-            self.reparse_behind(None, RevisionChains::Newest, &mut pass)?;
+            self.reparse_behind(RevisionChains::Newest, &mut pass)?;
         }
         if self.yielding() {
             pass.capture_pending = true;
@@ -680,7 +676,7 @@ impl Engine {
                 pass.sessions_derived += self.derive()?;
             }
             if !self.poll_request() {
-                self.reparse_behind(None, RevisionChains::Older, &mut pass)?;
+                self.reparse_behind(RevisionChains::Older, &mut pass)?;
             }
         }
         if self.yielding() {
@@ -688,7 +684,6 @@ impl Engine {
             pass.seconds = started.elapsed().as_secs_f64();
             return Ok((pass, seen));
         }
-        self.copy_identical_readings(&mut pass)?;
         if self.poll_request() {
             pass.capture_pending = true;
             pass.seconds = started.elapsed().as_secs_f64();
@@ -703,7 +698,17 @@ impl Engine {
         if !pass.capture_pending {
             pass.sessions_derived += self.derive()?;
             if pass.errors.is_empty() {
-                self.readings_pending = false;
+                // A source admitted behind the bookmark gets the next pass;
+                // new keys cannot extend this pass's upper bound forever.
+                let changed = if let Some(planning) = &self.stored_planning {
+                    self.reads.reader()?.change_position()?.archive != planning.archive_counter
+                } else {
+                    false
+                };
+                let again = changed && self.stored_readings_are_behind()?;
+                self.readings_pending = again;
+                pass.capture_pending |= again;
+                self.stored_planning = None;
             }
         }
         self.pass_open = pass.capture_pending;
@@ -1177,13 +1182,11 @@ impl Engine {
     /// like a newer chain's is not parsed over the bytes they share: its
     /// reading is copied from that chain's as the newer chain's parse passes
     /// them, or once that chain is read ([`crate::prefix_copies`]).
-    /// `selected` limits it to some inputs.
     ///
     /// Replacements commit each chain once. Continuing readings run in
     /// rounds with one range plan per path, preserving each path's order.
     pub(crate) fn reparse_behind(
         &mut self,
-        selected: Option<&[String]>,
         chains: RevisionChains,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
@@ -1197,50 +1200,100 @@ impl Engine {
                 | polylogue_store::ReadingContract::RawOnly { .. } => None,
             })
             .collect::<Vec<_>>();
-        if self.archive.index_build().is_some() && chains == RevisionChains::Newest {
-            let (bytes, read) = self.reads.reader()?.newest_parse_bytes(&versions)?;
-            self.archive.record_build_bytes(bytes, read);
-            let mut after = None;
-            loop {
-                if self.archive.stop().is_cancelled() || self.poll_request() {
-                    return Ok(());
-                }
-                let ids = self.reads.reader()?.input_ids_after(
-                    after.as_deref(),
-                    self.config.workers.max(1) * IN_POOL_PER_WORKER,
-                )?;
-                let Some(last) = ids.last() else {
-                    break;
-                };
-                after = Some(last.clone());
-                let ids: Vec<_> = ids
-                    .into_iter()
-                    .filter(|input| selected.is_none_or(|selected| selected.contains(input)))
-                    .collect();
-                if ids.is_empty() {
-                    continue;
-                }
-                let behind = self.reads.reader()?.chains_behind_index(
-                    &versions,
-                    polylogue_store::StoppedChains::ForAttempt(self.stopped_attempt),
-                    chains,
-                    Some(&ids),
-                )?;
-                self.reparse_chains(behind, pass)?;
-                self.shared_prefixes.get_mut().clear();
-                if self.yielding() {
-                    break;
-                }
-            }
+        if chains == RevisionChains::Newest
+            && self
+                .stored_planning
+                .as_ref()
+                .is_some_and(|planning| planning.phase == Some(RevisionChains::Older))
+        {
             return Ok(());
         }
-        let behind = self.reads.reader()?.chains_behind_index(
-            &versions,
-            polylogue_store::StoppedChains::ForAttempt(self.stopped_attempt),
-            chains,
-            selected,
-        )?;
-        self.reparse_chains(behind, pass)
+        if self
+            .stored_planning
+            .as_ref()
+            .is_none_or(|planning| planning.phase != Some(chains))
+        {
+            let reader = self.reads.reader()?;
+            let archive_counter = reader.change_position()?.archive;
+            let through = reader.last_input_id()?;
+            if self.archive.index_build().is_some() && chains == RevisionChains::Newest {
+                let (bytes, read) = reader.newest_parse_bytes(&versions)?;
+                self.archive.record_build_bytes(bytes, read);
+            }
+            self.stored_planning = Some(StoredPlanning {
+                phase: Some(chains),
+                after: None,
+                through,
+                archive_counter,
+            });
+        }
+        loop {
+            if self.archive.stop().is_cancelled() || self.poll_request() {
+                return Ok(());
+            }
+            let planning = self.stored_planning.as_ref().expect("planning started");
+            let ids = if let Some(through) = &planning.through {
+                self.reads
+                    .reader()?
+                    .input_ids_after(
+                        planning.after.as_deref(),
+                        self.config.workers.max(1) * IN_POOL_PER_WORKER,
+                    )?
+                    .into_iter()
+                    .filter(|input| input <= through)
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            let Some(last) = ids.last().cloned() else {
+                let planning = self.stored_planning.as_mut().expect("planning started");
+                planning.phase = if chains == RevisionChains::Newest && !pass.capture_pending {
+                    Some(RevisionChains::Older)
+                } else {
+                    None
+                };
+                planning.after = None;
+                return Ok(());
+            };
+            let behind = self.reads.reader()?.chains_behind_index(
+                &versions,
+                polylogue_store::StoppedChains::ForAttempt(self.stopped_attempt),
+                chains,
+                Some(&ids),
+            )?;
+            self.reparse_chains(behind, pass)?;
+            self.shared_prefixes.get_mut().clear();
+            if self.yielding() || self.archive.stop().is_cancelled() {
+                return Ok(());
+            }
+            self.stored_planning
+                .as_mut()
+                .expect("planning started")
+                .after = Some(last);
+        }
+    }
+
+    fn stored_readings_are_behind(&self) -> Result<bool, EngineError> {
+        use polylogue_model::freshness::{CompletenessDimension, CompletenessReason};
+        Ok(
+            match self
+                .reads
+                .reader()?
+                .completeness(&crate::reading_contracts())?
+                .parsing
+            {
+                CompletenessDimension::Incomplete(reasons)
+                | CompletenessDimension::Unknown(reasons) => reasons.into_iter().any(|reason| {
+                    matches!(
+                        reason,
+                        CompletenessReason::MissingCheckpoint
+                            | CompletenessReason::ReadingVersionChanged
+                            | CompletenessReason::ParserBehind
+                    )
+                }),
+                CompletenessDimension::Complete | CompletenessDimension::NotApplicable => false,
+            },
+        )
     }
 
     fn reparse_chains(
@@ -1249,10 +1302,10 @@ impl Engine {
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         // Chains set aside by an earlier pass that ended early are found again.
-        self.identical_chains.clear();
         self.shared_prefixes.get_mut().clear();
         let mut replacements = Vec::new();
         let mut parse = Vec::new();
+        let mut copies = Vec::new();
         let watched: HashMap<String, PathBuf> = self
             .inputs
             .iter()
@@ -1405,9 +1458,9 @@ impl Engine {
                 )?
             {
                 // Parsing these bytes again gives a reading another chain
-                // has, or will have once read; it is copied after this pass
-                // reads the chains it parses.
-                self.identical_chains.push(plan);
+                // has, or will have once read; copy it after this page reads
+                // the chains it parses.
+                copies.push(plan);
                 continue;
             }
             parse.push(plan);
@@ -1416,7 +1469,8 @@ impl Engine {
         if self.yielding() {
             return Ok(());
         }
-        self.execute_by_path(parse, pass)
+        self.execute_by_path(parse, pass)?;
+        self.copy_identical_readings(copies, pass)
     }
 
     /// Runs plans of stored chains on the parse pool together, in rounds that
@@ -1451,15 +1505,19 @@ impl Engine {
     /// is parsed on from the copy; one whose copy would not equal its parse
     /// (its source stopped, or its reading writes rows shared by the input's
     /// chains) is parsed whole.
-    fn copy_identical_readings(&mut self, pass: &mut Pass) -> Result<(), EngineError> {
-        if self.identical_chains.is_empty() || self.poll_request() {
+    fn copy_identical_readings(
+        &mut self,
+        copies: Vec<Plan>,
+        pass: &mut Pass,
+    ) -> Result<(), EngineError> {
+        if copies.is_empty() || self.poll_request() {
             return Ok(());
         }
         let report = self.flush_writes()?;
         pass.messages_written += report.messages;
         pass.errors.extend(report.errors);
         let mut parse = Vec::new();
-        for plan in std::mem::take(&mut self.identical_chains) {
+        for plan in copies {
             // Each answer commits one complete chain. A request between
             // copies yields now; uncopied chains are selected next pass.
             if self.poll_request() {
@@ -2447,7 +2505,9 @@ impl Engine {
                     let yielded = self.yielding();
                     pending = pass.capture_pending || yielded;
                     if yielded {
-                        self.discard_confirmed_state();
+                        // Reload committed cursors after answering the request,
+                        // retaining this scope's unfinished planning page.
+                        self.discard_confirmed_progress();
                     }
                     if pending {
                         changed.extend(seen);
@@ -2698,6 +2758,7 @@ impl Engine {
         self.requests = None;
         self.watcher = None;
         self.pass_open = false;
+        self.stored_planning = None;
         summary
     }
 }

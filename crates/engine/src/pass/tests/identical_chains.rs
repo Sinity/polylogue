@@ -21,15 +21,25 @@ fn a_user_request_yields_between_complete_copies_and_resume_selects_only_the_rem
     engine.load().unwrap();
     let mut pass = Pass::default();
     engine
-        .reparse_behind(None, RevisionChains::Newest, &mut pass)
+        .reparse_behind(RevisionChains::Newest, &mut pass)
         .unwrap();
-    engine
-        .reparse_behind(None, RevisionChains::Older, &mut pass)
-        .unwrap();
-    assert_eq!(engine.identical_chains.len(), 2);
-    let first = engine.identical_chains[0].parser_chain.unwrap();
-    let remaining = engine.identical_chains[1].parser_chain.unwrap();
-    let input = engine.identical_chains[0].input.id.clone();
+    let (first, remaining, input) = {
+        let reader = engine.reads.reader().unwrap();
+        let revisions = reader
+            .query(
+                "SELECT input,chain FROM a.revision ORDER BY number DESC",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(revisions.len(), 4);
+        // The newest B is read. The older A is parsed before copying the
+        // previous B and then the previous A, in descending chain order.
+        (
+            revisions[2]["chain"].as_i64().unwrap(),
+            revisions[3]["chain"].as_i64().unwrap(),
+            revisions[0]["input"].as_str().unwrap().to_owned(),
+        )
+    };
     let (send, receive) = std::sync::mpsc::channel();
     engine.requests = Some(Requests::new(receive));
     fault::arm("write.copy_table", "unused", Action::Hold, 0, 1);
@@ -55,7 +65,7 @@ fn a_user_request_yields_between_complete_copies_and_resume_selects_only_the_rem
         fault::release();
         sent.unwrap();
     });
-    let result = engine.copy_identical_readings(&mut pass);
+    let result = engine.reparse_behind(RevisionChains::Older, &mut pass);
     enqueue.join().unwrap();
     fault::clear();
     result.unwrap();
@@ -98,15 +108,13 @@ fn a_user_request_yields_between_complete_copies_and_resume_selects_only_the_rem
     engine.requests = None;
     let mut resumed = Pass::default();
     engine
-        .reparse_behind(None, RevisionChains::Older, &mut resumed)
+        .reparse_behind(RevisionChains::Older, &mut resumed)
         .unwrap();
-    engine.copy_identical_readings(&mut resumed).unwrap();
     assert_eq!(resumed.readings_copied, 1);
     assert_eq!(resumed.bytes_read, 0);
     let mut repeat = Pass::default();
     engine
-        .reparse_behind(None, RevisionChains::Older, &mut repeat)
+        .reparse_behind(RevisionChains::Older, &mut repeat)
         .unwrap();
-    engine.copy_identical_readings(&mut repeat).unwrap();
     assert_eq!((repeat.readings_copied, repeat.bytes_read), (0, 0));
 }
