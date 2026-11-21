@@ -97,9 +97,9 @@ struct StoredValue {
 }
 
 /// Keys and identity from this registration. Context can trust the prepared
-/// payload only when this call wrote both its body and every text payload.
-/// Reused text IDs, including cached IDs from another transaction, keep
-/// full stored-message validation.
+/// payload only when this call wrote its body and every text payload was
+/// supplied in this transaction. Text IDs from earlier transactions keep
+/// full stored-message validation, as do ignored duplicate bodies.
 pub(crate) struct RegisteredMessage<'a> {
     pk: i64,
     message: &'a Message,

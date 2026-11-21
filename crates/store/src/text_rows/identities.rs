@@ -9,18 +9,25 @@ use rusqlite::{Connection, OptionalExtension};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-/// The row key and whether this call wrote its prepared payload.
+/// The row key and whether its prepared payload was supplied in this transaction.
 pub(crate) struct ResolvedText {
     pub id: i64,
     pub written: bool,
+}
+
+#[derive(Default)]
+struct TextMark {
+    indexed: i64,
+    written: bool,
 }
 
 pub(crate) struct TextIds {
     /// A positive ID has a row; its negative form keeps the allocation after
     /// removal or rollback, so a later text cannot reuse that identity.
     known: RefCell<KeyRows>,
-    marked: RefCell<HashMap<i64, i64>>,
+    marked: RefCell<HashMap<i64, TextMark>>,
     marked_entries: usize,
+    in_transaction: Cell<bool>,
     groups: super::StoredGroups,
     next: Cell<i64>,
     reload: Cell<bool>,
@@ -34,6 +41,7 @@ impl TextIds {
             known: RefCell::new(KeyRows::new(bytes / 2)?),
             marked: RefCell::new(HashMap::new()),
             marked_entries: (bytes / 4 / 64).max(1) as usize,
+            in_transaction: Cell::new(false),
             groups: super::StoredGroups::new(bytes / 4),
             next: Cell::new(next(max)?),
             reload: Cell::new(preload),
@@ -81,7 +89,13 @@ impl TextIds {
         self.refresh(conn)?;
         let known = self.known.borrow().get(hash)?;
         if let Some(id) = known.filter(|id| *id > 0) {
-            return Ok(ResolvedText { id, written: false });
+            let written = self.in_transaction.get()
+                && self
+                    .marked
+                    .borrow()
+                    .get(&id)
+                    .is_some_and(|mark| mark.written);
+            return Ok(ResolvedText { id, written });
         }
         let allocated = known.map(i64::abs);
         if let Some(body) = body {
@@ -99,6 +113,10 @@ impl TextIds {
                         }
                     }
                     self.mark(id, bits);
+                }
+                if self.in_transaction.get() {
+                    self.mark(id, 0);
+                    self.marked.borrow_mut().get_mut(&id).unwrap().written = true;
                 }
                 self.next.set(self.next.get().max(after));
                 self.known.borrow_mut().set(*hash, id)?;
@@ -158,26 +176,28 @@ impl TextIds {
         self.marked
             .borrow()
             .get(&id)
-            .is_some_and(|bits| bits & bit != 0)
+            .is_some_and(|mark| mark.indexed & bit != 0)
     }
 
     pub(super) fn mark(&self, id: i64, bit: i64) {
         let mut marked = self.marked.borrow_mut();
-        // These are hints only: forgetting them repeats the idempotent SQL
-        // membership update instead of retaining a whole chain's IDs.
+        // Forgetting a mark repeats membership SQL or stored-payload validation
+        // instead of retaining a whole transaction's IDs.
         if marked.len() >= self.marked_entries && !marked.contains_key(&id) {
             marked.clear();
         }
-        *marked.entry(id).or_default() |= bit;
+        marked.entry(id).or_default().indexed |= bit;
     }
 
     pub(super) fn unmark(&self, id: i64, bit: i64) {
-        if let Some(bits) = self.marked.borrow_mut().get_mut(&id) {
-            *bits &= !bit;
+        if let Some(mark) = self.marked.borrow_mut().get_mut(&id) {
+            mark.indexed &= !bit;
         }
     }
 
     pub(crate) fn transaction(&self) -> TextTransaction<'_> {
+        self.marked.borrow_mut().clear();
+        self.in_transaction.set(true);
         TextTransaction {
             texts: self,
             committed: false,
@@ -201,6 +221,7 @@ impl TextTransaction<'_> {
 }
 impl Drop for TextTransaction<'_> {
     fn drop(&mut self) {
+        self.texts.in_transaction.set(false);
         self.texts.marked.borrow_mut().clear();
         if !self.committed {
             self.texts.reload.set(true);
