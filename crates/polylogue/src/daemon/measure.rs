@@ -177,6 +177,17 @@ pub static MEASURES: &[Measure] = &[
         text: |data, _| text::json(data),
     },
     Measure {
+        name: "shell-stages",
+        help: "Normalized stages extracted from submitted shell text, with occurrence, distinct call and distinct session counts",
+        whole_archive: false,
+        messages: true,
+        paging: None,
+        argument: None,
+        metrics: &[],
+        run: |r, x| json(tool_calls::shell_stages(r, &x.selection)),
+        text: |data, _| text::json(data),
+    },
+    Measure {
         name: "failing",
         help: "Per repository, the commands whose most recent run failed",
         whole_archive: false,

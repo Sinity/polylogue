@@ -1,6 +1,101 @@
 use super::*;
 
 #[test]
+fn shell_stages_count_occurrences_calls_and_sessions_in_the_query_population() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fx = Fixture::new(&dir.path().join("archive")).unwrap();
+    let west = [
+        (
+            "shell",
+            Some("sh -c 'git status && git status; cargo test'"),
+            1,
+        ),
+        ("shell", Some("git -C /work status"), 1),
+        ("shell", None, 1),
+        ("shell", Some("for file in *.txt; do cat file; done"), 1),
+        ("file_read", Some("git gc"), 1),
+        ("shell", Some("rg word"), 2),
+    ];
+    for (id, calls) in [
+        ("claude-code:west", west.as_slice()),
+        (
+            "claude-code:east",
+            &[("shell", Some("git status && cargo test"), 1)],
+        ),
+        (
+            "codex:other",
+            &[("shell", Some("git status && nix build"), 1)],
+        ),
+    ] {
+        let session = fx
+            .session(SessionFacts {
+                id,
+                started: at(1, 12),
+                last: at(calls.last().unwrap().2, 12),
+                ..SessionFacts::default()
+            })
+            .unwrap();
+        for (i, (action, command, day)) in calls.iter().enumerate() {
+            let when = at(*day, 12);
+            let message_id = scoped(id, &format!("{id}-stage-{i}"));
+            let message = fx
+                .message(session, msg(&message_id, "assistant", "model", "", when))
+                .unwrap();
+            fx.tool_call(
+                session,
+                message,
+                CallFacts {
+                    tool: if *action == "shell" { "Bash" } else { "Read" },
+                    action,
+                    command: *command,
+                    path: None,
+                    outcome: "unknown",
+                    exit_code: None,
+                    at: when,
+                    output: None,
+                },
+            )
+            .unwrap();
+        }
+    }
+    let archive = TestArchive { _dir: dir, fx };
+    let all = q(&archive, "sessions | measure shell-stages");
+    let all = &all["data"];
+    assert_eq!(all["shell_calls"], 7);
+    assert_eq!(all["calls_without_recognized_stages"], 2);
+    assert_eq!(
+        all["stages"]["git status"],
+        serde_json::json!({"occurrences":5,"calls":4,"sessions":3})
+    );
+    assert_eq!(all["stages"]["nix build"]["occurrences"], 1);
+    assert_eq!(all["stages"]["rg"]["occurrences"], 1);
+    let selected = q(
+        &archive,
+        "sessions where origin:claude-code | measure shell-stages",
+    );
+    assert_eq!(selected["data"]["shell_calls"], 6);
+    assert_eq!(selected["data"]["calls_without_recognized_stages"], 2);
+    assert_eq!(
+        selected["data"]["stages"],
+        serde_json::json!({
+            "git status":{"occurrences":4,"calls":3,"sessions":2},
+            "cargo test":{"occurrences":2,"calls":2,"sessions":2},
+            "rg":{"occurrences":1,"calls":1,"sessions":1}
+        })
+    );
+    let day = q(
+        &archive,
+        "sessions where since:2026-10-02 until:2026-10-02 | measure shell-stages",
+    );
+    assert_eq!(day["data"]["shell_calls"], 1);
+    assert_eq!(day["data"]["calls_without_recognized_stages"], 0);
+    assert_eq!(
+        day["data"]["stages"],
+        serde_json::json!({"rg":{"occurrences":1,"calls":1,"sessions":1}})
+    );
+}
+
+#[test]
 fn catalog_measures_use_selected_sessions_and_typed_fields() {
     let mut archive = morrow();
     archive.fx.derive().unwrap();
