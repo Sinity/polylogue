@@ -5,7 +5,7 @@
 //! word a verb takes after its name.
 use crate::briefing::StartSource;
 use command_surface::{JsonSchema, StepDeclarations};
-use polylogue_model::read::{ReadDelivery, View};
+use polylogue_model::read::{ReadBudget, ReadDelivery, View};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::path::PathBuf;
 
@@ -82,9 +82,9 @@ pub struct ReadStep {
     /// The document encoding
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
-    /// Tokens in one page
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub budget: Option<u64>,
+    /// Tokens in one page; none lifts the token cap while transfer bounds remain
+    #[serde(default, skip_serializing_if = "ReadBudget::is_default")]
+    pub budget: ReadBudget,
     /// Continue from a previous page's cursor
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,

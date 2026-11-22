@@ -669,3 +669,94 @@ fn http_get_pages_and_streams_never_acknowledge_display() {
         "GET cannot turn a caller flag into an authored mark"
     );
 }
+
+#[test]
+fn http_read_budget_none_keeps_transfer_continuations_and_deadlines() {
+    use polylogue_model::read::ItemKind;
+    use std::io::Write;
+    let r = reader();
+    let text = "synthetic unlimited token transfer λ🙂 ".repeat(1500);
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(r.w.home.join(".claude/projects/-p/s1.jsonl"))
+        .unwrap()
+        .write_all(polylogue_testkit::claude_user("u2", "s1", &text).as_bytes())
+        .unwrap();
+    r.w.wait_for(|s| s["store"]["messages"] == 2);
+    rt().block_on(async {
+        let first = read_page(&r, "session:claude-code:s1", &[("budget", "none")]).await;
+        let next = first
+            .document
+            .footer
+            .next
+            .as_ref()
+            .expect("none lifts tokens, not the byte transfer bound");
+        assert!(
+            next.request.arguments["steps"][0]
+                .as_object()
+                .unwrap()
+                .contains_key("budget")
+        );
+        assert_eq!(
+            next.request.arguments["steps"][0]["budget"],
+            serde_json::Value::Null
+        );
+        let second = follow_read(&r, next).await;
+        let previous = second
+            .document
+            .footer
+            .previous
+            .as_ref()
+            .expect("a previous transfer");
+        assert!(
+            previous.request.arguments["steps"][0]
+                .as_object()
+                .unwrap()
+                .contains_key("budget")
+        );
+        assert_eq!(
+            previous.request.arguments["steps"][0]["budget"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            follow_read(&r, previous).await.document.items,
+            first.document.items
+        );
+        let all = read_items(&r, "session:claude-code:s1", &[("budget", "none")]).await;
+        assert!(
+            all.iter().any(
+                |item| matches!(&item.kind, ItemKind::Text { text: actual } if actual == &text)
+            )
+        );
+        let numeric = read_items(&r, "session:claude-code:s1", &[("budget", "1000000")]).await;
+        assert_eq!(all, numeric);
+        let zero = read_page(&r, "session:claude-code:s1", &[("budget", "0")]).await;
+        assert!(!zero.document.items.is_empty());
+        assert_eq!(
+            zero.document
+                .footer
+                .next
+                .as_ref()
+                .unwrap()
+                .request
+                .arguments["steps"][0]["budget"],
+            0
+        );
+        let default = read_page(&r, "session:claude-code:s1", &[]).await;
+        assert_ne!(
+            zero.document.items, default.document.items,
+            "zero must not become the default allowance"
+        );
+        let path = read_url("session:claude-code:s1", &[("budget", "none")]);
+        let deadline = crate::daemon::execution::deadline(std::time::Duration::ZERO).to_string();
+        let (status, _, body) = send(
+            &r,
+            authed(get(&path))
+                .header("x-polylogue-deadline-ms", deadline)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::GATEWAY_TIMEOUT, "{body}");
+    });
+}

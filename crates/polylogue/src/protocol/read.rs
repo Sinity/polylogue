@@ -1,9 +1,8 @@
 //! Public read arguments. Show and hide options are the `show` and `hide` words of one
 //! table (`ShowKind`); the daemon reads them into one `ReadOptions`.
-use polylogue_model::read::{Format, ReadDelivery, View};
+use polylogue_model::read::{Format, ReadBudget, ReadDelivery, View};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::num::NonZeroU64;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -29,7 +28,8 @@ pub struct Arguments {
     #[schemars(extend("unlisted" = true))]
     pub delivery: ReadDelivery,
     /// Tokens transferred in one read page
-    pub page_tokens: Option<NonZeroU64>,
+    #[serde(default, skip_serializing_if = "ReadBudget::is_default")]
+    pub page_tokens: ReadBudget,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(description = polylogue_model::read::ShowKind::HELP)]
     #[schemars(extend("unlisted" = true))]

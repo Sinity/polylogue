@@ -158,7 +158,7 @@ impl AllItems {
         let arguments = crate::daemon::verbs::read::arguments(read, target).unwrap();
         let mut request = crate::daemon::service::read::request_of(arguments, None).unwrap();
         request.delivery = polylogue_model::read::ReadDelivery::Stream;
-        request.budget = None;
+        request.budget = polylogue_model::read::ReadBudget::Default;
         request.with_blobs = false;
         if !rows.references.is_empty() {
             request.references = Some(

@@ -251,6 +251,52 @@ fn declared_line_format_round_trips_options_literals_references_and_deadline_uni
 }
 
 #[test]
+fn read_budget_null_zero_and_absence_round_trip_the_real_line_boundary() {
+    let error = parse(
+        &["sessions", "brief", "--budget", "none"].map(str::to_owned),
+        &FirstWordCatalog::default(),
+        false,
+    )
+    .unwrap_err();
+    assert!(error.message.contains("budget"), "{error:?}");
+    for budget in [
+        None,
+        Some(Value::Null),
+        Some(serde_json::json!(0)),
+        Some(serde_json::json!(u64::MAX)),
+    ] {
+        let mut step = serde_json::json!({"verb":"read", "cursor":"accepted read cursor", "show":["tools:full"]});
+        if let Some(budget) = &budget {
+            step["budget"] = budget.clone();
+        }
+        let mut request = crate::client::request(
+            "rows",
+            serde_json::json!({"selection":"session:test:one", "steps":[step], "all":true}),
+            "read-budget-round-trip".into(),
+        );
+        request.deadline = command_surface::Deadline::Milliseconds(500);
+        request.budget_tokens = command_surface::TokenBudget::Tokens(333);
+        request.format = command_surface::Format::Json;
+        let command = crate::commands::declarations()
+            .cli_command(&request)
+            .unwrap();
+        match budget {
+            Some(Value::Null) => assert!(command.contains("--budget none"), "{command}"),
+            Some(Value::Number(ref n)) => {
+                assert!(command.contains(&format!("--budget {n}")), "{command}")
+            }
+            None => assert_eq!(
+                command.matches("--budget").count(),
+                1,
+                "only the envelope budget: {command}"
+            ),
+            _ => unreachable!(),
+        }
+        formatted(&request);
+    }
+}
+
+#[test]
 fn line_formatter_diagnoses_unrepresentable_step_fields() {
     let request = crate::client::request(
         "rows",

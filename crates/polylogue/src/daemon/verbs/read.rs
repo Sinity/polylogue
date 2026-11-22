@@ -10,7 +10,6 @@ use command_surface::{Deadline, RunnableRequest};
 use polylogue_model::read::{Format, ReadyCall};
 use polylogue_reading::{AttachmentPlace, Compile, Error, ReadRequest, ReadServices};
 use polylogue_store::{Reader, WriterSender};
-use std::num::NonZeroU64;
 use std::sync::Arc;
 
 pub(crate) struct Read;
@@ -115,12 +114,6 @@ pub(crate) fn arguments(
             Format::parse(name).ok_or_else(|| not_built_use("read", &format!("--format {name}")))
         })
         .transpose()?;
-    let page_tokens = budget
-        .map(|tokens| {
-            NonZeroU64::new(tokens)
-                .ok_or_else(|| Failure::bad_value("read --budget must be positive"))
-        })
-        .transpose()?;
     Ok(crate::protocol::read::Arguments {
         target,
         from: from.clone(),
@@ -128,7 +121,7 @@ pub(crate) fn arguments(
         view: *view,
         format,
         delivery: *delivery,
-        page_tokens,
+        page_tokens: *budget,
         show: show.clone(),
         hide: hide.clone(),
         output_lines: crate::protocol::read::output_lines(),
@@ -192,7 +185,7 @@ pub(crate) fn step_of(
         physical,
         neutral_names: for_others,
         format: format.map(|format| format.name().to_owned()),
-        budget: page_tokens.map(NonZeroU64::get),
+        budget: page_tokens,
         cursor,
         delivery,
         ..ReadStep::default()

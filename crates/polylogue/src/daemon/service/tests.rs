@@ -22,7 +22,14 @@ fn read(
     }
     let request = if let Some(resume) = cursor {
         let mut resume = resume.clone();
-        resume.arguments["steps"][0]["budget"] = serde_json::json!(budget);
+        if let Some(budget) = budget {
+            resume.arguments["steps"][0]["budget"] = serde_json::json!(budget);
+        } else {
+            resume.arguments["steps"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("budget");
+        }
         crate::test_daemon::Call::from_request(&resume)
     } else {
         crate::test_daemon::read(polylogue_reading::ReadRequest {
@@ -35,7 +42,9 @@ fn read(
             },
             delivery: polylogue_model::read::ReadDelivery::Page,
             format: format.into(),
-            budget,
+            budget: budget.map_or(polylogue_model::read::ReadBudget::Default, |tokens| {
+                polylogue_model::read::ReadBudget::Tokens(tokens as u64)
+            }),
             with_blobs: false,
             cursor: None,
         })
@@ -155,7 +164,7 @@ fn reading_variants_setting_is_the_default_and_is_bound_in_the_cursor() {
         },
         delivery: polylogue_model::read::ReadDelivery::Page,
         format: "json".into(),
-        budget: Some(1),
+        budget: polylogue_model::read::ReadBudget::Tokens(1),
         with_blobs: false,
         cursor: None,
     })

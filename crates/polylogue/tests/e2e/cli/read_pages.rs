@@ -247,3 +247,209 @@ fn read_on_terminal_shows_whole_session_through_pager() {
             .any(|item| item.source.message.is_some())
     );
 }
+
+#[test]
+fn read_budget_none_zero_and_default_survive_real_cli_mcp_and_reopen() {
+    use polylogue_model::read::ReadDocument;
+    use serde_json::{Value, json};
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let project = home.join(".claude/projects/-budget");
+    std::fs::create_dir_all(&project).unwrap();
+    let text = "a ".repeat(500);
+    let lines: String = (0..12)
+        .map(|n| line(&format!("u{n}"), "budget", &text))
+        .collect();
+    std::fs::write(project.join("budget.jsonl"), lines).unwrap();
+    let large = "λ🙂 finite transfer ".repeat(2500);
+    std::fs::write(
+        project.join("large.jsonl"),
+        line("large-u", "large", &large),
+    )
+    .unwrap();
+    let env = crate::Fixture::new(
+        &dir.path().join("archive"),
+        &home,
+        &dir.path().join("config"),
+    );
+    let daemon = start_daemon(&env);
+    wait_status(&env, |s| {
+        s["store"]["messages"] == 13 && s["store"]["search_pending"] == 0
+    });
+    let run = |budget: Option<&str>| {
+        let mut args = vec![
+            "--deadline",
+            "none",
+            "session:claude-code:budget",
+            "read",
+            "--format",
+            "json",
+        ];
+        if let Some(budget) = budget {
+            args.extend(["--budget", budget]);
+        }
+        let out = cli(&env, &args);
+        assert!(out.status.success(), "{out:?}");
+        let document: ReadDocument = serde_json::from_slice(&out.stdout).unwrap();
+        (out, document)
+    };
+    let (_, default) = run(None);
+    assert!(
+        default.footer.next.is_some(),
+        "the default token allowance is finite"
+    );
+    let (_, unlimited) = run(Some("none"));
+    assert!(
+        unlimited.footer.next.is_none(),
+        "this source fits the unchanged item/byte allowance"
+    );
+    let mut whole = Items::default();
+    whole.push_document(&unlimited);
+    assert_eq!(whole.text(), text.repeat(12));
+    let (zero_out, zero) = run(Some("0"));
+    assert!(
+        !zero.items.is_empty(),
+        "zero still makes minimum forward progress"
+    );
+    let zero_next = zero
+        .footer
+        .next
+        .as_ref()
+        .expect("zero must not become the default");
+    assert_eq!(zero_next.request.arguments["steps"][0]["budget"], 0);
+    let zero_command = continue_command(&zero_out).unwrap();
+    assert!(zero_command.contains("--budget 0"), "{zero_command}");
+    drop(daemon);
+    let _reopened = start_daemon(&env);
+    wait_status(&env, |s| s["store"]["messages"] == 13);
+    let continued = printed_cli(&env, &zero_command);
+    assert!(continued.status.success(), "{continued:?}");
+    let second: ReadDocument = serde_json::from_slice(&continued.stdout).unwrap();
+    let previous = second
+        .footer
+        .previous
+        .as_ref()
+        .expect("previous zero-budget page");
+    assert_eq!(previous.request.arguments["steps"][0]["budget"], 0);
+    let returned = followed_page(&env, previous);
+    assert_eq!(returned.document.items, zero.items);
+
+    let mut mcp = super::query_surfaces::Mcp::start(&env);
+    for budget in [None, Some(Value::Null), Some(json!(0)), Some(json!(4000))] {
+        let mut step = json!({"verb":"read"});
+        if let Some(value) = &budget {
+            step["budget"] = value.clone();
+        }
+        let reply = mcp.request("tools/call", json!({"name":"polylogue_read", "arguments":{
+            "operation":"rows", "arguments":{"selection":"session:claude-code:budget", "steps":[step]},
+            "request_id":uuid::Uuid::now_v7().to_string(), "deadline":null
+        }}));
+        assert!(reply["error"].is_null(), "{reply}");
+        let answer: command_surface::Answer<Value> =
+            serde_json::from_value(reply["result"]["structuredContent"].clone()).unwrap();
+        assert_eq!(answer.exit_code(), 0, "{answer:?}");
+        let page = read_page(answer.value().unwrap().clone());
+        let expected = match budget {
+            Some(Value::Null) => &unlimited.items,
+            Some(Value::Number(ref n)) if n.as_u64() == Some(0) => &zero.items,
+            _ => &default.items,
+        };
+        // Fresh invocations own different query references on transfer fragments.
+        // Their encoded source item and advancing coordinates are the same.
+        assert_eq!(
+            page.document
+                .items
+                .iter()
+                .map(|item| &item.kind)
+                .collect::<Vec<_>>(),
+            expected.iter().map(|item| &item.kind).collect::<Vec<_>>()
+        );
+        for item in &page.document.items {
+            if matches!(item.kind, polylogue_model::read::ItemKind::Fragment { .. }) {
+                assert_eq!(item.source.reference, page.snapshot.query);
+            }
+        }
+    }
+    let out = cli(
+        &env,
+        &[
+            "--deadline",
+            "none",
+            "session:claude-code:large",
+            "read",
+            "--format",
+            "json",
+            "--budget",
+            "none",
+        ],
+    );
+    assert!(out.status.success(), "{out:?}");
+    let mut document: ReadDocument = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        document.footer.next.is_some(),
+        "unlimited tokens retain the transfer bound"
+    );
+    let mut items = Items::default();
+    let mut output = out;
+    let mut calls = std::collections::BTreeSet::new();
+    loop {
+        items.push_document(&document);
+        let Some(command) = continue_command(&output) else {
+            break;
+        };
+        assert!(command.contains("--budget none"), "{command}");
+        assert!(calls.insert(command.clone()), "continuation must advance");
+        output = printed_cli(&env, &command);
+        assert!(output.status.success(), "{output:?}");
+        document = serde_json::from_slice(&output.stdout).unwrap();
+    }
+    assert_eq!(items.text(), large);
+    let mut request = command_surface::Request {
+        operation: "rows".into(),
+        arguments: json!({"selection":"session:claude-code:large", "steps":[{"verb":"read", "budget":null}]}),
+        request_id: uuid::Uuid::now_v7().to_string(),
+        deadline: command_surface::Deadline::None,
+        budget_tokens: Default::default(),
+        cursor: None,
+        fresh: false,
+        format: Default::default(),
+    };
+    let mut first_items = None;
+    for page_number in 0..3 {
+        let reply = mcp.request(
+            "tools/call",
+            json!({"name":"polylogue_read", "arguments":request}),
+        );
+        assert!(reply["error"].is_null(), "{reply}");
+        let answer: command_surface::Answer<Value> =
+            serde_json::from_value(reply["result"]["structuredContent"].clone()).unwrap();
+        assert_eq!(answer.exit_code(), 0, "{answer:?}");
+        let page = read_page(answer.value().unwrap().clone());
+        if page_number == 2 {
+            assert_eq!(page.document.items, first_items.unwrap());
+            break;
+        }
+        let call = if page_number == 0 {
+            first_items = Some(page.document.items.clone());
+            page.document
+                .footer
+                .next
+                .as_ref()
+                .expect("MCP none still has a transfer continuation")
+        } else {
+            page.document
+                .footer
+                .previous
+                .as_ref()
+                .expect("MCP previous transfer")
+        };
+        assert!(
+            call.request.arguments["steps"][0]
+                .as_object()
+                .unwrap()
+                .contains_key("budget")
+        );
+        assert_eq!(call.request.arguments["steps"][0]["budget"], Value::Null);
+        request = call.request.clone();
+    }
+}

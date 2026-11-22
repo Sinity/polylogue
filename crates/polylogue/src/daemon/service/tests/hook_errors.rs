@@ -119,7 +119,7 @@ fn hook_failures_reach_mcp_reads_and_budgeted_pages() {
         },
         delivery: ReadDelivery::Page,
         format: "json".into(),
-        budget: None,
+        budget: polylogue_model::read::ReadBudget::Default,
         with_blobs: false,
         cursor: None,
     }))

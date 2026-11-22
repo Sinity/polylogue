@@ -28,7 +28,7 @@ fn request(
         },
         delivery: ReadDelivery::Page,
         format: "json".into(),
-        budget: Some(budget),
+        budget: polylogue_model::read::ReadBudget::Tokens(budget as u64),
         with_blobs: false,
         cursor: None,
     })
