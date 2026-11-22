@@ -207,6 +207,26 @@ impl Sinex {
         let context = self.health.locked().context.clone();
         context.resolve(resolve_zone)
     }
+
+    /// Refreshes on an established read connection without entering a runtime.
+    /// The engine and synchronous foreground operations own connecting it.
+    pub async fn context_async(
+        &self,
+        resolve_zone: impl FnOnce(&str) -> Result<jiff::tz::TimeZone, String>,
+    ) -> Result<ResolvedContext, ContextFailure> {
+        if self.health.locked().context.refresh_due() {
+            let client = self.client.lock().await;
+            let Some(client) = client.as_ref() else {
+                return Err(self.health.locked().context.failure(
+                    ContextFailureKind::Missing,
+                    "Sinex public context has no established read connection",
+                ));
+            };
+            client.refresh_context().await;
+        }
+        let context = self.health.locked().context.clone();
+        context.resolve(resolve_zone)
+    }
 }
 
 #[cfg(test)]

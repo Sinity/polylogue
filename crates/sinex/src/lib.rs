@@ -197,7 +197,7 @@ pub struct Sinex {
     sender: Option<sender::Sender>,
     stopping: Option<Arc<sender::Stop>>,
     /// `None` only while dropping.
-    client: Mutex<Option<Client>>,
+    client: tokio::sync::Mutex<Option<Client>>,
     /// This host's name, for the register materials of requests.
     host: String,
 }
@@ -228,7 +228,7 @@ impl Sinex {
             stopping: None,
             spool,
             runtime: Arc::new(runtime),
-            client: Mutex::new(None),
+            client: tokio::sync::Mutex::new(None),
             host: host.to_owned(),
         };
         sinex.start_sender()?;
@@ -243,12 +243,7 @@ impl Sinex {
             health: self.health.clone(),
             spool: self.spool.clone(),
             runtime: self.runtime.clone(),
-            client: Mutex::new(
-                self.client
-                    .get_mut()
-                    .map_err(|_| Error::invalid("the Sinex connection panicked"))?
-                    .take(),
-            ),
+            client: tokio::sync::Mutex::new(self.client.get_mut().take()),
             host: self.host.clone(),
             publication: self.publication.clone(),
             sender: None,
@@ -282,27 +277,8 @@ impl Sinex {
     /// Executes one operation under this connection's lock. Sending uses its own connection.
     fn client_operation<T>(&self, work: impl AsyncFnOnce(&mut Client) -> Result<T>) -> Result<T> {
         let limit = polylogue_store::read::limit::ReadLimit::current();
-        let mut client = match &limit {
-            Some(limit) => {
-                let waiting = std::thread::current();
-                let _wake = limit.cancellation.on_cancel(move || waiting.unpark());
-                loop {
-                    limit.check()?;
-                    match self.client.try_lock() {
-                        Ok(client) => break client,
-                        Err(std::sync::TryLockError::Poisoned(error)) => break error.into_inner(),
-                        Err(std::sync::TryLockError::WouldBlock) => {
-                            let poll = std::time::Duration::from_millis(5);
-                            std::thread::park_timeout(
-                                limit.remaining().map_or(poll, |left| left.min(poll)),
-                            );
-                        }
-                    }
-                }
-            }
-            None => self.client.locked(),
-        };
         let future = async {
+            let mut client = self.client.lock().await;
             if client.is_none() {
                 *client = Some(
                     Client::connect_shared(
@@ -316,7 +292,12 @@ impl Sinex {
                     .await?,
                 );
             }
-            work(client.as_mut().expect("connected client")).await
+            let result = work(client.as_mut().expect("connected client")).await;
+            if matches!(result, Err(Error::Unreachable(_))) {
+                let _inside = self.runtime.enter();
+                client.take();
+            }
+            result
         };
         let result = self.runtime.block_on(async {
             let future = async {
@@ -353,15 +334,8 @@ impl Sinex {
                 None => future.await,
             }
         });
-        {
-            let mut health = self.health.locked();
-            health.reachable = Some(!matches!(result, Err(Error::Unreachable(_))));
-        }
-        if matches!(result, Err(Error::Unreachable(_))) {
-            // The immutable spool keeps every unacknowledged frame. A fresh
-            // connection retries those identities after the next successful hello.
-            let _inside = self.runtime.enter();
-            client.take();
+        if !matches!(result, Err(Error::Store(_))) {
+            self.health.locked().reachable = Some(!matches!(result, Err(Error::Unreachable(_))));
         }
         result
     }
@@ -407,9 +381,7 @@ impl Drop for Sinex {
             sender.stop();
         }
         let _inside = self.runtime.enter();
-        if let Ok(client) = self.client.get_mut() {
-            drop(client.take());
-        }
+        drop(self.client.get_mut().take());
     }
 }
 

@@ -199,10 +199,21 @@ fn context_refreshes_an_expired_observation_on_the_same_connection_and_keeps_ref
         publication: Default::default(),
         sender: None,
         stopping: None,
-        client: Mutex::new(None),
+        client: tokio::sync::Mutex::new(None),
         host: "fixture-host".into(),
     };
     let resolve = |name: &str| jiff::tz::TimeZone::get(name).map_err(|error| error.to_string());
+    let background = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    assert_eq!(
+        background
+            .block_on(sinex.context_async(resolve))
+            .unwrap_err()
+            .kind,
+        ContextFailureKind::Missing
+    );
     sinex.read_client(async |_| Ok(())).unwrap();
     let first = sinex.context(resolve).unwrap();
     let expire = || {
@@ -212,7 +223,7 @@ fn context_refreshes_an_expired_observation_on_the_same_connection_and_keeps_ref
         health.context.attempted = Some(old);
     };
     expire();
-    let next = sinex.context(resolve).unwrap();
+    let next = background.block_on(sinex.context_async(resolve)).unwrap();
     assert_eq!(first.observed_at.unix_ns(), 100_000_000_000);
     assert_eq!(next.observed_at.unix_ns(), 101_000_000_000);
     assert_eq!(next.settings_identity, first.settings_identity);
@@ -252,13 +263,13 @@ fn context_refreshes_an_expired_observation_on_the_same_connection_and_keeps_ref
             polylogue_store::StoreError::ReadCancelled
         ))
     ));
-    let held = sinex.client.locked();
-    let expired = polylogue_store::read::limit::ReadLimit::at(
-        Instant::now() - Duration::from_secs(1),
+    let held = sinex.client.try_lock().unwrap();
+    let waiting = polylogue_store::read::limit::ReadLimit::new(
+        Duration::from_millis(10),
         polylogue_store::cancellation::Cancellation::default(),
     );
     assert!(matches!(
-        expired.scope(|| sinex.read_client(async |_| Ok(()))),
+        waiting.scope(|| sinex.read_client(async |_| Ok(()))),
         Err(crate::Error::Store(
             polylogue_store::StoreError::ReadDeadlineExceeded
         ))
@@ -275,7 +286,9 @@ fn context_refreshes_an_expired_observation_on_the_same_connection_and_keeps_ref
         Err(polylogue_store::StoreError::ReadCancelled)
     ));
     expire();
-    let error = sinex.context(resolve).unwrap_err();
+    let error = background
+        .block_on(sinex.context_async(resolve))
+        .unwrap_err();
     assert_eq!(error.kind, ContextFailureKind::Refused);
     assert_eq!(error.reason, "public context grant denied");
     assert_eq!(error.last_known_identity.as_deref(), Some("settings-1"));

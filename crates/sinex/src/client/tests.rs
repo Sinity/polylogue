@@ -43,7 +43,7 @@ pub(super) fn synchronous(config: &Config, authentication: &Authentication) -> S
         publication: Default::default(),
         sender: None,
         stopping: Some(Default::default()),
-        client: std::sync::Mutex::new(None),
+        client: tokio::sync::Mutex::new(None),
         host: "fixture-host".into(),
     }
 }
@@ -973,7 +973,7 @@ fn refused_attachment_keeps_request_as_others_complete() {
         ))
         .unwrap();
     sinex.runtime.block_on(welcome).unwrap();
-    *sinex.client.locked() = Some(client);
+    *sinex.client.try_lock().unwrap() = Some(client);
     let bytes = b"synthetic refused attachment";
     let hash = BlobHash::of(bytes);
     let blob = sinex
