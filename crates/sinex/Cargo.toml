@@ -20,9 +20,9 @@ hashed-blobs.workspace = true
 query-language.workspace = true
 shared-signals.workspace = true
 jiff.workspace = true
-sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "5bd1ce9b66e51fc8602f582ddbe1565dac678d57" }
-sinex-transport = { git = "https://github.com/Sinity/sinex", rev = "5bd1ce9b66e51fc8602f582ddbe1565dac678d57" }
-sinex-model = { git = "https://github.com/Sinity/sinex", rev = "5bd1ce9b66e51fc8602f582ddbe1565dac678d57" }
+sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "b912c48fee5d9806b4725a3e8e455d7d4d18d668" }
+sinex-transport = { git = "https://github.com/Sinity/sinex", rev = "b912c48fee5d9806b4725a3e8e455d7d4d18d668" }
+sinex-model = { git = "https://github.com/Sinity/sinex", rev = "b912c48fee5d9806b4725a3e8e455d7d4d18d668" }
 # The same features as Sinex: JetStream over ring TLS. Leaving out NKeys,
 # WebSockets, key-value, object store and service keeps their signing and
 # socket crates out of the build.
@@ -37,7 +37,7 @@ thiserror.workspace = true
 toml = "1.1"
 
 [dev-dependencies]
-sinex-query = { git = "https://github.com/Sinity/sinex", rev = "5bd1ce9b66e51fc8602f582ddbe1565dac678d57" }
+sinex-query = { git = "https://github.com/Sinity/sinex", rev = "b912c48fee5d9806b4725a3e8e455d7d4d18d668" }
 polylogue-store = { workspace = true, features = ["fixture", "faults"] }
 jsonschema = { version = "0.42", default-features = false }
 polylogue-testkit.workspace = true
