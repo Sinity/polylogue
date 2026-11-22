@@ -63,6 +63,9 @@
       overlays.default = final: _: {
         inherit (self.packages.${final.stdenv.hostPlatform.system}) polylogue polylogue-extension;
       };
-      devShells.${system}.default = build.devShell;
+      devShells.${system} = {
+        default = build.devShell;
+        format = build.formatShell;
+      };
     };
 }

@@ -7,6 +7,12 @@
 }:
 let
   lib = pkgs.lib;
+  installGitHooks = ''
+    if [ -d .githooks ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+      && ! git config --get core.hooksPath >/dev/null; then
+      git config --local core.hooksPath .githooks
+    fi
+  '';
   craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
   workspace = (builtins.fromTOML (builtins.readFile ../Cargo.toml)).workspace.package;
   common = {
@@ -149,6 +155,14 @@ in
     default = polylogue;
   };
   inherit checks;
+  formatShell = pkgs.mkShellNoCC {
+    packages = [
+      toolchain
+      pkgs.git
+      pkgs.diffutils
+    ];
+    shellHook = installGitHooks;
+  };
   devShell = craneLib.devShell {
     # Entering the shell needs check tools, not a VM image or its driver.
     checks = lib.removeAttrs checks [ "behavior" ];
@@ -187,10 +201,7 @@ in
           export CARGO_TARGET_DIR="$cargo_target"
         fi
       fi
-      if [ -d .githooks ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-        && ! git config --get core.hooksPath >/dev/null; then
-        git config --local core.hooksPath .githooks
-      fi
-    '';
+    ''
+    + installGitHooks;
   };
 }
