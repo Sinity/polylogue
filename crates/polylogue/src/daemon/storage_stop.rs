@@ -14,18 +14,11 @@ fn marker(paths: &crate::config::Paths, root: &Path) -> PathBuf {
     paths.runtime_dir(root).join("storage-failure")
 }
 
-fn boot() -> Option<String> {
-    std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
-        .ok()
-        .map(|id| id.trim().to_owned())
-        .filter(|id| !id.is_empty())
-}
-
 /// The failure recorded for `root` in this boot, if there is one.
 pub(crate) fn this_boot(paths: &crate::config::Paths, root: &Path) -> Option<StorageStopped> {
     let text = std::fs::read_to_string(marker(paths, root)).ok()?;
     let (recorded_boot, message) = text.split_once('\n')?;
-    (Some(recorded_boot) == boot().as_deref()).then(|| {
+    (Some(recorded_boot) == crate::live_events::boot_id().as_deref()).then(|| {
         StorageStopped(format!(
             "{message}; refusing to start until the machine has rebooted (docs/operations.md, storage failure)"
         ))
@@ -35,14 +28,21 @@ pub(crate) fn this_boot(paths: &crate::config::Paths, root: &Path) -> Option<Sto
 /// Keeps `failure` for the rest of this boot. A machine without a boot
 /// identifier keeps nothing, and only the stopped process refuses.
 pub(crate) fn remember(paths: &crate::config::Paths, root: &Path, failure: &StorageFailure) {
-    let Some(boot) = boot() else {
+    let Some(boot) = crate::live_events::boot_id() else {
         return;
     };
     let path = marker(paths, root);
     let written = path
         .parent()
         .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| std::fs::write(&path, format!("{boot}\n{failure}")));
+        .and_then(|()| {
+            // Whole or absent: a torn marker would not match this boot.
+            polylogue_model::atomic_write::write_atomic(
+                &path,
+                format!("{boot}\n{failure}").as_bytes(),
+                None,
+            )
+        });
     if let Err(error) = written {
         crate::log::log!(
             error,

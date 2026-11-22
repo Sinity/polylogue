@@ -157,8 +157,8 @@ fn routed_kind(prefix: &str, event_type: &str) -> String {
     format!("{prefix}{snake}")
 }
 
-/// The hook event a line records: `event_type`, or `event` in lines written
-/// before the field was renamed.
+/// The hook event a line records: `event_type` in the per-session and dated
+/// files, `event` in the lines the hook command writes.
 fn event_type(value: &Json) -> Option<&str> {
     value
         .str("event_type")

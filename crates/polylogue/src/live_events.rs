@@ -92,11 +92,12 @@ fn stat(proc_root: &Path, pid: u32) -> Option<Stat> {
     parse_stat(&std::fs::read_to_string(proc_root.join(pid.to_string()).join("stat")).ok()?)
 }
 
-/// This boot's identity.
+/// This boot's identity; `None` where the kernel states none.
 pub(crate) fn boot_id() -> Option<String> {
     std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
         .ok()
         .map(|s| s.trim().to_owned())
+        .filter(|id| !id.is_empty())
 }
 
 /// The process identity of `pid` now, on this boot.
