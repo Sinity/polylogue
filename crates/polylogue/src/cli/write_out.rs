@@ -2,6 +2,9 @@
 //! only after a validated completion; staged failures keep their diagnosis.
 pub(crate) mod bundle;
 
+#[cfg(test)]
+mod tests;
+
 use super::{Archive, fail};
 use base64::Engine as _;
 use polylogue_model::{bundle::Counts, read::*};
