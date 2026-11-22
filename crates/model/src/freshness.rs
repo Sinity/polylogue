@@ -26,7 +26,11 @@ pub enum IndexFreshness {
         applied_position: Option<i64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sinex_position: Option<i64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "observation_age"
+        )]
         sinex_position_seconds_ago: Option<f64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reachable: Option<bool>,
@@ -37,6 +41,21 @@ pub enum IndexFreshness {
         error: Option<String>,
     },
 }
+
+// Tagged enums buffer arbitrary-precision JSON decimals as Number maps.
+// Decode that representation before converting the finite observation age.
+fn observation_age<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<f64>, D::Error> {
+    Option::<serde_json::Number>::deserialize(deserializer)?
+        .map(|number| {
+            number
+                .as_f64()
+                .ok_or_else(|| serde::de::Error::custom("observation age must be finite"))
+        })
+        .transpose()
+}
+
 impl IndexFreshness {
     pub fn primary(
         applied_position: Option<i64>,
