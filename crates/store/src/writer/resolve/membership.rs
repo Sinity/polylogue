@@ -276,7 +276,8 @@ struct MessageMember {
     end: i64,
     session: i64,
     main: bool,
-    explicit_session: bool,
+    /// Unread source facts stay unknown until they can affect composition.
+    explicit_session: Option<bool>,
     route: Route,
     completion: Completion,
     seq: i64,
@@ -513,6 +514,7 @@ pub(in crate::writer) struct MembershipState<'a> {
     message_layouts: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
     document_values: BTreeMap<Vec<u8>, (polylogue_model::Document, PreparedDocument)>,
     session_facts: BTreeMap<(i64, i64, i64), Session>,
+    stored_explicit_sessions: BTreeMap<(i64, i64, i64), bool>,
     /// The last message reading of each (input, chain, session) read in
     /// this snapshot.
     last_readings: BTreeMap<(i64, i64, i64), LastReading>,
@@ -523,6 +525,31 @@ pub(in crate::writer) struct MembershipState<'a> {
     released: BTreeSet<String>,
     values: Option<&'a dyn ValueSource>,
 }
+/// Only the original resolver snapshot supplies unknown source facts. Current
+/// readings carry their own flag; this small projection never crosses snapshots.
+fn explicit_session(
+    index: &Connection,
+    stored: &mut BTreeMap<(i64, i64, i64), bool>,
+    member: &MessageMember,
+) -> Result<bool> {
+    if let Some(explicit) = member.explicit_session {
+        return Ok(explicit);
+    }
+    let key = (member.session, member.input, member.chain);
+    if let Some(&explicit) = stored.get(&key) {
+        return Ok(explicit);
+    }
+    let explicit = index
+        .scalar_optional::<bool>(
+            "SELECT coalesce(json_extract(facts,'$.kind')<>'compaction',0)
+         FROM session_record WHERE session_pk=?1 AND input_pk=?2 AND chain=?3",
+            params![member.session, member.input, member.chain],
+        )?
+        .unwrap_or(false);
+    stored.insert(key, explicit);
+    Ok(explicit)
+}
+
 impl<'a> MembershipState<'a> {
     pub(in crate::writer) fn new(
         resolver: &'a Resolver,
@@ -544,6 +571,7 @@ impl<'a> MembershipState<'a> {
             message_layouts: BTreeMap::new(),
             document_values: BTreeMap::new(),
             session_facts: BTreeMap::new(),
+            stored_explicit_sessions: BTreeMap::new(),
             last_readings: BTreeMap::new(),
             reset_inputs: BTreeSet::new(),
             moved_copies: BTreeSet::new(),
@@ -702,6 +730,11 @@ impl<'a> MembershipState<'a> {
                 self.messages.members.entry(target).or_default();
                 for mut member in moved {
                     if member.session == from {
+                        member.explicit_session = Some(explicit_session(
+                            self.index,
+                            &mut self.stored_explicit_sessions,
+                            &member,
+                        )?);
                         member.session = to;
                     }
                     self.messages.put(target, member);
@@ -799,6 +832,11 @@ impl<'a> MembershipState<'a> {
                 self.messages.members.entry(target).or_default();
                 for mut member in moved {
                     if member.session == from {
+                        member.explicit_session = Some(explicit_session(
+                            self.index,
+                            &mut self.stored_explicit_sessions,
+                            &member,
+                        )?);
                         member.session = to;
                     }
                     self.messages.put(target, member);
@@ -893,6 +931,12 @@ impl<'a> MembershipState<'a> {
             // A portable header may arrive after its messages. Revisit only
             // this source's indexed memberships, including unloaded rows.
             let stored_kind:Option<String>=self.index.scalar_optional("SELECT json_extract(facts,'$.kind') FROM session_record WHERE session_pk=?1 AND input_pk=?2 AND chain=?3",params![pk,input,chain])?;
+            let stored_explicit = stored_kind
+                .as_deref()
+                .is_some_and(|kind| kind != "compaction");
+            self.stored_explicit_sessions
+                .entry(key)
+                .or_insert(stored_explicit);
             if !self.reset_inputs.contains(&(input, chain))
                 && stored_kind.as_deref() != Some(merged.kind.as_str())
             {
@@ -912,11 +956,13 @@ impl<'a> MembershipState<'a> {
                     .iter_mut()
                     .filter(|m| m.session == pk && m.input == input && m.chain == chain)
                 {
-                    if member.main != main || member.explicit_session != explicit_session {
+                    if member.main != main
+                        || member.explicit_session.unwrap_or(stored_explicit) != explicit_session
+                    {
                         self.messages.touched.insert(*message_pk);
                     }
                     member.main = main;
-                    member.explicit_session = explicit_session;
+                    member.explicit_session = Some(explicit_session);
                 }
             }
         }
@@ -1067,7 +1113,7 @@ impl<'a> MembershipState<'a> {
                     end: row.end.max(row.offset) as i64,
                     session,
                     main,
-                    explicit_session,
+                    explicit_session: Some(explicit_session),
                     route,
                     completion: Completion::of(&row.message, route),
                     seq,
@@ -1564,6 +1610,7 @@ impl<'a> MembershipState<'a> {
             messages,
             shown_messages,
             message_values,
+            stored_explicit_sessions,
             values,
             ..
         } = self;
@@ -1594,13 +1641,14 @@ impl<'a> MembershipState<'a> {
                         input: &m.input_id,
                         route: m.route,
                         main: m.main,
-                        explicit_session: m.explicit_session,
                         completion: m.completion,
                         hash: &m.hash,
                         message: &message_values[&m.hash].message,
                     })
                     .collect();
-                compose::message(&readings)
+                compose::message(&readings, |n| {
+                    explicit_session(index, stored_explicit_sessions, current[n])
+                })?
             } else {
                 None
             };

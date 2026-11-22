@@ -1,5 +1,6 @@
 //! Read one bounded population from the resolver's existing snapshot. Shared
-//! input, version/layout and source-session facts are fetched once per key.
+//! input and version/layout facts are fetched once per key. Session kinds are
+//! resolved by composition only when they can change its content winner.
 use super::{FieldGroup, IdKind, MessageMember, Shown, named};
 use crate::{Result, StoreError};
 use rusqlite::Connection;
@@ -22,9 +23,6 @@ struct Version {
     layout: Option<Vec<u8>>,
 }
 
-// (session row, input row, revision chain), within this same read snapshot.
-type SessionSource = (i64, i64, i64);
-
 pub(super) fn load(
     index: &Connection,
     pks: &[i64],
@@ -40,7 +38,6 @@ pub(super) fn load(
     let mut sources = BTreeMap::<i64, Vec<Source>>::new();
     let mut versions = BTreeSet::new();
     let mut inputs = BTreeSet::new();
-    let mut sessions = BTreeSet::new();
     let mut statement = index.prepare_cached(
         "SELECT s.message_pk,s.version_pk,s.input_pk,s.chain,s.source_start,s.source_end,
          s.session_pk,s.main,s.completion,s.route,s.seq,s.record_position,s.id_kind,s.order_time,s.at
@@ -59,7 +56,7 @@ pub(super) fn load(
             end: row.get(5)?,
             session: row.get(6)?,
             main: row.get(7)?,
-            explicit_session: false,
+            explicit_session: None,
             completion: named(row.get(8)?)?,
             route: named(row.get(9)?)?,
             seq: row.get(10)?,
@@ -71,7 +68,6 @@ pub(super) fn load(
         };
         versions.insert(version);
         inputs.insert(member.input);
-        sessions.insert((member.session, member.input, member.chain));
         sources
             .entry(pk)
             .or_default()
@@ -80,7 +76,6 @@ pub(super) fn load(
     drop(rows);
     let versions = version_rows(index, versions)?;
     let inputs = input_rows(index, inputs)?;
-    let explicit = session_kinds(index, sessions)?;
     let mut stored: BTreeMap<_, _> = pks
         .iter()
         .map(|&pk| {
@@ -105,10 +100,6 @@ pub(super) fn load(
                 .get(&member.input)
                 .ok_or_else(|| StoreError::Invalid("a stored message source has no input".into()))?
                 .clone();
-            member.explicit_session = explicit
-                .get(&(member.session, member.input, member.chain))
-                .copied()
-                .unwrap_or(false);
             members.push(member);
         }
     }
@@ -212,28 +203,6 @@ fn input_rows(index: &Connection, ids: BTreeSet<i64>) -> Result<BTreeMap<i64, St
         let mut rows = query.query([serde_json::to_string(ids)?])?;
         while let Some(row) = rows.next()? {
             found.insert(row.get(0)?, row.get(1)?);
-        }
-    }
-    Ok(found)
-}
-
-fn session_kinds(
-    index: &Connection,
-    ids: BTreeSet<SessionSource>,
-) -> Result<BTreeMap<SessionSource, bool>> {
-    let ids: Vec<_> = ids.into_iter().collect();
-    let mut found = BTreeMap::new();
-    let mut query = index.prepare_cached(
-        "SELECT f.session_pk,f.input_pk,f.chain,
-         coalesce(json_extract(f.facts,'$.kind')<>'compaction',0)
-         FROM json_each(?1) k CROSS JOIN session_record f
-         ON f.session_pk=json_extract(k.value,'$[0]')
-         AND f.input_pk=json_extract(k.value,'$[1]') AND f.chain=json_extract(k.value,'$[2]')",
-    )?;
-    for ids in ids.chunks(BATCH) {
-        let mut rows = query.query([serde_json::to_string(ids)?])?;
-        while let Some(row) = rows.next()? {
-            found.insert((row.get(0)?, row.get(1)?, row.get(2)?), row.get(3)?);
         }
     }
     Ok(found)

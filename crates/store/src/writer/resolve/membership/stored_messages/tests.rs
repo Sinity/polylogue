@@ -83,6 +83,7 @@ fn stored_readings_preserve_all_chains_routes_layouts_and_missing_facts() {
     let stored = load(&conn, &[20, 10, 999, 10], &mut layouts).unwrap();
     assert_eq!(stored.len(), 3);
     let readings = &stored[&10].members;
+    let mut kinds = BTreeMap::new();
     assert_eq!(
         readings.len(),
         3,
@@ -94,7 +95,7 @@ fn stored_readings_preserve_all_chains_routes_layouts_and_missing_facts() {
             .map(|member| (
                 member.input_id.as_str(),
                 member.chain,
-                member.explicit_session
+                super::super::explicit_session(&conn, &mut kinds, member).unwrap()
             ))
             .collect::<Vec<_>>(),
         [
@@ -199,16 +200,13 @@ fn measured(conn: &Connection, pks: &[i64]) -> (Vec<ReadingFact>, u64) {
     let result = {
         let mut all = Vec::new();
         let mut layouts = BTreeMap::new();
+        let mut kinds = BTreeMap::new();
         for pks in pks.chunks(BATCH) {
             for (pk, stored) in load(conn, pks, &mut layouts).unwrap() {
                 for member in stored.members {
-                    all.push((
-                        pk,
-                        member.input,
-                        member.chain,
-                        member.hash,
-                        member.explicit_session,
-                    ));
+                    let explicit =
+                        super::super::explicit_session(conn, &mut kinds, &member).unwrap();
+                    all.push((pk, member.input, member.chain, member.hash, explicit));
                 }
             }
         }
@@ -219,7 +217,7 @@ fn measured(conn: &Connection, pks: &[i64]) -> (Vec<ReadingFact>, u64) {
 }
 
 #[test]
-fn shared_snapshot_facts_are_read_once_per_key_group_not_per_source_claim() {
+fn requested_shared_facts_are_read_once_per_snapshot_not_per_claim() {
     const MESSAGES: i64 = 1024;
     let conn = Connection::open_in_memory().unwrap();
     schema(&conn);
@@ -246,8 +244,8 @@ fn shared_snapshot_facts_are_read_once_per_key_group_not_per_source_claim() {
     assert_eq!(actual.len(), (MESSAGES * 2) as usize);
     assert_eq!(version_reads, MESSAGES as u64);
     assert_eq!(
-        fact_reads, 4,
-        "two source-session records in each bounded group"
+        fact_reads, 2,
+        "each needed source-session fact belongs to the whole snapshot"
     );
     assert_eq!(fact_bytes, facts.len() as u64 * fact_reads);
     // Independent correlated SQL is the semantic oracle and a positive
@@ -302,7 +300,7 @@ fn shared_snapshot_facts_are_read_once_per_key_group_not_per_source_claim() {
         history_vm <= vm + 1000,
         "unrelated rows changed native work: {vm}->{history_vm}"
     );
-    assert_eq!(reads.facts.load(Ordering::Relaxed), 4);
+    assert_eq!(reads.facts.load(Ordering::Relaxed), 2);
     assert_eq!(reads.versions.load(Ordering::Relaxed), MESSAGES as u64);
     eprintln!(
         "MEMBERSHIP_SNAPSHOT_WORK {}",
@@ -339,9 +337,14 @@ fn all_snapshot_queries_keep_the_callers_existing_transaction() {
     let held = load(&read, &[1], &mut layouts).unwrap();
     assert_eq!(before[&1].shown.as_ref().unwrap().layout, Some(vec![1]));
     assert_eq!(held[&1].shown.as_ref().unwrap().layout, Some(vec![1]));
-    assert!(held[&1].members[0].explicit_session);
+    assert!(
+        super::super::explicit_session(&read, &mut BTreeMap::new(), &held[&1].members[0]).unwrap()
+    );
     read.execute_batch("COMMIT").unwrap();
     let current = load(&read, &[1], &mut layouts).unwrap();
     assert_eq!(current[&1].shown.as_ref().unwrap().layout, Some(vec![2, 3]));
-    assert!(!current[&1].members[0].explicit_session);
+    assert!(
+        !super::super::explicit_session(&read, &mut BTreeMap::new(), &current[&1].members[0])
+            .unwrap()
+    );
 }

@@ -227,9 +227,11 @@ Building the archive overlaps every stage:
   writer's lifetime, including while an unreferenced text has no row.
   Builds preload hashes by row order; other writes learn identities as needed.
   The resolver reads existing messages' selected rows, routes and source claims
-  in bounded groups within its existing snapshot. Shared version/layout, input
-  and source-session facts are fetched once per key group, so repeated claims
-  do not repeatedly read the same metadata or decode the same session facts.
+  in bounded groups within its existing snapshot. Shared version/layout and
+  input facts are fetched once per key group. Session kinds are read only for
+  latest readings that can win content selection; a single reading and lower
+  priority candidates need none. Needed stored kinds belong to that snapshot,
+  while a step's session facts govern its own new or changed readings.
   Missing build keys skip database probes. A fixed-size Bloom filter skips
   spill-file probes for unseen keys; possible matches still compare the stored
   row's complete key. Session and required foreign-key indexes remain live.
