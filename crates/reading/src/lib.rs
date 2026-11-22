@@ -11,7 +11,7 @@ use polylogue_render::pager::{PageBuilder, PageError, Push};
 use polylogue_store::{Reader, WriterSender, selection::NearFn};
 use polylogue_store::{selection::PreparedSelection, writer::HistorySlot};
 use query_language::cursor::OrderPosition;
-use std::{collections::BTreeMap, io::Write, num::NonZeroU64, ops::ControlFlow, sync::Arc};
+use std::{collections::BTreeMap, io::Write, ops::ControlFlow, sync::Arc};
 
 mod attachment_facts;
 mod authored;
@@ -57,7 +57,7 @@ pub struct ReadRequest {
     pub options: ReadOptions,
     pub delivery: ReadDelivery,
     pub format: String,
-    pub budget: Option<usize>,
+    pub budget: ReadBudget,
     pub with_blobs: bool,
     pub cursor: Option<String>,
 }
@@ -267,12 +267,7 @@ fn reading(request: &ReadRequest) -> Result<(Reading, Option<&str>), Error> {
     options.validate().map_err(Error::bad_request)?;
     let format = Format::parse(format).ok_or_else(|| Error::bad_request("unknown read format"))?;
     let budget = if *delivery == ReadDelivery::Page {
-        let mut resolved = PageBudget::default();
-        if let Some(tokens) = budget {
-            resolved.tokens = NonZeroU64::new(*tokens as u64)
-                .ok_or_else(|| Error::bad_request("read budget must be positive"))?;
-        }
-        Some(resolved)
+        Some(PageBudget::default().with_tokens(*budget))
     } else {
         None
     };

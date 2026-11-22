@@ -6,7 +6,7 @@ use polylogue_reading::{
     AttachmentPlace, Compile, Error, ReadRequest, ReadServices, operation::Context,
 };
 use polylogue_store::{Reader, WriterSender};
-use std::{io::Write, num::NonZeroU64, sync::Arc};
+use std::{io::Write, sync::Arc};
 
 pub(crate) fn request_of(
     arguments: crate::protocol::read::Arguments,
@@ -59,10 +59,7 @@ pub(crate) fn request_of(
         options,
         delivery,
         format: format.unwrap_or(Format::Json).name().into(),
-        budget: page_tokens
-            .map(|tokens| usize::try_from(tokens.get()))
-            .transpose()
-            .map_err(|_| "page_tokens exceeds address space")?,
+        budget: page_tokens,
         with_blobs,
         cursor,
     })
@@ -88,11 +85,7 @@ pub(crate) fn arguments_of(
         view: options.view,
         format: Some(Format::parse(format).ok_or_else(|| format!("unknown format {format:?}"))?),
         delivery: *delivery,
-        page_tokens: budget
-            .map(|value| {
-                NonZeroU64::new(value as u64).ok_or_else(|| "budget must be positive".to_string())
-            })
-            .transpose()?,
+        page_tokens: *budget,
         show,
         hide,
         output_lines: options.output_lines,

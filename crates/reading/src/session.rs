@@ -742,7 +742,7 @@ fn card(
             },
             delivery: ReadDelivery::Page,
             format: Format::Json.name().into(),
-            budget: None,
+            budget: ReadBudget::Default,
             with_blobs: false,
             cursor: None,
         },
@@ -1342,11 +1342,7 @@ pub(super) fn page(
         ..
     } = request;
     let format = Format::parse(format).ok_or_else(|| Error::bad_request("unknown read format"))?;
-    let mut limits = PageBudget::default();
-    if let Some(tokens) = budget {
-        limits.tokens = std::num::NonZeroU64::new(*tokens as u64)
-            .ok_or_else(|| Error::bad_request("read budget must be positive"))?;
-    }
+    let limits = PageBudget::default().with_tokens(*budget);
     let digest = options_digest(&(options, format));
     let key = super::cursor_seal(reader)?;
     let opened = cursor

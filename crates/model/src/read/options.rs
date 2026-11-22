@@ -556,6 +556,33 @@ impl ReadOptions {
     }
 }
 
+/// A read step's token choice. Absence selects the default; JSON null lifts it.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
+#[serde(untagged)]
+#[schemars(extend("cli_null" = "none"))]
+pub enum ReadBudget {
+    Tokens(u64),
+    Unlimited,
+    #[default]
+    #[serde(skip)]
+    Default,
+}
+impl ReadBudget {
+    pub fn is_default(&self) -> bool {
+        matches!(self, Self::Default)
+    }
+}
+
 /// Logical delivery caps captured before per-page response framing is reserved.
 /// A continuation reuses all caps; an explicit override changes only that page.
 #[derive(
@@ -566,6 +593,21 @@ pub struct PageBudget {
     pub items: std::num::NonZeroUsize,
     pub tokens: std::num::NonZeroU64,
     pub bytes: std::num::NonZeroUsize,
+}
+impl PageBudget {
+    /// Resolve only the token cap. Every page still has its item/byte bounds
+    /// and must make minimum progress, including an explicit zero-token read.
+    pub fn with_tokens(mut self, choice: ReadBudget) -> Self {
+        self.tokens = match choice {
+            ReadBudget::Default => self.tokens,
+            ReadBudget::Tokens(tokens) => {
+                std::num::NonZeroU64::new(tokens).unwrap_or(std::num::NonZeroU64::MIN)
+            }
+            // The fixed byte bound always ends a page before this cap binds.
+            ReadBudget::Unlimited => std::num::NonZeroU64::MAX,
+        };
+        self
+    }
 }
 impl Default for PageBudget {
     fn default() -> Self {

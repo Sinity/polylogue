@@ -954,7 +954,7 @@ pub(super) fn context_stream(
         options,
         delivery: ReadDelivery::Stream,
         format: "jsonl".into(),
-        budget: None,
+        budget: polylogue_model::read::ReadBudget::Default,
         with_blobs: false,
         cursor: None,
     };
@@ -1166,7 +1166,7 @@ fn context_stream_stops_on_scope_reset_and_cancellation_before_source_frames() {
                     },
                     delivery: ReadDelivery::Stream,
                     format: "jsonl".into(),
-                    budget: None,
+                    budget: polylogue_model::read::ReadBudget::Default,
                     with_blobs: false,
                     cursor: None,
                 },

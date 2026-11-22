@@ -157,7 +157,7 @@ fn read(d: &test_daemon::TestDaemon, target: &str, options: ReadOptions) -> Read
         options,
         delivery: polylogue_model::read::ReadDelivery::Page,
         format: "json".into(),
-        budget: Some(100_000),
+        budget: polylogue_model::read::ReadBudget::Tokens(100_000),
         with_blobs: false,
         cursor: None,
     }))
@@ -919,7 +919,7 @@ fn context_result_data_and_attachments_survive_entry_windows_and_page_boundaries
                 options,
                 delivery: polylogue_model::read::ReadDelivery::Page,
                 format: "json".into(),
-                budget: Some(64),
+                budget: polylogue_model::read::ReadBudget::Tokens(64),
                 with_blobs: false,
                 cursor: None,
             };

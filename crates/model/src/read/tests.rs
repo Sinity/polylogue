@@ -677,3 +677,29 @@ fn annotation_times_keep_the_same_read_option_string_codec() {
         assert!(options.annotation_position().is_none());
     }
 }
+
+#[test]
+fn read_token_choices_preserve_the_current_stored_page_caps() {
+    let default = PageBudget::default();
+    for (choice, tokens) in [
+        (ReadBudget::Default, 4000),
+        (ReadBudget::Tokens(0), 1),
+        (ReadBudget::Tokens(73), 73),
+        (ReadBudget::Tokens(u64::MAX), u64::MAX),
+        (ReadBudget::Unlimited, u64::MAX),
+    ] {
+        let resolved = default.with_tokens(choice);
+        assert_eq!(resolved.tokens.get(), tokens);
+        assert_eq!(resolved.bytes, default.bytes);
+        assert_eq!(resolved.items, default.items);
+        let encoded = serde_json::to_value(resolved).unwrap();
+        assert_eq!(
+            encoded,
+            serde_json::json!({"items":50,"tokens":tokens,"bytes":21000})
+        );
+        assert_eq!(
+            serde_json::from_value::<PageBudget>(encoded).unwrap(),
+            resolved
+        );
+    }
+}
