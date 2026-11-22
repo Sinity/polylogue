@@ -6,6 +6,9 @@ export class ProviderDeferred extends Error {
   }
 }
 
+// Where a provider's pacing state is kept in extension storage.
+const pacingKey = (provider) => `provider pacing ${provider}`;
+
 export class ProviderScheduler {
   constructor({ now = Date.now, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), random = Math.random, storage = null, dailyBudget = 10000 } = {}) {
     this.now = now;
@@ -38,7 +41,7 @@ export class ProviderScheduler {
   }
 
   async save(provider, state) {
-    await this.storage?.set({ [`provider pacing ${provider}`]: {
+    await this.storage?.set({ [pacingKey(provider)]: {
       until: state.until, failures: state.failures, day: state.day, count: state.count,
     } });
   }
@@ -58,7 +61,7 @@ export class ProviderScheduler {
 
   async execute(provider, state, { request, background, before, owner }) {
     if (!state.loaded) {
-      const key = `provider pacing ${provider}`;
+      const key = pacingKey(provider);
       Object.assign(state, { until: 0, failures: 0, day: null, count: 0 }, (await this.storage?.get({ [key]: null }))?.[key]);
       state.loaded = true;
     }

@@ -162,14 +162,13 @@ pub fn refresh(
     cache: &mut Cache,
     read_at: &str,
 ) -> io::Result<usize> {
-    let mut repos = BTreeSet::new();
-    for cwd in cwds {
-        let repo = repository_of(&cwd);
-        repos.extend(repo);
-    }
+    let repos: BTreeSet<PathBuf> = cwds
+        .into_iter()
+        .filter_map(|cwd| repository_of(&cwd))
+        .collect();
     let mut changed = 0;
     for repo in repos {
-        let l = read(&repo, cache);
+        let lookup = read(&repo, cache);
         let path = repo.display().to_string();
         let file = dir.join(format!(
             "{}.json",
@@ -178,15 +177,15 @@ pub fn refresh(
         if let Some(old) = fs::read(&file)
             .ok()
             .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-            && old["remote"].as_str() == l.remote.as_deref()
-            && old["root_commits"] == serde_json::json!(l.root_commits)
+            && old["remote"].as_str() == lookup.remote.as_deref()
+            && old["root_commits"] == serde_json::json!(lookup.root_commits)
         {
             continue;
         }
         let doc = serde_json::json!({
             "path": path,
-            "remote": l.remote,
-            "root_commits": l.root_commits,
+            "remote": lookup.remote,
+            "root_commits": lookup.root_commits,
             "read_at": read_at,
         });
         fs::create_dir_all(dir)?;

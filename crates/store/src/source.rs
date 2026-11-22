@@ -216,13 +216,7 @@ impl Source {
     }
 
     pub(crate) fn sql(self, sql: &str) -> String {
-        sql.replace(
-            "@source.",
-            match self {
-                Self::Standalone => "",
-                Self::Cache => "source_",
-            },
-        )
+        sql.replace("@source.", self.prefix())
     }
 }
 

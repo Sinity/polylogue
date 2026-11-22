@@ -46,7 +46,6 @@ mod parser_checkpoint;
 mod pass;
 mod plan;
 mod prefix_copies;
-mod writes;
 
 /// An origin has a reading only when its declared parser or generic row-dump
 /// reader supplies one. Unparsed provider bytes have no parser version to invent.
@@ -507,6 +506,11 @@ impl Engine {
     /// through the same writer as the loop's batches.
     pub fn writer(&self) -> polylogue_store::WriterSender {
         self.writer.sender()
+    }
+
+    /// Commits the rows the writer holds and reports how many of each it wrote.
+    fn flush_writes(&mut self) -> Result<WriteReport, EngineError> {
+        Ok(self.writer.flush_rows()?)
     }
 
     /// Starts the writer on an archive the caller has locked.

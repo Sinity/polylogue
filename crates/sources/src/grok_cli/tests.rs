@@ -99,7 +99,7 @@ fn appending_bytes_gives_the_same_messages() {
 
 #[test]
 fn the_working_directory_is_decoded_from_the_path() {
-    assert_eq!(percent_decode("%2Fhome%2Fsinity"), "/home/sinity");
+    assert_eq!(percent_decode("%2Fhome%2Fop"), "/home/op");
     assert_eq!(percent_decode("plain%zz"), "plain%zz");
 }
 

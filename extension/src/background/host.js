@@ -5,6 +5,8 @@
 // host answers `response` (status, headers), then one `response_body` frame
 // per `response_next` until `response_end`. A refusal is an `error` frame.
 
+import { decode, encode } from "./base64.js";
+
 export const HOST_NAME = "com.polylogue.browser_capture";
 const CHUNK_BYTES = 64 * 1024;
 
@@ -14,16 +16,6 @@ export class HostError extends Error {
     this.code = code;
     this.status = status;
   }
-}
-
-function encode(bytes) {
-  let text = "";
-  for (let at = 0; at < bytes.length; at += 0x8000) text += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
-  return btoa(text);
-}
-
-function decode(data) {
-  return Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
 }
 
 /** One request to the host; resolves `{status, headers, body: Blob}`. */

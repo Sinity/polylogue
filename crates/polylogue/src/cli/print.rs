@@ -54,19 +54,6 @@ pub fn rows(found: &protocol::query::Rows, style: TextStyle) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Query text for the tour, whose final display handles styling.
-pub fn query_plain(answer: &protocol::query::Answer) -> String {
-    match answer {
-        protocol::query::Answer::Rows(found) => {
-            let data = serde_json::to_value(found).expect("query rows serialize");
-            let mut out = Vec::new();
-            let _ = polylogue_render::results::plain_terminal(&data, &mut out);
-            String::from_utf8_lossy(&out).into_owned()
-        }
-        _ => query(answer, TextStyle::Plain),
-    }
-}
-
 /// A measurement in its measure's text view, with the continuation line.
 /// Measure data is JSON: each measure declares its own shape.
 fn measurement(what: &str, data: &Value, next: Option<&str>, zone: &str) -> String {

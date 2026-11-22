@@ -157,16 +157,20 @@ fn routed_kind(prefix: &str, event_type: &str) -> String {
     format!("{prefix}{snake}")
 }
 
+/// The hook event a line records: `event_type`, or `event` in lines written
+/// before the field was renamed.
+fn event_type(value: &Json) -> Option<&str> {
+    value
+        .str("event_type")
+        .filter(|s| !s.is_empty())
+        .or_else(|| value.str("event").filter(|s| !s.is_empty()))
+}
+
 impl Parser for HookSpool {
     type ParserState = ParserState;
 
     fn kind(&self, value: &Json) -> String {
-        value
-            .str("event_type")
-            .filter(|s| !s.is_empty())
-            .or_else(|| value.str("event").filter(|s| !s.is_empty()))
-            .unwrap_or("?")
-            .to_owned()
+        event_type(value).unwrap_or("?").to_owned()
     }
 
     fn parse_record(
@@ -179,11 +183,7 @@ impl Parser for HookSpool {
     ) -> RecordOutcome {
         let kind = self.kind(value);
         records.fields(&kind, value, &FIELDS);
-        let Some(event_type) = value
-            .str("event_type")
-            .filter(|s| !s.is_empty())
-            .or_else(|| value.str("event").filter(|s| !s.is_empty()))
-        else {
+        let Some(event_type) = event_type(value) else {
             return RecordOutcome::unreadable("no event_type");
         };
         // The hook command's lines from before it named the harness are

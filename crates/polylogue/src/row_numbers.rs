@@ -4,7 +4,6 @@
 //! the ID before the command runs. Output for programs (`--json`) is never remembered.
 
 use std::fs;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 /// The terminal this process talks to (`pts-3`), from the first standard
@@ -83,8 +82,14 @@ pub(crate) fn select(word: &str, shown: &ShownRows) -> Result<Vec<String>, Strin
         } else if let Some((first, last)) = part.split_once('-') {
             let first: usize = first.parse().map_err(|_| "invalid row range")?;
             let last: usize = last.parse().map_err(|_| "invalid row range")?;
-            if first == 0 || last < first || last > shown.rows.len() {
-                return Err("row range is outside the last list".into());
+            if first == 0 || last < first {
+                return Err(format!("@{first}-{last} is not a row range"));
+            }
+            if last > shown.rows.len() {
+                return Err(format!(
+                    "@{first}-{last}: the last list has {} rows",
+                    shown.rows.len()
+                ));
             }
             references.extend(
                 shown.rows[first - 1..last]
@@ -108,18 +113,9 @@ pub(crate) fn remember_listing(paths: &crate::config::Paths, root: &Path, shown:
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    let temporary = path.with_extension("tmp");
-    let result = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&temporary)
-        .and_then(|mut file| {
-            serde_json::to_writer(&mut file, shown).map_err(std::io::Error::other)
-        });
-    if result.is_ok() {
-        let _ = fs::rename(temporary, path);
+    // Remembering rows is a convenience: a failure leaves the earlier list.
+    if let Ok(bytes) = serde_json::to_vec(shown) {
+        let _ = polylogue_model::atomic_write::write_atomic(&path, &bytes, None);
     }
 }
 pub(crate) fn last_listing(paths: &crate::config::Paths, root: &Path) -> Result<ShownRows, String> {

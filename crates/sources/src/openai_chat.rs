@@ -36,7 +36,7 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
 }
 
 pub fn open(path: &Path) -> Option<Parse> {
-    let name = path.file_name()?.to_str()?.rsplit("!/").next()?;
+    let name = path.file_name()?.to_str()?;
     let stem = name.strip_suffix(".json").unwrap_or(name).to_owned();
     Some(Parse::Export(Box::new(OpenAiChat {
         file: stem,

@@ -60,7 +60,7 @@
     "5b981ebacae6be17a31dc47b1500a135a1b4697a53f03aa6b06c9ff9fe027f90"
   ],
   "gemini-app": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::export::VERSION=2,crate::gemini_app::VERSION=3",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::export::VERSION=2,crate::gemini_app::VERSION=4",
     "97b60bc1b86d341a821a4131b4c7704655ccc404e465cbca4ffd9d4b150c68bb"
   ],
   "gemini-cli": [

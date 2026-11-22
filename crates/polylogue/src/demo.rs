@@ -287,7 +287,12 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
 fn line_text(answer: &crate::protocol::line::LineAnswer) -> Result<String, String> {
     use crate::protocol::line::{LineAnswer, StepAnswer, StepOutcome};
     let reports = match answer {
-        LineAnswer::Listing(listing) => return Ok(crate::cli::print::query_plain(listing)),
+        LineAnswer::Listing(listing) => {
+            return Ok(crate::cli::print::query(
+                listing,
+                command_surface::TextStyle::Plain,
+            ));
+        }
         LineAnswer::Steps(reports) => &reports.steps,
         LineAnswer::Explained(_) => return Err("the tour expected completed steps".into()),
     };

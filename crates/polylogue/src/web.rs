@@ -537,7 +537,7 @@ async fn auth_exchange(
         )
             .into_response();
     }
-    let form: HashMap<String, String> = serde_urlencoded_pairs(&body);
+    let form: HashMap<String, String> = form_fields(&body);
     let token = form.get("token").map_or("", String::as_str);
     if !access::same_secret(token, &web.token) {
         return (
@@ -558,7 +558,8 @@ async fn auth_exchange(
     r
 }
 
-fn serde_urlencoded_pairs(body: &str) -> HashMap<String, String> {
+/// The fields of an `application/x-www-form-urlencoded` body.
+fn form_fields(body: &str) -> HashMap<String, String> {
     body.split('&')
         .filter_map(|kv| {
             let (k, v) = kv.split_once('=')?;
@@ -575,7 +576,10 @@ fn percent_decode(s: &str) -> String {
         match bytes[i] {
             b'+' => out.push(b' '),
             b'%' if i + 2 < bytes.len() => {
-                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
+                // `from_str_radix` alone would accept a sign.
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3])
+                    .ok()
+                    .filter(|hex| hex.bytes().all(|b| b.is_ascii_hexdigit()));
                 match hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
                     Some(b) => {
                         out.push(b);

@@ -88,6 +88,7 @@ pub fn hex(bytes: &[u8]) -> String {
     text
 }
 
+/// Start a thread whose name appears in panics, debuggers and `top -H`.
 pub fn spawn_named<F, T>(
     name: impl Into<String>,
     f: F,

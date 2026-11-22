@@ -306,6 +306,72 @@ fn response_pages_exclude_only_sessions_with_unknown_boundaries() {
     assert_eq!(result["rows"][0]["id"], "codex:known-response");
 }
 
+#[test]
+fn paging_across_assertions_and_events_shows_each_row_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(temp.path()).unwrap();
+    let session = f
+        .session(SessionFacts {
+            id: "codex:noted",
+            kind: "main",
+            ..Default::default()
+        })
+        .unwrap();
+    let notes: Vec<String> = (0..3)
+        .map(|_| {
+            f.note("note", None, Some("text"), "session:codex:noted")
+                .unwrap()
+        })
+        .collect();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let clock = fixture_clock("UTC", "00:00:00");
+    let selection = all(None, false, false);
+    let whole = page(&reader, &clock, &selection, None, 50).unwrap();
+    let noted_at = |id: &str| {
+        whole["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == id)
+            .unwrap()["at"]
+            .as_i64()
+            .unwrap()
+    };
+    // An event in the middle assertion's millisecond follows it: equal times
+    // order by kind, and `assertion` sorts before `event`.
+    drop(reader);
+    drop(pool);
+    f.event(session, "synthetic", Some(noted_at(&notes[1])))
+        .unwrap();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let mut seen = Vec::new();
+    let mut after: Option<Position> = None;
+    loop {
+        let found = page(&reader, &clock, &selection, after.as_ref(), 1).unwrap();
+        for row in found["rows"].as_array().unwrap() {
+            seen.push((
+                row["kind"].as_str().unwrap().to_owned(),
+                row["id"].as_str().unwrap().to_owned(),
+            ));
+        }
+        assert!(seen.len() <= 4, "a row repeated: {seen:?}");
+        if found["after"].is_null() {
+            break;
+        }
+        after = Some(serde_json::from_value(found["after"].clone()).unwrap());
+    }
+    let kinds: Vec<&str> = seen.iter().map(|(kind, _)| kind.as_str()).collect();
+    assert_eq!(kinds, ["assertion", "assertion", "event", "assertion"]);
+    let shown: Vec<&str> = seen
+        .iter()
+        .filter(|(kind, _)| kind == "assertion")
+        .map(|(_, id)| id.as_str())
+        .collect();
+    assert_eq!(shown, notes);
+}
+
 fn fixture_clock(zone: &str, start: &str) -> Clock {
     Clock::new(
         "2026-10-07T10:00:00Z".parse().unwrap(),

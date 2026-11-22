@@ -30,8 +30,11 @@ pub fn fold(text: &str) -> String {
             'ŧ' => out.push('t'),
             'Ŧ' => out.push('T'),
             'ƀ' => out.push('b'),
+            'Ƀ' => out.push('B'),
             'ɨ' => out.push('i'),
+            'Ɨ' => out.push('I'),
             'ʉ' => out.push('u'),
+            'Ʉ' => out.push('U'),
             _ => out.push(c),
         }
     }
@@ -84,7 +87,9 @@ pub fn fts_phrase(term: &str) -> Option<String> {
     if words.is_empty() {
         return None;
     }
-    let mut phrase = format!("\"{}\"", words.join(" ").replace('"', "\"\""));
+    // Tokens hold only letters, digits and combining marks, so the phrase
+    // needs no quote escaping.
+    let mut phrase = format!("\"{}\"", words.join(" "));
     if prefix {
         phrase.push('*');
     }

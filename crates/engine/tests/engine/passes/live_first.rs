@@ -9,7 +9,6 @@ use super::*;
 /// it is stored after at most the 16 files already in the pool and one
 /// commit group (about 100 of these files under the 1 MiB in-flight limit),
 /// well before the 200th backlog session.
-#[cfg(feature = "faults")]
 #[test]
 fn a_spool_file_arriving_mid_pass_is_stored_before_the_backlog_ends() {
     use polylogue_store::fault::{self, Action};

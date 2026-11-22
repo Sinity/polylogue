@@ -155,9 +155,6 @@ impl fmt::Debug for Timestamp {
     }
 }
 
-#[cfg(test)]
-mod tests;
-
 /// RFC 3339 in `zone` with that zone's offset at `t` (`2026-11-09T09:12:00+01:00`);
 /// a zero offset is written `Z`. The instant is exact either way.
 pub fn rfc3339_in(t: Timestamp, zone: &jiff::tz::TimeZone) -> String {
@@ -176,3 +173,6 @@ pub fn local_minute(t: Timestamp, zone: &jiff::tz::TimeZone) -> String {
         .strftime("%Y-%m-%d %H:%M %:z")
         .to_string()
 }
+
+#[cfg(test)]
+mod tests;

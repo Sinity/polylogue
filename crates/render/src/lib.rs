@@ -23,10 +23,9 @@
 //! service seals that position with the selection, options and source revision,
 //! and constructs every `ReadyCall` through the command table.
 //!
-//! An oversized text item becomes explicit `text` fragments. An oversized
-//! structured item becomes `read_item_json` fragments. Concatenating their
-//! `text` values reconstructs the complete original text or serialized
-//! `ReadItem`; `from`, `until` and `total` count Unicode characters. Fragment
+//! An oversized item of any kind becomes `fragment` items. Concatenating
+//! their `text` values reconstructs the item's complete JSON encoding;
+//! `position.character`, `until` and `total` count Unicode characters. Fragment
 //! positions never change a stored block ordinal. The byte budget includes
 //! the page document. `finish_with` regenerates the footer from the final
 //! unread position, removing trailing items or shortening the first fragment

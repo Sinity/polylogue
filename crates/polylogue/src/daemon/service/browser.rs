@@ -156,7 +156,7 @@ fn store_files(d: &Daemon, files: &[actions::ChatFile]) -> Result<PreparedFiles,
     for file in files {
         let result = d
             .archive
-            .prepare_decoded(&file.bytes)
+            .prepare_blob(&file.bytes)
             .and_then(|(new_blob, prepared)| writes.store_blob(new_blob, prepared));
         match result {
             Ok(blob) => attachments.push(actions::attachment(file, blob)),

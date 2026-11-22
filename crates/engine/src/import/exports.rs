@@ -370,7 +370,7 @@ impl Engine {
         pass: &mut Pass,
     ) -> Result<Option<ExportCursor>, EngineError> {
         for blob in std::mem::take(&mut item.output.blobs) {
-            let (new_blob, file) = self.archive.prepare_decoded(&blob.bytes)?;
+            let (new_blob, file) = self.archive.prepare_blob(&blob.bytes)?;
             if new_blob.hash != blob.hash || new_blob.size != blob.size {
                 return Err(std::io::Error::other(
                     "decoded export bytes differ from their declared hash or length",

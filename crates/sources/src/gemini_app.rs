@@ -10,7 +10,7 @@
 //! own. Responses are HTML in the export and are kept as text.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 use crate::RecordOutcome;
 use crate::document::{Sink, session_id};
@@ -250,12 +250,17 @@ fn entry(cell: &str) -> Option<Entry> {
     let date_at = segments
         .iter()
         .position(|s| activity_time_text(&text_of(s)));
-    let (notes_end, at, at_text) = match date_at {
+    // Without a recognisable date slot the second segment is kept as a note
+    // and everything after it as the response, so no text is dropped.
+    let (notes_end, response_start, at, at_text) = match date_at {
         Some(i) => {
             let t = text_of(segments[i]);
-            (i, parse_time(&t), t)
+            (i, i + 1, parse_time(&t), t)
         }
-        None => (segments.len().min(2), None, String::new()),
+        None => {
+            let end = segments.len().min(2);
+            (end, end, None, String::new())
+        }
     };
     let mut notes = Vec::new();
     let mut files = Vec::new();
@@ -271,7 +276,7 @@ fn entry(cell: &str) -> Option<Entry> {
         }
     }
     let response = segments
-        .get(notes_end + 1..)
+        .get(response_start..)
         .map(|r| html_text(&r.join("<br>")))
         .unwrap_or_default();
     let conversation = cell.find(APP).map(|i| {

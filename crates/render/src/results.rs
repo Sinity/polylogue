@@ -17,11 +17,6 @@ pub fn terminal_with_color(data: &Value, color: bool, out: &mut dyn Write) -> io
     render_with_links(data, Format::Terminal, out, None, color)
 }
 
-/// Plain text for a transcript whose displaying client chooses its styling.
-pub fn plain_terminal(data: &Value, out: &mut dyn Write) -> io::Result<()> {
-    render_with_links(data, Format::Terminal, out, None, false)
-}
-
 type LinkTarget<'a> = dyn Fn(&Value, &Value) -> Option<String> + 'a;
 
 /// HTML links are chosen per column descriptor and cell, then escaped here.
@@ -132,10 +127,6 @@ fn marked(snippet: &Value, open: &str, close: &str, escape: fn(&str) -> String) 
     Some(one_line(&out))
 }
 
-fn plain(s: &str) -> String {
-    s.to_owned()
-}
-
 fn terminal(
     columns: &[String],
     cells: &[Vec<String>],
@@ -162,10 +153,7 @@ fn terminal(
     let line = |vals: &[String]| -> String {
         vals.iter()
             .zip(&widths)
-            .map(|(v, w)| {
-                let v: String = v.chars().take(*w).collect();
-                format!("{v:<w$}")
-            })
+            .map(|(v, w)| format!("{v:<w$}"))
             .collect::<Vec<_>>()
             .join("  ")
             .trim_end()
@@ -234,7 +222,7 @@ fn markdown(
         let mut vals: Vec<String> = r.iter().map(|v| esc(v)).collect();
         if with_snippet {
             vals.push(esc(
-                &marked(&row["snippet"], "«", "»", plain).unwrap_or_default()
+                &marked(&row["snippet"], "«", "»", str::to_owned).unwrap_or_default()
             ));
         }
         writeln!(out, "| {} |", vals.join(" | "))?;

@@ -749,7 +749,7 @@ fn run_chain(
             let mut decoded = Vec::new();
             let mut files = Vec::new();
             for blob in std::mem::take(&mut item.output.blobs) {
-                let (new, file) = archive.prepare_decoded(&blob.bytes)?;
+                let (new, file) = archive.prepare_blob(&blob.bytes)?;
                 if new.hash != blob.hash || new.size != blob.size {
                     return Err(std::io::Error::other(
                         "decoded bytes differ from their declared hash or length",
@@ -1154,7 +1154,7 @@ pub(crate) fn run(
                             continue;
                         }
                         for blob in std::mem::take(&mut step.output.blobs) {
-                            match time(Stage::Store, || archive.prepare_decoded(&blob.bytes)) {
+                            match time(Stage::Store, || archive.prepare_blob(&blob.bytes)) {
                                 Ok((p, file)) => {
                                     if p.hash!=blob.hash || p.size!=blob.size {
                                         let error = "decoded bytes differ from their declared hash or length";

@@ -1,9 +1,8 @@
 //! First-build search is created in the private index before installation.
 
-use super::{groups, insert_entry};
+use super::{folded_text, groups, insert_entry};
 use crate::{Result, StoreError};
 use rusqlite::{Connection, Statement, TransactionBehavior};
-use std::borrow::Cow;
 
 const BATCH_BYTES: usize = 4 << 20;
 const BATCH_TEXTS: usize = 1024;
@@ -99,11 +98,7 @@ pub(crate) fn build_search_indexes(conn: &Connection) -> Result<()> {
         )?;
         let mut written = false;
         visit_indexed_texts(&tx, BATCH_BYTES, |id, indexed, text| {
-            let folded = if text.is_ascii() {
-                Cow::Borrowed(text.as_str())
-            } else {
-                Cow::Owned(polylogue_model::text::fold(&text))
-            };
+            let (folded, _) = folded_text(text);
             for bit in [1, 2] {
                 if indexed & bit != 0 {
                     insert_entry(&tx, id, bit, &folded)?;

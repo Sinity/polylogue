@@ -14,6 +14,7 @@ mod compaction;
 mod export_round_trip;
 mod hook_events;
 mod large_sessions;
+#[cfg(feature = "faults")]
 mod live_first;
 mod one_worker;
 mod reading_version;

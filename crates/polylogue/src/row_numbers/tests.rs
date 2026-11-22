@@ -36,6 +36,16 @@ fn row_number_ranges_and_hits_resolve() {
         select("@2.1", &shown).unwrap_err(),
         "row @2 has no hit 1; use @2"
     );
-    assert!(select("@0", &shown).is_err());
-    assert!(select("@3-2", &shown).is_err());
+    assert_eq!(
+        select("@0", &shown).unwrap_err(),
+        "@0: the last list has 3 rows"
+    );
+    assert_eq!(
+        select("@3-2", &shown).unwrap_err(),
+        "@3-2 is not a row range"
+    );
+    assert_eq!(
+        select("@2-4", &shown).unwrap_err(),
+        "@2-4: the last list has 3 rows"
+    );
 }

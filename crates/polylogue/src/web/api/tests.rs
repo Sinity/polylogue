@@ -172,7 +172,7 @@ fn generated_http_ready_call_executes_without_translating_its_arguments() {
     };
     let ready = daemon.daemon.ready_call(&call).unwrap();
     let url =
-        polylogue_render::web::http_url(crate::commands::declarations(), &ready.request).unwrap();
+        polylogue_render::ready::http_url(crate::commands::declarations(), &ready.request).unwrap();
     let pairs = url.split_once('?').unwrap().1.to_owned();
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -610,8 +610,9 @@ fn ready_http_calls_preserve_absent_null_and_finite_deadlines() {
         };
         let ready = daemon.daemon.ready_call(&request).unwrap();
         assert_eq!(ready.request, request);
-        let url = polylogue_render::web::http_url(crate::commands::declarations(), &ready.request)
-            .unwrap();
+        let url =
+            polylogue_render::ready::http_url(crate::commands::declarations(), &ready.request)
+                .unwrap();
         let uri: axum::http::Uri = url.parse().unwrap();
         let Query(pairs) = Query::<Vec<(String, String)>>::try_from_uri(&uri).unwrap();
         let has_deadline = pairs.iter().any(|(key, _)| key == "deadline");

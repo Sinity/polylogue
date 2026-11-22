@@ -801,7 +801,7 @@ impl WriterSender {
     }
 
     /// Stores bytes no input holds as one blob; `file` is the private file
-    /// [`crate::Archive::prepare_decoded`] wrote for a blob too large to keep inline.
+    /// [`crate::Archive::prepare_blob`] wrote for a blob too large to keep inline.
     pub fn store_blob(
         &self,
         new_blob: crate::NewBlob,
