@@ -2,6 +2,7 @@
 //! spool capture writes: which session (and subagent) a calling tool call
 //! belongs to.
 use command_surface::{AgentSession, CallerEvidence, Harness, HookIdentity};
+use polylogue_model::LockExt as _;
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
@@ -53,9 +54,13 @@ impl OpenCalls {
     }
     pub fn identity(&self, caller: &CallerEvidence) -> Option<HookIdentity> {
         let pid = caller.harness_pid?;
-        let file = File::open(self.directory.join(format!("{pid}.ndjson"))).ok()?;
+        let mut cursors = self.cursors.locked();
+        let Ok(file) = File::open(self.directory.join(format!("{pid}.ndjson"))) else {
+            // The harness's spool file is gone: its cursor is of no use.
+            cursors.remove(&pid);
+            return None;
+        };
         let metadata = file.metadata().ok()?;
-        let mut cursors = self.cursors.lock().ok()?;
         let cursor = cursors.entry(pid).or_default();
         if cursor.device != metadata.dev()
             || cursor.inode != metadata.ino()

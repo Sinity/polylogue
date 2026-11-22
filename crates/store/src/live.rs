@@ -1,5 +1,5 @@
 //! Live facts and their history. Each stored live event (an
-//! event of route `hook`, `process` or `registry`) is applied to its
+//! event of route `hook`, `process`, `registry` or `git`) is applied to its
 //! session's `live_facts` in the transaction that stores it
 //! ([`polylogue_model::live::apply_live_event`]); the intervals it closes go to
 //! `live_interval` and process lines to `process`. The live state itself

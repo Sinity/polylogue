@@ -16,9 +16,7 @@ impl Environment {
     pub(super) fn observe(host: &str, inputs: &super::Inputs) -> Self {
         Self {
             host: host.to_owned(),
-            boot: std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
-                .ok()
-                .map(|s| s.trim_end_matches('\n').to_owned()),
+            boot: crate::live_events::boot_id(),
             kitty_pid: inputs.kitty_pid,
             kitty_window: inputs.kitty_window.clone(),
         }
