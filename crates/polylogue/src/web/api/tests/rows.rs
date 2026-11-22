@@ -96,13 +96,20 @@ fn http_failed_step_sets_status_and_keeps_prior_results() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let (status, answer) = response(&daemon, axum::http::Method::POST, "/api/v1/rows", json!({
             "selection":"session:claude-code:s1",
-            "steps":[{"verb":"note","text":"synthetic completed note"},{"verb":"read","budget":0}]
+            "steps":[{"verb":"note","text":"synthetic completed note"},{"verb":"read","show":["not-a-show-kind"]}]
         })).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{answer:?}");
         let steps = &answer.value().unwrap()["reply"]["steps"];
         assert_eq!(steps[0]["outcome"]["status"], "done");
         assert_eq!(steps[0]["outcome"]["reply"]["kind"], "wrote_each");
         assert_eq!(steps[1]["outcome"]["status"], "failed");
+        assert_eq!(steps[0]["outcome"]["undo"].as_array().unwrap().len(), 1);
+        assert_eq!(steps[1]["outcome"]["error"]["kind"], "bad_request");
+        assert!(steps[1]["outcome"]["error"]["message"].as_str().unwrap().contains("not-a-show-kind"));
+        let (status, stored) = response(&daemon, axum::http::Method::GET,
+            "/api/v1/rows?selection=session%3Aclaude-code%3As1&steps=read", Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{stored:?}");
+        assert!(stored.value().unwrap().to_string().contains("synthetic completed note"), "the prefix write remains stored: {stored:?}");
     });
 }
 
@@ -210,9 +217,9 @@ fn http_html_renders_listing_brief_and_partial_steps() {
                 vec![r"Synthetic brief \u003cscript\u003eλ🙂\u003c/script\u003e"],
             ),
             (
-                json!({"selection":"session:claude-code:s1","steps":[{"verb":"note","text":"Synthetic completed write"},{"verb":"read","budget":0}]}),
+                json!({"selection":"session:claude-code:s1","steps":[{"verb":"note","text":"Synthetic completed write"},{"verb":"read","show":["not-a-show-kind"]}]}),
                 StatusCode::BAD_REQUEST,
-                vec!["wrote 1 annotation", "undo:", "read failed:"],
+                vec!["wrote 1 annotation", "undo:", "read failed:", "not-a-show-kind"],
             ),
         ] {
             let response = super::super::super::router(web(&daemon))
