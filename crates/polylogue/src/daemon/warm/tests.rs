@@ -181,6 +181,41 @@ fn vector_loading_leaves_the_cache_unlocked_and_clear_prevents_publication() {
 }
 
 #[test]
+fn cancelled_reader_leaves_while_vector_worker_is_still_loading() {
+    use polylogue_store::{cancellation::Cancellation, read::limit::ReadLimit};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = polylogue_store::Archive::open_or_create(dir.path()).unwrap();
+    let clock = polylogue_model::WallClock::new(jiff::Timestamp::now);
+    let warm = Warm::new(&archive, clock);
+    let reads = polylogue_store::ReadPool::open(&archive).unwrap();
+    let cancel = Cancellation::default();
+    let limit = ReadLimit::without_deadline(cancel.clone());
+    let (started, entered) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    warm.vectors.cache.lock().unwrap().gate = Some((started, released));
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let reading = scope.spawn(|| {
+            let reader = reads.reader().unwrap();
+            let result = limit.scope(|| warm.vectors_of(&reader, "synthetic/empty"));
+            done.send(result.map(|_| ())).unwrap();
+        });
+        let working = entered.recv_timeout(Duration::from_secs(10));
+        let cancelling = scope.spawn(|| cancel.cancel());
+        let result = finished.recv_timeout(Duration::from_secs(10));
+        let _ = release.send(());
+        cancelling.join().unwrap();
+        reading.join().unwrap();
+        working.expect("vector worker never reached the gate");
+        let error = result
+            .expect("cancelled read waited for the worker to finish")
+            .expect_err("cancelled read unexpectedly succeeded");
+        assert!(error.contains("cancel"), "{error}");
+    });
+}
+
+#[test]
 fn older_vector_snapshot_does_not_replace_newer_cached_values() {
     // The overlapping snapshots use a pool independent of daemon workers.
     let dir = tempfile::tempdir().unwrap();
