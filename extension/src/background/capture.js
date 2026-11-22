@@ -7,6 +7,7 @@
 // whose bytes the archive already holds is named by its hash and not
 // downloaded again.
 
+import { encode } from "./base64.js";
 import { ProviderScheduler } from "./provider.js";
 import { askPage, PageError } from "./tabs.js";
 
@@ -24,17 +25,11 @@ export class CaptureError extends Error {
   }
 }
 
-function base64(bytes) {
-  let text = "";
-  for (let at = 0; at < bytes.length; at += 0x8000) text += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
-  return btoa(text);
-}
-
 /** A Blob's bytes as base64 parts, so no file becomes one huge string. */
 async function base64Parts(blob) {
   const parts = [];
   for (let at = 0; at < blob.size; at += BASE64_PART_BYTES) {
-    parts.push(base64(new Uint8Array(await blob.slice(at, at + BASE64_PART_BYTES).arrayBuffer())));
+    parts.push(encode(new Uint8Array(await blob.slice(at, at + BASE64_PART_BYTES).arrayBuffer())));
   }
   return parts;
 }

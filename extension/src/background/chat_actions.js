@@ -4,17 +4,12 @@
 // Replies come back through regular capture.
 
 import { attachmentInPage, cancelChatActionInPage, chatActionInPage, failureOutcome } from "../actions/chatgpt.js";
+import { encode } from "./base64.js";
 import { ProviderScheduler } from "./provider.js";
 import { loaded } from "./tabs.js";
 
 const CHUNK_BYTES = 256 * 1024;
 const RENEW_MS = 60_000;
-
-function base64(bytes) {
-  let text = "";
-  for (let at = 0; at < bytes.length; at += 0x8000) text += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
-  return btoa(text);
-}
 
 /** Where an action's turn is written. */
 export function actionUrl(action) {
@@ -64,7 +59,7 @@ export class ChatActions {
       const bytes = new Uint8Array(await (await this.host.chatAttachment(action.id, item.id)).arrayBuffer());
       if (bytes.length !== item.size) throw new Error("protocol_attachment_size_mismatch");
       for (let at = 0; at < bytes.length; at += CHUNK_BYTES) {
-        await this.inPage(tabId, attachmentInPage, [action.id, runId, "append", item, at, base64(bytes.subarray(at, at + CHUNK_BYTES))]);
+        await this.inPage(tabId, attachmentInPage, [action.id, runId, "append", item, at, encode(bytes.subarray(at, at + CHUNK_BYTES))]);
       }
       await this.inPage(tabId, attachmentInPage, [action.id, runId, "finish", item]);
     }

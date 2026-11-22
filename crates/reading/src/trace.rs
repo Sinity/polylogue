@@ -60,6 +60,29 @@ fn prepare(
     Ok((reading, record, digest))
 }
 
+/// The reading's header renamed for the traced record, once the message
+/// holding that record is confirmed to be in the caller's selection.
+fn trace_header(
+    reader: &Reader<'_>,
+    request: &ReadRequest,
+    compiled: &Compiled<'_>,
+    mut header: ReadHeader,
+    near: Option<&NearFn<'_>>,
+) -> Result<ReadHeader, Error> {
+    let target = compiled
+        .selection
+        .direct_target()
+        .ok_or_else(|| Error::internal("trace has no concrete message selection"))?;
+    if !reader.selection_contains(compiled.selection, &target.reference(), near)? {
+        return Err(Error::not_found(&request.target));
+    }
+    header.target = request.target.clone();
+    header.kind = HeaderKind::Record {
+        record_type: "trace".into(),
+    };
+    Ok(header)
+}
+
 pub(super) fn page(
     reader: &Reader<'_>,
     d: &impl ReadServices,
@@ -73,18 +96,8 @@ pub(super) fn page(
         d,
         operation,
         &reading,
-        |compiled, snapshot, mut header, near| {
-            let target = compiled
-                .selection
-                .direct_target()
-                .ok_or_else(|| Error::internal("trace has no concrete message selection"))?;
-            if !reader.selection_contains(compiled.selection, &target.reference(), near)? {
-                return Err(Error::not_found(&request.target));
-            }
-            header.target = request.target.clone();
-            header.kind = HeaderKind::Record {
-                record_type: "trace".into(),
-            };
+        |compiled, snapshot, header, near| {
+            let header = trace_header(reader, request, compiled, header, near)?;
             let page = rows_page(
                 reader,
                 d,
@@ -123,18 +136,8 @@ pub(super) fn stream(
         d,
         operation,
         &reading,
-        |compiled, snapshot, mut header, near| {
-            let target = compiled
-                .selection
-                .direct_target()
-                .ok_or_else(|| Error::internal("trace has no concrete message selection"))?;
-            if !reader.selection_contains(compiled.selection, &target.reference(), near)? {
-                return Err(Error::not_found(&request.target));
-            }
-            header.target = request.target.clone();
-            header.kind = HeaderKind::Record {
-                record_type: "trace".into(),
-            };
+        |compiled, snapshot, header, near| {
+            let header = trace_header(reader, request, compiled, header, near)?;
             rows_stream(
                 reader,
                 d,

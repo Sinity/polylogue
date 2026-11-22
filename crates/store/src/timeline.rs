@@ -207,7 +207,8 @@ fn page_sources(reader: &Reader<'_>, selection: &Selection<'_>) -> Result<Vec<So
         .into_iter()
         .enumerate()
         .map(|(index, sql)| Source {
-            kind: ["message", "event", "note"][index],
+            // Each label is the `kind` its source's rows carry: the cursor compares them.
+            kind: ["message", "event", "assertion"][index],
             sql,
             params: params.clone(),
         })

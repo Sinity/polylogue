@@ -2,13 +2,16 @@
 
 import json
 import os
-import subprocess
 import socket
+import subprocess
 from pathlib import Path
 
 from .models import Answer, _copy
 
 __all__ = ["Client", "Refused"]
+
+# The exit status the CLI gives each outcome that is not a refusal.
+_EXIT_STATUS = {"ok": 0, "empty": 1, "degraded": 5}
 
 
 def _failure(answer):
@@ -61,16 +64,19 @@ class Client:
         try:
             answer = json.loads(result.stdout)
         except (ValueError, UnicodeDecodeError) as error:
-            raise RuntimeError(f"Polylogue returned no JSON answer (exit {result.returncode})") from error
+            said = result.stderr.decode("utf-8", "replace").strip()
+            raise RuntimeError(
+                f"Polylogue returned no JSON answer (exit {result.returncode})"
+                + (f": {said}" if said else "")
+            ) from error
         outcome = answer.get("outcome") if isinstance(answer, dict) else None
         if _failure(answer) is not None:
             if result.returncode == 0:
                 raise RuntimeError("Polylogue returned an error with a successful exit status")
             raise Refused(answer, result.returncode)
-        if outcome not in {"ok", "empty", "degraded"}:
+        if outcome not in _EXIT_STATUS:
             raise RuntimeError("Polylogue returned an invalid shared answer")
-        expected = {"ok": 0, "empty": 1, "degraded": 5}[outcome]
-        if result.returncode != expected:
+        if result.returncode != _EXIT_STATUS[outcome]:
             raise RuntimeError(f"Polylogue's {outcome} answer disagrees with exit {result.returncode}")
         return Answer(answer)
 
@@ -106,8 +112,9 @@ class Client:
                     raise Refused(failed, code)
                 if final is None:
                     raise RuntimeError("Polylogue's line stopped before its final answer")
-                expected = {"ok":0, "empty":1, "degraded":5}[final["outcome"]]
-                if code != expected:
+                if final.get("outcome") not in _EXIT_STATUS:
+                    raise RuntimeError("Polylogue returned an invalid shared answer")
+                if code != _EXIT_STATUS[final["outcome"]]:
                     raise RuntimeError(f"Polylogue's line answer disagrees with exit {code}")
             finally:
                 if process.poll() is None:
@@ -159,7 +166,7 @@ class Client:
         answer = json.loads(line)
         if _failure(answer) is not None:
             raise Refused(answer, None)
-        if answer.get("outcome") not in {"ok", "empty", "degraded"}:
+        if answer.get("outcome") not in _EXIT_STATUS:
             raise RuntimeError("Polylogue returned an invalid shared answer")
         return Answer(answer)
 

@@ -125,6 +125,15 @@ fn unknown_and_equal_times_keep_stable_order_and_conversation_links() {
         ["unknown", "known first", "known second"]
     );
     assert!(prompts[0].message.at.is_none());
+    // The entry without a readable date keeps its response as the others do.
+    let replies = step
+        .output
+        .messages
+        .iter()
+        .filter(|r| r.message.role == Role::Assistant)
+        .map(|r| r.message.text())
+        .collect::<Vec<_>>();
+    assert_eq!(replies, ["reply", "reply", "reply"]);
     assert_eq!(step.counts.records, 4);
     assert_eq!(step.counts.unreadable.values().sum::<u64>(), 1);
 }

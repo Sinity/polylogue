@@ -722,7 +722,7 @@ fn generated_ready_mcp_call_executes_its_typed_envelope() {
     assert_eq!(error.kind, command_surface::FailureKind::BadRequest);
     assert_eq!(error.message, "operation does not continue a page");
     assert!(
-        polylogue_render::web::http_url(crate::commands::declarations(), &sql.request)
+        polylogue_render::ready::http_url(crate::commands::declarations(), &sql.request)
             .unwrap()
             .starts_with("/api/v1/dev/sql?")
     );

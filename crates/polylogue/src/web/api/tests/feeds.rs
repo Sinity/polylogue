@@ -69,7 +69,7 @@ fn http_feeds_run_generated_calls_and_keep_their_position() {
                 format: Default::default(),
             };
             let ready = daemon.daemon.ready_call(&request).unwrap();
-            let url = polylogue_render::web::http_url(declarations, &ready.request).unwrap();
+            let url = polylogue_render::ready::http_url(declarations, &ready.request).unwrap();
             let Query(pairs) =
                 Query::<Vec<(String, String)>>::try_from_uri(&url.parse().unwrap()).unwrap();
             assert_eq!(
@@ -110,7 +110,7 @@ fn http_feeds_run_generated_calls_and_keep_their_position() {
             json!({"after":position}),
             "HTTP feed continuation".into(),
         );
-        let url = polylogue_render::web::http_url(declarations, &request).unwrap();
+        let url = polylogue_render::ready::http_url(declarations, &request).unwrap();
         let (status, bytes) = get(&daemon, &url, &[]).await;
         assert_eq!(status, StatusCode::OK);
         let received = lines(&bytes);

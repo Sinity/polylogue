@@ -63,7 +63,7 @@ fn stopping_stored_byte_replay_rolls_back_the_index() {
             } else {
                 b"decoded inline asset"
             };
-            let (blob, prepared) = w.archive.prepare_decoded(bytes).unwrap();
+            let (blob, prepared) = w.archive.prepare_blob(bytes).unwrap();
             b.blobs.push(blob.clone());
             files.extend(prepared);
             Some(blob)

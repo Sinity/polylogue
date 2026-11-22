@@ -18,7 +18,7 @@ def _freeze(value):
 def _copy(value):
     if isinstance(value, Mapping):
         return {key: _copy(item) for key, item in value.items()}
-    if isinstance(value, tuple):
+    if isinstance(value, (list, tuple)):
         return [_copy(item) for item in value]
     return value
 

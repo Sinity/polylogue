@@ -11,8 +11,8 @@
     const ms = Date.now() - Date.parse(at || "");
     if (!Number.isFinite(ms)) return "";
     if (ms < 60_000) return "just now";
-    if (ms < 3_600_000) return `${Math.round(ms / 60_000)} min ago`;
-    if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)} h ago`;
+    if (ms < 3_600_000) return `${Math.floor(ms / 60_000)} min ago`;
+    if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)} h ago`;
     return new Date(at).toLocaleString();
   }
 

@@ -11,8 +11,7 @@ mod tests;
 /// The live card of `session` at `now`.
 pub(super) fn card(reader: &Reader<'_>, session: &str, now: i64) -> Result<Card, Error> {
     let detail = reader
-        .live_detail(session, now)
-        .map_err(Error::from)?
+        .live_detail(session, now)?
         .ok_or_else(|| Error::not_found(format!("no session {session}")))?;
     Ok(render(&detail, now))
 }

@@ -6,6 +6,12 @@ fn strokes_fold_like_accents() {
     assert_eq!(key("łódź"), "lodz");
     assert_eq!(key("Straße"), "strasse");
     assert_eq!(fold("Ørsted"), "Orsted");
+    // A capital folds to the capital of the same base letter as its small
+    // form, so the tokenizer's case fold brings both to one key.
+    for (capital, small, base) in [("Ƀ", "ƀ", "b"), ("Ɨ", "ɨ", "i"), ("Ʉ", "ʉ", "u")] {
+        assert_eq!(key(capital), base);
+        assert_eq!(key(small), base);
+    }
 }
 
 #[test]

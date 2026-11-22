@@ -1,5 +1,6 @@
 //! The typed read page in the shared frame. Selection and ready calls are
 //! already resolved by the operation; this module formats no cursors.
+use crate::ready::http_url;
 use command_surface::{Failure, FailureKind, OperationDeclarations, RunnableRequest};
 use maud::{Markup, html};
 use polylogue_model::JsonExt;
@@ -76,7 +77,6 @@ fn follow(
         }
     })
 }
-pub use crate::ready::http_url;
 fn freshness(freshness: &IndexFreshness) -> Markup {
     html! { @match freshness {
         IndexFreshness::Standalone=>{span data-mode="standalone" {"Standalone archive"}},
@@ -88,9 +88,6 @@ fn freshness(freshness: &IndexFreshness) -> Markup {
         }
     } }
 }
-#[cfg(test)]
-mod tests;
-
 /// Product destinations shared by every frame, independent of archived data.
 pub fn navigation_entries() -> &'static [web_shell::Navigation<'static>] {
     const ENTRIES: [web_shell::Navigation<'static>; 3] = [
@@ -167,3 +164,6 @@ fn freshness_notice(
         (web_shell::values::view_state("behind", note, command))
     } }
 }
+
+#[cfg(test)]
+mod tests;

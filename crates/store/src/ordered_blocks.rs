@@ -1,11 +1,13 @@
-//! One stored block decoded with its source text.
+//! Stored blocks decoded with their text: one block, or a session's text,
+//! thinking and tool-result blocks in reading order.
 use crate::Result;
 use crate::encoding::{restore_text, unpack_block};
 use polylogue_model::Block;
 use rusqlite::Connection;
-
 use std::ops::ControlFlow;
 
+/// Visits the text, thinking and tool-result blocks of `session`'s messages
+/// in reading order, duplicate messages left out, until `visit` breaks.
 pub(crate) fn visit_text(
     connection: &Connection,
     session: i64,
@@ -16,11 +18,7 @@ pub(crate) fn visit_text(
     )?;
     let mut rows = statement.query([session])?;
     while let Some(row) = rows.next()? {
-        let mut block = unpack_block(&row.get::<_, Vec<u8>>(0)?)?;
-        if let Some(text) = crate::text_rows::column(row, 1)? {
-            restore_text(&mut block, text);
-        }
-        if visit(block)?.is_break() {
+        if visit(decode(row)?)?.is_break() {
             break;
         }
     }
@@ -36,6 +34,12 @@ pub(crate) fn one(connection: &Connection, block: i64) -> Result<Block> {
     )?;
     let mut rows = statement.query([block])?;
     let row = rows.next()?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+    decode(row)
+}
+
+/// A block from a row of its packed body, then its text's group body, start
+/// and length.
+fn decode(row: &rusqlite::Row<'_>) -> Result<Block> {
     let mut block = unpack_block(&row.get::<_, Vec<u8>>(0)?)?;
     if let Some(text) = crate::text_rows::column(row, 1)? {
         restore_text(&mut block, text);

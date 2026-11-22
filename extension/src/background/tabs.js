@@ -2,6 +2,8 @@
 // conversation, a list page or a file, and finding or opening a tab to
 // work in for backfill.
 
+import { decode } from "./base64.js";
+
 export const PROVIDERS = {
   chatgpt: { hosts: ["chatgpt.com", "chat.openai.com"], home: "https://chatgpt.com/" },
   "claude-ai": { hosts: ["claude.ai"], home: "https://claude.ai/recents" },
@@ -20,10 +22,6 @@ export class PageError extends Error {
     super(code);
     this.code = code;
   }
-}
-
-function decode(data) {
-  return Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
 }
 
 function once(chrome, tabId, request) {

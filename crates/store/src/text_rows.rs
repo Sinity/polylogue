@@ -27,17 +27,13 @@ pub(crate) fn intern(
     upkeep: &IndexUpkeep,
 ) -> Result<i64> {
     let hash = blake3::hash(body.as_bytes());
-    let id = conn
-        .prepare_cached("SELECT id FROM text WHERE hash=?1")?
-        .query_row([hash.as_bytes().as_slice()], |r| r.get::<_, i64>(0))
+    let stored: Option<(i64, i64)> = conn
+        .prepare_cached("SELECT id, indexed FROM text WHERE hash=?1")?
+        .query_row([hash.as_bytes().as_slice()], |r| <(_, _)>::try_from(r))
         .optional()?;
     let at_build_end = upkeep.at_build_end();
-    let (id, indexed) = match id {
-        Some(id) => (
-            id,
-            conn.prepare_cached("SELECT indexed FROM text WHERE id = ?1")?
-                .query_row([id], |r| r.get(0))?,
-        ),
+    let (id, indexed) = match stored {
+        Some(stored) => stored,
         None => {
             let own;
             let prepared = match prepared.filter(|p| p.contains(hash.as_bytes())) {
@@ -183,20 +179,20 @@ fn pending_batch(conn: &Connection, byte_limit: usize) -> Result<u64> {
 }
 
 fn write_entry(conn: &Connection, id: i64, bit: i64, text: String) -> Result<usize> {
-    let (folded, length) = folded_text(text)?;
+    let (folded, length) = folded_text(text);
     insert_entry(conn, id, bit, &folded)?;
     Ok(length)
 }
 
 /// A stored text as the search indexes hold it, and its length in bytes.
-fn folded_text(text: String) -> Result<(String, usize)> {
+fn folded_text(text: String) -> (String, usize) {
     let length = text.len();
     let folded = if text.is_ascii() {
         text
     } else {
         polylogue_model::text::fold(&text)
     };
-    Ok((folded, length))
+    (folded, length)
 }
 
 fn insert_entry(conn: &Connection, id: i64, bit: i64, folded: &str) -> Result<()> {
@@ -221,7 +217,17 @@ pub(crate) fn unindex_unused(
         (1, "b.kind NOT IN ('tool_result','tool_call')", "text_fts"),
         (2, "b.kind IN ('tool_result','tool_call')", "output_fts"),
     ] {
-        let used:bool=i.exists(&format!("SELECT EXISTS(SELECT 1 FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.text_id=?1 AND {kind}) OR (?2=1 AND EXISTS(SELECT 1 FROM document_block b JOIN document d ON d.pk=b.document_pk WHERE b.text_id=?1))"), params![id,bit])?;
+        // Document blocks are prose, so they count only for the prose index.
+        let used: bool = i.exists(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM block b JOIN message m ON m.pk=b.message_pk
+                               WHERE b.text_id=?1 AND {kind})
+                     OR (?2=1 AND EXISTS(SELECT 1 FROM document_block b
+                                         JOIN document d ON d.pk=b.document_pk
+                                         WHERE b.text_id=?1))"
+            ),
+            params![id, bit],
+        )?;
         if !used {
             if !at_build_end {
                 i.execute(&format!("DELETE FROM {table} WHERE rowid=?1"), [id])?;

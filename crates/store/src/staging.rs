@@ -105,10 +105,6 @@ impl crate::Archive {
         Ok((crate::NewBlob { hash, size, chunks }, files))
     }
 
-    pub fn prepare_decoded(&self, bytes: &[u8]) -> Result<(crate::NewBlob, Option<PreparedBytes>)> {
-        self.prepare_blob(bytes)
-    }
-
     /// Encode a one-shot stream once, then inspect it through the seekable
     /// decoder. No plaintext scratch file is created.
     pub fn prepare_stream<T>(

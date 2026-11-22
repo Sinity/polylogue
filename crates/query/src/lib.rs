@@ -1,4 +1,4 @@
-//! The query language: the existing language ported, not a second one. A
+//! The shared query language bound to Polylogue's units and fields. A
 //! read is a query, the columns it shows and the format it is printed in.
 //! Parsing and binding produce a typed Plan. Store alone lowers and executes it.
 

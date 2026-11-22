@@ -44,7 +44,13 @@ impl SharedScopeIndex {
 
     /// Optional hints never wait for a scope change or its lock.
     pub fn try_read<T>(&self, read: impl FnOnce(&ScopeIndex) -> T) -> Option<T> {
-        self.index.try_lock().ok()?.as_ref().map(read)
+        // A lock an earlier owner panicked under is read like any other.
+        let index = match self.index.try_lock() {
+            Ok(index) => index,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        index.as_ref().map(read)
     }
 
     /// Runs `read` over the index, waiting for its first full read until

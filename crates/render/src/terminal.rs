@@ -12,17 +12,22 @@ pub fn escape(text: &str) -> String {
             '\u{00}'..='\u{1f}' | '\u{7f}'..='\u{9f}' => {
                 let _ = write!(out, "\\x{:02x}", c as u32);
             }
-            '\u{061c}'
-            | '\u{200e}'
-            | '\u{200f}'
-            | '\u{202a}'..='\u{202e}'
-            | '\u{2066}'..='\u{2069}' => {
+            c if is_direction_control(c) => {
                 let _ = write!(out, "\\u{{{:04x}}}", c as u32);
             }
             _ => out.push(c),
         }
     }
     out
+}
+
+/// The Unicode marks, embeddings, overrides and isolates that change the
+/// direction text is displayed in.
+fn is_direction_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
 }
 
 /// Serialized JSON stays valid and round trips controls even when shown on a terminal.
@@ -35,8 +40,7 @@ pub fn json(value: &serde_json::Value, pretty: bool) -> String {
     .expect("JSON values serialize");
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
-        if matches!(c, '\u{7f}'..='\u{9f}' | '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
-        {
+        if matches!(c, '\u{7f}'..='\u{9f}') || is_direction_control(c) {
             let _ = write!(out, "\\u{:04x}", c as u32);
         } else {
             out.push(c);

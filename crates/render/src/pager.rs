@@ -1,5 +1,9 @@
-//! Layout paging under bounded prepared selection coordinates. Store owns
-//! metadata seeks; the service authenticates and seals the captured read scope.
+//! One page of a reading, built within a budget of bytes, tokens and items.
+//! An item that cannot fit whole is cut into a fragment of its JSON encoding
+//! at a character position, and the page records where the next one resumes.
+//! A page is built forward from a position, or backward from the items before
+//! one. The store finds the items for a position; the service seals positions
+//! into the cursors callers hold.
 use polylogue_model::{BlobHash, read::*};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PageError {
@@ -27,9 +31,9 @@ pub enum Push {
     Full,
 }
 
-/// At most one page and one encoded item are held. Every fragment uses the
-/// complete original ReadItem JSON domain, including otherwise unbounded Source.
-/// Its outer Source is the genuine bounded question supplied by the service.
+/// Holds at most one page and one encoded item. A fragment's text is a slice
+/// of the whole item's JSON encoding, its source included; the fragment's own
+/// `source` is the one the framing supplies.
 pub struct PageBuilder {
     header: ReadHeader,
     framing: ReadFraming,
@@ -54,7 +58,7 @@ impl PageBuilder {
         let bytes = crate::encode::json_bytes(&header)
             .map_err(serialization)?
             .len()
-            + 512;
+            + FOOTER_RESERVE;
         if bytes >= budget.bytes.get() {
             return Err(PageError::MetadataTooLarge);
         }
@@ -124,11 +128,7 @@ impl PageBuilder {
             character: from,
             item_hash,
         };
-        let cost = if matches!(&item.kind,ItemKind::Text{text} if text.is_empty()) {
-            0
-        } else {
-            estimate_tokens(std::str::from_utf8(&encoded).expect("JSON is UTF-8")) as u64
-        };
+        let cost = item_cost(&item, &encoded);
         if from == 0
             && self.items.len() < self.budget.items.get()
             && self.bytes + encoded.len() <= self.budget.bytes.get()
@@ -151,11 +151,7 @@ impl PageBuilder {
         if from >= total {
             return Err(PageError::InvalidPosition);
         }
-        let boundaries: Vec<_> = text
-            .char_indices()
-            .map(|(i, _)| i)
-            .chain(std::iter::once(text.len()))
-            .collect();
+        let boundaries = char_boundaries(&text);
         let make = |until: usize| ReadItem {
             source: self.framing.source(),
             kind: ItemKind::Fragment {
@@ -164,10 +160,6 @@ impl PageBuilder {
                 until: until as u64,
                 total: total as u64,
             },
-        };
-        let payload_cost = |text: &str| -> Result<u64, PageError> {
-            let bytes = crate::encode::json_bytes(&text).map_err(serialization)?;
-            Ok(estimate_tokens(std::str::from_utf8(&bytes).expect("JSON is UTF-8")) as u64)
         };
         let minimum = payload_cost(&text[boundaries[from]..boundaries[from + 1]])?;
         let token_limit = self.budget.tokens.get().max(minimum);
@@ -182,15 +174,7 @@ impl PageBuilder {
         if !fits(&make(from + 1))? {
             return Err(PageError::MetadataTooLarge);
         }
-        let (mut lo, mut hi) = (from + 1, total);
-        while lo < hi {
-            let mid = lo + (hi - lo).div_ceil(2);
-            if fits(&make(mid))? {
-                lo = mid;
-            } else {
-                hi = mid - 1;
-            }
-        }
+        let lo = largest_fitting(from + 1, total, |until| fits(&make(until)))?;
         let fragment = make(lo);
         let bytes = crate::encode::json_bytes(&fragment).map_err(serialization)?;
         self.bytes += bytes.len();
@@ -254,11 +238,7 @@ impl PageBuilder {
             character: 0,
             item_hash,
         };
-        let cost = if matches!(&item.kind,ItemKind::Text{text} if text.is_empty()) {
-            0
-        } else {
-            estimate_tokens(std::str::from_utf8(&encoded).expect("JSON is UTF-8")) as u64
-        };
+        let cost = item_cost(&item, &encoded);
         if until == total
             && self.items.len() < self.budget.items.get()
             && self.bytes + encoded.len() <= self.budget.bytes.get()
@@ -275,11 +255,7 @@ impl PageBuilder {
             return Ok(Push::Full);
         }
         let text = String::from_utf8(encoded).expect("JSON is UTF-8");
-        let boundaries: Vec<_> = text
-            .char_indices()
-            .map(|(index, _)| index)
-            .chain(std::iter::once(text.len()))
-            .collect();
+        let boundaries = char_boundaries(&text);
         let make = |keep: usize| ReadItem {
             source: self.framing.source(),
             kind: ItemKind::Fragment {
@@ -291,10 +267,6 @@ impl PageBuilder {
                 until: until as u64,
                 total: total as u64,
             },
-        };
-        let payload_cost = |text: &str| -> Result<u64, PageError> {
-            let bytes = crate::encode::json_bytes(&text).map_err(serialization)?;
-            Ok(estimate_tokens(std::str::from_utf8(&bytes).expect("JSON is UTF-8")) as u64)
         };
         let minimum = payload_cost(&text[boundaries[until - 1]..boundaries[until]])?;
         let token_limit = self.budget.tokens.get().max(minimum);
@@ -309,15 +281,7 @@ impl PageBuilder {
         if !fits(&make(1))? {
             return Err(PageError::MetadataTooLarge);
         }
-        let (mut lo, mut hi) = (1, until);
-        while lo < hi {
-            let mid = lo + (hi - lo).div_ceil(2);
-            if fits(&make(mid))? {
-                lo = mid;
-            } else {
-                hi = mid - 1;
-            }
-        }
+        let lo = largest_fitting(1, until, |keep| fits(&make(keep)))?;
         let fragment = make(lo);
         let bytes = crate::encode::json_bytes(&fragment).map_err(serialization)?;
         self.bytes += bytes.len();
@@ -387,7 +351,6 @@ impl PageBuilder {
                 } else {
                     removed
                 };
-                self.full = true;
                 continue;
             }
             let Some(item) = self.items.first_mut() else {
@@ -437,7 +400,6 @@ impl PageBuilder {
                 };
                 self.boundaries[0] = lower;
                 self.next = Some(lower);
-                self.full = true;
                 continue;
             }
             let until = position.character + keep as u64;
@@ -492,6 +454,51 @@ impl PageBuilder {
         Ok(document)
     }
 }
+/// Bytes kept free for the footer when the header is measured.
+const FOOTER_RESERVE: usize = 512;
+
+/// The token estimate of a whole item from its encoding. An empty text item
+/// costs nothing.
+fn item_cost(item: &ReadItem, encoded: &[u8]) -> u64 {
+    if matches!(&item.kind, ItemKind::Text { text } if text.is_empty()) {
+        0
+    } else {
+        estimate_tokens(std::str::from_utf8(encoded).expect("JSON is UTF-8")) as u64
+    }
+}
+
+/// The token estimate of a fragment's text as it is encoded in the page.
+fn payload_cost(text: &str) -> Result<u64, PageError> {
+    let bytes = crate::encode::json_bytes(&text).map_err(serialization)?;
+    Ok(estimate_tokens(std::str::from_utf8(&bytes).expect("JSON is UTF-8")) as u64)
+}
+
+/// The byte offset of every character of `text`, then its length.
+fn char_boundaries(text: &str) -> Vec<usize> {
+    text.char_indices()
+        .map(|(index, _)| index)
+        .chain(std::iter::once(text.len()))
+        .collect()
+}
+
+/// The largest size in `lo..=hi` that fits, where `lo` fits and a size that
+/// fits implies every smaller one does.
+fn largest_fitting(
+    mut lo: usize,
+    mut hi: usize,
+    mut fits: impl FnMut(usize) -> Result<bool, PageError>,
+) -> Result<usize, PageError> {
+    while lo < hi {
+        let mid = lo + (hi - lo).div_ceil(2);
+        if fits(mid)? {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    Ok(lo)
+}
+
 fn serialization(error: std::io::Error) -> PageError {
     PageError::Serialization(error.to_string())
 }

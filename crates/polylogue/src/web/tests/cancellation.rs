@@ -106,7 +106,7 @@ fn typed_url(
         format: Default::default(),
     };
     let ready = daemon.daemon.ready_call(&request).unwrap();
-    polylogue_render::web::http_url(crate::commands::declarations(), &ready.request).unwrap()
+    polylogue_render::ready::http_url(crate::commands::declarations(), &ready.request).unwrap()
 }
 
 #[test]

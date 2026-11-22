@@ -970,7 +970,7 @@ async fn follow_read(
     call: &polylogue_model::read::ReadyCall,
 ) -> polylogue_model::read::ReadPage {
     let path =
-        polylogue_render::web::http_url(crate::commands::declarations(), &call.request).unwrap();
+        polylogue_render::ready::http_url(crate::commands::declarations(), &call.request).unwrap();
     let (status, _, body) = send(r, authed(get(&path)).body(Body::empty()).unwrap()).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     serde_json::from_str(&body).unwrap()

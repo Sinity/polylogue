@@ -5,7 +5,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use std::thread::{JoinHandle, spawn};
+use std::thread::JoinHandle;
 
 #[derive(Default)]
 pub(crate) struct Collectors {
@@ -36,19 +36,22 @@ impl Collectors {
             let archive = paths.archive.to_path_buf();
             let spool = paths.spool.to_path_buf();
             let stop = Arc::clone(&self.stop);
-            self.tasks.insert(
-                name,
-                spawn(move || {
-                    (collector.sync)(
-                        &CollectorPaths {
-                            home: &home,
-                            archive: &archive,
-                            spool: &spool,
-                        },
-                        &stop,
-                    )
-                }),
-            );
+            let task = polylogue_model::spawn_named(format!("collect-{name}"), move || {
+                (collector.sync)(
+                    &CollectorPaths {
+                        home: &home,
+                        archive: &archive,
+                        spool: &spool,
+                    },
+                    &stop,
+                )
+            });
+            match task {
+                Ok(task) => {
+                    self.tasks.insert(name, task);
+                }
+                Err(error) => errors.push(format!("could not start its thread: {error}")),
+            }
         } else {
             errors.extend((collector.sync)(paths, &self.stop));
         }
@@ -67,9 +70,6 @@ impl Drop for Collectors {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;
 
 impl crate::Engine {
     /// The collector cursor follows archived bytes, independently of parsing.
@@ -115,3 +115,6 @@ impl crate::Engine {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;

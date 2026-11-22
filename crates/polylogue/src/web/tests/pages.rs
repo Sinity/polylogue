@@ -35,8 +35,9 @@ fn page_navigation_and_message_routes_use_the_shared_selection() {
         let (status, _, body) = send_html(&r, "/m/claude-code:u1").await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert!(body.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
-        let path = polylogue_render::web::http_url(crate::commands::declarations(), &next.request)
-            .unwrap();
+        let path =
+            polylogue_render::ready::http_url(crate::commands::declarations(), &next.request)
+                .unwrap();
         let (status, _, body) = send_html(&r, &path).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert!(!body.contains("history.back"));
@@ -127,7 +128,7 @@ fn changed_generation_refuses_content_continuation_and_replaces_change_populatio
     let r = reader();
     rt().block_on(async {
         let first = read_page(&r, "session:claude-code:s1", &[("budget", "2")]).await;
-        let next = polylogue_render::web::http_url(
+        let next = polylogue_render::ready::http_url(
             crate::commands::declarations(),
             &first.document.footer.next.unwrap().request,
         )
@@ -383,7 +384,7 @@ fn previous_links_reopen_unicode_fragments_without_browser_history() {
         let restored = follow_read(&r, previous).await;
         assert_eq!(restored.document.items, first.document.items);
         let path =
-            polylogue_render::web::http_url(crate::commands::declarations(), &previous.request)
+            polylogue_render::ready::http_url(crate::commands::declarations(), &previous.request)
                 .unwrap();
         let (status, _, html) = send_html(&r, &path).await;
         assert_eq!(status, StatusCode::OK, "{html}");
