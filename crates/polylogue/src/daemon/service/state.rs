@@ -55,6 +55,7 @@ impl Daemon {
     ) -> polylogue_reading::operation::Invocation {
         polylogue_reading::operation::Invocation::capture(&self.config.requests, authorship)
     }
+    #[cfg(test)]
     pub(crate) fn operation_context(
         &self,
         authorship: &polylogue_model::authorship::Authorship,
