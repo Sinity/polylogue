@@ -95,10 +95,10 @@ fn incomplete_timer_does_not_write_a_clock_heartbeat() {
     });
     let mut fixture = crate::test_daemon::start_with_clock("synthetic", clock);
     fixture.pause_signals();
-    tick(&fixture.daemon).unwrap();
+    tick(&fixture.daemon, operation(&fixture.daemon).unwrap()).unwrap();
     let before = load(&fixture.daemon).unwrap().unwrap().identity().unwrap();
     at.fetch_add(30_000, Ordering::SeqCst);
-    tick(&fixture.daemon).unwrap();
+    tick(&fixture.daemon, operation(&fixture.daemon).unwrap()).unwrap();
     assert_eq!(
         load(&fixture.daemon).unwrap().unwrap().identity().unwrap(),
         before
@@ -244,7 +244,7 @@ fn only_authored_commits_wake_the_rules() {
     let mut fixture = crate::test_daemon::start("synthetic");
     fixture.pause_signals();
     // The bootstrap checkpoint is written first, so the worker starts read-only.
-    tick(&fixture.daemon).unwrap();
+    tick(&fixture.daemon, operation(&fixture.daemon).unwrap()).unwrap();
     let (events, observed) = std::sync::mpsc::channel();
     *fixture.daemon.signal_trace.lock().unwrap() = Some(events);
     let stop = fixture.daemon.archive.stop().child();
@@ -320,7 +320,7 @@ fn completion_commit_wakes_rules_while_operation_clock_is_stopped() {
         polylogue_model::WallClock::fixed(jiff::Timestamp::from_millisecond(FIXED).unwrap()),
     );
     fixture.pause_signals();
-    tick(&fixture.daemon).unwrap();
+    tick(&fixture.daemon, operation(&fixture.daemon).unwrap()).unwrap();
     let baseline = load(&fixture.daemon).unwrap().unwrap().identity().unwrap();
     *fixture.daemon.signals.lock().unwrap() = Value::Null;
     let (events, observed) = std::sync::mpsc::channel();
@@ -546,7 +546,7 @@ fn unavailable_dependencies_keep_the_assertion_pending() {
     let before = checkpoint.identity().unwrap();
     at.fetch_add(2 * shared_signals::HOUR, Ordering::SeqCst);
     // An empty current-looking assertion read does not show a withdrawal or closure.
-    tick(&fixture.daemon).unwrap();
+    tick(&fixture.daemon, operation(&fixture.daemon).unwrap()).unwrap();
     assert_eq!(
         load(&fixture.daemon).unwrap().unwrap().identity().unwrap(),
         before
@@ -570,7 +570,7 @@ fn unavailable_dependencies_keep_the_assertion_pending() {
             },
         ))
         .unwrap();
-    tick(&fixture.daemon).unwrap();
+    tick(&fixture.daemon, operation(&fixture.daemon).unwrap()).unwrap();
     assert_eq!(
         load(&fixture.daemon).unwrap().unwrap().identity().unwrap(),
         before

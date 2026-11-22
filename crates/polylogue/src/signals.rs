@@ -63,6 +63,7 @@ fn report(d: &Daemon, hold: &Held) {
     observations::status(d);
 }
 
+#[cfg(test)]
 fn operation(d: &Daemon) -> Result<Arc<polylogue_reading::operation::Context>, Held> {
     d.operation_context(&polylogue_reading::operation::Context::worker_authorship(
         "polylogue-signals",
@@ -169,8 +170,7 @@ struct Tick {
     next: Option<i64>,
 }
 
-fn tick(d: &Daemon) -> Result<Tick, Held> {
-    let context = operation(d)?;
+fn tick(d: &Daemon, context: Arc<polylogue_reading::operation::Context>) -> Result<Tick, Held> {
     let clock = &context.clock;
     let reader = d.reads.reader().map_err(|e| e.to_string())?;
     let attention = if d.archive.is_primary() {

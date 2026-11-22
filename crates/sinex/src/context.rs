@@ -1,5 +1,4 @@
-//! One Sinex-observed temporal and policy snapshot. Resolution performs no I/O
-//! except the explicit named-zone callback supplied by the application boundary.
+//! One Sinex-observed temporal and policy snapshot, refreshed on use.
 use crate::Sinex;
 use polylogue_model::LockExt;
 use serde::Serialize;
@@ -187,12 +186,44 @@ fn valid(
 }
 
 impl Sinex {
-    /// Reads the last observed Sinex context. No network request or local
-    /// deployment setting participates in this operation.
+    /// Refreshes a due observation through the authenticated connection, then
+    /// resolves it. Local deployment settings never supply a missing context.
     pub fn context(
         &self,
         resolve_zone: impl FnOnce(&str) -> Result<jiff::tz::TimeZone, String>,
     ) -> Result<ResolvedContext, ContextFailure> {
+        if self.health.locked().context.refresh_due() {
+            self.read_client(async |client| {
+                client.refresh_context().await;
+                Ok(())
+            })
+            .map_err(|error| {
+                self.health
+                    .locked()
+                    .context
+                    .failure(ContextFailureKind::Unavailable, error.to_string())
+            })?;
+        }
+        let context = self.health.locked().context.clone();
+        context.resolve(resolve_zone)
+    }
+
+    /// Refreshes on an established read connection without entering a runtime.
+    /// The engine and synchronous foreground operations own connecting it.
+    pub async fn context_async(
+        &self,
+        resolve_zone: impl FnOnce(&str) -> Result<jiff::tz::TimeZone, String>,
+    ) -> Result<ResolvedContext, ContextFailure> {
+        if self.health.locked().context.refresh_due() {
+            let client = self.client.lock().await;
+            let Some(client) = client.as_ref() else {
+                return Err(self.health.locked().context.failure(
+                    ContextFailureKind::Missing,
+                    "Sinex public context has no established read connection",
+                ));
+            };
+            client.refresh_context().await;
+        }
         let context = self.health.locked().context.clone();
         context.resolve(resolve_zone)
     }
