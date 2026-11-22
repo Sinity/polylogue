@@ -3,7 +3,7 @@
 //! conversation through several routes). The writer's membership tables
 //! (`resolve/membership.rs`) gather the readings and apply the result.
 use polylogue_model::{Completion, FieldGroup, Message, Route, Timestamp};
-use std::cmp::Reverse;
+use std::{cmp::Reverse, collections::BinaryHeap};
 
 /// One input's latest reading of a message.
 pub(super) struct MessageReading<'a> {
@@ -14,8 +14,6 @@ pub(super) struct MessageReading<'a> {
     pub route: Route,
     /// The reading's session is a main session, not a sidechain's copy of it.
     pub main: bool,
-    /// This source names the work session rather than carrying unknown compaction history.
-    pub explicit_session: bool,
     pub completion: Completion,
     pub hash: &'a [u8],
     pub message: &'a Message,
@@ -31,27 +29,53 @@ pub(super) struct Composition {
     pub message: Message,
 }
 
+type FieldOrder<'a> = (bool, Reverse<bool>, u8, Completion, &'a [u8], &'a str);
+
+/// Source precedence after the content's explicit-session preference. Both
+/// lazy source-fact resolution and final composition use this same order.
+fn field_order<'a>(reading: &MessageReading<'a>, group: FieldGroup) -> FieldOrder<'a> {
+    (
+        !group.present(reading.message),
+        Reverse(reading.main),
+        group.rank(reading.route),
+        reading.completion,
+        reading.hash,
+        reading.input,
+    )
+}
+
 /// Content comes from an explicitly recorded work session.
 /// Each field group otherwise prefers a reading that has a value for it, then
 /// a main session's reading, then the group's route precedence, then
 /// finished before unknown before in-progress, and last by content hash, so
 /// the result never depends on arrival order. `None` without readings.
-pub(super) fn message(readings: &[MessageReading<'_>]) -> Option<Composition> {
-    let best = |group: FieldGroup| {
-        (0..readings.len()).min_by_key(|&n| {
-            let r = &readings[n];
-            (
-                group == FieldGroup::Content && !r.explicit_session,
-                !group.present(r.message),
-                Reverse(r.main),
-                group.rank(r.route),
-                r.completion,
-                r.hash,
-                r.input,
-            )
-        })
+pub(super) fn message(
+    readings: &[MessageReading<'_>],
+    mut explicit_session: impl FnMut(usize) -> crate::Result<bool>,
+) -> crate::Result<Option<Composition>> {
+    // Build in linear time, then inspect possible explicit winners only
+    // until the first one is confirmed. The input index preserves stable ties.
+    let mut order = BinaryHeap::from(
+        readings
+            .iter()
+            .enumerate()
+            .map(|(n, reading)| Reverse((field_order(reading, FieldGroup::Content), n)))
+            .collect::<Vec<_>>(),
+    );
+    let Some(Reverse((_, first))) = order.peek() else {
+        return Ok(None);
     };
-    let main = best(FieldGroup::Content)?;
+    let mut main = *first;
+    if readings.len() > 1 {
+        while let Some(Reverse((_, n))) = order.pop() {
+            if explicit_session(n)? {
+                main = n;
+                break;
+            }
+        }
+    }
+    let best =
+        |group: FieldGroup| (0..readings.len()).min_by_key(|&n| field_order(&readings[n], group));
     let mut message = readings[main].message.clone();
     let mut groups = Vec::new();
     for &group in FieldGroup::ALL {
@@ -64,11 +88,11 @@ pub(super) fn message(readings: &[MessageReading<'_>]) -> Option<Composition> {
             groups.push((group, winner));
         }
     }
-    Some(Composition {
+    Ok(Some(Composition {
         main,
         groups,
         message,
-    })
+    }))
 }
 
 /// One input's latest reading of a document.
@@ -101,3 +125,6 @@ pub(super) fn value(readings: &[(Route, &[u8], &str)]) -> Option<usize> {
         (FieldGroup::Content.rank(route), hash, input)
     })
 }
+
+#[cfg(test)]
+mod tests;
