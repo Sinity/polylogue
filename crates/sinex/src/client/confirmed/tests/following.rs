@@ -1,5 +1,4 @@
 use super::*;
-use polylogue_model::LockExt;
 use sinex_protocol::{ConfirmedConsumerReply, FetchEventReply, Subjects};
 use std::sync::Arc;
 
@@ -139,7 +138,7 @@ fn background_follow_drains_split_position_then_waits() {
     let index = archive.clone();
     let (daemon, mut consumers) = sinex.runtime.block_on(async {
         let (daemon, client) = connections(&server, &config.store, sinex.spool.clone()).await;
-        *sinex.client.locked() = Some(client);
+        *sinex.client.try_lock().unwrap() = Some(client);
         for number in 1..=300 {
             publish(
                 &daemon,
@@ -265,7 +264,7 @@ fn background_follow_drains_split_position_then_waits() {
             })
             .await
             .unwrap();
-        let mut connection = sinex.client.locked();
+        let mut connection = sinex.client.try_lock().unwrap();
         let client = connection.as_mut().unwrap();
         assert!(client.pending.is_empty());
         client.consumer = None;

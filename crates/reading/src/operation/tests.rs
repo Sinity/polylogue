@@ -191,6 +191,40 @@ fn sinex_context_records_its_settings_revision() {
 }
 
 #[test]
+fn refreshed_observation_preserves_cursor_settings_and_its_replayed_cutoff() {
+    let before = Timestamp::parse_rfc3339("2026-10-29T08:00:00Z").unwrap();
+    let after = Timestamp::parse_rfc3339("2026-10-29T08:00:10Z").unwrap();
+    let day = DaySetting::new(
+        jiff::tz::TimeZone::UTC,
+        jiff::civil::Time::constant(4, 0, 0, 0),
+    )
+    .unwrap();
+    let operation = |at, settings_revision| {
+        Context::primary(
+            Invocation::new(at, "fixture".into(), Context::worker_authorship("fixture")),
+            day.clone(),
+            SinexContext::Primary {
+                settings_identity: "public-settings".into(),
+                settings_revision,
+                observed_at: at,
+                received_seconds_ago: 0.,
+            },
+        )
+    };
+    let first = operation(before, 17);
+    let refreshed = operation(after, 17);
+    assert_eq!(refreshed.cursor_versions(), first.cursor_versions());
+    let continued = refreshed.replay_clock(first.clock.clone()).unwrap();
+    assert_eq!(continued.clock.now, first.clock.now);
+    assert_eq!(continued.ran_at, after);
+    assert_eq!(continued.cursor_versions(), first.cursor_versions());
+    assert_ne!(
+        operation(after, 18).cursor_versions(),
+        first.cursor_versions()
+    );
+}
+
+#[test]
 fn caller_working_directory_survives_replay_without_becoming_wire_context() {
     let at = Timestamp::parse_rfc3339("2026-10-29T08:00:00Z").unwrap();
     let day = DaySetting::new(

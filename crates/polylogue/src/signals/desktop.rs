@@ -12,8 +12,13 @@ async fn connect(d: &Daemon) -> Option<zbus::Connection> {
     }
 }
 
-fn persist_update(d: &Daemon, update: &NotificationUpdate) -> Result<bool, Held> {
-    let context = operation(d)?;
+async fn persist_update(d: &Daemon, update: &NotificationUpdate) -> Result<bool, Held> {
+    let context = d
+        .operation_context_async(&polylogue_reading::operation::Context::worker_authorship(
+            "polylogue-signals",
+        ))
+        .await
+        .map_err(Held::from)?;
     let reader = d.reads.reader().map_err(|e| e.to_string())?;
     let previous = reader
         .signal_checkpoint(&context.machine)
@@ -206,7 +211,16 @@ async fn drive(
             due = now.saturating_add(30_000);
             #[cfg(test)]
             super::observations::emit(d, super::observations::Phase::TickStarted { at: now });
-            match tick(d) {
+            let authorship =
+                polylogue_reading::operation::Context::worker_authorship("polylogue-signals");
+            let context = tokio::select! {
+                _ = stop.cancelled() => break,
+                context = d.operation_context_async(&authorship) => context,
+            };
+            match context
+                .map_err(Held::from)
+                .and_then(|context| tick(d, context))
+            {
                 Ok(tick) => {
                     if let Some(next) = tick.next {
                         due = due.min(next);
@@ -244,7 +258,7 @@ async fn drive(
                     worker_ended = true;
                     break;
                 };
-                match persist_update(d,&update) {
+                match persist_update(d,&update).await {
                     Ok(true)=>{let _=update.persisted.send(());}
                     Ok(false)=>{failure=Some(Held::from("notification receipt is pending confirmation"));break;}
                     Err(error)=>{failure=Some(error);break;}
@@ -295,7 +309,7 @@ async fn drain_worker(
 ) -> Result<(), Held> {
     let mut failure = None;
     while let Some(update) = returned.recv().await {
-        match persist_update(d, &update) {
+        match persist_update(d, &update).await {
             Ok(true) => {
                 let _ = update.persisted.send(());
             }

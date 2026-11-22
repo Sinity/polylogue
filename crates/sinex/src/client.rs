@@ -206,7 +206,7 @@ impl Client {
         Ok(connected)
     }
 
-    async fn refresh_context(&self) {
+    pub(crate) async fn refresh_context(&self) {
         let due = self.health.locked().context.refresh_due();
         if !due {
             return;

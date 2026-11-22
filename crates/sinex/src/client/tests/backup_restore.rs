@@ -272,7 +272,7 @@ fn paired_backup_restores_polylogue_pending_frames_after_live_confirmed_removal(
             true,
         ))
         .unwrap();
-    *sinex.client.locked() = Some(client);
+    *sinex.client.try_lock().unwrap() = Some(client);
     let before = b"synthetic pending before the core backup";
     let before_id = prepare(&sinex, before);
     let before_encoding = encoding(&sinex, &before_id);

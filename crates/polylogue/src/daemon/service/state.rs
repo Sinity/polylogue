@@ -55,6 +55,7 @@ impl Daemon {
     ) -> polylogue_reading::operation::Invocation {
         polylogue_reading::operation::Invocation::capture(&self.config.requests, authorship)
     }
+    #[cfg(test)]
     pub(crate) fn operation_context(
         &self,
         authorship: &polylogue_model::authorship::Authorship,
@@ -80,26 +81,53 @@ impl Daemon {
                         jiff::tz::TimeZone::get(name).map_err(|error| error.to_string())
                     })
                     .map_err(crate::protocol::context_failure)?;
-                let observed_at =
-                    polylogue_model::Timestamp::from_unix_ns(policy.observed_at.unix_ns())
-                        .ok_or_else(|| {
-                            Failure::primary_context_invalid(
-                                "the Sinex observation time is outside the supported range",
-                            )
-                        })?;
-                let sinex = polylogue_model::context::SinexContext::Primary {
-                    settings_identity: policy.settings_identity,
-                    settings_revision: policy.settings_revision,
-                    observed_at,
-                    received_seconds_ago: policy.received_seconds_ago,
-                };
-                polylogue_reading::operation::Context::primary(invocation, policy.day, sinex)
+                return Self::primary_context(invocation, policy);
             }
             ModeState::Blocked { error: reason, .. } => {
                 return Err(Failure::sinex_unavailable(reason.clone()));
             }
         };
         Ok(Arc::new(context))
+    }
+
+    pub(crate) async fn operation_context_async(
+        &self,
+        authorship: &polylogue_model::authorship::Authorship,
+    ) -> Result<Arc<polylogue_reading::operation::Context>, Failure> {
+        let invocation = self.invocation(authorship);
+        #[cfg(feature = "sinex")]
+        if let ModeState::Primary { connection } = &self.mode {
+            let policy = connection
+                .context_async(|name| {
+                    jiff::tz::TimeZone::get(name).map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(crate::protocol::context_failure)?;
+            return Self::primary_context(invocation, policy);
+        }
+        self.resolve_operation_context(invocation)
+    }
+
+    #[cfg(feature = "sinex")]
+    fn primary_context(
+        invocation: polylogue_reading::operation::Invocation,
+        policy: polylogue_sinex::ResolvedContext,
+    ) -> Result<Arc<polylogue_reading::operation::Context>, Failure> {
+        let observed_at = polylogue_model::Timestamp::from_unix_ns(policy.observed_at.unix_ns())
+            .ok_or_else(|| {
+                Failure::primary_context_invalid(
+                    "the Sinex observation time is outside the supported range",
+                )
+            })?;
+        let sinex = polylogue_model::context::SinexContext::Primary {
+            settings_identity: policy.settings_identity,
+            settings_revision: policy.settings_revision,
+            observed_at,
+            received_seconds_ago: policy.received_seconds_ago,
+        };
+        Ok(Arc::new(polylogue_reading::operation::Context::primary(
+            invocation, policy.day, sinex,
+        )))
     }
 
     pub(crate) fn ready_call(

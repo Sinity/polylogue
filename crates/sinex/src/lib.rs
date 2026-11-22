@@ -197,7 +197,7 @@ pub struct Sinex {
     sender: Option<sender::Sender>,
     stopping: Option<Arc<sender::Stop>>,
     /// `None` only while dropping.
-    client: Mutex<Option<Client>>,
+    client: tokio::sync::Mutex<Option<Client>>,
     /// This host's name, for the register materials of requests.
     host: String,
 }
@@ -228,7 +228,7 @@ impl Sinex {
             stopping: None,
             spool,
             runtime: Arc::new(runtime),
-            client: Mutex::new(None),
+            client: tokio::sync::Mutex::new(None),
             host: host.to_owned(),
         };
         sinex.start_sender()?;
@@ -243,12 +243,7 @@ impl Sinex {
             health: self.health.clone(),
             spool: self.spool.clone(),
             runtime: self.runtime.clone(),
-            client: Mutex::new(
-                self.client
-                    .get_mut()
-                    .map_err(|_| Error::invalid("the Sinex connection panicked"))?
-                    .take(),
-            ),
+            client: tokio::sync::Mutex::new(self.client.get_mut().take()),
             host: self.host.clone(),
             publication: self.publication.clone(),
             sender: None,
@@ -281,49 +276,66 @@ impl Sinex {
 
     /// Executes one operation under this connection's lock. Sending uses its own connection.
     fn client_operation<T>(&self, work: impl AsyncFnOnce(&mut Client) -> Result<T>) -> Result<T> {
-        let mut client = self.client.locked();
-        if client.is_none() {
-            let connect = Client::connect_shared(
-                &self.config,
-                &self.authentication,
-                Arc::clone(&self.spool),
-                Arc::clone(&self.health),
-                self.publication.clone(),
-                self.stopping.is_some(),
-            );
-            let connected = self.runtime.block_on(async {
-                match &self.stopping {
-                    Some(stop) => stop.until(connect).await,
-                    None => connect.await,
-                }
-            });
-            match connected {
-                Ok(connected) => *client = Some(connected),
-                Err(error) => {
-                    {
-                        let mut health = self.health.locked();
-                        health.reachable = Some(!matches!(error, Error::Unreachable(_)));
-                    }
-                    return Err(error);
-                }
+        let limit = polylogue_store::read::limit::ReadLimit::current();
+        let future = async {
+            let mut client = self.client.lock().await;
+            if client.is_none() {
+                *client = Some(
+                    Client::connect_shared(
+                        &self.config,
+                        &self.authentication,
+                        Arc::clone(&self.spool),
+                        Arc::clone(&self.health),
+                        self.publication.clone(),
+                        self.stopping.is_some(),
+                    )
+                    .await?,
+                );
             }
-        }
-        let future = work(client.as_mut().expect("connected client"));
+            let result = work(client.as_mut().expect("connected client")).await;
+            if matches!(result, Err(Error::Unreachable(_))) {
+                let _inside = self.runtime.enter();
+                client.take();
+            }
+            result
+        };
         let result = self.runtime.block_on(async {
-            match &self.stopping {
-                Some(stop) => stop.until(future).await,
+            let future = async {
+                match &self.stopping {
+                    Some(stop) => stop.until(future).await,
+                    None => future.await,
+                }
+            };
+            match &limit {
+                Some(limit) => {
+                    let cancelled = Arc::new(tokio::sync::Notify::new());
+                    let wake = Arc::clone(&cancelled);
+                    let _wake = limit.cancellation.on_cancel(move || wake.notify_one());
+                    let deadline = async {
+                        match limit.deadline() {
+                            Some(at) => tokio::time::sleep_until(at.into()).await,
+                            None => std::future::pending().await,
+                        }
+                    };
+                    limit.check()?;
+                    tokio::select! {
+                        biased;
+                        _ = cancelled.notified() => {
+                            limit.check()?;
+                            unreachable!("a cancellation wake has a stopped request")
+                        }
+                        _ = deadline => Err(polylogue_store::StoreError::ReadDeadlineExceeded.into()),
+                        result = future => {
+                            limit.check()?;
+                            result
+                        }
+                    }
+                }
                 None => future.await,
             }
         });
-        {
-            let mut health = self.health.locked();
-            health.reachable = Some(!matches!(result, Err(Error::Unreachable(_))));
-        }
-        if matches!(result, Err(Error::Unreachable(_))) {
-            // The immutable spool keeps every unacknowledged frame. A fresh
-            // connection retries those identities after the next successful hello.
-            let _inside = self.runtime.enter();
-            client.take();
+        if !matches!(result, Err(Error::Store(_))) {
+            self.health.locked().reachable = Some(!matches!(result, Err(Error::Unreachable(_))));
         }
         result
     }
@@ -369,9 +381,7 @@ impl Drop for Sinex {
             sender.stop();
         }
         let _inside = self.runtime.enter();
-        if let Ok(client) = self.client.get_mut() {
-            drop(client.take());
-        }
+        drop(self.client.get_mut().take());
     }
 }
 
