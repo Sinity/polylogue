@@ -231,12 +231,14 @@ impl Catalog {
             ),
         };
         // One-hour writes are part of `cache_write`; the rest are written
-        // with the default lifetime. More one-hour writes than writes is an
+        // with the default lifetime. More one-hour writes than writes, or
+        // one-hour writes without the total they are part of, is an
         // inconsistent record, priced as unknown.
-        let write_1h = usage.cache_write_1h.filter(|_| usage.cache_write.is_some());
-        let write_short = match usage.cache_write {
-            None => None,
-            Some(w) => Some(w.checked_sub(write_1h.unwrap_or(0))?),
+        let write_1h = usage.cache_write_1h;
+        let write_short = match (usage.cache_write, write_1h) {
+            (None, None | Some(0)) => None,
+            (None, Some(_)) => return None,
+            (Some(w), h) => Some(w.checked_sub(h.unwrap_or(0))?),
         };
         let token_cost =
             |tokens: u64, rate: Rate| i128::from(tokens).checked_mul(rate.pico_usd_per_token);
