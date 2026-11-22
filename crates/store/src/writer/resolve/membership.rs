@@ -449,55 +449,100 @@ fn load_document(index: &Connection, pk: i64) -> Result<Vec<DocumentMember>> {
         .collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-fn load_event(index: &Connection, pk: i64) -> Result<Vec<ValueMember>> {
-    Ok(index
-        .prepare_cached("SELECT s.input_pk,s.chain,s.route,s.value_pk,v.hash,s.session_pk,s.seq,s.source_start,s.source_end,s.after_message_id,s.at,s.committed,i.id FROM event_source s JOIN event_value v ON v.pk=s.value_pk JOIN input_ref i ON i.pk=s.input_pk WHERE s.event_pk=?1")?
-        .query_map([pk], |r| {
+fn load_value_members(
+    index: &Connection,
+    keys: &ResolvedKeys,
+    kind: Kind,
+    sql: &str,
+    decode: impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<ValueMember>,
+) -> Result<BTreeMap<i64, Vec<ValueMember>>> {
+    let mut members: BTreeMap<i64, Vec<ValueMember>> = keys
+        .rows
+        .iter()
+        .filter(|(key, row)| key.kind == kind && row.existing)
+        .map(|(_, row)| (row.pk, Vec::new()))
+        .collect();
+    let pks: Vec<_> = members.keys().copied().collect();
+    if pks.is_empty() {
+        return Ok(members);
+    }
+    let mut statement = index.prepare_cached(sql)?;
+    for group in pks.chunks(stored_messages::BATCH) {
+        let mut rows = statement.query([serde_json::to_string(group)?])?;
+        while let Some(row) = rows.next()? {
+            members
+                .get_mut(&row.get::<_, i64>(0)?)
+                .expect("one requested value")
+                .push(decode(row)?);
+        }
+    }
+    // The prior primary-key lookups visited each item's source rows in this order.
+    for sources in members.values_mut() {
+        sources.sort_unstable_by_key(|source| (source.input, source.chain));
+    }
+    Ok(members)
+}
+
+fn load_events(index: &Connection, keys: &ResolvedKeys) -> Result<BTreeMap<i64, Vec<ValueMember>>> {
+    load_value_members(
+        index,
+        keys,
+        Kind::Event,
+        "SELECT s.event_pk,s.input_pk,s.chain,s.route,s.value_pk,v.hash,s.session_pk,s.seq,
+         s.source_start,s.source_end,s.after_message_id,s.at,s.committed,i.id
+         FROM json_each(?1) k CROSS JOIN event_source s ON s.event_pk=k.value
+         JOIN event_value v ON v.pk=s.value_pk JOIN input_ref i ON i.pk=s.input_pk",
+        |r| {
             Ok(ValueMember {
-                input: r.get(0)?,
-                input_id: r.get(12)?,
-                chain: r.get(1)?,
-                route: named(r.get(2)?)?,
-                value_pk: r.get(3)?,
-                hash: r.get(4)?,
+                input: r.get(1)?,
+                input_id: r.get(13)?,
+                chain: r.get(2)?,
+                route: named(r.get(3)?)?,
+                value_pk: r.get(4)?,
+                hash: r.get(5)?,
                 body: Vec::new(),
                 event: Some(EventChoice {
-                    committed: r.get(11)?,
+                    committed: r.get(12)?,
                     kind: String::new(),
                     fields: Vec::new(),
                     imported: String::new(),
-                    value_pk: r.get(3)?,
-                    input: r.get(0)?,
-                    chain: r.get(1)?,
-                    session: r.get(5)?,
-                    seq: r.get(6)?,
-                    start: r.get(7)?,
-                    end: r.get(8)?,
-                    after: r.get(9)?,
-                    at: r.get(10)?,
+                    value_pk: r.get(4)?,
+                    input: r.get(1)?,
+                    chain: r.get(2)?,
+                    session: r.get(6)?,
+                    seq: r.get(7)?,
+                    start: r.get(8)?,
+                    end: r.get(9)?,
+                    after: r.get(10)?,
+                    at: r.get(11)?,
                     body: Vec::new(),
                 }),
             })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?)
+        },
+    )
 }
 
-fn load_link(index: &Connection, pk: i64) -> Result<Vec<ValueMember>> {
-    Ok(index
-        .prepare_cached("SELECT s.input_pk,s.chain,s.route,s.value_pk,v.hash,i.id FROM link_source s JOIN link_value v ON v.pk=s.value_pk JOIN input_ref i ON i.pk=s.input_pk WHERE s.link_pk=?1")?
-        .query_map([pk], |r| {
+fn load_links(index: &Connection, keys: &ResolvedKeys) -> Result<BTreeMap<i64, Vec<ValueMember>>> {
+    load_value_members(
+        index,
+        keys,
+        Kind::Link,
+        "SELECT s.link_pk,s.input_pk,s.chain,s.route,s.value_pk,v.hash,i.id
+         FROM json_each(?1) k CROSS JOIN link_source s ON s.link_pk=k.value
+         JOIN link_value v ON v.pk=s.value_pk JOIN input_ref i ON i.pk=s.input_pk",
+        |r| {
             Ok(ValueMember {
-                input: r.get(0)?,
-                input_id: r.get(5)?,
-                chain: r.get(1)?,
-                route: named(r.get(2)?)?,
-                value_pk: r.get(3)?,
-                hash: r.get(4)?,
+                input: r.get(1)?,
+                input_id: r.get(6)?,
+                chain: r.get(2)?,
+                route: named(r.get(3)?)?,
+                value_pk: r.get(4)?,
+                hash: r.get(5)?,
                 body: Vec::new(),
                 event: None,
             })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?)
+        },
+    )
 }
 
 pub(in crate::writer) struct MembershipState<'a> {
@@ -592,6 +637,8 @@ impl<'a> MembershipState<'a> {
                 membership_state.messages.members.insert(pk, stored.members);
             }
         }
+        membership_state.events.members = load_events(index, keys)?;
+        membership_state.links.members = load_links(index, keys)?;
         for (key, row) in &keys.rows {
             let pk = row.pk;
             match key.kind {
@@ -608,18 +655,6 @@ impl<'a> MembershipState<'a> {
                         .documents
                         .members
                         .insert(pk, load_document(index, pk)?);
-                }
-                Kind::Event if row.existing => {
-                    membership_state
-                        .events
-                        .members
-                        .insert(pk, load_event(index, pk)?);
-                }
-                Kind::Link if row.existing => {
-                    membership_state
-                        .links
-                        .members
-                        .insert(pk, load_link(index, pk)?);
                 }
                 Kind::Message => {
                     membership_state.messages.members.insert(pk, Vec::new());
