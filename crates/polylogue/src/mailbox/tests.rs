@@ -28,7 +28,7 @@ fn a_native_id_with_path_characters_stays_one_file_in_its_harness_directory() {
             Some(mail.join("claude-code").as_path())
         );
         assert!(raised(&mail, &session));
-        assert_eq!(flagged(&mail), [session.clone()]);
+        assert_eq!(flagged(&mail), std::slice::from_ref(&session));
         lower(&mail, &session).unwrap();
         assert!(flagged(&mail).is_empty());
     }
