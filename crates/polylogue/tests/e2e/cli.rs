@@ -180,18 +180,20 @@ pub(super) fn wait_status(
             Some(i32::from(answer.exit_code())),
             "{out:?}"
         );
-        let (status, current) = match answer.outcome {
-            command_surface::Outcome::Ok(value) => (value, true),
-            command_surface::Outcome::Degraded { value, .. } => (value, false),
+        match &answer.outcome {
+            command_surface::Outcome::Ok(status) => {
+                if status["busy"] == false && status["store"].is_object() && ready(status) {
+                    return status.clone();
+                }
+            }
+            command_surface::Outcome::Degraded { .. } => {}
+            command_surface::Outcome::Error(failure)
+                if failure.code.as_deref() == Some("index_building") => {}
             other => panic!("startup status failed: {other:?}: {out:?}"),
-        };
-        // A ready fixture requires a current index as well as its expected rows.
-        if current && status["busy"] == false && status["store"].is_object() && ready(&status) {
-            return status;
         }
         assert!(
             started.elapsed() < READY_DEADLINE,
-            "the awaited status did not come within {READY_DEADLINE:?}; last status: {status}"
+            "the awaited status did not come within {READY_DEADLINE:?}: {answer:?}"
         );
         std::thread::sleep(PAUSE);
     }
