@@ -78,13 +78,19 @@ daemon's arguments and environment. Module evaluation separately checks those
 characters in the Home Manager profile command path.
 
 The development shell installs the check tools and points Git at `.githooks`
-when no other hooks path is configured; it builds no VM. The commit hook checks
-staged whitespace and formats staged Rust files, including partial staging and
-renames. Formatting-only shell entry supplies an unused local target directory
-so it does not select or seed a compiler cache. The hook enters the shell once
-for the complete staged Rust set; the declared `fmt` operation also skips cache
-selection. The lock operation likewise supplies an unused local target before shell entry because dependency resolution uses no compiler artifacts. There is no push hook. GitHub Actions runs `cargo xtask check` for every pull request. The shell also carries coverage and fuzzing tools, LLVM tools matching
-the compiler, SQLite, jq and the time zone database.
+when no other hooks path is configured; it builds no VM. It carries coverage and
+fuzzing tools, LLVM tools matching the compiler, SQLite, jq and the time zone
+database. The formatting shell, `nix develop .#format`, uses the same pinned
+Rust toolchain with Git and diff, without the check inputs and other development
+tools. It installs the same Git hooks.
+
+The commit hook checks staged whitespace and formats staged Rust files,
+including partial staging and renames. It enters the formatting shell once for
+the complete staged Rust set; the declared `fmt` operation uses that shell too.
+Formatting supplies an unused local target directory and selects no compiler
+cache. The lock operation likewise supplies an unused local target before shell
+entry because dependency resolution uses no compiler artifacts. There is no push
+hook. GitHub Actions runs `cargo xtask check` for every pull request.
 
 `direnv allow` loads the same shell through `.envrc`, which reloads when the
 toolchain or Nix files change. The git-ignored `.envrc.local` holds personal
