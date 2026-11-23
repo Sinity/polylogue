@@ -116,12 +116,12 @@ fn a_needed_source_fact_refuses_and_a_losing_source_is_not_read() {
     .unwrap()
     .unwrap();
     assert_eq!(result.main, 0);
-    assert!(
+    assert!(matches!(
         message(&readings, |_| Err(crate::StoreError::Invalid(
             "needed fact".into()
-        )))
-        .is_err()
-    );
+        ))),
+        Err(crate::StoreError::Invalid(reason)) if reason == "needed fact"
+    ));
     assert!(message(&[], |_| unreachable!()).unwrap().is_none());
     assert_eq!(
         message(std::slice::from_ref(&readings[0]), |_| unreachable!())

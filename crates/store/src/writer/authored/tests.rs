@@ -734,11 +734,9 @@ fn fail_next_sync() {
 fn assert_refused_start(archive: &Archive) {
     match Writer::start(archive) {
         Err(StoreError::StorageFailed(failure)) => {
-            assert!(
-                failure.path.ends_with("archive.db-wal"),
-                "{}",
-                failure.path.display()
-            );
+            let mut log = archive.archive_db().into_os_string();
+            log.push("-wal");
+            assert_eq!(failure.path, std::path::PathBuf::from(log));
             assert_eq!(crate::storage_failure::recorded(), Some(failure));
         }
         Err(other) => panic!("refused for another reason: {other}"),

@@ -208,7 +208,10 @@ fn build_cleanup_keeps_text_and_forgets_deleted_ids() {
     )
     .unwrap();
     remove_unreferenced(&tx, &upkeep, &identities).unwrap();
-    assert!(identities.resolve(&tx, &hash, None, None).is_err());
+    assert!(matches!(
+        identities.resolve(&tx, &hash, None, None),
+        Err(crate::StoreError::Invalid(reason)) if reason == "a new text has no prepared bytes"
+    ));
     let replacement = identities
         .resolve(
             &tx,
@@ -237,7 +240,7 @@ fn build_cleanup_keeps_text_and_forgets_deleted_ids() {
 }
 
 #[test]
-fn version_keys_and_payload_children_survive_failed_removal() {
+fn version_keys_and_payload_children_are_restored_by_rollback_after_removal() {
     let conn = database(1);
     let mut hashes = [[42u8; 32]; 2];
     hashes[1][31] = 43; // Same long prefix must not alias a different canonical hash.
@@ -315,6 +318,23 @@ fn version_keys_and_payload_children_survive_failed_removal() {
     conn.execute_batch("ROLLBACK TO change; RELEASE change")
         .unwrap();
     assert_eq!(snapshot(), original);
+    for table in [
+        "message_version_body",
+        "message_block_selection",
+        "message_version_text",
+        "message_version_blob",
+    ] {
+        assert_eq!(
+            conn.query_row(
+                &format!("SELECT count(*) FROM {table} WHERE version_pk=?1"),
+                [keys[0]],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1,
+            "{table}"
+        );
+    }
     assert_eq!(
         conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
             .get::<_, i64>(

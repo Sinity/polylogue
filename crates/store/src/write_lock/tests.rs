@@ -37,7 +37,10 @@ fn a_register_transaction_takes_the_lock_only_to_commit() {
     // A commit refuses inside a held lock instead of waiting for itself.
     let tx = archive_conn.transaction().unwrap();
     let outer = hold(&tx).unwrap();
-    assert!(commit(tx).is_err());
+    assert!(matches!(
+        commit(tx),
+        Err(crate::StoreError::Invalid(reason)) if reason == "this thread already holds the write lock"
+    ));
     drop(outer);
 }
 
@@ -53,9 +56,7 @@ fn readers_start_and_see_a_register_commit_while_its_log_syncs() {
             .unwrap();
         commit(tx).unwrap();
     });
-    while !crate::fault::held() {
-        std::thread::yield_now();
-    }
+    crate::fault::wait_held();
     // The sync is under way: a reader starts without waiting and reads the
     // commit.
     let shared = wait_shared(&archive, || panic!("the log sync holds the lock")).unwrap();
@@ -183,6 +184,14 @@ fn aliases_share_file_identity_and_other_archives_can_read() {
         ))
         .is_err()
     );
+    let other_index = open_write(&other.index_db(), cache::SETUP).unwrap();
+    other_index
+        .execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES ('write_counter', '5')",
+            [],
+        )
+        .unwrap();
     let pool = crate::ReadPool::open(&other).unwrap();
-    pool.reader().unwrap().change_position().unwrap();
+    let position = pool.reader().unwrap().change_position().unwrap();
+    assert_eq!((position.index, position.archive), (5, 0));
 }

@@ -185,6 +185,19 @@ fn drift_reported_new_path_changed_type_and_stopped_optional_field() {
         ),
     );
     let report = read(&conn, Scope::current(Some("fixture"))).unwrap();
+    assert_eq!(
+        report
+            .drift
+            .iter()
+            .map(|row| (row.kind, row.shape.path.clone()))
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from([
+            (Kind::NewPath, "/new".to_string()),
+            (Kind::TypeChanged, "/body".to_string()),
+            (Kind::StoppedField, "/gone".to_string()),
+        ])
+    );
+    assert_eq!(report.drift.len(), 3);
     assert!(
         report
             .drift
@@ -312,12 +325,8 @@ fn wire_shape_reading_versions_and_input_chains_keep_their_history() {
             .any(|row| row.kind == Kind::TypeChanged && row.shape.path == "/old")
     );
     let history = read(&conn, Scope::history(Some("fixture"), Some("v1"))).unwrap();
-    assert!(
-        history
-            .shapes
-            .iter()
-            .any(|row| row.path == "/old" && row.types["number"].count == 1)
-    );
+    assert_eq!(at(&history, "/old").types.len(), 1);
+    assert_eq!(at(&history, "/old").types["number"].count, 1);
     assert_eq!(history.coverage[0].readings, 2);
     assert_eq!(history.coverage[0].current_readings, 1);
 }
@@ -402,6 +411,7 @@ fn wire_shape_unknown_kinds_and_tables_are_counted() {
     let parsed = step("v1", 0..10, true, vec![table, kind]);
     store(&mut conn, source(1, 1, 10, 1), &parsed);
     let report = read(&conn, Scope::current(None)).unwrap();
+    assert_eq!(report.drift.len(), 2);
     assert!(
         report
             .drift
@@ -463,8 +473,11 @@ fn wire_shape_tuple_paths_remain_distinct_and_transaction_rollback_is_atomic() {
     assert!(read(&conn, Scope::current(None)).unwrap().shapes.is_empty());
     store(&mut conn, source(1, 1, 10, 1), &parsed);
     let report = read(&conn, Scope::current(None)).unwrap();
-    assert!(report.shapes.iter().any(|row| row.path == "/a~1b/~2/~3/~0"));
-    assert!(report.shapes.iter().any(|row| row.path == "/a/b"));
+    assert_eq!(report.shapes.len(), 3);
+    assert_eq!(at(&report, "/a~1b/~2/~3/~0").types.len(), 1);
+    assert_eq!(at(&report, "/a~1b/~2/~3/~0").types["string"].count, 1);
+    assert_eq!(at(&report, "/a/b").types.len(), 1);
+    assert_eq!(at(&report, "/a/b").types["number"].count, 1);
     let mut conflict = parsed;
     conflict
         .counts
@@ -514,6 +527,9 @@ fn wire_shape_unknown_observation_times_remain_unknown_and_formats_stay_distinct
             .iter()
             .any(|row| row.kind == Kind::StoppedField)
     );
+    assert_eq!(report.drift.len(), 1);
+    assert_eq!(report.drift[0].kind, Kind::NewPath);
+    assert_eq!(report.drift[0].shape.path, "/new");
     assert_eq!(report.drift[0].shape.format, "other");
     assert!(
         read(&conn, Scope::current(Some("fixture")))

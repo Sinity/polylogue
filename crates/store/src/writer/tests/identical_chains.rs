@@ -381,11 +381,7 @@ fn stopping_a_later_copy_keeps_the_completed_chain_and_rolls_back_its_own_readin
     let (done, result) = sync_channel(1);
     let second = copies[1].clone();
     let worker = std::thread::spawn(move || done.send(sender.copy_reading(second)).unwrap());
-    let started = std::time::Instant::now();
-    while !crate::fault::held() {
-        assert!(started.elapsed() < std::time::Duration::from_secs(30));
-        std::thread::yield_now();
-    }
+    crate::fault::wait_held();
     let while_copying = index_rows(&w, true);
     // Already-accepted authored work stays stored while rebuildable copy
     // work rolls back.

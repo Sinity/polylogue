@@ -34,10 +34,12 @@ fn extent_writer_refuses_stale_append_without_replacing_prefix() {
     store(&w, continuation).unwrap();
     let mut stale = bytes(&w.archive, 0, b"abcdefghijkl");
     stale.batch.change = Change::Appended { from: 0 };
-    assert!(
-        store(&w, stale).is_err(),
-        "a stale append must not replace committed extent zero"
-    );
+    match store(&w, stale) {
+        Err(StoreError::Invalid(reason)) => {
+            assert_eq!(reason, "an append must start at the stored length");
+        }
+        other => panic!("expected the stale-append refusal, got {other:?}"),
+    }
     let reads = ReadPool::open(&w.archive).unwrap();
     let reader = reads.reader().unwrap();
     let progress = reader.input_progress("input").unwrap().unwrap();
