@@ -681,3 +681,41 @@ fn an_event_after_a_reopened_response_follows_the_latest_opened_message() {
     let second = run(&main_file("s1"), &mut state, &bytes[cut..], cut as u64).unwrap();
     assert_eq!(after(vec![first, second]), whole);
 }
+
+/// A file history snapshot names no session, so it is stated for the file's
+/// own session, yet after a later record of a resumed session's response it
+/// follows the latest message that session opened, read at once or in two
+/// steps.
+#[test]
+fn a_sessionless_event_follows_the_latest_opened_message_of_any_session() {
+    let resumed = |uuid: &str, msg_id: &str, text: &str| {
+        let mut record = assistant(uuid, msg_id, json!({"type":"text","text":text}));
+        record["sessionId"] = json!("s2");
+        record
+    };
+    let records = vec![
+        assistant("a1", "msg_1", json!({"type":"text","text":"own"})),
+        resumed("b1", "msg_2", "resumed"),
+        resumed("c1", "msg_3", "another"),
+        resumed("b2", "msg_2", "resumed, continued"),
+        json!({"type":"file-history-snapshot","messageId":"b2","snapshot":{}}),
+    ];
+    let bytes = jsonl(&records);
+    let after = |steps: Vec<crate::parse::Step>| {
+        crate::chain_names::tests::settled(&steps)
+            .iter()
+            .flat_map(|step| step.output.events.clone())
+            .find(|event| event.kind == "file_history")
+            .unwrap()
+            .after
+    };
+    let whole = after(vec![
+        run(&main_file("s1"), &mut ParserState::default(), &bytes, 0).unwrap(),
+    ]);
+    assert_eq!(whole, message_id("c1"));
+    let cut = jsonl(&records[..4]).len();
+    let mut state = ParserState::default();
+    let first = run(&main_file("s1"), &mut state, &bytes[..cut], 0).unwrap();
+    let second = run(&main_file("s1"), &mut state, &bytes[cut..], cut as u64).unwrap();
+    assert_eq!(after(vec![first, second]), whole);
+}

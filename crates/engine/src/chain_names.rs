@@ -65,4 +65,10 @@ impl EarlierRows for Committed {
             None => Ok(None),
         }
     }
+    fn session_of(&mut self, message: &MessageId) -> Result<Option<SessionId>, String> {
+        match &mut self.0 {
+            Some(rows) => rows.session_of(message).map_err(|e| e.to_string()),
+            None => Ok(None),
+        }
+    }
 }

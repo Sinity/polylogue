@@ -567,3 +567,46 @@ fn an_append_numbers_equal_content_named_messages_after_the_committed_ones() {
     assert_eq!(ids[2], format!("{first}-1"));
     assert!(ids[1].ends_with("-0") && !ids[1].starts_with(first));
 }
+
+/// A file history snapshot appended after a later record of a resumed
+/// session's response follows the latest message that session opened before
+/// it, found from the chain's committed rows: the snapshot names no session
+/// and is stated for the file's own.
+#[test]
+fn an_appended_sessionless_event_follows_the_resumed_sessions_response() {
+    let home = ClaudeHome::new();
+    home.append("own.jsonl", &claude_user("u1", "own", "start"));
+    let resumed = |uuid: &str, key: &str, text: &str| {
+        format!(
+            "{}\n",
+            serde_json::json!({"type":"assistant","uuid":uuid,"sessionId":"resumed","message":{"id":key,"role":"assistant","content":[{"type":"text","text":text}]}})
+        )
+    };
+    home.append("own.jsonl", &resumed("r1", "response-r", "first"));
+    home.append("own.jsonl", &resumed("q1", "response-q", "other"));
+    home.append("own.jsonl", &resumed("r2", "response-r", "second"));
+    {
+        let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
+        let pass = engine.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "{pass:?}");
+    }
+    home.append(
+        "own.jsonl",
+        &format!(
+            "{}\n",
+            serde_json::json!({"type":"file-history-snapshot","messageId":"r2","snapshot":{}})
+        ),
+    );
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    let reader = engine.reads.reader().unwrap();
+    let placed = reader
+        .query(
+            "SELECT m.id FROM event e JOIN message m ON m.pk=e.after_message_pk WHERE e.kind='file_history'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(placed.len(), 1, "{placed:?}");
+    assert_eq!(placed[0]["id"], "claude-code:q1");
+}

@@ -149,6 +149,24 @@ impl ChainRows {
             .transpose()
     }
 
+    /// The session of a message of the chain.
+    pub fn session_of(&mut self, message: &MessageId) -> Result<Option<SessionId>> {
+        let id = self
+            .conn
+            .prepare_cached(
+                "SELECT ss.id FROM message m JOIN message_source s ON s.message_pk=m.pk
+                 JOIN session ss ON ss.pk=s.session_pk
+                 WHERE m.id=?1 AND s.input_pk=?2 AND s.chain=?3 LIMIT 1",
+            )?
+            .query_row(
+                params![message.to_string(), self.input_pk, self.chain],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        id.map(|id| SessionId::parse(&id).map_err(StoreError::invalid))
+            .transpose()
+    }
+
     fn count(&self, name: &str, before: i64) -> Result<u64> {
         let count: i64 = self
             .conn

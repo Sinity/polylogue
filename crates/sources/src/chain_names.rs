@@ -42,6 +42,8 @@ pub trait EarlierRows {
     fn content_before(&mut self, name: &str, position: u64) -> Result<u64, String>;
     /// The message of `session` whose first record is the chain's latest.
     fn latest_opened(&mut self, session: &SessionId) -> Result<Option<MessageId>, String>;
+    /// The session of a message of the chain.
+    fn session_of(&mut self, message: &MessageId) -> Result<Option<SessionId>, String>;
 }
 
 /// A step that starts a chain's reading, or restates whole conversations
@@ -64,6 +66,9 @@ impl EarlierRows for NoEarlierRows {
     fn latest_opened(&mut self, _: &SessionId) -> Result<Option<MessageId>, String> {
         Ok(None)
     }
+    fn session_of(&mut self, _: &MessageId) -> Result<Option<SessionId>, String> {
+        Ok(None)
+    }
 }
 
 /// The rows settled earlier in one run over a chain, in front of the rows
@@ -78,6 +83,8 @@ pub struct Formed<B> {
     written: HashMap<(String, u64), u64>,
     /// Each session's message whose first record is the latest, with its start.
     opened: HashMap<SessionId, (u64, MessageId)>,
+    /// Each message's session.
+    sessions: HashMap<MessageId, SessionId>,
 }
 
 impl<B: EarlierRows> Formed<B> {
@@ -89,6 +96,7 @@ impl<B: EarlierRows> Formed<B> {
             content: HashMap::new(),
             written: HashMap::new(),
             opened: HashMap::new(),
+            sessions: HashMap::new(),
         }
     }
 
@@ -103,6 +111,8 @@ impl<B: EarlierRows> Formed<B> {
             if row.offset >= opened.0 {
                 *opened = (row.offset, row.message.id.clone());
             }
+            self.sessions
+                .insert(row.message.id.clone(), row.message.session.clone());
             if let Some(key) = &row.response {
                 self.responses
                     .insert((row.message.session.clone(), key.clone()), row.clone());
@@ -155,6 +165,12 @@ impl<B: EarlierRows> EarlierRows for Formed<B> {
         match self.opened.get(session) {
             Some((_, id)) => Ok(Some(id.clone())),
             None => self.before.latest_opened(session),
+        }
+    }
+    fn session_of(&mut self, message: &MessageId) -> Result<Option<SessionId>, String> {
+        match self.sessions.get(message) {
+            Some(session) => Ok(Some(session.clone())),
+            None => self.before.session_of(message),
         }
     }
 }
@@ -304,8 +320,12 @@ enum Stated {
 /// Joins the records of each response into one message and resolves
 /// parents and event placements through aliases, in byte order: a name is
 /// resolved by the aliases of the records before it. An event placed after a
-/// later record of a response follows the session's latest message opened
-/// before it, as it follows that message on the timeline.
+/// later record of a response follows the latest message opened before it in
+/// that response's session, as it follows that message on the timeline. The
+/// response's session, not the event's: a record without a session (a file
+/// history snapshot) is stated for the file's own session though the messages
+/// before it may be a resumed session's. Messages a progress record carries
+/// are another session's, so they do not move such an event.
 fn join(out: &mut Output, earlier: &mut dyn EarlierRows) -> Result<(), String> {
     let mut stated: Vec<(u64, u8, usize, Stated)> = Vec::new();
     for (index, row) in out.messages.iter().enumerate() {
@@ -326,6 +346,7 @@ fn join(out: &mut Output, earlier: &mut dyn EarlierRows) -> Result<(), String> {
     let mut joined = Vec::new();
     let mut reordered = false;
     let mut opened: HashMap<SessionId, MessageId> = HashMap::new();
+    let mut sessions: HashMap<MessageId, SessionId> = HashMap::new();
     for (_, _, _, item) in stated {
         match item {
             Stated::Alias(index) => {
@@ -339,12 +360,19 @@ fn join(out: &mut Output, earlier: &mut dyn EarlierRows) -> Result<(), String> {
                 let event = &mut out.events[index];
                 if let Some(after) = event.after.take() {
                     let resolved = resolve(&names, earlier, after.clone())?;
-                    event.after = match (&event.session, resolved != Some(after)) {
-                        (Some(session), true) => match opened.get(session) {
-                            Some(id) => Some(id.clone()),
-                            None => earlier.latest_opened(session)?.or(resolved),
+                    let session = match &resolved {
+                        Some(id) if resolved.as_ref() != Some(&after) => match sessions.get(id) {
+                            Some(session) => Some(session.clone()),
+                            None => earlier.session_of(id)?,
                         },
-                        _ => resolved,
+                        _ => None,
+                    };
+                    event.after = match session {
+                        Some(session) => match opened.get(&session) {
+                            Some(id) => Some(id.clone()),
+                            None => earlier.latest_opened(&session)?.or(resolved),
+                        },
+                        None => resolved,
                     };
                 }
             }
@@ -353,6 +381,7 @@ fn join(out: &mut Output, earlier: &mut dyn EarlierRows) -> Result<(), String> {
                 if let Some(parent) = row.message.parent.take() {
                     row.message.parent = resolve(&names, earlier, parent)?;
                 }
+                sessions.insert(row.message.id.clone(), row.message.session.clone());
                 let Some(key) = row.response.clone() else {
                     opened.insert(row.message.session.clone(), row.message.id.clone());
                     continue;
