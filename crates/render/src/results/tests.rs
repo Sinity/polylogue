@@ -24,13 +24,16 @@ fn text(format: Format) -> String {
 
 #[test]
 fn markdown_marks_matches_and_says_what_is_left() {
-    let t = text(Format::Markdown);
-    assert!(t.contains("| id | cost | snippet |"), "{t}");
-    assert!(t.contains("let's use «chrono», not time"), "{t}");
-    assert!(t.contains("| codex:b | – |"), "{t}");
-    assert!(t.contains("2 of 3 rows"));
-    assert!(t.contains("more: --cursor abc"));
-    assert!(t.contains("a note"));
+    assert_eq!(
+        text(Format::Markdown),
+        "| id | cost | snippet |\n\
+         |---|---|---|\n\
+         | claude-code:a | $1.50 | let's use «chrono», not time |\n\
+         | codex:b | – |  |\n\
+         2 of 3 rows\n\
+         more: --cursor abc\n\
+         a note\n"
+    );
 }
 
 #[test]
@@ -39,16 +42,46 @@ fn html_escapes_and_marks() {
     a["rows"][1]["id"] = json!("<b>");
     let mut out = vec![];
     render(&a, Format::Html, &mut out).unwrap();
-    let t = String::from_utf8(out).unwrap();
-    assert!(t.contains("<mark>chrono</mark>"));
-    assert!(t.contains("&lt;b&gt;"));
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "<table>\n\
+         <thead><tr><th>id</th><th>cost</th><th>snippet</th></tr></thead><tbody>\n\
+         <tr><td>claude-code:a</td><td>$1.50</td><td>let's use <mark>chrono</mark>, not time</td></tr>\n\
+         <tr><td>&lt;b&gt;</td><td>–</td><td></td></tr>\n\
+         </tbody></table>\n\
+         <p>2 of 3 rows</p>\n\
+         <p>more: --cursor abc</p>\n\
+         <p>a note</p>\n"
+    );
 }
 
 #[test]
-fn terminal_bolds_matches_and_explains_empty_results() {
-    let t = text(Format::Terminal);
-    assert!(t.contains("chrono"));
-    assert!(!t.contains("\x1b"));
+fn terminal_numbers_rows_and_indents_the_snippet() {
+    assert_eq!(
+        text(Format::Terminal),
+        "    id             cost\n\
+         @1  claude-code:a  $1.50\n\
+         \x20   let's use chrono, not time\n\
+         @2  codex:b        –\n\
+         2 of 3 rows\n\
+         more: --cursor abc\n\
+         a note\n"
+    );
+}
+
+#[test]
+fn terminal_with_color_bolds_the_match() {
+    let mut out = vec![];
+    terminal_with_color(&answer(), true, &mut out).unwrap();
+    let t = String::from_utf8(out).unwrap();
+    assert!(
+        t.contains("\n    let's use \x1b[1mchrono\x1b[0m, not time\n"),
+        "{t:?}"
+    );
+}
+
+#[test]
+fn an_empty_answer_says_no_rows_unless_a_part_failed() {
     let empty = json!({
         "columns": [], "rows": [], "count": 0, "next": null,
         "notes": [], "incomplete": [],
@@ -56,17 +89,19 @@ fn terminal_bolds_matches_and_explains_empty_results() {
     });
     let mut out = vec![];
     render(&empty, Format::Markdown, &mut out).unwrap();
-    let t = String::from_utf8(out).unwrap();
-    assert!(t.contains("no rows"));
-    assert!(t.contains("repo:other → 0 of 5"), "{t}");
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "no rows\nrepo:other → 0 of 5\n"
+    );
     // Nothing found while a part failed is not an empty answer.
     let mut incomplete = empty.clone();
     incomplete["incomplete"] = json!(["vectors"]);
     let mut out = vec![];
     render(&incomplete, Format::Markdown, &mut out).unwrap();
-    let t = String::from_utf8(out).unwrap();
-    assert!(!t.contains("no rows"), "{t}");
-    assert!(t.contains("0 rows"), "{t}");
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "0 rows\nvectors\nrepo:other → 0 of 5\n"
+    );
 }
 
 #[test]
