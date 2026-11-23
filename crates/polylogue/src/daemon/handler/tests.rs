@@ -276,13 +276,13 @@ fn local_schema_output_path_stays_out_of_the_typed_request() {
             "schema",
             "infer",
             "--all",
-            "--output",
+            "--to",
             "/synthetic/schema.json",
         ],
         std::path::Path::new("/"),
     )
     .unwrap();
-    assert!(arguments.get("output").is_none());
+    assert!(arguments.get("to").is_none());
     assert!(
         serde_json::from_value::<crate::protocol::schema::Infer>(Value::Object(arguments)).is_ok()
     );
