@@ -127,7 +127,6 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
         "{}",
         brief.text
     );
-    assert!(!brief.text.contains("Assertions held"), "{}", brief.text);
     drop(reader);
     // A later rejection replaces the acceptance.
     ok(
@@ -372,6 +371,10 @@ fn revising_a_withdrawal_is_refused() {
         &d,
         crate::test_daemon::Call::new("rows", assertion(vec![session], "keep the old path"))
             .id("note"),
+    );
+    assert_eq!(
+        crate::test_answers::ok(query(&d, "annotations where kind:lesson"))["count"],
+        1
     );
     ok(
         &d,

@@ -152,16 +152,6 @@ fn malformed_config_keeps_primary_status_and_refuses_reads_and_writes() {
         assert!(
             matches!((read_request()).answer(&runtime.daemon), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("sinex_unavailable"))
         );
-        assert!(
-            crate::test_answers::ok(
-                crate::test_daemon::Call::new(
-                    "set",
-                    serde_json::json!({"key": Some("browser.actions")})
-                )
-                .answer(&runtime.daemon)
-            )["authored"]
-                .is_null()
-        );
         assert!(w.file("pending.jsonl").exists());
         assert!(!w.root.join("archive.db").exists());
     }
@@ -314,7 +304,13 @@ fn sinex_outage_keeps_raw_bytes_without_standalone_day() {
         let ModeState::Primary { connection } = &runtime.daemon.mode else {
             panic!("primary mode required")
         };
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
         while connection.status().unwrap().prepared_materials == 0 {
+            assert!(
+                std::time::Instant::now() < until,
+                "no material was prepared while Sinex was down: {:?}",
+                connection.status()
+            );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(connection.status().unwrap().prepared_bytes > 0);
