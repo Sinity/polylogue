@@ -122,6 +122,34 @@ fn data_url_images_become_blobs() {
 }
 
 #[test]
+fn data_urls_that_are_not_base64_stay_references() {
+    let mut blobs = Vec::new();
+    let b = message_blocks(
+        &json!([
+            {"type": "input_image", "image_url": "data:image/png,plain"},
+            {"type": "input_image", "image_url": "data:image/png;base64,!!"}
+        ]),
+        &mut blobs,
+    );
+    let urls: Vec<_> = b
+        .iter()
+        .map(|block| {
+            let Block::Image(a) = block else { panic!() };
+            assert_eq!(a.blob, None);
+            a.url.as_deref()
+        })
+        .collect();
+    assert_eq!(
+        urls,
+        [
+            Some("data:image/png,plain"),
+            Some("data:image/png;base64,!!")
+        ]
+    );
+    assert!(blobs.is_empty());
+}
+
+#[test]
 fn harness_text_is_marked() {
     let k = |t: &str| prompt_kind(&json!([{"type": "input_text", "text": t}]));
     assert_eq!(

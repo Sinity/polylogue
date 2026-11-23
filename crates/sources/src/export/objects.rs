@@ -202,12 +202,14 @@ impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(),
         if self.scan_state.borrow().last != Some((end - 1, b'l')) {
             return Err(E::custom("missing null source boundary"));
         }
-        let raw: &RawValue = serde_json::from_str("null").expect("static JSON null");
-        (self.item)(self.parent, self.field, None, end - 4..end, raw)
+        const NULL: &str = "null";
+        let length = NULL.len();
+        let raw: &RawValue = serde_json::from_str(NULL).expect("static JSON null");
+        (self.item)(self.parent, self.field, None, end - length as u64..end, raw)
             .map_err(|error| callback_failed::<E>(self.scan_state, error))?;
         let mut scan_state = self.scan_state.borrow_mut();
         scan_state.stats.elements += 1;
-        scan_state.stats.peak_element_bytes = scan_state.stats.peak_element_bytes.max(4);
+        scan_state.stats.peak_element_bytes = scan_state.stats.peak_element_bytes.max(length);
         Ok(Json::Null)
     }
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Json, A::Error> {
