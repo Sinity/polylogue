@@ -241,6 +241,16 @@ fn a_hand_off_starts_a_new_session_briefed_from_the_source() {
             .unwrap()
             .contains("Hand-off from claude-code:s1")
     );
+    assert!(printed["channel"].is_string(), "{printed}");
+    assert!(printed["refused"].is_null(), "{printed}");
+    let printed_unsupported = crate::test_answers::ok(hand_off("chatgpt", true));
+    assert!(printed_unsupported["channel"].is_null());
+    assert!(
+        printed_unsupported["refused"]
+            .as_str()
+            .unwrap()
+            .starts_with("unsupported: ")
+    );
     assert!(turns(fixture.path()).is_empty(), "print starts nothing");
     let refused = serde_json::to_value(hand_off("chatgpt", false)).unwrap();
     assert_eq!(refused["error"]["kind"], "refused");
@@ -256,7 +266,10 @@ fn a_hand_off_starts_a_new_session_briefed_from_the_source() {
     d.wait_for(|status| status["pending_writes"]["delivery_outcomes"] == 0);
     let reader = d.daemon.reads.reader().unwrap();
     let (row, _) = reader.delivery(delivery).unwrap().unwrap();
-    assert_eq!((row.event.as_str(), row.sender.as_str()), ("pack", "act"));
+    assert_eq!(
+        (row.event.as_str(), row.sender.as_str()),
+        ("first_turn", "act")
+    );
     assert_eq!(row.recipient_id.as_deref(), Some("codex:t1"));
     assert_eq!(row.events, ["delivered"]);
     drop(reader);
@@ -388,6 +401,16 @@ fn ping_text_names_the_assert_tool() {
     );
     assert!(!text.contains("::finding"), "{text}");
     assert!(!text.contains("@["), "{text}");
+}
+
+/// A ping that starts a new role instance tells it how to answer.
+#[test]
+fn new_instance_ping_text_says_how_to_reply() {
+    let text = new_instance_ping_text("d1", "operator", "rebase please", Some("session:x"));
+    assert_eq!(
+        text,
+        "Ping from operator:\nrebase please\nAbout: session:x\nAnswer with a note replying to `delivery:d1` (`replies_to`, tool `polylogue_write`), or reach the sender with a `send` step (tool `polylogue_act`)."
+    );
 }
 
 /// An answer written the way the pack says is an assertion linked to the ping.

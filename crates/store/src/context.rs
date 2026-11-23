@@ -376,7 +376,7 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare_cached(
             "SELECT d.recipient_id, d.cwd, d.at FROM source_delivery d
-              WHERE d.event = 'pack' AND d.recipient_id IS NOT NULL
+              WHERE d.event = 'first_turn' AND d.recipient_id IS NOT NULL
                 AND EXISTS (SELECT 1 FROM json_each(d.refs_json) r WHERE r.value = ?1)
               ORDER BY d.at DESC, d.id DESC",
         )?;

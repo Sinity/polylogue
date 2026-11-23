@@ -111,7 +111,13 @@ pub(crate) fn arguments(
     let format = format
         .as_deref()
         .map(|name| {
-            Format::parse(name).ok_or_else(|| not_built_use("read", &format!("--format {name}")))
+            Format::parse(name).ok_or_else(|| match name {
+                // Documented formats whose encoders are not built.
+                "citation" | "bytes" => not_built_use("read", &format!("--format {name}")),
+                _ => Failure::bad_value(format!(
+                    "unknown format `{name}`; formats are terminal, markdown, html, json and jsonl"
+                )),
+            })
         })
         .transpose()?;
     Ok(crate::protocol::read::Arguments {
@@ -285,3 +291,6 @@ impl ReadServices for LineReads<'_> {
         ReadServices::writer(self.daemon)
     }
 }
+
+#[cfg(test)]
+mod tests;

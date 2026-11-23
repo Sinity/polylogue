@@ -2,6 +2,24 @@
 use super::{Daemon, error, store_error};
 use polylogue_model::LockExt as _;
 
+/// The daemon's mode as status reports it.
+fn mode(d: &Daemon) -> crate::protocol::status::Mode {
+    match &d.mode {
+        super::ModeState::Standalone => crate::protocol::status::Mode::Standalone,
+        #[cfg(feature = "sinex")]
+        super::ModeState::Primary { .. } => crate::protocol::status::Mode::Primary,
+        super::ModeState::Blocked {
+            configured,
+            path,
+            error,
+        } => crate::protocol::status::Mode::Blocked {
+            configured: configured.map(str::to_owned),
+            path: path.clone(),
+            error: error.clone(),
+        },
+    }
+}
+
 /// Status over an index that is not current is a degraded answer.
 pub(super) fn answer(
     d: &Daemon,
@@ -22,16 +40,8 @@ pub(super) fn answer(
     } else {
         (None, None)
     };
-    let loop_status = d
-        .status
-        .lock()
-        .map(|status| status.clone())
-        .unwrap_or_default();
-    let signals = d
-        .signals
-        .lock()
-        .map(|signals| signals.clone())
-        .unwrap_or_default();
+    let loop_status = d.status.locked().clone();
+    let signals = d.signals.locked().clone();
     let signals = match serde_json::from_value(signals) {
         Ok(signals) => signals,
         Err(problem) => return error(polylogue_model::Code::Internal, problem),
@@ -52,25 +62,35 @@ pub(super) fn answer(
             error: error.to_string(),
         },
     };
-    let mode = match &d.mode {
-        super::ModeState::Standalone => crate::protocol::status::Mode::Standalone,
-        #[cfg(feature = "sinex")]
-        super::ModeState::Primary { .. } => crate::protocol::status::Mode::Primary,
-        super::ModeState::Blocked {
-            configured,
-            path,
-            error,
-        } => crate::protocol::status::Mode::Blocked {
-            configured: configured.map(str::to_owned),
-            path: path.clone(),
-            error: error.clone(),
-        },
-    };
     let freshness = match d.freshness(reader) {
         Ok(freshness) => freshness,
         Err(error) => return store_error(&error),
     };
-    let vector_error = vectors_error.clone();
+    let mut missing: Vec<String> = freshness.notes().into_iter().map(str::to_owned).collect();
+    let blocked = if let super::ModeState::Blocked { path, error, .. } = &d.mode {
+        missing.push(format!("{}: {error}", path.display()));
+        true
+    } else {
+        false
+    };
+    if let Some(error) = &totals_error {
+        missing.push(format!("archive totals: {error}"));
+    }
+    if let Some(error) = &vectors_error {
+        missing.push(format!("vector counts: {error}"));
+    }
+    if let crate::protocol::status::Running::Unavailable { error } = &running {
+        missing.push(format!("running sessions: {error}"));
+    }
+    if let crate::protocol::status::Notices::Unavailable { error } = &notices {
+        missing.push(format!("notices: {error}"));
+    }
+    #[cfg(feature = "sinex")]
+    let primary = primary(d, reader);
+    #[cfg(feature = "sinex")]
+    if let Some(crate::protocol::status::Primary::Unavailable { error }) = &primary {
+        missing.push(format!("primary status: {error}"));
+    }
     let status = crate::protocol::status::Answer {
         archive: Some(d.archive.root.clone()),
         pid: std::process::id(),
@@ -87,31 +107,19 @@ pub(super) fn answer(
         notices,
         running,
         warm: d.warm.summary(),
-        mode,
+        mode: mode(d),
         freshness: freshness.clone(),
         #[cfg(feature = "sinex")]
-        primary: primary(d, reader),
+        primary,
     };
-    let super::ModeState::Blocked { path, error, .. } = &d.mode else {
-        let mut missing: Vec<String> = freshness.notes().into_iter().map(str::to_owned).collect();
-        if let Some(error) = vector_error {
-            missing.push(format!("vector counts: {error}"));
-        }
-        return capture_note(
-            d,
-            if freshness.up_to_date() && missing.is_empty() {
-                command_surface::Answer::ok(status)
-            } else {
-                command_surface::Answer::degraded(status, missing)
-            },
-        );
-    };
-    let mut missing: Vec<String> = freshness.notes().into_iter().map(str::to_owned).collect();
-    missing.push(format!("{}: {error}", path.display()));
-    if let Some(error) = vector_error {
-        missing.push(format!("vector counts: {error}"));
-    }
-    capture_note(d, command_surface::Answer::degraded(status, missing))
+    capture_note(
+        d,
+        if !blocked && freshness.up_to_date() && missing.is_empty() {
+            command_surface::Answer::ok(status)
+        } else {
+            command_surface::Answer::degraded(status, missing)
+        },
+    )
 }
 
 fn capture_note(
@@ -135,20 +143,13 @@ pub(super) fn building(
         CompletenessDimension, CompletenessReason, IndexFreshness, ReadCompleteness, ReadFreshness,
     };
     let unread = build.to_string();
-    let loop_status = d
-        .status
-        .lock()
-        .map(|status| status.clone())
-        .unwrap_or_default();
-    let signals = d
-        .signals
-        .lock()
-        .map(|signals| signals.clone())
-        .unwrap_or_default();
+    let loop_status = d.status.locked().clone();
+    let signals = d.signals.locked().clone();
     let signals = match serde_json::from_value(signals) {
         Ok(signals) => signals,
         Err(problem) => return error(polylogue_model::Code::Internal, problem),
     };
+    let mode = mode(d);
     let freshness = ReadFreshness {
         local: ReadCompleteness {
             parsing: CompletenessDimension::Incomplete(vec![CompletenessReason::FirstBuild]),
@@ -160,7 +161,12 @@ pub(super) fn building(
             kept_chains: 0,
             raw_only_chains: 0,
         },
-        sinex: IndexFreshness::Standalone,
+        sinex: match &mode {
+            crate::protocol::status::Mode::Primary => {
+                IndexFreshness::primary(None, None, None, None, None)
+            }
+            _ => IndexFreshness::Standalone,
+        },
     };
     let status = crate::protocol::status::Answer {
         archive: Some(d.archive.root.clone()),
@@ -180,12 +186,18 @@ pub(super) fn building(
         },
         running: crate::protocol::status::Running::Unavailable { error: unread },
         warm: d.warm.summary(),
-        mode: crate::protocol::status::Mode::Standalone,
+        mode: mode.clone(),
         freshness: freshness.clone(),
         #[cfg(feature = "sinex")]
         primary: None,
     };
-    capture_note(d, crate::protocol::read(status, &freshness))
+    let mut answer = crate::protocol::read(status, &freshness);
+    if let crate::protocol::status::Mode::Blocked { path, error, .. } = &mode
+        && let command_surface::Outcome::Degraded { missing, .. } = &mut answer.outcome
+    {
+        missing.push(format!("{}: {error}", path.display()));
+    }
+    capture_note(d, answer)
 }
 
 #[cfg(feature = "sinex")]
@@ -204,10 +216,10 @@ fn primary(
                 Err(error) => (None, Some(error.to_string())),
             };
             let (refused_events, last_refused) = match reader.confirmed_refusals() {
-                Ok(refusals) => refusals,
+                Ok((count, last)) => (Some(count), last),
                 Err(error) => {
                     position_error.get_or_insert(error.to_string());
-                    (0, None)
+                    (None, None)
                 }
             };
             let lag_positions = producer

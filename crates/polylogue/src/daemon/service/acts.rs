@@ -538,7 +538,8 @@ fn claim(d: &Daemon, session: &SessionId) -> Result<Answer<Value>, Failure> {
 }
 
 /// Pings and notices still pending for sessions that stopped running
-/// reach no hook: each is recorded `not_sent:session_ended` and the flag
+/// reach no hook: each is recorded `not_sent:session_<state>` (`ended`,
+/// `stale`, or `missing` when the session has no live state) and the flag
 /// lowered. Run by the live worker after each change, and at start for
 /// every session with pending items (a resumed run queued when the daemon
 /// stopped is among them).
@@ -738,7 +739,7 @@ fn answer(
             format!("already_answered by delivery:{}", first.id),
         )?;
         return Ok(error(
-            polylogue_model::Code::Refused,
+            polylogue_model::Code::Conflict,
             format!(
                 "already_answered: {reference} was answered by delivery:{}",
                 first.id
@@ -886,8 +887,6 @@ fn interrupt(
     Ok(answer)
 }
 
-/// Runs a resumed run on its own thread, then any queued behind it whose
-/// delivery no hook has claimed meanwhile.
 /// The acts worker: records the outcomes hosted connections report and
 /// starts each session's resumed runs on a thread of that session's own,
 /// so one session's run never delays another's.
@@ -1041,7 +1040,7 @@ struct NewSession<'a> {
 
 /// Starts a hosted session on the harness's control protocol, its first
 /// turn opening with the delivery reference, and records that turn as a
-/// `pack` delivery to the new session. The channel is
+/// `first_turn` delivery to the new session. The channel is
 /// [`polylogue_model::live::channel::host_channel`]'s.
 fn start_session(
     d: &Daemon,
@@ -1096,7 +1095,7 @@ fn start_session(
             recipient_kind: "session".into(),
             recipient_id: Some(session.to_string()),
             sender: DeliverySender::Act.as_str().into(),
-            event: DeliveryEvent::Pack.as_str().into(),
+            event: DeliveryEvent::FirstTurn.as_str().into(),
             cwd: Some(new.cwd.to_string_lossy().into_owned()),
             text: first,
             refs: new.refs,
@@ -1194,6 +1193,20 @@ fn start(
     })))
 }
 
+/// The first turn's ping text for a new role instance, which has no ping
+/// annotation to answer: the reply goes as a note replying to the
+/// delivery, or as a message to the sender.
+fn new_instance_ping_text(delivery: &str, author: &str, text: &str, about: Option<&str>) -> String {
+    let mut pack = format!("Ping from {author}:\n{text}\n");
+    if let Some(about) = about {
+        pack.push_str(&format!("About: {about}\n"));
+    }
+    pack.push_str(&format!(
+        "Answer with a note replying to `delivery:{delivery}` (`replies_to`, tool `polylogue_write`), or reach the sender with a `send` step (tool `polylogue_act`)."
+    ));
+    pack
+}
+
 /// A ping to a role with no running instance starts one, in the directory
 /// its latest instance ran in, with the ping as its first turn.
 fn ping_new_instance(
@@ -1214,10 +1227,7 @@ fn ping_new_instance(
         ));
     };
     let author_name = invocation.authorship.author.to_string();
-    let mut pack = format!("Ping from {author_name}:\n{text}\n");
-    if let Some(about) = about {
-        pack.push_str(&format!("About: {about}\n"));
-    }
+    let pack = new_instance_ping_text(request_id, &author_name, text, about);
     let session = match start_session(
         d,
         invocation,
@@ -1316,12 +1326,15 @@ fn hand_off(
     refs.extend(at.as_ref().map(polylogue_model::Reference::stored_form));
     refs.extend(prepared.refs.iter().cloned());
     if h.print {
+        let channel = polylogue_model::live::channel::host_channel(h.to);
         return Ok(ok(json!({
             "to": h.to,
             "cwd": cwd,
-            "channel": polylogue_model::live::channel::host_channel(h.to)
-                .map(|p| p.as_str())
-                .map_err(|r| r.reason),
+            "channel": channel.as_ref().ok().map(|p| p.as_str()),
+            "refused": channel
+                .as_ref()
+                .err()
+                .map(|r| format!("{}: {}", r.reason, r.detail)),
             "pack": text,
             "refs": refs,
         })));

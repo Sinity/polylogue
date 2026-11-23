@@ -118,3 +118,24 @@ fn resume_dry_run_prints_harness_command() {
         "would resume claude-code:s1 with claude --resume s1"
     );
 }
+
+/// An option of `--in` without it is refused, not dropped.
+#[test]
+fn resume_options_for_a_hand_off_need_in() {
+    let d = test_daemon::start("continue the clock work");
+    for step in [
+        json!({"verb": "resume", "at": "message:claude-code:u1"}),
+        json!({"verb": "resume", "cwd": "/home/op"}),
+        json!({"verb": "resume", "stop_source": true}),
+    ] {
+        let answer = Call::new(
+            "rows",
+            json!({"selection": "session:claude-code:s1", "dry_run": true, "steps": [step]}),
+        )
+        .id("resume-without-in")
+        .answer(&d.daemon);
+        let value = serde_json::to_value(&answer).unwrap();
+        let text = value.to_string();
+        assert!(text.contains("apply only with --in HARNESS"), "{text}");
+    }
+}
