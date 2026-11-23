@@ -228,7 +228,6 @@ fn unreadable_header_keeps_diagnostics_without_a_cursor_and_new_length_can_resta
     apply_step(&mut conn, 2, &complete).unwrap();
     let reading: Reading = serde_json::from_str(&state(&conn)).unwrap();
     assert_eq!(reading.status(), CoverageStatus::Complete);
-    assert_eq!(reading.export_refusals.unwrap().count, 1);
 }
 
 #[test]

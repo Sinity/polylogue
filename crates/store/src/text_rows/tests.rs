@@ -406,12 +406,12 @@ fn new_text_membership_follows_unindexing_and_rollback_within_the_writer() {
         .unwrap()
         .id;
     assert_eq!(state(&tx, id), (2, 1));
-    activate(&tx, &identities, id, 2, false).unwrap();
+    join_search_index(&tx, &identities, id, 2, false).unwrap();
     assert_eq!(state(&tx, id), (2, 1));
     // No block uses it, so unindexing removes it; activating restores it.
     unindex_unused(&tx, &identities, id, false).unwrap();
     assert_eq!(state(&tx, id), (0, 0));
-    activate(&tx, &identities, id, 2, false).unwrap();
+    join_search_index(&tx, &identities, id, 2, false).unwrap();
     assert_eq!(state(&tx, id), (2, 1));
     unindex_unused(&tx, &identities, id, false).unwrap();
     tx.commit().unwrap();
@@ -421,13 +421,13 @@ fn new_text_membership_follows_unindexing_and_rollback_within_the_writer() {
     // Membership set in a transaction that rolls back is not assumed after it.
     let transaction = identities.transaction();
     let tx = conn.transaction().unwrap();
-    activate(&tx, &identities, id, 1, false).unwrap();
+    join_search_index(&tx, &identities, id, 1, false).unwrap();
     assert_eq!(state(&tx, id), (1, 1));
     drop(tx);
     drop(transaction);
     assert_eq!(state(&conn, id), (0, 0));
     let tx = conn.transaction().unwrap();
-    activate(&tx, &identities, id, 1, false).unwrap();
+    join_search_index(&tx, &identities, id, 1, false).unwrap();
     tx.commit().unwrap();
     assert_eq!(state(&conn, id), (1, 1));
 }

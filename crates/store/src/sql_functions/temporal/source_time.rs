@@ -90,7 +90,7 @@ fn read_stored(bytes: Option<&[u8]>, storage: TimeStorage) -> Result<SourceTime,
             SourceTime::from_source(at, source)
         }
         TimeStorage::Event => {
-            let event: Event = serde_json::from_slice(&crate::encoding::unpack_bytes(bytes)?)?;
+            let event: Event = crate::encoding::unpack_json(bytes)?;
             SourceTime::from_source(event.at, event.time_evidence())
         }
         TimeStorage::Latest => {

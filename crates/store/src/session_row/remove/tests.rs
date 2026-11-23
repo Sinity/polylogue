@@ -65,6 +65,20 @@ fn many_tool_calls_remove_search_entries_and_keep_another_session() {
             .unwrap(),
         1
     );
+    // The external-content index has no triggers: only the removal's own
+    // 'delete' entries take the removed session's commands and paths out.
+    for term in ["syntheticcommand1", "\"/synthetic/path/1\""] {
+        assert_eq!(
+            tx.query_row(
+                "SELECT count(*) FROM tool_call_trigram WHERE tool_call_trigram MATCH ?1",
+                [term],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0,
+            "{term}"
+        );
+    }
     assert_eq!(tx.query_row("SELECT rowid FROM tool_call_trigram WHERE tool_call_trigram MATCH 'syntheticcommand4097'",[],|r|r.get::<_,i64>(0)).unwrap(),4097);
 }
 

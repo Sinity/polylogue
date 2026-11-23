@@ -67,7 +67,7 @@ pub(crate) fn intern(
     // written after this transaction commits: by the search thread, or by
     // the final build scan.
     if search_index != 0 && indexed & search_index == 0 {
-        join_index(conn, id, search_index, at_build_end)?;
+        mark_indexed(conn, id, search_index, at_build_end)?;
     }
     Ok(id)
 }
@@ -81,8 +81,9 @@ pub(crate) struct NewMembership<'a> {
     pub at_build_end: bool,
 }
 
-/// Marks an already stored text for current-block search membership.
-pub(crate) fn activate(
+/// Joins an already stored text to the search index named by `bit`, for
+/// current-block search membership.
+pub(crate) fn join_search_index(
     conn: &Connection,
     texts: &TextIds,
     id: i64,
@@ -93,12 +94,12 @@ pub(crate) fn activate(
     if texts.is_marked(id, bit) {
         return Ok(());
     }
-    join_index(conn, id, bit, at_build_end)?;
+    mark_indexed(conn, id, bit, at_build_end)?;
     texts.mark(id, bit);
     Ok(())
 }
 
-fn join_index(conn: &Connection, id: i64, bit: i64, at_build_end: bool) -> Result<()> {
+fn mark_indexed(conn: &Connection, id: i64, bit: i64, at_build_end: bool) -> Result<()> {
     let changed = conn
         .prepare_cached(
             "UPDATE text SET indexed = indexed | ?2 WHERE id = ?1 AND indexed & ?2 = 0",

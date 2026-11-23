@@ -177,6 +177,8 @@ pub fn verify(
     Ok(found)
 }
 
+/// A stored count; a negative value cannot be one, and every check that could
+/// meet one (kept counters, blob sizes, revision lengths) reports it as a problem.
 fn count(n: i64) -> u64 {
     u64::try_from(n).unwrap_or(0)
 }
@@ -293,7 +295,8 @@ fn rows(pool: &ReadPool, found: &mut Verification) -> Result<()> {
                 || coalesce((SELECT max(e.offset + e.length) FROM source_extent e
                              WHERE e.input = r.input AND e.chain = r.chain), 0)
          FROM source_revision r
-         WHERE r.length > coalesce((SELECT max(e.offset + e.length) FROM source_extent e
+         WHERE r.length < 0
+            OR r.length > coalesce((SELECT max(e.offset + e.length) FROM source_extent e
                                     WHERE e.input = r.input AND e.chain = r.chain), 0)
          ORDER BY r.input, r.number",
     )?;
@@ -380,8 +383,8 @@ fn blob_bytes(
             found.blobs.bytes += extent.decoded_len;
             found.blobs.stored_bytes += extent.len;
             if extent.hash.0.as_slice() != hash.as_slice()
-                || count(size) != extent.decoded_len
-                || count(stored_size) != extent.len
+                || u64::try_from(size).ok() != Some(extent.decoded_len)
+                || u64::try_from(stored_size).ok() != Some(extent.len)
             {
                 found.blobs.mismatched += 1;
                 found.problem(

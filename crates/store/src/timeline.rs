@@ -2,10 +2,10 @@
 use crate::OptionExt as _;
 use crate::{Reader, Result, SqlValue};
 use query_language::time::{Clock, DaySetting};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Position {
     pub undated: bool,
     pub at: Option<i64>,
@@ -409,11 +409,6 @@ pub fn page(
 pub fn calendar(reader: &Reader<'_>, clock: &Clock, date: jiff::civil::Date) -> Result<Vec<Value>> {
     let day = &clock.day;
     let (since, until) = crate::calendar::month(day, date)?;
-    if until <= since {
-        return Err(crate::StoreError::Invalid(
-            "calendar month has no representable interval".into(),
-        ));
-    }
     reader.with_clock(clock, || reader.query(
         "SELECT pl_day(at) AS date,count(*) AS records FROM (
         SELECT at FROM message WHERE at >= ?1 AND at < ?2
@@ -447,11 +442,6 @@ pub fn costs_by_day(
     );
     let source = &sources[0];
     let (since, until) = crate::calendar::month(day, month)?;
-    if until <= since {
-        return Err(crate::StoreError::Invalid(
-            "calendar month has no representable interval".into(),
-        ));
-    }
     params.push(SqlValue::Int(since));
     let first = params.len();
     params.push(SqlValue::Int(until));

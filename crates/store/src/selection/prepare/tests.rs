@@ -301,7 +301,12 @@ fn hash_prefix_resolves() {
         assert_eq!(by_prefix.question_id(), by_hash.question_id(), "{length}");
     }
     // Shorter than 12 characters is not a hash, and no saved query has that name.
-    assert!(prepare(&format!("query:{}", &full[..11])).is_err());
+    assert_eq!(
+        prepare(&format!("query:{}", &full[..11]))
+            .unwrap_err()
+            .code(),
+        polylogue_model::Code::InvalidQuery
+    );
     // A prefix no saved question starts with is unavailable.
     let other = if full.starts_with('0') { "1" } else { "0" };
     assert_eq!(
@@ -420,4 +425,15 @@ fn provisional_prefix_shared_by_two_questions_is_ambiguous() {
         provisional.by_prefix(&prefix).unwrap_err().kind(),
         polylogue_model::Code::Ambiguous
     );
+}
+
+#[test]
+fn kept_result_ids_are_read_quoted_or_bare() {
+    assert_eq!(
+        spelled_kept_results(
+            r#"join (result:"a:b.c") on id = id | join (result:plain-1) on id = id | result:"q\"x\\y""#
+        ),
+        ["a:b.c", "plain-1", r#"q"x\y"#]
+    );
+    assert!(spelled_kept_results(r#"result:"never closed"#).is_empty());
 }

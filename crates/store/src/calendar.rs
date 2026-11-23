@@ -40,7 +40,13 @@ pub fn month(day: &DaySetting, date: Date) -> Result<(i64, i64)> {
     let next = first
         .checked_add(jiff::Span::new().months(1))
         .map_err(crate::StoreError::invalid)?;
-    Ok((start(day, first)?, start(day, next)?))
+    let (since, until) = (start(day, first)?, start(day, next)?);
+    if until <= since {
+        return Err(crate::StoreError::Invalid(
+            "calendar month has no representable interval".into(),
+        ));
+    }
+    Ok((since, until))
 }
 pub fn day_label(day: &DaySetting, ms: i64) -> Result<String> {
     Ok(label::day(date(day, ms)?))

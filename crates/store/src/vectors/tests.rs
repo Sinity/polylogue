@@ -665,7 +665,14 @@ fn similar_scores_only_the_selected_rows_vectors() {
             let (_dir, f) = ranked_archive(sessions, |_| unit(&[1.0, 1.0]));
             let similarity = loaded_similarity(&f, &unit(&[1.0, 0.0]));
             let ids = ranked_ids(&f, text, &similarity);
-            assert!(!ids.is_empty(), "{text}");
+            // Rows without a vector follow the ranked ones, so a messages
+            // answer lists all of session 3's messages, its vectored one first.
+            if text.starts_with("sessions") {
+                assert_eq!(ids, ["test:many-3"], "{text}");
+            } else {
+                assert_eq!(ids.first().map(String::as_str), Some("many-3-2"), "{text}");
+                assert!(ids.iter().all(|id| id.starts_with("many-3-")), "{ids:?}");
+            }
             assert_eq!(
                 similarity.vectors_scored(),
                 1,

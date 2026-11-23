@@ -344,6 +344,22 @@ fn a_revision_longer_than_its_extents_is_reported() {
 }
 
 #[test]
+fn a_negative_revision_length_is_reported() {
+    let stored = two_inputs();
+    stored.edit("UPDATE revision SET length = -1 WHERE input = 'whole'");
+    let found = stored.verify(None);
+    assert!(
+        found.problems.iter().any(|problem| {
+            problem.kind == ProblemKind::RevisionUncovered
+                && problem.subject.starts_with("whole#")
+                && problem.detail.starts_with("length -1,")
+        }),
+        "{:?}",
+        found.problems
+    );
+}
+
+#[test]
 fn an_extent_citing_an_absent_blob_is_reported() {
     let stored = two_inputs();
     let missing = "00".repeat(32);

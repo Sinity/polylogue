@@ -145,7 +145,7 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
 | OpenTelemetry GenAI | OTLP-JSON `resourceSpans` | `otel-genai` |
 | OpenAI chat array | only with `--origin openai-chat`, since the shape has no reliable structure | `openai-chat` |
 | aider | `.aider.llm.history` beside `.aider.chat.history.md` | `aider`: the LLM history is the session, the Markdown a companion document |
-| Polylogue export bundle | the bundle manifest ([reading.md](reading.md#writing-out)) | the bundle's own records |
+| Polylogue bundle | the bundle manifest ([reading.md](reading.md#writing-out)) | the bundle's own records |
 | Hook spool lines in the older line shapes | only with `--origin hook-spool`: per-session `.jsonl`, `carriers/<harness>/<date>/<pid>.ndjson` | the payload's origin |
 | Browser captures in the older envelope | only with `--origin browser-capture`: `browser_llm_session` v1 envelopes | the payload's origin |
 | Python Polylogue's vector stores | only with `--origin python-vectors`: a sqlite-vec `message_embeddings` store, read through its backing tables | vectors ([search.md](search.md#what-is-embedded)) |

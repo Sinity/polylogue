@@ -279,12 +279,18 @@ pub(crate) fn column(row: &rusqlite::Row<'_>, at: usize) -> Result<Option<String
     else {
         return Ok(None);
     };
-    slice(body, row.get(at + 1)?, row.get(at + 2)?).map(Some)
+    slice(body, row.get(at + 1)?, row.get(at + 2)?)
+        .map(Some)
+        .map_err(|error| match error {
+            // The error names the column the text was read from.
+            StoreError::StoredValue { reason, .. } => StoreError::stored(at, reason),
+            other => other,
+        })
 }
 
 /// The text an inner join selected into columns `at..at + 3`.
 pub(crate) fn joined(row: &rusqlite::Row<'_>, at: usize) -> Result<String> {
-    column(row, at)?.ok_or_else(|| crate::StoreError::stored(0, "a text row has no group"))
+    column(row, at)?.ok_or_else(|| StoreError::stored(at, "a text row has no group"))
 }
 
 /// One stored text.
@@ -326,7 +332,8 @@ pub(crate) fn slice(body: &[u8], start: i64, length: i64) -> Result<String> {
 }
 
 pub(super) fn decode(body: &[u8]) -> Result<Vec<u8>> {
-    Ok(crate::encoding::unpack_bytes(body)?)
+    crate::encoding::unpack_bytes(body)
+        .map_err(|error| StoreError::stored(0, format!("a text group does not decode: {error}")))
 }
 
 pub(super) fn slice_decoded(group: &[u8], start: i64, length: i64) -> Result<String> {
@@ -338,14 +345,15 @@ fn text_range(start: i64, length: i64) -> Result<std::ops::Range<usize>> {
         .ok()
         .zip(usize::try_from(length).ok())
         .and_then(|(start, length)| Some(start..start.checked_add(length)?))
-        .ok_or_else(|| crate::StoreError::stored(0, "a stored text has an invalid place"))
+        .ok_or_else(|| StoreError::stored(0, "a stored text has an invalid place"))
 }
 
 fn text_of(group: &[u8], range: std::ops::Range<usize>) -> Result<String> {
     let bytes = group
         .get(range)
-        .ok_or_else(|| crate::StoreError::stored(0, "a stored text lies outside its group"))?;
-    String::from_utf8(bytes.to_vec()).map_err(|e| StoreError::Io(std::io::Error::other(e)))
+        .ok_or_else(|| StoreError::stored(0, "a stored text lies outside its group"))?;
+    String::from_utf8(bytes.to_vec())
+        .map_err(|_| StoreError::stored(0, "a stored text is not valid UTF-8"))
 }
 
 #[cfg(test)]

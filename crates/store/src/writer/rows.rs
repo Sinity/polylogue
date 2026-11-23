@@ -1455,7 +1455,13 @@ impl RowWriter<'_, '_> {
         let (idx, ordinal) = position;
         let bit = search_bit(block);
         if let Some(id) = text_id {
-            crate::text_rows::activate(self.tx, self.texts, id, bit, self.upkeep.at_build_end())?;
+            crate::text_rows::join_search_index(
+                self.tx,
+                self.texts,
+                id,
+                bit,
+                self.upkeep.at_build_end(),
+            )?;
         }
         let (kind, call_id, attachment) = match block {
             Block::Text { .. } => ("text", None, None),

@@ -104,6 +104,54 @@ fn period_totals_models_days_and_paged_responses_are_one_population() {
     assert_eq!(result["responses"]["rows"][0]["id"], "codex:unknown");
 }
 
+/// A day's known cost sums only priced responses; a day with none stays
+/// unknown, never zero, and every unpriced response is counted (docs/measures.md).
+#[test]
+fn days_with_unpriced_responses_keep_cost_unknown_and_count_them() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(temp.path()).unwrap();
+    let s = f
+        .session(SessionFacts {
+            id: "codex:priced",
+            kind: "main",
+            ..Default::default()
+        })
+        .unwrap();
+    for (id, at, cost_nusd) in [
+        ("codex:p1", "2024-04-10T12:00:00Z", Some(5_000_000)),
+        ("codex:p2", "2024-04-10T13:00:00Z", None),
+        ("codex:p3", "2024-04-12T12:00:00Z", None),
+    ] {
+        f.message(
+            s,
+            MessageFacts {
+                id,
+                at: Some(at.parse::<jiff::Timestamp>().unwrap().as_millisecond()),
+                model: Some("test"),
+                role: "assistant",
+                written_by: "model",
+                cost_nusd,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+    let pool = f.reads().unwrap();
+    let r = pool.reader().unwrap();
+    let mut request = options(None, None);
+    request.month = Some("2024-04-01");
+    let result = value(cost(&r, request, &fixture_context("04:00:00", 0)).unwrap());
+    let days = result["days"].as_array().unwrap();
+    assert_eq!(days.len(), 2);
+    assert_eq!(days[0]["date"], "2024-04-10");
+    assert_eq!(days[0]["records"], 2);
+    assert!(!days[0]["known"].is_null());
+    assert_eq!(days[0]["unpriced_records"], 1);
+    assert_eq!(days[1]["date"], "2024-04-12");
+    assert!(days[1]["known"].is_null());
+    assert_eq!(days[1]["unpriced_records"], 1);
+}
+
 #[test]
 fn request_day_binds_continuation_and_keeps_leap_days() {
     let temp = tempfile::tempdir().unwrap();
