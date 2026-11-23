@@ -169,7 +169,7 @@ fn accepting_preparation_uses_original_rows() {
         )
         .unwrap_err()
         .code(),
-        polylogue_model::Code::InvalidQuery
+        polylogue_model::Code::NotFound
     );
     let new_plan =
         polylogue_query::plan::prepare("sessions where repo:new", &Bindings::default(), |_| Ok(()))
