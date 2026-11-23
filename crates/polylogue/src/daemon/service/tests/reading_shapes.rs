@@ -150,7 +150,7 @@ pub(super) fn family(d: &test_daemon::TestDaemon) {
 }
 
 fn read(d: &test_daemon::TestDaemon, target: &str, options: ReadOptions) -> ReadPage {
-    let response = (crate::test_daemon::read(polylogue_reading::ReadRequest {
+    let response = (crate::test_daemon::read_call(polylogue_reading::ReadRequest {
         start: Default::default(),
         references: None,
         target: target.into(),
@@ -924,7 +924,7 @@ fn context_result_data_and_attachments_survive_entry_windows_and_page_boundaries
                 cursor: None,
             };
             let mut page = crate::test_answers::read(
-                crate::test_daemon::read(request.clone()).answer(&d.daemon),
+                crate::test_daemon::read_call(request.clone()).answer(&d.daemon),
             );
             let mut all = page.document.items;
             let mut seen = std::collections::BTreeSet::new();

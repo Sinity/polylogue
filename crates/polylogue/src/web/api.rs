@@ -144,7 +144,12 @@ fn query_request(
             .map_err(|failure| failure.message);
     }
     let [verb @ ("read" | "brief")] = verbs.as_slice() else {
-        return Err("use POST /api/v1/rows".into());
+        return Err(match verbs.as_slice() {
+            [verb] => format!(
+                "a GET carries only the read and brief steps, not {verb}; use POST /api/v1/rows"
+            ),
+            _ => "a GET carries one step; use POST /api/v1/rows for several".into(),
+        });
     };
     let fields = declarations
         .descriptions()
@@ -411,7 +416,8 @@ async fn answer_as(
                     .http_status()
                     .and_then(|status| StatusCode::from_u16(status).ok())
             })
-            .unwrap_or(StatusCode::OK);
+            // As the JSON answers: an outcome with no mapped status is not a success.
+            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         return scoped_body_response(
             web,
             status,

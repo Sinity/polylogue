@@ -26,7 +26,7 @@ Where Polylogue's inputs come from: the location model and every live origin, ho
 |---|---|---|
 | `collected` | matched by a location | stored as bytes (or row dumps), and parsed when the origin has a parser |
 | `ignored` | matched by an ignored entry | not stored; counted with its reason |
-| `unrecognized` | matched by neither | not stored, not parsed; counted per root, directory pattern and extension, and shown in status |
+| `unrecognized` | matched by neither | not stored, not parsed; counted per root (one row of files, bytes and newest time) and shown in status |
 
 - **Collecting does not wait for a parser.** An origin has two separate switches: *collect*, on for every declared location, and *parse*. A declared origin without a parser stores its bytes from the first day with parse state `no_parser_yet` ([archive.md](archive.md#parsing)).
 - **Fail closed.** A collected file that fails its origin's shape check is `refused`, with the reason, as a parse-state fact; it is never read as another origin's file. A Claude Code transcript found in Drive is not ingested as a Claude Code session, because it would duplicate the real one.
@@ -139,7 +139,7 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
 | claude.ai export | `conversations.json`, `users.json`, `projects/`, `memories.json`, `design_chats/` | `claude-ai`, `claude-design` |
 | claude.ai single conversation | the `chat_messages` and `uuid` shape | `claude-ai` |
 | Grok account export | `prod-grok-backend.json`, shape-checked while streaming | `grok` |
-| Google Takeout | `Takeout/My Activity/Gemini Apps/`; `Drive/Google AI Studio/*`; `Gemini/` (Gems); `NotebookLM/` | `gemini-app`; `ai-studio`, each prompt named by its content (its first chunk), never by its file name, which is its title; Gems as documents; NotebookLM stored without a parser. Other Takeout products are refused members, counted and not stored |
+| Google Takeout | `Takeout/My Activity/Gemini Apps/`; `Drive/Google AI Studio/*`; `Gemini/` (Gems); `NotebookLM/` | `gemini-app`, a session named by the conversation ID in its entry's caption link (an entry with no link is a session of its own, named by a hash of the entry); `ai-studio`, each prompt named by its content (its first chunk), never by its file name, which is its title; Gems as documents; NotebookLM stored without a parser. Other Takeout products are refused members, counted and not stored |
 | AI Studio archive | prompt JSON members, extensionless ones included | `ai-studio` |
 | OpenRouter chat-room export | its JSON shape | `openrouter` |
 | OpenTelemetry GenAI | OTLP-JSON `resourceSpans` | `otel-genai` |

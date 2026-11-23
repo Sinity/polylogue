@@ -14,7 +14,7 @@ fn parent_deadline_surrounds_the_unchanged_request() {
         request: accepted,
         parent_deadline_ms: parent,
         ..
-    } = incoming(&wire).unwrap().unwrap();
+    } = incoming(&wire).unwrap();
     assert_eq!(accepted, request);
     assert_eq!(parent, Some(123));
 }
@@ -35,10 +35,17 @@ fn bare_request_needs_no_caller_details() {
         request: accepted,
         caller,
         parent_deadline_ms,
-    } = incoming(&serde_json::to_string(&request).unwrap())
-        .unwrap()
-        .unwrap();
+    } = incoming(&serde_json::to_string(&request).unwrap()).unwrap();
     assert_eq!(accepted, request);
     assert_eq!(parent_deadline_ms, None);
     assert_eq!(caller, CallerEvidence::default());
+}
+
+#[test]
+fn a_malformed_request_line_says_what_is_wrong() {
+    let not_json = incoming("{\"operation\":").unwrap_err().to_string();
+    assert!(not_json.contains("EOF"), "{not_json}");
+    let no_operation = incoming("{\"arguments\":{}}").unwrap_err().to_string();
+    assert!(no_operation.contains("operation"), "{no_operation}");
+    assert!(incoming("[1]").is_err());
 }

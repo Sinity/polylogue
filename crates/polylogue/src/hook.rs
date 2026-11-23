@@ -789,7 +789,7 @@ pub fn run(harness: Harness, event: &str, startup: &Startup) -> ExitCode {
                 s,
             )
         })
-        .and_then(|s| claim(startup, s, event, until));
+        .and_then(|s| claim(startup, s, until));
     let responded = respond(harness, event, &payload, startup, until);
     let mut ids: Vec<String> = Vec::new();
     let mut texts: Vec<String> = Vec::new();
@@ -824,17 +824,12 @@ pub fn accepts_mail(harness: Harness, event: &str) -> bool {
 
 /// Takes the session's pending pings and notices from the daemon: their
 /// delivery IDs and their texts joined.
-fn claim(
-    startup: &Startup,
-    session: &SessionId,
-    event: &str,
-    until: Instant,
-) -> Option<(Vec<String>, String)> {
+fn claim(startup: &Startup, session: &SessionId, until: Instant) -> Option<(Vec<String>, String)> {
     let remaining = until.checked_duration_since(Instant::now())?;
     let reply = ask_daemon(
         startup,
         "internal mail-claim",
-        json!({ "session": session, "event": event }),
+        json!({ "session": session }),
         polylogue_store::user_writes::new_request_id(),
         remaining,
     )?;

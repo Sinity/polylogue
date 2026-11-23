@@ -55,19 +55,61 @@ fn http_post_rows_derives_request_id() {
 fn http_get_rows_refuses_write_step() {
     let daemon = crate::test_daemon::start("HTTP read step access");
     tokio::runtime::Runtime::new().unwrap().block_on(async {
-        for query in [
-            "selection=sessions&steps=note&text=synthetic",
-            "selection=sessions&steps=read&steps=brief",
-            "arguments=%7B%22selection%22%3A%22sessions%22%2C%22steps%22%3A%5B%7B%22verb%22%3A%22note%22%2C%22text%22%3A%22synthetic%22%7D%5D%7D",
+        for (query, message) in [
+            (
+                "selection=sessions&steps=note&text=synthetic",
+                "a GET carries only the read and brief steps, not note; use POST /api/v1/rows",
+            ),
+            (
+                "selection=sessions&steps=read&steps=brief",
+                "a GET carries one step; use POST /api/v1/rows for several",
+            ),
+            (
+                "arguments=%7B%22selection%22%3A%22sessions%22%2C%22steps%22%3A%5B%7B%22verb%22%3A%22note%22%2C%22text%22%3A%22synthetic%22%7D%5D%7D",
+                "use POST /api/v1/rows",
+            ),
         ] {
             let (status, answer) = response(&daemon, axum::http::Method::GET, &format!("/api/v1/rows?{query}"), Value::Null).await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{answer:?}");
             let command_surface::Outcome::Error(error) = answer.outcome else { panic!("GET write must refuse") };
-            assert_eq!(error.message, "use POST /api/v1/rows");
+            assert_eq!(error.message, message);
         }
         let (status, answer) = response(&daemon, axum::http::Method::GET, "/api/v1/rows?selection=session%3Aclaude-code%3As1&steps=read&view=dialogue&around=1", Value::Null).await;
         assert_eq!(status, StatusCode::OK, "{answer:?}");
         assert_eq!(answer.value().unwrap()["reply"]["steps"][0]["outcome"]["reply"]["kind"], "read");
+    });
+}
+
+#[test]
+fn http_get_refuses_to_change_a_setting() {
+    let daemon = crate::test_daemon::start("HTTP setting by GET");
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let (status, answer) = response(
+            &daemon,
+            axum::http::Method::GET,
+            "/api/v1/set?key=embed.calls&value=on",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{answer:?}");
+        let command_surface::Outcome::Error(error) = answer.outcome else {
+            panic!("a GET must not write a setting")
+        };
+        assert_eq!(error.message, "use POST /api/v1/set");
+    });
+}
+
+#[test]
+fn http_post_accepts_a_body_larger_than_the_default_body_limit() {
+    let daemon = crate::test_daemon::start("HTTP large body");
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        // Axum's own default limit is 2 MiB; stored text has no size cap.
+        let text = "x".repeat(3 << 20);
+        let body =
+            json!({"selection":"session:claude-code:s1","steps":[{"verb":"note","text":text}]});
+        let (status, answer) =
+            response(&daemon, axum::http::Method::POST, "/api/v1/rows", body).await;
+        assert_eq!(status, StatusCode::OK, "{answer:?}");
     });
 }
 

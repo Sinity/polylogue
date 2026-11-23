@@ -113,7 +113,7 @@ fn embed_mixed_queries_keep_each_winning_rows_scope_and_kept_results_stay_exact(
     daemon.set("embed.calls", "on");
     let server = std::thread::spawn(move || {
         let (peer, _) = listener.accept().unwrap();
-        crate::test_daemon::embeddings::response(
+        crate::test_daemon::embeddings::serve_request(
             peer,
             200,
             r#"{"data":[{"index":0,"embedding":[1,0]},{"index":1,"embedding":[0,1]},{"index":2,"embedding":[1,1]}]}"#,
@@ -180,7 +180,7 @@ fn embed_query_bound_selects_all_texts_and_chunks_of_physical_rows_without_previ
     let server = std::thread::spawn(move || {
         let (peer, _) = listener.accept().unwrap();
         accepted.send(()).unwrap();
-        crate::test_daemon::embeddings::response(
+        crate::test_daemon::embeddings::serve_request(
             peer,
             200,
             r#"{"data":[{"index":0,"embedding":[1,0]},{"index":1,"embedding":[0,1]},{"index":2,"embedding":[1,1]}]}"#,
