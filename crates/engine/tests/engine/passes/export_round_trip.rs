@@ -653,7 +653,7 @@ fn later_copy_annotations_preserve_declared_parent_without_expanding_earlier_bun
         assert!(report.pass.errors.is_empty(), "{report:?}");
         let expected = view(&receiving);
         if declared == "parent" {
-            assert!(expected.0.complete, "{:?}", expected.0);
+            assert!(expected.0.complete(), "{:?}", expected.0);
             assert_eq!(expected.1, ["shared", "own"]);
         } else {
             assert!(
