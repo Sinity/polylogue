@@ -7,7 +7,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 use super::{ROOT, session_id};
 use crate::lines::Record;
@@ -78,8 +78,11 @@ impl Side {
             .take(4)
             .collect();
         let dir = |i: usize| dirs.get(i).copied();
-        if name.starts_with("agent-") && dirs.contains(&"subagents") {
-            let at = dirs.iter().position(|d| *d == "subagents")?;
+        if let Some(at) = dirs
+            .iter()
+            .position(|d| *d == "subagents")
+            .filter(|_| name.starts_with("agent-"))
+        {
             return Some(Side::Meta {
                 stem: name.strip_suffix(".meta.json")?.to_owned(),
                 session: dir(at + 1).map(str::to_owned),
@@ -131,8 +134,12 @@ pub fn open_side(path: &Path) -> Option<Parse> {
     Side::from_path(path).map(|side| Parse::Document(Box::new(SideFile { side })))
 }
 
-pub fn recognize_history(path: &Path, head: &[u8]) -> bool {
+fn is_history_file(path: &Path) -> bool {
     path.file_name().is_some_and(|n| n == "history.jsonl")
+}
+
+pub fn recognize_history(path: &Path, head: &[u8]) -> bool {
+    is_history_file(path)
         && head
             .iter()
             .find(|b| !b.is_ascii_whitespace())
@@ -140,7 +147,7 @@ pub fn recognize_history(path: &Path, head: &[u8]) -> bool {
 }
 
 pub fn open_history(path: &Path) -> Option<Parse> {
-    recognize_history(path, b"").then(|| Parse::Lines(Box::new(History)))
+    is_history_file(path).then(|| Parse::Lines(Box::new(History)))
 }
 
 struct SideFile {
@@ -361,10 +368,17 @@ impl Parser for History {
         out: &mut Output,
         _records: &mut Records,
     ) -> RecordOutcome {
-        let Some(sid) = v.str("sessionId").filter(|s| !s.is_empty()) else {
-            return RecordOutcome::skipped(
-                "written before the tool recorded session IDs; project and time stay in the stored bytes",
-            );
+        let Some(object) = v.as_object() else {
+            return RecordOutcome::unreadable("history line is not a JSON object");
+        };
+        let sid = match object.get("sessionId") {
+            Some(Json::String(sid)) if !sid.is_empty() => sid.as_str(),
+            None | Some(Json::Null) | Some(Json::String(_)) => {
+                return RecordOutcome::skipped(
+                    "written before the tool recorded session IDs; project and time stay in the stored bytes",
+                );
+            }
+            Some(_) => return RecordOutcome::unreadable("session ID is not a string"),
         };
         let Some(session) = session_id(sid) else {
             return RecordOutcome::unreadable("session ID is not valid");

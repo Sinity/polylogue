@@ -8,7 +8,7 @@
     "d45d8b9e745b127f491ccc90d1ab03c74be904ed7a96684cf16436958c2f6bc7"
   ],
   "antigravity": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::antigravity::VERSION=1,crate::antigravity::cli::VERSION=1",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::antigravity::VERSION=1,crate::antigravity::cli::VERSION=2",
     "4782a10352c13ddce87d12b788b7183ef08be8ef35cfa1beafdf95c8eb3a00c0"
   ],
   "antigravity-database": [
@@ -16,11 +16,11 @@
     "31af61d461d1c6b651a1f133e93e1635c5f24f7f3d94d95e8996883e26fd151b"
   ],
   "antigravity-exports": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::antigravity::VERSION=1,crate::antigravity::cli::VERSION=1",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::antigravity::VERSION=1,crate::antigravity::cli::VERSION=2",
     "772aeaf490963ed1d9ba12440682a9730f823105dc2a36129b8433e3fe71cd64"
   ],
   "browser-capture": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::browser_capture::VERSION=4,crate::chatgpt::VERSION=3,crate::claude_ai::VERSION=2,crate::codex_cloud::VERSION=1,crate::grok::VERSION=2",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::browser_capture::VERSION=4,crate::chatgpt::VERSION=3,crate::claude_ai::VERSION=3,crate::codex_cloud::VERSION=1,crate::grok::VERSION=2",
     "3e5ecd895974d2c77a7f613096b41d9b5066ac2ea5a0e7765c374352dbe95d59"
   ],
   "chatgpt": [
@@ -28,23 +28,23 @@
     "da93bded7856c910de392e4f06f54aeb3583627930d021ac50210f867db9a5dc"
   ],
   "claude-ai": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::claude_ai::VERSION=2",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::claude_ai::VERSION=3",
     "15182f36ad3905e77a58aad4d2ce00830a736ecfcced7aef8f8a4008b878d4c9"
   ],
   "claude-code": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::claude_code::VERSION=9",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::claude_code::VERSION=10",
     "3b95e6fd2f7f8c4888cc3947441002aa3eea3a2faf926e75d2814509dfc02cfe"
   ],
   "claude-code-history": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::claude_code::VERSION=9,crate::claude_code::side::VERSION=2",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::claude_code::VERSION=10,crate::claude_code::side::VERSION=3",
     "92acebf5b2e325829b05a23fbae4b3dcbfdb4f354196541a71ca2f8c418e12f2"
   ],
   "claude-code-side": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::claude_code::VERSION=9,crate::claude_code::side::VERSION=2",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::claude_code::VERSION=10,crate::claude_code::side::VERSION=3",
     "27ae0456023092a3d499b9990d3a91a86704b81e3cd6d9ba14a3a572bb2167a8"
   ],
   "claude-design": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::claude_ai::VERSION=2",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::claude_ai::VERSION=3",
     "3c18cef36ae3a1a6771c81f25aac746115b8bddcc624a57e937cf92e767eb8ba"
   ],
   "codex": [
@@ -56,7 +56,7 @@
     "767cb3a07f133a813a21bff568ccf4bb6b0c6d2d4ca0be0dffe8e5ad85c016fd"
   ],
   "codex-database": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::codex::VERSION=8,crate::codex::database::VERSION=2",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::codex::VERSION=8,crate::codex::database::VERSION=3",
     "5b981ebacae6be17a31dc47b1500a135a1b4697a53f03aa6b06c9ff9fe027f90"
   ],
   "gemini-app": [

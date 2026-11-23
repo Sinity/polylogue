@@ -18,13 +18,12 @@ pub fn rollout_id(mut reader: impl BufRead) -> std::io::Result<Option<String>> {
         let Ok(value) = serde_json::from_slice::<Json>(&line) else {
             return Ok(None);
         };
-        if !matches!(value.str("type"), Some("session_meta" | "older_header")) {
-            return Ok(None);
-        }
-        return Ok(value
-            .get("payload")
-            .and_then(|p| p.str("id"))
-            .filter(|id| !id.is_empty())
-            .map(str::to_owned));
+        // A mid-2025 header has no type and names the session at the top level.
+        let id = match value.str("type").filter(|t| !t.is_empty()) {
+            Some("session_meta") => value.get("payload").and_then(|p| p.str("id")),
+            None => value.str("id"),
+            Some(_) => return Ok(None),
+        };
+        return Ok(id.filter(|id| !id.is_empty()).map(str::to_owned));
     }
 }

@@ -204,6 +204,22 @@ fn a_design_chat_is_a_linear_session() {
 }
 
 #[test]
+fn a_design_chat_delivers_the_bytes_of_its_inline_images() {
+    // "AQID" is base64 for the bytes 1, 2, 3.
+    let chat = json!({"uuid": "d1", "created_at": "2026-01-01T00:00:00Z",
+    "messages": [
+        {"uuid": "m1", "role": "assistant", "created_at": "2026-01-01T00:00:30Z",
+         "content": {"role": "assistant", "attachments": [], "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AQID"}}
+         ]}}
+    ]});
+    let step = run_document(&Design, &serde_json::to_vec(&chat).unwrap()).unwrap();
+    assert_eq!(step.output.blobs.len(), 1);
+    assert_eq!(step.output.blobs[0].bytes, vec![1, 2, 3]);
+    assert_eq!(step.output.blobs[0].hash, BlobHash::of(&[1, 2, 3]));
+}
+
+#[test]
 fn a_compaction_summary_marks_the_discontinuity_before_its_message() {
     let mut later = m(
         "u2",

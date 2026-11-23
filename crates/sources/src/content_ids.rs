@@ -16,6 +16,15 @@
 use polylogue_model::{MessageId, Role, SessionId};
 use serde::{Deserialize, Serialize};
 
+/// The BLAKE3 of a value's canonical JSON, as the untagged hash text. Readings
+/// and messages cite it as an identity, so its bytes carry no tag.
+pub(crate) fn untagged_hash(value: &impl Serialize) -> String {
+    polylogue_model::BlobHash::of(
+        &canonical_json::canonical_json(value).expect("a serializable value has a canonical form"),
+    )
+    .to_string()
+}
+
 /// Occurrences are keyed context values, shared across ranges and restored checkpoints.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ContentIds {

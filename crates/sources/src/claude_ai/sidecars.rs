@@ -1,5 +1,5 @@
 //! Account/project text is staged as documents, never conversation turns.
-use super::fields::{self, Field};
+use super::fields;
 use crate::document::Sink;
 use crate::export::{self, ExportParser, ExportState, Input, ItemSink, ScanError, ScanStats};
 use crate::fields::ExpectedType as T;
@@ -57,7 +57,8 @@ struct Item {
     missing_child: bool,
     kind: &'static str,
     keys: Json,
-    diagnostic: Option<String>,
+    /// Why the record yields no document; set only when `document` is `None`.
+    skip_reason: Option<String>,
 }
 struct Metadata {
     kind: &'static str,
@@ -121,10 +122,10 @@ static DOC: Fields = Fields::new(
     ],
 );
 
-fn names(fields: &BTreeMap<String, Field<'_>>) -> Json {
-    Json::Object(fields.keys().map(|key| (key.clone(), Json::Null)).collect())
+fn field_names<'a>(names: impl Iterator<Item = &'a String>) -> Json {
+    Json::Object(names.map(|name| (name.clone(), Json::Null)).collect())
 }
-fn native(fields: &BTreeMap<String, Field<'_>>, name: &str) -> Option<String> {
+fn native(fields: &BTreeMap<String, &RawValue>, name: &str) -> Option<String> {
     fields::text(fields, name).filter(|id| !id.is_empty())
 }
 fn component(id: &str) -> String {
@@ -136,24 +137,13 @@ fn scope(input: &str, kind: &str, id: Option<&str>, at: u64) -> (String, bool) {
         None => (format!("~input:{}:at:{at}", component(input)), true),
     }
 }
-fn time(fields: &BTreeMap<String, Field<'_>>) -> (Option<crate::time::SourceTime>, bool) {
-    for field in ["updated_at", "created_at"] {
-        if let Some(raw) = fields.get(field) {
-            let value: Json = serde_json::from_str(raw.raw.get()).unwrap_or(Json::Null);
-            if value.is_null() {
-                continue;
-            }
+/// The declared time: `updated_at`, else `created_at`, skipping nulls. The
+/// flag says the value is present but not a readable time.
+fn declared_time(get: impl Fn(&str) -> Option<Json>) -> (Option<crate::time::SourceTime>, bool) {
+    for key in ["updated_at", "created_at"] {
+        if let Some(value) = get(key).filter(|value| !value.is_null()) {
             // These sidecar fields declare ISO times with an offset, not epochs.
             let time = crate::time::rfc3339(&value);
-            return (time, time.is_none());
-        }
-    }
-    (None, false)
-}
-fn source_time(fields: &Json) -> (Option<crate::time::SourceTime>, bool) {
-    for key in ["updated_at", "created_at"] {
-        if let Some(value) = fields.get(key).filter(|value| !value.is_null()) {
-            let time = crate::time::rfc3339(value);
             return (time, time.is_none());
         }
     }
@@ -165,8 +155,6 @@ fn document(
     title: Option<String>,
     source_time: Option<crate::time::SourceTime>,
     source_kind: &str,
-    input: &str,
-    fallback: bool,
 ) -> Result<Document, String> {
     let id = DocumentId::new(
         Origin::new(super::ORIGIN).map_err(|e| e.to_string())?,
@@ -178,7 +166,7 @@ fn document(
     document
         .set_time(at, accuracy)
         .expect("decoded source time is valid");
-    document.metadata = serde_json::json!({"source_kind":source_kind,"identity":if fallback {serde_json::json!({"kind":"input_scoped","input":input})}else{serde_json::json!({"kind":"provider_scoped"})}});
+    document.metadata = serde_json::json!({"source_kind":source_kind});
     Ok(document)
 }
 
@@ -205,7 +193,7 @@ impl Sidecars {
         sink: &mut dyn ItemSink,
     ) -> Result<(), String> {
         let (range, raw) = record;
-        let (purpose, suffix, missing_child, kind, title, at, keys, diagnostic) = match field {
+        let (purpose, suffix, missing_child, kind, title, at, keys) = match field {
             "conversations_memory" => (
                 DocumentPurpose::Memory,
                 "memory".into(),
@@ -214,7 +202,6 @@ impl Sidecars {
                 None,
                 None,
                 Json::Null,
-                None,
             ),
             "project_memories" => {
                 let native = key.filter(|key| !key.is_empty());
@@ -230,7 +217,6 @@ impl Sidecars {
                     None,
                     None,
                     Json::Null,
-                    None,
                 )
             }
             "prompt_template" => (
@@ -241,7 +227,6 @@ impl Sidecars {
                 None,
                 None,
                 Json::Null,
-                None,
             ),
             "docs" => {
                 let fields = match fields::object(raw.get().as_bytes()) {
@@ -258,14 +243,20 @@ impl Sidecars {
                                 missing_child: true,
                                 kind: "project_document",
                                 keys: Json::Null,
-                                diagnostic: Some(reason),
+                                skip_reason: Some(reason),
                             },
                         );
                     }
                 };
                 let id = native(&fields, "uuid");
                 let (suffix, missing) = scope(input, "doc", id.as_deref(), range.start);
-                let (at, bad) = time(&fields);
+                // An unreadable time leaves the document's time unknown; the
+                // document is still a row.
+                let (at, _) = declared_time(|key| {
+                    fields
+                        .get(key)
+                        .map(|raw| serde_json::from_str(raw.get()).unwrap_or(Json::Null))
+                });
                 (
                     DocumentPurpose::Context,
                     suffix,
@@ -273,8 +264,7 @@ impl Sidecars {
                     "project_document",
                     fields::text(&fields, "filename"),
                     at,
-                    names(&fields),
-                    bad.then(|| "unreadable document time; original value kept".into()),
+                    field_names(fields.keys()),
                 )
             }
             _ => return Err("unknown sidecar field".into()),
@@ -295,8 +285,6 @@ impl Sidecars {
                     }
                 }
             },
-            input,
-            true,
         )?;
         if purpose == DocumentPurpose::Context {
             doc.metadata["text_kind"] = Json::String("extracted_text".into());
@@ -312,7 +300,7 @@ impl Sidecars {
                 missing_child,
                 kind,
                 keys,
-                diagnostic,
+                skip_reason: None,
             },
         )
     }
@@ -365,15 +353,13 @@ impl ExportParser for Sidecars {
             .map(|object| (object.start, object.fields))
             .collect();
         for fields in parents.values() {
-            let keys = Json::Object(
+            let keys = field_names(
                 fields
                     .as_object()
                     .ok_or_else(|| ScanError::Callback("sidecar metadata is not an object".into()))?
-                    .keys()
-                    .map(|key| (key.clone(), Json::Null))
-                    .collect(),
+                    .keys(),
             );
-            let bad_time = source_time(fields).1;
+            let bad_time = declared_time(|key| fields.get(key).cloned()).1;
             self.metadata.push(Metadata {
                 kind: if account { "account_memory" } else { "project" },
                 keys,
@@ -416,7 +402,8 @@ impl ExportParser for Sidecars {
                 }] = Json::String(id.to_owned());
             }
             if doc.purpose != DocumentPurpose::Context {
-                let (at, accuracy) = crate::time::parts(source_time(fields).0);
+                let (at, accuracy) =
+                    crate::time::parts(declared_time(|key| fields.get(key).cloned()).0);
                 doc.set_time(at, accuracy)
                     .expect("decoded source time is valid");
             }
@@ -474,7 +461,7 @@ impl ExportParser for Sidecars {
             sink.records.record(
                 item.kind,
                 &RecordOutcome::skipped(
-                    item.diagnostic
+                    item.skip_reason
                         .as_deref()
                         .unwrap_or("unrecognized sidecar record"),
                 ),
@@ -504,13 +491,7 @@ impl ExportParser for Sidecars {
             end: 0,
             document: doc,
         });
-        sink.records.record(
-            item.kind,
-            &item
-                .diagnostic
-                .as_deref()
-                .map_or(RecordOutcome::Used, RecordOutcome::skipped),
-        );
+        sink.records.record(item.kind, &RecordOutcome::Used);
         Ok(())
     }
 }

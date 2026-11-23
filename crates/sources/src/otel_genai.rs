@@ -180,7 +180,7 @@ impl ExportParser for OtelGenAi {
             return Ok(());
         };
         if first_sessions
-            .record_first_session(&format!("session\0{conversation}"), &sid)?
+            .claim_native_id(&format!("session\0{conversation}"), &sid)?
             .is_none()
         {
             let mut s = Session::new(sid.clone(), SessionKind::Main);
@@ -290,7 +290,7 @@ fn model_span(
     let n = inputs.len();
     for (place, m) in inputs.iter().chain(outputs.iter()).enumerate() {
         if first_sessions
-            .record_first_session(&format!("message\0{conversation}#{place}"), sid)?
+            .claim_native_id(&format!("message\0{conversation}#{place}"), sid)?
             .is_some()
         {
             continue;

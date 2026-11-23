@@ -108,7 +108,7 @@ impl ExportParser for GeminiApp {
             );
             return Ok(());
         };
-        if state.record_first_session(&native, &sid)?.is_none() {
+        if state.claim_native_id(&native, &sid)?.is_none() {
             let mut s = Session::new(sid.clone(), SessionKind::Main);
             if let Some(at) = e.at {
                 s.offer_start(at.timestamp(), at.accuracy())

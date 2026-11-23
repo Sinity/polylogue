@@ -268,7 +268,7 @@ impl ExportItems {
         Ok(())
     }
 
-    pub fn claim_session(
+    pub fn claim_native_id(
         &mut self,
         message: &str,
         session: &SessionId,

@@ -275,7 +275,11 @@ pub fn outcome(
         })
         .and_then(Json::as_i64)
     {
-        return if code == 0 {
+        // An exit code of 0 under a set error flag is a conflict, and the
+        // flag wins.
+        let flagged = item.bool("is_error") == Some(true)
+            || meta_bool("isError").or_else(|| meta_bool("is_error")) == Some(true);
+        return if code == 0 && !flagged {
             ToolOutcome::Ok
         } else {
             ToolOutcome::Error {

@@ -181,6 +181,28 @@ pub use files::files;
 
 pub struct Capture;
 
+/// The provider's own conversation JSON inside a capture, when the payload
+/// has that provider's shape.
+#[derive(Clone, Copy)]
+enum NativeShape {
+    CodexCloud,
+    ChatGpt,
+    ClaudeAi,
+    Grok,
+}
+
+impl NativeShape {
+    fn of(origin: &str, raw: &Json) -> Option<Self> {
+        match origin {
+            "chatgpt" => raw.get("mapping").is_some().then_some(Self::ChatGpt),
+            "claude-ai" => raw.get("chat_messages").is_some().then_some(Self::ClaudeAi),
+            "grok" => raw.get("responses").is_some().then_some(Self::Grok),
+            "codex-cloud" => crate::codex_cloud::task_shape(raw).then_some(Self::CodexCloud),
+            _ => None,
+        }
+    }
+}
+
 /// The session mode of a provider's temporary chat, which the provider does
 /// not keep: the capture may be its only copy.
 pub const TEMPORARY_MODE: &str = "temporary";
@@ -225,13 +247,8 @@ impl DocumentParser for Capture {
         let raw = capture
             .get("raw_provider_payload")
             .filter(|r| r.as_object().is_some_and(|o| !o.is_empty()));
-        let provider_format = match (origin, raw) {
-            ("chatgpt", Some(raw)) => raw.get("mapping").is_some(),
-            ("claude-ai", Some(raw)) => raw.get("chat_messages").is_some(),
-            ("grok", Some(raw)) => raw.get("responses").is_some(),
-            ("codex-cloud", Some(raw)) => crate::codex_cloud::task_shape(raw),
-            _ => false,
-        };
+        let native = raw.and_then(|raw| NativeShape::of(origin, raw));
+        let provider_format = native.is_some();
         let header = crate::fields::header(
             &capture,
             if provider_format {
@@ -262,8 +279,8 @@ impl DocumentParser for Capture {
         }
         let first_message = sink.out.messages.len();
         let first_session = sink.out.sessions.len();
-        match (origin, raw) {
-            ("codex-cloud", Some(raw)) if crate::codex_cloud::task_shape(raw) => {
+        match (native, raw) {
+            (Some(NativeShape::CodexCloud), Some(raw)) => {
                 let result = serde_json::to_vec(raw)
                     .map_err(|error| error.to_string())
                     .and_then(|bytes| {
@@ -279,13 +296,13 @@ impl DocumentParser for Capture {
                         .record("task", &RecordOutcome::unreadable(error));
                 }
             }
-            ("chatgpt", Some(raw)) if raw.get("mapping").is_some() => {
+            (Some(NativeShape::ChatGpt), Some(raw)) => {
                 crate::chatgpt::conversation(raw, &mut sink, &mut Default::default());
             }
-            ("claude-ai", Some(raw)) if raw.get("chat_messages").is_some() => {
+            (Some(NativeShape::ClaudeAi), Some(raw)) => {
                 crate::claude_ai::conversation(raw, &mut sink);
             }
-            ("grok", Some(raw)) if raw.get("responses").is_some() => {
+            (Some(NativeShape::Grok), Some(raw)) => {
                 grok::conversation(
                     raw,
                     capture.get("session").unwrap_or(&Json::Null),

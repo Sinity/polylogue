@@ -113,9 +113,8 @@ impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(),
             return Err(A::Error::custom("missing export object boundary"));
         };
         let mut fields = serde_json::Map::new();
-        let mut seen = HashSet::new();
         while let Some(key) = map.next_key::<String>()? {
-            if !seen.insert(key.clone()) {
+            if fields.contains_key(&key) {
                 return Err(A::Error::custom("duplicate export object field"));
             }
             if let Some((_, shape)) = self.frames.iter().find(|(name, _)| *name == key) {
@@ -204,10 +203,8 @@ impl<'de, F: FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(),
             return Err(E::custom("missing null source boundary"));
         }
         let raw: &RawValue = serde_json::from_str("null").expect("static JSON null");
-        (self.item)(self.parent, self.field, None, end - 4..end, raw).map_err(|error| {
-            self.scan_state.borrow_mut().failure = Some(ScanError::Callback(error));
-            E::custom("export callback failed")
-        })?;
+        (self.item)(self.parent, self.field, None, end - 4..end, raw)
+            .map_err(|error| callback_failed::<E>(self.scan_state, error))?;
         let mut scan_state = self.scan_state.borrow_mut();
         scan_state.stats.elements += 1;
         scan_state.stats.peak_element_bytes = scan_state.stats.peak_element_bytes.max(4);

@@ -207,3 +207,65 @@ fn patch_body_kept_for_built_in_and_namespaced_tools() {
         None
     );
 }
+
+#[test]
+fn output_text_that_states_a_failure_names_it() {
+    let outcome = |t: &str, o: &str| output_outcome(t, o).0;
+    assert_eq!(
+        outcome("exec", "Script error: boom\nWall time 0.0 seconds"),
+        ToolOutcome::Error { reason: None }
+    );
+    let interrupted = ToolOutcome::Error {
+        reason: Some(ErrorReason::Interrupted),
+    };
+    assert_eq!(outcome("shell", "aborted by user"), interrupted);
+    assert_eq!(
+        outcome("shell", "Command interrupted by the user"),
+        interrupted
+    );
+    assert_eq!(
+        outcome("custom_tool", r#"{"success":false,"output":"nope"}"#),
+        ToolOutcome::Error { reason: None }
+    );
+}
+
+#[test]
+fn completed_status_without_an_exit_code_gives_the_outcome() {
+    let outcome = |status: &str| completed(&json!({ "status": status })).map(|c| c.outcome);
+    for status in ["failed", "error"] {
+        assert_eq!(outcome(status), Some(ToolOutcome::Error { reason: None }));
+    }
+    for status in ["declined", "rejected"] {
+        assert_eq!(
+            outcome(status),
+            Some(ToolOutcome::Error {
+                reason: Some(ErrorReason::Denied(status.into()))
+            })
+        );
+    }
+    for status in ["interrupted", "cancelled", "aborted"] {
+        assert_eq!(
+            outcome(status),
+            Some(ToolOutcome::Error {
+                reason: Some(ErrorReason::Interrupted)
+            })
+        );
+    }
+    for status in ["inProgress", "in_progress", "running"] {
+        assert_eq!(
+            outcome(status),
+            Some(ToolOutcome::Unknown {
+                reason: UnknownReason::RunningInBackground
+            })
+        );
+    }
+    assert_eq!(outcome("completed"), Some(ToolOutcome::Ok));
+    assert_eq!(outcome("queued"), None);
+}
+
+#[test]
+fn a_duration_too_long_for_milliseconds_is_unknown() {
+    let huge =
+        json!({"status": "completed", "duration": {"secs": u64::MAX / 1000 + 1, "nanos": 0}});
+    assert_eq!(completed(&huge).unwrap().duration_ms, None);
+}
