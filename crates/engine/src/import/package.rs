@@ -432,10 +432,7 @@ fn classify(members: &mut [Member], origin: Option<&str>) -> std::io::Result<()>
         .collect::<Vec<_>>()
     {
         if members.iter().any(|member| {
-            member
-                .parent
-                .is_some_and(|parent| parent.container == index)
-                && member.origin.is_some()
+            member.parent.is_some_and(|parent| parent.0 == index) && member.origin.is_some()
         }) {
             members[index].origin = polylogue_sources::origin::by_name(KEPT);
         }
