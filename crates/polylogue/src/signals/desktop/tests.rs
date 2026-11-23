@@ -110,8 +110,5 @@ async fn notification_cleanup_preserves_the_delivery_workers_error() {
     let error = drain_worker(&fixture.daemon, &mut returned, worker)
         .await
         .unwrap_err();
-    assert!(
-        error.reason.contains("synthetic delivery failure"),
-        "{error:?}"
-    );
+    assert_eq!(error.reason, "desktop worker: synthetic delivery failure");
 }

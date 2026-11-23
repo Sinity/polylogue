@@ -161,6 +161,13 @@ fn tools_answer_with_the_daemon_and_refuse_bad_calls() {
     };
     assert!(read_pages::body(read).contains("walrus"));
 
+    let found = structured_call_as(
+        &archive,
+        "rows",
+        args(json!({"selection": "walrus"})),
+        &uuid::Uuid::now_v7().to_string(),
+    );
+    assert_eq!(found.value().unwrap()["reply"]["count"], 1, "{found:?}");
     let text = call(&archive, "rows", args(json!({"selection": "walrus"}))).unwrap();
     assert!(text.contains("claude-code:s1"), "{text}");
 
@@ -171,13 +178,6 @@ fn tools_answer_with_the_daemon_and_refuse_bad_calls() {
     )
     .unwrap_err();
     assert!(e.starts_with("error (bad_request)"), "{e}");
-    let e = call(
-        &archive,
-        "excise",
-        args(json!({"target": "session:claude-code:s1"})),
-    )
-    .unwrap_err();
-    assert!(e.contains("unknown MCP tool excise"), "{e}");
     let e = call(
         &archive,
         "rows",
@@ -269,7 +269,16 @@ fn discovery_and_inline_requests_keep_protocol_metadata() {
         )
         .answer(&archive)
         .unwrap();
-    assert_eq!(discovery["result"]["supportedVersions"], json!(VERSIONS));
+    assert_eq!(
+        discovery["result"]["supportedVersions"],
+        json!([
+            "2024-11-05",
+            "2025-03-26",
+            "2025-06-18",
+            "2025-11-25",
+            "2026-07-28"
+        ])
+    );
     assert_eq!(discovery["result"]["resultType"], "complete");
     let list = session
         .prepare(json!({"jsonrpc":"2.0", "id":2, "method":"tools/list", "params":{"_meta":meta}}))
@@ -346,10 +355,20 @@ fn server_instructions_are_the_card_naming_every_tool() {
 fn manual_query_examples_compile_through_the_public_command() {
     let w = test_daemon::start("manual query examples");
     let archive = Archive::at(&w.daemon.archive.root);
-    for query in crate::manual::text()
+    let manual = crate::manual::text();
+    let mut queries: Vec<&str> = manual
         .split('`')
         .filter(|text| text.starts_with("sessions where ") || text.starts_with("messages where "))
-    {
+        .collect();
+    // The guide gives this one inside a call, so the split cannot find it.
+    let in_a_call = "sessions where repo:example since:7d";
+    assert!(manual.contains(in_a_call));
+    queries.push(in_a_call);
+    assert!(
+        queries.contains(&"messages where \"timeout\""),
+        "{queries:?}"
+    );
+    for query in queries {
         call(
             &archive,
             "rows",

@@ -64,13 +64,22 @@ fn mcp_reads_input_events_through_the_same_typed_reader_and_budget_cursor() {
         panic!("one continued event read")
     };
     let token = read.cursor.as_deref().unwrap();
-    assert!(!token.contains("synthetic-later-value"));
+    let payload: Vec<u8> = token
+        .split('.')
+        .next()
+        .unwrap()
+        .as_bytes()
+        .chunks(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect();
+    let payload = String::from_utf8(payload).expect("the sealed payload is JSON text");
+    assert!(!payload.contains("synthetic-later-value"), "{payload}");
     let mut wrong = next.clone();
     wrong.request.arguments["steps"][0]["view"] = json!("dialogue");
     let error = super::read_pages::execute_ready(&archive, &wrong).unwrap_err();
     // docs/query.md: "a cursor from another question is `invalid_query`";
     // a read continuation with other arguments is refused the same way.
-    assert!(error.contains("invalid_query"), "{error}");
+    assert!(error.starts_with("error (invalid_query):"), "{error}");
     let (reconstructed, pages) =
         super::read_pages::collect(&daemon, page, None, None, command_surface::Deadline::None);
     let actual = reconstructed

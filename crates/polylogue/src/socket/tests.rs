@@ -47,7 +47,7 @@ fn failed_publication_preserves_the_destination_and_removes_its_private_socket()
     let path = dir.path().join("daemon.sock");
     std::fs::create_dir(&path).unwrap();
     std::fs::write(path.join("original"), b"synthetic original").unwrap();
-    assert!(bind(&path).is_err());
+    assert_eq!(bind(&path).unwrap_err().kind(), io::ErrorKind::IsADirectory);
     assert_eq!(
         std::fs::read(path.join("original")).unwrap(),
         b"synthetic original"
@@ -82,7 +82,7 @@ fn a_socket_path_no_client_can_connect_to_is_refused() {
 }
 
 #[tokio::test]
-async fn an_already_published_socket_is_seen_after_registering_the_watch() {
+async fn an_already_published_socket_connects_on_the_first_attempt() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("daemon.sock");
     let _listener = bind(&path).unwrap();
@@ -127,11 +127,11 @@ async fn failed_archive_startup_wakes_an_unlimited_client() {
         .await
         .unwrap()
         .unwrap_err();
-    assert!(crate::cli::is_down(&error));
+    assert_eq!(error.kind(), io::ErrorKind::NotFound);
 }
 
 #[tokio::test]
-async fn socket_wait_observes_a_startup_failure_before_registration_and_its_deadline() {
+async fn socket_wait_times_out_at_its_deadline_and_returns_a_startup_failure_at_once() {
     let dir = tempfile::tempdir().unwrap();
     let (_archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     let path = dir.path().join("daemon.sock");
@@ -151,5 +151,5 @@ async fn socket_wait_observes_a_startup_failure_before_registration_and_its_dead
     .await
     .unwrap()
     .unwrap_err();
-    assert!(crate::cli::is_down(&error));
+    assert_eq!(error.kind(), io::ErrorKind::NotFound);
 }

@@ -63,7 +63,7 @@ fn row_number_ranges_and_hits_resolve() {
 }
 
 #[test]
-fn only_row_selections_are_rewritten() {
+fn row_selection_words_are_recognised() {
     for word in ["@all", "@1", "@12", "@1,3", "@1-3", "@2.1", "@1-2,4.1"] {
         assert!(is_selection(word), "{word}");
     }

@@ -183,7 +183,13 @@ async fn each_request_answers_only_in_its_own_scope() {
     let first = first.await;
     let waiter = waiter.await;
     let fresh = ReadScopes::single(waiter_scope);
-    assert!(super::answer(waiter, &fresh).value().is_some());
+    let catalog = super::answer(waiter, &fresh);
+    let catalog = catalog.value().unwrap().as_array().unwrap();
+    let listed = catalog
+        .iter()
+        .find(|setting| setting["key"] == "browser.actions")
+        .expect("the fresh request answers with the settings catalog");
+    assert_eq!(listed["value"], json!({"type":"boolean","value":false}));
     let first_scopes = ReadScopes::single(first_scope);
     let answer = super::answer(first, &first_scopes);
     let command_surface::Answer {
