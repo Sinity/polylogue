@@ -16,7 +16,11 @@ fn building_status_keeps_progress_and_does_not_invent_empty_vectors() {
         let status = answer.value().unwrap();
         assert_eq!(status.index_build, Some(progress.clone()));
         assert!(status.vectors.is_none() && status.verification.is_none());
-        assert_eq!(status.vectors_error.is_some(), detail);
+        assert_eq!(
+            status.vectors_error,
+            detail.then(|| progress.to_string()),
+            "the unread reason is the build's progress"
+        );
     }
 }
 
@@ -36,6 +40,7 @@ fn verification_retains_runtime_pending_and_named_problem_outcomes() {
     status.envelope.notes.push("synthetic runtime note".into());
     let checked = crate::daemon::verify::run(&daemon.daemon, None);
     let found = crate::protocol::into_value(checked).unwrap();
+    let expected_verification = found.clone();
     let checked =
         command_surface::Answer::degraded(found, vec!["synthetic storage problem".into()]);
     let combined = with_verification(status, checked);
@@ -52,5 +57,5 @@ fn verification_retains_runtime_pending_and_named_problem_outcomes() {
         value.pending_writes.last_error.as_deref(),
         Some("synthetic retry pending")
     );
-    assert!(value.verification.is_some());
+    assert_eq!(value.verification, Some(expected_verification));
 }

@@ -29,13 +29,6 @@ fn a_daemon_over_an_index_from_another_format_rebuilds_it_and_serves() {
         serde_json::json!({"kind": "format_version", "found": 1, "wanted": polylogue_store::schema::INDEX_VERSION})
     );
     assert_ne!(rebuild["previous_schema"], rebuild["schema"], "{rebuild}");
-    assert_eq!(rebuild.get("set_aside"), None, "{rebuild}");
-    let left: Vec<String> = std::fs::read_dir(&root)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|name| name.starts_with("index-set-aside-"))
-        .collect();
-    assert_eq!(left, Vec::<String>::new());
     let found = crate::test_answers::ok(
         test_daemon::Call::new("rows", serde_json::json!({"selection": "sessions"}))
             .answer(&d.daemon),

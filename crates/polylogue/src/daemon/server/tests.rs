@@ -474,9 +474,9 @@ fn stopping_new_requests_releases_queued_socket_requests() {
     assert_eq!(error.code.as_deref(), Some("shutting_down"));
     assert_eq!(error.kind, command_surface::FailureKind::NotRunning);
     assert_eq!(
-        done.try_recv(),
-        Err(std::sync::mpsc::TryRecvError::Empty),
-        "refusing new requests must not cancel the running one"
+        runtime.daemon.executor.running(),
+        1,
+        "refusing new requests must leave the running one in place"
     );
     release.send(()).unwrap();
     done.recv_timeout(Duration::from_secs(2)).unwrap();
@@ -982,8 +982,11 @@ fn a_follow_whose_client_hangs_up_gives_up_its_place_at_once() {
             .as_bytes(),
         )
         .unwrap();
-    let mut first = [0u8; 1];
-    rustix::net::recv(&stream, &mut first, rustix::net::RecvFlags::PEEK).unwrap();
+    let mut records = follow_records(stream.try_clone().unwrap());
+    let first = records.next().expect("the first look shows the session");
+    assert_eq!(first["session"], "claude-code:s1", "{first}");
+    assert_eq!(d.executor.running(), 1, "the follow holds its place");
+    drop(records);
     drop(stream);
     eventually("the follow ended when its client hung up", || {
         d.executor.running() == 0

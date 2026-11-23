@@ -247,8 +247,8 @@ fn runtime_shutdown_wakes_signals_releases_lock_and_refuses_old_handles() {
         done.send(result).unwrap();
     });
     stopped
-        .recv()
-        .expect("shutdown waited for signal timer")
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("shutdown did not return: the signal timer was not woken")
         .unwrap();
     thread.join().unwrap();
     assert!(
@@ -431,11 +431,21 @@ fn stopping_releases_requests_waiting_for_a_full_pool_before_workers_or_running_
 fn invalid_reader_resource_configuration_refuses_startup_and_releases_the_lock() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("archive");
-    for (workers, memory) in [(0, 128 << 20), (2, 3 * 3072 - 1)] {
+    for (workers, memory, refusal) in [
+        (0, 128 << 20, "workers must be positive"),
+        (
+            2,
+            3 * 3072 - 1,
+            "reader memory budget needs at least 3 KiB per connection",
+        ),
+    ] {
         let mut config = config(dir.path());
         config.workers = workers;
         config.reader_memory_bytes = memory;
-        assert!(test_daemon::start_runtime(&root, config, ArchiveMode::Standalone).is_err());
+        let Err(error) = test_daemon::start_runtime(&root, config, ArchiveMode::Standalone) else {
+            panic!("{workers} workers with {memory} bytes started");
+        };
+        assert!(error.to_string().contains(refusal), "{error}");
         assert!(Archive::open_or_create(&root).is_ok());
     }
 }

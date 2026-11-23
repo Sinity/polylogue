@@ -239,15 +239,13 @@ fn a_hand_off_starts_a_new_session_briefed_from_the_source() {
             .unwrap()
             .contains("Hand-off from claude-code:s1")
     );
-    assert!(printed["channel"].is_string(), "{printed}");
+    assert_eq!(printed["channel"], "codex_app_server", "{printed}");
     assert!(printed["refused"].is_null(), "{printed}");
     let printed_unsupported = crate::test_answers::ok(hand_off("chatgpt", true));
     assert!(printed_unsupported["channel"].is_null());
-    assert!(
-        printed_unsupported["refused"]
-            .as_str()
-            .unwrap()
-            .starts_with("unsupported: ")
+    assert_eq!(
+        printed_unsupported["refused"],
+        "unsupported: chatgpt is not a harness Polylogue starts"
     );
     assert!(turns(fixture.path()).is_empty(), "print starts nothing");
     let refused = serde_json::to_value(hand_off("chatgpt", false)).unwrap();
@@ -326,11 +324,10 @@ fn role_addresses_and_role_starts() {
     )
     .unwrap();
     let refused = ping("@[role:reviewer]");
-    assert!(
-        refused["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("no_live_instance")
+    assert_eq!(refused["error"]["kind"], "refused");
+    assert_eq!(
+        refused["error"]["message"],
+        "no_live_instance: the role reviewer has no running session and none ran before to take a directory from; start one with `polylogue start --role reviewer --cwd DIR TEXT`"
     );
     let started = crate::test_answers::ok(crate::test_daemon::Call::new("start", serde_json::json!({"role": Some("reviewer"), "cwd": work.path(), "text": "look at the store"})).answer_with(&d.daemon, &invocation(&d)));
     assert_eq!(started["session"], "codex:t1");
@@ -390,15 +387,17 @@ fn role_addresses_and_role_starts() {
 /// records an answer.
 #[test]
 fn ping_text_names_the_assert_tool() {
-    let text = ping_text("d1", "p1", "operator", "rebase please", None);
-    assert!(text.contains("`rows`"), "{text}");
-    assert!(text.contains("`polylogue_write`"), "{text}");
-    assert!(
-        text.contains("`selection` and `replies_to` both name `annotation:p1@p1`"),
-        "{text}"
+    let answer = "Answer with Polylogue's MCP `rows` operation (tool `polylogue_write`): `selection` and `replies_to` both name `annotation:p1@p1`; use a `note` step with `as: finding` and your answer as `text`. Reach the sender with a `send` step (tool `polylogue_act`).";
+    assert_eq!(
+        ping_text("d1", "p1", "operator", "rebase please", None),
+        format!("Ping from operator (delivery:d1, annotation:p1):\nrebase please\n{answer}")
     );
-    assert!(!text.contains("::finding"), "{text}");
-    assert!(!text.contains("@["), "{text}");
+    assert_eq!(
+        ping_text("d1", "p1", "operator", "rebase please", Some("session:x")),
+        format!(
+            "Ping from operator (delivery:d1, annotation:p1):\nrebase please\nAbout: session:x\n{answer}"
+        )
+    );
 }
 
 /// A ping that starts a new role instance tells it how to answer.
