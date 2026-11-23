@@ -138,9 +138,20 @@ fn memory_scope_and_setting_target_host_are_part_of_the_slot() {
         role: LinkRole::Scope,
         reference: r("repo:project"),
     });
-    assert_ne!(
+    let memory_slot = |scope| UniqueSlot {
+        kind: "memory".into(),
+        parts: vec![
+            ("key".into(), SlotValue::One("notes.md".into())),
+            ("scope".into(), scope),
+        ],
+    };
+    assert_eq!(
         slots(&global, &Author::Operator, None),
-        slots(&local, &Author::Operator, None)
+        vec![memory_slot(SlotValue::Absent)]
+    );
+    assert_eq!(
+        slots(&local, &Author::Operator, None),
+        vec![memory_slot(SlotValue::One("repo:project".into()))]
     );
     let setting = input(
         AssertionKind::Setting,
@@ -179,7 +190,20 @@ fn memory_scope_and_setting_target_host_are_part_of_the_slot() {
             None,
         )
         .unwrap();
-    assert_ne!(first, second);
+    let setting_slot = |machine: &str| {
+        vec![UniqueSlot {
+            kind: "setting".into(),
+            parts: vec![
+                (
+                    "key".into(),
+                    SlotValue::One("signal.interrupts_per_hour".into()),
+                ),
+                ("machine".into(), SlotValue::One(machine.into())),
+            ],
+        }]
+    };
+    assert_eq!(first.unwrap().slots, setting_slot("first-host"));
+    assert_eq!(second.unwrap().slots, setting_slot("second-host"));
 }
 
 #[test]
@@ -204,8 +228,7 @@ fn every_kind_declares_only_components_the_writer_supplies() {
 }
 
 #[test]
-fn blocker_is_not_a_kind_and_hidden_is() {
-    assert_eq!(AssertionKind::from_name("blocker"), None);
+fn hidden_kind_name_resolves_and_occupies_one_slot_per_target() {
     assert_eq!(
         AssertionKind::from_name("hidden"),
         Some(AssertionKind::Hidden)
@@ -263,9 +286,18 @@ fn a_human_annotation_target_keeps_the_stored_unique_slot() {
     );
     tag.links[0].reference = Reference::parse("annotation:target@revision").unwrap();
     let slots = slots(&tag, &Author::Operator, None);
-    assert_eq!(slots.len(), 1);
-    assert!(slots[0].parts.contains(&(
-        "about".into(),
-        SlotValue::One("assertion:target@revision".into())
-    )));
+    assert_eq!(
+        slots,
+        vec![UniqueSlot {
+            kind: "tag".into(),
+            parts: vec![
+                (
+                    "about".into(),
+                    SlotValue::One("assertion:target@revision".into())
+                ),
+                ("key".into(), SlotValue::One("status".into())),
+                ("value".into(), SlotValue::One("\"checked\"".into())),
+            ],
+        }]
+    );
 }

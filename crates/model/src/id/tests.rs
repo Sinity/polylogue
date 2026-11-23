@@ -18,18 +18,28 @@ fn ids_round_trip_through_json() {
 
 #[test]
 fn bad_ids_are_refused() {
-    assert!(matches!(Origin::new("Claude"), Err(IdError::BadOrigin(_))));
-    assert!(matches!(Origin::new(""), Err(IdError::BadOrigin(_))));
-    assert!(matches!(
+    assert_eq!(
+        Origin::new("Claude"),
+        Err(IdError::BadOrigin("Claude".to_owned()))
+    );
+    assert_eq!(Origin::new(""), Err(IdError::BadOrigin(String::new())));
+    assert_eq!(
         SessionId::parse("no-colon"),
-        Err(IdError::NoOrigin(_))
-    ));
-    assert!(matches!(
-        SessionId::parse("codex:"),
-        Err(IdError::EmptyNative)
-    ));
-    assert!(serde_json::from_str::<Origin>("\"Claude\"").is_err());
-    assert!(serde_json::from_str::<NativeId>("\"\"").is_err());
+        Err(IdError::NoOrigin("no-colon".to_owned()))
+    );
+    assert_eq!(SessionId::parse("codex:"), Err(IdError::EmptyNative));
+    let origin_error = serde_json::from_str::<Origin>("\"Claude\"").unwrap_err();
+    assert!(
+        origin_error
+            .to_string()
+            .starts_with(&IdError::BadOrigin("Claude".to_owned()).to_string())
+    );
+    let native_error = serde_json::from_str::<NativeId>("\"\"").unwrap_err();
+    assert!(
+        native_error
+            .to_string()
+            .starts_with(&IdError::EmptyNative.to_string())
+    );
 }
 
 #[test]

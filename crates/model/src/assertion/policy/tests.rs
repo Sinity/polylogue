@@ -219,15 +219,18 @@ fn relation_shapes_allow_query_evidence_but_pin_authored_revisions() {
             .is_ok()
         );
         assert!(
-            check(
-                AssertionKind::Claim,
-                None,
-                &[
-                    (LinkRole::About, "message:codex:m"),
-                    (role, "assertion:claim")
-                ]
-            )
-            .is_err()
+            matches!(
+                check(
+                    AssertionKind::Claim,
+                    None,
+                    &[
+                        (LinkRole::About, "message:codex:m"),
+                        (role, "assertion:claim")
+                    ]
+                ),
+                Err(InvalidAssertion::Link { role: refused, .. }) if refused == role
+            ),
+            "{role:?}"
         );
     }
 }

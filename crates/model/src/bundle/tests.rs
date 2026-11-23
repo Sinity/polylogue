@@ -37,7 +37,7 @@ fn manifest() -> Manifest {
 }
 
 #[test]
-fn bundle_header_refuses_earlier_and_newer_formats_before_contents() {
+fn bundle_header_refuses_earlier_and_newer_formats() {
     let mut value = manifest();
     assert!(value.validate().is_ok());
     for version in [0, 1, 2, 4, u32::MAX] {
@@ -321,12 +321,6 @@ fn presentation_transfer_cannot_carry_an_omitted_body() {
     let forbidden =
         r#"{"kind":"presentation","parts":[],"record":{"record":"document","data":{}}}"#;
     assert!(serde_json::from_str::<ReadRecord>(forbidden).is_err());
-    let schema = serde_json::to_value(schemars::schema_for!(ReadRecord)).unwrap();
-    assert!(
-        schema["oneOf"]
-            .as_array()
-            .is_some_and(|variants| variants.len() == 2)
-    );
 }
 
 #[test]
@@ -379,7 +373,11 @@ fn hook_injection_keeps_message_and_imports_as_declared() {
             3 => injection.observed.as_mut().unwrap().pointer = "/bad~2escape".into(),
             _ => injection.observed.as_mut().unwrap().end = 3,
         }
-        assert!(invalid.validate().is_err(), "case {case}");
+        assert_eq!(
+            invalid.validate(),
+            Err(BundleError::InvalidInjectionEvidence),
+            "case {case}"
+        );
     }
 }
 

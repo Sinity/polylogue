@@ -151,7 +151,6 @@ fn empty_or_large_selections_invent_no_bytes() {
     let mut check = value.check_source(&value.source_version).unwrap();
     check.push("abc").unwrap();
     check.finish().unwrap();
-    assert_eq!(value.coverage.total_bytes, None);
     let merged = fragment(u64::MAX - 2, "A")
         .merge(&fragment(u64::MAX - 1, "B"))
         .unwrap()

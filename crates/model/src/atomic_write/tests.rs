@@ -28,7 +28,12 @@ fn replacement_is_private_and_cleans_up_on_failure() {
     );
     let destination = dir.path().join("directory");
     fs::create_dir(&destination).unwrap();
-    assert!(write_atomic(&destination, b"cannot replace a directory", None).is_err());
+    assert_eq!(
+        write_atomic(&destination, b"cannot replace a directory", None)
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::IsADirectory
+    );
     assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
 }
 

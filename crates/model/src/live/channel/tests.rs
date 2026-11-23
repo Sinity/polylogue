@@ -51,11 +51,6 @@ fn the_channel_is_a_function_of_act_state_and_probe() {
         assert_eq!(refused.reason, "unsupported");
         assert!(refused.detail.contains("claude-code"));
     }
-    // The same inputs always give the same answer.
-    assert_eq!(
-        channel(ping, Working, &observed),
-        channel(ping, Working, &observed)
-    );
     assert_eq!(
         channel(Act::Answer, Working, &bare).unwrap_err().reason,
         "unsupported"

@@ -39,6 +39,18 @@ fn a_tool_call_stored_without_an_action_reads_as_other() {
 #[test]
 fn text_covers_prose_and_thinking_only() {
     assert_eq!(Block::Text { text: "a".into() }.text(), Some("a"));
+    let reasoning = Block::Thinking {
+        text: Some("t".into()),
+        signature: None,
+        redacted: false,
+    };
+    assert_eq!(reasoning.text(), Some("t"));
+    let redacted = Block::Thinking {
+        text: None,
+        signature: Some("sig".into()),
+        redacted: true,
+    };
+    assert_eq!(redacted.text(), None);
     let call = Block::ToolCall {
         written_text: None,
         run_by_script: false,

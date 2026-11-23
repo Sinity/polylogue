@@ -35,7 +35,10 @@ fn seek_keeps_ordinals_and_separator_positions() {
     );
     let mut bad = seek;
     bad.end.byte = 3;
-    assert!(bad.validate(&container, &coverage).is_err());
+    assert_eq!(
+        bad.validate(&container, &coverage),
+        Err(TextFragmentError::Origin)
+    );
     let reversed = NativeSpanSeek {
         start: NativeTextPosition {
             piece: NativeTextPiece::Body { body: after },
@@ -43,18 +46,42 @@ fn seek_keeps_ordinals_and_separator_positions() {
         },
         end: seek.start,
     };
-    assert!(reversed.validate(&container, &coverage).is_err());
+    assert_eq!(
+        reversed.validate(&container, &coverage),
+        Err(TextFragmentError::Origin)
+    );
     let reversed_separator = NativeSpanSeek {
         start: seek.end,
         end: seek.start,
     };
-    assert!(reversed_separator.validate(&container, &coverage).is_err());
-    assert!(
-        seek.validate(
-            &Reference::parse("block:codex:example#7").unwrap(),
-            &coverage
-        )
-        .is_err()
+    assert_eq!(
+        reversed_separator.validate(&container, &coverage),
+        Err(TextFragmentError::Origin)
+    );
+    let block = Reference::parse("block:codex:example#7").unwrap();
+    assert_eq!(
+        seek.validate(&block, &coverage),
+        Err(TextFragmentError::Origin)
+    );
+    let inside_body = |block: u64| {
+        let position = |byte| NativeTextPosition {
+            piece: NativeTextPiece::Body {
+                body: NativeTextBody {
+                    block,
+                    field: TextField::ToolOutput,
+                },
+            },
+            byte,
+        };
+        NativeSpanSeek {
+            start: position(0),
+            end: position(9),
+        }
+    };
+    assert_eq!(inside_body(7).validate(&block, &coverage), Ok(()));
+    assert_eq!(
+        inside_body(11).validate(&block, &coverage),
+        Err(TextFragmentError::Origin)
     );
 }
 #[test]
@@ -77,7 +104,7 @@ fn accessible_empty_invents_no_body_or_coverage() {
         },
     )
     .unwrap();
-    assert!(
+    assert_eq!(
         seek.validate(
             &container,
             &TextCoverage {
@@ -85,8 +112,8 @@ fn accessible_empty_invents_no_body_or_coverage() {
                 end: 1,
                 total_bytes: None
             }
-        )
-        .is_err()
+        ),
+        Err(TextFragmentError::Origin)
     );
     assert!(
         serde_json::from_str::<NativeTextBody>(r#"{"block":7,"field":"text","body":"unselected"}"#)
