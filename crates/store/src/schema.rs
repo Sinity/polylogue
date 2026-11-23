@@ -27,7 +27,6 @@ pub const ARCHIVE: &str = concat!(
     "\n",
     include_str!("schema/signals.sql")
 );
-pub(crate) const ARCHIVE_RESULT_INDEX: &str = include_str!("schema/archive_result_index.sql");
 pub const INDEX: &str = concat!(
     include_str!("schema/index.sql"),
     "\n",
