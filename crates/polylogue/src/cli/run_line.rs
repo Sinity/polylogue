@@ -535,6 +535,7 @@ fn output(
                 parsed.listing.to.as_ref(),
                 startup,
             ) {
+                state.failed.get_or_insert(error.kind.exit_code());
                 return super::fail_with(startup.output, false, &error, &[]);
             }
         }
@@ -616,6 +617,7 @@ fn output(
                             }
                         };
                         if let Err(error) = result {
+                            state.failed.get_or_insert(error.kind.exit_code());
                             failed = Some(super::fail_with(startup.output, false, &error, &[]));
                         }
                     }
@@ -1006,7 +1008,9 @@ pub(crate) fn stream_steps(
             )
         );
     } else {
-        let _ = output(parsed, &line, &answer, startup, state);
+        // A failed delivery is recorded in `state.failed`; the printed exit
+        // status is not needed here.
+        output(parsed, &line, &answer, startup, state);
     }
     if parsed.line.json {
         state.accept(&answer);
@@ -1014,7 +1018,7 @@ pub(crate) fn stream_steps(
             state.offset += steps.steps.len();
         }
     }
-    Ok(if failed_code(&answer).is_some() {
+    Ok(if let Some(code) = failed_code(&answer).or(state.failed) {
         std::ops::ControlFlow::Break(code)
     } else {
         std::ops::ControlFlow::Continue(if code == 5 { 5 } else { 0 })

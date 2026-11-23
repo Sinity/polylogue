@@ -6,7 +6,7 @@ pub const VERSION: u32 = 1;
 
 use crate::Records;
 use crate::parse::Output;
-use polylogue_model::{Json, MessageId, NativeId, Origin, SessionId};
+use polylogue_model::{Json, JsonExt, MessageId, NativeId, Origin, SessionId};
 
 /// What a document or conversation parser writes into. `next` supplies
 /// message positions in reading order. The code that splits an input into
@@ -86,4 +86,20 @@ pub fn first_key(head: &[u8]) -> Option<&str> {
 /// A time written either as epoch seconds or as an RFC 3339 string.
 pub fn time_of(v: &Json) -> Option<crate::time::SourceTime> {
     crate::time::epoch_seconds(v).or_else(|| crate::time::rfc3339(v))
+}
+
+/// Text of `content`: a non-empty string, or the non-empty `text` of its
+/// parts joined by newlines.
+pub fn text_of(content: Option<&Json>) -> Option<String> {
+    match content? {
+        Json::String(s) if !s.is_empty() => Some(s.clone()),
+        Json::Array(parts) => {
+            let texts: Vec<&str> = parts
+                .iter()
+                .filter_map(|p| p.str("text").filter(|s| !s.is_empty()))
+                .collect();
+            (!texts.is_empty()).then(|| texts.join("\n"))
+        }
+        _ => None,
+    }
 }

@@ -48,6 +48,33 @@ fn save_name_optional_before_verb() {
     );
 }
 #[test]
+fn leading_options_accept_the_equals_spelling() {
+    let spaced = parsed(&[
+        "--deadline",
+        "5s",
+        "--page-size",
+        "10",
+        "--fields",
+        "id,at",
+        "--why",
+        "sessions",
+    ]);
+    let equals = parsed(&[
+        "--deadline=5s",
+        "--page-size=10",
+        "--fields=id,at",
+        "--why=true",
+        "sessions",
+    ]);
+    assert_eq!(equals.line.deadline.as_deref(), Some("5s"));
+    assert_eq!(equals.line.deadline, spaced.line.deadline);
+    assert_eq!(equals.listing.page_size.map(|size| size.get()), Some(10));
+    assert_eq!(equals.listing.fields, ["id", "at"]);
+    assert!(equals.listing.why);
+    assert!(!parsed(&["--why=false", "sessions"]).listing.why);
+}
+
+#[test]
 fn options_belong_to_the_verb_before_them() {
     let line = parsed(&[
         "sessions", "read", "--budget", "200", "brief", "--budget", "100", "--json",

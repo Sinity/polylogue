@@ -41,6 +41,9 @@ pub fn words(text: &str) -> Vec<String> {
 /// Words around the first match in a query result's snippet.
 const WINDOW: usize = 12;
 
+/// The most characters a snippet's text carries, whatever the words' length.
+const MAX_CHARS: usize = 400;
+
 /// A query result's snippet: about 12 words around the first match, with
 /// the matches' character ranges.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -247,25 +250,41 @@ pub fn cut(text: &str, terms: &[impl AsRef<str>]) -> (String, Vec<(usize, usize)
         .iter()
         .position(|(s, e)| matches(&text[*s..*e]))
         .unwrap_or(0);
-    let start = first.saturating_sub(WINDOW / 3);
-    let end = (start + WINDOW).min(words.len());
+    let mut start = first.saturating_sub(WINDOW / 3);
+    let mut end = (start + WINDOW).min(words.len());
+    // A word is a run of letters and digits, so one of tool output can be a
+    // whole encoded file: drop the words farthest from the match until the
+    // cut fits, and cut a single over-long word itself.
+    let length = |start: usize, end: usize| text[words[start].0..words[end - 1].1].chars().count();
+    while end - start > 1 && length(start, end) > MAX_CHARS {
+        if end - 1 > first {
+            end -= 1;
+        } else {
+            start += 1;
+        }
+    }
     let from = words[start].0;
-    let to = words[end - 1].1;
+    let mut to = words[end - 1].1;
+    let mut clipped = false;
+    if let Some((bytes, _)) = text[from..to].char_indices().nth(MAX_CHARS) {
+        to = from + bytes;
+        clipped = true;
+    }
     let mut out = String::new();
     if start > 0 {
         out.push('…');
     }
     let offset = out.chars().count();
     out.push_str(&text[from..to]);
-    if end < words.len() {
+    if clipped || end < words.len() {
         out.push('…');
     }
     let cut = &text[from..to];
     let chars = |bytes: usize| cut[..bytes].chars().count() + offset;
     let marks = words[start..end]
         .iter()
-        .filter(|(s, e)| matches(&text[*s..*e]))
-        .map(|(s, e)| (chars(s - from), chars(e - from)))
+        .filter(|(s, e)| *s < to && matches(&text[*s..*e]))
+        .map(|(s, e)| (chars(s - from), chars((*e).min(to) - from)))
         .collect();
     (out, marks)
 }

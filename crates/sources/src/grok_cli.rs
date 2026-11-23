@@ -10,9 +10,9 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
-use crate::document::{first_key, session_id};
+use crate::document::{first_key, session_id, text_of};
 use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
 use crate::lines::Record;
@@ -151,20 +151,6 @@ fn action(tool: &str) -> ToolAction {
         "grep" | "list_dir" | "search_tool" => ToolAction::Search,
         "web_fetch" | "web_search" => ToolAction::Web,
         _ => ToolAction::Other,
-    }
-}
-
-fn text_of(content: Option<&Json>) -> Option<String> {
-    match content? {
-        Json::String(s) if !s.is_empty() => Some(s.clone()),
-        Json::Array(parts) => {
-            let texts: Vec<&str> = parts
-                .iter()
-                .filter_map(|p| p.str("text").filter(|s| !s.is_empty()))
-                .collect();
-            (!texts.is_empty()).then(|| texts.join("\n"))
-        }
-        _ => None,
     }
 }
 
@@ -309,7 +295,9 @@ impl Parser for GrokCli {
                         .str("tool_call_id")
                         .filter(|s| !s.is_empty())
                         .map(str::to_owned),
-                    outcome: ToolOutcome::Ok,
+                    outcome: ToolOutcome::Unknown {
+                        reason: polylogue_model::UnknownReason::StatusFieldUnreadable,
+                    },
                     output: text_of(value.get("content")),
                     data: None,
                     attachments: Vec::new(),
