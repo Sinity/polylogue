@@ -410,7 +410,7 @@ pub trait ExportParser: Send {
 /// first used it. Previous-message links are
 /// stored separately so chronological records can interleave conversations.
 pub trait ExportState {
-    fn record_first_session(
+    fn claim_native_id(
         &mut self,
         native: &str,
         session: &polylogue_model::SessionId,

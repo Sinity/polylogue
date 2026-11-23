@@ -369,7 +369,7 @@ fn conversation_with_sessions(
     let mut branch: Option<(polylogue_model::SessionId, Message)> = None;
     for (position, (_, _, message)) in rows.into_iter().enumerate() {
         let native = message.id.native().as_str().to_owned();
-        match first_sessions.record_first_session(&native, &sid)? {
+        match first_sessions.claim_native_id(&native, &sid)? {
             Some(first_session) if first_session != sid => {
                 if !sink
                     .out

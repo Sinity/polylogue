@@ -136,12 +136,12 @@ impl StateLookup<'_> {
     }
 }
 impl ExportState for StateLookup<'_> {
-    fn record_first_session(
+    fn claim_native_id(
         &mut self,
         native_id: &str,
         session: &polylogue_model::SessionId,
     ) -> Result<Option<polylogue_model::SessionId>, String> {
-        let result = self.items.claim_session(native_id, session);
+        let result = self.items.claim_native_id(native_id, session);
         self.note(result)
     }
     fn last_message(
