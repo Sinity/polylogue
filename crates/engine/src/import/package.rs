@@ -3,21 +3,12 @@
 use super::*;
 use std::io::{Read, Seek};
 
-/// Where a member sits in its container.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct MemberPlace {
-    /// Index of the container's own member.
-    pub container: usize,
-    /// The entry's position in the container's listing.
-    pub member_index: u64,
-}
-
 pub(super) struct Member {
     pub path: PathBuf,
     pub bytes: polylogue_store::staging::PreparedBytes,
     pub container: bool,
     pub origin: Option<&'static OriginSpec>,
-    pub parent: Option<MemberPlace>,
+    pub parent: Option<(usize, u64)>,
     pub container_kind: Option<String>,
     pub member_path_bytes: Option<Vec<u8>>,
     /// Why a member with no origin is refused, when it is not that no
@@ -102,7 +93,7 @@ fn fits_in_staging(archive: &Archive, declared: u64) -> std::io::Result<()> {
 fn expand(
     path: PathBuf,
     bytes: polylogue_store::staging::PreparedBytes,
-    parent: Option<MemberPlace>,
+    parent: Option<(usize, u64)>,
     archive: &Archive,
     seen: &mut Expansion,
     out: &mut Vec<Member>,
@@ -244,10 +235,7 @@ fn expand(
         expand(
             PathBuf::from(format!("{}!/{display}", path.display())),
             member,
-            Some(MemberPlace {
-                container: index,
-                member_index: i,
-            }),
+            Some((index, i)),
             archive,
             seen,
             out,
@@ -298,7 +286,7 @@ fn classify(members: &mut [Member], origin: Option<&str>) -> std::io::Result<()>
             )
         {
             package_roots.push((
-                member.parent.map(|parent| parent.container),
+                member.parent.map(|parent| parent.0),
                 member.path.parent().unwrap_or(Path::new("")).to_path_buf(),
             ));
         }
@@ -306,7 +294,7 @@ fn classify(members: &mut [Member], origin: Option<&str>) -> std::io::Result<()>
         for part in member.path.components() {
             prefix.push(part);
             if part.as_os_str() == "Takeout" {
-                package_roots.push((member.parent.map(|parent| parent.container), prefix));
+                package_roots.push((member.parent.map(|parent| parent.0), prefix));
                 break;
             }
         }
@@ -314,7 +302,7 @@ fn classify(members: &mut [Member], origin: Option<&str>) -> std::io::Result<()>
     let keys: Vec<_> = members
         .iter()
         .map(|member| {
-            let parent = member.parent.map(|parent| parent.container);
+            let parent = member.parent.map(|parent| parent.0);
             let root = package_roots
                 .iter()
                 .filter(|(container, root)| *container == parent && member.path.starts_with(root))

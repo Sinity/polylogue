@@ -143,12 +143,12 @@ impl Engine {
                 import_id.clone(),
                 options,
             ));
-            captured.container = member.parent.and_then(|parent| {
+            captured.container = member.parent.and_then(|(parent, member_index)| {
                 hashes
-                    .get(&parent.container)
+                    .get(&parent)
                     .map(|input| polylogue_store::InContainer {
                         input: input.clone(),
-                        member_index: parent.member_index,
+                        member_index,
                         kind: member
                             .container_kind
                             .clone()
