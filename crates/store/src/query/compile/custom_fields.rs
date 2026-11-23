@@ -315,7 +315,7 @@ pub(crate) fn changes_after(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<St
         .and_then(|text| polylogue_model::ChangePosition::parse(&text));
     let Some(cursor) = cursor else {
         return Err(QueryError::Invalid {
-            message: "after: takes a cursor `GEN:COUNTER:ARCHIVE`".into(),
+            message: "after: takes a cursor `GENERATION:INDEX:ARCHIVE`".into(),
             position: x.span.start,
         });
     };

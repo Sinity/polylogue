@@ -243,7 +243,7 @@ pub(crate) fn role_instance(
 
 /// Where a role's new instance runs when an address starts one: where its
 /// latest instance ran.
-fn role_cwd(d: &Daemon, name: &str) -> Result<Option<std::path::PathBuf>, Failure> {
+pub(crate) fn role_cwd(d: &Daemon, name: &str) -> Result<Option<std::path::PathBuf>, Failure> {
     Ok(d.reads
         .reader()?
         .sessions_started_with(&role_reference(name))?

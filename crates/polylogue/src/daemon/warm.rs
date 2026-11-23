@@ -66,7 +66,8 @@ impl<V: Clone> Recent<V> {
     }
 }
 
-/// Hits and misses since the daemon started, for `status`.
+/// Work counters since the daemon started, for `status`: vector loads and
+/// reused query vectors.
 #[derive(Default)]
 struct Counts {
     vector_loads: AtomicU64,
@@ -148,6 +149,8 @@ struct Flight {
     waiting: std::sync::atomic::AtomicUsize,
 }
 
+/// The daemon's warm answers: loaded similarity vectors, query vectors and
+/// in-flight provider calls.
 pub struct Warm {
     clock: polylogue_model::WallClock,
     archive: polylogue_store::Archive,

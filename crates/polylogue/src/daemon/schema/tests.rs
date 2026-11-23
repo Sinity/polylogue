@@ -209,6 +209,50 @@ fn schema_selection_continues_every_page_and_time_bound_is_observation_time() {
 }
 
 #[test]
+fn inference_selections_are_validated_before_any_read() {
+    let mut unknown_origin = selection(Some("no-such-origin"), &[], None);
+    assert_eq!(unknown_origin.validate(), Err("unknown origin".to_owned()));
+    unknown_origin.origin = None;
+    assert_eq!(unknown_origin.validate(), Ok(()));
+    assert_eq!(
+        selection(None, &[], Some(0)).validate(),
+        Err("revision must be positive".to_owned())
+    );
+    let mut naive = selection(None, &[], None);
+    naive.since = Some("2026-01-01T00:00:00".into());
+    assert_eq!(
+        naive.validate(),
+        Err("since needs RFC 3339 with a UTC offset".to_owned())
+    );
+    naive.since = Some("2026-01-01T00:00:00Z".into());
+    assert_eq!(naive.validate(), Ok(()));
+    let mut both = selection(None, &["input"], None);
+    both.since = Some("2026-01-01T00:00:00Z".into());
+    assert_eq!(
+        both.validate(),
+        Err("select explicit inputs or --since".to_owned())
+    );
+}
+
+#[test]
+fn explicit_inputs_make_the_report_a_sample() {
+    let stored = Stored::new();
+    stored.put(
+        "first",
+        "claude-code",
+        false,
+        "/absent/session.jsonl",
+        10,
+        b"{\"a\":1}\n",
+    );
+    let explicit = stored.read(selection(Some("claude-code"), &["first"], None));
+    assert!(explicit.selection.missing_revisions.is_empty());
+    assert!(explicit.origins["claude-code"].sample);
+    let everything = stored.read(selection(Some("claude-code"), &[], None));
+    assert!(!everything.origins["claude-code"].sample);
+}
+
+#[test]
 fn compressed_containers_and_decoded_revisions_use_their_stored_framing() {
     let stored = Stored::new();
     let plain = b"{\"native\":\"private value\"}\n";

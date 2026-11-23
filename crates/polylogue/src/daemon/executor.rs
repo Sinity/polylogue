@@ -5,7 +5,7 @@
 //! completion, brief) and one background place for idle-priority work
 //! (schema inference, verification, imports). Queued work starts in the
 //! order of its deadline, so a short interactive request is not served after
-//! a long read accepted earlier; work without a deadline ranks as if it had
+//! a long read accepted earlier; work without a deadline queues as if it had
 //! the default read deadline, so it still starts in its turn.
 //!
 //! Threads are not places. Work that must wait for something outside the
@@ -96,7 +96,7 @@ struct Resumption {
 }
 
 struct Queued {
-    rank: Instant,
+    deadline: Instant,
     sequence: u64,
     class: Class,
     work: Work,
@@ -104,7 +104,7 @@ struct Queued {
 
 impl PartialEq for Queued {
     fn eq(&self, other: &Self) -> bool {
-        (self.rank, self.sequence) == (other.rank, other.sequence)
+        (self.deadline, self.sequence) == (other.deadline, other.sequence)
     }
 }
 impl Eq for Queued {}
@@ -114,10 +114,10 @@ impl PartialOrd for Queued {
     }
 }
 impl Ord for Queued {
-    /// The heap pops its greatest entry: the earliest rank, then the first
+    /// The heap pops its greatest entry: the earliest deadline, then the first
     /// accepted.
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        (other.rank, other.sequence).cmp(&(self.rank, self.sequence))
+        (other.deadline, other.sequence).cmp(&(self.deadline, self.sequence))
     }
 }
 
@@ -151,7 +151,7 @@ struct Holding {
     shared: Arc<Shared>,
     place: Option<Place>,
     class: Class,
-    rank: Instant,
+    deadline: Instant,
 }
 
 thread_local! {
@@ -185,7 +185,7 @@ impl Executor {
         deadline: Option<Instant>,
         job: impl FnOnce() + Send + 'static,
     ) -> bool {
-        let rank = rank(deadline);
+        let deadline = effective_deadline(deadline);
         let mut state = self.shared.state.locked();
         if state.stopping {
             return false;
@@ -193,7 +193,7 @@ impl Executor {
         state.sequence += 1;
         let sequence = state.sequence;
         state.queues[class.index()].push(Queued {
-            rank,
+            deadline,
             sequence,
             class,
             work: Work::Job(Box::new(job)),
@@ -290,8 +290,8 @@ impl Drop for Executor {
     }
 }
 
-/// Work without a deadline ranks as if it had the default read deadline.
-fn rank(deadline: Option<Instant>) -> Instant {
+/// Work without a deadline queues as if it had the default read deadline.
+fn effective_deadline(deadline: Option<Instant>) -> Instant {
     deadline.unwrap_or_else(|| Instant::now() + super::execution::default_read_deadline())
 }
 
@@ -303,9 +303,17 @@ impl Resumption {
 }
 
 impl Shared {
-    /// The queued work to start now and the place it takes: the earliest
-    /// ranked work that has a free place it may use.
+    /// The queued work to start now and the place it takes.
     fn take(state: &mut State) -> Option<(Queued, Place)> {
+        let (class, place) = Self::next_start(state)?;
+        let queued = state.queues[class.index()].pop()?;
+        state.free[place.index()] -= 1;
+        Some((queued, place))
+    }
+
+    /// The class of the earliest-deadline queued work that has a free place
+    /// it may use, with that place.
+    fn next_start(state: &State) -> Option<(Class, Place)> {
         let free = |place: Place| state.free[place.index()] > 0;
         let interactive = if free(Place::Reserved) {
             Some(Place::Reserved)
@@ -325,25 +333,18 @@ impl Shared {
                 free(Place::Background).then_some(Place::Background),
             ),
         ];
-        let (class, place) = candidates
+        candidates
             .into_iter()
             .filter_map(|(class, place)| {
                 let head = state.queues[class.index()].peek()?;
-                Some(((head.rank, head.sequence), class, place?))
+                Some(((head.deadline, head.sequence), class, place?))
             })
             .min_by_key(|(order, _, _)| *order)
-            .map(|(_, class, place)| (class, place))?;
-        let queued = state.queues[class.index()].pop()?;
-        state.free[place.index()] -= 1;
-        Some((queued, place))
+            .map(|(_, class, place)| (class, place))
     }
 
     fn runnable(state: &State) -> bool {
-        let free = |place: Place| state.free[place.index()] > 0;
-        (!state.queues[Class::Interactive.index()].is_empty()
-            && (free(Place::Reserved) || free(Place::Ordinary)))
-            || (!state.queues[Class::Ordinary.index()].is_empty() && free(Place::Ordinary))
-            || (!state.queues[Class::Background.index()].is_empty() && free(Place::Background))
+        Self::next_start(state).is_some()
     }
 
     /// Wakes a parked thread, or starts one, when queued work can start.
@@ -402,7 +403,7 @@ impl Shared {
                     shared: Arc::clone(&self),
                     place: Some(place),
                     class: queued.class,
-                    rank: queued.rank,
+                    deadline: queued.deadline,
                 })
             });
             if std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).is_err() {
@@ -421,7 +422,7 @@ impl Shared {
 
 /// Runs `wait` without holding an executor place: the place of the work
 /// running on this thread goes to queued work, and the work queues again at
-/// its original rank when `wait` returns. On a thread outside the executor
+/// its original deadline when `wait` returns. On a thread outside the executor
 /// it just runs `wait`.
 pub(crate) fn outside<T>(wait: impl FnOnce() -> T) -> T {
     let Some(holding) = HOLDING.with(|holding| holding.borrow_mut().take()) else {
@@ -447,7 +448,7 @@ pub(crate) fn outside<T>(wait: impl FnOnce() -> T) -> T {
         state.sequence += 1;
         let sequence = state.sequence;
         state.queues[holding.class.index()].push(Queued {
-            rank: holding.rank,
+            deadline: holding.deadline,
             sequence,
             class: holding.class,
             work: Work::Resume(Arc::clone(&resumption)),

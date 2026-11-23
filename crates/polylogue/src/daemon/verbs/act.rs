@@ -112,7 +112,17 @@ impl Verb for Send {
                     match acts::role_instance(d, name, now)? {
                         Some(session) => session,
                         None => {
-                            return Ok(format!("would send {:?} to {target}: hosted", step.text));
+                            let delivery = if acts::role_cwd(d, name)?.is_some() {
+                                "hosted".to_owned()
+                            } else {
+                                format!(
+                                    "refused: no_live_instance: the role {name} has no running session and none ran before"
+                                )
+                            };
+                            return Ok(format!(
+                                "would send {:?} to {target}: {delivery}",
+                                step.text
+                            ));
                         }
                     }
                 } else {
@@ -181,7 +191,7 @@ impl Verb for Answer {
         call: &StepCall<'_>,
     ) -> Result<StepDone, Failure> {
         let decision = decision(&step)?;
-        each_session(selection, call, |session, call| {
+        each_session(Self::NAME, selection, call, |session, call| {
             acts::AnswerRequest::run(
                 act::Answer {
                     session,
@@ -207,17 +217,26 @@ impl Verb for Answer {
                     session,
                     call.call.daemon.config.requests.now().unix_ms(),
                 )?;
-                let waiting = call.call.daemon.acts.host_request(session).is_some()
-                    || state.is_some_and(|(_, facts, _)| facts.pending_request.is_some());
-                Ok(format!(
-                    "would answer {} for {session}: {}",
-                    step.value,
-                    if waiting {
-                        "waiting on a permission"
-                    } else {
-                        "not waiting on a permission"
+                let result = match state {
+                    Some((state, facts, _)) => {
+                        let waiting = call.call.daemon.acts.host_request(session).is_some()
+                            || facts.pending_request.is_some();
+                        match channel(
+                            Act::Answer,
+                            state,
+                            &crate::live_acts::probe(&call.call.daemon.acts, session, &facts),
+                        ) {
+                            Ok(Channel::Hook) if !step.standing => "refused: the harness already shows its own prompt for this request; answer it in the terminal or use --standing".to_owned(),
+                            Ok(_) if waiting => "waiting on a permission".to_owned(),
+                            Ok(_) => "not waiting on a permission".to_owned(),
+                            Err(reason) => {
+                                format!("refused: {}: {}", reason.reason, reason.detail)
+                            }
+                        }
                     }
-                ))
+                    None => "refused: session missing".to_owned(),
+                };
+                Ok(format!("would answer {} for {session}: {result}", step.value))
             })
             .collect::<Result<Vec<_>, Failure>>()
             .map(|lines| lines.join("\n"))
@@ -242,7 +261,7 @@ impl Verb for Interrupt {
         selection: &Selection,
         call: &StepCall<'_>,
     ) -> Result<StepDone, Failure> {
-        each_session(selection, call, |session, call| {
+        each_session(Self::NAME, selection, call, |session, call| {
             acts::Interrupt::run(act::Interrupt { session }, call)
         })
     }
@@ -279,6 +298,7 @@ impl Verb for Interrupt {
 
 /// One act per session, request `<step>-<n>`; the first failure stops the step.
 fn each_session(
+    verb: &str,
     selection: &Selection,
     call: &StepCall<'_>,
     one: impl Fn(SessionId, &Call<'_>) -> Result<command_surface::Answer<Value>, Failure>,
@@ -286,7 +306,7 @@ fn each_session(
     let mut acted = Vec::new();
     let mut envelope = Envelope::default();
     let mut outcome = command_surface::Outcome::Empty(());
-    for (n, session) in sessions("this act", selection)?.into_iter().enumerate() {
+    for (n, session) in sessions(verb, selection)?.into_iter().enumerate() {
         let request_id = format!("{}-{}", call.call.request_id, n + 1);
         let done = delegated(
             one(

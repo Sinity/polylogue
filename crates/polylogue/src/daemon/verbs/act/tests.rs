@@ -92,9 +92,11 @@ fn acts_dry_run_reports_channels_and_permissions() {
         steps[0]["outcome"]["would"],
         "would send \"continue\" to claude-code:s1: resumed headlessly"
     );
-    assert_eq!(
-        steps[1]["outcome"]["would"],
-        "would answer allow for claude-code:s1: not waiting on a permission"
+    assert!(
+        steps[1]["outcome"]["would"]
+            .as_str()
+            .unwrap()
+            .starts_with("would answer allow for claude-code:s1: refused: session_not_live:")
     );
     assert!(
         steps[2]["outcome"]["would"]

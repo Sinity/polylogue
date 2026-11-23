@@ -84,6 +84,15 @@ pub struct Update {
     pub receipt: Option<Value>,
 }
 
+/// An attachment's name must be a plain file name, so it cannot name a path.
+pub fn check_file_name(name: &str) -> Result<(), Refused> {
+    let basename = Path::new(name).file_name().is_some_and(|n| n == name);
+    if !basename || name.chars().any(char::is_control) {
+        return Err(Refused(polylogue_model::Code::AttachmentNameNotABasename));
+    }
+    Ok(())
+}
+
 /// Checks a request and makes the row the writer stores. `files` are the
 /// attachments already stored as blobs, with their names and media types.
 pub fn new_action(
@@ -101,12 +110,7 @@ pub fn new_action(
         return Err(Refused(polylogue_model::Code::ModelRequired));
     }
     for file in &files {
-        let basename = Path::new(&file.name)
-            .file_name()
-            .is_some_and(|n| n == file.name.as_str());
-        if !basename || file.name.chars().any(char::is_control) {
-            return Err(Refused(polylogue_model::Code::AttachmentNameNotABasename));
-        }
+        check_file_name(&file.name)?;
     }
     let request =
         serde_json::to_value(req).map_err(|_| Refused(polylogue_model::Code::InvalidAction))?;

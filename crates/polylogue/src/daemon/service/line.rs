@@ -233,7 +233,7 @@ fn given(rows: &Rows) -> Result<Given, Failure> {
         (None, []) => Ok(Given::None),
         (None, references) => references
             .iter()
-            .map(|text| Reference::parse(text).map_err(Failure::bad_value))
+            .map(|text| Reference::parse(text.trim()).map_err(Failure::bad_value))
             .collect::<Result<_, _>>()
             .map(Given::References),
         (Some(text), []) => Ok(match named(text) {

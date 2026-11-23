@@ -390,6 +390,34 @@ fn a_client_can_close_its_write_half_and_still_receive_the_answer() {
     );
 }
 
+#[test]
+fn a_request_line_that_is_not_utf8_is_refused_and_the_connection_continues() {
+    let daemon = crate::test_daemon::start("socket invalid utf8");
+    let mut stream = UnixStream::connect(daemon.daemon.archive.socket()).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream.write_all(b"{\"operation\":\"\xff\"}\n").unwrap();
+    let mut input = BufReader::new(stream);
+    let mut line = String::new();
+    input.read_line(&mut line).unwrap();
+    let refused: command_surface::Answer<serde_json::Value> = serde_json::from_str(&line).unwrap();
+    assert!(
+        matches!(&refused, command_surface::Answer { outcome: command_surface::Outcome::Error(error), .. } if error.code.as_deref() == Some("bad_request")),
+        "{refused:?}"
+    );
+    let next = request_line(
+        "dev sql",
+        serde_json::json!({"statement":"SELECT 1"}),
+        "after-bad-line",
+    );
+    input.get_mut().write_all(next.as_bytes()).unwrap();
+    line.clear();
+    input.read_line(&mut line).unwrap();
+    let next: command_surface::Answer<serde_json::Value> = serde_json::from_str(&line).unwrap();
+    assert!(next.value().is_some(), "{next:?}");
+}
+
 /// A client already queued behind running work must be refused before the
 /// transport waits for it. The running request still finishes normally.
 #[test]
@@ -999,6 +1027,14 @@ fn a_query_word_named_mcp_does_not_change_the_observed_channel() {
     );
     assert_eq!(
         via_of_command_line(&["polylogue", "--deadline", "100", "mcp"]),
+        Via::Mcp
+    );
+    assert_eq!(
+        via_of_command_line(&["polylogue", "--budget", "4000", "mcp"]),
+        Via::Mcp
+    );
+    assert_eq!(
+        via_of_command_line(&["polylogue", "--cursor=abc", "mcp"]),
         Via::Mcp
     );
 }

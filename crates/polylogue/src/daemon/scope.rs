@@ -13,6 +13,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
+const TERMINATED: &str = "scope worker terminated";
+
 /// The scope index and a signal for its first full read.
 #[derive(Default)]
 pub struct SharedScopeIndex {
@@ -106,7 +108,7 @@ impl ScopeWorker {
         let thread = polylogue_model::spawn_named("polylogue-scope", move || {
             let _exit = super::lifecycle::WorkerExit::new(
                 worker_events,
-                "scope worker terminated",
+                TERMINATED,
                 Some(Arc::clone(&completed)),
             );
             let mut last_error = None;
@@ -187,7 +189,7 @@ impl ScopeWorker {
         (self.thread.as_ref().is_some_and(JoinHandle::is_finished)
             && !self.stop.load(Ordering::Acquire)
             && !self.expected_exit.load(Ordering::Acquire))
-        .then_some("scope worker terminated")
+        .then_some(TERMINATED)
     }
 
     /// Stops and joins the worker.
@@ -201,7 +203,7 @@ impl ScopeWorker {
                 .join()
                 .map_err(|_| std::io::Error::other("scope worker panicked"))?;
             if !self.expected_exit.load(Ordering::Acquire) {
-                return Err(std::io::Error::other("scope worker terminated"));
+                return Err(std::io::Error::other(TERMINATED));
             }
         }
         Ok(())

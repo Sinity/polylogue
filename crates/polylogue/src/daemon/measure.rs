@@ -315,22 +315,15 @@ pub fn run(
             m.name
         )));
     }
+    let (since, until) = if m.messages { window } else { (None, None) };
     let run = Run {
-        selection: if m.messages {
-            Selection {
-                sessions,
-                population,
-                since: window.0,
-                until: window.1,
-                logical: true,
-                ..Selection::default()
-            }
-        } else {
-            Selection {
-                sessions,
-                population,
-                ..Selection::default()
-            }
+        selection: Selection {
+            sessions,
+            population,
+            since,
+            until,
+            logical: m.messages,
+            ..Selection::default()
         },
         now,
         day,
@@ -340,7 +333,7 @@ pub fn run(
     if let Some(object) = answer.as_object_mut() {
         object
             .entry("zone")
-            .or_insert_with(|| Value::from(day.zone().iana_name().unwrap_or("UTC")));
+            .or_insert_with(|| Value::from(day.zone_name()));
     }
     Ok(answer)
 }

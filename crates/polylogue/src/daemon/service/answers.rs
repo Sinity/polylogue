@@ -678,10 +678,12 @@ pub(crate) fn query_targets_in(
                     if let Some(polylogue_model::Reference::Session(expected)) = container {
                         let Some(polylogue_model::Reference::Message(message)) = targets.first()
                         else {
-                            return Err(Failure::conflict(format!(
-                                "the supplied source is not a recorded message; the query selected {row_count} rows, first {:?}",
-                                targets.first()
-                            )));
+                            return Err(Failure::conflict(match targets.first() {
+                                None => "the supplied message is missing, ambiguous or belongs to another conversation; capture the conversation and retry".to_string(),
+                                Some(first) => format!(
+                                    "the supplied source is not a recorded message; the query selected {row_count} rows, first {first}"
+                                ),
+                            }));
                         };
                         let mut memberships = 0_u8;
                         let mut matches = false;

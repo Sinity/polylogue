@@ -315,20 +315,28 @@ fn typed_setting_catalog_is_a_real_table_answer() {
             .iter()
             .any(|current| current.key == "browser.actions")
     );
-    for (arguments, id) in [
-        (
+    let wrong_type = runtime().block_on(table.call(
+        request(
+            "set",
             json!({"key":"browser.actions", "machine":true}),
             "invalid-catalog-example",
         ),
-        (json!({"machine":"*"}), "invalid-host-example"),
-    ] {
-        let invalid = runtime().block_on(table.call(
-            request("set", arguments, id),
-            command_surface::Via::Cli,
-            Default::default(),
-        ));
-        assert!(invalid.value().is_none(), "{invalid:?}");
-    }
+        command_surface::Via::Cli,
+        Default::default(),
+    ));
+    assert!(wrong_type.value().is_none(), "{wrong_type:?}");
+    let all_hosts = runtime().block_on(table.call(
+        request("set", json!({"machine":"*"}), "invalid-host-example"),
+        command_surface::Via::Cli,
+        Default::default(),
+    ));
+    assert_eq!(
+        all_hosts
+            .failure()
+            .and_then(|failure| failure.code.as_deref()),
+        Some("bad_value"),
+        "{all_hosts:?}"
+    );
 }
 
 #[test]

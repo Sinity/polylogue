@@ -10,7 +10,7 @@ use query_language::time::Clock;
 /// Exercise the same resolution and Keep producer used by a Save step.
 fn save_rows(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     let (retained, references) = capture_selection(reader, &ask)?;
-    keep_selected(reader, ask, &retained, references.as_deref())
+    save_selected(reader, ask, &retained, references.as_deref())
 }
 
 const DAY: i64 = 86_400_000;
@@ -1725,7 +1725,7 @@ fn optional_count_timeout_preserves_a_completed_query_answer() {
         || {
             let reader = pool.reader().unwrap();
             let mut prepared = super::prepare(&reader, ask("sessions")).unwrap();
-            let program = prepared.count.as_mut().unwrap();
+            let program = prepared.count_program.as_mut().unwrap();
             match &mut program.statements {
             polylogue_store::query::Statements::Keyed(rows) => rows.count = "WITH RECURSIVE slow(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM slow WHERE n<1000000000) SELECT count(*), 0 FROM slow".into(),
             _ => panic!("keyed session selection"),

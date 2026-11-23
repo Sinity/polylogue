@@ -41,7 +41,11 @@ impl Verb for Brief {
             budget,
             ..call.call.copy()
         };
-        let answer = match form(selection) {
+        let form = match form(selection) {
+            Form::SessionWord(text) => Form::Session(one_session(&call, &text)?),
+            other => other,
+        };
+        let answer = match form {
             Form::Directory => handlers::Brief::run(
                 context::Brief {
                     cwd: step.cwd,
@@ -57,16 +61,7 @@ impl Verb for Brief {
                 },
                 &call,
             )?,
-            Form::SessionWord(text) => {
-                let session = one_session(&call, &text)?;
-                handlers::Takeover::run(
-                    context::Takeover {
-                        session,
-                        for_session,
-                    },
-                    &call,
-                )?
-            }
+            Form::SessionWord(_) => unreachable!("a session word is resolved to a session above"),
             Form::Words(query) => handlers::Recall::run(
                 context::Recall {
                     query,

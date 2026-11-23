@@ -108,8 +108,6 @@ struct Clients {
     panicked: std::sync::atomic::AtomicBool,
 }
 
-impl Clients {}
-
 /// The caller's facts as the daemon observes them from the socket peer. The
 /// request contributes only an MCP call's tool call ID, which joins a
 /// matching hook event.
@@ -157,17 +155,8 @@ fn working_directory(stream: &UnixStream) -> std::io::Result<PathBuf> {
 /// How a peer process reached the daemon, from its command line: the first
 /// word after the global options names the subcommand.
 fn via_of_command_line(words: &[&str]) -> command_surface::Via {
+    use crate::cli::GLOBAL_VALUED_OPTIONS as VALUED;
     use command_surface::Via;
-    const VALUED: [&str; 8] = [
-        "--deadline",
-        "--timeout",
-        "--archive",
-        "--config",
-        "--listen",
-        "--auth-token-file",
-        "--request",
-        "--request-id",
-    ];
     let mut words = words.iter().skip(1);
     while let Some(word) = words.next() {
         match *word {
@@ -176,10 +165,9 @@ fn via_of_command_line(words: &[&str]) -> command_surface::Via {
                 words.next();
                 continue;
             }
-            word if VALUED.iter().any(|option| {
-                word.strip_prefix(option)
-                    .is_some_and(|rest| rest.starts_with('='))
-            }) =>
+            word if word
+                .split_once('=')
+                .is_some_and(|(name, _)| VALUED.contains(&name)) =>
             {
                 continue;
             }
@@ -204,14 +192,29 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
         return;
     };
     let mut out = stream;
-    for line in BufReader::new(read_half).lines() {
-        let Ok(line) = line else {
-            return;
+    let mut requests = BufReader::new(read_half);
+    let mut buffer = Vec::new();
+    loop {
+        buffer.clear();
+        match requests.read_until(b'\n', &mut buffer) {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+        // An undecodable line is a bad request; the connection stays open.
+        let Ok(line) = std::str::from_utf8(&buffer) else {
+            let answer = command_surface::Answer::error(crate::protocol::failure(
+                polylogue_model::Code::BadRequest,
+                "a request line must be UTF-8 JSON",
+            ));
+            if !write_answer(&mut out, &answer) {
+                return;
+            }
+            continue;
         };
         if line.trim().is_empty() {
             continue;
         }
-        let incoming = match crate::protocol::wire::incoming(&line) {
+        let incoming = match crate::protocol::wire::incoming(line) {
             Ok(incoming) => incoming,
             Err(error) => {
                 let answer = command_surface::Answer::error(crate::protocol::failure(
@@ -392,8 +395,6 @@ fn send_stream(
     }
 }
 
-/// Runs the daemon until its listener stops. Each transport is dropped
-/// before the application workers and archive lock.
 /// The loop holds a file open for each blob it is storing, and a first build
 /// stores thousands at once. Services start with a soft limit of 1,024 open
 /// files; the hard limit is the real bound, so the soft one is raised to it.
@@ -421,6 +422,7 @@ pub struct Run {
 
 /// Serves the archive until a signal or, for a run until idle, until the
 /// loop has no work; then returns what the loop did in a run until idle.
+/// Each transport is dropped before the application workers and archive lock.
 pub fn serve(
     startup: &crate::config::Startup,
     run: Run,
@@ -624,10 +626,7 @@ fn listen(
     shared: Arc<Shared>,
     stopped_sender: tokio::sync::oneshot::Sender<()>,
 ) -> std::io::Result<()> {
-    let mut failure = None;
-    if let Err(error) = accept.listener.set_nonblocking(true) {
-        failure = Some(error);
-    }
+    let mut failure = accept.listener.set_nonblocking(true).err();
     while failure.is_none() {
         let stream = match accept.next() {
             Ok(Some(stream)) => stream,
