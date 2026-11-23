@@ -15,6 +15,9 @@ fn a_spool_file_arriving_mid_pass_is_stored_before_the_backlog_ends() {
     let w = ClaudeHome::new();
     const BACKLOG: i64 = 200;
     const HELD_AT: u32 = 20;
+    // Files already in the pool at the hold, and the commit group size.
+    const POOL: i64 = 16;
+    const GROUP: i64 = 100;
     let mut lines = String::new();
     for i in 0..10 {
         lines.push_str(&user(
@@ -78,8 +81,8 @@ fn a_spool_file_arriving_mid_pass_is_stored_before_the_backlog_ends() {
     }
     let behind = sessions(&w);
     assert!(
-        behind < BACKLOG,
-        "the hook event waited for the whole backlog ({behind} of {BACKLOG} sessions stored)"
+        behind <= i64::from(HELD_AT) + POOL + GROUP,
+        "the hook event waited behind {behind} of {BACKLOG} backlog sessions"
     );
     let done = pass.join().unwrap().unwrap();
     assert!(done.errors.is_empty(), "{:?}", done.errors);

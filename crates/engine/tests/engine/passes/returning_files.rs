@@ -143,12 +143,7 @@ fn a_growing_capture_log_appends_to_one_chain() {
         .into_iter()
         .map(|row| row["produced"].as_str().unwrap().to_owned())
         .collect();
-    assert_eq!(produced[0], "first");
-    assert!(produced.len() >= 4, "{produced:?}");
-    assert!(
-        produced[1..].iter().all(|p| p == "appended"),
-        "{produced:?}"
-    );
+    assert_eq!(produced, ["first", "appended", "appended", "appended"]);
     assert_eq!(chains(&w), 1);
     assert_eq!(
         w.count("SELECT sum(length) AS n FROM a.extent"),
