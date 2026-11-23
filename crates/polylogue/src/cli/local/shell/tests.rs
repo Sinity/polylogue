@@ -81,6 +81,27 @@ fn install_shell_remove_restores_original_bytes_and_repeats() {
 }
 
 #[test]
+fn install_shell_remove_restores_startup_file_without_final_newline() {
+    for shell in ["zsh", "fish"] {
+        let (_directory, startup) = fixture();
+        let (completion, startup_file) = paths(&startup, shell);
+        let startup_file = startup_file.unwrap();
+        for path in [&completion, &startup_file] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        }
+        std::fs::write(&completion, b"# completion\n").unwrap();
+        std::fs::write(&startup_file, b"# last line without newline").unwrap();
+        assert_eq!(invoke(&startup, shell, &[]).0, ExitCode::SUCCESS);
+        assert_eq!(invoke(&startup, shell, &["--remove"]).0, ExitCode::SUCCESS);
+        assert_eq!(
+            std::fs::read(&startup_file).unwrap(),
+            b"# last line without newline"
+        );
+        assert!(!crate::installation::backup_path(&startup_file).exists());
+    }
+}
+
+#[test]
 fn install_zsh_preserves_later_unrelated_startup_edits_and_honors_zdotdir() {
     let (_directory, mut startup) = fixture();
     startup.zsh_directory = startup.config.paths.home.join("zsh-startup");

@@ -35,6 +35,13 @@ pub struct Bundle {
     failed: bool,
     frames: u64,
 }
+
+fn parent_of(path: &Path) -> &Path {
+    path.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+}
+
 impl Bundle {
     pub fn new(
         destination: &Path,
@@ -42,10 +49,7 @@ impl Bundle {
         format: Format,
         with_blobs: bool,
     ) -> Result<Self> {
-        let parent = destination
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
+        let parent = parent_of(destination);
         let staging = tempfile::Builder::new()
             .prefix(".polylogue-bundle-")
             .tempdir_in(parent)
@@ -96,10 +100,7 @@ impl Bundle {
     pub fn staging(&self) -> &Path {
         &self.staging
     }
-    pub fn abort(&mut self, message: impl ToString) -> Error {
-        self.error(message)
-    }
-    fn error(&mut self, message: impl ToString) -> Error {
+    pub fn error(&mut self, message: impl ToString) -> Error {
         self.failed = true;
         let mut message = message.to_string();
         if let Some(items) = &mut self.items
@@ -247,11 +248,7 @@ impl Bundle {
             .and_then(|f| f.sync_all())
             .map_err(|e| self.error(e))?;
         check_destination(&self.destination).map_err(|e| self.error(e))?;
-        let parent = self
-            .destination
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
+        let parent = parent_of(&self.destination);
         let parent_file = File::open(parent).map_err(|e| self.error(e))?;
         let replacing = self.destination.exists();
         if replacing {
