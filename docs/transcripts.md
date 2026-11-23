@@ -66,7 +66,7 @@ Footer = CitedAndLinked[], More(ReadyCall)?
   - shared ancestors are counted once; the walk is iterative with no depth limit;
   - cycles, missing parents, missing branch points and conflicting parents become `link_issue` indicators and `parents.issues[]` in JSON. They never fail the reading and are never resolved by choosing one link.
 - Every message row carries `source_session` and `inherited`. The header shows `10 own + 18 inherited`.
-- A copy whose source session is not stored reports a missing parent as a `link_issue`; the child shows only its own messages.
+- A copy whose source session is not stored shows as the child's own message, marked `(repeated from a session not in the archive, counted as own)`.
 
 ## Branches
 
