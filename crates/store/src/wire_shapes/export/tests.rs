@@ -56,11 +56,8 @@ fn apply_step(conn: &mut Connection, length: u64, step: &ParseStep) -> Result<()
 }
 fn assert_rejected(result: Result<()>, reason: &str) {
     match result {
-        Err(StoreError::Invalid(message)) => assert!(
-            message.contains(reason),
-            "rejected for another reason: {message}"
-        ),
-        other => panic!("expected a rejection containing {reason:?}, got {other:?}"),
+        Err(StoreError::Invalid(message)) => assert_eq!(message, reason),
+        other => panic!("expected the rejection {reason:?}, got {other:?}"),
     }
 }
 fn state(conn: &Connection) -> String {
@@ -113,7 +110,7 @@ fn callback_prefix_retries_are_read_only_and_completion_waits_for_every_prior_ca
         .unwrap();
     assert_rejected(
         apply_step(&mut conn, 2, &conflict),
-        "replayed export prefix differs",
+        "replayed export prefix differs from the committed callback body",
     );
     let wrong = callback(
         2,
@@ -126,7 +123,7 @@ fn callback_prefix_retries_are_read_only_and_completion_waits_for_every_prior_ca
     );
     assert_rejected(
         apply_step(&mut conn, 2, &wrong),
-        "export completion does not account",
+        "export completion does not account for its committed callbacks",
     );
     assert_eq!(state(&conn), saved);
     let complete = callback(
@@ -171,7 +168,7 @@ fn callback_prefix_retries_are_read_only_and_completion_waits_for_every_prior_ca
     );
     assert_rejected(
         apply_step(&mut conn, 2, &forked_completion),
-        "replayed export prefix differs",
+        "replayed export prefix differs from the committed callback body",
     );
     let after_complete = callback(
         3,
@@ -243,7 +240,7 @@ fn unreadable_header_keeps_diagnostics_without_a_cursor_and_new_length_can_resta
     );
     assert_rejected(
         apply_step(&mut conn, 1, &header),
-        "a refused immutable source cannot change its callback",
+        "a refused immutable source cannot change its callback without a new source length",
     );
     apply_step(&mut conn, 2, &header).unwrap();
     let complete = callback(

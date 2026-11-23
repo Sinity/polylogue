@@ -120,6 +120,19 @@ fn query_and_typed_about_share_forks_and_withdrawal() {
     let fresh = reads.reader().unwrap();
     assert_eq!(selected(&fresh, "annotations"), ["right"]);
     assert!(selected(&fresh, "annotations where conflict:true").is_empty());
+    let mut associated = Vec::new();
+    let flow = fresh
+        .visit_assertion_references_linked(
+            &Reference::parse_stored(about.1).unwrap(),
+            &[polylogue_model::assertion::LinkRole::About],
+            |row| {
+                associated.push(row.revision.expect("linked revisions are exact"));
+                Ok(std::ops::ControlFlow::Continue(()))
+            },
+        )
+        .unwrap();
+    assert!(matches!(flow, std::ops::ControlFlow::Continue(())));
+    assert_eq!(associated, ["right"]);
     let exact = fresh
         .assertion(&polylogue_model::RevisionReference::exact(
             "family".into(),
@@ -176,7 +189,6 @@ fn no_effect_request_exports_its_outcome_and_source() {
     assert_eq!(record.prepared.request, original);
     assert!(record.prepared.effect.assertions.is_empty());
     assert_eq!(record.prepared.outcome.id, "tag-base");
-    assert!(record.commit > 0);
     let wire = polylogue_model::bundle::Record::Authored(record.clone());
     wire.validate().unwrap();
     let decoded: polylogue_model::bundle::Record =
@@ -246,7 +258,10 @@ fn unknown_authored_time_keeps_current_revision_queries() {
         .unwrap();
     let mut conflicting = dated.clone();
     conflicting.created_at = None;
-    assert!(archive.writer.restore_assertion(conflicting, None).is_err());
+    assert!(matches!(
+        archive.writer.restore_assertion(conflicting, None),
+        Err(StoreError::Conflict(id)) if id == "dated"
+    ));
     let reads = ReadPool::open(&archive.archive).unwrap();
     let reader = reads.reader().unwrap();
     assert_eq!(selected(&reader, "annotations"), ["dated", "undated"]);

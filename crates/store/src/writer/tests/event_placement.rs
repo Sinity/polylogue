@@ -23,7 +23,7 @@ fn observe(event: TraceEvent<'_>) {
                 if sql.starts_with("SELECT EXISTS(SELECT 1 FROM event WHERE after_message_id") {
                     value.checks += 1;
                     true
-                } else if sql.starts_with("SELECT m.id,coalesce(s.seq,0)") {
+                } else if sql.starts_with("SELECT coalesce(s.seq,0) FROM message m") {
                     value.message_reads += 1;
                     true
                 } else if sql.starts_with("UPDATE event SET after_message_pk=") {

@@ -69,6 +69,14 @@ mod armed {
         HOLD.locked().held
     }
 
+    /// Blocks until a thread has reached a point armed with [`Action::Hold`].
+    pub fn wait_held() {
+        let mut state = HOLD.locked();
+        while !state.held {
+            state = polylogue_model::unpoisoned(HOLD_CHANGED.wait(state));
+        }
+    }
+
     /// Lets the thread stopped at an [`Action::Hold`] point continue.
     pub fn release() {
         HOLD.locked().released = true;
@@ -91,7 +99,7 @@ mod armed {
 }
 
 #[cfg(feature = "faults")]
-pub use armed::{arm, clear, held, release};
+pub use armed::{arm, clear, held, release, wait_held};
 
 /// Reaching `point` for `subject` (a path, a table): fails, panics, stops the
 /// process or holds the thread if a test armed it (a hold or stop returns only

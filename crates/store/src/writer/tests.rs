@@ -1519,7 +1519,10 @@ fn a_refused_reading_in_a_group_of_independent_inputs_costs_only_itself() {
         .store_group(group, std::sync::Arc::new(w.archive.blobs().unwrap()))
         .unwrap();
     assert_eq!(results.len(), 2);
-    assert!(results[0].is_err(), "{results:?}");
+    assert!(
+        matches!(&results[0], Err(error) if error.to_string().contains("injected fault at write.input")),
+        "{results:?}"
+    );
     assert_eq!(
         results[1].as_ref().map(|stored| stored.input.as_str()).ok(),
         Some("accepted-group-input"),
@@ -1594,14 +1597,7 @@ fn a_stop_during_deferred_indexes_keeps_committed_rows_for_restart() {
         1,
     );
     let run = std::thread::spawn(move || sender.derive());
-    let guard = std::time::Instant::now();
-    while !crate::fault::held() {
-        assert!(
-            guard.elapsed() < std::time::Duration::from_secs(30),
-            "index finish did not reach pause"
-        );
-        std::thread::yield_now();
-    }
+    crate::fault::wait_held();
     stop.cancel();
     crate::fault::release();
     assert!(matches!(run.join().unwrap(), Err(StoreError::WriterGone)));

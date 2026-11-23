@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_model::{Document, DocumentAuthorship, DocumentId, DocumentPurpose, DocumentRow};
+use polylogue_model::{Document, DocumentId, DocumentPurpose, DocumentRow};
 use serde_json::json;
 use std::ops::ControlFlow;
 
@@ -149,7 +149,6 @@ fn prepared_and_unprepared_documents_keep_values_and_source_versions_without_cha
             .unwrap()[0]["n"],
         0
     );
-    assert_eq!(original.authorship, DocumentAuthorship::Unknown);
     drop(selected);
     drop(reader);
     drop(pool);
@@ -342,7 +341,7 @@ fn shared_message_document_text_keeps_vectors_after_both_sources_disappear() {
         1
     );
     let pool = ReadPool::open(&w.archive).unwrap();
-    assert!(pool.reader().unwrap().document(&doc.id).unwrap().is_some());
+    assert_eq!(pool.reader().unwrap().document(&doc.id).unwrap(), Some(doc));
 }
 
 #[test]

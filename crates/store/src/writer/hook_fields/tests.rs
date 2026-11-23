@@ -76,16 +76,15 @@ fn stated_hook_fields_bind_record_and_text_block() {
             .validate(&invalid.output)
             .expect_err("an invalid stated field is refused")
             .to_string();
-        // Case 2 names a block that may be unselected or not text.
         let cause = [
-            "span differs",
-            "span differs",
-            "",
-            "not a hook context index",
-            "not a hook context index",
-            "names a message the step does not hold",
+            "stated hook field span differs from its source record",
+            "stated hook field span differs from its source record",
+            "stated hook field names a block its message did not select",
+            "stated hook field pointer is not a hook context index",
+            "stated hook field pointer is not a hook context index",
+            "stated hook field names a message the step does not hold",
         ][case];
-        assert!(error.contains(cause), "case {case}: {error}");
+        assert_eq!(error, cause, "case {case}");
     }
 }
 
@@ -101,7 +100,7 @@ fn a_stated_hook_field_must_name_a_text_block() {
         .validate(&step.output)
         .expect_err("a claim on a non-text block is refused")
         .to_string();
-    assert!(error.contains("not text"), "{error}");
+    assert_eq!(error, "stated hook field names a block that is not text");
 }
 
 #[test]
@@ -152,5 +151,12 @@ fn sparse_hook_fields_keep_original_ordinals() {
     reading.prepared.validate(&reading.output).unwrap();
     assert_eq!(reading.prepared.messages[0].hash, source_version.0);
     reading.output.hook_fields.get_mut(&0).unwrap()[0].block = 0;
-    assert!(reading.prepared.validate(&reading.output).is_err());
+    assert_eq!(
+        reading
+            .prepared
+            .validate(&reading.output)
+            .unwrap_err()
+            .to_string(),
+        "stated hook field names a block its message did not select"
+    );
 }

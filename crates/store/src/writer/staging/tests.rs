@@ -328,6 +328,29 @@ fn an_equal_length_change_to_a_staged_file_is_refused_at_append() {
             .extent(&hashed_blobs::Hash::of(body)),
         Err(StoreError::NotFound(_))
     ));
+    // The same group with its staged bytes intact is stored, so the refusal
+    // above comes from the changed byte.
+    let control_directory = tempfile::tempdir().unwrap();
+    let (control, _control_lock) = Archive::open_or_create(control_directory.path()).unwrap();
+    let control_writer = Writer::start(&control).unwrap();
+    let prepared = control.prepare_bytes(body).unwrap();
+    let mut item = batch(&prepared.hash().to_string(), prepared.len());
+    item.new_blob = Some(NewBlob::whole(prepared.hash(), prepared.len()));
+    let results = control_writer
+        .store_group(
+            vec![crate::staging::PreparedBatch {
+                batch: item,
+                files: vec![prepared],
+            }],
+            Arc::new(control.blobs().unwrap()),
+        )
+        .unwrap();
+    assert!(results[0].is_ok());
+    control
+        .blobs()
+        .unwrap()
+        .extent(&hashed_blobs::Hash::of(body))
+        .unwrap();
 }
 
 fn reading(input: &str, chain: i64, length: u64) -> PreparedBatch {
@@ -406,7 +429,10 @@ fn stored_reading_validation_uses_logical_lengths_without_archive_writes() {
         reading("input", 1, 1),
         reading("input", 1, u64::MAX),
     ] {
-        assert!(stored_readings(&conn, &[item]).is_err());
+        assert!(matches!(
+            stored_readings(&conn, &[item]),
+            Err(StoreError::Invalid(_))
+        ));
     }
 }
 
