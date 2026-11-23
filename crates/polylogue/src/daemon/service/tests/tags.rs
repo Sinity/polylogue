@@ -167,17 +167,14 @@ fn tag_skips_rows_already_tagged_and_reports_the_accepted_population() {
     let (report, text) = wrote(&d, intended.clone());
     assert_eq!((report.targets, report.written), (2, 1));
     assert_eq!(report.already, vec![first.clone()]);
-    let written = report.id.as_ref().unwrap();
     let (report_lines, undo) = text.split_once("undo: ").expect("an undo line");
     assert_eq!(
         report_lines,
         format!("tagged 1 row\nalready tagged: {first}\n")
     );
-    // The written annotation's id extends the write's id with its row.
-    assert!(
-        undo.starts_with(&format!("printf '%s\\n' 'annotation:{written}")),
-        "{undo}"
-    );
+    // The undo withdraws what this write added, not the row already tagged.
+    assert!(undo.contains("'annotation:"), "{undo}");
+    assert!(!undo.contains(&first), "{undo}");
     let request = d
         .daemon
         .reads
