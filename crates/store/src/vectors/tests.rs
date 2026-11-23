@@ -830,3 +830,83 @@ fn request_text_lookup_ignores_unrelated_texts() {
             .is_empty()
     );
 }
+
+#[test]
+fn a_stored_vector_of_another_length_is_named_by_its_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(&dir.path().join("archive")).unwrap();
+    let pool = crate::ReadPool::open(&archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let mut vectors = reader.vectors_writer().unwrap();
+    let key = "local/test/2/document/unit";
+    vectors
+        .put(
+            key,
+            &[Vector {
+                text_hash: vec![1],
+                chunk: 0,
+                values: unit(&[1.0, 0.0]),
+            }],
+            &polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
+        )
+        .unwrap();
+    // A row written outside Polylogue: self-consistent at three values, in a two-value key.
+    vectors
+        .conn
+        .execute(
+            "INSERT INTO embedded(text_hash, model, chunk, dims, vector, embedded_at)
+             VALUES (x'02', ?1, 0, 3, zeroblob(12), 0)",
+            [key],
+        )
+        .unwrap();
+    let error = vectors.load(key).unwrap_err().to_string();
+    assert!(error.contains("has 3 values, not 2"), "{error}");
+}
+
+#[test]
+fn int8_scores_stay_within_one_percent_of_the_f32_dot_product() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(&dir.path().join("archive")).unwrap();
+    let pool = crate::ReadPool::open(&archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let mut vectors = reader.vectors_writer().unwrap();
+    let key = "local/test/64/document/unit";
+    // A fixed linear congruential sequence of components in [-1, 1).
+    let mut state = 12345u32;
+    let mut random_unit = || {
+        let raw: Vec<f32> = (0..64)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (state >> 8) as f32 / (1u32 << 23) as f32 - 1.0
+            })
+            .collect();
+        unit(&raw)
+    };
+    let stored: Vec<Vector> = (0..200u8)
+        .map(|n| Vector {
+            text_hash: vec![n],
+            chunk: 0,
+            values: random_unit(),
+        })
+        .collect();
+    vectors
+        .put(
+            key,
+            &stored,
+            &polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
+        )
+        .unwrap();
+    let query = random_unit();
+    let similarity = Arc::new(vectors.load(key).unwrap())
+        .similarity(&query)
+        .unwrap();
+    for vector in &stored {
+        let exact: f32 = vector.values.iter().zip(&query).map(|(a, b)| a * b).sum();
+        let scored = similarity.of(&vector.text_hash).unwrap();
+        assert!(
+            (scored - exact).abs() < 0.01,
+            "{scored} against {exact} for text {:?}",
+            vector.text_hash
+        );
+    }
+}

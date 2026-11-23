@@ -31,6 +31,8 @@ mod sparse_block_selection;
 mod stopping;
 mod stored_replay;
 mod tool_durations;
+mod unreported_derive_failures;
+mod usage_range;
 mod written_text;
 
 fn write_test_rows(

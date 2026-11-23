@@ -45,7 +45,7 @@ impl DeriveThread {
             stopping: stopping.clone(),
             interrupt: Arc::clone(&interrupt),
             conn: None,
-            unreported: Vec::new(),
+            unreported: Unreported::default(),
         };
         let handle = polylogue_model::spawn_named("polylogue-derive", move || thread.run(&rx))?;
         Ok(Self {
@@ -107,7 +107,33 @@ struct Worker {
     /// Opened at the first pass: a first build's index has one connection.
     conn: Option<Connection>,
     /// Failures of passes nobody waited for, reported with the next flush.
-    unreported: Vec<String>,
+    unreported: Unreported,
+}
+
+/// Failures of background passes, kept as the latest message and a count so
+/// a failure that repeats for the life of the process does not grow memory.
+#[derive(Default)]
+pub(super) struct Unreported {
+    latest: Option<String>,
+    count: u64,
+}
+
+impl Unreported {
+    pub(super) fn push(&mut self, error: String) {
+        self.latest = Some(error);
+        self.count += 1;
+    }
+
+    /// Moves what was kept into `errors`, leaving nothing kept.
+    pub(super) fn drain_into(&mut self, errors: &mut Vec<String>) {
+        let count = std::mem::take(&mut self.count);
+        if let Some(latest) = self.latest.take() {
+            errors.push(match count {
+                1 => latest,
+                _ => format!("{latest} (and {} earlier failures)", count - 1),
+            });
+        }
+    }
 }
 
 impl Worker {
@@ -142,7 +168,7 @@ impl Worker {
                         });
                     }
                     Waiting::Flush(reply, mut report) => {
-                        report.errors.append(&mut self.unreported);
+                        self.unreported.drain_into(&mut report.errors);
                         if let Err(e) = &result {
                             report.errors.push(format!("derive: {e}"));
                         }

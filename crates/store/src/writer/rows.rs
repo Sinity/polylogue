@@ -11,7 +11,8 @@ mod events_links;
 mod retract;
 pub(super) use retract::prune_sessions;
 
-/// Writes a parse step's rows; returns the number of message rows written.
+/// Writes a parse step's rows; returns the number of message rows written,
+/// changed or removed.
 pub(super) fn write_rows(
     tx: &Transaction<'_>,
     b: &Batch,
@@ -1150,7 +1151,8 @@ impl RowWriter<'_, '_> {
             (!a.is_empty()).then(|| serde_json::Value::Object(a).to_string())
         };
         let u = &m.usage;
-        let n = |x: Option<u64>| x.map(|x| x as i64);
+        // A count beyond SQLite's integer range is unknown, never wrapped.
+        let n = |x: Option<u64>| x.and_then(|x| i64::try_from(x).ok());
         let sql = if id.is_none() {
             "UPDATE message SET session_pk = ?2, session_order = ?3,
                  role = ?4, written_by = ?5, prompt_kind = ?6, model = ?7, at = ?8,
@@ -1205,9 +1207,9 @@ impl RowWriter<'_, '_> {
             v.end,
             reported_nusd(m.reported_cost_usd.as_ref()),
             // The five-minute part is known only when the one-hour part is.
-            u.cache_write_1h
-                .and(u.cache_write)
-                .map(|w| w.saturating_sub(u.cache_write_1h.unwrap_or(0)) as i64),
+            u.cache_write_1h.and(u.cache_write).and_then(|w| {
+                i64::try_from(w.saturating_sub(u.cache_write_1h.unwrap_or(0))).ok()
+            }),
             n(u.cache_write_1h),
             u.speed,
             // The cost derivation's value, written with the row so a first
@@ -1505,7 +1507,9 @@ impl RowWriter<'_, '_> {
                 attachment.and_then(|a| a.blob).map(|h| h.0.to_vec()),
                 attachment.and_then(|a| a.media_type.as_deref()),
                 attachment.and_then(|a| a.name.as_deref()),
-                attachment.and_then(|a| a.size).map(|s| s as i64),
+                attachment
+                    .and_then(|a| a.size)
+                    .and_then(|s| i64::try_from(s).ok()),
                 attachment.and_then(|a| a.url.as_deref()),
                 attachment.map(|a| name(&a.direction)),
                 signature,

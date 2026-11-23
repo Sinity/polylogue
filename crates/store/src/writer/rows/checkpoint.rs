@@ -148,8 +148,8 @@ impl Update {
                 .or(step.source_commit.as_ref())
                 .map(|r| r.sequence)
                 .filter(|n| *n > 0)
-        } else if previous.is_some_and(|prior| prior.state == state) {
-            previous.and_then(|prior| prior.commit)
+        } else if let Some(prior) = previous.filter(|prior| prior.state == state) {
+            prior.commit
         } else {
             Some(counter).filter(|n| *n > 0)
         };
