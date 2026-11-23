@@ -92,9 +92,6 @@ pub struct ParserState {
     thinking: Vec<Block>,
     /// The session's facts were sent.
     announced: bool,
-    /// Names the messages; lines carry no IDs.
-    #[serde(default)]
-    ids: crate::content_ids::ContentIds,
 }
 
 static FIELDS: Fields = Fields::new(
@@ -155,17 +152,7 @@ fn action(tool: &str) -> ToolAction {
 }
 
 impl Parser for GrokCli {
-    fn uses_context(&self) -> bool {
-        true
-    }
     type ParserState = ParserState;
-    fn bind_context(
-        &self,
-        state: &mut ParserState,
-        context: polylogue_model::parser_context::Handle,
-    ) {
-        state.ids.bind_context(context, "grok-cli".into());
-    }
 
     fn kind(&self, value: &Json) -> String {
         value
@@ -305,7 +292,7 @@ impl Parser for GrokCli {
             ),
             other => return RecordOutcome::skipped(format!("record type {other}")),
         };
-        let Some(id) = parser_state.ids.next(&sid, role, &blocks) else {
+        let Some(id) = crate::content_ids::named(&sid, role, &blocks, record.offset) else {
             return RecordOutcome::unreadable("unusable message ID");
         };
         let production = polylogue_model::Production {
@@ -316,6 +303,7 @@ impl Parser for GrokCli {
             ..Default::default()
         };
         out.messages.push(MessageRow {
+            response: None,
             page_text: false,
             id_kind: polylogue_model::IdKind::Content,
             offset: record.offset,

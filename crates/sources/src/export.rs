@@ -402,7 +402,6 @@ impl<R: Read + std::io::Seek> Input for BufReader<R> {
 /// Splits an export into records, then parses each in staged order. The
 /// default scanner reads JSON array elements; other origins split their own.
 pub trait ExportParser: Send {
-    fn bind_context(&mut self, _: polylogue_model::parser_context::Handle) {}
     fn scan(
         &mut self,
         _input: &str,

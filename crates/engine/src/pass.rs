@@ -1152,7 +1152,7 @@ impl Engine {
             stored_upto,
             parse_pos,
             storing_started: false,
-            parser_deferred: source_uncertain || never_parsed && st.stored > 0,
+            storing_only: source_uncertain || never_parsed && st.stored > 0,
             parser_state,
             parser_chain,
             tail: None,
@@ -1661,7 +1661,7 @@ impl Engine {
         if matches!(plan.source, pool::Bytes::File) {
             if plan.parser_state.is_none()
                 && plan.parse_pos > 0
-                && !plan.parser_deferred
+                && !plan.storing_only
                 && has_reading(plan.origin)
                 && let Some(chain) = plan.parser_chain
             {
@@ -2123,12 +2123,6 @@ impl Engine {
                     continue;
                 }
                 pass.bytes_stored += d.stored;
-                if d.continuation_missing && !plan.parser_deferred {
-                    pass.errors.push(format!(
-                        "parser continuation unavailable at {}:{}; captured bytes kept",
-                        plan.input.id, plan.parse_pos
-                    ));
-                }
                 if let Some(e) = &d.error {
                     pass.errors.push(e.clone());
                 }
@@ -2411,7 +2405,7 @@ impl Engine {
             } else {
                 0
             };
-            st.parsed = has_reading(plan.origin) && (!plan.parser_deferred || st.parsed);
+            st.parsed = has_reading(plan.origin) && (!plan.storing_only || st.parsed);
             st.waiting = plan.waiting;
         }
     }

@@ -39,7 +39,11 @@ fn history() -> Vec<Json> {
 #[test]
 fn reasoning_joins_the_next_answer_and_messages_are_named_by_content() {
     let input = lines(&history());
-    let step = run(&grok(), &mut ParserState::default(), &input, 0).unwrap();
+    let step =
+        crate::chain_names::tests::settled(&[
+            run(&grok(), &mut ParserState::default(), &input, 0).unwrap()
+        ])
+        .remove(0);
     let msgs: Vec<&Message> = step.output.messages.iter().map(|r| &r.message).collect();
     assert_eq!(msgs.len(), 5);
     assert_eq!(msgs[0].session.to_string(), "grok-cli:01a0b507");
@@ -112,13 +116,19 @@ fn grok_cli_inserted_line_keeps_later_ids() {
         json!({"type": "user", "content": [{"type": "text", "text": "an inserted prompt"}]}),
     );
     let ids = |records: &[Json]| -> Vec<String> {
-        run(&grok(), &mut ParserState::default(), &lines(records), 0)
-            .unwrap()
-            .output
-            .messages
-            .iter()
-            .map(|row| row.message.id.to_string())
-            .collect()
+        crate::chain_names::tests::settled(&[run(
+            &grok(),
+            &mut ParserState::default(),
+            &lines(records),
+            0,
+        )
+        .unwrap()])
+        .remove(0)
+        .output
+        .messages
+        .iter()
+        .map(|row| row.message.id.to_string())
+        .collect()
     };
     let before = ids(&original);
     let after = ids(&rewritten);
@@ -131,13 +141,14 @@ fn grok_cli_inserted_line_keeps_later_ids() {
 #[test]
 fn repeated_messages_are_told_apart_by_occurrence() {
     let prompt = json!({"type": "user", "content": [{"type": "text", "text": "again"}]});
-    let step = run(
+    let step = crate::chain_names::tests::settled(&[run(
         &grok(),
         &mut ParserState::default(),
         &lines(&[prompt.clone(), prompt]),
         0,
     )
-    .unwrap();
+    .unwrap()])
+    .remove(0);
     let ids: Vec<_> = step
         .output
         .messages

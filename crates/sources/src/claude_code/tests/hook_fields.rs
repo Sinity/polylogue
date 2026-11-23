@@ -126,25 +126,23 @@ fn hook_fields_ignore_tool_results_and_forged_values() {
 }
 
 #[test]
-fn hook_fields_follow_the_kept_row_after_flush() {
+fn hook_fields_follow_their_row_when_a_response_is_joined() {
     let values = [
         assistant("a1", "msg_1", json!({"type":"text","text":"earlier"})),
         summary(json!({"hookAdditionalContext":["context"]})),
+        assistant("a2", "msg_1", json!({"type":"text","text":"later"})),
     ];
-    let mut step = run(
+    let step = run(
         &main_file("s1"),
         &mut ParserState::default(),
         &jsonl(&values),
         0,
     )
     .unwrap();
-    let stated = step.output.hook_fields.remove(&1).unwrap();
-    let context = step.output.messages.remove(1);
-    let earlier = step.output.messages.remove(0);
-    step.output.messages = vec![context, earlier.clone(), earlier];
-    step.output.hook_fields.insert(0, stated.clone());
-    main_file("s1").flush(&mut ParserState::default(), &mut step.output);
+    let stated = step.output.hook_fields[&1].clone();
+    let step = crate::chain_names::tests::settled(&[step]).remove(0);
     assert_eq!(step.output.messages.len(), 2);
+    assert_eq!(step.output.messages[0].message.text(), "earlier\n\nlater");
     assert_eq!(step.output.hook_fields.len(), 1);
     assert_eq!(step.output.hook_fields[&1], stated);
     assert_eq!(

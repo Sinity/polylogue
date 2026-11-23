@@ -10,9 +10,7 @@ fn append_output_keeps_stated_hook_field_positions() {
             "sessionId":"s1","uuid":id,"hookAdditionalContext":["context"]});
         let mut bytes = serde_json::to_vec(&record).unwrap();
         bytes.push(b'\n');
-        let (step, _) = parser
-            .step(None, &bytes, index as u64 * 1000, &Default::default())
-            .unwrap();
+        let (step, _) = parser.step(None, &bytes, index as u64 * 1000).unwrap();
         let output = step.output;
         append_output(&mut combined, output);
     }

@@ -13,18 +13,18 @@ pub(crate) fn membership(
     let messages = match reference {
         Reference::Message(id) => Some(format!(
             "SELECT m.pk,m.session_pk FROM message m WHERE m.id={}",
-            crate::parser_context::resolved_message_sql(id, bind)
+            crate::chain_names::resolved_message_sql(id, bind)
         )),
         Reference::Block { message, n } => {
             let n = i64::try_from(*n).ok()?;
             Some(format!(
                 "SELECT m.pk,m.session_pk FROM message m WHERE m.id={} AND EXISTS(SELECT 1 FROM block b WHERE b.message_pk=m.pk AND b.idx={n})",
-                crate::parser_context::resolved_message_sql(message, bind)
+                crate::chain_names::resolved_message_sql(message, bind)
             ))
         }
         Reference::MessageRange { first, last } => {
-            let first = crate::parser_context::resolved_message_sql(first, bind);
-            let last = crate::parser_context::resolved_message_sql(last, bind);
+            let first = crate::chain_names::resolved_message_sql(first, bind);
+            let last = crate::chain_names::resolved_message_sql(last, bind);
             Some(format!(
                 "SELECT m.pk,m.session_pk FROM message m JOIN message f ON f.id={first} JOIN message l ON l.id={last} WHERE m.session_pk=f.session_pk AND f.session_pk=l.session_pk AND (m.session_order,m.id)>=(f.session_order,f.id) AND (m.session_order,m.id)<=(l.session_order,l.id)"
             ))

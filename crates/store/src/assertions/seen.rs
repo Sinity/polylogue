@@ -100,7 +100,7 @@ fn later_item(
         (message_item(&previous), message_item(&next))
     {
         let coordinate = |id: &polylogue_model::MessageId| -> Result<(i64, String, String)> {
-            let resolved = crate::parser_context::resolved_message(conn, id)?;
+            let resolved = crate::chain_names::resolved_message(conn, id)?;
             conn.query_row(
                 "SELECT session_pk,session_order,id FROM message WHERE id=?1 AND duplicate_of IS NULL",
                 [resolved.to_string()],

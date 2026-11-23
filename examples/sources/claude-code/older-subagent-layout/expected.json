@@ -52,7 +52,8 @@
           "at_quality": "intrinsic",
           "at_precision": "second"
         },
-        "offset": 172
+        "offset": 172,
+        "response": "msg_o"
       }
     ],
     "sessions": [

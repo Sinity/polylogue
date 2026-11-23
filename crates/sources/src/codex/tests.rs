@@ -128,7 +128,7 @@ fn turn() -> Vec<Json> {
 /// offset replaces the earlier one.
 fn final_messages(steps: &[Step]) -> Vec<Message> {
     let mut rows: BTreeMap<u64, Message> = BTreeMap::new();
-    for step in steps {
+    for step in &crate::chain_names::tests::settled(steps) {
         for row in &step.output.messages {
             rows.insert(row.offset, row.message.clone());
         }
@@ -267,11 +267,8 @@ fn parsing_in_appended_bytes_equals_parsing_at_once() {
     while cut < input.len() {
         let mut parser_state = ParserState::default();
         let first = run(&rollout(), &mut parser_state, &input[..cut], 0).unwrap();
-        // Active state crosses as JSON; keyed history remains in the context.
-        let context = parser_state.context.clone();
         let mut parser_state: ParserState =
             serde_json::from_value(serde_json::to_value(&parser_state).unwrap()).unwrap();
-        parser_state.bind(context);
         let used = first.consumed as usize;
         let second = run(&rollout(), &mut parser_state, &input[used..], used as u64).unwrap();
         assert_eq!(final_messages(&[first, second]), whole, "cut at {cut}");
@@ -779,10 +776,8 @@ fn copied_history_branch_point_survives_split_appends() {
                 .as_ref()
                 .is_some_and(|id| id.native().as_str() == "copied-first")
         }));
-        let context = state.context.clone();
         let mut state: ParserState =
             serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
-        state.bind(context);
         let second = run(&rollout(), &mut state, &input[cut..], cut as u64).unwrap();
         let links: Vec<_> = first
             .output
@@ -836,10 +831,8 @@ fn verified_answers_keep_their_payload_and_actual_call_across_appends() {
         let mut state = ParserState::default();
         let first = run(&rollout(), &mut state, &first_bytes, 0).unwrap();
         let actual_call = first.output.messages[0].message.id.clone();
-        let context = state.context.clone();
         let mut state: ParserState =
             serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
-        state.bind(context);
         let second = run(&rollout(), &mut state, &second_bytes, first.consumed).unwrap();
         let answer = second
             .output

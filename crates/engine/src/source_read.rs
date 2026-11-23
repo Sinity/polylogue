@@ -168,7 +168,7 @@ impl Engine {
                 cursor: Some(cursor),
                 spooled: None,
             });
-            plan.parser_deferred = true;
+            plan.storing_only = true;
             plan.parser_state = None;
             plan.storing_started = true;
         }
@@ -293,7 +293,7 @@ impl Engine {
         plan.byte_read = Some(crate::plan::ByteRead { cursor, spooled });
         // Parsed rows and checkpoints from a rejected capture stay recorded with
         // its spooled bytes. They do not become the current sampler's continuation.
-        plan.parser_deferred = true;
+        plan.storing_only = true;
         plan.parser_state = None;
         plan.storing_started = true;
         Ok(())

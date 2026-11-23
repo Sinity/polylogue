@@ -272,6 +272,7 @@ impl Parser for Transcript {
             });
         }
         out.messages.push(MessageRow {
+            response: None,
             page_text: false,
             id_kind: polylogue_model::IdKind::Native,
             offset: record.offset,

@@ -414,7 +414,7 @@ impl From<rusqlite::Error> for StoreError {
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
-pub mod parser_context;
+pub mod chain_names;
 
 /// Transient file failures may be retried with the original immutable bytes.
 pub fn retryable_io(error: &std::io::Error) -> bool {

@@ -10,6 +10,7 @@ fn commit(origin: &str, messages: Vec<Message>) -> TestArchive {
             message.id = MessageId::parse(&format!("{origin}:{}", message.id.native())).unwrap();
             message.session = session.clone();
             MessageRow {
+                response: None,
                 page_text: false,
                 id_kind: polylogue_model::IdKind::Native,
                 offset: i as u64 * 10,

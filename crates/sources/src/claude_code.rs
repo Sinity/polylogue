@@ -16,7 +16,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 10;
+pub const VERSION: u32 = 11;
 
 mod blocks;
 mod fields;
@@ -34,7 +34,7 @@ use polylogue_model::{
 };
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 pub const ROOT: Root = Root {
@@ -49,9 +49,6 @@ pub const LOCATIONS: &[&str] = &[
     "projects/*/*/subagents/workflows/*/agent-*.jsonl",
     "projects/*/*/subagents/workflows/*/journal.jsonl",
 ];
-
-/// Hot response cache. Eviction leaves the keyed continuation intact.
-const REOPEN_WINDOW: usize = 4;
 
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
     File::from_path(path).is_some()
@@ -146,118 +143,24 @@ pub struct ClaudeCode {
     pub file: File,
 }
 
+/// What the parser carries from one record to the next. A response
+/// written as several records yields one row per record, and a record that
+/// stands for another yields an alias row; both are joined when the chain's
+/// reading is formed ([`crate::chain_names`]), so nothing here grows with
+/// the file.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ParserState {
-    /// Session facts gathered so far, by native ID. A file touches a few
-    /// sessions: its own, the ones it copies from, its sidechain.
-    sessions: crate::parser_state::Map<Session>,
-    #[serde(skip)]
-    context: polylogue_model::parser_context::Handle,
-    #[serde(skip)]
-    namespace: String,
-    /// Embedded transcripts use the same response assembly as separate files.
-    #[serde(default)]
-    agents: crate::parser_state::Map<Box<ParserState>>,
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    touched_agents: BTreeSet<String>,
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    touched_sessions: BTreeSet<String>,
-    /// The assistant response still being assembled.
-    open: Option<Response>,
-    /// Recently closed responses that a late continuation may reopen.
-    recent: VecDeque<Response>,
-    /// Link statements already sent.
-    links: crate::parser_state::Set<String>,
-    #[serde(default)]
-    prefix_copies: crate::parser_state::Set<(SessionId, SessionId)>,
     /// The latest message, for placing events on the timeline.
     last: Option<MessageId>,
     #[serde(default)]
     compaction_pending: bool,
     #[serde(default)]
     compaction_ownership_reported: bool,
-    /// Names the messages of records without a `uuid`.
-    #[serde(default)]
-    ids: crate::content_ids::ContentIds,
-    /// Record uuids that are not a message's own: a split response's later
-    /// records (its message carries the first one's uuid) and event records
-    /// (compaction boundaries, attachments, progress), each mapped to the
-    /// message a child naming it as parent belongs under. This hot cache is
-    /// backed by the complete keyed continuation.
-    #[serde(default)]
-    aliases: VecDeque<(String, Option<MessageId>)>,
     /// The session-wide names (plan `slug`, `teamName`) last recorded, by
     /// kind and session, so each event is sent once per name, not with
-    /// every record.
-    #[serde(default)]
-    names: crate::parser_state::Map<String>,
-}
-
-/// Hot alias cache. Older aliases remain in the keyed continuation.
-const ALIAS_CACHE_CAPACITY: usize = 4096;
-
-impl ParserState {
-    fn bind(&mut self, context: polylogue_model::parser_context::Handle, namespace: String) {
-        self.context = context.clone();
-        self.namespace = namespace.clone();
-        self.ids.bind_context(context.clone(), namespace.clone());
-        self.sessions
-            .bind(context.clone(), format!("{namespace}/sessions"));
-        self.agents
-            .bind(context.clone(), format!("{namespace}/agents"));
-        self.names
-            .bind(context.clone(), format!("{namespace}/names"));
-        self.links
-            .bind(context.clone(), format!("{namespace}/links"));
-        self.prefix_copies
-            .bind(context, format!("{namespace}/prefix-copies"));
-    }
-    fn alias(&mut self, uuid: &str, target: Option<MessageId>) {
-        if self.aliases.len() == ALIAS_CACHE_CAPACITY {
-            self.aliases.pop_front();
-        }
-        self.context.put(
-            polylogue_model::parser_context::Key::Alias {
-                namespace: self.namespace.clone(),
-                uuid: uuid.to_owned(),
-            },
-            polylogue_model::parser_context::Value::Alias {
-                target: target.clone(),
-            },
-        );
-        self.aliases.push_back((uuid.to_owned(), target));
-    }
-
-    /// The message a record's parent pointer names, through aliases.
-    fn parent(&self, v: &Json) -> Option<MessageId> {
-        self.resolve(v.str("parentUuid").filter(|s| !s.is_empty())?)
-    }
-
-    fn resolve(&self, uuid: &str) -> Option<MessageId> {
-        match self.aliases.iter().rev().find(|(u, _)| u == uuid) {
-            Some((_, target)) => target.clone(),
-            None => match self
-                .context
-                .get(&polylogue_model::parser_context::Key::Alias {
-                    namespace: self.namespace.clone(),
-                    uuid: uuid.to_owned(),
-                }) {
-                Some(polylogue_model::parser_context::Value::Alias { target }) => target,
-                _ => message_id(uuid),
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Response {
-    key: String,
-    #[serde(default)]
-    id_kind: IdKind,
-    /// Where the response's first record starts and its latest one ends.
-    offset: u64,
-    end: u64,
-    message: Message,
+    /// every record. A file names a few sessions.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    names: BTreeMap<String, String>,
 }
 
 fn origin() -> Origin {
@@ -321,16 +224,10 @@ impl ClaudeCode {
         }
     }
 
-    /// The session's facts entry, created on first sight, with the
-    /// record's wrapper fields offered to it. Also sends the link that
-    /// explains why a record belongs to a session other than the file's
-    /// own.
-    fn session(
-        &self,
-        parser_state: &mut ParserState,
-        v: &Json,
-        out: &mut Output,
-    ) -> Option<crate::parser_state::Entry<Session>> {
+    /// The record's session, stated with the record's wrapper fields. Also
+    /// sends the link that explains why a record belongs to a session other
+    /// than the file's own.
+    fn session(&self, v: &Json, out: &mut Output) -> Option<SessionId> {
         let record_session = self.record_session(v);
         let id = session_id(&record_session.native)?;
         let parent = v
@@ -343,14 +240,7 @@ impl ClaudeCode {
             .and_then(session_id)
             && parent != id
         {
-            link(
-                parser_state,
-                out,
-                LinkKind::Resume,
-                parent,
-                id.clone(),
-                "resumeSessionId",
-            );
+            link(out, LinkKind::Resume, parent, id.clone(), "resumeSessionId");
         }
         let copied_into = match (&self.file, record_session.kind) {
             (File::Main { stem }, SessionKind::Main) => Some(stem),
@@ -364,9 +254,6 @@ impl ClaudeCode {
         if let Some(stem) = copied_into
             && record_session.native != *stem
             && let Some(child) = session_id(stem)
-            && parser_state
-                .prefix_copies
-                .insert((id.clone(), child.clone()))
         {
             out.prefix_copies.push(polylogue_model::PrefixCopy {
                 explicit_members: false,
@@ -377,23 +264,9 @@ impl ClaudeCode {
         if record_session.kind == SessionKind::Sidechain
             && let Some(parent) = parent.filter(|parent| *parent != id)
         {
-            link(
-                parser_state,
-                out,
-                LinkKind::Spawn,
-                parent,
-                id.clone(),
-                "isSidechain",
-            );
+            link(out, LinkKind::Spawn, parent, id.clone(), "isSidechain");
         }
-        parser_state
-            .touched_sessions
-            .insert(record_session.native.clone());
-        let mut s = parser_state
-            .sessions
-            .get_or_insert(record_session.native, || {
-                Session::new(id, record_session.kind)
-            });
+        let mut s = Session::new(id.clone(), record_session.kind);
         if let Some(cwd) = v.str("cwd").filter(|s| !s.is_empty()) {
             s.offer_cwd(cwd);
         }
@@ -410,11 +283,21 @@ impl ClaudeCode {
         if let Some(mode) = v.str("sessionKind").filter(|s| !s.is_empty()) {
             s.mode = Some(mode.to_owned());
         }
-        Some(s)
+        state(out, s);
+        Some(id)
     }
 
     /// The file's own session, for records that name none.
-    fn own_session(&self, parser_state: &mut ParserState) -> Option<SessionId> {
+    fn own_session(&self, out: &mut Output) -> Option<SessionId> {
+        self.own_session_with(out, |_| {})
+    }
+
+    /// The file's own session, stated with what `facts` adds.
+    fn own_session_with(
+        &self,
+        out: &mut Output,
+        facts: impl FnOnce(&mut Session),
+    ) -> Option<SessionId> {
         let (stem, kind) = match &self.file {
             File::Main { stem } => (stem, SessionKind::Main),
             File::Journal { session, .. } => (session, SessionKind::Main),
@@ -424,10 +307,9 @@ impl ClaudeCode {
             File::Subagent { stem } => (stem, SessionKind::Subagent),
         };
         let id = session_id(stem)?;
-        parser_state.touched_sessions.insert(stem.to_owned());
-        parser_state
-            .sessions
-            .get_or_insert(stem.to_owned(), || Session::new(id.clone(), kind));
+        let mut s = Session::new(id.clone(), kind);
+        facts(&mut s);
+        state(out, s);
         Some(id)
     }
 
@@ -474,7 +356,7 @@ impl ClaudeCode {
             return;
         };
         let key = format!("{kind}\u{0}{stem}");
-        if parser_state.names.get(&key).as_deref() == Some(name) {
+        if parser_state.names.get(&key).map(String::as_str) == Some(name) {
             return;
         }
         parser_state.names.insert(key, name.to_owned());
@@ -506,8 +388,8 @@ impl ClaudeCode {
         out: &mut Output,
     ) -> RecordOutcome {
         let session = match v.get("sessionId").or(v.get("agentId")) {
-            Some(_) => self.session(parser_state, v, out).map(|s| s.id.clone()),
-            None => self.own_session(parser_state),
+            Some(_) => self.session(v, out),
+            None => self.own_session(out),
         };
         let Some(session) = session else {
             return RecordOutcome::unreadable("session ID is empty");
@@ -538,7 +420,6 @@ impl ClaudeCode {
         out: &mut Output,
         records: &mut Records,
     ) -> RecordOutcome {
-        close(parser_state, out);
         let boundary = if parser_state.compaction_pending {
             None
         } else {
@@ -584,13 +465,13 @@ impl ClaudeCode {
             invalid,
         } = summary;
         if !blocks.is_empty() {
-            let Some(session) = self.session(parser_state, v, out).map(|s| s.id.clone()) else {
+            let Some(session) = self.session(v, out) else {
                 return RecordOutcome::unreadable("session ID is empty");
             };
             let (id, id_kind) = match v.str("uuid").filter(|s| !s.is_empty()) {
                 Some(uuid) => (message_id(uuid), IdKind::Native),
                 None => (
-                    parser_state.ids.next(&session, Role::System, &blocks),
+                    crate::content_ids::named(&session, Role::System, &blocks, record.offset),
                     IdKind::Content,
                 ),
             };
@@ -599,7 +480,6 @@ impl ClaudeCode {
             };
             // The summary records supplied feedback, including when the
             // hook prevented continuation. It is not a delivery receipt.
-            close(parser_state, out);
             // This sidecar cites fields as the harness wrote them, not a value
             // stated in the message. The commit decides whether they were observed
             // locally or only declared by an import; neither changes the message hash.
@@ -619,6 +499,7 @@ impl ClaudeCode {
                 );
             }
             out.messages.push(MessageRow {
+                response: None,
                 page_text: false,
                 offset: record.offset,
                 end: range(record).1,
@@ -629,7 +510,7 @@ impl ClaudeCode {
                     Message {
                         id: id.clone(),
                         session,
-                        parent: parser_state.parent(v),
+                        parent: written_parent(v),
                         role: Role::System,
                         at,
                         at_quality: time_evidence.quality,
@@ -670,7 +551,7 @@ impl ClaudeCode {
     ) -> RecordOutcome {
         let kind = self.kind(v);
         records.fields(&kind, v, &fields::MESSAGE_FIELDS);
-        let Some(session) = self.session(parser_state, v, out).map(|s| s.id.clone()) else {
+        let Some(session) = self.session(v, out) else {
             return RecordOutcome::unreadable("session ID is empty");
         };
         let msg = v.get("message").unwrap_or(&Json::Null);
@@ -679,14 +560,13 @@ impl ClaudeCode {
         let (id, id_kind) = match v.str("uuid").filter(|s| !s.is_empty()) {
             Some(uuid) => (message_id(uuid), IdKind::Native),
             None => (
-                parser_state.ids.next_blocks(&session, role, &mut blocks),
+                crate::content_ids::named_blocks(&session, role, &mut blocks, record.offset),
                 IdKind::Content,
             ),
         };
         let Some(id) = id else {
             return RecordOutcome::unreadable("message ID is empty");
         };
-        let native = id.native().as_str().to_owned();
         let usage = msg.get("usage").map(usage).unwrap_or_default();
         let stop_reason = msg
             .str("stop_reason")
@@ -713,7 +593,6 @@ impl ClaudeCode {
             && parent != session
         {
             link_at(
-                parser_state,
                 out,
                 LinkKind::Fork,
                 parent,
@@ -739,7 +618,6 @@ impl ClaudeCode {
                     .map(str::to_owned)
             });
             link_at(
-                parser_state,
                 out,
                 LinkKind::Spawn,
                 session.clone(),
@@ -750,140 +628,55 @@ impl ClaudeCode {
             );
         }
 
-        if role == Role::Assistant && !harness {
-            let key = msg
-                .str("id")
-                .filter(|s| !s.is_empty())
-                .or_else(|| v.str("requestId").filter(|s| !s.is_empty()))
-                .unwrap_or(&native)
-                .to_owned();
-            let same = |r: &Response| r.key == key && r.message.session == session;
-            if !parser_state.open.as_ref().is_some_and(same) {
-                let reopened = parser_state
-                    .recent
-                    .iter()
-                    .position(same)
-                    .and_then(|i| parser_state.recent.remove(i));
-                let reopened = reopened.or_else(|| {
-                    match parser_state.context.get(
-                        &polylogue_model::parser_context::Key::Response {
-                            namespace: parser_state.namespace.clone(),
-                            session: session.to_string(),
-                            key: key.clone(),
-                        },
-                    ) {
-                        Some(polylogue_model::parser_context::Value::Response { row }) => {
-                            Some(Response {
-                                key: key.clone(),
-                                id_kind: row.id_kind,
-                                offset: row.offset,
-                                end: row.end,
-                                message: row.message,
-                            })
-                        }
-                        _ => None,
-                    }
-                });
-                close(parser_state, out);
-                parser_state.open = reopened;
+        // Each record of a response is a row of its own, carrying the key
+        // that ties the records together; the reading joins them into one
+        // message. Runtime notices keep their own record identity.
+        let response = (role == Role::Assistant && !harness)
+            .then(|| {
+                msg.str("id")
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| v.str("requestId").filter(|s| !s.is_empty()))
+                    .map(str::to_owned)
+            })
+            .flatten();
+        let message = {
+            let (at, time_evidence) =
+                crate::time::parts(v.get("timestamp").and_then(time::rfc3339));
+            Message {
+                id: id.clone(),
+                session,
+                parent: written_parent(v),
+                role,
+                at,
+                at_quality: time_evidence.quality,
+                at_precision: time_evidence.precision,
+                at_until: time_evidence.until,
+                model,
+                prompt_kind: if harness {
+                    Some(PromptKind::Harness)
+                } else if role == Role::Assistant {
+                    None
+                } else {
+                    self.prompt_kind(v, content)
+                },
+                blocks,
+                usage,
+                stop_reason,
+                reported_cost_usd: cost,
+                duration_ms: duration,
+                attrs,
+                production,
             }
-            match &mut parser_state.open {
-                Some(open) => {
-                    let target = Some(open.message.id.clone());
-                    if native != open.message.id.native().as_str() {
-                        parser_state.alias(&native, target);
-                    }
-                    let Some(open) = &mut parser_state.open else {
-                        unreachable!("the open response was just matched")
-                    };
-                    open.end = open.end.max(end);
-                    let m = &mut open.message;
-                    let block_offset = m.blocks.len();
-                    m.blocks.extend(blocks);
-                    if !usage.is_empty() {
-                        m.usage = usage;
-                    }
-                    m.stop_reason = stop_reason.or(m.stop_reason.take());
-                    m.model = m.model.take().or(model);
-                    m.reported_cost_usd = cost.or(m.reported_cost_usd.take());
-                    m.duration_ms = duration.or(m.duration_ms);
-                    m.production.merge(production);
-                    merge_attrs(&mut m.attrs, attrs, block_offset);
-                }
-                None => {
-                    parser_state.open = Some(Response {
-                        key,
-                        id_kind,
-                        offset: record.offset,
-                        end,
-                        message: {
-                            let (at, time_evidence) =
-                                crate::time::parts(v.get("timestamp").and_then(time::rfc3339));
-                            Message {
-                                id: id.clone(),
-                                session,
-                                parent: parser_state.parent(v),
-                                role,
-                                at,
-                                at_quality: time_evidence.quality,
-                                at_precision: time_evidence.precision,
-                                at_until: time_evidence.until,
-                                model,
-                                prompt_kind: None,
-                                blocks,
-                                usage,
-                                stop_reason,
-                                reported_cost_usd: cost,
-                                duration_ms: duration,
-                                attrs,
-                                production,
-                            }
-                        },
-                    });
-                    parser_state.last = Some(id);
-                }
-            }
-        } else {
-            if harness {
-                // Runtime notices keep their own record identity.
-                close(parser_state, out);
-            }
-            let message = {
-                let (at, time_evidence) =
-                    crate::time::parts(v.get("timestamp").and_then(time::rfc3339));
-                Message {
-                    id: id.clone(),
-                    session,
-                    parent: parser_state.parent(v),
-                    role,
-                    at,
-                    at_quality: time_evidence.quality,
-                    at_precision: time_evidence.precision,
-                    at_until: time_evidence.until,
-                    model,
-                    prompt_kind: if harness {
-                        Some(PromptKind::Harness)
-                    } else {
-                        self.prompt_kind(v, content)
-                    },
-                    blocks,
-                    usage,
-                    stop_reason,
-                    reported_cost_usd: cost,
-                    duration_ms: duration,
-                    attrs,
-                    production,
-                }
-            };
-            out.messages.push(MessageRow {
-                page_text: false,
-                id_kind,
-                offset: record.offset,
-                end,
-                message,
-            });
-            parser_state.last = Some(id);
-        }
+        };
+        out.messages.push(MessageRow {
+            response,
+            page_text: false,
+            id_kind,
+            offset: record.offset,
+            end,
+            message,
+        });
+        parser_state.last = Some(id);
         RecordOutcome::Used
     }
 
@@ -904,7 +697,7 @@ impl ClaudeCode {
             "launched" => "workflow_launched",
             _ => return RecordOutcome::skipped("unrecognized journal record"),
         };
-        let Some(parent) = self.own_session(parser_state) else {
+        let Some(parent) = self.own_session(out) else {
             return RecordOutcome::unreadable("session ID is empty");
         };
         if let Some(agent) = v
@@ -914,7 +707,6 @@ impl ClaudeCode {
             && let Some(child) = session_id(&agent)
         {
             link(
-                parser_state,
                 out,
                 LinkKind::Spawn,
                 parent,
@@ -922,11 +714,9 @@ impl ClaudeCode {
                 "workflow journal",
             );
             if let Some(label) = v.str("label").filter(|s| !s.is_empty()) {
-                parser_state.touched_sessions.insert(agent.clone());
-                parser_state
-                    .sessions
-                    .get_or_insert(agent, || Session::new(child, SessionKind::Subagent))
-                    .offer_title(label, TitleSource::AgentName);
+                let mut agent = Session::new(child, SessionKind::Subagent);
+                agent.offer_title(label, TitleSource::AgentName);
+                state(out, agent);
             }
         }
         self.event(parser_state, record, v, kind, out)
@@ -954,40 +744,34 @@ impl ClaudeCode {
         Some(kind)
     }
 
-    fn title(
-        &self,
-        parser_state: &mut ParserState,
-        v: &Json,
-        field: &str,
-        source: TitleSource,
-    ) -> RecordOutcome {
+    fn title(&self, v: &Json, field: &str, source: TitleSource, out: &mut Output) -> RecordOutcome {
         let Some(text) = v.str(field).filter(|s| !s.is_empty()) else {
             return RecordOutcome::skipped(format!("no {field}"));
         };
-        let Some(id) = self.own_session(parser_state) else {
+        if self
+            .own_session_with(out, |s| s.offer_title(text, source))
+            .is_none()
+        {
             return RecordOutcome::unreadable("session ID is empty");
-        };
-        if let Some(mut s) = parser_state.sessions.get_mut(id.native().as_str()) {
-            s.offer_title(text, source);
         }
         RecordOutcome::Used
     }
 }
 
-fn link(
-    parser_state: &mut ParserState,
-    out: &mut Output,
-    kind: LinkKind,
-    parent: SessionId,
-    child: SessionId,
-    evidence: &str,
-) {
-    link_at(parser_state, out, kind, parent, child, None, None, evidence);
+/// States a session's facts from one record: merged into what the step
+/// already states about it, as the writer merges steps.
+fn state(out: &mut Output, session: Session) {
+    match out.sessions.iter_mut().find(|s| s.id == session.id) {
+        Some(stated) => stated.merge(&session),
+        None => out.sessions.push(session),
+    }
 }
 
-#[allow(clippy::too_many_arguments)]
+fn link(out: &mut Output, kind: LinkKind, parent: SessionId, child: SessionId, evidence: &str) {
+    link_at(out, kind, parent, child, None, None, evidence);
+}
+
 fn link_at(
-    parser_state: &mut ParserState,
     out: &mut Output,
     kind: LinkKind,
     parent: SessionId,
@@ -996,56 +780,23 @@ fn link_at(
     call_id: Option<String>,
     evidence: &str,
 ) {
-    let key = format!("{kind:?} {parent} {child} {at:?} {call_id:?}");
-    if parser_state.links.insert(key) {
-        out.links.push(Link {
-            kind,
-            copies_prefix: evidence == "fork-context-ref",
-            how: None,
-            parent,
-            child,
-            at,
-            call_id,
-            evidence: evidence.to_owned(),
-        });
-    }
+    out.links.push(Link {
+        kind,
+        copies_prefix: evidence == "fork-context-ref",
+        how: None,
+        parent,
+        child,
+        at,
+        call_id,
+        evidence: evidence.to_owned(),
+    });
 }
 
-fn remember(state: &ParserState, response: &Response) {
-    state.context.put(
-        polylogue_model::parser_context::Key::Response {
-            namespace: state.namespace.clone(),
-            session: response.message.session.to_string(),
-            key: response.key.clone(),
-        },
-        polylogue_model::parser_context::Value::Response {
-            row: Box::new(MessageRow {
-                page_text: false,
-                id_kind: response.id_kind,
-                offset: response.offset,
-                end: response.end,
-                message: response.message.clone(),
-            }),
-        },
-    );
-}
-
-/// Moves the open response to the output and keeps it reopenable.
-fn close(parser_state: &mut ParserState, out: &mut Output) {
-    if let Some(open) = parser_state.open.take() {
-        out.messages.push(MessageRow {
-            page_text: false,
-            id_kind: open.id_kind,
-            offset: open.offset,
-            end: open.end,
-            message: open.message.clone(),
-        });
-        remember(parser_state, &open);
-        parser_state.recent.push_back(open);
-        while parser_state.recent.len() > REOPEN_WINDOW {
-            parser_state.recent.pop_front();
-        }
-    }
+/// The record's parent as the source names it.
+fn written_parent(v: &Json) -> Option<MessageId> {
+    v.str("parentUuid")
+        .filter(|s| !s.is_empty())
+        .and_then(message_id)
 }
 
 /// Where a record starts and ends in its input.
@@ -1252,31 +1003,6 @@ fn message_attrs(record: &Json, message: &Json, blocks: &[Block]) -> serde_json:
     attrs
 }
 
-fn merge_attrs(
-    into: &mut serde_json::Map<String, Json>,
-    later: serde_json::Map<String, Json>,
-    block_offset: usize,
-) {
-    for (key, mut value) in later {
-        if key == "content" {
-            if let Some(details) = value.as_array_mut() {
-                for detail in details {
-                    if let Some(position) = detail.u64("position") {
-                        detail["position"] = Json::from(position + block_offset as u64);
-                    }
-                }
-            }
-            if let Some(Json::Array(existing)) = into.get_mut(&key) {
-                if let Json::Array(additional) = value {
-                    existing.extend(additional);
-                }
-                continue;
-            }
-        }
-        into.insert(key, value);
-    }
-}
-
 fn usage(u: &Json) -> Usage {
     let n = |k: &str| u.u64(k);
     let thinking = n("thinking_tokens").or_else(|| {
@@ -1412,21 +1138,13 @@ fn background_update(v: &Json) -> Option<(String, ToolOutcome, Option<String>, O
 }
 
 impl Parser for ClaudeCode {
-    fn uses_context(&self) -> bool {
-        true
-    }
-    fn check_context(&self, state: &ParserState) -> Result<(), crate::ParseError> {
-        state.context.check().map_err(crate::ParseError::Context)
-    }
-    fn bind_context(
-        &self,
-        state: &mut ParserState,
-        context: polylogue_model::parser_context::Handle,
-    ) {
-        state.bind(context, String::new());
-    }
-
     type ParserState = ParserState;
+
+    /// Session facts go out in the order of their native IDs.
+    fn flush(&self, _: &mut ParserState, out: &mut Output) {
+        out.sessions
+            .sort_by(|a, b| a.id.native().as_str().cmp(b.id.native().as_str()));
+    }
 
     fn kind(&self, v: &Json) -> String {
         let ty = v.str("type").filter(|s| !s.is_empty()).unwrap_or("?");
@@ -1451,9 +1169,6 @@ impl Parser for ClaudeCode {
         out: &mut Output,
         records: &mut Records,
     ) -> RecordOutcome {
-        if !parser_state.sessions.is_bound() {
-            parser_state.bind(parser_state.context.clone(), parser_state.namespace.clone());
-        }
         if !v.is_object() {
             return RecordOutcome::unreadable("record is not a JSON object");
         }
@@ -1474,18 +1189,25 @@ impl Parser for ClaudeCode {
             // A child naming this record as its parent belongs under the
             // nearest message above it; a compaction boundary points there
             // through `logicalParentUuid`.
-            let target = v
-                .str("logicalParentUuid")
-                .filter(|s| !s.is_empty())
-                .or_else(|| v.str("parentUuid").filter(|s| !s.is_empty()))
-                .and_then(|p| parser_state.resolve(p));
-            parser_state.alias(uuid, target);
+            if let Some(name) = message_id(uuid) {
+                let (offset, end) = range(record);
+                out.aliases.push(polylogue_model::Alias {
+                    offset,
+                    end,
+                    name,
+                    target: v
+                        .str("logicalParentUuid")
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| v.str("parentUuid").filter(|s| !s.is_empty()))
+                        .and_then(message_id),
+                });
+            }
         }
         self.names(parser_state, record, v, out);
         if self.record_session(v).kind == SessionKind::Compaction
             && !parser_state.compaction_ownership_reported
         {
-            let session = self.own_session(parser_state);
+            let session = self.own_session(out);
             let (at, accuracy) = crate::time::parts(v.get("timestamp").and_then(time::rfc3339));
             out.events.push(Event {
                 session, kind: "compaction_ownership_unknown".into(),
@@ -1517,7 +1239,6 @@ impl Parser for ClaudeCode {
                 ),
                 Some("compact_boundary") => {
                     records.fields("system/compact_boundary", v, &fields::COMPACTION_FIELDS);
-                    close(parser_state, out);
                     parser_state.compaction_pending = true;
                     self.event(parser_state, record, v, "compaction", out)
                 }
@@ -1558,8 +1279,8 @@ impl Parser for ClaudeCode {
             "queue-operation" => {
                 if let Some((task_id, outcome, call_id, output_file)) = background_update(v)
                     && let Some(session) = match v.get("sessionId") {
-                        Some(_) => self.session(parser_state, v, out).map(|s| s.id.clone()),
-                        None => self.own_session(parser_state),
+                        Some(_) => self.session(v, out),
+                        None => self.own_session(out),
                     }
                 {
                     let (result_at, result_at_evidence) =
@@ -1578,32 +1299,29 @@ impl Parser for ClaudeCode {
                 self.event(parser_state, record, v, "queue", out)
             }
             "relocated" => {
-                if let Some(dir) = v.str("relocatedCwd").filter(|s| !s.is_empty())
-                    && let Some(id) = self.own_session(parser_state)
-                    && let Some(mut s) = parser_state.sessions.get_mut(id.native().as_str())
-                {
-                    s.offer_cwd(dir);
+                if let Some(dir) = v.str("relocatedCwd").filter(|s| !s.is_empty()) {
+                    self.own_session_with(out, |s| s.offer_cwd(dir));
                 }
                 self.event(parser_state, record, v, "relocated", out)
             }
             "agent-name" => {
-                let d = self.title(parser_state, v, "agentName", TitleSource::AgentName);
+                let d = self.title(v, "agentName", TitleSource::AgentName, out);
                 if d != RecordOutcome::Used {
                     return d;
                 }
                 self.event(parser_state, record, v, "agent_name", out)
             }
-            "custom-title" => self.title(parser_state, v, "customTitle", TitleSource::Custom),
-            "ai-title" => self.title(parser_state, v, "aiTitle", TitleSource::Generated),
+            "custom-title" => self.title(v, "customTitle", TitleSource::Custom, out),
+            "ai-title" => self.title(v, "aiTitle", TitleSource::Generated, out),
             "summary" => {
                 if v.get("summary").is_some() {
-                    self.title(parser_state, v, "summary", TitleSource::Summary);
+                    self.title(v, "summary", TitleSource::Summary, out);
                 }
                 self.compaction_summary(parser_state, record, v, out, records)
             }
             "continued-in" => {
                 let (Some(parent), Some(child)) = (
-                    self.own_session(parser_state),
+                    self.own_session(out),
                     v.str("continuedInSessionId")
                         .filter(|s| !s.is_empty())
                         .and_then(session_id),
@@ -1611,7 +1329,6 @@ impl Parser for ClaudeCode {
                     return RecordOutcome::skipped("continued-in without a target");
                 };
                 link(
-                    parser_state,
                     out,
                     LinkKind::Continuation,
                     parent,
@@ -1621,7 +1338,7 @@ impl Parser for ClaudeCode {
                 RecordOutcome::Used
             }
             "fork-context-ref" => {
-                let child = self.session(parser_state, v, out).map(|s| s.id.clone());
+                let child = self.session(v, out);
                 let (Some(parent), Some(child)) = (
                     v.str("parentSessionId")
                         .filter(|s| !s.is_empty())
@@ -1637,7 +1354,6 @@ impl Parser for ClaudeCode {
                     .filter(|s| !s.is_empty())
                     .and_then(message_id);
                 link_at(
-                    parser_state,
                     out,
                     LinkKind::Spawn,
                     parent,
@@ -1657,7 +1373,7 @@ impl Parser for ClaudeCode {
                             v,
                             &fields::AGENT_PROGRESS_FIELDS,
                         );
-                        let parent = self.session(parser_state, v, out).map(|s| s.id.clone());
+                        let parent = self.session(v, out);
                         let child = data
                             .str("agentId")
                             .filter(|s| !s.is_empty())
@@ -1670,7 +1386,6 @@ impl Parser for ClaudeCode {
                             .filter(|s| !s.is_empty())
                             .map(str::to_owned);
                         link_at(
-                            parser_state,
                             out,
                             LinkKind::Spawn,
                             parent,
@@ -1685,16 +1400,6 @@ impl Parser for ClaudeCode {
                                     stem: child.native().to_string(),
                                 },
                             };
-                            parser_state
-                                .touched_agents
-                                .insert(child.native().to_string());
-                            let mut state = parser_state
-                                .agents
-                                .get_or_insert(child.native().to_string(), Default::default);
-                            state.bind(
-                                parser_state.context.clone(),
-                                format!("{}/{}", parser_state.namespace, child.native()),
-                            );
                             let mut embedded = embedded.clone();
                             if let Some(object) = embedded.as_object_mut() {
                                 // Some progress records wrap an API message; others hold
@@ -1731,8 +1436,16 @@ impl Parser for ClaudeCode {
                                     );
                                 }
                             };
-                            let outcome =
-                                agent.message(&mut state, record, &embedded, role, out, records);
+                            // An embedded message is named and joined like
+                            // one in the agent's own file; nothing carries over.
+                            let outcome = agent.message(
+                                &mut ParserState::default(),
+                                record,
+                                &embedded,
+                                role,
+                                out,
+                                records,
+                            );
                             if !matches!(outcome, RecordOutcome::Used) {
                                 return outcome;
                             }
@@ -1752,58 +1465,6 @@ impl Parser for ClaudeCode {
             "init" => RecordOutcome::skipped("empty start marker"),
             _ => RecordOutcome::skipped("unrecognized record type"),
         }
-    }
-
-    fn flush(&self, parser_state: &mut ParserState, out: &mut Output) {
-        let mut agent_sessions = Vec::new();
-        for native in std::mem::take(&mut parser_state.touched_agents) {
-            let Some(mut state) = parser_state.agents.get_mut(&native) else {
-                continue;
-            };
-            state.bind(
-                parser_state.context.clone(),
-                format!("{}/{native}", parser_state.namespace),
-            );
-            let agent = ClaudeCode {
-                file: File::Subagent {
-                    stem: native.clone(),
-                },
-            };
-            agent.flush(&mut state, out);
-            agent_sessions.append(&mut out.sessions);
-        }
-        if let Some(open) = &parser_state.open {
-            remember(parser_state, open);
-            out.messages.push(MessageRow {
-                page_text: false,
-                id_kind: open.id_kind,
-                offset: open.offset,
-                end: open.end,
-                message: open.message.clone(),
-            });
-        }
-        // A response reopened within one step was sent more than once; keep
-        // the last, which is the longest. Rows go out in file order.
-        let mut seen = BTreeSet::new();
-        let mut stated = std::mem::take(&mut out.hook_fields);
-        let mut kept = Vec::with_capacity(out.messages.len());
-        for (index, row) in out.messages.drain(..).enumerate().rev() {
-            if seen.insert((row.message.id.clone(), row.offset)) {
-                kept.push((row, stated.remove(&index)));
-            }
-        }
-        kept.sort_by_key(|(row, _)| row.offset);
-        for (index, (_, stated)) in kept.iter_mut().enumerate() {
-            if let Some(fields) = stated.take() {
-                out.hook_fields.insert(index, fields);
-            }
-        }
-        out.messages = kept.into_iter().map(|(row, _)| row).collect();
-        out.sessions = std::mem::take(&mut parser_state.touched_sessions)
-            .into_iter()
-            .filter_map(|native| parser_state.sessions.get(&native))
-            .chain(agent_sessions)
-            .collect();
     }
 }
 

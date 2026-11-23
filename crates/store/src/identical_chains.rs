@@ -48,7 +48,7 @@ impl StoredParseState {
 
 /// The index tables that hold one chain's reading, keyed by `input_pk` and
 /// `chain`. Copying a reading copies each table's rows of the other chain.
-const READING_TABLES: [&str; 23] = [
+const READING_TABLES: [&str; 20] = [
     "parse_state",
     "parsed",
     "session_record",
@@ -60,10 +60,7 @@ const READING_TABLES: [&str; 23] = [
     "text_fragment_source",
     "message_injection_field",
     "unused",
-    "parser_context_response",
-    "parser_context_alias",
-    "parser_context_value",
-    "parser_context_state",
+    "message_alias",
     "wire_reading",
     "wire_occurrence",
     "wire_shape",

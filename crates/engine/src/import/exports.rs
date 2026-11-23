@@ -2,6 +2,7 @@
 use super::*;
 use polylogue_model::batch::{ExportCursor, ExportDelivery, ExportDeliverySource};
 use polylogue_model::{BlobHash, Output, RecordCounts};
+use polylogue_sources::chain_names::{Formed, NoEarlierRows, settle};
 use polylogue_sources::export::{self, ExportParser, ExportState};
 use polylogue_store::{Batch, ParseStep, export_items::ExportItems};
 
@@ -543,10 +544,6 @@ pub(crate) fn parse_export(
     };
     let mut reader = Counted::new(|| chain.reader(Arc::clone(blobs)));
     let scanned = parser.scan(&plan.input.id, &mut reader, &mut ItemWriter(&mut scratch));
-    let context = polylogue_model::parser_context::Handle::new(
-        polylogue_store::parser_context::Overlay::temporary()?,
-    );
-    parser.bind_context(context.clone());
     let refusal = match scanned {
         Err(export::ScanError::Malformed(error)) => Some(error.to_string()),
         Err(error) => {
@@ -595,7 +592,10 @@ pub(crate) fn parse_export(
     let mut ordinal = 0;
     let mut item_count = 0u64;
     let mut previous_prefix = ExportDelivery::seed();
-    if let Some(step) = parser
+    // An export is read whole in one run, so the rows its earlier items
+    // settled are all the chain's earlier rows.
+    let mut names = Formed::new(NoEarlierRows);
+    if let Some(mut step) = parser
         .begin(
             plan.size,
             next.as_ref().map(|record| record.bytes.as_slice()),
@@ -603,6 +603,7 @@ pub(crate) fn parse_export(
         .map_err(EngineError::Parse)?
     {
         repeats_whole_conversations = step.repeats_whole_conversations;
+        names.settle(&mut step.output).map_err(EngineError::Parse)?;
         order_from = (step.output.messages.len() as u64).max(1);
         let cursor = delivered(
             emit(ExportStep {
@@ -634,13 +635,18 @@ pub(crate) fn parse_export(
             failure: None,
         };
         let parsed = export::parse_item(parser, &bytes, range.clone(), &mut state);
-        context.check().map_err(EngineError::Parse)?;
         if let Some(failure) = state.failure {
             return Err(EngineError::Parse(failure));
         }
         // One element the parser cannot read is that element's outcome; the
         // export's other elements still parse. Its bytes stay stored.
-        let step = parsed.unwrap_or_else(|error| export::unreadable_item(error, range.clone()));
+        let mut step = parsed.unwrap_or_else(|error| export::unreadable_item(error, range.clone()));
+        if repeats_whole_conversations {
+            settle(&mut step.output, &mut NoEarlierRows).map(|_| ())
+        } else {
+            names.settle(&mut step.output)
+        }
+        .map_err(EngineError::Parse)?;
         let count = step.output.messages.len() as u64;
         let cursor = delivered(
             emit(ExportStep {

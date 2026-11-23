@@ -299,7 +299,6 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
         .filter(|s| !s.is_empty())
         .map(str::to_owned);
     let mut rows = Vec::new();
-    let mut summary_ids = crate::content_ids::ContentIds::default();
     for (i, m) in messages.iter().enumerate() {
         let kind = m
             .str("sender")
@@ -326,7 +325,14 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
                         })
                         .collect();
                     let summary_id = (!blocks.is_empty())
-                        .then(|| summary_ids.next_blocks(&sid, Role::User, &mut blocks))
+                        .then(|| {
+                            crate::content_ids::named_blocks(
+                                &sid,
+                                Role::User,
+                                &mut blocks,
+                                i as u64,
+                            )
+                        })
                         .flatten();
                     if let Some(id) = summary_id {
                         let mut summary_message = context_summary(
@@ -409,6 +415,7 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
     for (_, _, _, _, id_kind, message) in rows {
         let offset = sink.position();
         sink.out.messages.push(MessageRow {
+            response: None,
             page_text: false,
             id_kind,
             offset,
@@ -976,6 +983,7 @@ fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
         };
         let offset = sink.position();
         sink.out.messages.push(MessageRow {
+            response: None,
             page_text: false,
             id_kind: polylogue_model::IdKind::Native,
             offset,

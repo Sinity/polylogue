@@ -17,7 +17,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 9;
+pub const VERSION: u32 = 10;
 
 pub mod database;
 mod fields;
@@ -38,6 +38,7 @@ use polylogue_model::{
 };
 use serde::{Deserialize, Serialize};
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 pub const ROOT: Root = Root {
@@ -189,18 +190,17 @@ struct Call {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ParserState {
-    #[serde(skip)]
-    context: polylogue_model::parser_context::Handle,
     session: Option<Session>,
     /// The thread a subagent's copied history came from, and the outer record
     /// ordinal where the subagent's own records begin.
     copied_from: Option<String>,
     copied_until: Option<u64>,
-    #[serde(default)]
-    prefix_copies: crate::parser_state::Set<(SessionId, SessionId)>,
     /// The explicit relation whose later context can supply its branch point.
     #[serde(default)]
     branch_relation: Option<Link>,
+    /// The relation was stated with its branch point.
+    #[serde(default)]
+    relation_stated: bool,
     #[serde(default)]
     copied_history_complete: bool,
     /// The last copied item, where the child branched.
@@ -210,11 +210,13 @@ pub struct ParserState {
     usage: usage::Observer,
     #[serde(default)]
     scope_recorded: bool,
-    calls: crate::parser_state::Map<Call>,
+    /// The open turn's tool calls, by call ID.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    calls: BTreeMap<String, Call>,
     /// Commands left running, by handle (`process 123`, `cell 4`), to the
     /// call that started them.
-    running: crate::parser_state::Map<String>,
-    links: crate::parser_state::Set<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    running: BTreeMap<String, String>,
     last: Option<MessageId>,
     /// The last quota reading is a repeated snapshot.
     limits: Option<String>,
@@ -234,21 +236,6 @@ pub struct ParserState {
     /// adjacent records; the second of the pair is the same prompt.
     #[serde(default)]
     prompt: Option<Prompt>,
-    /// Names the items that carry no `id`.
-    #[serde(default)]
-    ids: crate::content_ids::ContentIds,
-}
-
-impl ParserState {
-    fn bind(&mut self, context: polylogue_model::parser_context::Handle) {
-        self.context = context.clone();
-        self.ids.bind_context(context.clone(), "codex".into());
-        self.calls.bind(context.clone(), "codex/calls".into());
-        self.running.bind(context.clone(), "codex/running".into());
-        self.links.bind(context.clone(), "codex/links".into());
-        self.prefix_copies
-            .bind(context, "codex/prefix-copies".into());
-    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -359,7 +346,6 @@ impl Rollout {
                 .id
                 .clone();
             link(
-                parser_state,
                 out,
                 LinkKind::Resume,
                 id,
@@ -434,9 +420,9 @@ impl Rollout {
                     .and_then(|t| t.str("parent_thread_id").filter(|s| !s.is_empty()))
             });
         let forked = p.str("forked_from_id").filter(|s| !s.is_empty());
+        let stated_from = out.links.len();
         if let Some(parent_id) = parent.and_then(session_id) {
             link(
-                parser_state,
                 out,
                 LinkKind::Spawn,
                 parent_id,
@@ -448,7 +434,6 @@ impl Rollout {
         }
         if let Some(fork_id) = forked.filter(|f| Some(*f) != parent).and_then(session_id) {
             link(
-                parser_state,
                 out,
                 LinkKind::Fork,
                 fork_id,
@@ -464,6 +449,7 @@ impl Rollout {
             } else {
                 (LinkKind::Fork, "forked_from_id")
             };
+            parser_state.relation_stated = false;
             parser_state.branch_relation = Some(Link {
                 kind,
                 copies_prefix: false,
@@ -485,6 +471,7 @@ impl Rollout {
                 } else {
                     (LinkKind::Spawn, "parent_thread_id")
                 };
+                parser_state.relation_stated = false;
                 parser_state.branch_relation = Some(Link {
                     kind,
                     copies_prefix: true,
@@ -496,6 +483,22 @@ impl Rollout {
                     evidence: evidence.into(),
                 });
                 Self::unknown_boundaries(copied_parent, out);
+            }
+        }
+        // The relation is stated once, with its branch point, when the copied
+        // history ends; this record does not state it without one.
+        if let Some(relation) = &parser_state.branch_relation {
+            let mut index = stated_from;
+            while index < out.links.len() {
+                let link = &out.links[index];
+                if link.kind == relation.kind
+                    && link.parent == relation.parent
+                    && link.child == relation.child
+                {
+                    out.links.remove(index);
+                } else {
+                    index += 1;
+                }
             }
         }
         self.event(parser_state, p, "session_meta", at, out)
@@ -596,7 +599,7 @@ impl Rollout {
         let (id, id_kind) = match item.str("id").filter(|s| !s.is_empty()) {
             Some(native) => (message_id(native), IdKind::Native),
             None => (
-                parser_state.ids.next_blocks(&session, role, &mut blocks),
+                crate::content_ids::named_blocks(&session, role, &mut blocks, record.offset),
                 IdKind::Content,
             ),
         };
@@ -666,6 +669,7 @@ impl Rollout {
             }
         };
         let row = MessageRow {
+            response: None,
             page_text: false,
             id_kind,
             offset: record.offset,
@@ -676,9 +680,6 @@ impl Rollout {
             let parent = row.message.session.clone();
             if let Some(child) = self.own(parser_state)
                 && parent != child
-                && parser_state
-                    .prefix_copies
-                    .insert((parent.clone(), child.clone()))
             {
                 out.prefix_copies.push(polylogue_model::PrefixCopy {
                     parent,
@@ -837,7 +838,7 @@ impl Rollout {
         out: &mut Output,
     ) -> (ToolOutcome, Option<u64>) {
         let call = call_id
-            .and_then(|id| parser_state.calls.get(id))
+            .and_then(|id| parser_state.calls.get(id).cloned())
             .unwrap_or_default();
         let tool = if call.tool.is_empty() {
             "?"
@@ -885,7 +886,6 @@ impl Rollout {
                 .and_then(session_id)
         {
             link(
-                parser_state,
                 out,
                 LinkKind::Spawn,
                 session.clone(),
@@ -896,7 +896,7 @@ impl Rollout {
             );
         }
         if let Some(id) = call_id
-            && let Some(mut c) = parser_state.calls.get_mut(id)
+            && let Some(c) = parser_state.calls.get_mut(id)
         {
             c.answered = true;
         }
@@ -928,7 +928,7 @@ impl Rollout {
                     );
                 };
                 let id = item.str("id").filter(|s| !s.is_empty()).unwrap_or("");
-                if let Some(mut call) = parser_state.calls.get_mut(id) {
+                if let Some(call) = parser_state.calls.get_mut(id) {
                     let Some(done) = items::completed(item) else {
                         return RecordOutcome::skipped("call item without a status");
                     };
@@ -960,6 +960,7 @@ impl Rollout {
                 };
                 let duration = items::completed(item).and_then(|c| c.duration_ms);
                 out.messages.push(MessageRow {
+                    response: None,
                     page_text: false,
                     id_kind: polylogue_model::IdKind::Native,
                     offset: record.offset,
@@ -999,7 +1000,6 @@ impl Rollout {
                 ) {
                     let call = item.str("id").filter(|s| !s.is_empty()).map(str::to_owned);
                     link(
-                        parser_state,
                         out,
                         LinkKind::Spawn,
                         parent,
@@ -1093,7 +1093,7 @@ impl Rollout {
             "exec_command_end" | "patch_apply_end" | "mcp_tool_call_end" => {
                 // Older rollouts: how a call ended, before item_completed.
                 let id = p.str("call_id").filter(|s| !s.is_empty()).unwrap_or("");
-                if let (Some(mut call), Some(done)) =
+                if let (Some(call), Some(done)) =
                     (parser_state.calls.get_mut(id), items::completed(p))
                 {
                     if call.answered
@@ -1191,7 +1191,6 @@ fn snake(name: &str) -> String {
 
 #[allow(clippy::too_many_arguments)]
 fn link(
-    parser_state: &mut ParserState,
     out: &mut Output,
     kind: LinkKind,
     parent: SessionId,
@@ -1213,26 +1212,11 @@ fn link(
         call_id,
         evidence: evidence.to_owned(),
     };
-    if parser_state.links.insert(value.selection_tag()) {
-        out.links.push(value);
-    }
+    out.links.push(value);
 }
 
 impl Parser for Rollout {
-    fn uses_context(&self) -> bool {
-        true
-    }
     type ParserState = ParserState;
-    fn bind_context(
-        &self,
-        state: &mut ParserState,
-        context: polylogue_model::parser_context::Handle,
-    ) {
-        state.bind(context);
-    }
-    fn check_context(&self, state: &ParserState) -> Result<(), crate::ParseError> {
-        state.context.check().map_err(crate::ParseError::Context)
-    }
 
     fn kind(&self, v: &Json) -> String {
         let rec = unwrap(v);
@@ -1259,9 +1243,6 @@ impl Parser for Rollout {
         out: &mut Output,
         records: &mut Records,
     ) -> RecordOutcome {
-        if !parser_state.calls.is_bound() {
-            parser_state.bind(parser_state.context.clone());
-        }
         if !v.is_object() {
             return RecordOutcome::unreadable("record is not a JSON object");
         }
@@ -1406,7 +1387,7 @@ impl Parser for Rollout {
                     .then(|| {
                         p.str("call_id")
                             .and_then(|call_id| parser_state.calls.get(call_id))
-                            .and_then(|call| call.message)
+                            .and_then(|call| call.message.clone())
                     })
                     .flatten();
                 let outcome = self.event_by_time(parser_state, p, kind, rec.at, out);
@@ -1492,7 +1473,10 @@ impl Parser for Rollout {
     }
 
     fn flush(&self, parser_state: &mut ParserState, out: &mut Output) {
+        // Nothing read yet names nothing: the session's facts come with its
+        // first record.
         if !parser_state.scope_recorded
+            && parser_state.session.is_some()
             && let Some(session) = self.own(parser_state)
         {
             Self::unknown_boundaries(session, out);
@@ -1501,30 +1485,13 @@ impl Parser for Rollout {
         // A partial copied prefix cannot establish its final branch point. Once
         // complete, emit the statement even if its header was in an earlier append.
         if (parser_state.copied_until.is_none() || parser_state.copied_history_complete)
-            && let (Some(at), Some(mut relation)) = (
-                parser_state.branch_point.clone(),
-                parser_state.branch_relation.clone(),
-            )
+            && !parser_state.relation_stated
+            && let Some(mut relation) = parser_state.branch_relation.clone()
             && relation.parent != relation.child
         {
-            relation.at = Some(at);
-            let key = relation.selection_tag();
-            let mut updated = false;
-            for value in &mut out.links {
-                if value.kind == relation.kind
-                    && value.parent == relation.parent
-                    && value.child == relation.child
-                    && value.at.is_none()
-                {
-                    value.at.clone_from(&relation.at);
-                    value.copies_prefix = relation.copies_prefix;
-                    updated = true;
-                }
-            }
-            let unseen = parser_state.links.insert(key);
-            if !updated && unseen {
-                out.links.push(relation);
-            }
+            relation.at = parser_state.branch_point.clone();
+            out.links.push(relation);
+            parser_state.relation_stated = true;
         }
         out.sessions = parser_state.session.iter().cloned().collect();
     }

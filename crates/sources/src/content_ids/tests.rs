@@ -1,20 +1,25 @@
 use super::*;
 use serde_json::json;
 
-/// The native ID [`ContentIds`] gives, computed from hand-written canonical
-/// JSON of `[role, content]`, independently of the encoder.
+/// The content name [`content_name`] gives, computed from hand-written
+/// canonical JSON of `[role, content]`, independently of the encoder.
+pub(crate) fn expected_name(session_native: &str, role: &str, canonical: &str) -> String {
+    let mut bytes = b"polylogue-message-content\0".to_vec();
+    bytes.extend_from_slice(canonical.as_bytes());
+    let hash = blake3::hash(&bytes).to_hex();
+    format!("{session_native}~{role}-{}", &hash.as_str()[..16])
+}
+
+/// The settled native ID of a content-named message.
 pub(crate) fn expected(
     session_native: &str,
     role: &str,
     canonical: &str,
     occurrence: u32,
 ) -> String {
-    let mut bytes = b"polylogue-message-content\0".to_vec();
-    bytes.extend_from_slice(canonical.as_bytes());
-    let hash = blake3::hash(&bytes).to_hex();
     format!(
-        "{session_native}~{role}-{}-{occurrence}",
-        &hash.as_str()[..16]
+        "{}-{occurrence}",
+        expected_name(session_native, role, canonical)
     )
 }
 
@@ -23,75 +28,35 @@ fn session(native: &str) -> SessionId {
 }
 
 #[test]
-fn a_message_is_named_by_session_role_content_and_occurrence() {
-    let mut ids = ContentIds::default();
+fn a_message_is_written_as_its_session_role_content_and_position() {
     let blocks = json!([{"type": "text", "text": "hi"}]);
-    let first = ids.next(&session("s"), Role::User, &blocks).unwrap();
     let canonical = r#"["user",[{"text":"hi","type":"text"}]]"#;
-    assert_eq!(first.native().as_str(), expected("s", "user", canonical, 0));
-    assert_eq!(first.origin().as_str(), "grok-cli");
-    let again = ids.next(&session("s"), Role::User, &blocks).unwrap();
-    assert_eq!(again.native().as_str(), expected("s", "user", canonical, 1));
-    let answered = ids.next(&session("s"), Role::Assistant, &blocks).unwrap();
+    let id = named(&session("s"), Role::User, &blocks, 42).unwrap();
     assert_eq!(
-        answered.native().as_str(),
-        expected(
-            "s",
-            "assistant",
-            r#"["assistant",[{"text":"hi","type":"text"}]]"#,
-            0
-        )
+        id.native().as_str(),
+        format!("{}@42", expected_name("s", "user", canonical))
     );
-    let elsewhere = ids.next(&session("t"), Role::User, &blocks).unwrap();
-    assert_eq!(
-        elsewhere.native().as_str(),
-        expected("t", "user", canonical, 0)
-    );
+    assert_eq!(id.origin().as_str(), "grok-cli");
+    let name = expected_name("s", "user", canonical);
+    assert_eq!(as_written(&id), Some((name.as_str(), 42)));
+    let answered = named(&session("s"), Role::Assistant, &blocks, 42).unwrap();
+    assert!(answered.native().as_str().starts_with(&expected_name(
+        "s",
+        "assistant",
+        r#"["assistant",[{"text":"hi","type":"text"}]]"#
+    )));
+    let elsewhere = named(&session("t"), Role::User, &blocks, 42).unwrap();
+    assert!(elsewhere.native().as_str().starts_with("t~user-"));
 }
 
 #[test]
-fn carried_counts_continue_after_a_resumed_parse() {
-    let context = polylogue_model::parser_context::Handle::default();
-    let mut ids = ContentIds::default();
-    ids.bind_context(context.clone(), "fixture".into());
-    let blocks = json!(["same"]);
-    ids.next(&session("s"), Role::User, &blocks).unwrap();
-    let carried: ContentIds = serde_json::from_slice(&serde_json::to_vec(&ids).unwrap()).unwrap();
-    let mut resumed = carried;
-    resumed.bind_context(context, "fixture".into());
-    assert_eq!(
-        resumed
-            .next(&session("s"), Role::User, &blocks)
-            .unwrap()
-            .native()
-            .as_str(),
-        expected("s", "user", r#"["user",["same"]]"#, 1)
-    );
-    assert_eq!(
-        serde_json::to_string(&ContentIds::default()).unwrap(),
-        "{}",
-        "an unused counter adds nothing to a parser's carried state"
-    );
-}
-
-#[test]
-fn removing_an_earlier_equal_message_renumbers_the_later_copies() {
-    let a = json!(["A"]);
-    let x = json!(["X"]);
-    let ids = |contents: &[&serde_json::Value]| -> Vec<MessageId> {
-        let mut ids = ContentIds::default();
-        contents
-            .iter()
-            .map(|content| ids.next(&session("s"), Role::User, *content).unwrap())
-            .collect()
-    };
-    let before = ids(&[&a, &x, &a]);
-    let after = ids(&[&x, &a]);
-    // X keeps its ID; the remaining A takes the first A's number, and the
-    // second A's ID no longer names anything (docs/archive.md).
-    assert_eq!(after[0], before[1]);
-    assert_eq!(after[1], before[0]);
-    assert!(!after.contains(&before[2]));
+fn a_settled_id_gives_back_its_content_name() {
+    let name = expected_name("s", "user", r#"["user",["same"]]"#);
+    let id = numbered("grok-cli", &name, 3).unwrap();
+    assert_eq!(id.native().as_str(), format!("{name}-3"));
+    assert_eq!(settled_name(id.native().as_str()), Some(name.as_str()));
+    assert_eq!(as_written(&id), None);
+    assert_eq!(settled_name("toolu_01-7"), None);
 }
 
 #[test]
@@ -107,13 +72,13 @@ fn normalized_written_text_preserves_message_identity_and_original_block() {
         path: None,
         run_by_script: false,
     }];
-    let expected = ContentIds::default().next(&session, Role::Assistant, &blocks);
+    let expected = named(&session, Role::Assistant, &blocks, 0);
     let polylogue_model::Block::ToolCall { written_text, .. } = &mut blocks[0] else {
         unreachable!()
     };
     *written_text = Some("exact patch".into());
     assert_eq!(
-        ContentIds::default().next_blocks(&session, Role::Assistant, &mut blocks),
+        named_blocks(&session, Role::Assistant, &mut blocks, 0),
         expected
     );
     let polylogue_model::Block::ToolCall { written_text, .. } = &blocks[0] else {

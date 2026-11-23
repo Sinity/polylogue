@@ -2224,6 +2224,7 @@ dependencies = [
  "blake3",
  "canonical-json",
  "polylogue-model",
+ "proptest",
  "query-language",
  "references",
  "schemars",

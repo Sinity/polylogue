@@ -61,6 +61,7 @@ fn complete_callback_products_keep_fields_and_source_keys() {
     let mut output = Output {
         sessions: vec![Session::new(message.session.clone(), SessionKind::Main)],
         messages: vec![MessageRow {
+            response: None,
             page_text: false,
             id_kind: polylogue_model::IdKind::Native,
             offset: 7,

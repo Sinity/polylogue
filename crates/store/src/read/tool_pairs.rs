@@ -221,7 +221,7 @@ impl Reader<'_> {
     }
 
     fn tool_pair_fact(&self, message: &MessageId, ordinal: u64) -> Result<Option<PairFact>> {
-        let resolved = crate::parser_context::resolved_message(self.conn()?, message)?;
+        let resolved = crate::chain_names::resolved_message(self.conn()?, message)?;
         let message = &resolved;
 
         let conn = self.conn()?;

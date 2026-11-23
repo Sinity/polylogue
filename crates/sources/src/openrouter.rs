@@ -189,6 +189,7 @@ impl ExportParser for OpenRouter {
             Ok(message) => {
                 let offset = sink.position();
                 sink.out.messages.push(MessageRow {
+                    response: None,
                     page_text: false,
                     id_kind: polylogue_model::IdKind::Native,
                     offset,

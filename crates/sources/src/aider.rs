@@ -37,7 +37,9 @@ enum LogRole {
 pub struct History {
     native: Option<String>,
     context: Vec<(LogRole, String)>,
-    ids: crate::content_ids::ContentIds,
+    /// Messages named so far: tells their written names apart
+    /// ([`crate::content_ids`]).
+    named: u64,
     last: Option<polylogue_model::MessageId>,
 }
 
@@ -56,9 +58,6 @@ fn push_element(
 }
 
 impl ExportParser for History {
-    fn bind_context(&mut self, context: polylogue_model::parser_context::Handle) {
-        self.ids.bind_context(context, ORIGIN.into());
-    }
     fn scan(
         &mut self,
         _input: &str,
@@ -194,12 +193,12 @@ impl History {
                 vec![Block::Text { text }],
             ),
         };
-        let id = self
-            .ids
-            .next(sid, role, &blocks)
+        self.named += 1;
+        let id = crate::content_ids::named(sid, role, &blocks, self.named - 1)
             .ok_or("unusable Aider message identity")?;
         let offset = sink.position();
         sink.out.messages.push(MessageRow {
+            response: None,
             page_text: false,
             id_kind: polylogue_model::IdKind::Content,
             offset,

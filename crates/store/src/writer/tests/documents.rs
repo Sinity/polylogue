@@ -294,6 +294,7 @@ fn shared_message_document_text_keeps_vectors_after_both_sources_disappear() {
             Route::Capture,
             0,
             vec![MessageRow {
+                response: None,
                 page_text: false,
                 id_kind: polylogue_model::IdKind::Native,
                 offset: 0,

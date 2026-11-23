@@ -314,7 +314,7 @@ mod tests {
             let bytes = std::fs::read(&path).unwrap();
             assert!(polylogue_sources::hook_spool::recognize(&path, &bytes));
             let parser = polylogue_sources::hook_spool::open(&path).unwrap();
-            let (step, _) = parser.step(None, &bytes, 0, &Default::default()).unwrap();
+            let (step, _) = parser.step(None, &bytes, 0).unwrap();
             assert_eq!(step.output.events.len(), 1);
             let event = &step.output.events[0];
             assert_eq!(event.kind, "registry_status");

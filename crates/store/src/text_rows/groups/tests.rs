@@ -117,19 +117,18 @@ fn the_writer_stores_a_group_once_and_removes_it_with_its_last_text() {
     let removed = ids
         .resolve(&tx, &hash("removed"), prepared.get(&hash("removed")), None)
         .unwrap();
-    assert!(kept.written && removed.written);
     tx.commit().unwrap();
     transaction.commit();
     assert_eq!(count(&conn, "text_group"), 1);
-    assert_eq!(read(&conn, kept.id).unwrap(), "kept");
-    assert_eq!(read(&conn, removed.id).unwrap(), "removed");
+    assert_eq!(read(&conn, kept).unwrap(), "kept");
+    assert_eq!(read(&conn, removed).unwrap(), "removed");
 
-    remove(&conn, removed.id, 0).unwrap();
-    ids.removed(&hash("removed"), removed.id).unwrap();
+    remove(&conn, removed, 0).unwrap();
+    ids.removed(&hash("removed"), removed).unwrap();
     assert_eq!(count(&conn, "text_group"), 1);
-    assert_eq!(read(&conn, kept.id).unwrap(), "kept");
-    remove(&conn, kept.id, 0).unwrap();
-    ids.removed(&hash("kept"), kept.id).unwrap();
+    assert_eq!(read(&conn, kept).unwrap(), "kept");
+    remove(&conn, kept, 0).unwrap();
+    ids.removed(&hash("kept"), kept).unwrap();
     assert_eq!(count(&conn, "text_group"), 0);
     assert_eq!(count(&conn, "text"), 0);
 }
@@ -146,8 +145,7 @@ fn a_known_text_adds_no_group_and_a_rolled_back_group_is_stored_again() {
     let first = PreparedTexts::pack(["shared"]).unwrap();
     let id = ids
         .resolve(&conn, &hash("shared"), first.get(&hash("shared")), None)
-        .unwrap()
-        .id;
+        .unwrap();
     let later = PreparedTexts::pack(["shared", "fresh"]).unwrap();
     {
         let _texts = ids.transaction();
@@ -155,7 +153,7 @@ fn a_known_text_adds_no_group_and_a_rolled_back_group_is_stored_again() {
         let again = ids
             .resolve(&tx, &hash("shared"), later.get(&hash("shared")), None)
             .unwrap();
-        assert_eq!((again.id, again.written), (id, false));
+        assert_eq!(again, id);
         assert_eq!(count(&tx, "text_group"), 1);
         ids.resolve(&tx, &hash("fresh"), later.get(&hash("fresh")), None)
             .unwrap();
@@ -170,7 +168,7 @@ fn a_known_text_adds_no_group_and_a_rolled_back_group_is_stored_again() {
         .unwrap();
     tx.commit().unwrap();
     texts.commit();
-    assert_eq!(read(&conn, fresh.id).unwrap(), "fresh");
+    assert_eq!(read(&conn, fresh).unwrap(), "fresh");
     assert_eq!(read(&conn, id).unwrap(), "shared");
     assert_eq!(count(&conn, "text_group"), 2);
 }

@@ -149,9 +149,27 @@ CREATE TABLE message_source (
                                             --   computed again when an earlier reading's time changes
   completion        TEXT NOT NULL CHECK (completion IN ('finished','unknown','in_progress')),
   version_pk        INTEGER NOT NULL REFERENCES message_version(pk), -- the version hash lives in the narrow version row
+  response_key      TEXT,                   -- the key the source gives the records of one response, as written
+  content_name      TEXT,                   -- a content-named message's name without its number
   PRIMARY KEY (message_pk, input_pk, chain)
 ) STRICT;
 CREATE INDEX message_source_input ON message_source(input_pk, chain, source_start);   -- foreign-key check; the next record's start
+CREATE INDEX message_source_response ON message_source(input_pk, chain, response_key) WHERE response_key IS NOT NULL;   -- the response an appended record continues
+CREATE INDEX message_source_content ON message_source(input_pk, chain, content_name, source_start) WHERE content_name IS NOT NULL;   -- the number of the next equal message
+
+-- Records that are not messages but stand in a chain of parents: `name`
+-- stands for `target` (NULL: no message), settled through the chain's earlier
+-- aliases so one lookup resolves a name.
+CREATE TABLE message_alias (
+  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
+  chain             INTEGER NOT NULL,
+  name              TEXT NOT NULL,
+  target            TEXT,
+  source_start      INTEGER NOT NULL,
+  source_end        INTEGER NOT NULL,
+  PRIMARY KEY (input_pk, chain, name)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX message_alias_name ON message_alias(name);   -- references resolved through aliases
 CREATE INDEX message_source_order ON message_source(input_pk, chain, session_pk, seq, record_position);   -- the order time before a step
 
 -- The newest message time in each chain of an export that lists every

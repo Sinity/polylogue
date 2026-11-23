@@ -10,6 +10,7 @@ fn one_message(input: &str, message: &str, text: &str) -> Batch {
         Route::Live,
         0,
         vec![MessageRow {
+            response: None,
             page_text: false,
             id_kind: polylogue_model::IdKind::Native,
             offset: 0,

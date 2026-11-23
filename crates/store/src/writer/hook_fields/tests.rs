@@ -23,6 +23,7 @@ fn step_with_second_block(second: Block) -> ParseStep {
     );
     let mut output = Output {
         messages: vec![MessageRow {
+            response: None,
             page_text: false,
             id_kind: polylogue_model::IdKind::Native,
             offset: 10,
@@ -120,6 +121,7 @@ fn sparse_hook_fields_keep_original_ordinals() {
     original.blocks = vec![original.blocks[3].clone()];
     let mut output = Output {
         messages: vec![MessageRow {
+            response: None,
             page_text: false,
             id_kind: polylogue_model::IdKind::Native,
             offset: 10,

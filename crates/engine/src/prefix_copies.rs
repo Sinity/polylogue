@@ -180,7 +180,7 @@ fn copies_from(engine: &Engine, plan: &Plan) -> Option<i64> {
     if engine.archive.is_primary()
         || plan.replace
         || plan.byte_read.is_some()
-        || plan.parser_deferred
+        || plan.storing_only
         || !crate::has_reading(plan.origin)
         || plan.origin.is_row_dump(&plan.path)
         || matches!(

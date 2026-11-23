@@ -54,7 +54,7 @@ fn confirmed_capture_resumes_without_rereading_provider_bytes() {
         if codex {
             plan.input.id = "codex:rollout:delayed".into();
         }
-        plan.parser_deferred = true;
+        plan.storing_only = true;
         let mut job = plan.next_job(&polylogue_testkit::stopped_attempt());
         job.end = (bytes.len() / 2) as u64;
         job.length = job.end;
@@ -62,7 +62,7 @@ fn confirmed_capture_resumes_without_rereading_provider_bytes() {
         let mut context = engine.sampling_context(&path, origin.name).unwrap();
         context.facts = Some(now);
         job.source_read = Some(context);
-        let (prepared, done) = crate::pool::run(job, &engine.archive, &engine.blobs, true);
+        let (prepared, done) = crate::pool::run(job, &engine.archive, &engine.blobs, true, None);
         assert!(done.error.is_none(), "{:?}", done.error);
         // A byte read without a cursor is still unsupported before confirmation.
         engine.apply_byte_read_result(&mut plan, &done).unwrap();
@@ -196,7 +196,7 @@ fn confirmed_capture_resumes_without_rereading_provider_bytes() {
         let mut context = engine.sampling_context(&path, origin.name).unwrap();
         context.facts = Some(now);
         job.source_read = Some(context);
-        let (prepared, last) = crate::pool::run(job, &engine.archive, &engine.blobs, true);
+        let (prepared, last) = crate::pool::run(job, &engine.archive, &engine.blobs, true, None);
         assert!(last.error.is_none(), "{:?}", last.error);
         let results = engine
             .writer

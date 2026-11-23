@@ -612,6 +612,7 @@ impl ExportParser for Database {
                 if let Some(prompt) = text(row, "system_prompt") {
                     let offset = sink.position();
                     sink.out.messages.push(MessageRow {
+                        response: None,
                         page_text: false,
                         id_kind: polylogue_model::IdKind::Native,
                         offset,
@@ -703,6 +704,7 @@ impl ExportParser for Database {
                         }
                         let offset = sink.position();
                         sink.out.messages.push(MessageRow {
+                            response: None,
                             page_text: false,
                             id_kind: polylogue_model::IdKind::Native,
                             offset,

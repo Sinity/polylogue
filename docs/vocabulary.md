@@ -101,6 +101,15 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **content ID**: the ID of a message whose source gives none: its session, a
   hash of its role and content, and its occurrence among equal messages
   (`id_kind` `content`, against `native`).
+- **content name**: a content ID without its occurrence number
+  (`<session>~<role>-<hash>`); a parser writes a content-named message as its
+  content name and its record's position, and the number is settled when the
+  chain's reading is formed.
+- **response key**: the key a source gives the records of one response written
+  as several records (Claude Code's `message.id`); a chain's rows with one
+  session and key are one message.
+- **alias row**: a record that is not a message but stands in a chain of
+  parents, saying which name it stands for.
 - **linked material**: a page or file a conversation cites, fetched and stored.
 - **Python Polylogue**: the earlier Python implementation; `import` reads
   its vector stores, whose vectors were paid for.
