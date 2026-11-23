@@ -181,7 +181,7 @@ A **finding** is an annotation of kind `finding` that cites the `result:` or `qu
 
 ## Pre-registration
 
-A run or kept result is **pre-registered** when a question naming its `query:<hash>` was written before the hash's first run on this archive: a `claim` or `forecast` whose `--check` names it ([annotations.md](annotations.md#checked-claims)), or a `saved_query` annotation brought in through `import` of annotation lines. `save` registers its question in the same act as its first run, so a save is not a pre-registration. Replies and kept results carry `pre_registered: true|false` with the registering annotation. Order is the archive's commit order, never a clock; in primary mode, Sinex's commit order.
+A run or kept result is **pre-registered** when a question naming its `query:<hash>` was written before the hash's first run on this archive: a `claim` or `finding` whose `--check` names it ([annotations.md](annotations.md#checked-claims)), or a `saved_query` annotation brought in through `import` of annotation lines. `save` registers its question in the same act as its first run, so a save is not a pre-registration. Replies and kept results carry `pre_registered: true|false` with the registering annotation. Order is the archive's commit order, never a clock; in primary mode, Sinex's commit order.
 
 ## Watches
 

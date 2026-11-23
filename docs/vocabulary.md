@@ -285,10 +285,10 @@ generated page of the thing they belong to, or on the area page that owns them.
   `scope`, `origin`, a relation such as `replies_to` or `revises`, or, for
   references in its text, `mentions`, `cites` and `embeds`).
 - **stack**: annotations about annotations, joined by typed relations.
-- **current revision**: a revision no unwithdrawn `revises` points at; two
-  current revisions of one record are a **conflict**. A write names its
-  **base**, the revisions it revises; one naming an outdated base is
-  **stale** and refused.
+- **current revision**: a revision that is not withdrawn and has no unwithdrawn
+  descendant through `revises`; two current revisions of one record are a
+  **conflict**. A write names its **base**, the revisions it revises; one
+  naming an outdated base is **stale** and refused.
 - **withdrawal**: an authored statement that takes annotations back; nothing
   is deleted.
 - **undo line**: the line a write prints that withdraws what it wrote.
@@ -439,7 +439,7 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **party**: whose time a span of a session counts as (`tool`, `model`,
   `human`, `unattributed`).
 - **token kind**: a category of tokens a provider counts or charges
-  (uncached input, cached input, cache write, output).
+  (uncached input, cache read, cache write, output, reasoning).
 - **command class**: the extracted class of a normalized shell command, used
   only for analysing agent tool use.
 - **fail-then-pass**: a failing run followed by a passing run of the same
@@ -590,7 +590,7 @@ another line does are in [set-aside.md](set-aside.md#words-another-line-does).
 | answer (for a query run) | run: `run:<id>`, the unit `runs` |
 | `answers` (link role) | `--replies-to` |
 | `annotation` (rubric kind) | `rubric_value` |
-| `ranking:[…]`, `insufficient_evidence` (comparison verdicts) | `judge 'B>A>C'`, `judge insufficient-evidence` |
+| `ranking:[…]`, `insufficient_evidence` (as typed comparison verdicts; the stored value keeps the underscore) | `judge 'B>A>C'`, `judge insufficient-evidence` |
 | `--limit`, `--out`, `--output`, `--for-session`, `--print`, `--exec`, `--harness`, `--for-others`, `--variant`, `--answers`, `--page-tokens`, `--output-lines`, `--since seen` | `--page-size`, `--to`, `--for`, `--dry-run`, `--in`, `--neutral-names`, `--alternate`, `--replies-to`, `--budget`, `--show tools:N`, `--from seen` |
 | `last` (reference) | `latest` |
 | `--format` on `import` | `--origin` |

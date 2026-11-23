@@ -60,7 +60,7 @@ unit_properties = ["MemoryHigh=8G"]
 description = "Run selected tests on the workspace feature graph; Cargo target flags bound compilation"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "--quiet", "-p", "xtask", "--", "test"]
 arguments = "required"
-pool = "normal"
+pool = "compile"
 result = "exit"
 timeout_seconds = 3600
 scratch = "tmpfs"

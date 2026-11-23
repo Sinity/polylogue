@@ -26,7 +26,7 @@ provides an unpacked Chrome extension; the overlay adds both packages. Package
 builds set `POLYLOGUE_REVISION` at compile time, and `--version` shows it.
 `--version` and `--help` load no deployment file.
 
-Extension packaging reads the committed registration in `extension/manifest.json` and the explicit runtime inputs in `extension/scripts/package.mjs`. `npm --prefix extension run build -- --out DIR` writes Chrome ZIP and Firefox XPI archives plus `build-manifest.json`; it never rewrites source versions. `--version VERSION` changes only the artifact version, stripping development suffixes while rejecting malformed browser versions. The existing Firefox background declaration and Gecko identity are preserved. Artifact checks do not qualify execution in a real browser.
+Extension packaging reads the committed registration in `extension/manifest.json` and the explicit runtime inputs in `extension/scripts/package.mjs`. `npm --prefix extension run build -- --out DIR` writes Chrome ZIP and Firefox XPI archives plus `build-manifest.json`; it never rewrites source versions. `--version VERSION` changes only the artifact version, stripping development suffixes while rejecting malformed browser versions. The packager derives the Firefox background scripts and Gecko identity from that manifest. Artifact checks do not qualify execution in a real browser.
 
 To change the source release version, run `npm --prefix extension version VERSION --no-git-tag-version`, update the committed manifest version to its browser version, then review the package, lock and manifest together. `npm --prefix extension run check` runs lint, manifest validation and the JS suite, including real zip/Python archive generation, the released members and source-byte preservation. The required hosted check runs it too. The declared AgentCTL `extension` operation runs these npm commands without a Rust test build. `nix build .#polylogue-extension` checks packaging from read-only Nix source and provides the unpacked Chrome files. The declared `extension_package` operation builds that output and the Nix-format check only.
 
@@ -84,13 +84,14 @@ database. The formatting shell, `nix develop .#format`, uses the same pinned
 Rust toolchain with Git and diff, without the check inputs and other development
 tools. It installs the same Git hooks.
 
-The commit hook checks staged whitespace and formats staged Rust files,
-including partial staging and renames. It enters the formatting shell once for
+The commit hook checks staged whitespace and refuses staged Rust that rustfmt would
+change (format it and stage again), including partial staging and renames. It enters the formatting shell once for
 the complete staged Rust set; the declared `fmt` operation uses that shell too.
 Formatting supplies an unused local target directory and selects no compiler
 cache. The lock operation likewise supplies an unused local target before shell
 entry because dependency resolution uses no compiler artifacts. There is no push
-hook. GitHub Actions runs `cargo xtask check` for every pull request.
+hook. GitHub Actions runs `cargo xtask check --changed-base` for every pull request
+(affected tests) and `cargo xtask check` for every master push.
 
 `direnv allow` loads the same shell through `.envrc`, which reloads when the
 toolchain or Nix files change. The git-ignored `.envrc.local` holds personal
@@ -169,7 +170,8 @@ Every archive has its own `polylogue-NAME` command and service. With several
 archives, `defaultArchive` names the one also installed as `polylogue`, `plg`
 and `plog`. The command, the daemon and its clients share explicit archive and
 XDG paths. The NixOS module also needs `user`, an existing account, and its
-client commands run as that account; its home and XDG directories can be set.
+client commands take that account's home and XDG directories (which can be set)
+whoever runs them.
 
 `settings`, `sinex` and `signals` render the files described in
 [installing](installing.md#configuration). Omitted values keep the binary's
@@ -178,8 +180,8 @@ Primary mode refuses a local `settings.day`.
 
 Activation restarts a service when the package changes; a configuration-only
 change takes effect at the next service restart. The units use notify
-readiness, a watchdog, the exit code for a refused schema, and CPU and I/O
-weights below interactive work, with no memory cap.
+readiness, a watchdog, no restart after a storage failure or a refused
+archive ([operations.md](operations.md#the-daemon)), and CPU and I/O weights below interactive work, with no memory cap.
 
 The Home Manager module also installs the harness hooks and MCP registration,
 the browser extension's host manifest, and each archive command's shell
@@ -190,6 +192,6 @@ completion with its Alt-p key. Each is the output of
 
 The `POLYLOGUE_TIMING_WORKERS` profiling environment variable records pipeline
 stage times and completed worker CPU times. The daemon prints them at exit
-with SQLite's peak allocation count and, on GNU/Linux, the C allocator's
+with SQLite's peak memory in bytes and, on GNU/Linux, the C allocator's
 statistics. `MIMALLOC_SHOW_STATS=1` separately prints Rust allocator statistics;
 allocation totals require building mimalloc with `MI_STAT` enabled.
