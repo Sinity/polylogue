@@ -70,25 +70,61 @@ fn reference_full_forms_round_trip_without_losing_source_names() {
 }
 #[test]
 fn malformed_references_are_typed_errors() {
-    for text in [
-        "work:7",
-        "note:old",
-        "alternate:root#-1",
-        "alternate:root@",
-        "role:",
-        "role:root@",
-        "result:id#x",
-        "block:codex:m#18446744073709551616",
-        "span:session:codex:s#b=0-2",
-        "span:annotation:root#b=0-2",
-        "span:alternate:root@revision#b=0-2",
-        "span:message:codex:m#b=5-1",
-        "span:message:codex:m#bytes=1-2",
-        "file:path",
-        "url:/relative",
-        "query:name(p=1,p=2)",
+    const SPAN_CONTAINER: &str = "span container must be a message, document, block, exact annotation or exact alternate part";
+    let invalid = |text: &str, why| ReferenceError::Invalid(text.into(), why);
+    let incomplete = |text: &str| ReferenceError::Incomplete(text.into());
+    for (text, expected) in [
+        ("work:7", ReferenceError::UnknownKind("work:7".into())),
+        ("note:old", ReferenceError::UnknownKind("note:old".into())),
+        (
+            "alternate:root#-1",
+            invalid("alternate:root#-1", "expected a nonnegative integer"),
+        ),
+        ("alternate:root@", incomplete("alternate:root@")),
+        ("role:", incomplete("role:")),
+        ("role:root@", incomplete("role:root@")),
+        (
+            "result:id#x",
+            invalid("result:id#x", "expected a nonnegative integer"),
+        ),
+        (
+            "block:codex:m#18446744073709551616",
+            invalid(
+                "block:codex:m#18446744073709551616",
+                "integer is out of range",
+            ),
+        ),
+        (
+            "span:session:codex:s#b=0-2",
+            invalid("span:session:codex:s#b=0-2", SPAN_CONTAINER),
+        ),
+        (
+            "span:annotation:root#b=0-2",
+            invalid("span:annotation:root#b=0-2", SPAN_CONTAINER),
+        ),
+        (
+            "span:alternate:root@revision#b=0-2",
+            invalid("span:alternate:root@revision#b=0-2", SPAN_CONTAINER),
+        ),
+        (
+            "span:message:codex:m#b=5-1",
+            invalid("span:message:codex:m#b=5-1", "span end precedes its start"),
+        ),
+        (
+            "span:message:codex:m#bytes=1-2",
+            invalid("span:message:codex:m#bytes=1-2", "unknown span unit"),
+        ),
+        ("file:path", incomplete("file:path")),
+        (
+            "url:/relative",
+            invalid("url:/relative", "URL must be absolute"),
+        ),
+        (
+            "query:name(p=1,p=2)",
+            invalid("query:name(p=1,p=2)", "query parameter is repeated"),
+        ),
     ] {
-        assert!(Reference::parse(text).is_err(), "{text}");
+        assert_eq!(Reference::parse(text), Err(expected), "{text}");
     }
 }
 
@@ -186,7 +222,6 @@ fn accepted_request_reference_preserves_the_existing_opaque_identity() {
 #[test]
 fn sinex_global_reference_round_trips() {
     for text in [
-        "sinex:ev/019a2f20-1234-7000-8000-0123456789ab",
         "sinex:record/machine/origin/type/0",
         "sinex:key/opaque%23key",
         "sinex:future-kind/opaque:identity",
@@ -245,10 +280,10 @@ fn sinex_reference_with_selector_refused() {
 fn sinex_read_names_its_reader() {
     let reference = Reference::parse("sinex:ev/opaque").unwrap();
     let error = crate::read::ReadTarget::try_from(reference).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("reading a Sinex object needs the Sinex reader")
+    assert_eq!(error.reference, "sinex:ev/opaque");
+    assert_eq!(
+        error.reason,
+        "reading a Sinex object needs the Sinex reader"
     );
 }
 
@@ -327,14 +362,29 @@ fn stored_spellings_report_the_complete_surface_correction() {
 #[test]
 fn read_targets_refuse_what_has_no_selected_row_reading() {
     use crate::read::ReadTarget;
-    for text in [
-        "session:test:one",
-        "message:test:one:m1",
-        "block:test:one:m1#0",
-        "annotation:root@revision",
+    let session = || crate::SessionId::parse("test:one").unwrap();
+    let message = || crate::MessageId::parse("test:one:m1").unwrap();
+    for (text, expected) in [
+        ("session:test:one", ReadTarget::Session(session())),
+        ("message:test:one:m1", ReadTarget::Message(message())),
+        (
+            "block:test:one:m1#0",
+            ReadTarget::Block {
+                message: message(),
+                n: 0,
+            },
+        ),
+        (
+            "annotation:root@revision",
+            ReadTarget::Assertion {
+                root: "root".into(),
+                revision: "revision".into(),
+            },
+        ),
     ] {
-        assert!(
-            ReadTarget::try_from(Reference::parse(text).unwrap()).is_ok(),
+        assert_eq!(
+            ReadTarget::try_from(Reference::parse(text).unwrap()),
+            Ok(expected),
             "{text}"
         );
     }

@@ -82,7 +82,7 @@ fn a_cursor_names_its_own_reading() {
 }
 
 #[test]
-fn only_a_moved_rewrite_version_stales() {
+fn a_change_to_any_composed_version_field_stales() {
     let cursor = cursor();
     assert!(!cursor.rewritten(&cursor.versions));
     let mut versions = vec![SessionVersion {
@@ -146,12 +146,32 @@ fn a_cursor_sealed_with_the_same_key_for_another_generation_is_stale() {
 }
 
 #[test]
-fn physical_session_lower_bound_round_trips_and_old_default_encoding_opens() {
+fn a_session_lower_bound_round_trips_and_an_ordinary_cursor_stores_none() {
     let key = seal(7, "g1");
     let ordinary = cursor();
-    let old = serde_json::to_value(&ordinary).unwrap();
-    assert!(old.get("session_read").is_none());
-    assert_eq!(serde_json::from_value::<PageCursor>(old).unwrap(), ordinary);
+    let stored = serde_json::to_value(&ordinary).unwrap();
+    let mut names: Vec<&str> = stored
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "digest",
+            "direction",
+            "position",
+            "target",
+            "variants",
+            "versions"
+        ]
+    );
+    assert_eq!(
+        serde_json::from_value::<PageCursor>(stored).unwrap(),
+        ordinary
+    );
     let mut bound = ordinary;
     bound.session_read = Some(SessionRead {
         session: crate::SessionId::parse("test:one").unwrap(),

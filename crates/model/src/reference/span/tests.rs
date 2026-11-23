@@ -106,19 +106,45 @@ fn span_body_alignment_preserves_separators_and_zero_width_insertions() {
 
 #[test]
 fn every_resolved_byte_belongs_to_a_body_or_an_explicit_separator() {
+    // (is_separator, body index or the body the separator follows, offset)
+    type Owner = (bool, u64, u64);
     for lengths in [vec![], vec![0], vec![0, 0], vec![1, 2], vec![3, 0, 4]] {
-        let total = lengths.iter().sum::<u64>() + 2 * lengths.len().saturating_sub(1) as u64;
+        // The original text laid out byte by byte: bodies joined by "\n\n".
+        let mut owners: Vec<Owner> = Vec::new();
+        for (index, length) in lengths.iter().enumerate() {
+            if index > 0 {
+                owners.extend((0..2).map(|offset| (true, index as u64 - 1, offset)));
+            }
+            owners.extend((0..*length).map(|offset| (false, index as u64, offset)));
+        }
+        let total = owners.len() as u64;
         for start in 0..=total {
             for end in start..=total {
                 let pieces = span_bodies(start..end, lengths.iter().copied()).unwrap();
-                let covered: u64 = pieces
+                let claimed: Vec<Owner> = pieces
                     .iter()
-                    .map(|piece| match piece {
-                        TextSpanPiece::Body { start, end, .. } => end - start,
-                        TextSpanPiece::Separator { start, end, .. } => (end - start) as u64,
+                    .flat_map(|piece| match piece {
+                        TextSpanPiece::Body {
+                            body_index,
+                            start,
+                            end,
+                        } => (*start..*end)
+                            .map(|offset| (false, *body_index, offset))
+                            .collect::<Vec<_>>(),
+                        TextSpanPiece::Separator {
+                            after_body,
+                            start,
+                            end,
+                        } => (*start..*end)
+                            .map(|offset| (true, *after_body, u64::from(offset)))
+                            .collect(),
                     })
-                    .sum();
-                assert_eq!(covered, end - start, "{lengths:?} {start}..{end}");
+                    .collect();
+                assert_eq!(
+                    claimed,
+                    owners[start as usize..end as usize],
+                    "{lengths:?} {start}..{end}"
+                );
             }
         }
     }

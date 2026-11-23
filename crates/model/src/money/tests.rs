@@ -54,8 +54,15 @@ fn quotients_round_half_away_from_zero() {
 
 #[test]
 fn an_amount_carries_nano_usd_and_exact_dollars() {
-    assert_eq!(
-        serde_json::to_string(&Amount(1_234_500_001)).unwrap(),
-        r#"{"nusd":1234500001,"usd":1.234500001}"#
-    );
+    for (nusd, json) in [
+        (1_234_500_001, r#"{"nusd":1234500001,"usd":1.234500001}"#),
+        (0, r#"{"nusd":0,"usd":0}"#),
+        (-5, r#"{"nusd":-5,"usd":-0.000000005}"#),
+        (
+            i64::MAX,
+            r#"{"nusd":9223372036854775807,"usd":9223372036.854775807}"#,
+        ),
+    ] {
+        assert_eq!(serde_json::to_string(&Amount(nusd)).unwrap(), json);
+    }
 }

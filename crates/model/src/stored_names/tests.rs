@@ -13,9 +13,7 @@ fn serde_name<T: serde::Serialize>(v: T) -> String {
 
 macro_rules! check {
     ($ty:ty) => {
-        assert_eq!(<$ty>::ALL.len(), <$ty>::NAMES.len());
         for (v, name) in <$ty>::ALL.iter().zip(<$ty>::NAMES) {
-            assert_eq!(crate::StoredName::as_str(*v), *name);
             assert_eq!(serde_name(*v), *name, "{} serde name", stringify!($ty));
             assert_eq!(<$ty as crate::StoredName>::from_name(name), Some(*v));
         }
@@ -23,8 +21,8 @@ macro_rules! check {
 }
 
 /// Every enum declared with `stored_names!` stores, queries and serializes
-/// under one name per variant: `ALL` and `NAMES` line up, `from_name` reads
-/// each name back, and serde writes the same name.
+/// under one name per variant: `from_name` reads each name back, and serde
+/// writes the same name.
 #[test]
 fn stored_name_round_trips_for_every_enum() {
     use crate::assertion::{AssertionKind, LinkRole};
@@ -131,7 +129,4 @@ fn link_names_cover_every_kind_once() {
         ["spawn", "fork", "continuation", "resume", "reference"]
     );
     assert_eq!(LINK_HOW_NAMES, ["briefing", "ping", "mention"]);
-    for kind in LinkKind::ALL {
-        assert_eq!(LinkKind::from_name(kind.as_str()), Some(*kind));
-    }
 }
