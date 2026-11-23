@@ -106,8 +106,11 @@ class ClientTests(unittest.TestCase):
             declared = str(alias.absolute())
             self.assertNotEqual(declared, str(alias.resolve()))
             self.assertEqual(client.archive, declared)
-            self.assertEqual(client._arguments("status")[:3], [EXECUTABLE, "--archive", declared])
-            self.assertEqual(client._arguments("dev", "feed")[:3], [EXECUTABLE, "--archive", declared])
+            self.assertEqual(client._arguments("status"), [EXECUTABLE, "--archive", declared, "status"])
+            self.assertEqual(
+                client._arguments("dev", "feed"),
+                [EXECUTABLE, "--archive", declared, "dev", "feed"],
+            )
 
     def test_ordered_line_stream_reads_every_step_and_finishes_once(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -134,9 +137,12 @@ class ClientTests(unittest.TestCase):
     def test_query_and_read_match_cli_json(self):
         query = self.checked(lambda: self.client.query("sessions"))
         self.assertEqual(query["outcome"], "ok")
-        self.assertTrue(query["value"]["reply"]["rows"])
+        self.assertEqual(
+            sorted(row["id"] for row in query["value"]["reply"]["rows"]),
+            ["claude-code:python", "claude-code:python-image", "claude-code:python-pages"],
+        )
         read = self.checked(lambda: self.client.read(PYTHON_SESSION))
-        self.assertIn(read["outcome"], {"ok", "degraded"})
+        self.assertEqual(read["outcome"], "ok")
         self.assertTrue(read_page(read)["document"]["items"])
         self.assertIn("read_at", read_page(read)["snapshot"])
         self.assertEqual(text_items(read_page(read)["document"]["items"]), [PYTHON_TEXT])

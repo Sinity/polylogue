@@ -89,7 +89,10 @@ fn cli_reports_deadline_refusals_with_exit_seven() {
         panic!("typed timeout required")
     };
     assert_eq!(error.kind, command_surface::FailureKind::Timeout);
-    assert!(error.message.contains("rows scanned unknown"));
+    assert_eq!(
+        error.message,
+        "the read deadline was exceeded; rows scanned unknown"
+    );
 }
 
 #[test]
@@ -319,4 +322,41 @@ fn a_read_deadline_does_not_cancel_a_real_typed_import() {
     let report = reply.value().expect("typed import result");
     assert_eq!(report.imported, [path]);
     assert!(report.refused.is_empty(), "{report:?}");
+
+    // The session reached the archive and reads back through the daemon.
+    let output = crate::cli::cli(&fixture, &["--deadline", "none", "--json", "sessions"]);
+    assert!(output.status.success(), "{output:?}");
+    let answer: command_surface::Answer<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).unwrap();
+    let listing = crate::cli::listing(answer.value().expect("query succeeded").clone());
+    let ids: Vec<_> = listing["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["chatgpt:deadline-import"]);
+    let output = crate::cli::cli(
+        &fixture,
+        &[
+            "--deadline",
+            "none",
+            "--json",
+            "session:chatgpt:deadline-import",
+            "read",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let answer: command_surface::Answer<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).unwrap();
+    let read = answer.value().expect("read succeeded").clone();
+    let items = read["reply"]["steps"][0]["outcome"]["reply"]["reply"]["document"]["items"]
+        .as_array()
+        .unwrap();
+    let texts: Vec<_> = items
+        .iter()
+        .filter(|item| item["kind"]["kind"] == "text")
+        .map(|item| item["kind"]["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(texts, ["synthetic import"], "{read}");
 }
