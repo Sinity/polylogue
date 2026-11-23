@@ -77,14 +77,11 @@ fn sources(
     ], vec![])
 }
 
-fn representable(column: &str, undated: bool) -> String {
+/// The condition for a time that is unknown or outside the timestamp range.
+fn unrepresentable(column: &str) -> String {
     let min = jiff::Timestamp::MIN.as_millisecond();
     let max = jiff::Timestamp::MAX.as_millisecond();
-    if undated {
-        format!("({column} IS NULL OR {column} < {min} OR {column} > {max})")
-    } else {
-        format!("{column} >= {min} AND {column} <= {max}")
-    }
+    format!("({column} IS NULL OR {column} < {min} OR {column} > {max})")
 }
 
 /// Finds recorded logical years by seeking to the first timestamp after each
@@ -249,7 +246,7 @@ fn row_queries(
     {
         let mut conditions = Vec::new();
         if undated {
-            conditions.push(representable("at", true));
+            conditions.push(unrepresentable("at"));
             if let Some(after) = after.filter(|p| p.undated) {
                 match kind.cmp(after.kind.as_str()) {
                     std::cmp::Ordering::Less => continue,

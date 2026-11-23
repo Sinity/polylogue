@@ -208,20 +208,20 @@ fn insert_entry(conn: &Connection, id: i64, bit: i64, folded: &str) -> Result<()
 /// Historical versions keep their text row, but only current blocks contribute
 /// documents to full-text ranking or embedding.
 pub(crate) fn unindex_unused(
-    i: &Connection,
+    conn: &Connection,
     texts: &TextIds,
     id: i64,
     at_build_end: bool,
 ) -> Result<()> {
-    for (bit, kind, table) in [
+    for (bit, block_filter, table) in [
         (1, "b.kind NOT IN ('tool_result','tool_call')", "text_fts"),
         (2, "b.kind IN ('tool_result','tool_call')", "output_fts"),
     ] {
         // Document blocks are prose, so they count only for the prose index.
-        let used: bool = i.exists(
+        let used: bool = conn.exists(
             &format!(
                 "SELECT EXISTS(SELECT 1 FROM block b JOIN message m ON m.pk=b.message_pk
-                               WHERE b.text_id=?1 AND {kind})
+                               WHERE b.text_id=?1 AND {block_filter})
                      OR (?2=1 AND EXISTS(SELECT 1 FROM document_block b
                                          JOIN document d ON d.pk=b.document_pk
                                          WHERE b.text_id=?1))"
@@ -230,13 +230,13 @@ pub(crate) fn unindex_unused(
         )?;
         if !used {
             if !at_build_end {
-                i.execute(&format!("DELETE FROM {table} WHERE rowid=?1"), [id])?;
+                conn.execute(&format!("DELETE FROM {table} WHERE rowid=?1"), [id])?;
             }
-            i.execute(
+            conn.execute(
                 "DELETE FROM search_pending WHERE text_id=?1 AND fts_table=?2",
                 params![id, bit],
             )?;
-            i.execute(
+            conn.execute(
                 "UPDATE text SET indexed=indexed & ~?2 WHERE id=?1",
                 params![id, bit],
             )?;

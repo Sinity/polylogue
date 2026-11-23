@@ -24,6 +24,12 @@ pub(crate) fn check(
     container: &InContainer,
 ) -> Result<InContainer> {
     require_original(conn, &container.input)?;
+    check_shape(input, container)
+}
+
+/// The membership's own shape, for a container staged in the same group and
+/// so not yet in the archive.
+pub(crate) fn check_shape(input: &str, container: &InContainer) -> Result<InContainer> {
     if input == container.input {
         return Err(StoreError::Invalid(
             "a container cannot be its own member".into(),

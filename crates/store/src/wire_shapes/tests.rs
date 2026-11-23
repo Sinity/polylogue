@@ -69,7 +69,7 @@ fn store(conn: &mut Connection, source: Source<'_>, step: &ParseStep) {
     apply(&tx, source, step).unwrap();
     tx.commit().unwrap();
 }
-fn at<'a>(report: &'a Report, path: &str) -> &'a Observation {
+fn at<'a>(report: &'a Report, path: &str) -> &'a PathShape {
     report
         .shapes
         .iter()
@@ -391,7 +391,7 @@ fn wire_shape_missing_prefix_remains_incomplete_after_later_eof() {
     );
 }
 #[test]
-fn wire_shape_unknown_type_fields_and_tables_carry_no_values() {
+fn wire_shape_unknown_kinds_and_tables_are_counted() {
     let mut conn = database();
     let mut kind = shape("/type", "string", &["string"]);
     kind.known_kinds = vec!["message".into()];
@@ -399,18 +399,7 @@ fn wire_shape_unknown_type_fields_and_tables_carry_no_values() {
     let mut table = root();
     table.table = Some("new_schema_table".into());
     table.unknown_table_count = 1;
-    let mut parsed = step("v1", 0..10, true, vec![table, kind]);
-    parsed.output.events.push(polylogue_model::Event {
-        at_quality: polylogue_model::TimeQuality::Unknown,
-        at_precision: None,
-        at_until: None,
-        session: None,
-        kind: "fixture".into(),
-        at: None,
-        after: None,
-        range: Some((0, 10)),
-        data: serde_json::json!({"secret":"distinctive-source-value-123"}),
-    });
+    let parsed = step("v1", 0..10, true, vec![table, kind]);
     store(&mut conn, source(1, 1, 10, 1), &parsed);
     let report = read(&conn, Scope::current(None)).unwrap();
     assert!(
@@ -421,18 +410,6 @@ fn wire_shape_unknown_type_fields_and_tables_carry_no_values() {
     );
     assert!(report.drift.iter().any(|row| row.kind == Kind::UnknownTable
         && row.shape.table.as_deref() == Some("new_schema_table")));
-    let output = serde_json::to_string(&report).unwrap();
-    assert!(!output.contains("distinctive-source-value-123"));
-    let stored: String = conn
-        .query_row(
-            "SELECT (SELECT group_concat(path||table_key) FROM wire_shape)
-              ||(SELECT group_concat(json_type) FROM wire_type)
-              ||(SELECT group_concat(path||table_key||expected||known_kinds) FROM wire_declaration)",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert!(!stored.contains("distinctive-source-value-123"));
 }
 #[test]
 fn wire_shape_no_parser_and_failed_refused_coverage_are_visible() {

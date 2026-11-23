@@ -1,4 +1,5 @@
-use crate::fixture::{Fixture, MessageFacts, SessionFacts};
+use crate::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
+use polylogue_model::{Reference, user::UserWrite};
 
 /// A view's columns are part of its version: changing them means a new
 /// version beside it.
@@ -82,4 +83,125 @@ fn the_views_read_sessions_messages_and_assertions() {
         (&assertions[0]["current"], &assertions[0]["withdrawn"]),
         (&1.into(), &0.into())
     );
+}
+
+/// An unknown token count or cost is NULL, never 0; known values pass through.
+#[test]
+fn the_views_keep_unknown_values_null_and_read_calls_and_links() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
+    let s = f
+        .session(SessionFacts {
+            id: "test:s1",
+            ..SessionFacts::default()
+        })
+        .unwrap();
+    f.session(SessionFacts {
+        id: "test:s2",
+        ..SessionFacts::default()
+    })
+    .unwrap();
+    let priced = f
+        .message(
+            s,
+            MessageFacts {
+                id: "m1",
+                role: "assistant",
+                written_by: "model",
+                cost_nusd: Some(2500),
+                ..MessageFacts::default()
+            },
+        )
+        .unwrap();
+    f.message(
+        s,
+        MessageFacts {
+            id: "m2",
+            role: "user",
+            written_by: "human",
+            ..MessageFacts::default()
+        },
+    )
+    .unwrap();
+    f.tool_call(
+        s,
+        priced,
+        CallFacts {
+            tool: "Bash",
+            action: "shell",
+            command: Some("ls"),
+            outcome: "error",
+            exit_code: Some(2),
+            ..CallFacts::default()
+        },
+    )
+    .unwrap();
+    f.link("test:s1", "test:s2", "fork", None).unwrap();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let messages = reader
+        .query(
+            "SELECT id, input_tokens, output_tokens, cost_nusd FROM v1_messages ORDER BY id",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(messages[0]["cost_nusd"], 2500);
+    assert!(messages[0]["input_tokens"].is_null());
+    assert!(messages[0]["output_tokens"].is_null());
+    assert!(messages[1]["cost_nusd"].is_null());
+    let calls = reader
+        .query(
+            "SELECT session, tool, command, outcome, exit_code FROM v1_tool_calls",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0]["session"], "test:s1");
+    assert_eq!(calls[0]["tool"], "Bash");
+    assert_eq!(calls[0]["command"], "ls");
+    assert_eq!(calls[0]["outcome"], "error");
+    assert_eq!(calls[0]["exit_code"], 2);
+    let links = reader
+        .query("SELECT parent, child, kind, how FROM v1_links", &[])
+        .unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0]["parent"], "test:s1");
+    assert_eq!(links[0]["child"], "test:s2");
+    assert_eq!(links[0]["kind"], "fork");
+    assert!(links[0]["how"].is_null());
+}
+
+#[test]
+fn a_withdrawn_assertion_shows_as_withdrawn_in_its_view() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
+    f.session(SessionFacts {
+        id: "test:s1",
+        ..SessionFacts::default()
+    })
+    .unwrap();
+    let kept = f
+        .note("tag", Some("keep"), None, "session:test:s1")
+        .unwrap();
+    let dropped = f
+        .note("tag", Some("drop"), None, "session:test:s1")
+        .unwrap();
+    f.user(UserWrite::WithdrawAssertions {
+        targets: vec![Reference::parse_stored(&format!("assertion:{dropped}@{dropped}")).unwrap()],
+        reason: None,
+    })
+    .unwrap();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let rows = reader
+        .query(
+            "SELECT id, withdrawn, conflict FROM v1_assertions WHERE key IN ('keep','drop') ORDER BY key DESC",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(rows[0]["id"], kept);
+    assert_eq!(rows[0]["withdrawn"], 0);
+    assert_eq!(rows[1]["id"], dropped);
+    assert_eq!(rows[1]["withdrawn"], 1);
+    assert_eq!(rows[1]["conflict"], 0);
 }

@@ -133,13 +133,12 @@ fn prepare_readings(
     archive: &Connection,
 ) -> Result<()> {
     let mut distinct = BTreeSet::new();
-    for reading in readings.iter_mut() {
+    for reading in readings.iter() {
         if reading.chain < 1 || !distinct.insert((reading.input.id.clone(), reading.chain)) {
             return Err(StoreError::Invalid(
                 "a position must name each valid input chain once".into(),
             ));
         }
-        reading.reading.finish()?;
         if reading.reading.first {
             return Err(StoreError::Invalid(
                 "a chain replacement has no reading".into(),
@@ -184,9 +183,9 @@ fn prepare_readings(
             let input = keys
                 .get(resolve::Kind::Input, reading.input.id.as_bytes())?
                 .pk;
-            let (file, path) = tempfile::NamedTempFile::new()?.into_parts();
-            let mut output = BufWriter::new(file);
-            let location = history.add_path(&path);
+            let (scratch, path) = tempfile::NamedTempFile::new()?.into_parts();
+            let mut output = BufWriter::new(scratch);
+            let file = history.add_path(&path);
             let mut reader = BufReader::new(std::fs::File::open(&reading.reading.path)?);
             while let Some((mut step, _)) = read_step(&mut reader)? {
                 attachments::normalize_known(&mut step, &history.available)?;
@@ -194,15 +193,7 @@ fn prepare_readings(
                 let offset = output.stream_position()?;
                 write_step(&mut output, &step, Some(&choices))?;
                 output.flush()?;
-                history.record(
-                    input,
-                    reading.chain,
-                    &choices,
-                    Location {
-                        path: location,
-                        offset,
-                    },
-                );
+                history.record(input, reading.chain, &choices, Location { file, offset });
             }
             drop(output.into_inner().map_err(|error| error.into_error())?);
             prepared.push(path);
@@ -238,7 +229,7 @@ fn gather(
     let mut recorded = Vec::new();
     let mut history = History::new();
     for reading in readings {
-        let path = history.add_path(&reading.reading.path);
+        let file = history.add_path(&reading.reading.path);
         let mut reader = BufReader::new(std::fs::File::open(&reading.reading.path)?);
         loop {
             let offset = reader.stream_position()?;
@@ -247,7 +238,7 @@ fn gather(
             };
             attachments::remember(&step, archive, pending, &mut history.available)?;
             attachments::normalize_known(&mut step, &history.available)?;
-            let location = Location { path, offset };
+            let location = Location { file, offset };
             recorded.extend(
                 step.output
                     .sessions
@@ -378,7 +369,8 @@ struct StoredStep(
 );
 #[derive(Clone, Copy)]
 struct Location {
-    path: usize,
+    /// An index into `History::paths`.
+    file: usize,
     offset: u64,
 }
 struct History {
@@ -442,7 +434,7 @@ impl History {
         &self,
         location: Location,
     ) -> Result<(ParseStep, Option<resolve::membership::Choices>)> {
-        let path = self.paths.borrow()[location.path].clone();
+        let path = self.paths.borrow()[location.file].clone();
         let mut reader = BufReader::new(std::fs::File::open(path)?);
         reader.seek(SeekFrom::Start(location.offset))?;
         let (mut step, choices) =
@@ -574,7 +566,6 @@ impl Inner {
                 result?;
             }
         }
-        reading.finish()?;
         let mut local_steps = false;
         let mut version = None;
         let mut complete = false;

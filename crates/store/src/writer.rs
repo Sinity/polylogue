@@ -1005,7 +1005,7 @@ impl Inner {
                 Ok(first) => first,
                 Err(_) => break,
             };
-            let _busy = crate::timing::writer_started();
+            let _busy = crate::timing::enter(crate::timing::Stage::Writer);
             self.serve_users();
             let turn = Arc::clone(&self.search.turn);
             let _turn = turn.locked();
@@ -1695,8 +1695,7 @@ impl Inner {
             for extent in &synced.extents {
                 crate::blobs::insert_extent(&tx, extent)?;
             }
-            tx.execute("INSERT INTO segment(name,committed_end) VALUES (?1,?2) ON CONFLICT(name) DO UPDATE SET committed_end=excluded.committed_end",
-                params!["segments/current.hb",synced.end as i64])?;
+            crate::blobs::record_committed_end(&tx, synced.end)?;
             crate::write_lock::commit(tx)?;
             self.commits
                 .committed(crate::completion::Committed::CONTENT);
@@ -1896,7 +1895,7 @@ impl Inner {
         crate::fault::check("write.replay_rows", "")?;
         let counter = bump_counter(&itx)?;
         let changes = crate::change_summary::ChangeSummary::start(&itx)?;
-        let mut stats = (0u64, 0u64);
+        let (mut batches, mut messages) = (0u64, 0u64);
         for (b, chain) in indexed.iter().zip(chains) {
             if let Some(chain) = chain {
                 for p in &b.parse {
@@ -1915,7 +1914,7 @@ impl Inner {
                         chain,
                         p.parsed_upto,
                     )?;
-                    stats.1 += write_rows(
+                    messages += write_rows(
                         &itx,
                         b,
                         p,
@@ -1935,7 +1934,7 @@ impl Inner {
                     rows::prune_sessions(&itx, &b.input.id, chain, counter)?;
                 }
             }
-            stats.0 += 1;
+            batches += 1;
         }
         self.report.item_units_read += rows::finish(&itx, &changes, &upkeep, &self.texts, counter)?;
         let source_changed = if !primary {
@@ -1954,8 +1953,8 @@ impl Inner {
         self.commits
             .committed(crate::completion::Committed::CONTENT);
         self.search.wake();
-        self.report.batches += stats.0;
-        self.report.messages += stats.1;
+        self.report.batches += batches;
+        self.report.messages += messages;
         self.report.transactions += 1;
         Ok(())
     }

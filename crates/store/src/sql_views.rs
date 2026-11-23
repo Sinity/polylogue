@@ -9,7 +9,7 @@
 use rusqlite::Connection;
 
 /// Each view: its name and its query. Times are Unix milliseconds, costs
-/// dollars; an unknown value is NULL, never 0. `{title}` stands for the
+/// nano-USD; an unknown value is NULL, never 0. `{title}` stands for the
 /// session's displayed title ([`crate::session_sql::display_title`]).
 pub const VIEWS: &[(&str, &str)] = &[
     (

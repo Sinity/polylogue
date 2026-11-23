@@ -557,7 +557,7 @@ fn hash_prefixes(
             digest.update(&buffer[..n]);
             at += n as u64;
         }
-        hashes.push(digest.clone().finalize().to_hex().to_string());
+        hashes.push(digest.finalize().to_hex().to_string());
     }
     Ok((hashes, at, None))
 }

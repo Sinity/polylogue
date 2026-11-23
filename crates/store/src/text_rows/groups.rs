@@ -212,13 +212,13 @@ impl StoredGroups {
 /// hash is already stored. A group used only by that skipped insert is removed.
 pub(crate) fn insert(
     conn: &Connection,
-    groups: &StoredGroups,
+    stored_groups: &StoredGroups,
     id: Option<i64>,
     hash: &[u8; 32],
     prepared: Prepared<'_>,
     indexed: i64,
 ) -> Result<Option<i64>> {
-    let (group, inserted) = groups.row(conn, prepared)?;
+    let (group_row, inserted) = stored_groups.row(conn, prepared)?;
     let row = conn
         .prepare_cached(
             "INSERT OR IGNORE INTO text(id,hash,normalized_hash,indexed,group_id,start,length)
@@ -230,7 +230,7 @@ pub(crate) fn insert(
                 hash.as_slice(),
                 prepared.text.normalized_hash.as_slice(),
                 indexed,
-                group,
+                group_row,
                 prepared.text.start as i64,
                 prepared.text.length as i64
             ],
@@ -240,8 +240,8 @@ pub(crate) fn insert(
         Ok(id) => Ok(Some(id)),
         Err(rusqlite::Error::QueryReturnedNoRows) => {
             if inserted {
-                remove_empty_group(conn, group)?;
-                groups.clear();
+                remove_empty_group(conn, group_row)?;
+                stored_groups.clear();
             }
             Ok(None)
         }

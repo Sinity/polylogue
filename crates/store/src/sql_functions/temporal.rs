@@ -1,6 +1,6 @@
 //! Temporal predicates over stored source times, without zone I/O.
 use crate::query::{fields::TimeAttribute, time::TimePredicate};
-use polylogue_model::{Precision, Timestamp};
+use polylogue_model::Precision;
 use query_language::semantics::Truth;
 use query_language::time::{Time, TimeValue};
 use rusqlite::Connection;
@@ -12,35 +12,6 @@ type Failure = Box<dyn std::error::Error + Send + Sync + 'static>;
 mod order;
 mod source_time;
 use source_time::read as source_time;
-
-fn period(
-    at: Option<Timestamp>,
-    precision: Option<Precision>,
-    until: Option<Timestamp>,
-) -> Option<Time> {
-    let at: jiff::Timestamp = at?.into();
-    if precision == Some(Precision::Instant) {
-        return Some(Time::Instant { at });
-    }
-    let end = match until {
-        Some(end) => end.into(),
-        None => match precision {
-            Some(Precision::Second | Precision::Minute) => {
-                let seconds = if precision == Some(Precision::Second) {
-                    1
-                } else {
-                    60
-                };
-                at.checked_add(jiff::SignedDuration::from_secs(seconds))
-                    .ok()?
-            }
-            // A calendar grain needs the source's boundary or upper bound.
-            // The operation's own zone cannot stand in for the source's.
-            _ => return None,
-        },
-    };
-    Some(Time::Span { start: at, end })
-}
 
 fn test(
     bytes: Option<&[u8]>,

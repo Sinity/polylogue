@@ -25,6 +25,21 @@ WITH readings AS (
 "#;
 type Key = (String, String, String, String, Option<String>);
 
+/// Runs `sql` with the scope as its three parameters and hands each row to `each`.
+fn for_each_row(
+    conn: &Connection,
+    sql: &str,
+    scope: Scope<'_>,
+    mut each: impl FnMut(&rusqlite::Row<'_>) -> Result<()>,
+) -> Result<()> {
+    let mut statement = conn.prepare_cached(sql)?;
+    let mut rows = statement.query(params![scope.format, scope.reading_version, scope.history])?;
+    while let Some(row) = rows.next()? {
+        each(row)?;
+    }
+    Ok(())
+}
+
 /// Aggregate active readings by default, keeping only schema-shaped results
 /// and first/last source references in memory. SQLite owns grouping and spill.
 /// Every source reference stays in the tables; history must be requested.
@@ -35,9 +50,7 @@ pub fn read(conn: &Connection, scope: Scope<'_>) -> Result<Report> {
     let sql = format!(
         "{READINGS} SELECT format,reading_version,COUNT(*),COUNT(DISTINCT input_pk),SUM(active),pl_wire_sum(state,'parsed_upto'),pl_wire_sum(state,'length'),SUM(json_extract(state,'$.length') IS NULL),pl_wire_first(state,'first'),pl_wire_last(state,'last') FROM readings GROUP BY format,reading_version ORDER BY format,reading_version"
     );
-    let mut statement = conn.prepare_cached(&sql)?;
-    let mut rows = statement.query(params![scope.format, scope.reading_version, scope.history])?;
-    while let Some(row) = rows.next()? {
+    for_each_row(conn, &sql, scope, |row| {
         let format: String = row.get(0)?;
         let version: String = row.get(1)?;
         coverage_keys.insert((format.clone(), version.clone()), report.coverage.len());
@@ -54,13 +67,12 @@ pub fn read(conn: &Connection, scope: Scope<'_>) -> Result<Report> {
             first: occurrence(row, 8)?,
             last: occurrence(row, 9)?,
         });
-    }
+        Ok(())
+    })?;
     let sql = format!(
         "{READINGS} SELECT format,reading_version,status,COUNT(*) FROM readings GROUP BY format,reading_version,status ORDER BY format,reading_version,status"
     );
-    let mut statement = conn.prepare_cached(&sql)?;
-    let mut rows = statement.query(params![scope.format, scope.reading_version, scope.history])?;
-    while let Some(row) = rows.next()? {
+    for_each_row(conn, &sql, scope, |row| {
         let format: String = row.get(0)?;
         let version: String = row.get(1)?;
         let status: String = row.get(2)?;
@@ -69,11 +81,12 @@ pub fn read(conn: &Connection, scope: Scope<'_>) -> Result<Report> {
             .states
             .entry(status_of(&status))
             .or_default() += integer(row, 3)?;
-    }
+        Ok(())
+    })?;
     // A path is present in a complete reading when it is counted and was
-    // first seen before the reading's latest completion, or, when a reset
-    // left it uncounted, was last seen before the completion preceding that
-    // reset.
+    // first seen at or before the reading's latest completion, or, when a
+    // reset left it uncounted, was last seen at or before the completion
+    // preceding that reset.
     let sql = format!(
         r#"{READINGS}
 SELECT r.format,s.reading_version,s.record_kind,s.path,json_extract(s.table_key,'$'),COUNT(*),
@@ -99,10 +112,8 @@ JOIN wire_occurrence last_occurrence ON last_occurrence.input_pk=s.input_pk AND 
 GROUP BY r.format,s.reading_version,s.record_kind,s.path,s.table_key
 ORDER BY r.format,s.reading_version,s.record_kind,s.path,json_extract(s.table_key,'$')"#
     );
-    let mut statement = conn.prepare_cached(&sql)?;
-    let mut rows = statement.query(params![scope.format, scope.reading_version, scope.history])?;
     let mut shape_keys = BTreeMap::new();
-    while let Some(row) = rows.next()? {
+    for_each_row(conn, &sql, scope, |row| {
         let format: String = row.get(0)?;
         let version: String = row.get(1)?;
         let kind: String = row.get(2)?;
@@ -118,7 +129,7 @@ ORDER BY r.format,s.reading_version,s.record_kind,s.path,json_extract(s.table_ke
             ),
             report.shapes.len(),
         );
-        report.shapes.push(Observation {
+        report.shapes.push(PathShape {
             format,
             reading_version: version,
             record_kind: kind,
@@ -137,7 +148,8 @@ ORDER BY r.format,s.reading_version,s.record_kind,s.path,json_extract(s.table_ke
             present_in_latest: row.get(14)?,
             unused_count: integer(row, 15)?,
         });
-    }
+        Ok(())
+    })?;
     let sql = format!(
         r#"{READINGS}
 SELECT r.format,t.reading_version,t.record_kind,t.path,json_extract(t.table_key,'$'),t.json_type,
@@ -148,9 +160,7 @@ JOIN wire_occurrence last_occurrence ON last_occurrence.input_pk=t.input_pk AND 
 GROUP BY r.format,t.reading_version,t.record_kind,t.path,t.table_key,t.json_type
 ORDER BY r.format,t.reading_version,t.record_kind,t.path,json_extract(t.table_key,'$'),t.json_type"#
     );
-    let mut statement = conn.prepare_cached(&sql)?;
-    let mut rows = statement.query(params![scope.format, scope.reading_version, scope.history])?;
-    while let Some(row) = rows.next()? {
+    for_each_row(conn, &sql, scope, |row| {
         let key: Key = (
             row.get(0)?,
             row.get(1)?,
@@ -171,19 +181,13 @@ ORDER BY r.format,t.reading_version,t.record_kind,t.path,json_extract(t.table_ke
                 })?,
             },
         );
-    }
+        Ok(())
+    })?;
     let latest_kinds: std::collections::BTreeSet<_> = report
         .shapes
         .iter()
         .filter(|shape| shape.path.is_empty() && shape.present_in_latest)
-        .map(|shape| {
-            (
-                shape.format.clone(),
-                shape.reading_version.clone(),
-                shape.record_kind.clone(),
-                shape.table.clone(),
-            )
-        })
+        .map(PathShape::record_key)
         .collect();
     for shape in &report.shapes {
         let source =
@@ -217,12 +221,7 @@ ORDER BY r.format,t.reading_version,t.record_kind,t.path,json_extract(t.table_ke
             && shape.complete_presence.is_some()
             && !shape.present_in_latest
             && source.status() == CoverageStatus::Complete
-            && latest_kinds.contains(&(
-                shape.format.clone(),
-                shape.reading_version.clone(),
-                shape.record_kind.clone(),
-                shape.table.clone(),
-            ))
+            && latest_kinds.contains(&shape.record_key())
         {
             report.drift.push(Drift {
                 kind: Kind::StoppedField,
@@ -240,7 +239,7 @@ ORDER BY r.format,t.reading_version,t.record_kind,t.path,json_extract(t.table_ke
             .then_with(|| left.shape.reading_version.cmp(&right.shape.reading_version))
             .then_with(|| left.shape.record_kind.cmp(&right.shape.record_kind))
             .then_with(|| left.shape.path.cmp(&right.shape.path))
-            .then_with(|| kind_order(left.kind).cmp(&kind_order(right.kind)))
+            .then_with(|| left.kind.cmp(&right.kind))
             .then_with(|| left.shape.table.cmp(&right.shape.table))
     });
     Ok(report)
@@ -298,15 +297,6 @@ fn latest_occurrence(drift: &Drift) -> i64 {
         .filter_map(|source| source.last.as_ref().map(|occurrence| occurrence.sequence))
         .max()
         .unwrap_or(drift.shape.last.sequence)
-}
-fn kind_order(kind: Kind) -> u8 {
-    match kind {
-        Kind::NewPath => 0,
-        Kind::TypeChanged => 1,
-        Kind::StoppedField => 2,
-        Kind::UnknownKind => 3,
-        Kind::UnknownTable => 4,
-    }
 }
 fn integer(row: &rusqlite::Row<'_>, at: usize) -> Result<u64> {
     u64::try_from(row.get::<_, i64>(at)?).or_invalid("negative wire count in index")
