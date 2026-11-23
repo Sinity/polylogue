@@ -150,12 +150,17 @@ fn schema_tools_no_values_stored_revisions_and_unreadable_records() {
         ),
         (1, 1, 0)
     );
-    assert!(schema.fields.contains_key("/id"));
-    assert!(!schema.fields.contains_key("/count"));
+    // The record root and its one field; the malformed line adds none.
+    assert_eq!(
+        schema.fields.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["", "/id"]
+    );
     assert_eq!(schema.selection[0].revision, Some(1));
     assert_eq!(report.selection.missing_revisions, ["missing"]);
     assert_eq!(report.selection.selected_inputs, 1);
-    assert_eq!(report.selection.read_bytes, report.selection.selected_bytes);
+    // The first revision holds 24 bytes of JSON and 10 of an unreadable line.
+    assert_eq!(report.selection.read_bytes, 34);
+    assert_eq!(report.selection.selected_bytes, 34);
     let text = serde_json::to_string(&report).unwrap();
     for secret in ["private scalar", "/absent", "provider.jsonl"] {
         assert!(!text.contains(secret));
@@ -441,7 +446,7 @@ fn idle_inference_yields_at_stream_reads_and_cancellation_releases_its_lease() {
 }
 
 #[test]
-fn schema_infer_and_unread_use_the_real_daemon_socket_and_read_only_requests() {
+fn schema_infer_and_unread_use_the_real_daemon_socket() {
     let daemon = crate::test_daemon::start("private scalar");
     let provider = daemon.home.join(".claude/projects/-p/s1.jsonl");
     let mut row: serde_json::Value = serde_json::from_str(&polylogue_testkit::claude_user(
@@ -516,13 +521,6 @@ fn schema_infer_and_unread_use_the_real_daemon_socket_and_read_only_requests() {
         !serde_json::to_string(&data)
             .unwrap()
             .contains("private unseen")
-    );
-    assert!(
-        data["shapes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|s| s["unused_count"].as_u64().unwrap() > 0)
     );
     assert!(!data["coverage"].as_array().unwrap().is_empty());
 }

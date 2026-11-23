@@ -78,9 +78,10 @@ fn conversation_urls_select_sessions_by_declared_shape() {
     ] {
         let failure = run_q(&archive, ask(url)).unwrap_err();
         assert_eq!(failure.code(), "invalid_query", "{url}: {failure:?}");
-        assert!(
-            failure.message.contains("not a conversation URL"),
-            "{url}: {failure:?}"
+        assert_eq!(
+            failure.message,
+            format!("{url} is not a conversation URL Polylogue recognizes"),
+            "{url}"
         );
     }
 }

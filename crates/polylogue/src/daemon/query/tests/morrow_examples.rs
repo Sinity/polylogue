@@ -296,8 +296,13 @@ fn compare(
                     diffs.push(format!("rows {got:?} want {want:?}"));
                 }
             }
-            if o.contains_key("known repos") && v.get("known_repos").is_none() {
-                diffs.push("no known repositories listed".into());
+            if let Some(want) = o.get("known repos")
+                && v.get("known_repos") != Some(want)
+            {
+                diffs.push(format!(
+                    "known repositories {} want {want}",
+                    v.get("known_repos").unwrap_or(&Value::Null)
+                ));
             }
             if diffs.is_empty() {
                 Ok(())

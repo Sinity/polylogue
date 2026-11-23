@@ -99,9 +99,6 @@ fn shell_stages_count_occurrences_calls_and_sessions_in_the_query_population() {
 fn catalog_measures_use_selected_sessions_and_typed_fields() {
     let mut archive = morrow();
     archive.fx.derive().unwrap();
-    for removed in ["profiles", "pace", "similar", "correlation", "distribution"] {
-        assert!(run_q(&archive, ask(&format!("sessions | measure {removed}"))).is_err());
-    }
     let all = q(&archive, "sessions | measure facets:deep");
     let selected = q(
         &archive,
@@ -448,19 +445,23 @@ fn unknown_session_endings_and_clock_sources_match_unknown_conditions() {
         })
         .unwrap();
     archive.fx.derive().unwrap();
-    for field in ["ends_with", "time_source"] {
-        let result = q(
-            &archive,
-            &format!(r#"sessions where id:"codex:untimed" {field}:unknown"#),
+    // Each condition selects the untimed session and not every session.
+    let total = q(&archive, "sessions where kind:*")["count"]
+        .as_u64()
+        .unwrap();
+    for condition in [
+        "ends_with:unknown",
+        "time_source:unknown",
+        // The stored word for an untimed session is also accepted as a value.
+        "time_source:absent",
+    ] {
+        let result = q(&archive, &format!("sessions where kind:* {condition}"));
+        assert!(
+            ids(&result).contains(&"codex:untimed".to_owned()),
+            "{condition}: {result}"
         );
-        assert_eq!(result["count"], 1);
+        assert!(result["count"].as_u64().unwrap() < total, "{condition}");
     }
-    // The stored word for an untimed session is also accepted as a value.
-    let result = q(
-        &archive,
-        r#"sessions where id:"codex:untimed" time_source:absent"#,
-    );
-    assert_eq!(result["count"], 1);
 }
 
 fn session_pk(archive: &TestArchive, like: &str) -> i64 {

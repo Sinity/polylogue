@@ -134,11 +134,14 @@ fn similar_with_the_provider_down_answers_unranked_and_incomplete() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|n| n.as_str().is_some_and(|n| n.contains(
-                "semantic ranking failed (the embedding provider refused the connection)"
-            ))),
+            .any(|n| n.as_str()
+                == Some(
+                    "semantic ranking failed (the embedding provider refused the connection); rows are unranked"
+                )),
         "{v}"
     );
+    // The query vector is missing, so every row's similarity is unknown.
+    assert_eq!(v["unknown"]["similar"], 8, "{v}");
 }
 
 #[test]
@@ -152,6 +155,7 @@ fn hybrid_search_keeps_text_ranks_when_vectors_are_missing() {
     let answer = run_q(&w, request).unwrap();
     assert_eq!(answer["count"], 4);
     assert_eq!(answer["unknown"]["similar"], 2);
+    assert_eq!(answer["rows"].as_array().unwrap().len(), 4, "{answer}");
     assert!(
         answer["rows"]
             .as_array()

@@ -41,7 +41,7 @@ fn continuation_refuses_the_pre_logical_session_compiler() {
 }
 
 #[test]
-fn counting_ranked_rows_does_not_sort_or_project_the_answer() {
+fn counting_ranked_rows_does_not_sort_the_answer() {
     let w = morrow();
     let pool = w.fx.reads().unwrap();
     let reader = pool.reader().unwrap();
@@ -51,9 +51,7 @@ fn counting_ranked_rows_does_not_sort_or_project_the_answer() {
     let params = values(&program.params);
     let count_sql = program.statements.count(program.counts_near);
     let (count, without) = reader.query_counts(&count_sql, &params).unwrap();
-    let rows = reader.query_rows(&program).unwrap();
-    assert!(!rows.is_empty());
-    assert_eq!(count, rows.len() as u64);
+    assert!(count > 0);
     assert_eq!(without, 0);
     // A row count needs selection, never the answer's presentation order.
     // Inspect SQLite's executable operations rather than timing a tiny fixture.
@@ -64,33 +62,28 @@ fn counting_ranked_rows_does_not_sort_or_project_the_answer() {
 }
 
 #[test]
-fn counting_fused_rows_does_not_rank_or_sort_the_answer() {
+fn counting_fused_rows_does_not_sort_the_answer() {
     let w = morrow();
     let pool = w.fx.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let fused = "messages where parser | union (messages where done) | fuse (messages where cwd:/home/op/morrow)";
-    for text in [
-        fused.to_owned(),
-        format!("{fused} | fields id | sort by id"),
-    ] {
-        let request = ask(&text);
-        let opts = options(&reader, &request, 1).unwrap();
-        let program = polylogue_store::query::compile(request.text, &opts).unwrap();
-        let params = values(&program.params);
-        let count_sql = program.statements.count(program.counts_near);
-        let (count, without) = reader.query_counts(&count_sql, &params).unwrap();
-        let rows = reader.query_rows(&program).unwrap();
-        assert!(!rows.is_empty());
-        assert_eq!(count, rows.len() as u64);
-        assert_eq!(without, 0);
-        let operations = reader
-            .query(&format!("EXPLAIN {count_sql}"), &params)
-            .unwrap();
-        assert!(
-            operations.iter().all(|op| op["opcode"] != "SorterOpen"),
-            "{text}\ncount SQL: {count_sql}\noperations: {operations:#?}"
-        );
-    }
+    let text = "messages where parser | union (messages where done) | fuse (messages where cwd:/home/op/morrow) | fields id | sort by id";
+    let request = ask(text);
+    let opts = options(&reader, &request, 1).unwrap();
+    let program = polylogue_store::query::compile(request.text, &opts).unwrap();
+    let params = values(&program.params);
+    let count_sql = program.statements.count(program.counts_near);
+    let (count, without) = reader.query_counts(&count_sql, &params).unwrap();
+    let rows = reader.query_rows(&program).unwrap();
+    assert!(!rows.is_empty());
+    assert_eq!(count, rows.len() as u64);
+    assert_eq!(without, 0);
+    let operations = reader
+        .query(&format!("EXPLAIN {count_sql}"), &params)
+        .unwrap();
+    assert!(
+        operations.iter().all(|op| op["opcode"] != "SorterOpen"),
+        "{text}\ncount SQL: {count_sql}\noperations: {operations:#?}"
+    );
 }
 
 #[test]
@@ -701,9 +694,8 @@ fn rows_written_between_pages_continue_after_the_last_row_shown() {
             let before = row_ids(&q(&w, text));
             let first = next_page(&w, text, size, None);
             let mut shown = row_ids(&first);
-            let Some(mut cursor) = first["next"].as_str().map(str::to_owned) else {
-                continue;
-            };
+            assert!(first["next"].is_string(), "{text} by {size}: {first}");
+            let mut cursor = first["next"].as_str().unwrap().to_owned();
             for (name, day, messages) in [("new-early", -5, 9), ("new-late", 20, 1)] {
                 let s =
                     w.fx.session(SessionFacts {

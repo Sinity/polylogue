@@ -347,9 +347,15 @@ fn peers_are_symmetric() {
                 .trim_start_matches("claude-code:")
         })
         .collect();
+    assert_eq!(order.len(), 5, "{order:?}");
+    // b waits; a and d work; c and e are idle; f has ended.
     assert_eq!(order[0], "b");
-    assert!(!order.contains(&"f"));
-    assert_eq!(order.len(), 5);
+    let mut working = order[1..3].to_vec();
+    working.sort_unstable();
+    assert_eq!(working, ["a", "d"], "{order:?}");
+    let mut idle = order[3..].to_vec();
+    idle.sort_unstable();
+    assert_eq!(idle, ["c", "e"], "{order:?}");
 }
 
 #[test]
@@ -387,7 +393,10 @@ fn the_change_feed_continues_from_its_cursor() {
     assert_eq!(refs(&later), ["claude-code:b"]);
     assert!(later["rows"][0]["live_changed"].is_i64());
     // A malformed cursor is refused, not read as "from the start".
-    assert!(run(&r, ask("feed where after:12", T0)).is_err());
+    assert_eq!(
+        run(&r, ask("feed where after:12", T0)).unwrap_err().code(),
+        "invalid_query"
+    );
 }
 
 mod change_generation;

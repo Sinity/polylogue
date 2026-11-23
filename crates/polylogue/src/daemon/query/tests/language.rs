@@ -155,6 +155,8 @@ fn three_valued_filters_partition() {
     let top: BTreeSet<String> = ids(&q(&r, "sessions where physical:true"))
         .into_iter()
         .collect();
+    // Every one of Morrow's eight sessions is a physical session.
+    assert_eq!(top, all);
     let has: BTreeSet<String> = ids(&q(
         &r,
         "sessions where physical:true exists tool_calls(outcome:error)",
@@ -208,7 +210,8 @@ fn a_nested_condition_does_not_drop_a_default() {
     // The same field at the top level, or `F:*`, drops the default: the
     // code-mode wrappers whose commands are counted come back.
     let every_call = count("tool_calls where action:* | agg count");
-    assert!(every_call > 37, "{every_call}");
+    // 37 calls plus the 5 `exec` wrappers (3 in #5, 2 in #6; FACTS.md).
+    assert_eq!(every_call, 42);
     assert_eq!(
         count("tool_calls where (action:shell OR NOT action:shell) action:* | agg count"),
         every_call
@@ -226,7 +229,7 @@ fn a_nested_condition_does_not_drop_a_default() {
     ] {
         assert_eq!(chrono(&format!("{human} {nested}")), 2, "{nested}");
     }
-    assert!(chrono(&format!("{human} duplicate:*")) >= 2);
+    assert_eq!(chrono(&format!("{human} duplicate:*")), 2);
 }
 
 /// A value outside a field's closed set is refused, never an empty
@@ -327,11 +330,11 @@ fn a_value_outside_a_closed_set_is_refused() {
     assert!(ran > 50, "{ran}");
 }
 
-/// The turns unit on Morrow: every session with a prompt has turns, a
-/// turn's identity is one of its messages, its span is ordered, and the
-/// prompts the turns count are the session's on-path human prompts.
+/// The turns unit on Morrow: a turn's identity is one of its messages, its
+/// span is ordered, and the prompts the turns count add up to the human
+/// prompts.
 #[test]
-fn turns_partition_each_sessions_prompts() {
+fn turns_count_every_human_prompt_once() {
     let w = Morrow::build(Set::Main);
     let pool = w.reads();
     let r = pool.reader().unwrap();

@@ -37,7 +37,10 @@ fn seen_by_reads_the_rows_polylogue_had_then() {
     let all = query(&home, "messages | sort by first_seen").unwrap();
     assert_eq!(all["count"], 2);
     assert_eq!(all["rows"][0]["first_seen"], then.as_str(), "{all}");
-    assert_ne!(all["rows"][1]["first_seen"], then.as_str(), "{all}");
+    assert_eq!(
+        all["rows"][1]["first_seen"], "2026-10-07T10:00:01Z",
+        "{all}"
+    );
     let until_then = query(&home, &format!("messages where seen_by:{then}")).unwrap();
     assert_eq!(until_then["count"], 1, "{until_then}");
     assert_eq!(until_then["rows"][0]["id"], first["rows"][0]["id"]);
