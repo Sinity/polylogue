@@ -31,20 +31,26 @@ fn catalog(outputs: &[SourceOutput]) -> Arc<Catalog> {
         Arc::make_mut(&mut catalog).source_outputs =
             outputs.iter().map(SourceOutput::catalog_output).collect();
         for output in outputs {
-            if let Some(unit) = &output.schema.unit {
-                recorded_unit(&mut catalog, unit);
-            }
-            for unit in output.schema.match_units.iter().flatten() {
-                recorded_unit(&mut catalog, unit);
-            }
-            for field in &output.schema.fields {
-                if let Some(unit) = &field.unit {
-                    recorded_unit(&mut catalog, unit);
-                }
-            }
+            recorded_schema_units(&mut catalog, &output.schema);
         }
     }
     catalog
+}
+fn recorded_schema_units(
+    catalog: &mut Arc<Catalog>,
+    schema: &query_language::catalog::OutputSchema,
+) {
+    if let Some(unit) = &schema.unit {
+        recorded_unit(catalog, unit);
+    }
+    for unit in schema.match_units.iter().flatten() {
+        recorded_unit(catalog, unit);
+    }
+    for field in &schema.fields {
+        if let Some(unit) = &field.unit {
+            recorded_unit(catalog, unit);
+        }
+    }
 }
 /// A sealed question retains its recorded source spelling. Its hash is
 /// validated by the immutable-object owner; the live parser never sees them.
@@ -126,15 +132,7 @@ pub(crate) fn recorded_units_for_bindings(
     }
     for kept in bindings.kept.values() {
         for part in [ResultPart::Rows, ResultPart::Matches] {
-            let output = kept.output_schema(part);
-            if let Some(unit) = &output.unit {
-                recorded_unit(catalog, unit);
-            }
-            for field in &output.fields {
-                if let Some(unit) = &field.unit {
-                    recorded_unit(catalog, unit);
-                }
-            }
+            recorded_schema_units(catalog, &kept.output_schema(part));
         }
     }
     Ok(())
@@ -149,12 +147,9 @@ fn parse_id(name: &str) -> Result<QuestionId, QueryError> {
             "saved source {name:?} has no resolved question identity"
         )));
     }
-    let mut bytes = [0; 32];
-    for (at, byte) in bytes.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&name[at * 2..at * 2 + 2], 16)
-            .map_err(|_| QueryError::invalid("invalid question identity"))?;
-    }
-    Ok(QuestionId(bytes))
+    polylogue_model::BlobHash::parse(name)
+        .map(|hash| QuestionId(hash.0))
+        .map_err(|_| QueryError::invalid("invalid question identity"))
 }
 /// Parse the `query:<hash>` reference carried by saved figure denominators.
 pub fn question_id_from_reference(reference: &str) -> Result<QuestionId, QueryError> {
@@ -366,8 +361,7 @@ pub(super) fn from_plan(plan: &Plan) -> Result<QueryObject, QueryError> {
                 first = false;
                 return Ok(());
             }
-            let question = identity::question_id(query, &plan.identity_catalog, &BTreeMap::new())
-                .map_err(language)?;
+            let question = inline_identity(query, &plan.identity_catalog)?;
             if !saved_definitions
                 .iter()
                 .any(|node| node.question == question)
@@ -762,8 +756,7 @@ pub fn replay_binding(
         walk(
             &mut query,
             &mut |query| {
-                let question =
-                    identity::question_id(query, &catalog, &BTreeMap::new()).map_err(language)?;
+                let question = inline_identity(query, &catalog)?;
                 if question != binding.context.question
                     && !definitions
                         .iter()
@@ -825,16 +818,12 @@ pub fn replay(object: &QueryObject, expected_catalog: &str) -> Result<Plan, Quer
     validate_object(object)?;
     let catalog = runtime_catalog(object)?;
     let original = query_language::bind::bind(&object.query, &catalog).map_err(language)?;
-    let expanded = expand(
-        original.query(),
-        &catalog,
-        &replay_bindings(object, &catalog)?,
-    )?;
+    let bindings = replay_bindings(object, &catalog)?;
+    let expanded = expand(original.query(), &catalog, &bindings)?;
 
     let expanded = query_language::bind::bind(&expanded, &catalog).map_err(language)?;
     let text =
         query_language::format::format_query(original.query(), &catalog).map_err(language)?;
-    let bindings = replay_bindings(object, &catalog)?;
     Ok(Plan {
         saved_object: Some(object.clone()),
         original,

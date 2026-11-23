@@ -43,7 +43,6 @@ pub struct PageBuilder {
     tokens: u64,
     start: Option<ItemPlace>,
     next: Option<ItemPlace>,
-    full: bool,
     boundaries: Vec<ItemPlace>,
     before: Option<ItemPlace>,
     previous_input: Option<(SelectionLocator, u64)>,
@@ -71,7 +70,6 @@ impl PageBuilder {
             tokens: 0,
             start,
             next: None,
-            full: false,
             boundaries: vec![],
             before: None,
             previous_input: None,
@@ -97,7 +95,7 @@ impl PageBuilder {
         ordinal: u64,
         item: ReadItem,
     ) -> Result<Push, PageError> {
-        if self.full {
+        if self.next.is_some() {
             return Err(PageError::AlreadyFull);
         }
         if self.before.is_some() {
@@ -178,7 +176,7 @@ impl PageBuilder {
         let fragment = make(lo);
         let bytes = crate::encode::json_bytes(&fragment).map_err(serialization)?;
         self.bytes += bytes.len();
-        self.tokens += estimate_tokens(std::str::from_utf8(&bytes).expect("JSON is UTF-8")) as u64;
+        self.tokens += item_cost(&fragment, &bytes);
         self.boundaries.push(position);
         self.items.push(fragment);
         self.start = None;
@@ -285,7 +283,7 @@ impl PageBuilder {
         let fragment = make(lo);
         let bytes = crate::encode::json_bytes(&fragment).map_err(serialization)?;
         self.bytes += bytes.len();
-        self.tokens += estimate_tokens(std::str::from_utf8(&bytes).expect("JSON is UTF-8")) as u64;
+        self.tokens += item_cost(&fragment, &bytes);
         let lower = ItemPlace {
             character: (until - lo) as u64,
             ..position
@@ -422,7 +420,6 @@ impl PageBuilder {
     }
     fn stop(&mut self, position: ItemPlace) {
         self.next = Some(position);
-        self.full = true;
     }
     pub fn position(&self) -> Option<&ItemPlace> {
         self.next.as_ref()

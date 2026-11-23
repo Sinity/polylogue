@@ -40,7 +40,7 @@ pub fn safe_url(url: &str) -> bool {
 }
 pub fn value<T: Display>(state: &ValueState<T>) -> Markup {
     let name = match state {
-        ValueState::Value { .. } => "measured",
+        ValueState::Value { .. } => "known",
         ValueState::Unknown { .. } => "unknown",
         ValueState::NotRecorded => "not-recorded",
         ValueState::NotApplicable => "not-applicable",
@@ -176,7 +176,7 @@ fn item_markup(
 ) -> Result<Markup, Failure> {
     Ok(
         html! { section class="read-item" data-row="" tabindex="-1" data-reference=(Reference::display_stored(&item.source.reference)) data-block=[item.source.block] { @match &item.kind {
-            ItemKind::MessageHeader { header } => { h2 { time { (header.time.at.map(|at| crate::encode::recorded_time(Some(at), header.time.evidence, zone)).unwrap_or_else(||"--:--".into())) } " " (value(&header.author)) @if let Some(model)=header.model.value() { " · " (model) } @if header.inherited { " · inherited" } @match &header.branch { BranchState::Abandoned { n,total } => { " · abandoned branch " (n.map(|n|n.to_string()).unwrap_or_else(||"?".into())) "/" (total.map(|n|n.to_string()).unwrap_or_else(||"?".into())) }, BranchState::Unknown { versions:Some(n) } => { " · active version unknown: " (n) " versions" }, _ => {} } @if let Some(variant)=&header.variant { " · ≈ " (&variant.key) @if variant.stale { " (stale)" } @if let Some(call)=&variant.show_original { " " (ready(call, commands)?) } } } code { (Reference::display_stored(&item.source.reference)) } @for assertion in &header.assertions { aside { (crate::encode::annotation_text(assertion, crate::Format::Html)) } } },
+            ItemKind::MessageHeader { header } => { h2 { time { (header.time.at.map(|at| crate::encode::recorded_time(Some(at), header.time.evidence, zone)).unwrap_or_else(||"--:--".into())) } " " (value(&header.author)) @if let Some(model)=header.model.value() { " · " (model) } @if header.inherited { " · inherited" } @match &header.branch { BranchState::Abandoned { n,total } => { " · abandoned branch " (n.map(|n|n.to_string()).unwrap_or_else(||"unknown".into())) " of " (total.map(|n|n.to_string()).unwrap_or_else(||"unknown".into())) }, BranchState::Unknown { versions:Some(n) } => { " · active version unknown: " (n) " versions" }, _ => {} } @if let Some(variant)=&header.variant { " · ≈ " (&variant.key) @if variant.stale { " (stale)" } @if let Some(call)=&variant.show_original { " " (ready(call, commands)?) } } } code { (Reference::display_stored(&item.source.reference)) } @for assertion in &header.assertions { aside { (crate::encode::annotation_text(assertion, crate::Format::Html)) } } },
             ItemKind::Text { text } => { div class="archived-text" { (markdown(text)) } },
             ItemKind::Thinking { words,content } => { @match content {
                 ThinkingContent::Text { text } => { details class="thinking" { summary { "thinking (" (value(words)) " words)" } pre { (text) } } },
@@ -236,7 +236,7 @@ pub(crate) fn export_css() -> String {
     css
 }
 
-/// Aggregate allowance used by prepared read windows and standalone exports.
+/// The largest single image inlined as a data URI in HTML, per attachment.
 pub const DEFAULT_INLINE_IMAGE_BYTES: usize = 10 * 1024 * 1024;
 
 /// Raster types permitted in an archive HTML image data URL.

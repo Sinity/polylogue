@@ -85,7 +85,7 @@ fn trace_header(
 
 pub(super) fn page(
     reader: &Reader<'_>,
-    d: &impl ReadServices,
+    services: &impl ReadServices,
     request: &ReadRequest,
     operation: &Arc<Context>,
     history: Option<HistorySlot>,
@@ -93,14 +93,14 @@ pub(super) fn page(
     let (reading, record, digest) = prepare(reader, request)?;
     prepared(
         reader,
-        d,
+        services,
         operation,
         &reading,
         |compiled, snapshot, header, near| {
             let header = trace_header(reader, request, compiled, header, near)?;
             let page = rows_page(
                 reader,
-                d,
+                services,
                 request,
                 operation,
                 &reading,
@@ -116,7 +116,9 @@ pub(super) fn page(
                 ReadFooter::default(),
             )?;
             if request.cursor.is_none() {
-                record_compiled(reader, d, operation, request, &reading, compiled, history)?;
+                record_compiled(
+                    reader, services, operation, request, &reading, compiled, history,
+                )?;
             }
             Ok(page)
         },
@@ -125,7 +127,7 @@ pub(super) fn page(
 
 pub(super) fn stream(
     reader: &Reader<'_>,
-    d: &impl ReadServices,
+    services: &impl ReadServices,
     request: &ReadRequest,
     operation: &Arc<Context>,
     output: &mut dyn Write,
@@ -133,14 +135,14 @@ pub(super) fn stream(
     let (reading, record, _) = prepare(reader, request)?;
     prepared(
         reader,
-        d,
+        services,
         operation,
         &reading,
         |compiled, snapshot, header, near| {
             let header = trace_header(reader, request, compiled, header, near)?;
             rows_stream(
                 reader,
-                d,
+                services,
                 request,
                 &reading,
                 &rows::Rows::Object(&record, ReadRecordKind::Presentation),
