@@ -3,7 +3,7 @@
 let
   inherit (lib) mkOption types;
   absolutePath = types.strMatching "/.*";
-  optional =
+  nullableOption =
     type: description:
     mkOption {
       type = types.nullOr type;
@@ -16,7 +16,7 @@ let
         type = absolutePath;
         description = "Executable path. Arguments are passed separately.";
       };
-      arguments = optional (types.listOf types.str) "Arguments passed to the executable.";
+      arguments = nullableOption (types.listOf types.str) "Arguments passed to the executable.";
     };
   };
   deploymentType = types.submodule {
@@ -25,21 +25,15 @@ let
         default = { };
         type = types.submodule {
           options = {
-            listen = optional types.str "HTTP socket address.";
-            auth_token_file = optional absolutePath "File containing the HTTP bearer token.";
+            listen = nullableOption types.str "HTTP socket address.";
+            auth_token_file = nullableOption absolutePath "File containing the HTTP bearer token.";
           };
         };
       };
-      day = optional (types.submodule {
+      day = nullableOption (types.submodule {
         options = {
-          zone = mkOption {
-            type = types.str;
-            description = "Named time zone for a standalone archive.";
-          };
-          start = mkOption {
-            type = types.str;
-            description = "Logical day start as HH:MM:SS.";
-          };
+          zone = nullableOption types.str "Named time zone for a standalone archive. Omit for the host's zone.";
+          start = nullableOption types.str "Logical day start as HH:MM:SS. Omit for 04:00:00.";
         };
       }) "Standalone logical day. Primary mode obtains its day from Sinex.";
     };
@@ -53,18 +47,12 @@ let
         ];
         description = "Archive storage mode.";
       };
-      nats = mkOption {
-        type = types.str;
-        description = "Credential-free NATS URL.";
-      };
-      password_file = optional absolutePath "File containing the producer password.";
-      subject_root = optional types.str "Sinex subject root.";
-      producer = optional types.str "Declared Sinex producer identity.";
-      upload_root = optional absolutePath "Local upload scratch when Sinex runs on another host.";
-      store = mkOption {
-        type = absolutePath;
-        description = "Sinex store root on this host.";
-      };
+      nats = nullableOption types.str "Credential-free NATS URL. Required in primary mode.";
+      password_file = nullableOption absolutePath "File containing the producer password.";
+      subject_root = nullableOption types.str "Sinex subject root.";
+      producer = nullableOption types.str "Declared Sinex producer identity.";
+      upload_root = nullableOption absolutePath "Local upload scratch when Sinex runs on another host.";
+      store = nullableOption absolutePath "Sinex store root on this host. Required in primary mode.";
     };
   };
   signalsType = types.submodule {
@@ -73,8 +61,8 @@ let
         default = { };
         type = types.submodule {
           options = {
-            away_command = optional commandType "Command that receives each notice sent away, as JSON on standard input.";
-            deadline_ms = optional types.ints.positive "Notification delivery deadline in milliseconds.";
+            away_command = nullableOption commandType "Command that receives each notice the route function sends away, as JSON on standard input.";
+            deadline_ms = nullableOption types.ints.positive "Notification delivery deadline in milliseconds.";
           };
         };
       };
@@ -110,6 +98,11 @@ let
     assert lib.assertMsg (
       archive.sinex == null || archive.sinex.mode != "primary" || archive.settings.day == null
     ) "Primary Polylogue archives obtain their logical day from Sinex; omit settings.day.";
+    assert lib.assertMsg (
+      archive.sinex == null
+      || archive.sinex.mode != "primary"
+      || (archive.sinex.nats != null && archive.sinex.store != null)
+    ) "Primary Polylogue archives need sinex.nats and sinex.store.";
     stripNulls (
       {
         polylogue = archive.settings // {
@@ -141,7 +134,7 @@ in
         default = { };
         description = "Deployment values accepted by polylogue.toml.";
       };
-      sinex = optional sinexType "Sinex deployment. Omit for standalone storage.";
+      sinex = nullableOption sinexType "Sinex deployment. Omit for standalone storage.";
       signals = mkOption {
         type = signalsType;
         default = { };
@@ -157,26 +150,26 @@ in
       package,
       archive,
       home,
-      config,
-      data,
-      state,
-      cache,
-      runtime,
+      configHome,
+      dataHome,
+      stateHome,
+      cacheHome,
+      runtimeDir,
     }:
     pkgs.writeShellScriptBin name ''
       export HOME=${lib.escapeShellArg home}
-      export XDG_CONFIG_HOME=${lib.escapeShellArg config}
-      export XDG_DATA_HOME=${lib.escapeShellArg data}
-      export XDG_STATE_HOME=${lib.escapeShellArg state}
-      export XDG_CACHE_HOME=${lib.escapeShellArg cache}
+      export XDG_CONFIG_HOME=${lib.escapeShellArg configHome}
+      export XDG_DATA_HOME=${lib.escapeShellArg dataHome}
+      export XDG_STATE_HOME=${lib.escapeShellArg stateHome}
+      export XDG_CACHE_HOME=${lib.escapeShellArg cacheHome}
       ${
-        if runtime == null then
+        if runtimeDir == null then
           ''
             export XDG_RUNTIME_DIR="/run/user/$(${pkgs.coreutils}/bin/id -u)"
           ''
         else
           ''
-            export XDG_RUNTIME_DIR=${lib.escapeShellArg runtime}
+            export XDG_RUNTIME_DIR=${lib.escapeShellArg runtimeDir}
           ''
       }
       exec -a "$0" ${lib.getExe package} --archive ${lib.escapeShellArg archive.path} --config ${configDirectory archive}/polylogue/polylogue.toml "$@"

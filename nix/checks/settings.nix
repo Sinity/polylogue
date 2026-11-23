@@ -93,6 +93,32 @@ assert lib.assertMsg (refused {
     start = "04:00:00";
   };
 }) "The primary day must come from Sinex.";
+assert lib.assertMsg (refused {
+  path = "/archive";
+  sinex = {
+    mode = "primary";
+    nats = "nats://localhost";
+  };
+}) "Primary mode needs the Sinex store.";
+assert lib.assertMsg (
+  (settings.render (evaluate {
+    path = "/archive";
+    settings.day.zone = "Europe/Warsaw";
+    sinex.mode = "standalone";
+  })) == {
+    polylogue = {
+      archive = "/archive";
+      http = { };
+      day.zone = "Europe/Warsaw";
+    };
+    signals = {
+      notifications = { };
+      value_targets = { };
+      action_commands = { };
+    };
+    sinex.mode = "standalone";
+  }
+) "A day may name only its zone, and standalone Sinex needs no endpoint.";
 pkgs.runCommand "polylogue-settings" { nativeBuildInputs = [ pkgs.python3 ]; } ''
   python3 ${./settings.py} ${settings.configDirectory full} ${settings.configDirectory primary}
   touch "$out"

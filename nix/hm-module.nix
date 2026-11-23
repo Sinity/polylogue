@@ -1,3 +1,4 @@
+# Home Manager module: one user service and one command wrapper per archive.
 { packageFor }:
 {
   config,
@@ -17,11 +18,11 @@ let
       package = cfg.package;
       inherit archive;
       home = config.home.homeDirectory;
-      config = config.xdg.configHome;
-      data = config.xdg.dataHome;
-      state = config.xdg.stateHome;
-      cache = config.xdg.cacheHome;
-      runtime = null;
+      configHome = config.xdg.configHome;
+      dataHome = config.xdg.dataHome;
+      stateHome = config.xdg.stateHome;
+      cacheHome = config.xdg.cacheHome;
+      runtimeDir = null;
     }
   ) cfg.archives;
 in

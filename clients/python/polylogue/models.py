@@ -15,6 +15,14 @@ def _freeze(value):
     return value
 
 
+def _hashable(value):
+    if isinstance(value, Mapping):
+        return frozenset((key, _hashable(item)) for key, item in value.items())
+    if isinstance(value, tuple):
+        return tuple(_hashable(item) for item in value)
+    return value
+
+
 def _copy(value):
     if isinstance(value, Mapping):
         return {key: _copy(item) for key, item in value.items()}
@@ -31,6 +39,10 @@ class Answer:
 
     def __post_init__(self):
         object.__setattr__(self, "data", _freeze(self.data))
+
+    def __hash__(self):
+        # The generated hash would fail on the frozen mappings inside data.
+        return hash(_hashable(self.data))
 
     def json(self):
         """An independent, plain JSON value for export or comparison."""
