@@ -1608,8 +1608,11 @@ fn since_seen_returns_a_session_whose_live_or_derived_counter_passed_the_mark() 
             .unwrap()
             .query_rows(&program)
             .unwrap()
-            .iter()
-            .map(|row| row["id"].as_str().unwrap().to_owned())
+            .iter_mut()
+            .map(|row| {
+                present(&program, row).unwrap();
+                row["id"].as_str().unwrap().to_owned()
+            })
             .collect();
         ids.sort();
         ids
