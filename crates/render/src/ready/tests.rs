@@ -4,6 +4,7 @@ use serde_json::json;
 #[test]
 fn explicit_null_is_a_wire_value_and_absence_alone_omits_a_field() {
     let commands = crate::tests::read_commands();
+    let arguments = "%7B%22nullable%22%3Anull%2C%22flag%22%3Afalse%2C%22zero%22%3A0%7D";
     let supplied = RunnableRequest {
         deadline: Deadline::None,
         ..RunnableRequest::new(
@@ -12,19 +13,18 @@ fn explicit_null_is_a_wire_value_and_absence_alone_omits_a_field() {
             "synthetic",
         )
     };
-    let url = http_url(commands, &supplied).unwrap();
-    assert!(url.contains("deadline=null"), "{url}");
-    let fields: serde_json::Value = serde_json::to_value(&supplied).unwrap();
     assert_eq!(
-        fields["arguments"],
-        json!({"nullable":null,"flag":false,"zero":0})
+        http_url(commands, &supplied).unwrap(),
+        format!(
+            "/api/v1/read?operation=read&arguments={arguments}&request_id=synthetic&deadline=null"
+        )
     );
-    assert!(url.contains("%22nullable%22%3Anull"), "{url}");
     let omitted = RunnableRequest {
         deadline: Deadline::Default,
         ..supplied
     };
-    let url = http_url(commands, &omitted).unwrap();
-    assert!(!url.contains("deadline="), "{url}");
-    assert!(url.contains("%22nullable%22%3Anull"), "{url}");
+    assert_eq!(
+        http_url(commands, &omitted).unwrap(),
+        format!("/api/v1/read?operation=read&arguments={arguments}&request_id=synthetic")
+    );
 }

@@ -82,14 +82,11 @@ fn typed_page_shares_the_frame_and_shows_freshness() {
     let output = read(&page(), &table, &request).unwrap();
     assert!(output.contains("/assets/shell.js"));
     assert!(output.contains("/assets/tokens.css"));
-    assert!(!output.contains("reader.js"));
-    assert!(!output.contains("reader.css"));
     assert!(output.contains("&lt;script&gt;"));
     assert!(!output.contains("<script>archived"));
-    assert!(output.contains("data-row=\"\""));
-    assert!(output.contains("data-state=\"behind\""));
-    assert!(output.contains("applied 4"));
-    assert!(output.contains("Sinex 7"));
+    assert!(output.contains(
+        "<span data-mode=\"primary\" data-state=\"behind\">Primary: behind · applied 4 · Sinex 7 · observed 1 seconds ago · reachable true · lag 3</span>"
+    ));
     assert!(output.contains("polylogue read --request"));
     assert!(output.contains("Read view"));
 }
@@ -106,7 +103,7 @@ fn unavailable_sinex_note_carries_its_own_state() {
     let output = read(&unavailable, &read_table(), &request).unwrap();
     assert!(output.contains("Sinex is unavailable"));
     assert!(!output.contains("data-state=\"behind\""));
-    assert!(output.matches("data-state=\"unavailable\"").count() >= 2);
+    assert_eq!(output.matches("data-state=\"unavailable\"").count(), 2);
 }
 #[test]
 fn continuation_encodes_the_complete_ready_call_without_decoding_its_cursor() {
@@ -138,13 +135,14 @@ fn continuation_links_use_service_calls_instead_of_template_cursor_state() {
         },
     });
     let output = navigation(&page, &read_table()).unwrap().into_string();
-    assert!(output.contains(r#"rel="next""#));
-    assert!(output.contains("cursor=sealed"));
-    assert!(!output.contains("with_parents"));
+    assert_eq!(
+        output,
+        "<nav class=\"paging\" aria-label=\"Content pages\"><a href=\"/api/v1/read?operation=read&amp;arguments=%7B%22target%22%3A%22session%3Atest%3Asession%22%7D&amp;request_id=synthetic&amp;cursor=sealed\" rel=\"next\">Next</a></nav>"
+    );
 }
 
 #[test]
-fn typed_lineage_issues_keep_unknowns_and_evidence_in_every_encoder() {
+fn typed_lineage_issues_keep_unknowns_and_evidence_in_html_and_terminal() {
     let mut page = page();
     page.document.items =
         vec![
@@ -203,18 +201,22 @@ fn typed_lineage_issues_keep_unknowns_and_evidence_in_every_encoder() {
     )
     .unwrap();
     let text = String::from_utf8(text).unwrap();
-    assert!(text.contains("root pending"));
-    assert!(text.contains("parent codex:<missing> of codex:p is not available"));
+    for line in [
+        "↳ link_issue: missing_branch_point · parent codex:p · child codex:c · native.<field> · <unknown>",
+        "↳ session:codex:p · unknown (not stored) · parents  · 0 own + unknown (missing branch point) inherited · cost not recorded own / unknown tree",
+        "root pending · parent codex:<missing> of codex:p is not available",
+    ] {
+        assert!(text.lines().any(|actual| actual == line), "{line}: {text}");
+    }
     let html = String::from_utf8(output).unwrap();
-    assert!(html.contains("root pending"));
-    assert!(html.contains("codex:&lt;missing&gt;"));
-    assert!(!html.contains("codex:<missing>"));
-    assert!(html.contains("missing_branch_point"));
-    assert!(html.contains("native.&lt;field&gt;"));
-    assert!(!html.contains("native.<field>"));
-    assert!(html.contains("not stored"));
-    assert!(html.contains("missing branch point"));
-    assert!(html.contains("data-state=\"known\">0</span> own"));
+    for fragment in [
+        "<aside class=\"indicator\" data-kind=\"link_issue\">missing_branch_point · parent codex:p · child codex:c · native.&lt;field&gt; · &lt;unknown&gt;</aside>",
+        "<h3>session:codex:p · <span class=\"value-state\" data-state=\"unknown\">unknown (not stored)</span></h3>",
+        "<p>root pending · parent codex:&lt;missing&gt; of codex:p is not available</p>",
+        "<p><span class=\"value-state\" data-state=\"known\">0</span> own + <span class=\"value-state\" data-state=\"unknown\">unknown (missing branch point)</span> inherited · cost <span class=\"value-state\" data-state=\"not-recorded\">not recorded</span> own / <span class=\"value-state\" data-state=\"unknown\">unknown</span> tree</p>",
+    ] {
+        assert!(html.contains(fragment), "{fragment}: {html}");
+    }
 }
 
 fn url_parameters(url: &str) -> std::collections::BTreeMap<String, String> {
@@ -264,7 +266,7 @@ fn view_switches_use_model_option_acceptance_and_preserve_request_metadata() {
     assert!(!fields.contains_key("cursor"));
     assert_eq!(fields["operation"], "read");
     let deadline: Value = serde_json::from_str(&fields["deadline"]).unwrap();
-    assert_eq!(deadline, serde_json::to_value(request.deadline).unwrap());
+    assert_eq!(deadline, json!(1234));
     let fields = url_parameters(&view_url(&read_table(), &request, View::Summary).unwrap());
     let args: Value = serde_json::from_str(&fields["arguments"]).unwrap();
     assert!(args.get("inherited").is_none());

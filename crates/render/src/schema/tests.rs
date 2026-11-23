@@ -7,16 +7,15 @@ fn plain_and_json_reports_preserve_change_details_and_sample_limits() {
     let mut bytes = Vec::new();
     render(&data, Format::Terminal, &mut bytes).unwrap();
     let text = String::from_utf8(bytes).unwrap();
-    for part in [
-        "Comparable samples: false",
-        "different_samples",
-        "/text",
-        "string",
-        "null",
-        "required true -> false",
-    ] {
-        assert!(text.contains(part), "{text}");
-    }
+    assert_eq!(
+        text,
+        "Rule version: 1\n\
+         before: synthetic (sample: true), 2 records, 0 unreadable inputs, 0 unreadable records\n\
+         after: synthetic (sample: true), 1 records, 1 unreadable inputs, 0 unreadable records\n\
+         Comparable samples: false\n\
+         different_samples\n\
+         types /text: types {\"string\":2} -> {\"null\":1}, required true -> false\n"
+    );
     let mut bytes = Vec::new();
     render(&data, Format::Json, &mut bytes).unwrap();
     assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), data);
@@ -24,10 +23,14 @@ fn plain_and_json_reports_preserve_change_details_and_sample_limits() {
     same["changes"] = json!([]);
     let mut bytes = Vec::new();
     render(&same, Format::Terminal, &mut bytes).unwrap();
-    assert!(
-        String::from_utf8(bytes)
-            .unwrap()
-            .contains("No schema differences")
+    assert_eq!(
+        String::from_utf8(bytes).unwrap(),
+        "Rule version: 1\n\
+         before: synthetic (sample: true), 2 records, 0 unreadable inputs, 0 unreadable records\n\
+         after: synthetic (sample: true), 1 records, 1 unreadable inputs, 0 unreadable records\n\
+         Comparable samples: false\n\
+         different_samples\n\
+         No schema differences\n"
     );
 }
 
@@ -55,6 +58,13 @@ fn plain_reports_name_the_table_of_a_tool_database_change() {
     let mut bytes = Vec::new();
     render(&data, Format::Terminal, &mut bytes).unwrap();
     let text = String::from_utf8(bytes).unwrap();
-    assert!(text.contains("table notes: types /value:"), "{text}");
-    assert!(text.contains(r"table tags\nx: types /value:"), "{text}");
+    assert_eq!(
+        text,
+        "Rule version: 2\n\
+         before: synthetic (sample: true), 1 records, 0 unreadable inputs, 0 unreadable records\n\
+         after: synthetic (sample: true), 1 records, 0 unreadable inputs, 0 unreadable records\n\
+         Comparable samples: true\n\
+         table notes: types /value: types {\"string\":1} -> {\"null\":1}, required true -> true\n\
+         table tags\\nx: types /value: types {\"string\":1} -> {\"null\":1}, required true -> true\n"
+    );
 }

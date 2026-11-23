@@ -6,18 +6,16 @@ fn outlook_labels_estimates_populations_and_unknown_values() {
     let text = outlook(
         &json!({"provider":"sample","projection_method":"linear","window":{"start":0,"end":86400000},"segments":[{"plan":{"name":"configured"},"from":0,"until":86400000,"responses":{"api_nusd":{"used":1_000_000_001_i64,"projected":null,"known_items":1,"unknown_items":2,"lower_bound":true,"observed_days":1,"missing_days":[]}},"recorded_reports":{"reported_nusd":{"used":0,"projected":0,"known_items":1,"unknown_items":0,"observed_days":1,"missing_days":[]}},"subscription_price_share_nusd":null,"unknown_boundary_items":3,"unconfirmed_reports":4}],"untimed_responses":5,"untimed_reports":6}),
     );
-    for label in [
-        "(estimate)",
-        "API-equivalent USD",
-        "provider-reported USD",
-        "at least used $1.000000001",
-        "projected unknown",
-        "Subscription price share: unknown",
-        "1970-01-01 00:00 UTC",
-        "5; untimed reports: 6",
-    ] {
-        assert!(text.contains(label), "{label}: {text}");
-    }
+    assert_eq!(
+        text,
+        "sample (estimate), method linear\n\
+         UTC billing window 1970-01-01 00:00 UTC to 1970-01-02 00:00 UTC\n\
+         configured: 1970-01-01 00:00 UTC to 1970-01-02 00:00 UTC\n\
+         responses, API-equivalent USD: at least used $1.000000001, projected unknown (estimate); 1 known items, 2 unknown; 1 observed days, 0 missing days\n\
+         recorded_reports, provider-reported USD: used $0, projected $0 (estimate); 1 known items, 0 unknown; 1 observed days, 0 missing days\n\
+         Subscription price share: unknown. Unknown-boundary items: 3; unconfirmed reports: 4\n\
+         Untimed responses: 5; untimed reports: 6; untimed unknown-boundary items: unknown. Billing before the first plan setting: unknown.\n"
+    );
     assert!(!text.contains("null"));
 }
 
@@ -36,9 +34,14 @@ fn outlook_escapes_controls_in_plan_names_units_and_reasons() {
         assert!(text.contains(part), "{part}: {text}");
     }
     let missing = outlook(&json!({"reason":"missing\u{1b}[2J"}));
-    assert!(missing.contains("missing\\x1b[2J"));
-    assert!(missing.contains("--option provider:method"));
-    assert!(outlook(&json!({"reason":"no_cycle_anchor"})).contains("cycle_anchor_day"));
+    assert_eq!(
+        missing,
+        "Cost outlook unavailable: missing\\x1b[2J. Configure plan.<provider> and choose --option provider:method.\n"
+    );
+    assert_eq!(
+        outlook(&json!({"reason":"no_cycle_anchor"})),
+        "Cost outlook unavailable: no_cycle_anchor. Set cycle_anchor_day in plan.<provider>.\n"
+    );
 }
 
 #[test]
@@ -52,7 +55,7 @@ fn measure_times_print_in_answer_zone() {
     assert!(quota(&answer).contains("1970-01-01 00:00 +00:00"));
     answer["zone"] = json!("not/a/timezone");
     assert!(quota(&answer).contains("1970-01-01 00:00 +00:00"));
-    assert!(time(&Value::Null, &answer_zone(&answer)).contains("unknown"));
+    assert_eq!(time(&Value::Null, &answer_zone(&answer)), "unknown");
 }
 
 #[test]
@@ -82,16 +85,18 @@ fn token_counts_change_unit_at_the_rounded_figure() {
 #[test]
 fn failing_groups_by_repository_identity_not_display_name() {
     let data = json!([
-        {"repository":"root-a","repo":"same","command":"cargo test","at":0,"last_ok_at":null},
-        {"repository":"root-b","repo":"same","command":"cargo test","at":0,"last_ok_at":null},
-        {"repository":"root-a","repo":"same","command":"cargo clippy","at":0,"last_ok_at":null},
+        {"repository":"root-a","repo":"same","command":"cargo test","at":0,"last_ok_at":null,"session":"s1","exit_code":1,"failures_since_ok":1},
+        {"repository":"root-b","repo":"same","command":"cargo test","at":0,"last_ok_at":null,"session":"s2","exit_code":2,"failures_since_ok":3},
+        {"repository":"root-a","repo":"same","command":"cargo clippy","at":0,"last_ok_at":null,"session":"s3","exit_code":101,"failures_since_ok":2},
     ]);
-    let output = failing(&data, &jiff::tz::TimeZone::UTC);
-    assert_eq!(output.matches("same\n").count(), 2, "{output}");
-    assert_eq!(output.matches("cargo").count(), 3, "{output}");
-    let first = output.find("cargo test").unwrap();
-    let second = output.rfind("same\n").unwrap();
-    assert!(output.find("cargo clippy").unwrap() < second && first < second);
+    assert_eq!(
+        failing(&data, &jiff::tz::TimeZone::UTC),
+        "same\n\
+         \x20 cargo test  failed 1970-01-01 00:00 +00:00 (exit 1) in s1 · 1 failure(s) since ok · never succeeded\n\
+         \x20 cargo clippy  failed 1970-01-01 00:00 +00:00 (exit 101) in s3 · 2 failure(s) since ok · never succeeded\n\
+         same\n\
+         \x20 cargo test  failed 1970-01-01 00:00 +00:00 (exit 2) in s2 · 3 failure(s) since ok · never succeeded\n"
+    );
 }
 
 #[test]
@@ -125,8 +130,16 @@ fn partial_money_and_token_counts_state_what_is_missing() {
 #[test]
 fn drift_names_each_format_or_says_everything_was_recognized() {
     assert_eq!(drift(&json!([])), "every record and field was recognized\n");
-    let item = json!({"format":"sample","by_design":true});
-    assert!(drift_text(&json!([item])).contains(" (kept as a count by design)"));
-    let item = json!({"format":"sample","by_design":false});
-    assert!(!drift_text(&json!([item])).contains("by design"));
+    assert_eq!(
+        drift_text(
+            &json!([{"format":"sample","what":"unknown_field","count":2,"inputs":3,"by_design":true}])
+        ),
+        "sample  unknown_field  2 in 3 input(s) (kept as a count by design)\n"
+    );
+    assert_eq!(
+        drift_text(
+            &json!([{"format":"sample","what":"unknown_field","count":2,"inputs":3,"by_design":false}])
+        ),
+        "sample  unknown_field  2 in 3 input(s)\n"
+    );
 }

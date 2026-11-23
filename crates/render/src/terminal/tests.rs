@@ -5,9 +5,10 @@ const HOSTILE: &str = "\x1b]0;title\x07\x1b]2;title\x1b\\\x1b]52;c;YQ==\x07\x1b]
 #[test]
 fn controls_are_visible_and_escaping_is_idempotent() {
     let escaped = escape(HOSTILE);
-    assert!(escaped.contains("\\x1b]52;c;YQ==\\x07"));
-    assert!(escaped.contains("\\x9b2J\\u{202e}"));
-    assert!(escaped.ends_with("\\x0d\\x7f"));
+    assert_eq!(
+        escaped,
+        r#"\x1b]0;title\x07\x1b]2;title\x1b\\x1b]52;c;YQ==\x07\x1b]8;;https://example.test\x1b\link\x1b]8;;\x1b\\x7f\x1b[2J\x1b\x9b2J\u{202e}abc\u{2066}xyz\u{2069}\x0d\x7f"#
+    );
     assert_eq!(escape(&escaped), escaped);
     assert_eq!(escape("λ🙂\n\t"), "λ🙂\n\t");
     for code in 0..=159 {
@@ -32,6 +33,13 @@ fn json_controls_round_trip_without_terminal_sequences() {
                 .chars()
                 .any(|c| c.is_control() && c != '\n' && c != '\t')
         );
-        assert!(!text.contains('\u{202e}'));
+        for (raw, escaped) in [
+            ('\u{202e}', "\\u202e"),
+            ('\u{2066}', "\\u2066"),
+            ('\u{2069}', "\\u2069"),
+        ] {
+            assert!(!text.contains(raw), "{text}");
+            assert!(text.contains(escaped), "{text}");
+        }
     }
 }

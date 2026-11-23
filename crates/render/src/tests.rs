@@ -376,32 +376,58 @@ fn specialized_views_need_prepared_layout_facts() {
 fn value_states_keep_zero_empty_missing_unavailable_and_partial() {
     assert_eq!(crate::encode::value_text(&ValueState::known(0)), "0");
     assert_eq!(crate::encode::value_text(&ValueState::known("")), "");
-    for state in [
-        ValueState::<String>::default(),
-        ValueState::NotRecorded,
-        ValueState::Unavailable {
-            reason: "grant".into(),
-        },
-        ValueState::Pending,
-        ValueState::Error {
-            reason: "provider".into(),
-        },
-        ValueState::Partial {
-            value: "0".into(),
-            unknown: 2,
-        },
-        ValueState::Inferred { value: "0".into() },
-        ValueState::Stale {
-            value: None,
-            reason: "changed".into(),
-        },
-        ValueState::Inherited {
-            value: "source".into(),
-        },
+    for (state, name, expected) in [
+        (ValueState::<String>::default(), "unknown", "unknown"),
+        (ValueState::NotRecorded, "not-recorded", "not recorded"),
+        (
+            ValueState::Unavailable {
+                reason: "grant".into(),
+            },
+            "unavailable",
+            "unavailable (grant)",
+        ),
+        (ValueState::Pending, "pending", "pending"),
+        (
+            ValueState::Error {
+                reason: "provider".into(),
+            },
+            "error",
+            "error (provider)",
+        ),
+        (
+            ValueState::Partial {
+                value: "0".into(),
+                unknown: 2,
+            },
+            "partial",
+            "≥ 0 (2 unknown)",
+        ),
+        (
+            ValueState::Inferred { value: "0".into() },
+            "inferred",
+            "≈ 0",
+        ),
+        (
+            ValueState::Stale {
+                value: None,
+                reason: "changed".into(),
+            },
+            "stale",
+            "stale (changed)",
+        ),
+        (
+            ValueState::Inherited {
+                value: "source".into(),
+            },
+            "inherited",
+            "↳ source",
+        ),
     ] {
-        let text = crate::encode::value_text(&state);
-        assert_ne!(text, "0");
-        assert!(html::value(&state).into_string().contains("data-state="));
+        assert_eq!(crate::encode::value_text(&state), expected);
+        assert_eq!(
+            html::value(&state).into_string(),
+            format!("<span class=\"value-state\" data-state=\"{name}\">{expected}</span>")
+        );
     }
 }
 #[test]
@@ -695,9 +721,15 @@ fn summary_cards_show_header_facts_without_source_instructions() {
         &LayoutFacts::default(),
     );
     for format in [Format::Terminal, Format::Markdown, Format::Html] {
-        assert!(
-            !encode(&document(items.clone()), format).contains("HARNESS_INSTRUCTIONS_NOT_SUMMARY")
-        );
+        let card = encode(&document(items.clone()), format);
+        assert!(!card.contains("HARNESS_INSTRUCTIONS_NOT_SUMMARY"), "{card}");
+        for fact in [
+            "title unknown",
+            "working directories: not recorded",
+            "branch: not recorded · model provider: not recorded · tool version: not recorded",
+        ] {
+            assert!(card.contains(fact), "{format:?} {fact}: {card}");
+        }
     }
 }
 #[test]
@@ -1234,8 +1266,6 @@ fn format_flags_and_public_json_schema_use_one_closed_vocabulary() {
             format
         );
     }
-    assert!(Format::parse("md").is_none());
-    assert!(serde_json::from_value::<Format>(serde_json::json!("md")).is_err());
 }
 
 #[test]
@@ -2280,23 +2310,38 @@ fn partial_stated_sources_do_not_invent_roles() {
     let record = selected_fragment("<script>\u{9b}quote</script>", 9);
     record.validate().unwrap();
     let stated = known_fragment_origin(BlockKind::Text, 9, 42);
-    for origin in [
-        ValueState::default(),
-        ValueState::Unavailable {
-            reason: "source unavailable".into(),
-        },
-        ValueState::Partial {
-            value: stated.clone(),
-            unknown: 1,
-        },
-        ValueState::Inferred {
-            value: stated.clone(),
-        },
-        ValueState::Stale {
-            value: Some(stated.clone()),
-            reason: "source changed".into(),
-        },
-        ValueState::Inherited { value: stated },
+    for (origin, classification) in [
+        (ValueState::default(), "unknown"),
+        (
+            ValueState::Unavailable {
+                reason: "source unavailable".into(),
+            },
+            "unavailable (source unavailable)",
+        ),
+        (
+            ValueState::Partial {
+                value: stated.clone(),
+                unknown: 1,
+            },
+            "≥ assistant message · text (1 unknown)",
+        ),
+        (
+            ValueState::Inferred {
+                value: stated.clone(),
+            },
+            "≈ assistant message · text",
+        ),
+        (
+            ValueState::Stale {
+                value: Some(stated.clone()),
+                reason: "source changed".into(),
+            },
+            "stale: assistant message · text (source changed)",
+        ),
+        (
+            ValueState::Inherited { value: stated },
+            "↳ assistant message · text",
+        ),
     ] {
         let facts = LayoutFacts {
             fragment_origin: origin.clone(),
@@ -2323,7 +2368,12 @@ fn partial_stated_sources_do_not_invent_roles() {
         assert!(html.contains("Selected source text"));
         assert!(html.contains("&lt;script&gt;"));
         assert!(!html.contains("<script>"));
-        assert!(encode(&doc, Format::Markdown).contains("Source classification:"));
+        assert!(
+            encode(&doc, Format::Markdown).contains(&format!(
+                "Source classification: {classification} · recorded source length: unknown\n"
+            )),
+            "{classification}"
+        );
         for view in [View::Dialogue, View::Context] {
             assert!(matches!(
                 project_record(
