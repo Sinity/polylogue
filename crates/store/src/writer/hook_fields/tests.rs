@@ -65,10 +65,21 @@ fn stated_hook_fields_bind_record_and_text_block() {
                 invalid.output.hook_fields.insert(1, Vec::new());
             }
         }
-        assert!(
-            invalid.prepared.validate(&invalid.output).is_err(),
-            "case {case}"
-        );
+        let error = invalid
+            .prepared
+            .validate(&invalid.output)
+            .expect_err("an invalid stated field is refused")
+            .to_string();
+        // Case 2 names a block that may be unselected or not text.
+        let cause = [
+            "span differs",
+            "span differs",
+            "",
+            "not a hook context index",
+            "not a hook context index",
+            "names a message the step does not hold",
+        ][case];
+        assert!(error.contains(cause), "case {case}: {error}");
     }
 }
 

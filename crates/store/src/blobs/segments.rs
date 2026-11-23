@@ -203,18 +203,31 @@ pub(crate) fn insert_extent(conn: &Connection, extent: &hashed_blobs::Extent) ->
     Ok(true)
 }
 
+/// The segment file new bytes are appended to.
+const CURRENT_SEGMENT: &str = "segments/current.hb";
+
+/// Records how far the current segment is committed, in the transaction that
+/// stores the extents written up to `end`.
+pub(crate) fn record_committed_end(conn: &Connection, end: u64) -> Result<()> {
+    conn.execute(
+        "INSERT INTO segment(name,committed_end) VALUES (?1,?2) ON CONFLICT(name) DO UPDATE SET committed_end=excluded.committed_end",
+        rusqlite::params![CURRENT_SEGMENT, end as i64],
+    )?;
+    Ok(())
+}
+
 pub(crate) fn open_writer(conn: &Connection, root: &Path) -> Result<hashed_blobs::SegmentWriter> {
     let end: i64 = conn
         .scalar_optional(
             "SELECT committed_end FROM segment WHERE name=?1",
-            ["segments/current.hb"],
+            [CURRENT_SEGMENT],
         )?
         .unwrap_or(0);
     let end = u64::try_from(end)
         .map_err(|_| crate::StoreError::stored(0, "negative committed segment end"))?;
     Ok(hashed_blobs::SegmentWriter::open(
         root,
-        "segments/current.hb",
+        CURRENT_SEGMENT,
         end,
         &[],
         0o600,

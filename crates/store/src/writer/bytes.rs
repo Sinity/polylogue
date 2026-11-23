@@ -306,17 +306,9 @@ pub(super) fn observation(
     };
     check_import_format(tx, &b.input.id, o.import.as_ref())?;
     let container = match o.container.as_ref() {
-        Some(container) if staged.contains(&container.input) => {
-            if container.input == b.input.id
-                || container.kind.is_empty()
-                || i64::try_from(container.member_index).is_err()
-            {
-                return Err(StoreError::Invalid(
-                    "invalid staged container membership".into(),
-                ));
-            }
-            Some(container.clone())
-        }
+        Some(container) if staged.contains(&container.input) => Some(
+            crate::container_members::check_shape(&b.input.id, container)?,
+        ),
         Some(container) => Some(crate::container_members::check(tx, &b.input.id, container)?),
         None => None,
     };

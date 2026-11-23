@@ -299,8 +299,7 @@ impl Inner {
                     added.insert(BlobHash(extent.hash.0), extent.decoded_len);
                 }
             }
-            tx.execute("INSERT INTO segment(name,committed_end) VALUES (?1,?2) ON CONFLICT(name) DO UPDATE SET committed_end=excluded.committed_end",
-                params!["segments/current.hb",synced.end as i64])?;
+            crate::blobs::record_committed_end(&tx, synced.end)?;
         }
         let mut stored = Vec::new();
         let mut seen = BTreeSet::new();
