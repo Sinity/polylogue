@@ -75,6 +75,14 @@ assert lib.assertMsg (refused {
 }) "Relative archive paths must fail evaluation.";
 assert lib.assertMsg (refused {
   path = "/archive";
+  sinex = {
+    mode = "primary";
+    nats = "nats://localhost";
+    store = "relative/sinex";
+  };
+}) "Relative Sinex store paths must fail evaluation.";
+assert lib.assertMsg (refused {
+  path = "/archive";
   settings.quiet = true;
 }) "Authored settings must not become deployment options.";
 assert lib.assertMsg (refused {

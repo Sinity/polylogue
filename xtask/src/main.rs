@@ -1,6 +1,7 @@
 mod bench;
 mod common_link;
 mod native_sinex;
+mod nix;
 
 use clap::Parser;
 use devkit::{Nextest, Run};
@@ -264,16 +265,38 @@ fn main() -> ExitCode {
             changed,
             changed_base,
         } => {
-            let args: Vec<String> = match (changed, changed_base) {
+            let base = changed_base;
+            let args: Vec<String> = match (changed, &base) {
                 (_, Some(base)) => vec![format!("--changed-base={base}")],
                 (true, None) => vec!["--changed".into()],
                 (false, None) => Vec::new(),
             };
             run("check", &args, |run| {
+                // The Nix checks run for every full check, and for a diff
+                // that touches their inputs; a diff confined to them has no
+                // Rust to build or test.
+                let files = match (changed, &base) {
+                    (false, None) => None,
+                    (_, base) => Some(nix::changed_files(
+                        &run.root,
+                        base.as_deref().unwrap_or("origin/master"),
+                    )?),
+                };
+                let nix_changed = files
+                    .as_ref()
+                    .is_none_or(|files| files.iter().any(|file| nix::is_nix_input(file)));
+                let nix_only = files.as_ref().is_some_and(|files| {
+                    !files.is_empty() && files.iter().all(|file| nix::is_nix_input(file))
+                });
                 fmt_check(run)?;
-                clippy(run)?;
-                let arguments = test_arguments(&args, None).expect("the selection is valid");
-                run.nextest("test", &nextest(arguments))?;
+                if !nix_only {
+                    clippy(run)?;
+                    let arguments = test_arguments(&args, None).expect("the selection is valid");
+                    run.nextest("test", &nextest(arguments))?;
+                }
+                if nix_changed {
+                    nix::check(run)?;
+                }
                 if !changed {
                     native_sinex::check(run)?;
                 }
