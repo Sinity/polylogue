@@ -23,7 +23,7 @@ impl Verb for Resume {
         selection: &Selection,
         call: &StepCall<'_>,
     ) -> Result<StepDone, Failure> {
-        let session = session(&step, selection)?;
+        let session = session(&step, selection, call)?;
         match (step.harness, session) {
             (None, session) => delegated(
                 handlers::Continue::run(
@@ -60,7 +60,7 @@ impl Verb for Resume {
         selection: &Selection,
         call: &StepCall<'_>,
     ) -> Result<String, Failure> {
-        let session = session(step, selection)?;
+        let session = session(step, selection, call)?;
         match (&step.harness, session) {
             (None, session) => {
                 let done = delegated(
@@ -131,7 +131,11 @@ impl Verb for Resume {
 }
 
 /// The one session resumed; none when the line names no rows.
-fn session(step: &ResumeStep, selection: &Selection) -> Result<Option<SessionId>, Failure> {
+fn session(
+    step: &ResumeStep,
+    selection: &Selection,
+    call: &StepCall<'_>,
+) -> Result<Option<SessionId>, Failure> {
     if step.fork {
         return Err(not_built("resume", "fork"));
     }
@@ -150,7 +154,12 @@ fn session(step: &ResumeStep, selection: &Selection) -> Result<Option<SessionId>
         [] => Err(Failure::not_found(
             "resume found no session in the selection",
         )),
-        [session] => Ok(Some(session.clone())),
+        [session] => {
+            if step.harness.is_none() {
+                acts::refuse_running_resume(call.call.daemon, session)?;
+            }
+            Ok(Some(session.clone()))
+        }
         several => Err(crate::protocol::failure(
             polylogue_model::Code::Ambiguous,
             format!("resume takes one session; {} match", several.len()),

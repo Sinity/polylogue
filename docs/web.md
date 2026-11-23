@@ -56,7 +56,7 @@ The tokens, marks of meaning, value states and chips are `web-shell`'s. Polylogu
 - **Values:** the value-state table of [reading.md](reading.md); missing values in charts use the missing-value hatch, never a zero-height bar.
 - **Notes:** `◆` plus the kind word, `--note` ink on `--note-bg`.
 - **Check states:** `holds`, `fails`, `unknown`, `unchecked` badges; `unchecked` outlined.
-- **Live states:** the six states of [session-control.md](session-control.md), always as the word: `waiting` on `--pending-bg`, `working` on `--observed-bg`, `idle` and `unknown` on `--surface-sunk`, `stale` in `--failure-ink`, `ended` plain.
+- **Live states:** the six states of [live-sessions.md](live-sessions.md#live-state), always as the word: `waiting` on `--pending-bg`, `working` on `--observed-bg`, `idle` and `unknown` on `--surface-sunk`, `stale` in `--failure-ink`, `ended` plain.
 - **Authorship:** typed text plain; a pasted span shaded with one line saying where it came from; unknown authorship hatched. Annotations show their author (`operator`, `agent:<session>` as a link, `agent:<origin>`, `script:<unit>`, `unattributed` shown as "author unknown") and `via` ([authorship.md](authorship.md)).
 - **Density:** comfortable (default), compact, dense; a setting.
 - **Motion:** none except the live tick and progress; off under `prefers-reduced-motion`.

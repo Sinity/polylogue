@@ -169,7 +169,7 @@ Store: **row** (a column on a parsed row), **session** (stored at session grain)
 | Experiment intervals | `measure experiment` | read | exact |
 | Reports | queries joining the above | read | exact |
 | Embeddings | vectors in the embeddings store | row | judged |
-| Format drift | the `drift` unit ([archive.md](archive.md#format-drift)) | read | exact |
+| Format drift | `measure drift` ([archive.md](archive.md#format-drift)) | read | exact |
 
 Activity sessions, presence, agency, interruption and resumption, cross-day episodes and day narratives are Sinex's higher layer ([Sinex higher-layer](https://github.com/Sinity/sinex/blob/master/docs/higher-layer.md)); Polylogue supplies sessions, task linkage and session spans as its events.
 
