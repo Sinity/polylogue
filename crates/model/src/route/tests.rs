@@ -73,7 +73,10 @@ fn every_group_ranks_routes_in_the_documented_order() {
 #[test]
 fn message_completion_has_three_values() {
     let user = message(Role::User);
-    assert_eq!(MessageCompletion::of(&user, Route::Live), MessageCompletion::Finished);
+    assert_eq!(
+        MessageCompletion::of(&user, Route::Live),
+        MessageCompletion::Finished
+    );
     let mut answer = message(Role::Assistant);
     assert_eq!(
         MessageCompletion::of(&answer, Route::Live),
