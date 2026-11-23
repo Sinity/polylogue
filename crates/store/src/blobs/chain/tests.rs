@@ -219,12 +219,22 @@ fn invalid_extent_metadata_refuses_capture_without_panicking() {
         w.conn
             .execute(&format!("UPDATE extent SET {column}=?1"), [value])
             .unwrap();
-        // A zero-length extent is outside the requested range and leaves a gap.
         let result = StoredChain::load(&w.source(), "input", 1, 3);
-        if value == 0 {
-            assert!(result.unwrap().read_range(&w.store, 0, 3).is_err());
-        } else {
-            assert!(result.is_err(), "{column}={value}");
+        match (column, value) {
+            // A zero-length extent is skipped, so the range has a gap.
+            ("length", 0) => assert!(matches!(
+                result.unwrap().read_range(&w.store, 0, 3),
+                Err(StoreError::Invalid(text)) if text == "stored extent gap"
+            )),
+            // A negative offset does not decode as an unsigned column.
+            ("blob_offset", -1) => assert!(
+                matches!(result, Err(StoreError::StoredValue { column: 3, .. })),
+                "{column}={value}"
+            ),
+            _ => assert!(
+                matches!(&result, Err(StoreError::Invalid(text)) if text == "invalid stored extent bounds"),
+                "{column}={value}"
+            ),
         }
     }
 }
@@ -241,11 +251,14 @@ fn large_segment_blobs_refuse_changed_catalog_size_before_exposing_ranges() {
     );
     w.conn.execute("UPDATE blob SET size=size+1", []).unwrap();
     let changed = w.load(bytes.len() as u64);
-    assert!(changed.read_range(&w.store, 100, 117).is_err());
+    assert!(matches!(
+        changed.read_range(&w.store, 100, 117),
+        Err(StoreError::BlobCorrupt(_))
+    ));
 }
 
 #[test]
-fn only_a_complete_single_blob_uses_the_direct_reader() {
+fn single_file_blob_is_some_only_for_a_complete_single_blob() {
     let w = Fixture::new(64 << 10);
     let bytes = vec![b'x'; 64 << 10];
     let hash = w.add(0, bytes.len() as u64, 0, &bytes);
@@ -315,7 +328,7 @@ fn a_poisoned_extent_list_returns_a_typed_error() {
         .is_err()
     );
     let error = chain.read_range(&w.store, 0, 3).unwrap_err();
-    assert!(matches!(error, StoreError::Invalid(text) if text.contains("lock poisoned")));
+    assert!(matches!(error, StoreError::Invalid(text) if text == "stored extents lock poisoned"));
 }
 
 #[test]

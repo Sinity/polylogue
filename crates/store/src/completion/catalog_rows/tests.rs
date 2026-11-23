@@ -137,6 +137,18 @@ fn completion_removal_delta_keeps_a_recreated_session_in_the_same_cursor_window(
     let (position, upserted, removed) = changes(&reader, &before);
     assert!(upserted.iter().any(|id| id == "claude-code:restored"));
     assert!(removed.is_empty());
+    // Removed and stored again since the catalog was published: a recreation,
+    // not a plain upsert, so the old values are dropped.
+    let mut recreated = Vec::new();
+    reader
+        .visit_completion_sessions(Some(&before), |change| {
+            if let SessionChange::Recreated(session) = change {
+                recreated.push(session.id);
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(recreated, ["claude-code:restored"]);
     catalog
         .update(
             &Metadata {
@@ -277,7 +289,11 @@ fn authored_deltas_follow_only_affected_families_and_setting_keys() {
     assert_eq!(changes.len(), 1);
     assert_eq!(changes[0].family, "saved-a");
     assert_eq!(changes[0].saved.as_ref().unwrap().name, "alpha");
-    assert!(changes[0].queries.contains_key("alpha"));
+    assert_eq!(changes[0].queries["alpha"].len(), 1);
+    assert_eq!(
+        changes[0].queries["alpha"][0].text,
+        "sessions | group by origin | count"
+    );
     let after = reads.reader().unwrap().change_position().unwrap();
     write(
         "replace-a",
@@ -425,8 +441,9 @@ fn completion_refresh_statements_proportional_to_changes() {
             };
             assert_eq!(values(&published), values(&rebuilt), "{field}");
         }
-        let tool = published.values("tool", "tool-1").unwrap();
-        assert_eq!(tool[0].count, 2, "the appended call counts");
+        let tools = published.values("tool", "tool-1").unwrap();
+        let tool = tools.iter().find(|value| value.value == "tool-1").unwrap();
+        assert_eq!(tool.count, 2, "the appended call counts");
         assert_eq!(
             published
                 .session_details("claude-code:big")
@@ -439,6 +456,7 @@ fn completion_refresh_statements_proportional_to_changes() {
                 .unwrap()
                 .first_prompt
         );
+        assert!(count > 0, "the statement trace saw no statements");
         count
     }
     let small = refresh_after_append(4);

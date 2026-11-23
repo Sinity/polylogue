@@ -35,12 +35,24 @@ fn stored_values_the_model_cannot_read_are_column_errors() {
     };
     let (column, why) = failure(read(&one("'robot'"), |row| row.name::<Role>(0)).unwrap_err());
     assert_eq!((column, why.as_str()), (0, "unknown stored name \"robot\""));
-    let (_, why) = failure(read(&one("'no-origin'"), |row| row.id::<SessionId>(0)).unwrap_err());
-    assert!(why.contains("\"no-origin\" does not parse"), "{why}");
-    let (_, why) = failure(read(&one("x'0102'"), |row| row.hash(0)).unwrap_err());
-    assert_eq!(why, "a stored hash has 2 bytes, not 32");
-    let (_, why) = failure(read(&one(&i64::MAX.to_string()), |row| row.time_ms(0)).unwrap_err());
-    assert!(why.contains("out of range"), "{why}");
+    let (column, why) =
+        failure(read(&one("'no-origin'"), |row| row.id::<SessionId>(0)).unwrap_err());
+    assert_eq!(column, 0);
+    assert!(
+        why.starts_with("stored identity \"no-origin\" does not parse: "),
+        "{why}"
+    );
+    let (column, why) = failure(read(&one("x'0102'"), |row| row.hash(0)).unwrap_err());
+    assert_eq!(
+        (column, why.as_str()),
+        (0, "a stored hash has 2 bytes, not 32")
+    );
+    let (column, why) =
+        failure(read(&one(&i64::MAX.to_string()), |row| row.time_ms(0)).unwrap_err());
+    assert_eq!(
+        (column, why.as_str()),
+        (0, "stored time 9223372036854775807 ms is out of range")
+    );
 }
 
 #[test]

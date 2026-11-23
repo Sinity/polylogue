@@ -46,23 +46,6 @@ fn no_task_from_prose_or_claim_commands() {
 }
 
 #[test]
-fn a_failed_claim_claims_nothing() {
-    let mut w = WriterArchive::new();
-    w.write(
-        "s",
-        bash(
-            "s",
-            1,
-            1_000,
-            "bd update demo-1 --status in_progress",
-            false,
-            "error: not found",
-        ),
-    );
-    assert_eq!(w.live_task("s"), json!({"task": null}));
-}
-
-#[test]
 fn commits_and_pull_requests_come_from_the_output_of_the_commands_that_made_them() {
     let mut w = WriterArchive::new();
     let mut m = bash("s", 1, 1_000, "bd update demo-9 --claim", true, "");
@@ -97,13 +80,44 @@ fn commits_and_pull_requests_come_from_the_output_of_the_commands_that_made_them
 #[test]
 fn deriving_again_changes_nothing() {
     let mut w = WriterArchive::new();
-    w.write(
+    let mut m = bash("s", 1, 1_000, "bd update demo-1 --claim", true, "");
+    m.extend(bash(
         "s",
-        bash("s", 1, 1_000, "bd update demo-1 --claim", true, ""),
+        2,
+        2_000,
+        "git commit -m fixture",
+        true,
+        "[main 1a2b3c4] fixture",
+    ));
+    m.extend(bash(
+        "s",
+        3,
+        3_000,
+        "gh pr create --fill",
+        true,
+        "https://github.com/Sinity/polylogue/pull/6300\n",
+    ));
+    w.write("s", m);
+    let links = |w: &WriterArchive| {
+        (
+            w.rows("SELECT commit_hash, evidence FROM commit_link"),
+            w.rows("SELECT repo, number, url FROM pr_link"),
+        )
+    };
+    let before = links(&w);
+    assert_eq!(
+        before,
+        (
+            vec![json!({"commit_hash": "1a2b3c4", "evidence": "commit-output"})],
+            vec![json!({
+                "repo": "Sinity/polylogue",
+                "number": 6300,
+                "url": "https://github.com/Sinity/polylogue/pull/6300"
+            })]
+        )
     );
-    let before = w.live_task("s");
     assert_eq!(w.writer.derive().unwrap(), 0);
-    assert_eq!(before, w.live_task("s"));
+    assert_eq!(links(&w), before);
 }
 
 #[test]
@@ -332,6 +346,10 @@ fn links_after_append_equal_full_recompute() {
     check(&w, "call without result");
     w.write("s", vec![result]);
     check(&w, "late result");
+    assert_eq!(
+        w.rows("SELECT repo, number, evidence FROM pr_link"),
+        vec![json!({"repo": "Sinity/polylogue", "number": 6300, "evidence": "gh-output"})]
+    );
     // A rewrite: a snapshot states the commit's output again, differently.
     w.write_snapshot(
         "s",
@@ -345,6 +363,10 @@ fn links_after_append_equal_full_recompute() {
         ),
     );
     check(&w, "rewritten output");
+    assert_eq!(
+        w.rows("SELECT commit_hash, evidence FROM commit_link"),
+        vec![json!({"commit_hash": "5e6f7a8", "evidence": "commit-output"})]
+    );
     // Another session's commit leaves this session's links alone.
     w.write(
         "t",

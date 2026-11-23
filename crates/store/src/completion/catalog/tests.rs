@@ -84,14 +84,13 @@ fn a_failed_publication_rolls_back_values_and_position() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("catalog");
     let mut writer = writer(&path);
-    assert!(
-        writer
-            .update(&metadata(2), |writer| {
-                writer.put_session(&session("codex:abc", "temporary", 1))?;
-                Err(StoreError::Invalid("synthetic failure".into()))
-            })
-            .is_err()
-    );
+    let error = writer
+        .update(&metadata(2), |writer| {
+            writer.put_session(&session("codex:abc", "temporary", 1))?;
+            Err(StoreError::Invalid("synthetic failure".into()))
+        })
+        .unwrap_err();
+    assert!(matches!(error, StoreError::Invalid(ref message) if message == "synthetic failure"));
     let reader = CatalogReader::open(&path, "synthetic").unwrap().unwrap();
     assert_eq!(reader.metadata.position, metadata(1).position);
     assert!(reader.values("model", "").unwrap().is_empty());
@@ -132,7 +131,7 @@ fn prefix_updates_include_neighbors_unicode_and_removed_sessions() {
     );
 }
 #[test]
-fn read_only_snapshot_never_writes_and_typed_items_use_identity() {
+fn read_only_snapshot_never_writes_and_saved_and_kept_lookups_are_exact() {
     use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("catalog");
@@ -244,7 +243,13 @@ fn tag_only_contributors_are_listed_and_removed_alone() {
         let read = CatalogReader::open(&path, "synthetic").unwrap().unwrap();
         assert_eq!(read.values("tag", "").unwrap()[0].count, 4);
         let settings = read.settings("browser.actions").unwrap();
-        assert_eq!(settings[0].value.conflicts.len(), 2);
+        assert_eq!(
+            settings[0].value.conflicts,
+            vec![
+                polylogue_model::Reference::parse_stored("assertion:setting@left").unwrap(),
+                polylogue_model::Reference::parse_stored("assertion:setting@right").unwrap(),
+            ]
+        );
         assert!(settings[0].value.value.is_none());
     }
     // An absent-family update removes only that cached contribution.

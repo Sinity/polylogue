@@ -4,7 +4,7 @@ use crate::fixture::{authored::operator_request, writer::WriterArchive};
 use polylogue_model::user::{Delivery, UserWrite};
 
 #[test]
-fn old_unacknowledged_notices_are_scoped_metadata_until_selected() {
+fn pending_notices_are_selected_by_directory_scope_and_acknowledgement() {
     let archive = WriterArchive::new();
     let deliver = |id: &str, cwd: Option<&str>| {
         archive
@@ -53,13 +53,9 @@ fn old_unacknowledged_notices_are_scoped_metadata_until_selected() {
         ["old-pending"]
     );
     assert_eq!(candidates[0].at, Timestamp::from_unix_ms(1).unwrap());
-    assert!(
-        reader
-            .delivery(&candidates[0].id)
-            .unwrap()
-            .unwrap()
-            .1
-            .starts_with("old-pending body")
+    assert_eq!(
+        reader.delivery(&candidates[0].id).unwrap().unwrap().1,
+        format!("old-pending {}", "body".repeat(10000))
     );
 }
 
