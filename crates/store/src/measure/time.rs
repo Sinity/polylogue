@@ -115,7 +115,7 @@ struct Rows {
 }
 
 /// The rows after `after` in session order, or all of them.
-fn rows(conn: &Connection, pk: i64, after: Option<&OrderKey>) -> Result<Rows> {
+fn read_rows(conn: &Connection, pk: i64, after: Option<&OrderKey>) -> Result<Rows> {
     let own = session_sql::own_messages("m", Some("=?1"));
     let mut params: Vec<rusqlite::types::Value> = vec![pk.into()];
     let tail = match after {
@@ -190,7 +190,7 @@ fn rows(conn: &Connection, pk: i64, after: Option<&OrderKey>) -> Result<Rows> {
 
 /// The same calculation serves the derivation and a read of a behind session.
 pub(crate) fn compute(conn: &Connection, pk: i64, gap_ms: i64) -> Result<(Span, Vec<PartyTime>)> {
-    let rows = rows(conn, pk, None)?;
+    let rows = read_rows(conn, pk, None)?;
     if rows.messages.is_empty() {
         return Ok(from_events(conn, pk)?.finish());
     }
@@ -263,7 +263,7 @@ impl Prefix {
     /// Adds the messages that follow, and their calls; a call's
     /// `message_index` counts from `offset`.
     fn extend(&mut self, messages: &[Message], tools: &[Tool], offset: usize, gap_ms: i64) {
-        let lower = self.last;
+        let last_before = self.last;
         let mut prompts_through = Vec::with_capacity(messages.len());
         let mut clustered = Vec::new();
         let mut waiting = Vec::new();
@@ -332,7 +332,7 @@ impl Prefix {
         clustered.extend(spans.iter().copied());
         self.tool_union_ms += union_ms(spans);
         self.clustered_ms += union_ms(clustered);
-        if let Some((a, b)) = lower.or(self.first).zip(self.last) {
+        if let Some((a, b)) = last_before.or(self.first).zip(self.last) {
             let waiting: Vec<_> = waiting
                 .iter()
                 .map(|(a, b, party)| (*a, *b, party.as_str()))
@@ -363,16 +363,16 @@ impl Prefix {
         } else {
             "absent"
         };
-        let timed_tools = self.tools == 0 || self.intervals > 0;
+        let any_tool_time_known = self.tools == 0 || self.intervals > 0;
         let span = Span {
             first_at: self.first,
             last_at: self.last,
             time_source: time_source.into(),
             wall_ms: self.first.zip(self.last).map(|(a, b)| b - a),
             clustered_ms: (self.timed >= 2).then_some(self.clustered_ms),
-            tool_sum_ms: timed_tools.then_some(self.tool_sum_ms),
-            tool_union_ms: timed_tools.then_some(self.tool_union_ms),
-            tool_overlap_ms: timed_tools.then_some(self.tool_sum_ms - self.tool_union_ms),
+            tool_sum_ms: any_tool_time_known.then_some(self.tool_sum_ms),
+            tool_union_ms: any_tool_time_known.then_some(self.tool_union_ms),
+            tool_overlap_ms: any_tool_time_known.then_some(self.tool_sum_ms - self.tool_union_ms),
             tool_untimed: self.tool_untimed,
             tool_no_result: self.tool_no_result,
             tool_same_timestamp: self.tool_same_timestamp,
@@ -494,7 +494,7 @@ pub(crate) fn derive(conn: &Connection, pk: i64, from_start: bool) -> Result<(De
             .end
             .clone()
             .expect("a stored prefix ends at a message");
-        let rows = rows(conn, pk, Some(&key))?;
+        let rows = read_rows(conn, pk, Some(&key))?;
         if earliest(&rows).is_none_or(|e| e >= at) {
             resumed = Some((prefix, rows));
         }
@@ -502,7 +502,7 @@ pub(crate) fn derive(conn: &Connection, pk: i64, from_start: bool) -> Result<(De
     let (mut prefix, rows) = match resumed {
         Some(found) => found,
         None => {
-            let rows = rows(conn, pk, None)?;
+            let rows = read_rows(conn, pk, None)?;
             if rows.messages.is_empty() {
                 let (span, parties) = from_events(conn, pk)?.finish();
                 return Ok((
@@ -839,6 +839,10 @@ pub(crate) fn read(
     Ok((span, parties, false))
 }
 
+/// Each selected session's time span and parties. A session whose stored
+/// span is behind is computed here only when the selection is a single
+/// session; in a larger selection its span is `None` and `computed_at_read`
+/// is false.
 pub fn times(reader: &Reader<'_>, selection: &Selection) -> Result<Vec<SessionTime>> {
     let (condition, params) = selection.session_condition("s.pk")?;
     let conn = reader.conn()?;

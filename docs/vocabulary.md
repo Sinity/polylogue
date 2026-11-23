@@ -42,6 +42,12 @@ generated page of the thing they belong to, or on the area page that owns them.
   stored as a blob of its own so a revision stores only the chunks it changes.
 - **observation**: one time the collector found something at a path; a file
   that disappears is an observation, never a deletion.
+- **observation kind**: what an observation found: `first`, `appended`,
+  `rewritten`, `deleted`, `back` or `imported`. Distinct from the three file
+  classes of coverage.
+- **container**: an input that holds other inputs as its members: a provider's
+  export (ZIP or tar) or one compressed file. A member is an input of its own,
+  addressed `container!/member`.
 - **observed state**: what one read saw of a file or database (size, inode,
   write-ahead log), used to tell whether it changed.
 - **export** and **member**: a provider's data export, stored whole, and one

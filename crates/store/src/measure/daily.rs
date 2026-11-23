@@ -285,7 +285,7 @@ pub fn daily(
 /// Human prompts by logical weekday (Monday first) and civil clock hour.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Rhythm {
-    pub zone: Option<String>,
+    pub zone: String,
     pub prompts: u64,
     pub grid: [[u64; 24]; 7],
 }
@@ -314,7 +314,7 @@ pub fn rhythm(reader: &Reader<'_>, selection: &Selection, day: &DaySetting) -> R
         prompts += 1;
     }
     Ok(Rhythm {
-        zone: Some(day.zone_name().to_string()),
+        zone: day.zone_name().to_string(),
         prompts,
         grid,
     })

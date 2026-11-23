@@ -162,6 +162,19 @@ fn fragment_conflicts_stay_distinct_per_source() {
         .unwrap()
         .apply(&conn, 2, 1, 9, |_| Ok(Some(300)))
         .unwrap();
+    let mut statement = conn
+        .prepare(
+            "SELECT input_pk, chain, committed FROM text_fragment_source \
+             WHERE committed IS NOT NULL ORDER BY input_pk, chain",
+        )
+        .unwrap();
+    let committed: Vec<(i64, i64, i64)> = statement
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<std::result::Result<_, rusqlite::Error>>()
+        .unwrap();
+    drop(statement);
+    assert_eq!(committed, vec![(1, 2, 200), (2, 1, 300)]);
     retract(&conn, 1, 1).unwrap();
     assert_eq!(
         conn.query_row("SELECT count(*) FROM text_fragment", [], |r| r

@@ -462,19 +462,20 @@ impl<'a> Compiler<'a> {
                 for key in keys {
                     let (sql, kind) = if matches!(&key.expression, Expression::Function { name, .. } if name == "random")
                     {
-                        let sql =
-                            match parse_random_seed(&key.expression)?.or(self.opts.random_seed) {
-                                Some(seed) => format!(
-                                    "pl_random(json_array({}), '{seed}')",
-                                    relation
-                                        .identity_order()
-                                        .iter()
-                                        .map(|key| format!("r.{}", column_sql(&key.column)))
-                                        .collect::<Vec<_>>()
-                                        .join(", ")
-                                ),
-                                None => "random()".into(),
-                            };
+                        let sql = match parse_random_seed(&key.expression, at)?
+                            .or(self.opts.random_seed)
+                        {
+                            Some(seed) => format!(
+                                "pl_random(json_array({}), '{seed}')",
+                                relation
+                                    .identity_order()
+                                    .iter()
+                                    .map(|key| format!("r.{}", column_sql(&key.column)))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
+                            None => "random()".into(),
+                        };
                         (sql, ColKind::Number)
                     } else {
                         self.sql_expression_with(&key.expression, at, &mut |compiler, name, at| {
