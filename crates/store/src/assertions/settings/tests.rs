@@ -135,24 +135,22 @@ fn setting_history_forks_never_choose_the_latest_writer_clock() {
     super::super::apply(&conn, &facts, 1).unwrap();
     conn.execute_batch("BEGIN").unwrap();
     assert_eq!(
-        history(&conn, "browser.actions", date(3))
-            .unwrap()
-            .last()
-            .unwrap(),
-        &(
-            date(3),
-            SettingAt::Conflict(vec![
-                "annotation:setting@left".into(),
-                "annotation:setting@right".into()
-            ])
-        )
+        history(&conn, "browser.actions", date(3)).unwrap(),
+        vec![
+            (date(1), known(true)),
+            (date(2), known(false)),
+            (
+                date(3),
+                SettingAt::Conflict(vec![
+                    "annotation:setting@left".into(),
+                    "annotation:setting@right".into()
+                ])
+            ),
+        ]
     );
     assert_eq!(
-        history(&conn, "browser.actions", date(2))
-            .unwrap()
-            .last()
-            .unwrap(),
-        &(date(2), known(false))
+        history(&conn, "browser.actions", date(2)).unwrap(),
+        vec![(date(1), known(true)), (date(2), known(false))]
     );
 }
 

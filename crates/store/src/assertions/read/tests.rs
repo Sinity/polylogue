@@ -583,6 +583,60 @@ fn expiry_check_does_not_load_the_assertion_body() {
 }
 
 #[test]
+fn tagged_reads_only_the_current_revision_of_a_tag() {
+    let (_dir, _archive, _lock, writer, reads) = setup();
+    let first = Reference::parse("session:codex:first").unwrap();
+    let mut tag = statement(AssertionKind::Tag, "session:codex:first", "unused");
+    tag.key = Some("status".into());
+    tag.value = Some(serde_json::json!({"value":"ready"}));
+    let saved = writer
+        .user(crate::fixture::authored::operator_request(
+            "tag-ready".into(),
+            UserWrite::Assert {
+                assertions: vec![tag],
+            },
+        ))
+        .unwrap();
+    writer
+        .user(crate::fixture::authored::operator_request(
+            "tag-done".into(),
+            UserWrite::ReviseAssertions {
+                bases: vec![RevisionReference::exact(saved.id.clone(), saved.id.clone())],
+                patch: AssertionPatch {
+                    value: Change::Set(serde_json::json!({"value":"done"})),
+                    ..Default::default()
+                },
+            },
+        ))
+        .unwrap();
+    let targets = vec![first.clone()];
+    let reader = reads.reader().unwrap();
+    let author = polylogue_model::Author::Operator;
+    assert!(
+        reader
+            .tagged(
+                &targets,
+                "status",
+                Some(&serde_json::json!("ready")),
+                &author
+            )
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        reader
+            .tagged(
+                &targets,
+                "status",
+                Some(&serde_json::json!("done")),
+                &author
+            )
+            .unwrap(),
+        [first].into_iter().collect()
+    );
+}
+
+#[test]
 fn tagged_reads_current_name_and_value_with_confidence_outside_identity() {
     let (_dir, _archive, _lock, writer, reads) = setup();
     let first = Reference::parse("session:codex:first").unwrap();

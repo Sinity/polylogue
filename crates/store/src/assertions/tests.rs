@@ -296,7 +296,7 @@ fn stored_heads_keep_forks_and_follow_withdrawals() {
 }
 
 #[test]
-fn an_annotation_applied_before_its_rubric_takes_the_rubric_it_was_derived_from() {
+fn an_annotation_applied_before_its_rubric_occupies_one_slot() {
     let conn = archive();
     let mut annotation = assertion(
         "answer",

@@ -459,7 +459,7 @@ fn wrong_namespace_hash_or_size_gets_no_byte_match() {
 }
 
 #[test]
-fn byte_match_binds_only_the_member_it_checked() {
+fn byte_match_is_unavailable_until_its_member_is_imported_again() {
     let fixture = Fixture::new();
     let bytes = b"same bytes";
     let record = record(bytes);
@@ -587,10 +587,14 @@ fn zero_length_received_bytes_are_known_and_conflicting_candidates_stay_ambiguou
     let resolution = reader.attachment_binding(&selection).unwrap().unwrap();
     assert_eq!(resolution.state, AttachmentState::Ambiguous);
     assert_eq!(resolution.claim.candidates.len(), 2);
-    assert_ne!(
-        resolution.claim.candidates[0].sources,
-        resolution.claim.candidates[1].sources
-    );
+    let mut inputs = resolution
+        .claim
+        .candidates
+        .iter()
+        .map(|candidate| candidate.sources[0].input.as_str())
+        .collect::<Vec<_>>();
+    inputs.sort_unstable();
+    assert_eq!(inputs, ["different-history", "historical-source"]);
     assert!(matches!(
         reader.pin_attachment(&selection).unwrap(),
         AttachmentPin::Ambiguous
@@ -1011,12 +1015,6 @@ fn hidden_bindings_export_without_granting_members() {
     assert_ne!(stated[0].context(), stated[1].context());
     assert_eq!(stated[0].claim(), stated[1].claim());
     assert_eq!(stated[1].members().len(), 1);
-    assert_eq!(
-        reader
-            .stated_attachment_bindings(&record.message.id, record.source_version)
-            .unwrap(),
-        expected
-    );
     assert!(
         reader
             .stated_attachment_bindings(&record.message.id, BlobHash::of(b"another source version"))

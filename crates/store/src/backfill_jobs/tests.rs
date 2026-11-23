@@ -97,7 +97,7 @@ fn one_job_runs_per_provider_and_a_restarted_instance_continues_where_it_reporte
     assert_eq!(other.id, "j2");
     assert!(matches!(
         write(&writer, UserWrite::BackfillClaim { by: "ext-3".into() }),
-        Err(StoreError::NotFound(_))
+        Err(StoreError::NotFound(message)) if message == "a waiting backfill job"
     ));
 
     let mut finished = progress("done", 7);
@@ -166,6 +166,6 @@ fn an_expired_claim_lets_the_job_wait_and_the_operator_can_cancel_it() {
     ));
     assert!(matches!(
         write(&writer, UserWrite::BackfillClaim { by: "ext".into() }),
-        Err(StoreError::NotFound(_))
+        Err(StoreError::NotFound(message)) if message == "a waiting backfill job"
     ));
 }

@@ -131,7 +131,7 @@ fn cardinality_and_stale_base_use_graph_after_each_overlay_change() {
     );
 }
 #[test]
-fn duplicate_tag_uses_mathematical_value_and_keeps_original_author_and_hash() {
+fn duplicate_tag_uses_mathematical_value_and_keeps_original_hash() {
     let conn = db();
     let first = statement(
         AssertionKind::Tag,
@@ -266,10 +266,10 @@ fn annotation_checks_rubric_and_pass_before_storing() {
     write_one(&conn, "allowed", annotation.clone(), 3);
     annotation.value = Some(json!({"value":4}));
     assert!(
-        matches!(write(&conn,&request("refused"),&[annotation.clone()],4,&|_| Ok(None),SettingMode::Standalone),Err(StoreError::Invalid(message)) if message.contains("not_allowed_by_rubric"))
+        matches!(write(&conn,&request("refused"),&[annotation.clone()],4,&|_| Ok(None),SettingMode::Standalone),Err(StoreError::Invalid(message)) if message == "not_allowed_by_rubric: field value")
     );
     annotation.value = Some(json!({"value":2,"confidence":0.5}));
-    assert!(
+    assert!(matches!(
         write(
             &conn,
             &request("confidence"),
@@ -277,9 +277,9 @@ fn annotation_checks_rubric_and_pass_before_storing() {
             4,
             &|_| Ok(None),
             SettingMode::Standalone
-        )
-        .is_err()
-    );
+        ),
+        Err(StoreError::Invalid(message)) if message == "not_allowed_by_rubric: confidence"
+    ));
     assert!(get(&conn, "refused").unwrap().is_none());
 }
 
