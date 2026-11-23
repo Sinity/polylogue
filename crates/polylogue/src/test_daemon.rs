@@ -11,13 +11,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Loop and request workers of a test daemon unless a test asks for others.
+const DEFAULT_WORKERS: usize = 2;
+
 pub(crate) fn engine_config(home: PathBuf) -> Config {
     Config::new(
         home,
         Default::default(),
         "synthetic-machine".into(),
         "synthetic-host".into(),
-        2,
+        DEFAULT_WORKERS,
         polylogue_model::WallClock::new(jiff::Timestamp::now),
     )
     .expect("valid fixture configuration")
@@ -88,7 +91,7 @@ pub struct TestDaemon {
 /// A daemon whose loop has parsed one Claude Code session, `claude-code:s1`,
 /// holding `text`, with its first derivation pass finished and socket served.
 pub fn start(text: &str) -> TestDaemon {
-    start_with_workers(text, 2)
+    start_with_workers(text, DEFAULT_WORKERS)
 }
 
 pub(crate) fn start_with_workers(text: &str, workers: usize) -> TestDaemon {
@@ -126,7 +129,7 @@ type Seed<'a> = (&'a dyn Fn(&Path), u64);
 const NO_SEED: Seed<'static> = (&|_| {}, 0);
 
 pub(crate) fn start_with_clock(text: &str, clock: polylogue_model::WallClock) -> TestDaemon {
-    start_with_clock_and_workers(text, 2, clock, None, NO_SEED)
+    start_with_clock_and_workers(text, DEFAULT_WORKERS, clock, None, NO_SEED)
 }
 
 pub(crate) fn start_with_clock_and_day(
@@ -134,7 +137,7 @@ pub(crate) fn start_with_clock_and_day(
     clock: polylogue_model::WallClock,
     day: query_language::time::DaySetting,
 ) -> TestDaemon {
-    start_with_clock_and_workers(text, 2, clock, Some(day), NO_SEED)
+    start_with_clock_and_workers(text, DEFAULT_WORKERS, clock, Some(day), NO_SEED)
 }
 
 fn start_with_clock_and_workers(
@@ -155,9 +158,7 @@ fn start_with_clock_and_workers(
     .unwrap();
     (seed.0)(&home);
     let mut config = engine_config(home.clone());
-    config.home = home.clone();
     config.clock = clock;
-    config.tool_dirs.clear();
     config.workers = workers;
     let root = dir.path().join("archive");
     let mut deployment = crate::config::Config::for_test(&config, &root);
@@ -313,21 +314,11 @@ impl TestDaemon {
 
     /// Sets an archive setting through the daemon.
     pub fn set(&self, key: &str, value: &str) {
-        let r = call(
+        crate::test_answers::ok(call(
             &self.daemon,
             "set",
             serde_json::json!({ "key": key, "value": value }),
-        );
-        assert!(
-            matches!(
-                r,
-                command_surface::Answer {
-                    outcome: command_surface::Outcome::Ok(_),
-                    ..
-                }
-            ),
-            "{r:?}"
-        );
+        ));
     }
 }
 
@@ -448,7 +439,7 @@ impl Call {
 }
 
 /// A read through the declared line, retaining its typed cursor and options.
-pub(crate) fn read(request: polylogue_reading::ReadRequest) -> Call {
+pub(crate) fn read_call(request: polylogue_reading::ReadRequest) -> Call {
     let arguments = crate::daemon::service::read::arguments_of(&request)
         .expect("a test read has public arguments");
     let step = crate::daemon::verbs::read::step_of(arguments, request.cursor)

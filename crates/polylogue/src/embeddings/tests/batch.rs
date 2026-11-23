@@ -25,7 +25,7 @@ fn provider(replies: Vec<(u16, String)>) -> (Provider, std::thread::JoinHandle<V
                         }
                     }
                 };
-                crate::test_daemon::embeddings::response(peer, status, &body)
+                crate::test_daemon::embeddings::serve_request(peer, status, &body)
             })
             .collect()
     });

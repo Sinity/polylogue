@@ -224,3 +224,25 @@ fn every_catalog_key_changes_an_output() {
         assert_ne!(before, after, "{key} changes nothing");
     }
 }
+
+#[test]
+fn completion_keeps_valid_deployment_flags_beside_an_invalid_one() {
+    let words = |words: &[&str]| -> Vec<std::ffi::OsString> {
+        words.iter().map(std::ffi::OsString::from).collect()
+    };
+    let overrides = super::completion_overrides(&words(&[
+        "polylogue",
+        "--listen",
+        "not-an-address",
+        "--archive",
+        "/synthetic/archive",
+        "rows",
+        "--config",
+    ]));
+    assert_eq!(
+        overrides.archive,
+        Some(std::path::PathBuf::from("/synthetic/archive"))
+    );
+    assert_eq!(overrides.listen, None);
+    assert_eq!(overrides.config_file, None);
+}

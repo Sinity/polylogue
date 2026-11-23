@@ -17,7 +17,7 @@ fn request(
         resume.arguments["steps"][0]["budget"] = serde_json::json!(budget);
         return crate::test_daemon::Call::from_request(&resume);
     }
-    crate::test_daemon::read(polylogue_reading::ReadRequest {
+    crate::test_daemon::read_call(polylogue_reading::ReadRequest {
         start: Default::default(),
         references: None,
         target: target.into(),

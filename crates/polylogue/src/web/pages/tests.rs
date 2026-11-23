@@ -43,7 +43,7 @@ fn identical_cell_text_links_only_by_its_column_reference() {
 }
 
 #[test]
-fn every_product_page_uses_the_shared_frame_and_archived_text_controls_are_visible() {
+fn every_product_page_uses_the_shared_frame_and_shows_direction_controls_as_text() {
     let output = layout(
         "Title\u{202e}",
         "query",
@@ -56,5 +56,14 @@ fn every_product_page_uses_the_shared_frame_and_archived_text_controls_are_visib
     assert!(!output.contains("reader.js"));
     assert!(!output.contains("reader.css"));
     assert!(!output.contains('\u{202e}'));
+    assert!(output.contains("Title\\u{202e}"));
     assert!(auth().contains("/assets/auth.js"));
+}
+
+#[test]
+fn the_overview_shows_an_unknown_status_value_as_unknown_and_zero_as_zero() {
+    let status = json!({"store": {"search_pending": null, "messages": 0}});
+    let page = home(&status, &json!(null));
+    assert!(page.contains("<div><dt>search pending</dt><dd>unknown</dd></div>"));
+    assert!(page.contains("<div><dt>messages</dt><dd>0</dd></div>"));
 }

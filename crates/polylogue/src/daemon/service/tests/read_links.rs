@@ -46,7 +46,7 @@ fn read_target(
             resume.arguments["steps"][0]["budget"] = serde_json::json!(budget);
             test_daemon::Call::from_request(&resume)
         }
-        None => test_daemon::read(polylogue_reading::ReadRequest {
+        None => test_daemon::read_call(polylogue_reading::ReadRequest {
             start: Default::default(),
             references: None,
             target: target.into(),

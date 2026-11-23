@@ -120,10 +120,19 @@ fn an_ambiguous_reference_names_every_candidate() {
 #[test]
 fn noncurrent_primary_reads_keep_their_data_and_say_why() {
     use polylogue_model::freshness::IndexFreshness;
-    for freshness in [
-        IndexFreshness::primary(Some(5), Some(8), Some(0.5), Some(true), None),
-        IndexFreshness::primary(Some(5), Some(8), Some(9.0), Some(true), None),
-        IndexFreshness::primary(Some(5), None, None, Some(false), Some("unreachable".into())),
+    for (freshness, reason) in [
+        (
+            IndexFreshness::primary(Some(5), Some(8), Some(0.5), Some(true), None),
+            "the index is behind the observed Sinex position",
+        ),
+        (
+            IndexFreshness::primary(Some(5), Some(8), Some(9.0), Some(true), None),
+            "the Sinex position is unknown",
+        ),
+        (
+            IndexFreshness::primary(Some(5), None, None, Some(false), Some("unreachable".into())),
+            "Sinex is unavailable",
+        ),
     ] {
         let value = json!({"rows":[{"ref":"session:synthetic"}]});
         let freshness = polylogue_model::freshness::ReadFreshness {
@@ -135,8 +144,8 @@ fn noncurrent_primary_reads_keep_their_data_and_say_why() {
         assert_eq!(result.http_status(), Some(200));
         assert_eq!(result.value(), Some(&value));
         assert_eq!(
-            crate::protocol::notes(&result).collect::<Vec<_>>().len(),
-            1,
+            crate::protocol::notes(&result).collect::<Vec<_>>(),
+            [reason],
             "{freshness:?}"
         );
     }

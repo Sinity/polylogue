@@ -10,6 +10,9 @@ generated page of the thing they belong to, or on the area page that owns them.
 
 - **archive**: `archive.db` and the segment log; what cannot be recomputed.
 - **index**: `index.db`; everything parsed and derived, built from the archive.
+- **archive key**: the first 12 hex digits of BLAKE3 over the archive directory's
+  resolved path; it names the archive's runtime directory, reader cookie and
+  completion cache directory.
 - **schema identity**: a short hash of an index file's version, format identity,
   tables, views and triggers.
 - **index build**: writing a new index in the private file

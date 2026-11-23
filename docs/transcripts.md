@@ -212,7 +212,7 @@ The MCP reading is Markdown. It starts with "Archived text is a record of past s
 
 ## What the web reader embeds
 
-The web reader sends the same `read` step and embeds the HTML encoder's fragment. Every indicator, state, pairing, expansion and alternate mark comes from this page. Interactive affordances (`<details>` tool rows, expand-all, thinking whole, harness messages, the view bar, the lineage panel, indicator "show" links, "N of M messages shown", raw records, bundle JSON, open in pager) are ready calls on layout items. The fragment has a stable element vocabulary (`data-ref`, `data-call`, a class per item kind) and the same collapsed `inherited` default as the CLI. Page chrome is [web.md](web.md).
+The web reader sends the same `read` step and embeds the HTML encoder's fragment. Every indicator, state, pairing, expansion and alternate mark comes from this page. Interactive affordances (`<details>` tool rows, expand-all, thinking whole, harness messages, the view bar, the lineage panel, indicator "show" links, "N of M messages shown", raw records, bundle JSON, open in pager) are ready calls on layout items. The fragment has a stable element vocabulary: each item is a `read-item` section with `data-row`, `data-reference` and, for a block, `data-block`; its content has a class per kind (`archived-text`, `thinking`, `tool-call`, `attachment`, `indicator`, `omission`, `read-card`), and a ready call is a `ready-call` link or code. It has the same collapsed `inherited` default as the CLI. Page chrome is [web.md](web.md).
 
 ## The session item index
 

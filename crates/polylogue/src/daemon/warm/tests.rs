@@ -482,7 +482,7 @@ fn one_provider_call_per_query_text_in_flight() {
             );
             std::thread::sleep(Duration::from_millis(1));
         }
-        crate::test_daemon::embeddings::response(
+        crate::test_daemon::embeddings::serve_request(
             peer,
             200,
             r#"{"data":[{"index":0,"embedding":[1.0,0.0]}]}"#,
@@ -548,7 +548,7 @@ fn slow_provider_calls_cannot_fill_the_read_pool() {
         }
         drop(d.reads.reader().unwrap());
         for peer in peers {
-            crate::test_daemon::embeddings::response(
+            crate::test_daemon::embeddings::serve_request(
                 peer,
                 200,
                 r#"{"data":[{"index":0,"embedding":[1.0,0.0]}]}"#,
@@ -580,7 +580,7 @@ fn only_an_executed_ranking_asks_the_provider() {
                     Ok((peer, _)) => {
                         peer.set_nonblocking(false).unwrap();
                         calls.fetch_add(1, Ordering::AcqRel);
-                        crate::test_daemon::embeddings::response(
+                        crate::test_daemon::embeddings::serve_request(
                             peer,
                             200,
                             r#"{"data":[{"index":0,"embedding":[1.0,0.0]}]}"#,
@@ -653,7 +653,7 @@ fn ranking_with_model_calls_off_uses_stored_vectors() {
                     Ok((peer, _)) => {
                         peer.set_nonblocking(false).unwrap();
                         calls.fetch_add(1, Ordering::AcqRel);
-                        crate::test_daemon::embeddings::response(
+                        crate::test_daemon::embeddings::serve_request(
                             peer,
                             200,
                             r#"{"data":[{"index":0,"embedding":[1.0,0.0]}]}"#,

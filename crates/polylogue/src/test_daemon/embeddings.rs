@@ -2,8 +2,9 @@
 use super::*;
 use std::io::{Read, Write};
 
-/// One synthetic provider exchange, including the exact submitted inputs.
-pub(crate) fn response(
+/// Reads one request from `peer`, answers it with `status` and `body`, and
+/// returns the request's JSON body: the exact inputs submitted.
+pub(crate) fn serve_request(
     mut peer: std::net::TcpStream,
     status: u16,
     body: &str,
@@ -12,7 +13,7 @@ pub(crate) fn response(
         .unwrap();
     let mut bytes = Vec::new();
     let mut chunk = [0; 1024];
-    loop {
+    let body_start = loop {
         let n = peer.read(&mut chunk).unwrap();
         assert!(n > 0);
         bytes.extend_from_slice(&chunk[..n]);
@@ -26,28 +27,25 @@ pub(crate) fn response(
                 .parse()
                 .unwrap();
             if bytes.len() >= end + 4 + size {
-                break;
+                break end + 4;
             }
         }
-    }
+    };
     let reply = format!(
         "HTTP/1.1 {status} Synthetic\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     peer.write_all(reply.as_bytes()).unwrap();
-    let end = bytes.windows(4).position(|v| v == b"\r\n\r\n").unwrap() + 4;
-    serde_json::from_slice(&bytes[end..]).unwrap()
+    serde_json::from_slice(&bytes[body_start..]).unwrap()
 }
 
 impl TestDaemon {
     /// Serves one query vector; later reads reuse the daemon's warm vector.
-    pub fn local_embeddings(&self) -> std::thread::JoinHandle<f64> {
+    pub fn local_embeddings(&self) -> std::thread::JoinHandle<()> {
         let listener = self.embedding_endpoint();
         std::thread::spawn(move || {
             let (peer, _) = listener.accept().unwrap();
-            let started = std::time::Instant::now();
-            response(peer, 200, r#"{"data":[{"index":0,"embedding":[1.0,0.0]}]}"#);
-            started.elapsed().as_secs_f64() * 1000.0
+            serve_request(peer, 200, r#"{"data":[{"index":0,"embedding":[1.0,0.0]}]}"#);
         })
     }
 

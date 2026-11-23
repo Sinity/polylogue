@@ -51,7 +51,7 @@ fn resumed_runs_of_one_session_queue_in_order() {
         text: String::new(),
     };
     // With no acts worker nothing runs, and the session is free again.
-    assert!(acts.resume(run(1)));
+    assert!(!acts.resume(run(1)));
     assert_eq!(acts.resume_finished(&session), None);
     acts.resuming
         .lock()
@@ -68,7 +68,8 @@ fn resumed_runs_of_one_session_queue_in_order() {
         Some("d3".into())
     );
     assert_eq!(acts.resume_finished(&session), None);
-    assert!(acts.resume(run(4)));
+    assert!(!acts.resume(run(4)));
+    assert_eq!(acts.resume_finished(&session), None);
 }
 
 /// Answers to a hosted Codex thread take the shape each request asks for.

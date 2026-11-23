@@ -1,17 +1,17 @@
-//! The mailbox flag: an empty file `mail/<harness>/<session>` in the
+//! The mailbox flag: an empty file `mailbox/<origin>/<session>` in the
 //! archive's runtime directory, present while a delivery waits for the
 //! session's next context-accepting hook event. A hook checks the one path
 //! with a `stat` and asks the daemon only when it exists, so pings and
 //! notices cost nothing to sessions with none pending. A native ID is any
 //! text its source wrote, so the file name is its percent-encoded form: an ID
-//! holding `/` or `..` still names one file inside its harness directory.
+//! holding `/` or `..` still names one file inside its origin directory.
 
 use polylogue_model::SessionId;
 use std::path::{Path, PathBuf};
 
 /// The mailbox directory of the archive at `root`.
 pub fn dir(paths: &crate::config::Paths, root: &Path) -> PathBuf {
-    paths.runtime_dir(root).join("mail")
+    paths.runtime_dir(root).join("mailbox")
 }
 
 /// The flag file of `session`.
@@ -35,7 +35,8 @@ fn file_name(native: &str) -> String {
     name
 }
 
-/// The native ID a flag's file name encodes; `None` for any other file.
+/// The native ID a flag's file name encodes; `None` for any file that
+/// `file_name` would not have written.
 fn native_of(name: &str) -> Option<String> {
     let mut bytes = Vec::with_capacity(name.len());
     let mut rest = name.as_bytes();
@@ -52,7 +53,8 @@ fn native_of(name: &str) -> Option<String> {
             rest = tail;
         }
     }
-    String::from_utf8(bytes).ok()
+    let native = String::from_utf8(bytes).ok()?;
+    (file_name(&native) == name).then_some(native)
 }
 
 /// Marks a delivery pending for `session`.
@@ -77,17 +79,22 @@ pub fn lower(dir: &Path, session: &SessionId) -> std::io::Result<()> {
     }
 }
 
-/// The sessions whose flag is up.
-pub fn flagged(dir: &Path) -> Vec<SessionId> {
-    let Ok(origins) = std::fs::read_dir(dir) else {
-        return Vec::new();
+/// The sessions whose flag is up. A mailbox that was never created has none;
+/// any other read failure is an error.
+pub fn flagged(dir: &Path) -> std::io::Result<Vec<SessionId>> {
+    let origins = match std::fs::read_dir(dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        other => other?,
     };
     let mut out = Vec::new();
-    for origin in origins.flatten() {
-        let Ok(sessions) = std::fs::read_dir(origin.path()) else {
-            continue;
+    for origin in origins {
+        let origin = origin?;
+        let sessions = match std::fs::read_dir(origin.path()) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            other => other?,
         };
-        for session in sessions.flatten() {
+        for session in sessions {
+            let session = session?;
             if let Some(native) = session.file_name().to_str().and_then(native_of)
                 && let Ok(id) = SessionId::parse(&format!(
                     "{}:{native}",
@@ -98,12 +105,16 @@ pub fn flagged(dir: &Path) -> Vec<SessionId> {
             }
         }
     }
-    out
+    Ok(out)
 }
 
-/// Whether a delivery may be pending: one `stat`.
+/// Whether a delivery may be pending: one `stat`. A flag that cannot be
+/// read counts as up, so the daemon is asked.
 pub fn raised(dir: &Path, session: &SessionId) -> bool {
-    std::fs::symlink_metadata(flag(dir, session)).is_ok()
+    !matches!(
+        std::fs::symlink_metadata(flag(dir, session)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound
+    )
 }
 
 #[cfg(test)]

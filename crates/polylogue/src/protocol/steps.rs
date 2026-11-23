@@ -1,4 +1,4 @@
-//! The thirteen verbs of a line, one typed step each. A field is one option
+//! The verbs of a line, one typed step each. A field is one option
 //! of its verb on every surface: `--name` on the command line (with `-` for
 //! `_`), the key beside `verb` in an MCP or HTTP step. Its doc comment is
 //! its help; the schema key `argument_form = "positional"` marks the one

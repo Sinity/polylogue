@@ -302,7 +302,7 @@ pub(crate) struct Acts {
     /// behind it: one resumed run per session at a time, in order.
     resuming: Mutex<BTreeMap<String, VecDeque<ResumeRun>>>,
     hosted: Mutex<BTreeMap<String, Handle>>,
-    permission_hook: OnceLock<bool>,
+    permission_hook: OnceLock<()>,
     /// The program that proxies Codex's control socket, and the socket.
     codex: Mutex<(PathBuf, PathBuf)>,
     /// The hosted sessions' records and host sockets.
@@ -392,9 +392,14 @@ impl Acts {
     }
 
     /// Whether the installed Claude Code asks the synchronous permission
-    /// hook, probed once.
+    /// hook. A positive probe is kept; a failed or older one is probed
+    /// again, since Claude Code may be installed or upgraded while the
+    /// daemon runs.
     fn permission_hook(&self) -> bool {
-        *self.permission_hook.get_or_init(|| {
+        if self.permission_hook.get().is_some() {
+            return true;
+        }
+        let asks = {
             let confirmed = crate::hook::HarnessVersion::parse(
                 crate::hook::CONFIRMED_FROM
                     .iter()
@@ -404,7 +409,11 @@ impl Acts {
             crate::hook::probe_version(crate::hook::Harness::ClaudeCode)
                 .zip(confirmed)
                 .is_some_and(|(installed, from)| installed >= from)
-        })
+        };
+        if asks {
+            let _ = self.permission_hook.set(());
+        }
+        asks
     }
 
     fn handle(&self, session: &SessionId) -> Option<Handle> {
@@ -553,7 +562,8 @@ impl Acts {
     }
 
     /// Starts a resumed run, or queues it behind the session's run in
-    /// progress; `true` when it started.
+    /// progress; `true` when it started. `false` when it waits, or when no
+    /// acts worker runs and the ping went back to the mailbox.
     pub(crate) fn resume(&self, run: ResumeRun) -> bool {
         {
             let mut resuming = self.resuming.locked();
@@ -573,6 +583,7 @@ impl Acts {
             while let Some(queued) = self.resume_finished(&session) {
                 self.release(&queued.delivery);
             }
+            return false;
         }
         true
     }

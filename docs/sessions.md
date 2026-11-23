@@ -37,7 +37,7 @@ Who wrote a message is separate from its role, in two closed sets and no third f
 | Column | Values |
 |---|---|
 | `written_by` | `human` (the user), `model`, `harness`, `tool` (rows that only carry tool results), `unknown` |
-| `prompt_kind` (user-role rows) | `prose`, `command` (a typed slash command), `injected_context` (hook output, skill text, a delivered brief), `compaction_summary`, `harness` (other prompts the harness wrote), `model` (a prompt a model wrote, such as a delegated task) |
+| `prompt_kind` (user-role rows; `harness` also marks runtime notices carried under another role) | `prose`, `command` (a slash command, shell escape or memory line), `injected_context` (hook output, skill text, a delivered brief), `compaction_summary`, `harness` (other text the harness wrote: tool results, interruption notices, local command output), `model` (a prompt a model wrote, such as a delegated task) |
 
 - The user role is not the human: harnesses and models write user-role rows too, and the two columns say which. A human prompt and a typed command are counted apart.
 - An `injected_context` row carries the delivery reference when its text matches a recorded delivery ([agent-context.md#deliveries](agent-context.md#deliveries)).
@@ -132,7 +132,7 @@ A route is one of `live` (the tool's own file or database), `capture` (the provi
 1. A field group present in one reading and absent in another is taken from where it is present.
 2. Then a reading from a main session wins over a sidechain's copy of the message.
 3. Where several readings have the group, the **route precedence for that group** decides: `live`, `capture`, `recorded`, `export`, `copy`, then `page_text` for every group. For example, message text comes from the provider's data over the export over a page scrape, and provider timestamps from the export when the capture has none. One table serves every origin today; an origin whose routes call for another order declares its own.
-4. Between readings of the same route, a finished reading wins over one whose completion is unknown, which wins over one still in progress. A message is finished when it is not an assistant message or carries a stop reason; an assistant message without one is in progress from an origin that records stop reasons when a response ends (Claude Code, claude.ai, AI Studio, Hermes) and of unknown completion otherwise.
+4. Between readings of the same route, a finished reading wins over one whose completion is unknown, which wins over one still in progress. A message is finished when it is not an assistant message or carries a stop reason; an assistant message without one is in progress when its reading is not page text and its origin records stop reasons when a response ends (Claude Code, claude.ai, AI Studio, Hermes), and of unknown completion otherwise (page text records no stop reasons).
 5. The last tie-break is the content hash, so the result never depends on arrival order or recency. Between readings with identical content, the main route is the one whose input ID sorts first; nothing shown depends on it.
 
 - The reading that supplies the content is the message's **main route**: its version is the stored reading. Messages a session holds through several routes are ordered by their source times ([Messages](#messages)). The composition records, for each other field group, the input and chain it came from (`message_route`), when that is not the main route.

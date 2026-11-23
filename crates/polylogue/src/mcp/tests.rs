@@ -851,7 +851,7 @@ fn generated_mcp_follow_up_preserves_the_accepted_request() {
             .unwrap();
         let mut line = String::new();
         BufReader::new(&stream).read_line(&mut line).unwrap();
-        let incoming = crate::protocol::wire::incoming(&line).unwrap().unwrap();
+        let incoming = crate::protocol::wire::incoming(&line).unwrap();
         assert_eq!(incoming.parent_deadline_ms, Some(parent_deadline));
         assert_eq!(
             incoming.caller.tool_call_id.as_deref(),

@@ -878,15 +878,7 @@ fn an_elapsed_hook_deadline_sends_no_request_or_delivery() {
         until,
     );
     assert_eq!(result, Some((String::new(), TIMEOUT_NOTICE.into())));
-    assert!(
-        claim(
-            &startup,
-            &SessionId::parse("codex:turn-1").unwrap(),
-            "UserPromptSubmit",
-            until
-        )
-        .is_none()
-    );
+    assert!(claim(&startup, &SessionId::parse("codex:turn-1").unwrap(), until).is_none());
     permission(
         &startup,
         &SessionId::parse("claude-code:turn-1").unwrap(),

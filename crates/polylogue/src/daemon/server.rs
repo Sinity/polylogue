@@ -209,22 +209,12 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
             continue;
         }
         let incoming = match crate::protocol::wire::incoming(&line) {
-            Some(Ok(incoming)) => incoming,
-            Some(Err(error)) => {
+            Ok(incoming) => incoming,
+            Err(error) => {
                 let answer = command_surface::Answer::error(crate::protocol::failure(
                     polylogue_model::Code::BadRequest,
                     error.to_string(),
                 ));
-                if !write_answer(&mut out, &answer) {
-                    return;
-                }
-                continue;
-            }
-            None => {
-                let answer = error(
-                    polylogue_model::Code::BadRequest,
-                    "a request names its operation",
-                );
                 if !write_answer(&mut out, &answer) {
                     return;
                 }

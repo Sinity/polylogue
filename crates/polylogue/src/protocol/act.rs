@@ -113,7 +113,6 @@ pub struct HandOff {
 #[serde(deny_unknown_fields)]
 pub struct Claim {
     pub session: SessionId,
-    pub event: String,
 }
 
 /// The synchronous permission hook asks for a decision given ahead.

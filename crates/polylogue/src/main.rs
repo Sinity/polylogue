@@ -355,30 +355,46 @@ fn hook_invocation(arguments: &[std::ffi::OsString]) -> bool {
     false
 }
 
-/// Completion resolves deployment flags without parsing unfinished query words.
+/// Completion resolves deployment flags without parsing unfinished query
+/// words. Each flag is parsed alone, so an incomplete or invalid one drops
+/// only itself.
 fn completion_overrides(arguments: &[std::ffi::OsString]) -> config::Overrides {
-    let mut flags = vec![std::ffi::OsString::from("polylogue")];
+    let mut groups: Vec<Vec<std::ffi::OsString>> = Vec::new();
     let mut arguments = arguments.iter().skip(1);
     while let Some(argument) = arguments.next() {
         let Some(text) = argument.to_str() else {
             continue;
         };
         if ["--archive", "--config", "--listen", "--auth-token-file"].contains(&text) {
-            flags.push(argument.clone());
+            let mut group = vec![argument.clone()];
             if let Some(value) = arguments.next() {
-                flags.push(value.clone());
+                group.push(value.clone());
             }
+            groups.push(group);
         } else if ["--archive=", "--config=", "--listen=", "--auth-token-file="]
             .iter()
             .any(|prefix| text.starts_with(prefix))
         {
-            flags.push(argument.clone());
+            groups.push(vec![argument.clone()]);
         }
     }
-    config::augment_command(clap::Command::new("polylogue"))
-        .try_get_matches_from(flags)
-        .map(|matches| config::Overrides::from_matches(&matches))
-        .unwrap_or_default()
+    let mut merged = config::Overrides::default();
+    for group in groups {
+        let flags = std::iter::once(std::ffi::OsString::from("polylogue")).chain(group);
+        let Ok(matches) =
+            config::augment_command(clap::Command::new("polylogue")).try_get_matches_from(flags)
+        else {
+            continue;
+        };
+        let found = config::Overrides::from_matches(&matches);
+        merged = config::Overrides {
+            config_file: found.config_file.or(merged.config_file),
+            archive: found.archive.or(merged.archive),
+            listen: found.listen.or(merged.listen),
+            auth_token_file: found.auth_token_file.or(merged.auth_token_file),
+        };
+    }
+    merged
 }
 
 #[cfg(test)]

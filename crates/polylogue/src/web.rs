@@ -461,17 +461,17 @@ async fn home(State(web): State<Arc<Web>>) -> HttpResponse {
             Ok(status) => status,
             Err(failure) => return failed_with(&failure),
         };
-    let sessions = match ask(
-        &web,
-        "rows",
-        serde_json::json!({"selection": "sessions", "page_size": 30}),
-        None,
-    )
-    .await
-    .value()
-    {
-        Some(sessions) => sessions["reply"].clone(),
-        None => serde_json::Value::Null,
+    let sessions = match crate::protocol::into_value(
+        ask(
+            &web,
+            "rows",
+            serde_json::json!({"selection": "sessions", "page_size": 30}),
+            None,
+        )
+        .await,
+    ) {
+        Ok(sessions) => sessions["reply"].clone(),
+        Err(failure) => return failed_with(&failure),
     };
     page(pages::home(&status, &sessions))
 }

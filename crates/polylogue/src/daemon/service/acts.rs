@@ -570,6 +570,10 @@ pub(crate) fn finish_ended(d: &Daemon, now: i64, everyone: bool) {
             .unwrap_or_default()
     } else {
         crate::mailbox::flagged(d.acts.mail())
+            .unwrap_or_else(|error| {
+                crate::log::log!(warning, "session mailbox read failed: {error}");
+                Vec::new()
+            })
             .iter()
             .map(ToString::to_string)
             .collect()
