@@ -5,7 +5,7 @@
 //! and `Created …` cells are other activity (a Gem, a canvas) and become
 //! events.
 //!
-//! Messages are named by their conversation and time, which a later
+//! Messages are named by their content (docs/archive.md), which a later
 //! Takeout repeats; a cell with no conversation link is a session of its
 //! own. Responses are HTML in the export and are kept as text.
 
@@ -241,6 +241,9 @@ fn entry(cell: &str) -> Option<Entry> {
     let start = cell.find(BODY)? + BODY.len();
     let body = &cell[start..];
     let body = &body[..body.find("</div>").unwrap_or(body.len())];
+    // The conversation link is in the caption after the body, never in text
+    // the prompt or response quotes.
+    let caption = &cell[start + body.len()..];
     let segments: Vec<&str> = body.split("<br>").collect();
     let first = text_of(segments.first()?);
     let (verb, prompt) = match first.split_once([' ', '\u{a0}']) {
@@ -279,8 +282,8 @@ fn entry(cell: &str) -> Option<Entry> {
         .get(response_start..)
         .map(|r| html_text(&r.join("<br>")))
         .unwrap_or_default();
-    let conversation = cell.find(APP).map(|i| {
-        cell[i + APP.len()..]
+    let conversation = caption.find(APP).map(|i| {
+        caption[i + APP.len()..]
             .chars()
             .take_while(char::is_ascii_alphanumeric)
             .collect::<String>()
@@ -302,7 +305,8 @@ fn text_of(segment: &str) -> String {
 }
 
 /// HTML to readable text: block ends become newlines, list items keep a
-/// dash, entities are decoded, other tags dropped.
+/// dash, the common named entities and numeric references are decoded, other
+/// tags dropped.
 pub fn html_text(html: &str) -> String {
     let mut out = String::with_capacity(html.len());
     let mut rest = html;
@@ -315,7 +319,7 @@ pub fn html_text(html: &str) -> String {
         let tag = rest[lt + 1..lt + gt].to_ascii_lowercase();
         let name = tag
             .trim_start_matches('/')
-            .split([' ', '/'])
+            .split(|c: char| c.is_whitespace() || c == '/')
             .next()
             .unwrap_or("");
         match (tag.starts_with('/'), name) {

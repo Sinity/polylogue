@@ -1,6 +1,6 @@
 use super::{Field, RULE_VERSION, Schema, Selection, Table};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -63,6 +63,8 @@ fn validate(schema: &Schema) -> Result<(), String> {
     if schema.rule_version != RULE_VERSION {
         return Err("unsupported schema rule version".into());
     }
+    // `records` also counts table rows, so a schema observed only through
+    // tables has no root records.
     validate_fields(
         &schema.fields,
         if schema.fields.is_empty() && !schema.tables.is_empty() {
@@ -95,10 +97,7 @@ fn validate(schema: &Schema) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_fields(
-    fields: &std::collections::BTreeMap<String, Field>,
-    records: u64,
-) -> Result<(), String> {
+fn validate_fields(fields: &BTreeMap<String, Field>, records: u64) -> Result<(), String> {
     let types = [
         "object", "array", "string", "integer", "number", "boolean", "null",
     ];
@@ -135,13 +134,9 @@ fn validate_fields(
             return Err("invalid schema field counts or types".into());
         }
         if path.split('/').skip(1).any(|part| {
-            let mut chars = part.chars();
-            while let Some(c) = chars.next() {
-                if c == '~' && !matches!(chars.next(), Some('0' | '1' | '2' | '3')) {
-                    return true;
-                }
-            }
-            false
+            part.split('~')
+                .skip(1)
+                .any(|rest| !matches!(rest.chars().next(), Some('0'..='3')))
         }) {
             return Err("schema path contains an invalid escape".into());
         }
@@ -181,15 +176,26 @@ pub fn compare(before: &Schema, after: &Schema) -> Result<Diff, String> {
     let mut changes = field_changes(&before.fields, &after.fields, None);
     let mut tables = Vec::new();
     let names: BTreeSet<_> = before.tables.keys().chain(after.tables.keys()).collect();
+    let empty = BTreeMap::new();
     for name in names {
         let left = before.tables.get(name);
         let right = after.tables.get(name);
-        let empty = std::collections::BTreeMap::new();
-        changes.extend(field_changes(
-            left.map_or(&empty, |t| &t.fields),
-            right.map_or(&empty, |t| &t.fields),
-            Some(name),
-        ));
+        // A table with no observed rows has unknown columns, not none, so its
+        // fields cannot be compared.
+        if left.is_some_and(|t| t.unobserved_columns) || right.is_some_and(|t| t.unobserved_columns)
+        {
+            let observed = |t: Option<&Table>| t.is_some_and(|t| !t.fields.is_empty());
+            let reason = "unobserved_table_columns".to_owned();
+            if (observed(left) || observed(right)) && !reasons.contains(&reason) {
+                reasons.push(reason);
+            }
+        } else {
+            changes.extend(field_changes(
+                left.map_or(&empty, |t| &t.fields),
+                right.map_or(&empty, |t| &t.fields),
+                Some(name),
+            ));
+        }
         if left.is_none()
             || right.is_none()
             || left.map(|t| &t.metadata) != right.map(|t| &t.metadata)
@@ -214,8 +220,8 @@ pub fn compare(before: &Schema, after: &Schema) -> Result<Diff, String> {
 }
 
 fn field_changes(
-    before: &std::collections::BTreeMap<String, Field>,
-    after: &std::collections::BTreeMap<String, Field>,
+    before: &BTreeMap<String, Field>,
+    after: &BTreeMap<String, Field>,
     table: Option<&str>,
 ) -> Vec<Change> {
     let paths: BTreeSet<_> = before.keys().chain(after.keys()).collect();

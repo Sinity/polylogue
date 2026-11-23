@@ -781,7 +781,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
-        name: "codex-cloud",
+        name: crate::codex_cloud::ORIGIN,
         harness_prefixes: &[],
         modules: modules!(crate::export::VERSION, crate::codex_cloud::VERSION),
         support: Support::Parsed,
