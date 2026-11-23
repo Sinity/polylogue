@@ -45,7 +45,14 @@ fn prompts_group_into_their_conversation_oldest_first() {
     assert_eq!(msgs[2].text(), "and then?");
     assert_eq!(msgs[2].parent, Some(msgs[1].id.clone()));
     assert_eq!(msgs[3].text(), "Then this & that.");
-    assert_eq!(msgs[0].session.native().as_str(), "abc123");
+    // A reply follows its prompt, and a prompt follows the conversation's
+    // previous reply.
+    assert_eq!(msgs[0].parent, None);
+    assert_eq!(msgs[1].parent, Some(msgs[0].id.clone()));
+    assert_eq!(msgs[3].parent, Some(msgs[2].id.clone()));
+    for msg in &msgs {
+        assert_eq!(msg.session.native().as_str(), "abc123");
+    }
     // 2026-07-27 20:59:30 UTC.
     assert_eq!(msgs[0].at.unwrap().unix_ms(), 1_785_185_970_000);
     let activity = step
@@ -131,9 +138,20 @@ fn unknown_and_equal_times_keep_stable_order_and_conversation_links() {
         .messages
         .iter()
         .filter(|r| r.message.role == Role::Assistant)
-        .map(|r| r.message.text())
         .collect::<Vec<_>>();
-    assert_eq!(replies, ["reply", "reply", "reply"]);
+    assert_eq!(
+        replies.iter().map(|r| r.message.text()).collect::<Vec<_>>(),
+        ["reply", "reply", "reply"]
+    );
+    // Each prompt and its reply sit in the conversation the caption names.
+    for (i, conversation) in ["unknown", "a", "b"].into_iter().enumerate() {
+        assert_eq!(prompts[i].message.session.native().as_str(), conversation);
+        assert_eq!(replies[i].message.session.native().as_str(), conversation);
+        assert_eq!(
+            replies[i].message.parent,
+            Some(prompts[i].message.id.clone())
+        );
+    }
     assert_eq!(step.counts.records, 4);
     assert_eq!(step.counts.unreadable.values().sum::<u64>(), 1);
 }
@@ -243,5 +261,7 @@ fn a_link_quoted_in_the_prompt_does_not_name_the_conversation() {
 
 #[test]
 fn tags_are_named_up_to_any_whitespace() {
-    assert_eq!(html_text("one<br\n>two"), "one\ntwo");
+    for tag in ["<br\n>", "<br\t>", "<br\r\n>", "<br >", "<br/>"] {
+        assert_eq!(html_text(&format!("one{tag}two")), "one\ntwo", "{tag:?}");
+    }
 }

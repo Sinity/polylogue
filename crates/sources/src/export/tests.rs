@@ -61,8 +61,20 @@ fn serde_raw_elements_have_spans_on_fragmented_input() {
 
 #[test]
 fn malformed_outer_suffix_is_an_error_after_complete_elements() {
-    for input in ["[{},", "[{}]garbage", "[{},]", "{}", "[", "[{}"] {
-        assert!(scan(input.as_bytes(), |_, _| Ok(())).is_err(), "{input}");
+    for (input, delivered) in [
+        ("[{},", vec!["{}"]),
+        ("[{}]garbage", vec!["{}"]),
+        ("{}", vec![]),
+        ("[", vec![]),
+        ("[{}", vec!["{}"]),
+    ] {
+        let mut got: Vec<String> = Vec::new();
+        let result = scan(input.as_bytes(), |_, raw| {
+            got.push(raw.get().to_owned());
+            Ok(())
+        });
+        assert!(matches!(result, Err(ScanError::Malformed(_))), "{input}");
+        assert_eq!(got, delivered, "{input}");
     }
 }
 
@@ -103,7 +115,9 @@ fn scan_buffers_follow_element_size_rather_than_array_size_or_whitespace() {
     let reader = io::repeat(b' ')
         .take(1 << 20)
         .chain(io::Cursor::new(b"[{}]"));
-    assert!(scan(reader, |_, _| Ok(())).unwrap().peak_element_bytes <= 5);
+    // One `{}` element is held twice, as copied source bytes and as the raw
+    // value: 2 + 2 bytes, however much whitespace precedes it.
+    assert_eq!(scan(reader, |_, _| Ok(())).unwrap().peak_element_bytes, 4);
 }
 
 #[test]
@@ -264,7 +278,10 @@ fn typed_wrapper_headers_refuse_duplicates_without_changing_value_wrapper_rules(
     assert_eq!(metadata["version"], 1);
     assert_eq!(stats.elements, 1);
     let input = br#"{"version":1,"items":[{}]}"#;
-    assert!(scan_nested_unique(input.as_slice(), &["items"], |_, _| Ok(())).is_ok());
+    let (metadata, stats) =
+        scan_nested_unique(input.as_slice(), &["items"], |_, _| Ok(())).unwrap();
+    assert_eq!(metadata, serde_json::json!({"version":1,"items":[]}));
+    assert_eq!(stats.elements, 1);
 }
 
 #[test]

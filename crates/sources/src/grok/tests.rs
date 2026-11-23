@@ -31,12 +31,11 @@ fn nested_flat_and_equivalent_declared_time_forms_keep_ids_and_supplied_content(
         first.output.messages[0].message.at.unwrap().to_string(),
         "2024-04-01T19:33:21Z"
     );
+    // Without a native ID the session is named `~<content hash>-<occurrence>`.
+    let native = first.output.sessions[0].id.native().as_str();
     assert!(
-        first.output.sessions[0]
-            .id
-            .native()
-            .as_str()
-            .starts_with('~')
+        native.starts_with('~') && native.ends_with("-0"),
+        "{native}"
     );
     for time in [
         json!(1712000001),
@@ -50,6 +49,7 @@ fn nested_flat_and_equivalent_declared_time_forms_keep_ids_and_supplied_content(
         flat["responses"][0]["create_time"] = time.clone();
         let next = parse(json!({"conversations":[flat]}));
         assert_eq!(next.output.sessions[0].id, first.output.sessions[0].id);
+        assert_eq!(next.output.messages.len(), first.output.messages.len());
         for (next, original) in next.output.messages.iter().zip(&first.output.messages) {
             assert_eq!(next.message.id, original.message.id);
             assert_eq!(next.message.at, original.message.at);
@@ -108,20 +108,22 @@ fn equal_idless_turns_keep_occurrences_and_report_the_correspondence_limit() {
         parsed.output.messages[1].message.text(),
         parsed.output.messages[2].message.text()
     );
-    assert!(
-        parsed.output.messages[1]
-            .message
-            .id
-            .native()
-            .as_str()
-            .contains(":~")
-    );
+    // A message without an ID is `<session>:~<content hash>-<occurrence>`;
+    // equal turns share the hash and differ in the occurrence.
+    let session = parsed.output.sessions[0].id.native().as_str().to_owned();
+    let first = parsed.output.messages[1].message.id.native().as_str();
+    let second = parsed.output.messages[2].message.id.native().as_str();
+    assert!(first.starts_with(&format!("{session}:~")), "{first}");
+    assert!(first.ends_with("-0"), "{first}");
+    assert!(second.ends_with("-1"), "{second}");
+    assert_eq!(first[..first.len() - 2], second[..second.len() - 2]);
     assert_eq!(parsed.output.events.len(), 1);
-    assert!(
-        parsed.output.events[0]
-            .data
-            .to_string()
-            .contains("which file record is which is ambiguous")
+    assert_eq!(
+        parsed.output.events[0].data["warnings"],
+        json!([
+            "content-derived conversation: filename and ordering are stable, but append/edit continuity is unproved",
+            "equal responses without an ID keep distinct occurrence IDs; which file record is which is ambiguous"
+        ])
     );
 }
 
@@ -187,13 +189,27 @@ fn malformed_and_unknown_fields_are_not_read_and_invent_no_facts() {
             .iter()
             .all(|row| row.message.at.is_none() && row.message.model.is_none())
     );
-    assert!(parsed.counts.unreadable.values().sum::<u64>() >= 3);
+    assert_eq!(
+        parsed.counts.unreadable,
+        std::collections::BTreeMap::from([
+            ("conversation: no Grok conversation object".to_owned(), 1),
+            ("response: Grok response is not an object".to_owned(), 1),
+            (
+                "response: Grok message is not a supplied string".to_owned(),
+                2
+            ),
+        ])
+    );
     assert_eq!(parsed.counts.skipped.values().sum::<u64>(), 1);
-    assert!(
-        parsed.output.events[0]
-            .data
-            .to_string()
-            .contains("no time was inferred")
+    assert_eq!(
+        parsed.output.events[0].data["warnings"],
+        json!([
+            "a response is not an object; original bytes stay in the stored input",
+            "missing, null or structured message is not read as text; original bytes stay in the stored input",
+            "non-string response model was not inferred",
+            "unrecognized Grok creation time; no time was inferred",
+            "unrecognized response sender; original bytes stay in the stored input"
+        ])
     );
 }
 
@@ -213,8 +229,18 @@ fn detection_is_content_based_across_filenames_and_rejects_cli_history() {
         Path::new("chat_history.jsonl"),
         br#"{"type":"user","content":"hello"}"#
     ));
+}
+
+#[test]
+fn an_export_whose_conversations_are_not_an_array_is_unreadable() {
     let bad = parse(json!({"conversations":"not an array"}));
-    assert!(!bad.counts.unreadable.is_empty());
+    assert_eq!(
+        bad.counts.unreadable,
+        std::collections::BTreeMap::from([(
+            "export: Grok export has no conversations array".to_owned(),
+            1
+        )])
+    );
     assert!(bad.output.sessions.is_empty());
 }
 

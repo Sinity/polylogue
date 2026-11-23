@@ -34,16 +34,26 @@ fn an_array_with_a_tool_round_trip() {
     assert!(
         matches!(&msgs[1].blocks[1], Block::Image(a) if a.url.as_deref() == Some("https://x/y.png"))
     );
-    assert!(matches!(&msgs[2].blocks[0], Block::Thinking { .. }));
+    assert!(
+        matches!(&msgs[2].blocks[0], Block::Thinking { text: Some(text), .. } if text == "need a tool")
+    );
     match &msgs[2].blocks[1] {
-        Block::ToolCall { tool, input, .. } => {
+        Block::ToolCall {
+            call_id,
+            tool,
+            input,
+            ..
+        } => {
+            assert_eq!(call_id.as_deref(), Some("c1"));
             assert_eq!(tool.as_deref(), Some("weather"));
             assert_eq!(input["city"], "Oslo");
         }
         other => panic!("{other:?}"),
     }
     assert_eq!(msgs[3].prompt_kind, Some(PromptKind::Harness));
-    assert!(matches!(&msgs[3].blocks[0], Block::ToolResult { output: Some(o), .. } if o == "rain"));
+    assert!(
+        matches!(&msgs[3].blocks[0], Block::ToolResult { call_id: Some(id), output: Some(o), .. } if id == "c1" && o == "rain")
+    );
     assert_eq!(msgs[4].id.native().as_str(), "chat-1#4");
     assert_eq!(
         msgs[4].parent.as_ref().unwrap().native().as_str(),
@@ -90,10 +100,15 @@ fn refused_and_empty_messages_keep_raw_ordinals_without_breaking_parent_links() 
         ]),
     );
     assert_eq!(step.output.messages.len(), 2);
+    assert_eq!(step.output.messages[0].message.id.native().as_str(), "p#0");
     assert_eq!(step.output.messages[1].message.id.native().as_str(), "p#3");
     assert_eq!(
-        step.output.messages[1].message.parent.as_ref(),
-        Some(&step.output.messages[0].message.id)
+        step.output.messages[1]
+            .message
+            .parent
+            .as_ref()
+            .map(|id| id.native().as_str()),
+        Some("p#0")
     );
     assert_eq!(step.counts.records, 5);
     assert_eq!(

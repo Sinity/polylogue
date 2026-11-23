@@ -36,7 +36,8 @@ fn a_finished_input_ends_its_last_record_at_its_last_byte() {
     assert_eq!(got, [(100, &b"{\"a\":1}"[..]), (108, &b"{\"b\":2}"[..])]);
     assert_eq!(consumed, 16);
     let (records, consumed) = lines(b"{\"a\":1}\n  ", 0, true);
-    assert_eq!(records.len(), 1);
+    let got: Vec<_> = records.iter().map(|r| (r.offset, r.bytes)).collect();
+    assert_eq!(got, [(0, &b"{\"a\":1}"[..])]);
     assert_eq!(consumed, 10, "trailing blanks are covered, not a record");
 }
 
