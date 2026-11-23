@@ -145,7 +145,8 @@
       dot.className = `dot ${said.tone}`;
       chipDot.className = `dot ${said.tone}`;
       chip.setAttribute("aria-label", `Open Polylogue: ${said.label}`);
-      captureButton.disabled = !page?.conversation;
+      // A failed request leaves Capture available, so the operator can retry.
+      captureButton.disabled = !page?.conversation && !page?.error;
       shell.hidden = false;
     }
 
@@ -228,7 +229,7 @@
     chip.addEventListener("click", onClick(() => (panel.hidden ? open() : close())));
     captureButton.addEventListener("click", onClick(async () => {
       label.textContent = "Capturing…";
-      render(await runtime.sendMessage({ type: "polylogue.capture" }).catch(() => null));
+      render(await runtime.sendMessage({ type: "polylogue.capture" }).catch((error) => ({ error: String(error?.message || error) })));
     }));
     hideButton.addEventListener("click", onClick(async () => {
       await runtime.sendMessage({ type: "polylogue.hide-panel", site: root.location.hostname });

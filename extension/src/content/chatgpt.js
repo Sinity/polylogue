@@ -4,9 +4,9 @@
 (function () {
   const request = (...args) => (globalThis.polylogueFetch || fetch)(...args);
   const PAGE_SIZE = 28;
-  // The conversation list comes in four parts: archived or not, starred or
-  // not. A list position is `<part>:<offset>`.
-  const PARTS = [
+  // The conversation list comes in four partitions: archived or not,
+  // starred or not. A list position is `<partition>:<offset>`.
+  const PARTITIONS = [
     { archived: false, starred: false },
     { archived: false, starred: true },
     { archived: true, starred: false },
@@ -47,14 +47,17 @@
     return { id: null, temporary: false };
   }
 
-  function wait(response) {
+  // The failure record for a response that asks to try again later.
+  function retryLater(response) {
     return { status: response.status, retry_after: response.headers.get("retry-after") };
   }
 
-  async function headers() {
-    if (auth && auth.until > Date.now()) return auth.headers;
+  // The request headers carrying the page's sign-in: `{ headers }`, or
+  // `{ failed }` with the failure record.
+  async function signIn() {
+    if (auth && auth.until > Date.now()) return { headers: auth.headers };
     const response = await request("/api/auth/session", { credentials: "include", cache: "no-store" });
-    if (response.status === 429 || response.status >= 500) return wait(response);
+    if (response.status === 429 || response.status >= 500) return { failed: retryLater(response) };
     let session = response.ok ? await response.json().catch(() => null) : null;
     if (!session?.accessToken) {
       try {
@@ -64,18 +67,25 @@
       } catch { /* The page's own startup data is optional. */ }
     }
     const token = session?.accessToken;
-    if (!token) return { status: 401, error: "signed_out" };
+    if (!token) {
+      // A refusal other than "not signed in" (a challenge page, say) is
+      // reported as what it is, not as a signed-out browser.
+      if (!response.ok && response.status !== 401) {
+        return { failed: { status: response.status, error: `chatgpt_http_${response.status}` } };
+      }
+      return { failed: { status: 401, error: "signed_out" } };
+    }
     const found = { Authorization: `Bearer ${token}` };
     if (session.account?.id) found["ChatGPT-Account-Id"] = session.account.id;
     auth = { headers: found, until: Date.now() + 60_000 };
-    return found;
+    return { headers: found };
   }
 
   async function api(path) {
-    const sent = await headers();
-    if (typeof sent.status === "number") return { failed: sent };
-    const response = await request(path, { credentials: "include", cache: "no-store", headers: sent });
-    if (response.status === 429 || response.status >= 500) return { failed: wait(response) };
+    const { headers, failed: unsigned } = await signIn();
+    if (unsigned) return { failed: unsigned };
+    const response = await request(path, { credentials: "include", cache: "no-store", headers });
+    if (response.status === 429 || response.status >= 500) return { failed: retryLater(response) };
     if (!response.ok) return { failed: { status: response.status, error: `chatgpt_http_${response.status}` } };
     return { response };
   }
@@ -93,8 +103,8 @@
   }
 
   async function list(position) {
-    const [part, offset] = String(position || "0:0").split(":").map((n) => Number.parseInt(n, 10));
-    const flags = PARTS[part];
+    const [partition, offset] = String(position || "0:0").split(":").map((n) => Number.parseInt(n, 10));
+    const flags = PARTITIONS[partition];
     if (!flags || !Number.isSafeInteger(offset)) return { status: 400, error: "unknown_list_position" };
     const query = new URLSearchParams({
       offset: String(offset), limit: String(PAGE_SIZE), order: "updated",
@@ -110,13 +120,16 @@
       updated_at: time(item.update_time),
     }));
     const next = offset + items.length;
-    const total = Number.isFinite(page.total) ? page.total : next;
-    const partDone = items.length === 0 || next >= total;
-    const done = partDone && part === PARTS.length - 1;
+    // Without a total, only a short page ends the partition.
+    const partitionDone = items.length === 0
+      || (Number.isFinite(page.total) ? next >= page.total : items.length < PAGE_SIZE);
+    const last = partition === PARTITIONS.length - 1;
+    const done = partitionDone && last;
+    const following = last ? null : `${partition + 1}:0`;
     return {
       status: 200,
-      // Each part is listed newest change first.
-      info: { conversations, next_partition: part < PARTS.length - 1 ? `${part + 1}:0` : null, next: partDone ? (done ? null : `${part + 1}:0`) : `${part}:${next}`, done, newest_first: true },
+      // Each partition is listed newest change first.
+      info: { conversations, next_partition: following, next: partitionDone ? following : `${partition}:${next}`, done, newest_first: true },
     };
   }
 
@@ -149,7 +162,7 @@
     const bytes = await request(target.href, {
       credentials: target.origin === location.origin ? "include" : "omit", cache: "no-store",
     });
-    if (bytes.status === 429 || bytes.status >= 500) return wait(bytes);
+    if (bytes.status === 429 || bytes.status >= 500) return retryLater(bytes);
     if (!bytes.ok) return { status: bytes.status, error: `download_http_${bytes.status}` };
     return {
       status: 200,

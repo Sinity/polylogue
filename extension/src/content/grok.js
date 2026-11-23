@@ -24,7 +24,10 @@
     const response = await request(url, { credentials: "include", cache: "no-store" });
     if (response.status === 429 || response.status >= 500) return { failed: { status: response.status, retry_after: response.headers.get("retry-after") } };
     if (!response.ok) {
-      return required ? { failed: { status: response.status, error: `grok_http_${response.status}` } } : { response: null };
+      // An optional answer may be absent (404); any other refusal is a failure.
+      return required || response.status !== 404
+        ? { failed: { status: response.status, error: `grok_http_${response.status}` } }
+        : { response: null };
     }
     return { response };
   }

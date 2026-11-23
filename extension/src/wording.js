@@ -19,6 +19,9 @@
   // `page` is the background's answer about a tab: the conversation on
   // it, what the archive holds of it, and the extension's last capture.
   function conversation(page) {
+    if (page?.error) {
+      return { tone: "bad", label: "The extension could not check this page", detail: String(page.error) };
+    }
     if (!page?.provider) return { tone: "neutral", label: "Not a chat page", detail: "" };
     if (!page.conversation) {
       return { tone: "neutral", label: `${providerName(page.provider)}: no conversation open`, detail: "" };
@@ -29,7 +32,7 @@
       return {
         tone: "bad",
         label: "Polylogue is not installed for this browser",
-        detail: "Run `polylogue install-agent chrome --extension-id <id>`.",
+        detail: "Run `polylogue install chrome --extension-id <id>`.",
       };
     }
     if (last?.outcome === "failed") {

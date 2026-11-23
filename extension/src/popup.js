@@ -4,6 +4,7 @@
 (function () {
   const words = globalThis.polylogueWording;
   const $ = (id) => document.getElementById(id);
+  const PROBLEMS_SHOWN = 5;
   let tabId = null;
 
   function setDot(id, tone) {
@@ -29,7 +30,7 @@
     if (status.host === "missing") {
       tone = "bad";
       label = "Not installed for this browser";
-      detail = `Run: polylogue install-agent chrome --extension-id ${chrome.runtime.id}`;
+      detail = `Run: polylogue install chrome --extension-id ${chrome.runtime.id}`;
     } else if (status.host !== "ok") {
       tone = "bad";
       label = "Polylogue did not answer";
@@ -52,20 +53,19 @@
     setDot("page-dot", said.tone);
     $("page-state").textContent = said.label;
     $("page-detail").textContent = said.detail;
-    $("capture").disabled = !page?.conversation;
+    // A failed request leaves Capture available, so the operator can retry.
+    $("capture").disabled = !page?.conversation && !page?.error;
     $("reader").disabled = page?.state !== "archived";
   }
 
   function showApprovals(actions) {
     $("approvals-section").hidden = actions.length === 0;
     $("approvals").replaceChildren(...actions.map((action) => {
-      const li = item(
-        `${words.providerName(action.provider)}: send into conversation ${action.conversation}`,
-        action.text.length > 200 ? `${action.text.slice(0, 200)}…` : action.text,
-      );
+      // The turn is shown whole: it is posted under the operator's account.
+      const li = item(`${words.providerName(action.provider)}: send into conversation ${action.conversation}`, action.text);
       const buttons = document.createElement("div");
       buttons.className = "buttons";
-      for (const [label, approve] of [["Approve", true], ["Decline", false]]) {
+      for (const [label, approve] of [["Allow", true], ["Deny", false]]) {
         const button = document.createElement("button");
         button.textContent = label;
         if (approve) button.className = "primary";
@@ -92,7 +92,9 @@
 
   function showProblems(problems) {
     $("problems-section").hidden = problems.length === 0;
-    $("problems").replaceChildren(...problems.slice(0, 5).map((problem) => item(problem.text, words.ago(problem.at))));
+    const shown = problems.slice(0, PROBLEMS_SHOWN).map((problem) => item(problem.text, words.ago(problem.at)));
+    if (problems.length > PROBLEMS_SHOWN) shown.push(item(`${problems.length - PROBLEMS_SHOWN} older not shown`));
+    $("problems").replaceChildren(...shown);
   }
 
   async function refresh() {
@@ -114,8 +116,15 @@
   $("capture").addEventListener("click", async () => {
     $("capture").disabled = true;
     $("page-state").textContent = "Capturing…";
-    showPage(await chrome.runtime.sendMessage({ type: "polylogue.capture", tabId }));
-    await refresh();
+    let answer;
+    try {
+      answer = await chrome.runtime.sendMessage({ type: "polylogue.capture", tabId });
+    } catch (error) {
+      answer = { error: String(error?.message || error) };
+    }
+    showPage(answer);
+    // A refresh would replace the failure with the page's state.
+    if (!answer?.error) await refresh();
   });
   $("reader").addEventListener("click", async () => {
     const answer = await chrome.runtime.sendMessage({ type: "polylogue.reader" });
