@@ -46,7 +46,7 @@ fn here_uses_recorded_repository_roots_for_the_worktree_paths() {
     let main = temp.path().join("main");
     std::fs::create_dir_all(main.join(".git")).unwrap();
     let mut archive = polylogue_store::fixture::writer::WriterArchive::new();
-    archive.lookups.push(polylogue_model::RepoLookup {
+    archive.repo_lookups.push(polylogue_model::RepoLookup {
         path: main.to_str().unwrap().into(),
         remote: None,
         root_commits: vec!["b".repeat(40), "a".repeat(40)],

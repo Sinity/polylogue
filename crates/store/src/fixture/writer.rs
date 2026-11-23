@@ -21,7 +21,7 @@ pub struct WriterArchive {
     /// Links sent with the next write.
     pub links: Vec<polylogue_model::Link>,
     /// Repository lookups sent with the next write.
-    pub lookups: Vec<polylogue_model::RepoLookup>,
+    pub repo_lookups: Vec<polylogue_model::RepoLookup>,
     _dir: tempfile::TempDir,
 }
 
@@ -59,6 +59,11 @@ pub fn message(id: &str, session: &str, role: Role, at: i64, blocks: Vec<Block>)
         production: Default::default(),
         attrs: Default::default(),
     }
+}
+
+/// The input a session is written from when a test names none.
+fn input_key(session: &Session) -> String {
+    format!("input-{}", session.id.native().as_str())
 }
 
 /// One tool call and its result, as two messages. `result` is the output,
@@ -152,7 +157,7 @@ impl WriterArchive {
             offset: 0,
             positions: Default::default(),
             links: vec![],
-            lookups: vec![],
+            repo_lookups: vec![],
         }
     }
 
@@ -169,7 +174,7 @@ impl WriterArchive {
 
     /// As [`WriterArchive::write`], with the session's own facts.
     pub fn write_session(&mut self, s: Session, messages: Vec<Message>) {
-        let input = format!("input-{}", s.id.native().as_str());
+        let input = input_key(&s);
         self.write_from(&input, s, messages);
     }
 
@@ -185,7 +190,7 @@ impl WriterArchive {
     /// `from` is the source's message order, not a replacement byte range.
     pub fn write_snapshot_at(&mut self, session: &str, from: u64, messages: Vec<Message>) {
         let session = Session::new(sid(session), SessionKind::Main);
-        let input = format!("input-{}", session.id.native().as_str());
+        let input = input_key(&session);
         self.write_from_mode(&input, session, messages, Some(from));
     }
 
@@ -209,7 +214,7 @@ impl WriterArchive {
     /// step is the caller's.
     pub fn write_underived(&mut self, session: &str, messages: Vec<Message>) {
         let s = Session::new(sid(session), SessionKind::Main);
-        let input = format!("input-{}", s.id.native().as_str());
+        let input = input_key(&s);
         self.write_rows(&input, s, messages, None, false);
     }
 
@@ -254,7 +259,7 @@ impl WriterArchive {
             messages: rows,
             prefix_copies,
             links: std::mem::take(&mut self.links),
-            repo_lookups: std::mem::take(&mut self.lookups),
+            repo_lookups: std::mem::take(&mut self.repo_lookups),
             ..Output::default()
         };
         self.write_output_mode(

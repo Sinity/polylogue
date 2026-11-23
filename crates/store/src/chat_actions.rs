@@ -64,7 +64,7 @@ impl Reader<'_> {
         let store = self.blob_store()?;
         let mut bytes = Vec::new();
         store
-            .read_plain(&hashed_blobs::Hash(a.blob.0), Some(a.size), || Ok(()))?
+            .read_plain(&hashed_blobs::Hash(a.blob.0), a.size, || Ok(()))?
             .read_to_end(&mut bytes)?;
         if BlobHash::of(&bytes) != a.blob {
             return Err(StoreError::BlobCorrupt(a.blob));
@@ -73,13 +73,13 @@ impl Reader<'_> {
     }
 }
 
-/// One chat action from the archive tables under `schema` (`a.` when the
-/// archive is attached, empty on the archive connection).
-pub(crate) fn read(conn: &Connection, schema: &str, id: &str) -> Result<Option<ChatAction>> {
+/// One chat action from the archive tables, whose names start with `table_prefix`
+/// (`source_` on the cache connection, empty on a standalone archive).
+pub(crate) fn read(conn: &Connection, table_prefix: &str, id: &str) -> Result<Option<ChatAction>> {
     let row = conn
         .prepare_cached(&format!(
             "SELECT request_key, request_hash, request_json, stage_only, needs_approval, created_at, execution
-             FROM {schema}chat_action WHERE id = ?1"
+             FROM {table_prefix}chat_action WHERE id = ?1"
         ))?
         .query_row([id], |r| <(String, Vec<u8>, String, bool, bool, i64, String)>::try_from(r))
         .optional()?;
@@ -89,7 +89,7 @@ pub(crate) fn read(conn: &Connection, schema: &str, id: &str) -> Result<Option<C
     };
     let attachments = conn
         .prepare_cached(&format!(
-            "SELECT id, blob, name, media_type, size FROM {schema}chat_action_attachment
+            "SELECT id, blob, name, media_type, size FROM {table_prefix}chat_action_attachment
              WHERE action = ?1 ORDER BY id"
         ))?
         .query_map([id], |r| {
@@ -111,7 +111,7 @@ pub(crate) fn read(conn: &Connection, schema: &str, id: &str) -> Result<Option<C
         .collect::<Result<_>>()?;
     let events = conn
         .prepare_cached(&format!(
-            "SELECT at, kind, phase, detail, by, receipt_json, request FROM {schema}chat_action_event
+            "SELECT at, kind, phase, detail, by, receipt_json, request FROM {table_prefix}chat_action_event
              WHERE action = ?1 ORDER BY n"
         ))?
         .query_map([id], |r| <(i64, String, String, Option<String>, Option<String>, Option<String>, String)>::try_from(r))?

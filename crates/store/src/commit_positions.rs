@@ -17,9 +17,24 @@ fn positive(value: Option<i64>) -> Result<Option<u64>> {
 }
 
 impl Reader<'_> {
+    /// The greatest commit position among the rows `contributors` selects
+    /// (a `SELECT committed ...` over the fact's source rows and its
+    /// prefix copies). One contributor without a commit position makes the
+    /// whole fact's position unknown.
+    fn greatest_commit(
+        &self,
+        contributors: &str,
+        params: impl rusqlite::Params,
+    ) -> Result<Option<u64>> {
+        positive(self.conn()?.scalar(
+            &format!("WITH contributors(committed) AS ({contributors}) SELECT CASE WHEN count(*)=count(committed) THEN max(committed) END FROM contributors"),
+            params,
+        )?)
+    }
+
     /// Greatest commit position among the stored session facts.
     pub fn session_commit(&self, id: &SessionId) -> Result<Option<u64>> {
-        positive(self.conn()?.scalar("WITH contributors(committed) AS (SELECT r.committed FROM session_record r JOIN session s ON s.pk=r.session_pk WHERE s.id=?1 UNION ALL SELECT committed FROM prefix_copy WHERE child_id=?1) SELECT CASE WHEN count(*)=count(committed) THEN max(committed) END FROM contributors", [id.to_string()])?)
+        self.greatest_commit("SELECT r.committed FROM session_record r JOIN session s ON s.pk=r.session_pk WHERE s.id=?1 UNION ALL SELECT committed FROM prefix_copy WHERE child_id=?1", [id.to_string()])
     }
 
     /// Commit position of the selected document reading, independent of cache changes.
@@ -47,6 +62,6 @@ impl Reader<'_> {
     pub fn link_commit(&self, link: &Link) -> Result<Option<u64>> {
         let kind = link.kind.as_str();
         let how = link.how.map(|how| how.as_str());
-        positive(self.conn()?.scalar("WITH contributors(committed) AS (SELECT s.committed FROM link_source s JOIN link l ON l.pk=s.link_pk WHERE l.parent_id=?1 AND l.child_id=?2 AND l.kind=?3 AND l.how IS ?4 UNION ALL SELECT committed FROM prefix_copy WHERE parent_id=?1 AND child_id=?2) SELECT CASE WHEN count(*)=count(committed) THEN max(committed) END FROM contributors", params![link.parent.to_string(),link.child.to_string(),kind,how])?)
+        self.greatest_commit("SELECT s.committed FROM link_source s JOIN link l ON l.pk=s.link_pk WHERE l.parent_id=?1 AND l.child_id=?2 AND l.kind=?3 AND l.how IS ?4 UNION ALL SELECT committed FROM prefix_copy WHERE parent_id=?1 AND child_id=?2", params![link.parent.to_string(),link.child.to_string(),kind,how])
     }
 }

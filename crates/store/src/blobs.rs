@@ -22,24 +22,10 @@ pub(crate) use segments::{insert_extent, load_extent, open_writer};
 /// The read operations used by stored chains.
 pub trait PlainBlobs {
     fn open_plain(&self, hash: &hashed_blobs::Hash, size: u64) -> Result<BlobReader>;
-    fn verify_plain(
-        &self,
-        hash: &hashed_blobs::Hash,
-        size: u64,
-        visit: impl FnMut(&[u8]) -> Result<()>,
-    ) -> Result<hashed_blobs::VerificationStats>;
 }
 impl PlainBlobs for Blobs {
     fn open_plain(&self, hash: &hashed_blobs::Hash, size: u64) -> Result<BlobReader> {
-        self.read_plain(hash, Some(size), || Ok(()))
-    }
-    fn verify_plain(
-        &self,
-        hash: &hashed_blobs::Hash,
-        size: u64,
-        visit: impl FnMut(&[u8]) -> Result<()>,
-    ) -> Result<hashed_blobs::VerificationStats> {
-        self.verify_plain(hash, size, visit)
+        self.read_plain(hash, size, || Ok(()))
     }
 }
 

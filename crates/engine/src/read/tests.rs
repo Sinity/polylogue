@@ -134,11 +134,7 @@ fn export_scanning_uses_one_forward_pass_over_checked_frames() {
     let hash = commit_blob(&engine, bytes.as_slice());
     let mut source = engine
         .blobs
-        .read_plain(
-            &hashed_blobs::Hash(hash.0),
-            Some(bytes.len() as u64),
-            || Ok(()),
-        )
+        .read_plain(&hashed_blobs::Hash(hash.0), bytes.len() as u64, || Ok(()))
         .unwrap();
     let verified = source.stats();
     let scan = polylogue_sources::export::scan(&mut source, |_, _| Ok(())).unwrap();

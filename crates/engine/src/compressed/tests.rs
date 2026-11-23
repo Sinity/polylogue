@@ -226,7 +226,7 @@ fn equal_decoded_read_keeps_its_body_without_a_revision() {
     assert!(pass.errors.is_empty(), "{pass:?}");
     let mut body = Vec::new();
     e.blobs
-        .read_plain(&hash, Some(whole.len() as u64), || Ok(()))
+        .read_plain(&hash, whole.len() as u64, || Ok(()))
         .unwrap()
         .read_to_end(&mut body)
         .unwrap();

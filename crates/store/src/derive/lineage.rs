@@ -1,3 +1,6 @@
+//! The session lineage row (root, depth, pending root and issue), computed by
+//! [`crate::lineage`] and written to `session_lineage`.
+
 use super::{Cause, Class, Derivation, Output, Version};
 use crate::Result;
 use polylogue_model::read::SessionLineage;

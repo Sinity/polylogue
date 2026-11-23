@@ -1529,7 +1529,7 @@ fn encode_counts(counts: &ItemCounts) -> Vec<u8> {
 }
 
 fn decode_counts(bytes: &[u8]) -> Result<ItemCounts> {
-    let invalid = || StoreError::Invalid("malformed session item counts".into());
+    let invalid = || StoreError::invalid("malformed session item counts");
     let mut input = entry_bytes::Input { bytes, at: 0 };
     let mut counts = ItemCounts {
         tokens_full: input.leb128().ok_or_else(invalid)?,

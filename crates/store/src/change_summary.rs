@@ -140,7 +140,7 @@ impl ChangeSummary {
     /// Placement and visibility change without changing the selected content.
     pub(crate) fn message_metadata(&self, conn: &Connection, pk: i64) -> Result<()> {
         self.record_message(conn, pk)?;
-        self.replaced_message(pk)?;
+        self.forget_installed(pk)?;
         self.changed
             .borrow_mut()
             .items

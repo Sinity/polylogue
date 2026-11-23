@@ -71,6 +71,8 @@ pub(crate) fn write(
     Ok(())
 }
 
+/// Makes the document row what its resolved choice says. `None` means every
+/// reading of the document is gone: the row and its unused texts are removed.
 pub(crate) fn apply_choice(
     tx: &Transaction<'_>,
     pk: i64,
@@ -245,14 +247,6 @@ impl DocumentRead<'_, '_> {
     }
     pub fn version(&self) -> String {
         hex(&self.hash)
-    }
-    pub fn metadata(&self) -> Result<Json> {
-        let mut value = serde_json::to_value(&self.fields)?;
-        value
-            .as_object_mut()
-            .expect("Document is an object")
-            .remove("blocks");
-        Ok(value)
     }
     pub fn document(&self) -> Result<Document> {
         let mut document = self.fields.clone();

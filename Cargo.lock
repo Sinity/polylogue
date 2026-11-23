@@ -2246,7 +2246,6 @@ dependencies = [
  "hashed-blobs",
  "jiff",
  "libc",
- "memchr",
  "polylogue-model",
  "polylogue-query",
  "proptest",

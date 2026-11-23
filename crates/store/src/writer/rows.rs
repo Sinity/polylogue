@@ -988,7 +988,7 @@ impl RowWriter<'_, '_> {
             self.detach_event_placement(pk)?;
             self.tx
                 .execute("DELETE FROM message_route WHERE message_pk=?1", [pk])?;
-            self.changes.replaced_message(pk)?;
+            self.changes.forget_installed(pk)?;
             self.tx.execute("DELETE FROM message WHERE pk=?1", [pk])?;
             return Ok(true);
         };
@@ -1231,7 +1231,7 @@ impl RowWriter<'_, '_> {
             self.changes
                 .installed_message(pk, session_pk, parent, m, words, author)?;
         } else {
-            self.changes.replaced_message(pk)?;
+            self.changes.forget_installed(pk)?;
         }
         Ok(true)
     }

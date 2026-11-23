@@ -23,7 +23,7 @@ impl ChangeSummary {
             words: if human || model { words } else { 0 },
             human_words: if human { words } else { 0 },
             model_words: if model { words } else { 0 },
-            thinking: i64::from(
+            thinking_messages: i64::from(
                 message
                     .blocks
                     .iter()
@@ -49,7 +49,9 @@ impl ChangeSummary {
         Ok(())
     }
 
-    pub(crate) fn replaced_message(&self, pk: i64) -> Result<()> {
+    /// The message's row no longer holds what its insert wrote (it was
+    /// rewritten, moved or deleted), so its counts are read from the row.
+    pub(crate) fn forget_installed(&self, pk: i64) -> Result<()> {
         let mut changed = self.changed.borrow_mut();
         let change = changed.messages.get_mut(&pk).ok_or_else(|| {
             crate::StoreError::Invalid("changed message is not in the transaction's changes".into())

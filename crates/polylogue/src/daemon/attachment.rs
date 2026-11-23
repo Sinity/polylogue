@@ -291,7 +291,7 @@ fn inline_page(
             .min(size);
         let scope = reader.scope_token();
         let limit = polylogue_store::read::limit::ReadLimit::current();
-        let mut body = match blobs.read_plain(&hashed_blobs::Hash(hash.0), Some(size), move || {
+        let mut body = match blobs.read_plain(&hashed_blobs::Hash(hash.0), size, move || {
             scope
                 .check()
                 .map_err(|error| hashed_blobs::Error::Io(std::io::Error::other(error)))?;

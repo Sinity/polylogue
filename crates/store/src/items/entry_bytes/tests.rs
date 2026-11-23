@@ -157,6 +157,31 @@ fn an_event_entry_round_trips_with_its_typed_facts() {
 }
 
 #[test]
+fn an_event_entry_is_never_a_later_entry_of_a_message() {
+    let event = plain(
+        EntryKey::Event {
+            event: "claude-code:event-1".into(),
+        },
+        EntryKind::Event,
+    );
+    assert!(matches!(
+        encode(&event, Some(&header())),
+        Err(StoreError::Invalid(_))
+    ));
+    // Bytes of a message's block entry carry a block number, which an event
+    // row never has.
+    let block_bytes = encode(&call(), None).unwrap();
+    assert!(
+        decode(
+            &block_bytes,
+            EntryOf::Event("claude-code:event-1".into()),
+            None
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn trailing_or_missing_bytes_are_refused() {
     let mut stored = encode(&call(), Some(&header())).unwrap();
     stored.push(0);

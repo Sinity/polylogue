@@ -70,7 +70,7 @@ fn stored_counts_match_the_shown_path_and_action_population() {
             c.words,
             c.human_words,
             c.model_words,
-            c.thinking,
+            c.thinking_messages,
             c.tool_calls,
             c.errors
         ),

@@ -103,7 +103,7 @@ codes!(boundary_code, boundary_of, Boundary {
 });
 
 fn malformed() -> StoreError {
-    StoreError::Invalid("malformed session item entry".into())
+    StoreError::invalid("malformed session item entry")
 }
 
 /// The stored bytes of `entry`. `header` is the message header when
@@ -171,7 +171,7 @@ pub(crate) fn encode(entry: &IndexEntry, header: Option<&IndexEntry>) -> Result<
             out.push(prompt_code(prompt));
         }
         if let Some(at) = entry.at {
-            number(&mut out, ((at << 1) ^ (at >> 63)) as u64);
+            number(&mut out, zigzag(at));
         }
     }
     if let Some(block) = block {
@@ -182,7 +182,7 @@ pub(crate) fn encode(entry: &IndexEntry, header: Option<&IndexEntry>) -> Result<
     // The full form is rarely smaller than the line; wrapping keeps every
     // pair of values exact.
     let extra = entry.tokens_full.wrapping_sub(entry.tokens_line) as i64;
-    number(&mut out, ((extra << 1) ^ (extra >> 63)) as u64);
+    number(&mut out, zigzag(extra));
     if entry.output_lines != 0 {
         number(&mut out, entry.output_lines);
     }
@@ -247,7 +247,7 @@ pub(super) fn decode(
             };
             let at = if has(AT) {
                 let value = input.number()?;
-                Some(((value >> 1) as i64) ^ -((value & 1) as i64))
+                Some(unzigzag(value))
             } else {
                 None
             };
@@ -283,7 +283,7 @@ pub(super) fn decode(
     let body_bytes = input.number()?;
     let tokens_line = input.number()?;
     let extra = input.number()?;
-    let extra = ((extra >> 1) as i64) ^ -((extra & 1) as i64);
+    let extra = unzigzag(extra);
     let tokens_full = tokens_line.wrapping_add(extra as u64);
     let output_lines = if has(OUTPUT_LINES) {
         input.number()?
@@ -364,6 +364,15 @@ pub(super) fn number(out: &mut Vec<u8>, mut value: u64) {
         }
         out.push(byte | 0x80);
     }
+}
+
+/// Maps a signed number to an unsigned one that is small when the signed one is.
+fn zigzag(value: i64) -> u64 {
+    ((value << 1) ^ (value >> 63)) as u64
+}
+
+fn unzigzag(value: u64) -> i64 {
+    ((value >> 1) as i64) ^ -((value & 1) as i64)
 }
 
 fn text(out: &mut Vec<u8>, bytes: &[u8]) {

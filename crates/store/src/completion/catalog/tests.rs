@@ -126,6 +126,10 @@ fn prefix_updates_include_neighbors_unicode_and_removed_sessions() {
         1,
         "fuzzy title fallback"
     );
+    assert!(
+        reader.sessions("\u{301}").unwrap().is_empty(),
+        "a prefix of only combining marks matches no title"
+    );
 }
 #[test]
 fn read_only_snapshot_never_writes_and_typed_items_use_identity() {

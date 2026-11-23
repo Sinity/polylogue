@@ -199,12 +199,11 @@ fn paired(captured: &[Turn], exported: &[Turn]) -> Vec<(usize, usize)> {
         seen
     }
     let in_export = once(exported);
-    let matches: Vec<(usize, usize)> = once(captured)
+    let mut matches: Vec<(usize, usize)> = once(captured)
         .into_iter()
         .filter_map(|(key, c)| Some((c?, in_export.get(key).copied().flatten()?)))
-        .collect::<std::collections::BTreeMap<_, _>>()
-        .into_iter()
         .collect();
+    matches.sort_unstable();
     longest_increasing(&matches)
 }
 

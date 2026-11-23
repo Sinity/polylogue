@@ -25,8 +25,7 @@ pub(crate) struct Counts {
     pub words: i64,
     pub human_words: i64,
     pub model_words: i64,
-    #[serde(rename = "thinking_messages")]
-    pub thinking: i64,
+    pub thinking_messages: i64,
     pub compactions: i64,
     pub tool_calls: i64,
     pub errors: i64,
@@ -41,7 +40,7 @@ impl Counts {
             (&mut self.words, other.words),
             (&mut self.human_words, other.human_words),
             (&mut self.model_words, other.model_words),
-            (&mut self.thinking, other.thinking),
+            (&mut self.thinking_messages, other.thinking_messages),
             (&mut self.compactions, other.compactions),
             (&mut self.tool_calls, other.tool_calls),
             (&mut self.errors, other.errors),
@@ -84,7 +83,7 @@ pub(crate) fn message(conn: &Connection, pk: i64) -> Result<Option<(i64, Counts)
         counts.human_words = if author == "human" { words } else { 0 };
         counts.model_words = if author == "model" { words } else { 0 };
         counts.words = counts.human_words + counts.model_words;
-        counts.thinking = i64::from(thinking);
+        counts.thinking_messages = i64::from(thinking);
         (counts.tool_calls, counts.errors) = message_actions(conn, pk)?;
     }
     Ok(Some((session, counts)))
@@ -167,7 +166,7 @@ pub(crate) fn apply_delta(
         c.words,
         c.human_words,
         c.model_words,
-        c.thinking,
+        c.thinking_messages,
         c.compactions,
         c.tool_calls,
         c.errors,
@@ -195,7 +194,7 @@ pub(crate) fn compute(conn: &Connection, pk: i64) -> Result<Counts> {
                 words: r.get(3)?,
                 human_words: r.get(4)?,
                 model_words: r.get(5)?,
-                thinking: r.get(6)?,
+                thinking_messages: r.get(6)?,
                 compactions: 0,
                 tool_calls: 0,
                 errors: 0,
@@ -212,7 +211,7 @@ pub(crate) fn read(conn: &Connection, pk: i64, current: bool) -> Result<Counts> 
     if !current {
         return compute(conn, pk);
     }
-    Ok(conn.query_row("SELECT message_count,human_prompt_count,human_command_count,word_count,human_word_count,model_word_count,thinking_count,compaction_count,tool_call_count,error_count FROM session WHERE pk=?1",[pk],|r|Ok(Counts{messages:r.get(0)?,human_prompts:r.get(1)?,human_commands:r.get(2)?,words:r.get(3)?,human_words:r.get(4)?,model_words:r.get(5)?,thinking:r.get(6)?,compactions:r.get(7)?,tool_calls:r.get(8)?,errors:r.get(9)?}))?)
+    Ok(conn.query_row("SELECT message_count,human_prompt_count,human_command_count,word_count,human_word_count,model_word_count,thinking_count,compaction_count,tool_call_count,error_count FROM session WHERE pk=?1",[pk],|r|Ok(Counts{messages:r.get(0)?,human_prompts:r.get(1)?,human_commands:r.get(2)?,words:r.get(3)?,human_words:r.get(4)?,model_words:r.get(5)?,thinking_messages:r.get(6)?,compactions:r.get(7)?,tool_calls:r.get(8)?,errors:r.get(9)?}))?)
 }
 
 pub(crate) fn apply_values(
@@ -222,7 +221,7 @@ pub(crate) fn apply_values(
     changed: Option<i64>,
 ) -> Result<()> {
     tx.prepare_cached("UPDATE session SET message_count=?2,human_prompt_count=?3,human_command_count=?4,word_count=?5,human_word_count=?6,model_word_count=?7,thinking_count=?8,compaction_count=?9,tool_call_count=?10,error_count=?11,changed=coalesce(?12,changed) WHERE pk=?1")?
-        .execute(params![pk,c.messages,c.human_prompts,c.human_commands,c.words,c.human_words,c.model_words,c.thinking,c.compactions,c.tool_calls,c.errors,changed])?;
+        .execute(params![pk,c.messages,c.human_prompts,c.human_commands,c.words,c.human_words,c.model_words,c.thinking_messages,c.compactions,c.tool_calls,c.errors,changed])?;
     Ok(())
 }
 
