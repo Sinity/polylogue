@@ -106,7 +106,7 @@ pub fn visit(
     mut visit: impl FnMut(Assertion) -> Result<()>,
 ) -> Result<()> {
     let after = after.map(i64::try_from).transpose().map_err(|_| {
-        crate::StoreError::invalid("assertion counter exceeds SQLite's integer range")
+        crate::StoreError::invalid("commit position exceeds SQLite's integer range")
     })?;
     let source = Source::reading(conn)?;
     let predicate = if after.is_some() {
@@ -129,8 +129,8 @@ pub fn visit(
 /// Families whose current revisions can change when these newly committed facts arrive.
 /// Includes withdrawal/reinstatement targets through the owning link rules.
 pub(crate) fn changed_roots(conn: &Connection, after: i64) -> Result<BTreeSet<String>> {
-    let after = u64::try_from(after)
-        .map_err(|_| crate::StoreError::invalid("negative assertion cursor"))?;
+    let after =
+        u64::try_from(after).map_err(|_| crate::StoreError::invalid("negative commit position"))?;
     let mut links = StoredLinks::new(conn)?;
     let mut roots = BTreeSet::new();
     visit(conn, Some(after), |assertion| {
@@ -268,7 +268,7 @@ fn target(revision: &RevisionReference) -> Target {
 /// nothing; a different fact under a stored ID is refused.
 pub fn apply(conn: &Connection, assertions: &[AssertionFact], counter: i64) -> Result<()> {
     if counter < 0 {
-        return Err(crate::StoreError::invalid("negative assertion counter"));
+        return Err(crate::StoreError::invalid("negative commit position"));
     }
     let source = Source::of(conn)?;
     let mut written = Vec::new();
@@ -651,7 +651,7 @@ pub fn heads(conn: &Connection, root: &Reference) -> Result<Vec<Reference>> {
                 .collect())
         }
         _ => Err(crate::StoreError::invalid(
-            "heads require an assertion or variant root",
+            "heads require an annotation or alternate root",
         )),
     }
 }

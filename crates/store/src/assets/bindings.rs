@@ -652,12 +652,11 @@ pub(crate) fn project(
     catalog: &Connection,
     record: &AttachmentBindingRecord,
 ) -> Result<()> {
-    record.validate()?;
-    let selection = record.selection();
-    let body = serde_json::to_vec(record)?;
     if known(index, record)? {
         return Ok(());
     }
+    let selection = record.selection();
+    let body = serde_json::to_vec(record)?;
     // Source/member absence is an unavailable association, not a reason to
     // discard stated bindings or accept a different member by its hash.
     let (catalog, prefix) = if matches!(

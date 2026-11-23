@@ -2,13 +2,14 @@ use super::*;
 
 #[test]
 fn child_cancellation_does_not_cancel_another_request() {
-    let connection = Cancellation::default();
-    let a = connection.child();
-    let b = connection.child();
+    let parent = Cancellation::default();
+    let a = parent.child();
+    let b = parent.child();
     a.cancel();
     assert!(a.is_cancelled());
+    assert!(!parent.is_cancelled());
     assert!(!b.is_cancelled());
-    connection.cancel();
+    parent.cancel();
     assert!(b.is_cancelled());
 }
 

@@ -147,7 +147,7 @@ impl Reader<'_> {
         let Some(state) = self.assertion_family_state(reference)? else {
             return Ok(None);
         };
-        if state.heads.len() > 1 {
+        if state.conflict() {
             return Err(StoreError::Ambiguous {
                 reference: Reference::Assertion(reference.clone()).to_string(),
                 candidates: state.heads.iter().map(ToString::to_string).collect(),

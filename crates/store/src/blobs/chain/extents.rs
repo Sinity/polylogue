@@ -56,7 +56,7 @@ impl ExtentList {
     ) -> Result<(Self, Option<BlobHash>)> {
         let conn = open(source)?;
         conn.execute_batch("BEGIN")?;
-        let checked = check(&conn, source.tables, input, chain, start, length)?;
+        let checked = check(&conn, source.table_prefix, input, chain, start, length)?;
         conn.execute_batch("COMMIT")?;
         drop(conn);
         Ok((
@@ -97,11 +97,11 @@ impl ExtentList {
             *conn = Some(self.reopen()?);
         }
         let conn = conn.as_ref().expect("opened above");
-        let tables = self.source.tables;
+        let table_prefix = self.source.table_prefix;
         let row = conn
             .prepare_cached(&format!(
                 "SELECT e.offset,e.length,e.blob,e.blob_offset,b.size
-                 FROM {tables}extent e JOIN {tables}blob b ON b.hash=e.blob
+                 FROM {table_prefix}extent e JOIN {table_prefix}blob b ON b.hash=e.blob
                  WHERE e.input=?1 AND e.chain=?2 AND e.offset<=?3
                  ORDER BY e.offset DESC LIMIT 1"
             ))?
@@ -133,7 +133,7 @@ impl ExtentList {
         conn.execute_batch("BEGIN")?;
         let checked = check(
             &conn,
-            self.source.tables,
+            self.source.table_prefix,
             &self.input,
             self.chain,
             self.start,
@@ -166,7 +166,7 @@ fn open(source: &ChainSource) -> Result<Connection> {
 /// Checks the extents covering `start..length` and hashes their rows.
 fn check(
     conn: &Connection,
-    tables: &str,
+    table_prefix: &str,
     input: &str,
     chain: i64,
     start: u64,
@@ -174,7 +174,7 @@ fn check(
 ) -> Result<Checked> {
     let mut stmt = conn.prepare(&format!(
         "SELECT e.offset,e.length,e.blob,e.blob_offset,b.size
-         FROM {tables}extent e JOIN {tables}blob b ON b.hash=e.blob
+         FROM {table_prefix}extent e JOIN {table_prefix}blob b ON b.hash=e.blob
          WHERE e.input=?1 AND e.chain=?2 AND e.offset<?3 AND e.offset+e.length>?4
          ORDER BY e.offset"
     ))?;
