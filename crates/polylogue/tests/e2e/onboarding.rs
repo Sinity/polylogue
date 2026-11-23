@@ -59,21 +59,22 @@ fn demo_steps_run_through_rows() {
         "polylogue session:claude-code:7f3a2c10-0002-4000-8000-000000000002 brief"
     );
     assert_eq!(tour["first_query_seconds"], steps[0]["seconds"]);
-    assert!(tour["preparation_seconds"].as_f64().unwrap() >= 0.0);
+    // Preparation imports the bundled exports, so it takes measurable time, and
+    // the transcript header reports the same figures as the tour.
+    let preparation = tour["preparation_seconds"].as_f64().unwrap();
+    assert!(preparation > 0.0);
+    assert!(
+        tour["transcript"].as_str().unwrap().contains(&format!(
+            "Preparation: {preparation:.3}s. First query: {:.3}s.",
+            tour["first_query_seconds"].as_f64().unwrap()
+        )),
+        "{}",
+        tour["transcript"]
+    );
     let examples: Value = serde_json::from_str(include_str!(
         "../../../../examples/morrow/expected/main/expected.json"
     ))
     .unwrap();
-    assert_eq!(
-        steps[0]["result"]["reply"]["rows"]
-            .as_array()
-            .unwrap()
-            .len(),
-        examples["queries"]["13 messages where written_by:human \"chrono\""]
-            .as_array()
-            .unwrap()
-            .len()
-    );
     let short = |row: &Value| {
         polylogue_testkit::short(
             row["session"]
@@ -82,6 +83,22 @@ fn demo_steps_run_through_rows() {
                 .unwrap(),
         )
     };
+    let mut chrono_sessions: Vec<_> = steps[0]["result"]["reply"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(short)
+        .collect();
+    let mut expected_chrono_sessions: Vec<_> =
+        examples["queries"]["13 messages where written_by:human \"chrono\""]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r[0].as_str().unwrap().to_owned())
+            .collect();
+    chrono_sessions.sort();
+    expected_chrono_sessions.sort();
+    assert_eq!(chrono_sessions, expected_chrono_sessions);
     let mut errors: Vec<_> = steps[2]["result"]["reply"]["rows"]
         .as_array()
         .unwrap()
@@ -130,31 +147,30 @@ fn demo_steps_run_through_rows() {
         .map(|v| v.as_str().unwrap().to_owned())
         .collect();
     assert_eq!(unknown, expected_unknown);
-    assert_eq!(
-        steps[8]["result"]["reply"]["rows"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
+    let notes = steps[8]["result"]["reply"]["rows"].as_array().unwrap();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert_eq!(notes[0]["value"], "Use chrono for date parsing.");
     // A takeover names an assertion by another author that the operator has
     // not accepted, without quoting it (docs/agents.md, Brief).
     let takeover = steps[9]["result"]["reply"]["steps"][0]["outcome"]["reply"]["reply"]["prepared"]
         ["text"]
         .as_str()
         .unwrap();
-    assert!(
-        takeover.contains("Assertions by other authors, not yet accepted: 1;"),
+    let session = "session:claude-code:7f3a2c10-0002-4000-8000-000000000002";
+    let pointer = format!(
+        "Assertions by other authors, not yet accepted: 1; list them with `polylogue 'annotations where NOT author:operator judged:unknown about:\"{session}\"'`."
+    );
+    assert_eq!(
+        takeover
+            .lines()
+            .filter(|line| line.starts_with("Assertions by other authors"))
+            .collect::<Vec<_>>(),
+        [pointer.as_str()],
         "{takeover}"
     );
     assert!(
         !takeover.contains("Use chrono for date parsing."),
         "{takeover}"
-    );
-    assert!(
-        steps
-            .iter()
-            .all(|s| !s["text"].as_str().unwrap().is_empty())
     );
     assert_eq!(
         std::fs::read_to_string(directory.join("transcript.md")).unwrap(),
