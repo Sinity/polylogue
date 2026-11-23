@@ -182,7 +182,7 @@ pub(crate) fn connection_budget(
                 && crate::commands::deadlines().get(class).is_none() =>
         {
             command_surface::Deadline::Milliseconds(
-                crate::daemon::execution::DEFAULT_READ_TIMEOUT_MS,
+                crate::daemon::execution::DEFAULT_READ_DEADLINE_MS,
             )
         }
         _ => request.deadline,

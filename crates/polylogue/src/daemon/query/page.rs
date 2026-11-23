@@ -16,6 +16,48 @@ fn stale(message: &str) -> Failure {
     Failure::stale_cursor(format!("{message}; run the query again without its cursor"))
 }
 
+fn invalid(message: &str) -> Failure {
+    Failure::from(Error::new(ErrorKind::InvalidQuery, message, 0))
+}
+
+/// The read positions a cursor records: the generation, the index file and
+/// the counters the read saw.
+pub(crate) fn read_positions(
+    position: &ChangePosition,
+    index_file: (u64, u64),
+) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("generation".into(), position.generation.clone()),
+        (
+            "index_file".into(),
+            format!("{}:{}", index_file.0, index_file.1),
+        ),
+        ("index".into(), position.index.to_string()),
+        ("archive".into(), position.archive.to_string()),
+    ])
+}
+
+/// Whether the recorded read positions are still reachable from the current
+/// ones: same generation and index file, counters not ahead.
+pub(crate) fn read_positions_unchanged(
+    context: &CursorContext,
+    position: &ChangePosition,
+    index_file: (u64, u64),
+) -> bool {
+    let at_most = |key: &str, bound: i64| {
+        context
+            .read_positions
+            .get(key)
+            .and_then(|value| value.parse::<i64>().ok())
+            .is_some_and(|value| value <= bound)
+    };
+    context.read_positions.get("generation") == Some(&position.generation)
+        && context.read_positions.get("index_file")
+            == Some(&format!("{}:{}", index_file.0, index_file.1))
+        && at_most("index", position.index)
+        && at_most("archive", position.archive)
+}
+
 /// The caller supplies the secret from its current reader; it never enters a
 /// request, answer, public Debug value, question identity or execution log.
 pub(super) struct Paging<'a> {
@@ -54,19 +96,7 @@ pub(super) fn open(
         },
         |context| {
             context.clock.day == options.clock.day
-                && context.read_positions.get("generation") == Some(&position.generation)
-                && context.read_positions.get("index_file")
-                    == Some(&format!("{}:{}", index_file.0, index_file.1))
-                && context
-                    .read_positions
-                    .get("index")
-                    .and_then(|n| n.parse::<i64>().ok())
-                    .is_some_and(|n| n <= position.index)
-                && context
-                    .read_positions
-                    .get("archive")
-                    .and_then(|n| n.parse::<i64>().ok())
-                    .is_some_and(|n| n <= position.archive)
+                && read_positions_unchanged(context, position, index_file)
                 && context.versions.get("ranking").is_none_or(|previous| {
                     previous == &polylogue_store::vectors::writes().to_string()
                 })
@@ -80,13 +110,8 @@ fn context_digest(domain: &str, value: &impl Serialize) -> Result<String, Failur
     digest.update(b"polylogue.query.cursor-context\0");
     digest.update(domain.as_bytes());
     digest.update(b"\0");
-    serde_json::to_writer(&mut digest, value).map_err(|_| {
-        Failure::from(Error::new(
-            ErrorKind::InvalidQuery,
-            "the query context cannot be encoded",
-            0,
-        ))
-    })?;
+    serde_json::to_writer(&mut digest, value)
+        .map_err(|_| invalid("the query context cannot be encoded"))?;
     Ok(digest.finalize().to_hex().to_string())
 }
 
@@ -134,15 +159,7 @@ pub(super) fn context(
         clock: options.clock.clone(),
         resolved_times: program.resolved_times.clone(),
         random_seed: seed,
-        read_positions: BTreeMap::from([
-            ("generation".into(), position.generation.clone()),
-            (
-                "index_file".into(),
-                format!("{}:{}", index_file.0, index_file.1),
-            ),
-            ("index".into(), position.index.to_string()),
-            ("archive".into(), position.archive.to_string()),
-        ]),
+        read_positions: read_positions(position, index_file),
         versions,
     };
     polylogue_store::query::continuation::compact_resolved_times(&mut context)?;
@@ -158,11 +175,9 @@ pub(super) fn check(
     if cursor.context.versions.get("binding") != Some(&binding(options, why)?)
         || cursor.after.values.len() != program.order.len()
     {
-        return Err(Failure::from(Error::new(
-            ErrorKind::InvalidQuery,
+        return Err(invalid(
             "the cursor belongs to different query options or ordering",
-            0,
-        )));
+        ));
     }
     if cursor.context.versions.get("compiler").map(String::as_str) != Some(COMPILER_VERSION)
         || cursor.context.versions.get("definitions") != Some(&definitions(program)?)
@@ -187,13 +202,8 @@ pub(super) fn after_row(
         .map(|key| row[&key.column].clone())
         .collect();
     // The complete product key is already total, with its stable identity last.
-    let row_identity = serde_json::to_string(&values).map_err(|_| {
-        Failure::from(Error::new(
-            ErrorKind::InvalidQuery,
-            "the row key cannot be encoded",
-            0,
-        ))
-    })?;
+    let row_identity =
+        serde_json::to_string(&values).map_err(|_| invalid("the row key cannot be encoded"))?;
     let continuation = Continuation {
         context: paging.context.clone(),
         after: OrderPosition {

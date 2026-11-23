@@ -16,6 +16,7 @@ use super::Failure;
 pub(crate) mod assertions;
 pub(crate) mod feed;
 mod page;
+pub(crate) use page::{read_positions, read_positions_unchanged};
 use query_language::cursor::CursorSeal;
 
 /// What a request asks besides the text.

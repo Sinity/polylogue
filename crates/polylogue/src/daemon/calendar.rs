@@ -11,7 +11,6 @@ use query_language::time::{Clock, DaySettingWire};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// One page of records in time order, as the store reads them.
@@ -176,7 +175,6 @@ fn paging(
     let binding = fingerprint("binding", binding)?.to_hex().to_string();
     let position = reader.change_position()?;
     let file = reader.index_identity()?;
-    let file = format!("{}:{}", file.0, file.1);
     let seal = CursorSeal::new(reader.cursor_key()?);
     let continuation = cursor
         .map(|text| {
@@ -203,18 +201,7 @@ fn paging(
                             .all(|(key, value)| context.versions.get(key) == Some(value))
                         && context.versions.get("domain").map(String::as_str) == Some("calendar-v1")
                         && context.versions.get("binding") == Some(&binding)
-                        && context.read_positions.get("generation") == Some(&position.generation)
-                        && context.read_positions.get("index_file") == Some(&file)
-                        && context
-                            .read_positions
-                            .get("index")
-                            .and_then(|value| value.parse::<i64>().ok())
-                            .is_some_and(|value| value <= position.index)
-                        && context
-                            .read_positions
-                            .get("archive")
-                            .and_then(|value| value.parse::<i64>().ok())
-                            .is_some_and(|value| value <= position.archive)
+                        && query::read_positions_unchanged(context, &position, file)
                 },
             )
         })
@@ -249,12 +236,7 @@ fn paging(
                 clock: request_context.clock.clone(),
                 resolved_times: vec![],
                 random_seed: 0,
-                read_positions: BTreeMap::from([
-                    ("generation".into(), position.generation),
-                    ("index_file".into(), file),
-                    ("index".into(), position.index.to_string()),
-                    ("archive".into(), position.archive.to_string()),
-                ]),
+                read_positions: query::read_positions(&position, file),
                 versions: request_versions
                     .into_iter()
                     .chain([
@@ -421,17 +403,14 @@ pub fn timeline(
             },
         )))
     };
+    let (previous_month, following_month) = neighbouring_months(date);
     Ok(TimelineAnswer {
         context: paging.operation.run_context(),
         date: date.to_string(),
         previous: date.yesterday().ok().map(|d| d.to_string()),
         following: date.tomorrow().ok().map(|d| d.to_string()),
-        previous_month: date
-            .first_of_month()
-            .yesterday()
-            .ok()
-            .map(|d| d.first_of_month().to_string()),
-        following_month: date.last_of_month().tomorrow().ok().map(|d| d.to_string()),
+        previous_month,
+        following_month,
         day: day.wire(),
         since,
         until,
@@ -442,6 +421,17 @@ pub fn timeline(
         across_years,
         undated,
     })
+}
+
+/// The first days of the months before and after the one holding `date`.
+fn neighbouring_months(date: jiff::civil::Date) -> (Option<String>, Option<String>) {
+    let previous = date
+        .first_of_month()
+        .yesterday()
+        .ok()
+        .map(|d| d.first_of_month().to_string());
+    let following = date.last_of_month().tomorrow().ok().map(|d| d.to_string());
+    (previous, following)
 }
 
 /// A usage report as measure data, or the store's failure to read it.
@@ -528,9 +518,6 @@ pub fn cost(
             "choose a recorded model or unknown model",
         ));
     }
-    if size == Some(0) {
-        return Err(Failure::bad_request("page size must be positive"));
-    }
     let chosen = text.map(|s| date(Some(s), &clock)).transpose()?;
     let bounds = chosen
         .map(|date| polylogue_store::calendar::range(day, date))
@@ -568,11 +555,7 @@ pub fn cost(
         Ok(days) => (Some(objects(days)), None),
         Err(error) => (None, Some(StoreFailure::new(&error))),
     };
-    let previous_month = month
-        .yesterday()
-        .ok()
-        .map(|d| d.first_of_month().to_string());
-    let following_month = month.last_of_month().tomorrow().ok().map(|d| d.to_string());
+    let (previous_month, following_month) = neighbouring_months(month);
     let usage = measured(polylogue_store::measure::usage(reader, &selection));
     let unplaced = match timeline::undated_responses(reader, &selection) {
         Ok(count) => Unplaced::Counted { count },

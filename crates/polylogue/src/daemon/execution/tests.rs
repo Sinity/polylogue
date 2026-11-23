@@ -300,7 +300,7 @@ fn deadline_hint_not_repeating_existing_bound() {
         let command_surface::Answer {
             outcome: command_surface::Outcome::Error(error),
             ..
-        } = refusal::<()>(
+        } = stopped_read::<()>(
             &polylogue_store::StoreError::ReadDeadlineExceeded,
             "page",
             Some(query),
@@ -326,7 +326,7 @@ fn deadline_hint_uses_stopped_stage() {
         let command_surface::Answer {
             outcome: command_surface::Outcome::Error(error),
             envelope: command_surface::Envelope { notes, .. },
-        } = refusal::<()>(
+        } = stopped_read::<()>(
             &polylogue_store::StoreError::ReadDeadlineExceeded,
             "query",
             Some("sessions"),
@@ -367,7 +367,7 @@ fn context_deadline_hint_names_the_context_form() {
         let command_surface::Answer {
             outcome: command_surface::Outcome::Error(error),
             ..
-        } = refusal::<()>(
+        } = stopped_read::<()>(
             &polylogue_store::StoreError::ReadDeadlineExceeded,
             "context",
             Some("sessions where synthetic"),

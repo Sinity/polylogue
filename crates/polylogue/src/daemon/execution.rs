@@ -4,23 +4,23 @@ use command_surface::{Answer, Deadline, LatencyClass};
 use polylogue_store::{cancellation::Cancellation, read::limit::ReadLimit};
 use std::time::{Duration, Instant};
 
-pub const DEFAULT_READ_TIMEOUT_MS: u64 = 30_000;
+pub const DEFAULT_READ_DEADLINE_MS: u64 = 30_000;
 
-pub fn timeout() -> Duration {
-    Duration::from_millis(DEFAULT_READ_TIMEOUT_MS)
+pub fn default_read_deadline() -> Duration {
+    Duration::from_millis(DEFAULT_READ_DEADLINE_MS)
 }
 
 pub fn deadline(duration: Duration) -> i64 {
-    polylogue_model::WallClock::new(jiff::Timestamp::now)
-        .now_ms()
+    jiff::Timestamp::now()
+        .as_millisecond()
         .saturating_add(i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
 }
 
 pub fn remaining(deadline_ms: Option<i64>) -> Duration {
-    deadline_ms.map_or_else(timeout, |deadline| {
+    deadline_ms.map_or_else(default_read_deadline, |deadline| {
         Duration::from_millis(
             deadline
-                .saturating_sub(polylogue_model::WallClock::new(jiff::Timestamp::now).now_ms())
+                .saturating_sub(jiff::Timestamp::now().as_millisecond())
                 .max(0) as u64,
         )
     })
@@ -43,7 +43,7 @@ pub(crate) fn request_limit(
     let declared = crate::commands::deadlines().get(latency);
     let duration = match deadline {
         Deadline::Default if !default_deadline => None,
-        Deadline::Default if declared.is_none() => Some(timeout()),
+        Deadline::Default if declared.is_none() => Some(default_read_deadline()),
         deadline => deadline.duration(declared),
     };
     let request = duration.and_then(|duration| Instant::now().checked_add(duration));
@@ -54,7 +54,7 @@ pub(crate) fn request_limit(
 }
 
 /// A stopped read names its stage and any shorter query suited to the caller.
-pub fn refusal<T>(
+pub fn stopped_read<T>(
     error: &polylogue_store::StoreError,
     stage: &str,
     text: Option<&str>,

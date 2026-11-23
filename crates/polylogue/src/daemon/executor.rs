@@ -292,9 +292,7 @@ impl Drop for Executor {
 
 /// Work without a deadline ranks as if it had the default read deadline.
 fn rank(deadline: Option<Instant>) -> Instant {
-    deadline.unwrap_or_else(|| {
-        Instant::now() + Duration::from_millis(super::execution::DEFAULT_READ_TIMEOUT_MS)
-    })
+    deadline.unwrap_or_else(|| Instant::now() + super::execution::default_read_deadline())
 }
 
 impl Resumption {
