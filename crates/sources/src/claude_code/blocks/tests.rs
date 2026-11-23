@@ -192,13 +192,29 @@ fn server_tool_results_pair_and_keep_structured_success_or_failure() {
         data.as_ref().unwrap()["content"],
         record["message"]["content"][1]["content"]
     );
-    assert!(matches!(
-        result[2],
-        Block::ToolResult {
-            outcome: ToolOutcome::Error { .. },
-            ..
-        }
-    ));
+    let Block::ToolResult {
+        call_id,
+        outcome,
+        output,
+        data,
+        attachments,
+        reported_duration_ms,
+    } = &result[2]
+    else {
+        panic!("search result")
+    };
+    assert_eq!(call_id.as_deref(), Some("search"));
+    assert_eq!(*outcome, ToolOutcome::Error { reason: None });
+    assert_eq!(*output, None);
+    assert_eq!(
+        *data,
+        Some(json!({
+            "toolUseResult": null,
+            "content": {"type": "web_search_tool_result_error", "error_code": "max_uses_exceeded"}
+        }))
+    );
+    assert!(attachments.is_empty());
+    assert_eq!(*reported_duration_ms, None);
 }
 
 #[test]

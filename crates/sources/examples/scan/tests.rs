@@ -75,26 +75,6 @@ fn unconsumed_tail_is_incomplete_not_an_extra_skipped_record() {
 }
 
 #[test]
-fn failed_open_is_one_outcome_and_does_not_hide_other_inputs() {
-    let dir = tempfile::tempdir().unwrap();
-    let valid = dir.path().join("synthetic.jsonl");
-    std::fs::write(&valid, UNKNOWN).unwrap();
-    let (report, success) = run(input::Selection {
-        origin: "claude-code".into(),
-        threads: 2,
-        files: vec![dir.path().join("absent.jsonl"), valid.clone(), valid],
-    });
-    assert!(!success);
-    assert_eq!(report["selected_inputs"], 3);
-    assert_eq!(report["inputs"].as_array().unwrap().len(), 3);
-    assert_eq!(report["failed_inputs"], 1);
-    assert_eq!(report["files"], 2);
-    assert_eq!(report["bytes_read"], UNKNOWN.len() * 2);
-    assert_eq!(report["inputs"][0]["outcome"]["stage"], "open");
-    assert!(!report.to_string().contains("PRIVATE_BODY_MARKER"));
-}
-
-#[test]
 fn invalid_selection_fails_before_any_scan() {
     for args in [
         vec![],

@@ -212,10 +212,12 @@ fn an_unpublished_body_is_reused_and_conflicting_bytes_are_refused() {
     let body = br#"{"runSettings":{},"chunkedPrompt":{"chunks":[]}}"#;
     let kept = c.keep_revision("1AbC", Some(revision("r1")), body).unwrap();
     assert!(!c.spool.join("1AbC.json").exists());
-    assert!(
-        c.keep_revision("1AbC", Some(revision("r1")), b"changed")
-            .is_err()
-    );
+    let again = c.keep_revision("1AbC", Some(revision("r1")), body).unwrap();
+    assert_eq!(again.body, kept.body);
+    assert!(matches!(
+        c.keep_revision("1AbC", Some(revision("r1")), b"changed"),
+        Err(DriveError::Io(e)) if e.kind() == std::io::ErrorKind::InvalidData
+    ));
     assert_eq!(c.sync().unwrap().revisions_written, 0);
     assert_eq!(std::fs::read(c.spool.join("1AbC.json")).unwrap(), body);
     assert_eq!(std::fs::read(kept.body).unwrap(), body);
@@ -502,7 +504,13 @@ fn invalid_present_credentials_are_reported_instead_of_treated_as_unauthorized()
     };
     let errors = (COLLECTOR.sync)(&paths, &std::sync::atomic::AtomicBool::new(false));
     assert_eq!(errors.len(), 1);
-    assert!(errors[0].contains("Drive token"), "{errors:?}");
+    assert!(
+        errors[0].starts_with(&format!(
+            "Drive token {}: ",
+            token_path(dir.path()).display()
+        )),
+        "{errors:?}"
+    );
 }
 
 #[test]

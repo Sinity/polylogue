@@ -178,11 +178,14 @@ fn transcript_identity_is_scoped_and_unknown_shapes_are_accounted() {
     assert_eq!(step.counts.records, 2);
     assert_eq!(step.counts.skipped.values().sum::<u64>(), 1);
     assert_eq!(step.counts.unreadable.values().sum::<u64>(), 1);
-    assert!(
+    // NEW_SOURCE and NEW_TYPE are the only two values outside the known kinds.
+    assert_eq!(
         step.counts
             .wire_shapes
             .values()
-            .any(|shape| shape.unknown_kind_count > 0)
+            .map(|shape| shape.unknown_kind_count)
+            .sum::<u64>(),
+        2
     );
     assert!(step.output.messages.is_empty());
 }

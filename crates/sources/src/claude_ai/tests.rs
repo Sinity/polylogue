@@ -64,6 +64,34 @@ fn a_turn_with_a_server_tool_keeps_call_and_result_together() {
         })
         .collect();
     assert_eq!(kinds, ["thinking", "call", "result", "other", "text"]);
+    match &msgs[1].blocks[1] {
+        Block::ToolCall {
+            call_id,
+            tool,
+            action,
+            input,
+            ..
+        } => {
+            assert_eq!(call_id.as_deref(), Some("t1"));
+            assert_eq!(tool.as_deref(), Some("web_search"));
+            assert_eq!(*action, polylogue_model::ToolAction::Web);
+            assert_eq!(*input, json!({"query": "q"}));
+        }
+        other => panic!("{other:?}"),
+    }
+    match &msgs[1].blocks[2] {
+        Block::ToolResult {
+            call_id,
+            outcome,
+            output,
+            ..
+        } => {
+            assert_eq!(call_id.as_deref(), Some("t1"));
+            assert_eq!(*outcome, polylogue_model::ToolOutcome::Ok);
+            assert_eq!(output.as_deref(), Some("found"));
+        }
+        other => panic!("{other:?}"),
+    }
     match &msgs[1].blocks[0] {
         Block::Thinking { text, redacted, .. } => {
             assert_eq!(text.as_deref(), Some("planning"));

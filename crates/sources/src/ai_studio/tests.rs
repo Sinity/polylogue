@@ -53,7 +53,10 @@ fn chunks_become_messages_with_thoughts_split_out() {
     assert_eq!(step.output.events[0].range, Some((0, bytes.len() as u64)));
     assert_eq!(msgs[1].text(), "what is an electron");
     assert_eq!(msgs[1].usage.input, Some(6));
-    assert!(msgs[1].at.is_some());
+    assert_eq!(
+        msgs[1].at,
+        polylogue_model::Timestamp::parse_rfc3339("2026-05-17T12:27:24.102Z")
+    );
     match &msgs[2].blocks[0] {
         Block::Thinking {
             text, signature, ..
@@ -71,7 +74,11 @@ fn chunks_become_messages_with_thoughts_split_out() {
     assert!(
         matches!(&msgs[4].blocks[1], Block::File(a) if a.source_id.as_deref() == Some("abc123"))
     );
-    assert!(matches!(&msgs[5].blocks[0], Block::Other { type_name, .. } if type_name == "error"));
+    assert!(matches!(
+        &msgs[5].blocks[0],
+        Block::Other { type_name, data }
+            if type_name == "error" && *data == json!("An internal error has occurred.")
+    ));
     // A chunk without an ID is named by its content.
     assert_eq!(
         msgs[1].id.native().as_str(),
@@ -143,7 +150,12 @@ fn code_and_images_inside_parts_are_read() {
         &m.blocks[2],
         Block::ToolResult { call_id: Some(c), outcome: ToolOutcome::Error { .. }, .. } if *c == call
     ));
-    assert!(matches!(&m.blocks[3], Block::Image(a) if a.blob.is_some()));
+    assert_eq!(step.output.blobs.len(), 1);
+    assert_eq!(step.output.blobs[0].bytes, b"hello");
+    assert!(matches!(
+        &m.blocks[3],
+        Block::Image(a) if a.blob == Some(polylogue_model::BlobHash::of(b"hello"))
+    ));
     assert!(
         step.counts.unread_fields.is_empty(),
         "{:?}",

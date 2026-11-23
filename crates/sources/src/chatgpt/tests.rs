@@ -230,6 +230,8 @@ fn images_and_uploads_keep_their_file_ids() {
         Block::File(a) => {
             assert_eq!(a.name.as_deref(), Some("notes.pdf"));
             assert_eq!(a.source_id.as_deref(), Some("file-Doc"));
+            assert_eq!(a.size, Some(99));
+            assert_eq!(a.media_type.as_deref(), Some("application/pdf"));
         }
         other => panic!("{other:?}"),
     }

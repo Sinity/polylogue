@@ -19,6 +19,20 @@ fn request_snapshots_keep_new_messages_and_repeat_a_shared_prefix_once() {
             "more"
         ]
     );
+    assert_eq!(
+        step.output
+            .messages
+            .iter()
+            .map(|row| row.message.role)
+            .collect::<Vec<_>>(),
+        [
+            Role::System,
+            Role::User,
+            Role::Assistant,
+            Role::User,
+            Role::Assistant
+        ]
+    );
     assert!(
         step.output
             .messages

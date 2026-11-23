@@ -136,6 +136,28 @@ fn final_messages(steps: &[Step]) -> Vec<Message> {
     rows.into_values().collect()
 }
 
+/// The events and links of steps, in a canonical order: the session facts
+/// written when a pass ends move with where the pass ends.
+fn facts(steps: &[&Step]) -> Vec<String> {
+    let mut facts: Vec<String> = steps
+        .iter()
+        .flat_map(|step| {
+            step.output
+                .events
+                .iter()
+                .map(|event| serde_json::to_string(event).unwrap())
+                .chain(
+                    step.output
+                        .links
+                        .iter()
+                        .map(|link| serde_json::to_string(link).unwrap()),
+                )
+        })
+        .collect();
+    facts.sort();
+    facts
+}
+
 fn texts(msgs: &[Message]) -> Vec<String> {
     msgs.iter().map(Message::text).collect()
 }
@@ -262,7 +284,9 @@ fn the_thread_item_gives_the_call_its_exit_code_and_duration() {
 fn parsing_in_appended_bytes_equals_parsing_at_once() {
     let input = jsonl(&turn());
     let mut whole_carry = ParserState::default();
-    let whole = final_messages(&[run(&rollout(), &mut whole_carry, &input, 0).unwrap()]);
+    let whole_step = run(&rollout(), &mut whole_carry, &input, 0).unwrap();
+    let whole_facts = facts(&[&whole_step]);
+    let whole = final_messages(&[whole_step]);
     let mut cut = 0;
     while cut < input.len() {
         let mut parser_state = ParserState::default();
@@ -271,6 +295,7 @@ fn parsing_in_appended_bytes_equals_parsing_at_once() {
             serde_json::from_value(serde_json::to_value(&parser_state).unwrap()).unwrap();
         let used = first.consumed as usize;
         let second = run(&rollout(), &mut parser_state, &input[used..], used as u64).unwrap();
+        assert_eq!(facts(&[&first, &second]), whole_facts, "cut at {cut}");
         assert_eq!(final_messages(&[first, second]), whole, "cut at {cut}");
         cut += 37;
     }
@@ -602,10 +627,9 @@ fn the_thread_settings_give_later_usage_its_service_tier() {
     let mut parser_state = ParserState::default();
     let step = run(&rollout(), &mut parser_state, &jsonl(&records), 0).unwrap();
     let readings = readings(&step);
-    let priced: Vec<_> = readings.iter().collect();
-    assert!(!priced.is_empty());
+    assert_eq!(readings.len(), 2);
     assert!(
-        priced
+        readings
             .iter()
             .all(|m| m.usage.service_tier.as_deref() == Some("flex"))
     );
@@ -849,9 +873,16 @@ fn verified_answers_keep_their_payload_and_actual_call_across_appends() {
         assert_eq!(written["at_precision"], "instant");
         assert_eq!(second.output.messages.len(), 1);
         assert_eq!(second.counts.used["retained_context"], 1);
+        // The record starts after the intervening message's line and ends
+        // before its own line break.
+        let intervening =
+            jsonl(&[user(3, "An intervening message is not the answer's call.")]).len();
         assert_eq!(
-            answer.range.unwrap().1,
-            first.consumed + second.consumed - 1
+            answer.range,
+            Some((
+                (first_bytes.len() + intervening) as u64,
+                (first_bytes.len() + second_bytes.len() - 1) as u64
+            ))
         );
     }
 }

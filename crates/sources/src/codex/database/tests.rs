@@ -45,8 +45,28 @@ fn rows_become_sessions_links_and_events() {
     let s = &step.output.sessions[0];
     assert_eq!(s.title.as_ref().unwrap().text, "Fix the build");
     assert_eq!(s.started.unwrap().unix_ms(), 1_772_359_200_123);
-    assert_eq!(step.output.links[0].evidence, "thread_spawn_edges");
-    assert_eq!(step.output.events[0].kind, "goal");
+    assert_eq!(step.output.links.len(), 1);
+    let link = &step.output.links[0];
+    assert_eq!(link.kind, LinkKind::Spawn);
+    assert_eq!(
+        link.parent.to_string(),
+        "codex:019a0000-0000-7000-8000-000000000001"
+    );
+    assert_eq!(
+        link.child.to_string(),
+        "codex:019a0000-0000-7000-8000-000000000002"
+    );
+    assert_eq!(link.evidence, "thread_spawn_edges");
+    assert_eq!(step.output.events.len(), 1);
+    let goal = &step.output.events[0];
+    assert_eq!(goal.kind, "goal");
+    assert_eq!(
+        goal.session.as_ref().unwrap().to_string(),
+        "codex:019a0000-0000-7000-8000-000000000001"
+    );
+    assert_eq!(goal.at.unwrap().unix_ms(), 1_772_359_300_000);
+    assert_eq!(goal.data["objective"], "ship it");
+    assert_eq!(goal.data["status"], "complete");
     assert_eq!(step.counts.skipped.values().sum::<u64>(), 2);
     assert_eq!(step.counts.used.values().sum::<u64>(), 4);
 }
