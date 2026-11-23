@@ -92,7 +92,7 @@ Use a bound in the query to select a finite set, for example `polylogue embed --
 
 ## Several archives and machines
 
-**Several archives on one machine.** An archive is a directory. `--archive DIR` selects it on every line, so a client and the daemon it reaches always agree. Each archive has its own daemon, lock, socket (`daemon.sock` under the archive directory) and unit instance. A command never acts on an archive it was not pointed at, and every `status` and error names the archive path.
+**Several archives on one machine.** An archive lives in one directory. `--archive DIR` selects it on every line, so a client and the daemon it reaches always agree. Each archive has its own daemon, lock, socket (`daemon.sock` under the archive directory) and unit instance. A command never acts on an archive it was not pointed at, and every `status` and error names the archive path.
 
 **Several machines.** Every observation records the machine ID and host name, so paths from two machines never collide, and sessions show their host where an archive holds more than one. Archives on different machines combine either through primary mode, each host sending to one Sinex as its own producer ([primary-mode.md](primary-mode.md)), or standalone, by writing a bundle with `polylogue 'repo:sinex' read --to DIR` on one machine ([reading.md#formats-and-destinations](reading.md#formats-and-destinations)) and reading it with `polylogue import DIR` on the other. An archive directory is never synced live between machines.
 
@@ -101,7 +101,7 @@ Runtime files use `$XDG_RUNTIME_DIR/polylogue/<archive key>/`. When `XDG_RUNTIME
 ## Deployment
 
 - **The flake** exports `packages.polylogue`, `nixosModules.polylogue` and `homeModules.polylogue`. The modules' options are typed from the same declaration as the configuration above, through one shared settings library; a deployment only sets options. Any deployment works the same way; none is a dependency of Polylogue's behaviour.
-- **The package** can be built with the Sinex adapter, a Cargo feature outside the default build, so the standalone build has no NATS dependency. The binary reports its version and commit (`--version`, `status`).
+- **The package** includes the Sinex adapter, a Cargo feature that a plain Cargo build leaves out, so the standalone build has no NATS dependency. The binary reports its version and commit (`--version`, `status`).
 - **The Home Manager module installs:** one wrapper used as the CLI, the daemon command and the browser host, passing `--archive` explicitly and setting the XDG directories; `polylogue`, `plg` and `plog` as shell names of the same wrapper, with completion and the Alt-p key for each; the browser extension and its native-messaging manifest; the harness hooks and MCP registration; `sinex.toml` and `signals.toml`; and one user service per archive with `Type=notify`, `WatchdogSec`, `Restart=on-failure`, `RestartPreventExitStatus=74 78`, a failure notification, and a resource class that yields I/O and CPU to interactive work with no memory cap. The completion scripts, host manifest and harness entries are the output of `install TARGET --dry-run` ([Installing](#installing)), so the module and `install` never differ.
 - **The daemon restarts only when its binary changes;** activating unrelated changes leaves it running.
 - **Placement of stores on the host** (separate volumes, snapshot schedules, copy-on-write settings) is deployment configuration. Whatever the placement, the archive stays covered by a backup.
