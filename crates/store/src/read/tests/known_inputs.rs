@@ -166,6 +166,11 @@ fn known_point_lookup_only_visits_its_paths_revision_histories() {
 fn confirmed_refusals_count_unconfirmed_and_live_events_and_report_the_latest() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    // A standalone index has no primary tables; add them as primary mode does.
+    let index = Connection::open(fixture.archive.index_db()).unwrap();
+    index
+        .execute_batch(crate::primary::confirmed::SCHEMA)
+        .unwrap();
     assert_eq!(
         fixture
             .reads()
@@ -176,7 +181,6 @@ fn confirmed_refusals_count_unconfirmed_and_live_events_and_report_the_latest() 
             .unwrap(),
         (0, None)
     );
-    let index = Connection::open(fixture.archive.index_db()).unwrap();
     index
         .execute_batch(
             "INSERT INTO primary_refused VALUES
