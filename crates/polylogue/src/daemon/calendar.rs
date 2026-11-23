@@ -11,7 +11,6 @@ use query_language::time::{Clock, DaySettingWire};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// One page of records in time order, as the store reads them.
