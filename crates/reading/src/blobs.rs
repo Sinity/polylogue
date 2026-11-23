@@ -6,6 +6,9 @@ use polylogue_model::{Attachment, BlobHash, Block, bundle::*, read::*};
 use polylogue_store::{Reader, export_items::ExportItems};
 use std::io::Read;
 
+/// Bytes read and sent per blob chunk; bounds memory, not the file size.
+const CHUNK_BYTES: usize = 16 << 10;
+
 pub(super) struct Blobs {
     seen: ExportItems,
     source: polylogue_store::blobs::Blobs,
@@ -101,7 +104,7 @@ impl Blobs {
         })?;
         let mut digest = blake3::Hasher::new();
         let mut offset = 0_u64;
-        let mut buffer = [0_u8; 16 << 10];
+        let mut buffer = [0_u8; CHUNK_BYTES];
         loop {
             check()?;
             let length = bytes.read(&mut buffer).map_err(Error::io)?;

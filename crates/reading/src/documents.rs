@@ -186,7 +186,7 @@ pub(super) fn visit(
     }
     let mut failure = None;
     let mut continuing = true;
-    let mut block = |ordinal: u64, block| {
+    let mut visit_block = |ordinal: u64, block| {
         let result = (|| {
             let locator = ordinal.checked_add(1).ok_or_else(stale)?;
             emit_items(
@@ -220,14 +220,14 @@ pub(super) fn visit(
                 polylogue_store::read::VisitFrom::Last,
                 polylogue_store::read::VisitFrom::Before,
             ),
-            &mut block,
+            &mut visit_block,
         )
     } else {
         selected.visit_blocks(
             polylogue_store::read::VisitFrom::At(
                 from.map_or(0, |ordinal| ordinal.saturating_sub(1)),
             ),
-            &mut block,
+            &mut visit_block,
         )
     };
     check(reader)?;
