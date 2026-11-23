@@ -13,7 +13,7 @@ fn request(conversation: Option<&str>, submit: bool) -> ChatRequest {
 }
 
 #[test]
-fn a_request_is_checked_before_it_is_stored() {
+fn a_request_is_checked_and_shaped_into_an_action_row() {
     let new = new_action("k1", &request(None, false), vec![]).unwrap();
     assert!(new.stage_only && !new.needs_approval);
     assert_eq!(new.request_key, "k1");

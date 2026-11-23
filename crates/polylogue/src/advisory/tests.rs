@@ -197,12 +197,46 @@ fn unscoped_relative_files_are_not_inferred_global_and_absolute_files_match_exac
     );
     assert!(!selected(&w, "Inspect ./src/../src/parser.rs", CWD).empty);
     assert!(selected(&w, "Inspect src/parser.rs", "/synthetic/another").empty);
+    assert!(selected(&w, "Inspect /synthetic/repo/src/parser.rs2", CWD).empty);
+    assert!(
+        !selected(
+            &w,
+            "Inspect /synthetic/repo/src/parser.rs",
+            "/synthetic/another"
+        )
+        .empty
+    );
 }
 
 #[test]
-fn advisory_bounds_intersect_parent_and_an_expired_request_prepares_nothing() {
+fn an_expired_request_prepares_nothing_where_a_live_one_prepares_the_judged_file() {
     let (w, _) = fixture();
-    let request = crate::test_daemon::Call::new("internal advisory", serde_json::json!({"prompt": "Inspect src/parser.rs", "cwd": CWD, "session": SessionId::parse("codex:advisory-test").unwrap()})).id("expired-advisory").surface(crate::commands::Surface::Hook);
+    let judged = statement(
+        &w,
+        "expiry-file",
+        AssertionKind::Decision,
+        "file:src/parser.rs@fixture-commit",
+        Some("cwd:/synthetic/repo"),
+        true,
+    );
+    let advisory = |id: &str| {
+        crate::test_daemon::Call::new("internal advisory", serde_json::json!({"prompt": "Inspect src/parser.rs", "cwd": CWD, "session": SessionId::parse("codex:advisory-test").unwrap()})).id(id).surface(crate::commands::Surface::Hook)
+    };
+    let live = polylogue_store::read::limit::ReadLimit::new(
+        std::time::Duration::from_secs(60),
+        Default::default(),
+    );
+    let answer = advisory("live-advisory").limit(live).answer(&w.daemon);
+    assert!(answer.failure().is_none(), "{answer:?}");
+    let value = crate::test_answers::ok(answer);
+    assert_eq!(
+        value["prepared"]["refs"],
+        serde_json::json!([
+            Reference::Assertion(judged).stored_form(),
+            "file:src/parser.rs@fixture-commit"
+        ])
+    );
+    let request = advisory("expired-advisory");
     let limit =
         polylogue_store::read::limit::ReadLimit::at(std::time::Instant::now(), Default::default());
     // docs/agents.md, Advisories: "preparation is capped at 20 ms, intersected
@@ -263,13 +297,9 @@ fn cooldown_is_per_session_and_expires_at_ten_minutes() {
         .available(&first, 100)
         .unwrap()
         .insert(first.to_string(), 100);
-    assert!(cooldowns.available(&first, 100 + COOLDOWN_MS - 1).is_none());
-    assert!(
-        cooldowns
-            .available(&second, 100 + COOLDOWN_MS - 1)
-            .is_some()
-    );
-    assert!(cooldowns.available(&first, 100 + COOLDOWN_MS).is_some());
+    assert!(cooldowns.available(&first, 100 + 600_000 - 1).is_none());
+    assert!(cooldowns.available(&second, 100 + 600_000 - 1).is_some());
+    assert!(cooldowns.available(&first, 100 + 600_000).is_some());
 }
 
 #[test]

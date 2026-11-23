@@ -129,6 +129,7 @@ fn explicit_local_artifacts_are_reusable_for_diff_without_archive_access() {
             .any(|r| r == "different_selection_coverage")
     );
     let changes = diff["origins"]["synthetic"]["changes"].as_array().unwrap();
+    assert_eq!(changes.len(), 2, "{changes:?}");
     assert!(
         changes
             .iter()

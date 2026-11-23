@@ -14,6 +14,11 @@ fn retries_complete_partial_headers_and_bodies_without_changing_accepted_prefix(
     let b = br#"{"observed":"pending-b"}"#;
     append(&path, a).unwrap();
     let accepted = fs::read(&path).unwrap();
+    // The layout is the documented one: magic line, 20-digit decimal length,
+    // a space, a 64-digit hex digest, a newline, then the submitted bytes.
+    assert_eq!(accepted.len(), 21 + 20 + 1 + 64 + 1 + 25);
+    assert!(accepted.starts_with(b"POLYLOGUE-CAPTURES/1\n00000000000000000025 "));
+    assert!(accepted.ends_with(&[b"\n".as_slice(), a.as_slice()].concat()));
     let pending = frame(b);
     let mut expected = accepted.clone();
     expected.extend(&pending);
@@ -62,7 +67,7 @@ fn differing_tails_and_corrupt_accepted_lengths_preserve_all_existing_bytes() {
     append(&path, a).unwrap();
     let accepted = fs::read(&path).unwrap();
     let pending = frame(a);
-    for tail in [
+    for (index, tail) in [
         b"POLYX".to_vec(),
         {
             let mut bytes = accepted.clone();
@@ -81,9 +86,17 @@ fn differing_tails_and_corrupt_accepted_lengths_preserve_all_existing_bytes() {
             bytes[MAGIC.len()..MAGIC.len() + HEADER_LEN].copy_from_slice(&header.encode());
             bytes
         },
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         fs::write(&path, &tail).unwrap();
-        assert!(append(&path, b).is_err());
+        let expected = if index == 0 {
+            "capture file is not a capture log"
+        } else {
+            "existing tail differs from submitted frame"
+        };
+        assert_eq!(append(&path, b).unwrap_err().to_string(), expected);
         assert_eq!(fs::read(&path).unwrap(), tail);
     }
     let mut corrupt = accepted.clone();
@@ -91,7 +104,10 @@ fn differing_tails_and_corrupt_accepted_lengths_preserve_all_existing_bytes() {
     header.length += 1;
     corrupt[MAGIC.len()..MAGIC.len() + HEADER_LEN].copy_from_slice(&header.encode());
     fs::write(&path, &corrupt).unwrap();
-    assert!(append(&path, a).is_err());
+    assert_eq!(
+        append(&path, a).unwrap_err().to_string(),
+        "existing tail differs from submitted frame"
+    );
     assert_eq!(fs::read(&path).unwrap(), corrupt);
 }
 

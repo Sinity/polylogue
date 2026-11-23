@@ -176,7 +176,7 @@ printf 'shell-ready\n'"#
 }
 
 #[test]
-fn install_shell_wrapper_names_are_quoted_and_do_not_become_function_names() {
+fn install_shell_wrapper_function_names_replace_unsafe_program_characters() {
     for shell in ["zsh", "fish"] {
         let (_directory, startup) = fixture();
         assert_eq!(

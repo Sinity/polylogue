@@ -7,6 +7,10 @@ use serde_json::json;
 
 const HOSTILE: &str = "\x1b]0;title\x07\x1b]2;title\x1b\\\x1b]52;c;YQ==\x07\x1b]8;;https://example.test\x1b\\link\x1b]8;;\x1b\\\x7f\x1b[2J\x1b\u{9b}2J\u{202e}";
 
+/// HOSTILE with each control written as its visible escape: `\xNN` for C0,
+/// DEL and C1 characters, `\u{NNNN}` for the direction override.
+const HOSTILE_ESCAPED: &str = "\\x1b]0;title\\x07\\x1b]2;title\\x1b\\\\x1b]52;c;YQ==\\x07\\x1b]8;;https://example.test\\x1b\\link\\x1b]8;;\\x1b\\\\x7f\\x1b[2J\\x1b\\x9b2J\\u{202e}";
+
 fn safe(text: &str) {
     assert!(
         !text
@@ -47,7 +51,7 @@ fn terminal_printers_escape_archived_text() {
             next: None,
         },
     };
-    escaped(&context(&context_answer, TextStyle::Plain));
+    assert_eq!(context(&context_answer, TextStyle::Plain), HOSTILE_ESCAPED);
     let plan_answer = protocol::resume::Answer::Plan(Plan {
         session: session(),
         harness_command: Some(hostile_command()),
@@ -138,7 +142,12 @@ fn terminal_printers_escape_archived_text() {
         follow_ups: vec![HOSTILE.into()],
         harness_command: None,
     }]);
-    safe(&resume(&sessions, TextStyle::Plain));
+    assert_eq!(
+        resume(&sessions, TextStyle::Plain),
+        format!(
+            "  codex:print-test  {HOSTILE_ESCAPED}\n    todo: {HOSTILE_ESCAPED}; waiting on {HOSTILE_ESCAPED}; {HOSTILE_ESCAPED}\n"
+        )
+    );
     let status = json!({"notices":[HOSTILE], "errors":[HOSTILE]});
     let text = super::json(&status, TextStyle::Plain);
     safe(&text);
@@ -185,9 +194,8 @@ fn tag_reports_show_skips_and_escape_row_references() {
         }],
     });
     let text = line(&answer, TextStyle::Plain);
-    escaped(&text);
-    assert!(
-        text.starts_with("tagged 0 rows\nalready tagged: url:"),
-        "{text}"
+    assert_eq!(
+        text,
+        format!("tagged 0 rows\nalready tagged: url:{HOSTILE_ESCAPED}\n")
     );
 }

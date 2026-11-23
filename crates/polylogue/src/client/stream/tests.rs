@@ -36,7 +36,7 @@ fn early_refusal_keeps_its_kind_and_notes_across_split_reads() {
 }
 
 #[test]
-fn a_late_refusal_after_split_unicode_never_delivers_completion() {
+fn a_late_refusal_after_split_unicode_stops_after_the_delivered_frame() {
     let mut bytes = Vec::new();
     crate::protocol::stream::event(&mut bytes, "begin", &serde_json::json!({"title":"λ"})).unwrap();
     crate::protocol::stream::event(&mut bytes, "error", &refusal()).unwrap();

@@ -103,7 +103,7 @@ fn bundle_formats_pin_inventory_and_keep_source_records() {
             let file = File::open(destination.join("records.jsonl")).unwrap();
             assert_eq!(BufReader::new(file).lines().count(), 3);
             let inventory = fs::read_to_string(destination.join("members.jsonl")).unwrap();
-            assert!(!inventory.contains("records.jsonl"));
+            assert_eq!(inventory, "");
         }
         if format == Format::Html {
             let html = fs::read_to_string(destination.join("codex/last.html")).unwrap();
@@ -180,14 +180,33 @@ fn unrelated_directories_and_symlinks_are_refused() {
     let destination = root.path().join("unrelated");
     fs::create_dir(&destination).unwrap();
     fs::write(destination.join("keep"), b"operator bytes").unwrap();
-    assert!(Bundle::new(&destination, begin(), Format::Json, false).is_err());
+    let refused = Bundle::new(&destination, begin(), Format::Json, false)
+        .err()
+        .unwrap();
+    assert_eq!(
+        refused.message,
+        "destination is not a current bundle directory"
+    );
     assert_eq!(
         fs::read(destination.join("keep")).unwrap(),
         b"operator bytes"
     );
+    // A link to a valid bundle is refused for being a link.
+    let real = root.path().join("real");
+    let mut sink = Bundle::new(&real, begin(), Format::Json, false).unwrap();
+    sink.push(session("kept")).unwrap();
+    sink.finish(complete(1)).unwrap();
+    let manifest_bytes = fs::read(real.join("manifest.json")).unwrap();
     let link = root.path().join("link");
-    std::os::unix::fs::symlink(&destination, &link).unwrap();
-    assert!(Bundle::new(&link, begin(), Format::Json, false).is_err());
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let refused = Bundle::new(&link, begin(), Format::Json, false)
+        .err()
+        .unwrap();
+    assert_eq!(refused.message, "destination must be a bundle directory");
+    assert_eq!(
+        fs::read(real.join("manifest.json")).unwrap(),
+        manifest_bytes
+    );
 }
 #[test]
 fn blob_hash_failure_writes_nothing_and_offsets_are_checked() {
@@ -247,7 +266,10 @@ fn long_opaque_names_have_bounded_distinct_components() {
     let native_id = "x/".repeat(1000);
     let a = SessionId::parse(&format!("codex:{native_id}")).unwrap();
     let b = SessionId::parse(&format!("codex:{native_id}b")).unwrap();
-    assert!(session_path(&a).len() < 100);
+    assert_eq!(
+        session_path(&a),
+        format!("codex/~{}", blake3::hash(native_id.as_bytes()).to_hex())
+    );
     assert_ne!(session_path(&a), session_path(&b));
 }
 

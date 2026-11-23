@@ -359,7 +359,10 @@ fn hermes_and_non_harness_targets_refuse_instructions_without_writes() {
     let error = super::super::instructions::install(&startup, &arguments, true, &mut Vec::new())
         .unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-    assert!(error.to_string().contains("config.yaml"));
+    assert_eq!(
+        error.to_string(),
+        "Hermes reads its hooks from config.yaml; --instructions has no supported global instructions file for Hermes"
+    );
     assert!(!startup.config.paths.home.exists());
 }
 

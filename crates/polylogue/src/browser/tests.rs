@@ -290,7 +290,11 @@ fn report(host: &Arc<BrowserHost>, id: &str, by: &str, outcome: &str) -> Answer 
 fn the_extension_claims_and_reports_actions_the_operator_queued() {
     let w = test_daemon::start("x");
     let host = host(&w);
-    let claim = |by: &str| exchange(&host, "GET", &format!("/v1/chat-actions?by={by}"), b"").json();
+    let claim = |by: &str| {
+        let answer = exchange(&host, "GET", &format!("/v1/chat-actions?by={by}"), b"");
+        assert_eq!(answer.status, 200, "claim by {by}");
+        answer.json()
+    };
     // Off by default: nothing queues and nothing is handed out.
     assert_eq!(
         send(&w, "k1", chat_request(None, false), vec![]).unwrap_err(),
@@ -345,7 +349,7 @@ fn the_extension_claims_and_reports_actions_the_operator_queued() {
     let held = send(&w, "k3", chat_request(Some("conv-9"), true), vec![]).unwrap();
     assert_eq!(held["status"], "awaiting_approval");
     let held_id = held["id"].as_str().unwrap().to_owned();
-    report(&host, &b_id, "tab-b", "failed");
+    assert_eq!(report(&host, &b_id, "tab-b", "failed").status, 200);
     assert_eq!(claim("tab-a")["action"], Value::Null);
     let approve = exchange(
         &host,
@@ -394,13 +398,14 @@ fn a_backfill_job_runs_through_the_daemon_and_survives_an_extension_restart() {
     let id = data["job"]["id"].as_str().unwrap().to_owned();
     assert_eq!(data["job"]["status"], "waiting");
     let claim = |by: &str| {
-        exchange(
+        let answer = exchange(
             &host,
             "POST",
             "/v1/backfill/claim",
             json!({"by": by}).to_string().as_bytes(),
-        )
-        .json()
+        );
+        assert_eq!(answer.status, 200, "claim by {by}");
+        answer.json()
     };
     let job = claim("ext-1");
     assert_eq!(job["job"]["id"], id.as_str());
@@ -673,13 +678,14 @@ fn the_reader_address_uses_the_daemon_runtime_directory_and_listener() {
 }
 
 #[test]
-fn a_frame_claiming_more_than_arrives_fails_without_allocating_the_claim() {
-    // A header claiming 4 GiB followed by three bytes: the reader must stop
-    // at the bytes that exist instead of allocating the claimed length.
+fn a_frame_claiming_more_than_arrives_fails_at_the_bytes_that_exist() {
+    // A header claiming 4 GiB followed by three bytes: the reader fails at
+    // the bytes that exist.
     let mut input = u32::MAX.to_ne_bytes().to_vec();
     input.extend_from_slice(b"{}x");
     let error = read_frame(&mut input.as_slice()).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+    assert_eq!(error.to_string(), "frame ended after 3 of 4294967295 bytes");
     let mut whole = Vec::new();
     write_frame(&mut whole, &json!({"type": "body_end"})).unwrap();
     assert_eq!(
