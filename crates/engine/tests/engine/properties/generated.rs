@@ -170,7 +170,7 @@ fn run_all_at_once(c: &Corpus) -> (ClaudeHome, Vec<Vec<Record>>) {
 }
 
 #[test]
-fn three_copied_inputs_keep_the_build_writable() {
+fn two_resumes_of_one_parent_store_each_record_once() {
     let c = corpus(&Shape {
         parents: vec![5],
         children: vec![(7, 4, 3), (2, 3, 3)],
@@ -306,9 +306,18 @@ proptest! {
             let cid = polylogue_model::SessionId::parse(&format!("claude-code:{child}")).unwrap();
             let own = r.messages(&cid, false).unwrap();
             prop_assert!(own.iter().all(|m| m.session == cid), "a copy is owned by its origin");
+            let (_, lines) = c.files.iter().find(|(n, _)| n == &format!("{child}.jsonl")).unwrap();
+            // The generator names a child's own records `<child>-<i>`; the
+            // copied prefix keeps its parent's names.
+            let tail: Vec<String> = lines
+                .iter()
+                .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["uuid"].as_str().unwrap().to_owned())
+                .filter(|uuid| uuid.starts_with(&format!("{child}-")))
+                .collect();
+            let own_ids: Vec<String> = own.iter().map(|m| m.id.native().as_str().to_owned()).collect();
+            prop_assert_eq!(own_ids, tail);
             // Read logically, a resumed session shows its own file's records
             // in file order, each once, wherever it is stored.
-            let (_, lines) = c.files.iter().find(|(n, _)| n == &format!("{child}.jsonl")).unwrap();
             let expected: Vec<String> = lines
                 .iter()
                 .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["uuid"].as_str().unwrap().to_owned())

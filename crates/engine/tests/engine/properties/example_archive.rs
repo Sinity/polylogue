@@ -55,7 +55,13 @@ fn original_bytes_survive_the_source() {
         }
         let before = w.view();
         fs::remove_file(&file).unwrap();
-        w.run_pass();
+        let (pass, _) = w.run_pass();
+        assert!(
+            pass.errors.is_empty(),
+            "deleting {}: {:?}",
+            rel.display(),
+            pass.errors
+        );
         assert_eq!(
             w.view(),
             before,
@@ -73,9 +79,10 @@ fn original_bytes_survive_the_source() {
 
 /// identity stability. An unrelated new session, an append to
 /// another session's file, and a renamed session file leave every recorded
-/// message with the same ID and document (a session may gain messages).
+/// message with the same ID and content (a session may gain messages), and
+/// the appended message arrives.
 #[test]
-fn ids_and_documents_survive_unrelated_changes() {
+fn message_ids_survive_unrelated_changes() {
     let w = Morrow::build(Set::Main);
     let before = w.view();
     let project = w.file(".claude/projects/-home-op-morrow");
@@ -124,6 +131,12 @@ fn ids_and_documents_survive_unrelated_changes() {
         }
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    let late_arrived = after.values().any(|doc| {
+        doc.as_array().unwrap().iter().any(|record| {
+            record["record"] == "message" && record["data"]["message"]["id"] == "u1-late"
+        })
+    });
+    assert!(late_arrived, "the appended message u1-late is missing");
 }
 
 /// corruption is loud. A stored blob with one byte flipped fails
@@ -259,7 +272,8 @@ fn appended_steps_reassemble_exactly() {
             let upto = lines.len() * step / 3;
             fs::write(f, lines[..upto].concat()).unwrap();
         }
-        new_blobs.run_pass();
+        let (pass, _) = new_blobs.run_pass();
+        assert!(pass.errors.is_empty(), "step {step}: {:?}", pass.errors);
     }
     for (f, bytes) in files.iter().zip(&full) {
         assert_eq!(
@@ -314,6 +328,8 @@ fn a_host_rename_restores_nothing() {
     };
     let (mut engine, _lock) = w.engine_with(config);
     let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    assert!(pass.inputs_seen > 0, "{pass:?}");
     assert_eq!(pass.inputs_changed, 0, "{pass:?}");
     assert_eq!(pass.bytes_stored, 0, "{pass:?}");
     drop(engine);
