@@ -54,6 +54,10 @@ pub(crate) fn is_selection(word: &str) -> bool {
 }
 pub(crate) fn select(word: &str, shown: &ShownRows) -> Result<Vec<String>, String> {
     if word == "@all" {
+        // An empty selection would reach the daemon as no selection at all.
+        if shown.rows.is_empty() {
+            return Err("@all: the last list has 0 rows".into());
+        }
         return Ok(shown.rows.iter().map(|row| row.reference.clone()).collect());
     }
     let row = |number: &str| -> Result<&Row, String> {

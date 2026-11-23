@@ -126,8 +126,7 @@ pub struct Provider {
 }
 
 /// Why a text without a stored vector cannot be embedded.
-pub const CALLS_OFF: &str = "semantic search for new text is off (model calls are off); \
-     `similar:` on a stored session or message still works";
+pub const CALLS_OFF: &str = "semantic search for new text is off (model calls are off)";
 
 impl Provider {
     /// From settings; `None` while embeddings are off.

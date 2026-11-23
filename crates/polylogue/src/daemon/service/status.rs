@@ -254,7 +254,8 @@ fn primary(
 
 fn pending_writes(d: &Daemon) -> crate::protocol::status::PendingWrites {
     let (delivery_outcomes, outcome_error) = d.queued_deliveries.pending_outcomes();
-    let (live_event_lines, spool_error) = d.live_spool.locked().summary();
+    let spool = d.live_spool.locked().summary();
+    let (live_event_lines, spool_error) = (spool.lines, spool.error);
     crate::protocol::status::PendingWrites {
         delivery_outcomes,
         live_event_lines,

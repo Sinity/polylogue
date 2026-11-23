@@ -200,11 +200,18 @@ fn open_route(path: &str) -> bool {
     path == "/auth" || path.starts_with("/assets/")
 }
 
-pub(crate) fn has_token(web: &Web, headers: &HeaderMap) -> bool {
-    let bearer = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
+/// The credential of an `Authorization: Bearer` header. The scheme name is
+/// case-insensitive and one or more spaces may follow it (RFC 9110).
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let (scheme, credential) = value.split_once(' ')?;
+    scheme
+        .eq_ignore_ascii_case("Bearer")
+        .then(|| credential.trim_start_matches(' '))
+}
+
+fn has_token(web: &Web, headers: &HeaderMap) -> bool {
+    let bearer = bearer_token(headers);
     let cookie = access::cookie_token(
         headers.get(header::COOKIE).and_then(|v| v.to_str().ok()),
         &access::cookie_name(&web.key),
@@ -238,10 +245,7 @@ async fn guarded(web: Arc<Web>, req: HttpRequest, next: Next) -> HttpResponse {
     // A write from a page must come from the reader's own origin.
     if req.method() == Method::POST {
         let ok = origin.is_some_and(|o| access::host_allowed(o.strip_prefix("http://"), web.port));
-        let bearer_only = origin.is_none()
-            && headers
-                .get(header::AUTHORIZATION)
-                .is_some_and(|v| v.as_bytes().starts_with(b"Bearer "));
+        let bearer_only = origin.is_none() && bearer_token(headers).is_some();
         if !ok && !bearer_only {
             return (
                 StatusCode::FORBIDDEN,
@@ -332,7 +336,7 @@ pub async fn ask(
     let d = Arc::clone(&web.daemon);
     let limit = request_limit();
     let parent = parent_lifetime();
-    let mut cancel = CancelRead(Some(limit.cancellation.clone()));
+    let mut cancel = polylogue_store::cancellation::CancelOnDrop::new(limit.cancellation.clone());
     let authorship: polylogue_model::authorship::Authorship = command_surface::author_of(
         &command_surface::CallerEvidence::default(),
         command_surface::Via::Web,
@@ -360,7 +364,7 @@ pub async fn ask(
         })
         .await
         .unwrap_or_else(|| crate::daemon::service::shutting_down().answer());
-    cancel.0.take();
+    cancel.disarm();
     let scopes = crate::protocol::ReadScopes::single(scope);
     let answer = crate::protocol::scope_answer(answer, &scopes);
     browser_response(answer, &web.daemon.archive.root)
@@ -391,15 +395,6 @@ pub(super) fn parent_lifetime() -> Option<Arc<polylogue_reading::operation::Pare
             polylogue_reading::operation::ParentLifetime::capture(*deadline, cancellation.clone())
         })
         .ok()
-}
-
-pub(super) struct CancelRead(Option<polylogue_store::cancellation::Cancellation>);
-impl Drop for CancelRead {
-    fn drop(&mut self) {
-        if let Some(cancellation) = &self.0 {
-            cancellation.cancel();
-        }
-    }
 }
 
 /// Archive paths never reach a browser, in values, failures or notes.
@@ -483,6 +478,13 @@ struct SearchQuery {
     cursor: Option<String>,
 }
 
+/// The cost measure is not paged, so the form sends only the selection.
+#[derive(Deserialize)]
+struct CostQuery {
+    #[serde(default)]
+    q: String,
+}
+
 async fn search(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> HttpResponse {
     if p.q.trim().is_empty() {
         return Redirect::to("/").into_response();
@@ -505,7 +507,7 @@ async fn search(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> Ht
 }
 
 /// Cost uses the cost measure and its session selection, as the CLI does.
-async fn cost(State(web): State<Arc<Web>>, Query(p): Query<SearchQuery>) -> HttpResponse {
+async fn cost(State(web): State<Arc<Web>>, Query(p): Query<CostQuery>) -> HttpResponse {
     let scope = if p.q.trim().is_empty() {
         "sessions"
     } else {

@@ -45,9 +45,10 @@ use std::time::{Duration, Instant};
 #[cfg(test)]
 mod tests;
 
-/// How long the daemon waits for one protocol answer while starting or
-/// reattaching to a hosted session.
-const ANSWER_WAIT: Duration = Duration::from_secs(10);
+/// How long the daemon waits on a hosted session's host: for its socket to
+/// appear after spawning, for its hello line on connecting, and for the
+/// answer to one protocol call.
+const HOST_WAIT: Duration = Duration::from_secs(10);
 
 /// The hosted-session directory of the archive at `root`.
 pub fn dir(paths: &crate::config::Paths, root: &Path) -> PathBuf {
@@ -285,7 +286,6 @@ struct Relay {
 fn hello(relay: &Relay) -> Vec<u8> {
     let mut line = serde_json::to_vec(&json!({"polylogue_host": {
         "status": relay.tracker.word(),
-        "session": relay.session.as_ref().map(ToString::to_string),
     }}))
     .unwrap_or_default();
     line.push(b'\n');
@@ -577,7 +577,7 @@ pub(crate) fn spawn_host(
     if let Some(id) = session_id {
         command.arg("--session-id").arg(id);
     }
-    start_host(&mut command, socket, Instant::now() + ANSWER_WAIT)
+    start_host(&mut command, socket, Instant::now() + HOST_WAIT)
 }
 
 fn start_host(
@@ -820,7 +820,7 @@ impl HostedStdio {
     ) -> std::io::Result<Self> {
         let stream = UnixStream::connect(socket)?;
         let mut reader = BufReader::new(stream.try_clone()?);
-        reader.get_ref().set_read_timeout(Some(ANSWER_WAIT))?;
+        reader.get_ref().set_read_timeout(Some(HOST_WAIT))?;
         let mut first = String::new();
         reader.read_line(&mut first)?;
         let hello: Value = serde_json::from_str(&first)
@@ -884,7 +884,7 @@ impl HostedStdio {
         let mut state = mutex.locked();
         let id = state.id();
         state.write(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))?;
-        let deadline = Instant::now() + ANSWER_WAIT;
+        let deadline = Instant::now() + HOST_WAIT;
         loop {
             if let Some(at) = state.answers.iter().position(|a| a["id"] == id) {
                 let answer = state.answers.remove(at);

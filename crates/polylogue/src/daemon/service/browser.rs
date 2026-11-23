@@ -467,7 +467,7 @@ browser!(
                     id: id.clone(),
                     session: session.as_ref().map(ToString::to_string),
                     messages: held.as_ref().map(|h| h.messages),
-                    downloading: held.as_ref().is_some_and(|h| h.downloading),
+                    downloading: held.as_ref().map(|h| h.downloading),
                     last_captured_at: held.and_then(|h| h.last_captured_at),
                 }
             })

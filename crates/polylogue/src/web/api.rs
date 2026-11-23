@@ -582,7 +582,7 @@ async fn stream_as(
         .with_accepted_request(Some(Arc::new(accepted_request)))
         .with_calling_session(accepted.calling_session.clone())
         .with_parent(accepted.parent);
-    let mut cancel = super::CancelRead(Some(cancellation.clone()));
+    let mut cancel = polylogue_store::cancellation::CancelOnDrop::new(cancellation.clone());
     let input =
         match crate::daemon::streaming::start(&web.daemon, class, limit, invocation, produce) {
             Ok(input) => input,
@@ -609,7 +609,7 @@ async fn stream_as(
             );
         }
     };
-    cancel.0.take();
+    cancel.disarm();
     let body = StreamBody {
         input: Arc::new(input),
         pending: first,

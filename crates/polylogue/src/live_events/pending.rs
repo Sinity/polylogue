@@ -1,4 +1,7 @@
-//! Each producer owns its file and retains exactly the bytes not yet appended.
+//! Lines the live writers append to the hook spool, kept until the spool
+//! accepts them. Each producer owns its file and retains exactly the bytes
+//! not yet appended; a failed write is counted in the daemon's
+//! `pending_writes` status.
 
 use polylogue_model::LockExt as _;
 use serde_json::Value;
@@ -13,15 +16,23 @@ pub(crate) struct SpoolStatus(BTreeMap<&'static str, (u64, String)>);
 
 pub(crate) type SharedStatus = Arc<Mutex<SpoolStatus>>;
 
+/// Lines waiting for a retry and the write errors that left them there.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct PendingSummary {
+    pub(crate) lines: u64,
+    pub(crate) error: Option<String>,
+}
+
 impl SpoolStatus {
-    pub(crate) fn summary(&self) -> (u64, Option<String>) {
-        (
-            self.0.values().map(|(lines, _)| lines).sum(),
-            self.0
+    pub(crate) fn summary(&self) -> PendingSummary {
+        PendingSummary {
+            lines: self.0.values().map(|(lines, _)| lines).sum(),
+            error: self
+                .0
                 .iter()
                 .map(|(stream, (_, error))| format!("{stream}: {error}"))
                 .reduce(|left, right| format!("{left}; {right}")),
-        )
+        }
     }
 
     fn record(&mut self, stream: &'static str, bytes: &[u8], result: &std::io::Result<()>) {
@@ -137,8 +148,8 @@ mod tests {
                     .append(&spool, "boot", std::slice::from_ref(&second))
                     .is_err()
             );
-            assert_eq!(status.locked().summary().0, 2);
-            assert!(status.locked().summary().1.unwrap().contains(stream));
+            assert_eq!(status.locked().summary().lines, 2);
+            assert!(status.locked().summary().error.unwrap().contains(stream));
             let expected = pending.bytes.clone();
             std::fs::remove_file(&spool).unwrap();
             pending.append(&spool, "boot", &[]).unwrap();
@@ -150,7 +161,13 @@ mod tests {
                 .collect::<Result<_, _>>()
                 .unwrap();
             assert_eq!(lines, [first, second]);
-            assert_eq!(status.locked().summary(), (0, None));
+            assert_eq!(
+                status.locked().summary(),
+                PendingSummary {
+                    lines: 0,
+                    error: None
+                }
+            );
         }
     }
 

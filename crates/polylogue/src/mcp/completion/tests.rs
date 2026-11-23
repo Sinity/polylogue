@@ -77,3 +77,28 @@ fn completion_route_rejects_a_cursor_inside_a_utf8_character() {
     assert_eq!(reply["error"]["data"]["outcome"], "error");
     assert_eq!(reply["error"]["data"]["error"]["kind"], "bad_request");
 }
+
+#[test]
+fn completion_without_a_position_completes_at_the_end_of_the_text() {
+    let daemon = crate::test_daemon::start("MCP default completion position");
+    let archive = &daemon.daemon.archive;
+    let mut session = Session {
+        initialized: true,
+        ..Default::default()
+    };
+    let text = "live: | measure count";
+    let mut complete = |meta: Value| {
+        let reply = session
+            .prepare(json!({
+                "jsonrpc":"2.0","id":1,"method":"completion/complete",
+                "params":{"argument":{"name":"query","value":text}, "_meta":meta}
+            }))
+            .answer(archive)
+            .unwrap();
+        assert!(reply.get("error").is_none(), "{reply}");
+        reply["result"]["completion"]["values"].clone()
+    };
+    let default = complete(json!({}));
+    let explicit = complete(json!({"polylogue/position": text.len()}));
+    assert_eq!(default, explicit);
+}

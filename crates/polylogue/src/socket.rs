@@ -73,10 +73,10 @@ impl Watch {
     /// client whose daemon failed before it could publish a socket.
     pub(crate) fn changed(&self) -> io::Result<bool> {
         let mut bytes = [MaybeUninit::uninit(); 4096];
-        let mut events = inotify::Reader::new(&self.descriptor, &mut bytes);
+        let mut reader = inotify::Reader::new(&self.descriptor, &mut bytes);
         let mut changed = false;
         loop {
-            let event = match events.next() {
+            let event = match reader.next() {
                 Ok(event) => event,
                 Err(rustix::io::Errno::AGAIN) => return Ok(changed),
                 Err(rustix::io::Errno::INTR) => continue,
