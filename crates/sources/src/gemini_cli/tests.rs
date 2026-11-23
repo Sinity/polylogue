@@ -36,14 +36,19 @@ fn a_turn_with_a_tool_call_and_its_result() {
     assert_eq!(msgs[1].parent.as_ref().unwrap().native().as_str(), "u1");
     assert_eq!(msgs[1].usage.input, Some(40));
     assert_eq!(msgs[1].usage.cached_input, Some(60));
+    assert_eq!(msgs[1].usage.output, Some(7));
     assert_eq!(msgs[1].usage.reasoning, Some(20));
     match &msgs[1].blocks[2] {
         Block::ToolCall {
             run_by_script: false,
+            call_id,
+            tool,
             command,
             action,
             ..
         } => {
+            assert_eq!(call_id.as_deref(), Some("c1"));
+            assert_eq!(tool.as_deref(), Some("run_shell_command"));
             assert_eq!(command.as_deref(), Some("ls"));
             assert_eq!(*action, polylogue_model::ToolAction::Shell);
         }
@@ -51,8 +56,12 @@ fn a_turn_with_a_tool_call_and_its_result() {
     }
     match &msgs[1].blocks[3] {
         Block::ToolResult {
-            outcome, output, ..
+            call_id,
+            outcome,
+            output,
+            ..
         } => {
+            assert_eq!(call_id.as_deref(), Some("c1"));
             assert_eq!(*outcome, ToolOutcome::Ok);
             assert_eq!(output.as_deref(), Some("a\nb"));
         }
@@ -65,6 +74,7 @@ fn a_turn_with_a_tool_call_and_its_result() {
         .find(|e| e.kind == "notice")
         .unwrap();
     assert_eq!(notice.after.as_ref().unwrap().native().as_str(), "g1");
+    assert_eq!(notice.data, json!("Request cancelled."));
     assert_eq!(
         step.counts.unread_fields,
         std::collections::BTreeMap::from([
@@ -101,6 +111,13 @@ fn recognizes_chat_files_only() {
     assert!(recognize(p, b"{\n  \"sessionId\": \"4ab5\""));
     assert!(!recognize(
         Path::new("/h/.gemini/state.json"),
+        b"{\"sessionId\": \"x\""
+    ));
+    let chats = Path::new("/h/.gemini/tmp/proj/chats/session-1.json");
+    assert!(!recognize(chats, b"{\"messages\": []}"));
+    assert!(!recognize(chats, b"[{\"sessionId\": \"x\"}]"));
+    assert!(!recognize(
+        Path::new("/h/.gemini/tmp/proj/chats/session-1.txt"),
         b"{\"sessionId\": \"x\""
     ));
 }

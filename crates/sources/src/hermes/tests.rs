@@ -98,7 +98,8 @@ fn profiles_bind_exports_and_unbound_or_conflicting_exports_do_not_guess() {
     let records = vec![session("s", None, None), message(1, "s", "user", "body")];
     let a = parse([vec![header("a")], records.clone()].concat());
     let b = parse([vec![header("b")], records.clone()].concat());
-    assert_ne!(a.output.sessions[0].id, b.output.sessions[0].id);
+    assert_eq!(a.output.sessions[0].id.to_string(), "hermes:s@profile-a");
+    assert_eq!(b.output.sessions[0].id.to_string(), "hermes:s@profile-b");
     assert_ne!(
         a.output.messages[0].message.id,
         b.output.messages[0].message.id
@@ -107,35 +108,37 @@ fn profiles_bind_exports_and_unbound_or_conflicting_exports_do_not_guess() {
     unbound.as_object_mut().unwrap().remove("source");
     let without_source = parse([vec![unbound], records.clone()].concat());
     assert!(without_source.output.sessions.is_empty());
-    assert!(!without_source.counts.skipped.is_empty());
-    assert!(
-        without_source
-            .counts
-            .skipped
-            .keys()
-            .all(|reason| reason.contains("names no profile"))
+    let no_profile = "Hermes row dump names no profile; original rows stay unbound";
+    assert_eq!(
+        without_source.counts.skipped,
+        std::collections::BTreeMap::from([
+            (format!("?: {no_profile}"), 1),
+            (format!("sessions: {no_profile}"), 1),
+            (format!("messages: {no_profile}"), 1),
+        ])
     );
+    let refused = "Hermes export has conflicting, invalid or historically unbound source bindings";
     let conflicting = parse([vec![header("a"), header("b")], records.clone()].concat());
     assert!(conflicting.output.messages.is_empty());
-    assert!(!conflicting.counts.skipped.is_empty());
-    assert!(
-        conflicting
-            .counts
-            .skipped
-            .keys()
-            .all(|reason| reason.contains("source bindings"))
+    assert_eq!(
+        conflicting.counts.skipped,
+        std::collections::BTreeMap::from([
+            (format!("?: {refused}"), 2),
+            (format!("sessions: {refused}"), 1),
+            (format!("messages: {refused}"), 1),
+        ])
     );
     let mut unbound_first = header("a");
     unbound_first.as_object_mut().unwrap().remove("source");
     let late_binding = parse([vec![unbound_first, header("a")], records].concat());
     assert!(late_binding.output.sessions.is_empty());
-    assert!(!late_binding.counts.skipped.is_empty());
-    assert!(
-        late_binding
-            .counts
-            .skipped
-            .keys()
-            .all(|reason| reason.contains("source bindings"))
+    assert_eq!(
+        late_binding.counts.skipped,
+        std::collections::BTreeMap::from([
+            (format!("?: {refused}"), 2),
+            (format!("sessions: {refused}"), 1),
+            (format!("messages: {refused}"), 1),
+        ])
     );
 }
 
@@ -168,7 +171,7 @@ fn hermes_home_move_keeps_session_ids() {
 }
 
 #[test]
-fn latest_positive_rows_and_gone_keep_the_last_known_message_without_changing_its_raw_record() {
+fn latest_positive_rows_and_gone_keep_the_last_known_message() {
     let parsed = parse(vec![
         header("a"),
         session("s", None, None),
@@ -215,13 +218,7 @@ fn compression_cycle_through_empty_session_does_not_link_a_session_to_itself() {
         session("b", Some("a"), Some("compression")),
         message(1, "a", "user", "body"),
     ]);
-    assert!(
-        parsed
-            .output
-            .links
-            .iter()
-            .all(|link| link.parent != link.child)
-    );
+    assert!(parsed.output.links.is_empty());
 }
 
 #[test]
@@ -255,7 +252,11 @@ fn prose_and_reasoning_reach_blocks_without_duplicates() {
             .iter()
             .any(|block| matches!(block,Block::Text{text} if text=="only native item prose"))
     );
-    assert!(blocks.iter().any(|block|matches!(block,Block::Thinking{text:Some(text),signature:Some(signature),redacted:true} if text.contains("native summary")&&text.contains("native detail")&&signature=="opaque encrypted evidence")));
+    assert!(blocks.contains(&Block::Thinking {
+        text: Some("native summary\n\nnative detail".into()),
+        signature: Some("opaque encrypted evidence".into()),
+        redacted: true,
+    }));
     row["r"]["content"] = json!("only native item prose");
     let parsed = parse(vec![header("a"), session("s", None, None), row]);
     assert_eq!(

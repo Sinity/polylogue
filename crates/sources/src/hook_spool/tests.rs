@@ -82,7 +82,6 @@ fn the_hook_commands_carrier_lines_are_read() {
         "{:?}",
         step.counts.unread_fields
     );
-    assert!(LOCATIONS.contains(&"polylogue/hooks/*.ndjson"));
 }
 
 /// Two invocations of the hook with the same payload are two events; the
@@ -266,7 +265,9 @@ fn process_and_registry_lines_are_live_events() {
     // The hook line keeps the whole process identity.
     assert_eq!(step.output.events[2].data["harness_start"], 901);
     assert_eq!(step.counts.records, 4);
-    assert!(polylogue_model::live::is_live_event(kinds[0]));
+    for kind in &kinds {
+        assert!(polylogue_model::live::is_live_event(kind), "{kind}");
+    }
 }
 
 #[test]
@@ -278,16 +279,6 @@ fn a_provider_or_route_that_is_not_a_string_is_unreadable() {
     let step = run(&HookSpool, &mut ParserState::default(), &input, 0).unwrap();
     assert!(step.output.events.is_empty());
     assert_eq!(step.counts.unreadable.len(), 2);
-    assert!(
-        step.counts
-            .unreadable
-            .keys()
-            .any(|k| k.ends_with("provider is not a string"))
-    );
-    assert!(
-        step.counts
-            .unreadable
-            .keys()
-            .any(|k| k.ends_with("route is not a string"))
-    );
+    assert_eq!(step.counts.unreadable["Stop: provider is not a string"], 1);
+    assert_eq!(step.counts.unreadable["Status: route is not a string"], 1);
 }

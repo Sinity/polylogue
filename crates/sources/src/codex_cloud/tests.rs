@@ -87,23 +87,28 @@ fn capture_counts_payload_once_and_shows_dom_turns() {
         &serde_json::to_vec(&capture).unwrap(),
     )
     .unwrap();
-    assert_eq!(step.output.messages[0].message.text(), "native request");
-    assert!(
-        !step
-            .counts
-            .unread_fields
-            .keys()
-            .any(|key| key.starts_with("capture.raw_provider_payload.")),
-        "{:?}",
-        step.counts.unread_fields
+    assert_eq!(step.output.sessions.len(), 1);
+    assert_eq!(
+        step.output
+            .messages
+            .iter()
+            .map(|row| row.message.text())
+            .collect::<Vec<_>>(),
+        ["native request"]
     );
-    assert!(
+    // The payload is read once, by the task parser; the capture's own turns
+    // are shown as unread session fields.
+    assert_eq!(
         step.counts
             .unread_fields
-            .keys()
-            .any(|key| key.contains("turns") && key.ends_with("text")),
-        "{:?}",
-        step.counts.unread_fields
+            .iter()
+            .map(|(key, count)| (key.as_str(), *count))
+            .collect::<Vec<_>>(),
+        [
+            ("session.provider_session_id", 1),
+            ("session.turns[].role", 1),
+            ("session.turns[].text", 1),
+        ]
     );
     assert_eq!(
         step.output.events.last().unwrap().data["provider_meta"]["adapter"],
@@ -117,12 +122,6 @@ fn a_literal_branch_named_none_is_a_branch_not_a_missing_value() {
     let step =
         crate::export::fixture::parse(&mut open(Path::new("codex.json")).unwrap(), bytes).unwrap();
     assert_eq!(step.output.sessions[0].git_branch.as_deref(), Some("None"));
-    assert!(
-        !step.output.messages[0]
-            .message
-            .attrs
-            .contains_key("external_pull_request_id")
-    );
 }
 
 #[test]
@@ -208,14 +207,16 @@ fn only_the_none_null_and_empty_pull_request_spellings_mean_no_reference() {
             "{spelling:?}"
         );
     }
-    let step = parse_task(
-        serde_json::json!([{"id":"t1","role":"user","external_pull_request_id":"pr_7","input_items":[{"content":[{"content_type":"text","text":"Go."}]}]}]),
-        serde_json::json!({}),
-    );
-    assert_eq!(
-        step.output.messages[0].message.attrs["external_pull_request_id"],
-        "pr_7"
-    );
+    for spelling in ["pr_7", "nullable", "none-yet", "nil"] {
+        let step = parse_task(
+            serde_json::json!([{"id":"t1","role":"user","external_pull_request_id":spelling,"input_items":[{"content":[{"content_type":"text","text":"Go."}]}]}]),
+            serde_json::json!({}),
+        );
+        assert_eq!(
+            step.output.messages[0].message.attrs["external_pull_request_id"],
+            spelling
+        );
+    }
 }
 
 #[test]

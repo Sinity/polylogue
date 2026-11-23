@@ -126,9 +126,16 @@ fn observed_paths_distinguish_literal_keys_arrays_and_nested_fields() {
         &json!({"a.b":1,"a":{"b":2},"[]":3,"*":4,"/":5,"~":6,"list":[7]}),
         &EMPTY,
     );
-    for path in ["/a.b", "/a/b", "/~3", "/~2", "/~1", "/~0", "/list/[]"] {
-        assert!(observed.shapes.contains_key(path), "{path}");
-    }
+    assert_eq!(
+        observed
+            .shapes
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        [
+            "", "/a", "/a.b", "/a/b", "/list", "/list/[]", "/~0", "/~1", "/~2", "/~3"
+        ]
+    );
 }
 
 #[test]
