@@ -14,7 +14,7 @@ fn accepts(arguments: &Value) -> bool {
         .is_ok()
 }
 #[test]
-fn authored_steps_take_their_declared_fields_and_transport_identity() {
+fn authored_steps_are_admitted_and_transport_identity_fields_are_refused() {
     for step in [
         json!({"verb":"note","text":"Synthetic finding","as":"decision"}),
         json!({"verb":"tag","name":"reviewed"}),

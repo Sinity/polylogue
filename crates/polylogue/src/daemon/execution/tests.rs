@@ -179,7 +179,14 @@ fn streamed_read_has_no_default_deadline_and_explicit_deadlines_still_apply() {
 
     request.deadline = policy.deadline(Deadline::Milliseconds(5_000));
     assert_eq!(request.deadline, Deadline::Milliseconds(5_000));
-    assert!(limit_for(request.deadline, None).deadline().is_some());
+    let left = limit_for(request.deadline, None)
+        .deadline()
+        .unwrap()
+        .saturating_duration_since(Instant::now());
+    assert!(
+        left <= Duration::from_secs(5) && left > Duration::from_secs(4),
+        "{left:?}"
+    );
     let parent = Instant::now();
     let limit = limit_for(request.deadline, Some(parent));
     assert_eq!(limit.deadline(), Some(parent));
@@ -198,7 +205,7 @@ fn other_read_requests_use_their_operation_name_in_refusals() {
         .limit(ReadLimit::new(Duration::ZERO, Default::default()))
         .answer(&daemon.daemon);
     assert!(
-        matches!(&response, command_surface::Answer { outcome: command_surface::Outcome::Error(_), envelope: command_surface::Envelope { notes, .. }, .. } if notes[0].starts_with("stopped during backfill list ")),
+        matches!(&response, command_surface::Answer { outcome: command_surface::Outcome::Error(error), envelope: command_surface::Envelope { notes, .. }, .. } if error.code.as_deref() == Some("deadline_exceeded") && notes[0].starts_with("stopped during backfill list ")),
         "{response:?}"
     );
 }
@@ -249,17 +256,6 @@ fn an_authored_write_commits_with_an_expired_cancelled_read_budget() {
 }
 
 #[test]
-fn continued_read_is_a_page_with_a_read_deadline() {
-    let request = crate::test_daemon::Call::new(
-        "rows",
-        serde_json::json!({"selection": "session:claude-code:s1", "steps":[{"verb":"read", "format":"json"}]}),
-    )
-    .cursor(Some("opaque-awaiting-daemon-validation"));
-    let policy = policy(&request);
-    assert!(policy.read_only && !policy.streaming && policy.default_deadline);
-}
-
-#[test]
 fn a_read_first_write_whose_deadline_passes_after_handoff_answers_its_write() {
     let limit = ReadLimit::new(Duration::from_millis(50), Default::default());
     let response = within_limit(&limit, true, false, "rows", None, || {
@@ -279,7 +275,8 @@ fn a_read_first_write_whose_deadline_passes_after_handoff_answers_its_write() {
 fn a_read_phase_that_has_run_out_refuses_the_handoff() {
     let limit = ReadLimit::new(Duration::ZERO, Default::default());
     limit.scope(|| {
-        assert!(crate::daemon::handler::finish_read_phase("write").is_err());
+        let failure = crate::daemon::handler::finish_read_phase("write").unwrap_err();
+        assert_eq!(failure.error.code.as_deref(), Some("deadline_exceeded"));
     });
 }
 

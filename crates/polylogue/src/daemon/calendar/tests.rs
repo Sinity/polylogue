@@ -279,6 +279,8 @@ fn all_time_model_drilldown_reaches_every_dated_and_undated_response() {
             break;
         }
     }
+    // The fixture has five responses of model `test`: four dated, one undated.
+    assert_eq!(ids.len(), 5);
     assert_eq!(ids.len() as u64, count.unwrap());
     assert_eq!(ids.last().unwrap(), "codex:unknown-time-model");
     ids.sort();

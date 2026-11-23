@@ -255,12 +255,14 @@ fn completion_handler_uses_the_catalog_when_archive_reader_slots_are_closed() {
     let Some(data) = response.value().cloned() else {
         panic!("{response:?}")
     };
-    assert!(
-        data.as_array()
-            .unwrap()
-            .iter()
-            .any(|candidate| candidate["value"] == "error")
-    );
+    // The outcomes are ok, error, pending and unknown; only `error` starts with `err`.
+    let values: Vec<&str> = data
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|candidate| candidate["value"].as_str().unwrap())
+        .collect();
+    assert_eq!(values, ["error"]);
 }
 
 #[test]
