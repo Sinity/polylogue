@@ -145,7 +145,7 @@ fn terminal_printers_escape_archived_text() {
     assert_eq!(
         resume(&sessions, TextStyle::Plain),
         format!(
-            "  codex:print-test  {HOSTILE_ESCAPED}\n    todo: {HOSTILE_ESCAPED}; waiting on {HOSTILE_ESCAPED}; {HOSTILE_ESCAPED}\n"
+            "  codex:print-test  {HOSTILE_ESCAPED}\n    todo in progress: {HOSTILE_ESCAPED}; waiting on {HOSTILE_ESCAPED}; {HOSTILE_ESCAPED}\n"
         )
     );
     let status = json!({"notices":[HOSTILE], "errors":[HOSTILE]});
