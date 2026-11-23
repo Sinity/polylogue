@@ -156,10 +156,10 @@ pub(crate) fn project_fragment(
             });
         }
     }
-    if options.view == View::Context {
-        if !super::view_filter::context_selected(facts, options.view, &row.reference)? {
-            return Err(unsupported());
-        }
+    if options.view == View::Context
+        && !super::view_filter::context_selected(facts, options.view, &row.reference)?
+    {
+        return Err(unsupported());
     }
     Ok(())
 }

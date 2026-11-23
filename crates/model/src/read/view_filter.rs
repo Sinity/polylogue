@@ -94,10 +94,10 @@ pub fn project_record(
             if options.view == View::Changes && facts.cards.is_empty() {
                 return Ok(None);
             }
-            if options.view == View::Context {
-                if !context_selected(facts, options.view, record.reference().unwrap_or_default())? {
-                    return Ok(None);
-                }
+            if options.view == View::Context
+                && !context_selected(facts, options.view, record.reference().unwrap_or_default())?
+            {
+                return Ok(None);
             }
         }
         Record::Document(document) => {
