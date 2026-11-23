@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn pkce_uses_the_rfc7636_s256_vector() {
     assert_eq!(
-        challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+        pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
         "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
     );
 }

@@ -1007,7 +1007,19 @@ fn explain_option_runs_nothing() {
         ],
     );
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(json(&output)["kind"], "explained");
+    let explained = json(&output);
+    assert_eq!(explained["kind"], "explained");
+    let steps = explained["reply"]["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 1, "{explained}");
+    assert_eq!(steps[0]["verb"], "tag", "{explained}");
+    assert_eq!(steps[0]["access"], "write", "{explained}");
+    assert!(
+        steps[0]["would"]
+            .as_str()
+            .unwrap()
+            .starts_with("would tag the rows of "),
+        "{explained}"
+    );
     assert_eq!(
         listing(json(&cli(&env, &["--json", "annotations where kind:tag"])))["count"],
         0

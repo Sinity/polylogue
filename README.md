@@ -51,7 +51,8 @@ claude.ai data export) are brought in with `polylogue import`.
 Morrow is a synthetic week of work on a fictional Rust library, in Claude Code,
 Codex, ChatGPT and claude.ai, shipped with Polylogue for examples and tests
 ([`examples/morrow/`](examples/morrow/)). `demo` builds a separate archive
-from it in a new directory and prints the first lines to try:
+from it in a new directory and prints a ten-step walkthrough of it
+(also written to `transcript.md` there):
 
 ```sh
 polylogue demo ./morrow

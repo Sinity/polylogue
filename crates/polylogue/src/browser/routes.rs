@@ -121,8 +121,9 @@ async fn reader(State(host): State<Arc<BrowserHost>>) -> HttpResponse {
 /// The conversation a capture names.
 fn capture_identity(v: &Value) -> Option<(String, String)> {
     let provider = v.pointer("/session/provider")?.as_str()?.trim();
-    let session = v.pointer("/session/provider_session_id")?.as_str()?.trim();
-    (!provider.is_empty() && !session.is_empty()).then(|| (provider.to_owned(), session.to_owned()))
+    let conversation = v.pointer("/session/provider_session_id")?.as_str()?.trim();
+    (!provider.is_empty() && !conversation.is_empty())
+        .then(|| (provider.to_owned(), conversation.to_owned()))
 }
 
 /// Whether a capture carries a conversation: the provider's own JSON, or
@@ -219,7 +220,7 @@ async fn capture_files(State(host): State<Arc<BrowserHost>>, body: Bytes) -> Htt
         .as_str()
         .map(str::to_owned);
     let conversation = listed["conversation"]["id"].as_str().map(str::to_owned);
-    let stored = match provider.zip(conversation) {
+    let held = match provider.zip(conversation) {
         Some((provider, conversation)) => ask(
             host,
             "internal stored-files",
@@ -229,17 +230,17 @@ async fn capture_files(State(host): State<Arc<BrowserHost>>, body: Bytes) -> Htt
         .ok(),
         None => None,
     };
-    listed["downloading"] = stored
+    listed["downloading"] = held
         .as_ref()
         .map_or(Value::Bool(false), |data| data["downloading"].clone());
-    let stored = stored.as_ref().map_or(&[][..], |data| {
+    let held_files = held.as_ref().map_or(&[][..], |data| {
         data["files"].as_array().map_or(&[][..], Vec::as_slice)
     });
     if let Some(files) = listed["files"].as_array_mut() {
         for file in files {
             let found = file["file_id"]
                 .as_str()
-                .and_then(|id| stored.iter().find(|s| s["id"] == id));
+                .and_then(|id| held_files.iter().find(|s| s["id"] == id));
             file["stored"] = match found {
                 Some(s) => json!({ "blob": s["blob"], "size": s["size"] }),
                 None => Value::Null,
@@ -256,8 +257,8 @@ struct ConversationsAsked {
 }
 
 /// What the archive holds of some conversations: `archived` with its
-/// message count and last capture time, `spooled` (stored, not yet read by
-/// the daemon), `missing`, or `unknown` while the daemon does not answer.
+/// message count and last capture time, `spooled` (saved in the spool, not yet
+/// read by the daemon), `missing`, or `unknown` while the daemon does not answer.
 async fn conversations(
     State(host): State<Arc<BrowserHost>>,
     Json(asked): Json<ConversationsAsked>,

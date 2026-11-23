@@ -43,6 +43,15 @@ impl Tool {
         }
     }
 
+    /// The name without the `polylogue_` prefix.
+    pub fn family(self) -> &'static str {
+        match self {
+            Tool::Read => "read",
+            Tool::Write => "write",
+            Tool::Act => "act",
+        }
+    }
+
     pub fn access(self) -> ToolAccess {
         match self {
             Self::Read => ToolAccess::Read,
@@ -123,8 +132,8 @@ pub enum Cli {
     Subcommand,
     /// A subcommand left out of help: programs run it, people do not.
     Hidden,
-    /// A selection and the verbs after it. Until the line parser reads it,
-    /// the row is a hidden subcommand taking `--request`.
+    /// A selection and the verbs after it, read by the line parser
+    /// (`cli/line.rs`); it is not a subcommand.
     Line,
 }
 /// The first word of an actual command, from the same table as CLI parsing.
@@ -903,12 +912,7 @@ pub(crate) fn specification<A: command_surface::JsonSchema>(
         summary: command.help.into(),
         reason: command.reason.into(),
         kind: command_surface::OperationKind::Request {
-            tool: command.tool.map(|tool| {
-                tool.name()
-                    .strip_prefix("polylogue_")
-                    .expect("product tool prefix")
-                    .into()
-            }),
+            tool: command.tool.map(|tool| tool.family().into()),
         },
         http_route: command
             .http
@@ -953,11 +957,7 @@ pub fn declarations() -> &'static std::sync::Arc<command_surface::OperationDecla
                 {
                     declarations
                         .declare_tool(command_surface::ToolFamily {
-                            name: tool
-                                .name()
-                                .strip_prefix("polylogue_")
-                                .expect("product tool prefix")
-                                .into(),
+                            name: tool.family().into(),
                             description: tool.description().into(),
                             open_world: tool.open_world(),
                             idempotent: tool.idempotent(),

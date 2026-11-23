@@ -5,7 +5,8 @@
 //!
 //! A session-start brief brings an agent up to speed on its directory:
 //! - notes the operator wrote, or agents wrote and the operator accepted:
-//!   lessons, handoffs, decisions, problems and goals on this directory,
+//!   corrections, lessons, handoffs, decisions, problems, goals, questions
+//!   and findings on this directory,
 //!   its repository, or the session itself;
 //! - other agents working here now;
 //! - task claims observed here with no observed close or release, labelled
@@ -325,6 +326,8 @@ fn operator_note_ids(
         AssertionKind::Decision,
         AssertionKind::Problem,
         AssertionKind::Goal,
+        AssertionKind::Question,
+        AssertionKind::Finding,
     ]
     .map(|k| format!("kind:{}", k.as_str()))
     .join(" OR ");
