@@ -12,6 +12,7 @@ use crate::read::scope::InitialInvalidation;
 use crate::{Result, StoreError, schema};
 use rusqlite::{Connection, OpenFlags, Transaction};
 use std::fs::{self, File, OpenOptions};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 /// Increments the database's write counter; one value per transaction.
@@ -396,7 +397,7 @@ impl Archive {
         if fresh {
             no_cow(root);
         }
-        let file = OpenOptions::new()
+        let mut file = OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
@@ -404,12 +405,19 @@ impl Archive {
         match file.try_lock() {
             Ok(()) => {}
             Err(fs::TryLockError::WouldBlock) => {
+                let holder = fs::read_to_string(root.join("lock"))
+                    .ok()
+                    .and_then(|text| text.trim().parse().ok());
                 return Err(StoreError::Locked {
                     path: root.to_path_buf(),
+                    holder,
                 });
             }
             Err(fs::TryLockError::Error(error)) => return Err(error.into()),
         }
+        // The holder's pid, so a refused second start can name it.
+        file.set_len(0)?;
+        file.write_all(format!("{}\n", std::process::id()).as_bytes())?;
         Ok(ArchiveLock { _file: file })
     }
 
@@ -533,6 +541,7 @@ pub(crate) const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 fn tune(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "wal")?;
     conn.pragma_update(None, "synchronous", "normal")?;
+    conn.pragma_update(None, "journal_size_limit", WAL_FILE_LIMIT)?;
     conn.pragma_update(None, "temp_store", "file")?;
     conn.busy_timeout(BUSY_TIMEOUT)?;
     Ok(())
@@ -547,6 +556,11 @@ pub mod cache {
     /// Schema setup and one-off maintenance.
     pub const SETUP: i64 = 16;
 }
+
+/// Bytes of write-ahead log file kept after a checkpoint has copied the log
+/// into the database: a restarted log is truncated to this, not left at the
+/// size it once grew to.
+const WAL_FILE_LIMIT: i64 = 64 << 20;
 
 /// Pages of write-ahead log after which a write connection copies the log
 /// into the database file: about 1 GB rather than 4 MB, so a page written by

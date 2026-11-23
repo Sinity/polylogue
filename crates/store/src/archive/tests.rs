@@ -84,6 +84,27 @@ fn a_second_open_is_refused_while_the_lock_is_held() {
 }
 
 #[test]
+fn a_write_connection_limits_the_log_file_it_keeps() {
+    let dir = tempfile::tempdir().unwrap();
+    let conn = open_write(&dir.path().join("x.db"), cache::SETUP).unwrap();
+    let limit: i64 = conn
+        .query_row("PRAGMA journal_size_limit", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(limit, 64 * 1024 * 1024);
+}
+
+#[test]
+fn a_refused_open_names_the_pid_of_the_holder() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("a");
+    let (_archive, _lock) = Archive::open_or_create(&root).unwrap();
+    let Err(StoreError::Locked { holder, .. }) = Archive::open_or_create(&root) else {
+        panic!("the second open must be refused");
+    };
+    assert_eq!(holder, Some(std::process::id()));
+}
+
+#[test]
 fn a_same_boot_build_keeps_its_rows_and_resumes() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("a");

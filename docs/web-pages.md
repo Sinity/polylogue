@@ -45,7 +45,7 @@ polylogue_read {"arguments": {"selection": "page:flaky-ci", "steps": [{"verb": "
 - **Left rail**: the contents with counts per section and the open items, then the pages sharing the name prefix.
 - **Inspector**: **Backlinks** (what places, links, cites or includes this page, exact rows first, then rows inside, [page-text.md](page-text.md#backlinks)); the **decision box** (`no decision yet` with **Record decision**, which writes a `decision` about the subject placed in the Decision section: `polylogue annotation:01JA9X2B note 'strict weekday mode' --as decision --page flaky-ci --section Decision`); **Members**, each alias with its resolved session, live state, role and last activity on the page (`@reviewer → codex:019d0f2a · working · reviewer · last on this page 09:50`), with **Add member** ([pages.md](pages.md#members)); **Page details** (template, subject, scope, brief, parameters); **History**.
 - **References** everywhere open nested hover popups from the shared reference reader, with an icon per kind of target; a hover never runs a model or changes anything. Clicking a citation opens the reader at the highlighted span.
-- **Open items** each show "unresolved since" and link to their item ([pages.md](pages.md#open-items-and-the-decision-box)). **Staleness and circle markers** are dim marks in place (`written before 2 findings on this page`, `returned to the position of revision 2`).
+- **Open items** each show "unresolved since" and link to their item ([pages.md](pages.md#open-items-and-the-decision-box)). **Staleness and circle markers** are dim marks in place (`written before 2 findings on this page`, `returned to the position of revision 1`).
 - **Send composer:** a member or session, the text, and the section where the reply belongs (`polylogue @reviewer send 'fold the findings into the overview' --page flaky-ci --section Overview`); delivery is [session-control.md](session-control.md#send)'s, and the reply is placed in that section ([pages.md](pages.md#reply-placement)).
 - **Live.** A page view streams its slots and shown annotations; live cells, figures and text update in place, and fixed slots never change. Agents' markers aimed at the page appear under their section as they are written, authored by the message's author. Updates never move the reader: a change above the viewport shows `N changes · show`. Unsent text in an editor survives live updates.
 
@@ -106,7 +106,7 @@ Keys follow the shared key table ([web.md](web.md#keys)). The page view adds:
 | `i` | edit the focused text slot |
 | `m` | move the focused slot (arrows, then `Enter`) |
 | `[`, `]` | previous and next section |
-| `v` then a letter | layout: `l` linear, `b` board, `t` table, `c` contents, `h` history |
+| `v` then a letter | layout: `t` linear, `b` board, `a` table, `n` contents, `h` history, the letters of the shared table |
 | `Ctrl-Enter` | save the open editor as one revision |
 
 Lines: `polylogue pages`, `polylogue page:flaky-ci read --view changes --from seen`, `polylogue page:flaky-ci read --at 2026-11-10`, `polylogue 'messages where "flaky" repo:morrow since:7d' save page:flaky-ci --section Evidence --fixed`, `polylogue page:flaky-ci#7q2m withdraw`, `polylogue import flaky-ci.md`.

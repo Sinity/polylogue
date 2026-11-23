@@ -208,7 +208,7 @@ generated page of the thing they belong to, or on the area page that owns them.
   word in prose and tool input and output.
 - **field selection**: a transform or default that changes which fields a row
   shows, keeping its row identity.
-- **question**: `query:<hash>`, the identity of a query's normal form.
+- **question**: `query:<hash>`, the identity of a query's normal form. (The note kind `question`, `note --as question`, is a different thing: an open question someone wrote.)
 - **run**: one evaluation of a query (`run:<id>`): its question, read
   position, author and count; it holds no rows.
 - **saved query**: a question saved under a name, re-run each time it is used
@@ -391,7 +391,7 @@ generated page of the thing they belong to, or on the area page that owns them.
   decisions about its subject. Both are computed when read.
 - **staleness mark**: `written before 2 findings on this page`, on a note
   older than later findings or decisions on its page; **circle marker**:
-  `returned to the position of revision 2`, on a decision back at an earlier
+  `returned to the position of revision 1`, on a decision back at an earlier
   value.
 - **context bundle**: a page from the `bundle` template, the context a
   recipient should read, given with `brief`.

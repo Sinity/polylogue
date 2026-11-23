@@ -11,8 +11,8 @@ to build them are in [`AGENTS.md`](../AGENTS.md).
 ## Purpose and users
 
 Polylogue captures every session its user has with AI tools (coding agents
-such as Claude Code, Codex and Gemini CLI; web chats such as ChatGPT, claude.ai
-and AI Studio), keeps the original bytes, parses them into one model of
+such as Claude Code, Codex and Gemini CLI; web chats such as ChatGPT and
+claude.ai; AI Studio), keeps the original bytes, parses them into one model of
 sessions and their lineage, and lets people and agents search, read, measure
 and annotate that history. On top of the parsed sessions it holds what its
 users author about them: notes, tags, judgments, claims, saved queries,
@@ -79,7 +79,7 @@ index, written by the same code. Three parts are added beside them: its bytes
 are handed to Sinex's store and read from there, so they exist once; its
 record is shipped to Sinex in commit order and can be restored from it; and
 one reader of Sinex's committed log applies what other hosts recorded and what
-Sinex's lifecycle decided. Everything a user can do is the same in both modes.
+Sinex's lifecycle decided. Every operation is the same in both modes; what differs is listed in [primary-mode.md](primary-mode.md#the-rule).
 [Primary mode](primary-mode.md) owns what is added.
 
 ## Data flow
@@ -108,7 +108,7 @@ Sinex's lifecycle decided. Everything a user can do is the same in both modes.
 
 The daemon is the only process that opens the archive. It holds the archive
 lock, runs the one writer and serves every client over its socket; a command
-that needs the archive with no daemon running fails with "daemon down"
+that needs the archive with no daemon running fails with `not_running`, naming the archive and `polylogue daemon`
 ([exit codes](interfaces.md#exit-codes)).
 
 ## Stores
@@ -181,7 +181,7 @@ they reached the disk. Recovery starts with a reboot
 of its own, without syncing as it goes, and installs them by rename when it
 ends; until then nothing but the build opens them. A build never changes the
 record or the stored bytes, so losing one costs the build and nothing else: a
-start that finds an unfinished build discards its files and builds again, and
+start that finds a build a crash left (its files may hold unsynced pages) discards its files and builds again, one that a clean stop synced resumes in them, and
 a start that finds a finished build not yet installed installs it. While a
 build runs, reads are served from the installed index when this build of
 Polylogue can read it, and otherwise reply `index_building` with the build's
@@ -427,7 +427,7 @@ daemon refuses to start; paths are absolute.
 - **Two homes for settings.** Deployment configuration (the Nix modules, the
   configuration file, environment variables) holds what is set per machine:
   mode, archive path, the logical day, listen address and authentication, the
-  optional notification command, the Sinex endpoint. The changeable settings
+  optional away command, the Sinex endpoint. The changeable settings
   catalog holds what any author may change at run time (quiet hours, the
   interrupt budget, enabled alternates, briefing switches), each key with a
   type, default and scope; unknown keys are refused. How they are loaded is in
