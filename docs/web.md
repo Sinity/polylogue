@@ -72,7 +72,7 @@ A workspace is several targets open at once: sessions, pages, kept results and s
 
 ## Keys
 
-Navigation, selection, the palette, help and the copy menu keys come from the shared key table in `web-shell`. The picker and the web use the same letter for the same act wherever both offer it: the picker's `Ctrl-r` read, `Ctrl-y` copy and `Ctrl-e` query are the web's `r`, `y` and `e` ([terminal.md](terminal.md#keys)). The picker needs the Ctrl forms because its prompt takes letters; the web binds the bare letters. Single-character keys can be switched off (a setting), are ignored in inputs and while text is selected, and move real DOM focus, which live updates never steal.
+Navigation, selection, the palette, help and the copy menu keys come from the shared key table in `web-shell`. The picker and the web use the same letter for the same act wherever both offer it, except marking and rejecting ([terminal.md](terminal.md#keys)): the picker's `Ctrl-r` read, `Ctrl-y` copy and `Ctrl-e` query are the web's `r`, `y` and `e` ([terminal.md](terminal.md#keys)). The picker needs the Ctrl forms because its prompt takes letters; the web binds the bare letters. Single-character keys can be switched off (a setting), are ignored in inputs and while text is selected, and move real DOM focus, which live updates never steal.
 
 | Key | Action | Line it runs | Scope |
 |---|---|---|---|

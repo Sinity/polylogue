@@ -138,13 +138,13 @@ A route is one of `live` (the tool's own file or database), `capture` (the provi
 - The reading that supplies the content is the message's **main route**: its version is the stored reading. Messages a session holds through several routes are ordered by their source times ([Messages](#messages)). The composition records, for each other field group, the input and chain it came from (`message_route`), when that is not the main route.
 - The shown rows of a session are computed from its readings whenever one of them changes, never adjusted by the difference a step made ([architecture.md](architecture.md#composition)). A change that leaves a message's composition as it was leaves its rows and every cursor into them as they were.
 - Documents show the newest source time, then route precedence, then the content hash. Events and links show their reading by route precedence, then value hash; a link's evidence and copied-prefix observation merge over readings of the same recorded coordinates. Conflicting coordinates remain distinct statements.
-- **Routes without shared turn IDs** (a Gemini page capture and a Takeout of the same conversation) are matched by the repeated-turn rule; the matched message names the shown one (`duplicate_of`). That rule and its validity evidence are in [measures.md](measures.md#catalog).
+- **Routes without shared turn IDs** (a Gemini page capture and a Takeout of the same conversation) are matched by the repeated-turn rule; the matched message names the shown one (`duplicate_of`). That rule and its validity evidence are in [measures.md](measures.md#session-structure).
 - **A capture read from the page** rather than the provider's data is marked *partial fidelity* (the `page_text` route) and is outranked by any other route for every field; it supplies only what no other reading has.
 
 ## Logical sessions
 
 The **logical session** is the default unit of work: the root of a tree of `spawn`, `fork`, `continuation` and `resume` links, so one piece of work spread over subagents, forks, compactions and resumes reads as one thing. `reference` links never join it.
 
-- Listings, counts and measures show logical sessions, each expandable into its physical sessions; `--physical` lists sessions one by one ([query.md](query.md#units-and-fields)).
+- Listings, counts and measures show logical sessions, each expandable into its physical sessions; `physical:true` lists sessions one by one ([query.md](query.md#units-and-fields)).
 - References always name physical sessions exactly.
 - The stored root and depth are a derived product ([measures.md](measures.md#catalog)). Structural ancestry uses every explicit non-reference relation. Missing parents, conflicting parent identities and cycles produce typed unresolved results, with no chosen parent or cycle root. Copying content alone never changes the logical root.

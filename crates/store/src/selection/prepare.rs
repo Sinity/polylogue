@@ -477,9 +477,8 @@ pub(super) fn resolve_reference(
     if is_self {
         let id = self_session
             .map(str::to_owned)
-            .ok_or_else(|| QueryError::Invalid {
-                message: "self requires a calling session".into(),
-                position: 0,
+            .ok_or_else(|| QueryError::NotFound {
+                message: "`self` names the calling session, and this caller is not one".into(),
             })?;
         *condition = ConditionKind::Reference {
             reference: format!("session:{id}"),

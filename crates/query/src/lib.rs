@@ -76,6 +76,9 @@ pub enum QueryError {
     NotBuilt { what: String },
     #[error("{reason}")]
     Unavailable { reason: String },
+    /// A thing the line names does not exist for this caller.
+    #[error("{message}")]
+    NotFound { message: String },
     #[error("{what} is ambiguous: {}", .candidates.join(", "))]
     Ambiguous {
         what: String,
@@ -137,6 +140,7 @@ impl QueryError {
             QueryError::NotAQuery { .. } => Code::NotAQuery,
             QueryError::NotBuilt { .. } => Code::NotBuilt,
             QueryError::Unavailable { .. } => Code::NotYetAvailable,
+            QueryError::NotFound { .. } => Code::NotFound,
             QueryError::Ambiguous { .. } => Code::Ambiguous,
         }
     }

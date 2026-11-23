@@ -431,10 +431,9 @@ impl<'a> Compiler<'a> {
             }
             "self" => {
                 let Some(me) = self.opts.self_session.clone() else {
-                    return Err(QueryError::Invalid {
+                    return Err(QueryError::NotFound {
                         message: "`self` names the calling session, and this caller is not one"
                             .into(),
-                        position: span.start,
                     });
                 };
                 let p = self.text_param(&me);

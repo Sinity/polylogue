@@ -135,6 +135,14 @@ fn latest_excludes_the_calling_session() {
     assert_eq!(targets(&reader, "latest", &caller), ["session:test:two"]);
 }
 #[test]
+fn self_without_a_calling_session_is_not_found() {
+    let (_dir, f) = fixture();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let refused = reader.prepare_selection("self", &options()).err().unwrap();
+    assert_eq!(refused.code(), polylogue_model::Code::NotFound);
+}
+#[test]
 fn latest_respects_scope() {
     let (_dir, f) = fixture();
     let pool = f.reads().unwrap();
