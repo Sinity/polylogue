@@ -79,7 +79,7 @@ Kinds are one closed declaration in the `model` crate. Each states the key's mea
 | `forecast` | event name | `{probability, horizon, resolves_by}` | many | anything | `note --as forecast` | `::forecast` |
 | `judgment` | `accepted`, `rejected` or `deferred` | optional reason | one per about and author | exactly one annotation at an exact revision | `judge` | — |
 | `comparison` | dimension | `{verdict, blind?}` | many | two or more references | `judge` | — |
-| `rubric` | name | `{instructions, unit_query, fields, abstain, confidence}` | one per name | — | `import` | — |
+| `rubric` | name | `{instructions, unit_query, fields, abstain, confidence, rationale}` | one per name | — | `import` | — |
 | `pass` | — | `{rubric, population: result:<id>, counts}` | many | — | `import` | — |
 | `rubric_value` | a rubric field, or `abstain` | `{value, confidence?, rationale?}`: the field's value, or the reason for abstaining | one per (about, rubric revision, key, author) | one row of the pass's population | `import` | `::rubric_value(rubric=…, pass=…, key=…)` |
 | `memory` | path | file text | one per (scope, key) | — (`scope` link) | `note --as memory`, the memory-tool adapter | — |

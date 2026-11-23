@@ -187,6 +187,7 @@ One table binds every format:
 | not applicable | `n/a` |
 | partial | `≥ X (N unknown)` |
 | inferred | `≈ X` |
+| counted | `≈ X`, with the tokenizer named ([measures.md](measures.md#token-kinds-and-populations)) |
 | zero | `0` |
 | pending | `pending` |
 | error | `error` |
@@ -195,7 +196,7 @@ One table binds every format:
 
 - One Rust type in `model` holds the state, with one rendering per encoder; encoders never format a number directly.
 - Colour only repeats the text; meaning is never carried by colour alone. Unknown is hatched, never drawn as zero.
-- Money names its kind at the first figure and wherever the kind changes: `API-eq.`, `reported`, `sub. share`, `estimated` ([measures.md](measures.md#cost-and-usage)).
+- Money names its kind at the first figure and wherever the kind changes: `API-eq.`, `provider-reported`, `sub. share`, `manual`, `estimated` ([measures.md](measures.md#cost-and-usage)).
 
 ## Text as stored
 
@@ -221,5 +222,5 @@ A transcript is paged over *entries*, one per layout item it can show: a message
 - **An entry is a function of its message or event alone**, and is stored with it: its kind, `written_by` and `prompt_kind`, time, body length, two token estimates (the one-line and the full form), for calls the action and the target cut to 120 characters, for model messages the provider-reported input (the context meter), and for events the context boundary they are (for a microcompaction, the call IDs whose results it removed). Its class (its kind, who wrote its message, and for a header the kinds of block its message holds), with the message's derived place on or off the active path, alone decides whether a reading shows it under any view and show/hide words.
 - **An entry's place is its key**: its message's place in the session ([sessions.md](sessions.md#messages)) and its ordinal within the message. No entry is numbered by how many come before it, so an append or an insertion earlier in the session changes no stored entry and no cursor that names one.
 - **Counts are derived at session grain.** How many entries of each class come before a place, and the sum of their token estimates, are a derived value of the session ([measures.md](measures.md#convergence)), exact, and computed on the spot for a session whose derived values are due. The page's place among the shown entries, the reading's total, the header's message counts, the `continues` line's count, turn numbers and the context meter's estimate come from it. A composed parent prefix counts from the parent's counts at the branch point; a spawn card is one entry of its parent, and the spawned session counts from its own.
-- **Paging.** A reading pages from its starting entry: it reads the page's entries forward or backward by key, passes hidden ones without decoding them, and reads the bodies of that page only, so a page costs the same at any depth. Nothing about a session is held in daemon memory between readings.
+- **Paging.** A reading pages from its starting entry: it reads the page's entries forward or backward by key, passes hidden ones without decoding them, and reads the bodies of that page only, so a page costs the same at any depth. No session body or cursor is held in daemon memory between readings; the only warm per-session state is the session item index ([latency.md](latency.md#warm-state)).
 - **Cursors.** A cursor names the entry where its page starts. An append never makes it stale; a change to anything a page already showed (a re-parse that changes a shown row, a branch change, a newly stored parent link) gives `stale_cursor` naming the session, never a shifted page ([reading.md](reading.md#paging-and-budgets)).

@@ -4,9 +4,9 @@ Where Polylogue's inputs come from: the location model and every live origin, ho
 
 ## Principles
 
-- **Every relevant origin, at full fidelity.** Every AI tool whose sessions the user has is captured, with every side file that carries conversation content, context or harness-side state, even before a parser for it exists, because harnesses prune their own files and a pruned file is lost. A degraded form (a flattened transcript, a page scrape where the provider's data is available) is never the stored record.
+- **Every relevant origin, at full fidelity.** Every AI harness whose sessions the user has is captured, with every side file that carries conversation content, context or harness-side state, even before a parser for it exists, because harnesses prune their own files and a pruned file is lost. A degraded form (a flattened transcript, a page scrape where the provider's data is available) is never the stored record.
 - **Nothing disappears silently.** Every file under a declared root is collected, ignored with a recorded reason, or reported unrecognized.
-- **Fixed locations, strict recognition, fail closed.** Polylogue reads data where each tool writes it; there are no path settings and no custom roots. Input that does not match its declared shape is refused, never reinterpreted.
+- **Fixed locations, strict recognition, fail closed.** Polylogue reads data where each harness writes it; there are no path settings and no custom roots. Input that does not match its declared shape is refused, never reinterpreted.
 - **A leading UTF-8 byte order mark is ignored.** A text input saved with one (common from Windows tools) is recognized and parsed as without it. The stored bytes and every recorded byte offset still count the mark.
 - **Live is the normal case.** A growing file is tailed; a live origin needs no import step.
 - **Exports arrive by hand.** Provider exports are brought in with `polylogue import PATH`; nothing is picked up from a download or inbox directory.
@@ -18,8 +18,8 @@ Where Polylogue's inputs come from: the location model and every live origin, ho
 ### Roots, locations and the ignored list
 
 - Each origin declares its **root**, a fixed set of **location** patterns, and an **ignored list** with one reason per entry (secret or account state, program files, cache, derived pile, the tool's lock files).
-- The root honours the tool's own home variable where the tool defines one (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `HERMES_HOME`); otherwise it is the tool's fixed path under `$HOME`. Polylogue has no setting of its own for any path.
-- Ignoring a tool's credential files is not filtering content: they are account state, not AI work.
+- The root honours the harness's own home variable where the harness defines one (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `HERMES_HOME`); otherwise it is the harness's fixed path under `$HOME`. Polylogue has no setting of its own for any path.
+- Ignoring a harness's credential files is not filtering content: they are account state, not AI work.
 
 ### Every file in one class
 
@@ -97,7 +97,7 @@ Ignored: `logs_2.sqlite` (diagnostic log); `thread_history_*.sqlite` (a derived 
 Hooks are a capture channel: every event each harness emits is recorded whole. Hook-only facts (permission answers, pre-compaction context, paste bodies as typed, process identity) exist nowhere else. Which events are declared and how they are installed (`polylogue install HARNESS`) is in [installing.md](installing.md#installing); what context hooks bring to a session is in [agent-context.md#brief](agent-context.md#brief).
 
 - **Each harness's declared events are installed and spooled.** Claude Code gets its base events, plus the events a probe of the installed version confirmed (`PermissionRequest`, `PermissionDenied`, `StopFailure`, `SubagentStart`, `Elicitation`); Codex gets `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse` and `Stop`; Gemini CLI gets `SessionStart`, `BeforeAgent`, `BeforeTool`, `AfterTool`, `AfterAgent`, `Notification`, `PreCompress` and `SessionEnd`. The exact lists are in [live-sessions.md](live-sessions.md#live-state). Hermes's lifecycle events and Grok CLI's, if it offers any, follow the same rule.
-- **Recording.** `polylogue internal hook EVENT --in HARNESS`, the entry `install` writes into each harness's settings, appends the payload, whole and with no size cap, as one line of the per-process spool file under `$XDG_STATE_HOME/polylogue/hooks/`, and syncs it (`fdatasync`) before returning. Recording opens no database and contacts nothing. A harness treats a non-zero hook exit as a refusal (Claude Code blocks the tool call on exit 2), so the hook always exits 0: an unwritable spool, an unreadable configuration file, a deleted working directory or an unknown harness name writes nothing to stdout and one line to stderr. A recording entry takes under 5 ms typically and 15 ms at p95 when the state directory is on a disk that is not saturated by bulk writes; a sync behind heavy writeback can take hundreds of milliseconds, so deployments keep the state directory off bulk storage.
+- **Recording.** `polylogue internal hook EVENT --harness HARNESS`, the entry `install` writes into each harness's settings, appends the payload, whole and with no size cap, as one line of the per-process spool file under `$XDG_STATE_HOME/polylogue/hooks/`, and syncs it (`fdatasync`) before returning. Recording opens no database and contacts nothing. A harness treats a non-zero hook exit as a refusal (Claude Code blocks the tool call on exit 2), so the hook always exits 0: an unwritable spool, an unreadable configuration file, a deleted working directory or an unknown harness name writes nothing to stdout and one line to stderr. A recording entry takes under 5 ms typically and 15 ms at p95 when the state directory is on a disk that is not saturated by bulk writes; a sync behind heavy writeback can take hundreds of milliseconds, so deployments keep the state directory off bulk storage.
 - **The spool line** wraps the payload, kept whole under `payload`:
 
   ```json
@@ -149,7 +149,7 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
 | Hook spool lines in the older line shapes | only with `--origin hook-spool`: per-session `.jsonl`, `carriers/<harness>/<date>/<pid>.ndjson` | the payload's origin |
 | Browser captures in the older envelope | only with `--origin browser-capture`: `browser_llm_session` v1 envelopes | the payload's origin |
 | Python Polylogue's vector stores | only with `--origin python-vectors`: a sqlite-vec `message_embeddings` store, read through its backing tables | vectors ([search.md](search.md#what-is-embedded)) |
-| A live-origin file outside its root | only with `--origin NAME`, or when the path keeps the tool's own layout; an origin with no parser yet is stored and waits for one | that origin |
+| A live-origin file outside its root | only with `--origin NAME`, or when the path keeps the harness's own layout; an origin with no parser yet is stored and waits for one | that origin |
 
 ### Earlier stores
 
@@ -161,7 +161,7 @@ Hand-made Markdown chat dumps are not a structure: a flattened transcript is a d
 
 ## AI Studio through Drive
 
-AI Studio stores its prompts in Google Drive, which is a known location like a tool's home directory.
+AI Studio stores its prompts in Google Drive, which is a known location like a harness's home directory.
 
 - The collector follows Drive's changes feed from a start page token, not folder relisting, and writes every Drive revision of each prompt, oldest first, into the spool.
 - The revision list is read through every page. The cursor holds the accepted revision and its Drive modification time; when Drive has pruned that revision, the walk continues at the first revision newer than it.

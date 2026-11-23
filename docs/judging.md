@@ -8,7 +8,7 @@ Judgment is optional and never a gate: most agent annotations will never be seen
 
 `judge accept|reject|defer [--reason TEXT]` records a `judgment` on the exact revision selected: `polylogue annotation:01JB7Q2M@2 judge accept`. Any author may judge, and the judgment records its true author. The review queue is the shipped saved query `review` (annotations not by the operator that the counted judges have not judged); `polylogue review pick judge accept` triages several.
 
-`judged:` and `judged_by:` default to the operator's judgments; `judged_by:agent:<…>` and `judged_by:*` widen it. Judging a revision again revises the judge's earlier judgment of it, so which judgment is current follows the revision links, never the writers' clocks; two current operator judgments of one revision that differ (written apart and merged) are a conflict. Operator-authored annotations need none. No score, check result or count of agent judgments accepts anything; there is no promotion.
+`judged:` reads the operator's judgments and `judged_by:` defaults to them; `judged_by:agent:<…>` and `judged_by:*` widen it. Judging a revision again revises the judge's earlier judgment of it, so which judgment is current follows the revision links, never the writers' clocks; two current operator judgments of one revision that differ (written apart and merged) are a conflict. Operator-authored annotations need none. No score, check result or count of agent judgments accepts anything; there is no promotion.
 
 **The one-key loop.** In the picker over annotations (`polylogue review pick`), `Ctrl-a`, `Ctrl-x` and `Ctrl-d` record accept, reject and defer on the highlighted row and move to the next; moving past a row writes nothing. Each key is one `judge` request with the same reply and undo line as the typed verb. The key table is [terminal.md](terminal.md#keys).
 
@@ -54,7 +54,7 @@ How far a pass agrees with a reference judge: `polylogue 'annotations where pass
 
 ## Forecasts
 
-A `forecast` names an event, a probability, a horizon and what resolves it; the resolution is an annotation that `replies_to` it with the outcome. Calibration uses only forecasts written before their event resolved (by `commit_seq` on one archive, otherwise by the resolving record's time) and is reported with its count.
+A `forecast` names an event, a probability, a horizon and what resolves it; the resolution is an annotation that `replies_to` it with the outcome. Calibration uses only forecasts written before their event resolved (by the resolving record's time) and is reported with its count.
 
 ## Rubrics and passes
 
@@ -63,7 +63,7 @@ Systematic agent annotation is a pass of annotation lines governed by a rubric, 
 1. A `rubric` declares instructions, a unit query, and fields with types, enums or ranges, plus whether abstaining, a confidence and a rationale are allowed.
 2. A pass first keeps its population as `result:<id>` (`save` with no name), then imports one `pass` line, the `origin` of everything that follows, and one `rubric_value` per row and field, each `derived_from` the rubric's exact revision.
 3. A value the rubric does not allow is refused and returned, not stored. An abstention is a `rubric_value` keyed `abstain` with its reason.
-4. **Coverage** is the kept rows minus the rows with a value or abstention, computed at read.
+4. **Pass coverage** is the kept rows minus the rows with a value or abstention, computed at read.
 5. Withdrawing a pass's whole set is one withdrawal.
 6. A marker cannot open a pass; `::rubric_value` names a rubric revision and a pass the same author opened.
 7. **Shipped rubrics:** Python Polylogue's six annotation schemas (`delegation.discourse`, `seed.activity`, `seed.goal-event`, `seed.outcome-evidence`, `seed.knowledge-artifact`, `seed.reusability`) ship as rubric data, resolved by name like shipped saved queries; a rubric of one's own with the same name takes precedence.
