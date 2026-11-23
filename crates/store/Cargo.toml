@@ -45,8 +45,3 @@ workspace = true
 fixture = []
 # Test support: arm fault points (crate::fault); never enabled by a shipped build.
 faults = []
-
-[[example]]
-name = "convert-line-executions"
-path = "examples/convert_line_executions.rs"
-required-features = ["fixture"]

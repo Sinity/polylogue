@@ -89,15 +89,5 @@ fn rebuilding_cache_preserves_prior_source_pending_authored_intent() {
             before.3,
             polylogue_store::primary::queue::Phase::Pending
         ));
-        drop(sdk);
-        let mut extracted = Vec::new();
-        assert_eq!(
-            crate::line_population::extract(&store, "polylogue-test", &mut extracted).unwrap(),
-            0
-        );
-        assert!(
-            extracted.is_empty(),
-            "unchanged authored intent needs no conversion"
-        );
     }
 }

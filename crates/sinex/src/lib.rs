@@ -13,8 +13,6 @@ pub use context::{ContextFailure, ContextFailureKind, ResolvedContext};
 pub use sinex_protocol::PublicInterruptBudget;
 pub(crate) mod attribution;
 pub mod kinds;
-#[cfg(feature = "fixture")]
-pub mod line_population;
 mod material;
 mod producer;
 mod products;
