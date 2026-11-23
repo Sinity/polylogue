@@ -96,7 +96,7 @@ fn request_field_matches_every_row_of_one_write() {
 }
 
 #[test]
-fn links_to_matches_any_revision() {
+fn links_to_matches_supports_links_and_ignores_about_links() {
     let d = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(d.path()).unwrap();
     session(&mut f, "test:work");
@@ -903,6 +903,9 @@ fn outlier_uses_only_the_repositorys_preceding_thirty_days() {
         ("old", "morrow", now - 31 * 86400000, 1_000_000_000_000),
         ("other", "elsewhere", now - 86400000, 1_000_000_000_000),
         ("current", "morrow", now, 9_000_000_000),
+        // Its window is p1..p3 and current: median (3e9+4e9)/2 = 3.5e9, so the
+        // outlier threshold is 10.5e9 and 10e9 stays below it.
+        ("modest", "morrow", now + 1000, 10_000_000_000),
     ] {
         let name = format!("test:{id}");
         let pk = f
@@ -931,6 +934,10 @@ fn outlier_uses_only_the_repositorys_preceding_thirty_days() {
     assert_eq!(
         rows(&f, "sessions where id:test:current", &["outlier"])[0]["outlier"],
         true
+    );
+    assert_eq!(
+        rows(&f, "sessions where id:test:modest", &["outlier"])[0]["outlier"],
+        false
     );
 }
 

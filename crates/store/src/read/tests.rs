@@ -197,7 +197,8 @@ fn main_and_attached_cache_targets_leave_room_for_the_optional_vectors_share() {
                 .unwrap()
                 .pragma_query_value(Some(schema), "cache_size", |r| r.get(0))
                 .unwrap();
-            assert!(cache < 0);
+            // (8 MiB + 123) / (3 readers * 3 databases * 1 KiB) = 910 KiB.
+            assert_eq!(cache, -910);
             total += (-cache) as u64 * 1024;
             let mmap: i64 = reader
                 .conn()
@@ -207,8 +208,7 @@ fn main_and_attached_cache_targets_leave_room_for_the_optional_vectors_share() {
             assert_eq!(mmap, 0);
         }
     }
-    assert!(total <= (8 << 20) + 123);
-    assert!(total <= (8 << 20) * 2 / 3);
+    assert_eq!(total, 6 * 910 * 1024);
     assert!(ReadPool::with_budget(&fixture.archive, 0, 8 << 20).is_err());
     assert!(ReadPool::with_budget(&fixture.archive, 3, 3 * 3 * 1024 - 1).is_err());
 }

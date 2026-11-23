@@ -42,7 +42,7 @@ fn completed_history_keeps_lookup_and_one_run_group() {
             .unwrap();
         assert_eq!(
             writer.flush_rows().unwrap().errors,
-            [format!("confirmed stream: after position 0: {offline}")]
+            ["confirmed stream: after position 0: Sinex: synthetic offline producer".to_string()]
         );
         let pool = crate::ReadPool::open(&archive).unwrap();
         let reader = pool.reader().unwrap();

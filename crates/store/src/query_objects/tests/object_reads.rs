@@ -63,7 +63,7 @@ fn run_completion_without_its_beginning_is_incomplete() {
         .unwrap();
     let reader = pool.reader().unwrap();
     assert!(
-        matches!(reader.prepare_object_read(&Reference::Run(beginning.id)), Err(StoreError::ReferenceUnavailable {reason,..}) if reason.contains("beginning is unavailable"))
+        matches!(reader.prepare_object_read(&Reference::Run(beginning.id)), Err(StoreError::ReferenceUnavailable {reason,..}) if reason == "the run completion is recorded but its beginning is unavailable")
     );
 }
 
@@ -100,6 +100,6 @@ fn run_object_read_checks_the_completion_identity() {
     drop(conn);
     let reader = pool.reader().unwrap();
     assert!(
-        matches!(reader.prepare_object_read(&Reference::Run(beginning.id)), Err(StoreError::Invalid(message)) if message.contains("names another run"))
+        matches!(reader.prepare_object_read(&Reference::Run(beginning.id)), Err(StoreError::Invalid(message)) if message == "stored run completion names another run")
     );
 }

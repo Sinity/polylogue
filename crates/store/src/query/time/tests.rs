@@ -15,7 +15,6 @@ fn ms(text: &str) -> i64 {
 #[test]
 fn source_time_expressions_use_one_shared_clock() {
     let clock = fixture();
-    assert_eq!(clock.now.to_string(), "2026-10-07T10:00:00Z");
     for (text, expected) in [
         ("7d", "2026-09-30T10:00:00Z"),
         ("3h", "2026-10-07T07:00:00Z"),

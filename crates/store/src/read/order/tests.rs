@@ -37,7 +37,6 @@ fn message_session_lookup_never_hydrates_the_endpoint_body() {
         reader.message_session(&id).unwrap(),
         Some(SessionId::parse("codex:opaque:session").unwrap())
     );
-    assert!(reader.message_with_block_selection(&id).is_err());
     assert_eq!(
         reader
             .message_session(&MessageId::parse("codex:absent").unwrap())

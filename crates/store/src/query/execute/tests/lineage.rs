@@ -22,14 +22,16 @@ fn root_and_depth_queries_use_current_explicit_lineage_before_and_after_derivati
         }
         let pool = f.reads().unwrap();
         let reader = pool.reader().unwrap();
-        for (query, expected) in [
+        for (query, expected, depths) in [
             (
                 "sessions where root:test:root | sort by id",
                 vec!["test:fork", "test:resume", "test:root"],
+                vec![1, 2, 0],
             ),
             (
                 "sessions where depth=2 | sort by depth",
                 vec!["test:resume"],
+                vec![2],
             ),
         ] {
             let mut opts = options();
@@ -45,8 +47,16 @@ fn root_and_depth_queries_use_current_explicit_lineage_before_and_after_derivati
             assert_eq!(ids, expected, "{query}, derived={derived}");
             for row in &page.rows {
                 assert_eq!(row["root"], "test:root");
-                assert!(row["depth"].is_number());
             }
+            let projected: Vec<_> = page.rows.iter().map(|row| row["depth"].clone()).collect();
+            assert_eq!(
+                projected,
+                depths
+                    .iter()
+                    .map(|d| serde_json::json!(d))
+                    .collect::<Vec<_>>(),
+                "{query}, derived={derived}"
+            );
         }
     }
     // A known cached root cannot leak through a newly conflicting parent.

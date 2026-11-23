@@ -108,14 +108,16 @@ fn waiting_length_and_explicit_kept_contracts_have_distinct_meanings() {
             [],
         )
         .unwrap();
-    assert!(
-        !pool
-            .reader()
-            .unwrap()
-            .completeness(&[expected("synthetic", "v1")])
-            .unwrap()
-            .caught_up()
+    let behind = pool
+        .reader()
+        .unwrap()
+        .completeness(&[expected("synthetic", "v1")])
+        .unwrap();
+    assert_eq!(
+        behind.parsing,
+        CompletenessDimension::Incomplete(vec![CompletenessReason::ParserBehind])
     );
+    assert!(!behind.caught_up());
     index
         .execute(
             "UPDATE parse_state SET status='no_parser_yet',parsed_upto=10,at_length=NULL",
@@ -128,6 +130,10 @@ fn waiting_length_and_explicit_kept_contracts_have_distinct_meanings() {
         .completeness(&[expected("synthetic", "v1")])
         .unwrap();
     assert_eq!(raw.raw_only_chains, 1);
+    assert_eq!(
+        raw.parsing,
+        CompletenessDimension::Incomplete(vec![CompletenessReason::KnownRawOnly])
+    );
     assert!(!raw.caught_up());
 }
 
@@ -208,12 +214,12 @@ fn bytes_only_declaration_needs_no_parser_or_parsed_coverage() {
     assert_eq!(present.raw_only_chains, 1);
     assert_eq!(present.kept_chains, 0);
     assert!(!present.caught_up());
-    assert!(
+    assert!(matches!(
         pool.reader()
             .unwrap()
-            .completeness(&[expected("unparsed-provider", "")])
-            .is_err()
-    );
+            .completeness(&[expected("unparsed-provider", "")]),
+        Err(crate::StoreError::Invalid(_))
+    ));
 }
 
 /// The parsing answer of a walk over every chain of the source joined with

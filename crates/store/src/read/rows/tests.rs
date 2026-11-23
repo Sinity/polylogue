@@ -17,6 +17,15 @@ fn row_visit_preserves_query_values_and_stops_at_callback_failure() {
         })
         .unwrap();
     assert_eq!(visited, collected);
+    assert_eq!(collected.len(), 1000);
+    assert_eq!(
+        collected[0],
+        serde_json::json!({"x": 1, "absent": null, "bytes": "007fff", "word": "é"})
+    );
+    assert_eq!(
+        collected[999],
+        serde_json::json!({"x": 1000, "absent": null, "bytes": "007fff", "word": "é"})
+    );
     let mut visits = 0;
     let error = reader
         .query_each(sql, &[], |_| {
