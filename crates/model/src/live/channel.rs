@@ -73,7 +73,7 @@ stored_names!(HostProtocol {
 impl HostProtocol {
     /// Whether the agent's stdio must be held by a `polylogue internal host`
     /// process so that a daemon restart does not end it.
-    pub fn stdio(self) -> bool {
+    pub fn needs_host_process(self) -> bool {
         !matches!(self, Self::CodexAppServer)
     }
 }
@@ -164,7 +164,7 @@ fn refuse<T>(reason: &'static str, detail: String) -> Result<T, Refusal> {
 /// describes; preference: protocol, hook, resume.
 pub fn channel(act: Act, state: LiveState, probe: &Probe) -> Result<Channel, Refusal> {
     let harness = &probe.harness;
-    let running = |what: &str| {
+    let running_channel = |what: &str| {
         if probe.hosted {
             Ok(Channel::Protocol)
         } else if probe.hooks {
@@ -179,7 +179,7 @@ pub fn channel(act: Act, state: LiveState, probe: &Probe) -> Result<Channel, Ref
     match act {
         Act::Ping { live } => {
             if state.running() {
-                running("a message")
+                running_channel("a message")
             } else if live {
                 refuse(
                     "session_not_live",
@@ -196,7 +196,7 @@ pub fn channel(act: Act, state: LiveState, probe: &Probe) -> Result<Channel, Ref
         }
         Act::Notice => {
             if state.running() {
-                running("a notice")
+                running_channel("a notice")
             } else {
                 refuse(
                     "session_not_live",

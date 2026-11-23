@@ -21,7 +21,15 @@ fn strokes_fold_like_accents() {
     }
     // A capital folds to the capital of the same base letter as its small
     // form, so the tokenizer's case fold brings both to one key.
-    for (capital, small, base) in [("Ƀ", "ƀ", "b"), ("Ɨ", "ɨ", "i"), ("Ʉ", "ʉ", "u")] {
+    for (capital, small, base) in [
+        ("Ƀ", "ƀ", "b"),
+        ("Ɨ", "ɨ", "i"),
+        ("Ʉ", "ʉ", "u"),
+        ("Ƶ", "ƶ", "z"),
+        ("Ɉ", "ɉ", "j"),
+        ("Ɍ", "ɍ", "r"),
+        ("Ǥ", "ǥ", "g"),
+    ] {
         assert_eq!(key(capital), base);
         assert_eq!(key(small), base);
     }
@@ -40,6 +48,18 @@ fn tokens_split_on_anything_but_letters_and_digits() {
         .collect();
     assert_eq!(words, ["cafe\u{301}", "x"]);
     assert_eq!(key("cafe\u{301}"), "cafe");
+}
+
+#[test]
+fn private_use_characters_stay_inside_a_token() {
+    let t = "build\u{E0B0}done next";
+    let words: Vec<&str> = tokens(t).into_iter().map(|(s, e)| &t[s..e]).collect();
+    assert_eq!(words, ["build\u{E0B0}done", "next"]);
+    assert_eq!(
+        fts_phrase("build\u{E0B0}done").as_deref(),
+        Some("\"build\u{E0B0}done\"")
+    );
+    assert_eq!(key("ƚ"), "l");
 }
 
 #[test]

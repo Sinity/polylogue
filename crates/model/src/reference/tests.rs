@@ -323,3 +323,33 @@ fn stored_spellings_report_the_complete_surface_correction() {
         );
     }
 }
+
+#[test]
+fn read_targets_refuse_what_has_no_selected_row_reading() {
+    use crate::read::ReadTarget;
+    for text in [
+        "session:test:one",
+        "message:test:one:m1",
+        "block:test:one:m1#0",
+        "annotation:root@revision",
+    ] {
+        assert!(
+            ReadTarget::try_from(Reference::parse(text).unwrap()).is_ok(),
+            "{text}"
+        );
+    }
+    for (text, reason) in [
+        (
+            "annotation:root",
+            "an assertion family is read through its current revision",
+        ),
+        (
+            "span:block:test:one:m1#0#u16=0-2",
+            "a span addresses text inside a record; read its container",
+        ),
+        ("tool:test:one#call", "it has no selected-row reading"),
+    ] {
+        let refused = ReadTarget::try_from(Reference::parse(text).unwrap()).unwrap_err();
+        assert_eq!(refused.reason, reason, "{text}");
+    }
+}

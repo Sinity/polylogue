@@ -30,7 +30,7 @@ impl Integer {
         if self.negative == other.negative {
             Self {
                 negative: self.negative,
-                digits: add(&self.digits, &other.digits),
+                digits: add_digits(&self.digits, &other.digits),
             }
         } else {
             let order = magnitude(&self.digits, &other.digits);
@@ -53,7 +53,7 @@ impl Integer {
 fn magnitude(left: &str, right: &str) -> Ordering {
     left.len().cmp(&right.len()).then_with(|| left.cmp(right))
 }
-fn add(left: &str, right: &str) -> String {
+fn add_digits(left: &str, right: &str) -> String {
     let mut left = left.bytes().rev();
     let mut right = right.bytes().rev();
     let mut carry = 0;

@@ -109,3 +109,6 @@ pub struct NewVariantPart {
     pub relation: VariantRelation,
     pub body: String,
 }
+
+#[cfg(test)]
+mod tests;

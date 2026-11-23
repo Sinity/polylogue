@@ -126,8 +126,11 @@ impl Timestamp {
         text.parse::<jiff::Timestamp>().ok().map(Self)
     }
 
+    /// Milliseconds since the epoch, rounded toward the past, so an instant
+    /// before 1970 never maps to a later millisecond.
     pub fn unix_ms(self) -> i64 {
-        self.0.as_millisecond()
+        i64::try_from(self.0.as_nanosecond().div_euclid(1_000_000))
+            .expect("supported instants fit in i64 milliseconds")
     }
 
     pub fn unix_ns(self) -> i128 {

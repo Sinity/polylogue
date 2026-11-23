@@ -17,8 +17,10 @@ pub fn nusd_from_usd(text: &str) -> Option<i64> {
 /// The exact decimal dollars of an amount: `1234500000` → `1.2345`,
 /// `-5` → `-0.000000005`, `0` → `0`.
 pub fn usd_text(nusd: i64) -> String {
-    let whole = nusd.unsigned_abs() / NUSD_PER_USD.unsigned_abs();
-    let fraction = format!("{:09}", nusd.unsigned_abs() % NUSD_PER_USD.unsigned_abs());
+    let magnitude = nusd.unsigned_abs();
+    let per_usd = NUSD_PER_USD.unsigned_abs();
+    let whole = magnitude / per_usd;
+    let fraction = format!("{:09}", magnitude % per_usd);
     let fraction = fraction.trim_end_matches('0');
     format!(
         "{}{whole}{}{fraction}",

@@ -113,3 +113,13 @@ fn times_in_a_zone_keep_the_instant_and_show_the_offset() {
         "2026-07-01 10:00 +02:00"
     );
 }
+
+#[test]
+fn milliseconds_round_toward_the_past() {
+    let ms = |ns: i128| Timestamp::from_unix_ns(ns).unwrap().unix_ms();
+    assert_eq!(ms(1_999_999), 1);
+    assert_eq!(ms(500_000), 0);
+    assert_eq!(ms(-500_000), -1);
+    assert_eq!(ms(-1_000_000), -1);
+    assert_eq!(ms(-1_000_001), -2);
+}

@@ -1,6 +1,7 @@
 //! Text as search sees it. The full-text index (SQLite FTS5, `unicode61`
 //! with `remove_diacritics 2`) folds case and accents and splits on
-//! anything that is not a letter or digit. It does not fold letters with a
+//! anything that is not a letter, a digit or a private-use character (icon
+//! font glyphs belong to the word they touch). It does not fold letters with a
 //! stroke, so `fold` maps those first, both when text is indexed and when a
 //! query is written; `Łódź` is then found by `lodz`.
 //!
@@ -35,6 +36,15 @@ pub fn fold(text: &str) -> String {
             'Ɨ' => out.push('I'),
             'ʉ' => out.push('u'),
             'Ʉ' => out.push('U'),
+            'ƶ' => out.push('z'),
+            'Ƶ' => out.push('Z'),
+            'ƚ' => out.push('l'),
+            'ɉ' => out.push('j'),
+            'Ɉ' => out.push('J'),
+            'ɍ' => out.push('r'),
+            'Ɍ' => out.push('R'),
+            'ǥ' => out.push('g'),
+            'Ǥ' => out.push('G'),
             _ => out.push(c),
         }
     }
@@ -51,13 +61,21 @@ pub fn key(token: &str) -> String {
         .collect()
 }
 
-/// The tokens of `text` with their byte ranges: maximal runs of letters and
-/// digits (combining marks stay inside the run they follow).
+/// Whether the index tokenizer keeps `c` inside a token: a letter, a digit or
+/// a private-use code point (its default token categories are L*, N* and Co).
+fn is_token_char(c: char) -> bool {
+    c.is_alphanumeric()
+        || matches!(c, '\u{E000}'..='\u{F8FF}' | '\u{F0000}'..='\u{FFFFD}' | '\u{100000}'..='\u{10FFFD}')
+}
+
+/// The tokens of `text` with their byte ranges: maximal runs of letters,
+/// digits and private-use characters (combining marks stay inside the run they
+/// follow).
 pub fn tokens(text: &str) -> Vec<(usize, usize)> {
     let mut out = vec![];
     let mut start = None;
     for (i, c) in text.char_indices() {
-        let inside = c.is_alphanumeric() || (start.is_some() && is_combining_mark(c));
+        let inside = is_token_char(c) || (start.is_some() && is_combining_mark(c));
         match (inside, start) {
             (true, None) => start = Some(i),
             (false, Some(s)) => {
@@ -87,7 +105,7 @@ pub fn fts_phrase(term: &str) -> Option<String> {
     if words.is_empty() {
         return None;
     }
-    // Tokens hold only letters, digits and combining marks, so the phrase
+    // Tokens hold only letters, digits, private-use characters and combining marks, so the phrase
     // needs no quote escaping.
     let mut phrase = format!("\"{}\"", words.join(" "));
     if prefix {
