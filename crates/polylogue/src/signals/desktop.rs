@@ -1,3 +1,6 @@
+//! Desktop notification delivery: the bus connection, receipt persistence,
+//! recovery of undelivered notices, and the loop that drives them beside the
+//! signal evaluator.
 use super::*;
 use shared_signals::notifications::NotificationState;
 use signal_delivery::{Deliverer, NotificationRequest, NotificationUpdate};
@@ -6,10 +9,8 @@ use tokio_util::sync::CancellationToken;
 
 async fn connect(d: &Daemon) -> Option<zbus::Connection> {
     let address = d.config.notification_bus_address.as_deref()?;
-    match zbus::connection::Builder::address(address) {
-        Ok(builder) => builder.build().await.ok(),
-        Err(_) => None,
-    }
+    let builder = zbus::connection::Builder::address(address).ok()?;
+    builder.build().await.ok()
 }
 
 async fn persist_update(d: &Daemon, update: &NotificationUpdate) -> Result<bool, Held> {

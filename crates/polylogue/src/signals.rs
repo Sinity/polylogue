@@ -7,6 +7,7 @@ mod rules;
 
 use crate::daemon::service::Daemon;
 use polylogue_model::{
+    LockExt as _,
     authored::ExecutionEligibility,
     signal::{Checkpoint, Commit, Event, Outbox},
     user::UserWrite,
@@ -59,9 +60,7 @@ impl From<crate::daemon::Failure> for Held {
     }
 }
 fn report(d: &Daemon, hold: &Held) {
-    if let Ok(mut status) = d.signals.lock() {
-        *status = json!({"held":[hold]});
-    }
+    *d.signals.locked() = json!({"held":[hold]});
     #[cfg(test)]
     observations::status(d);
 }
@@ -236,7 +235,7 @@ fn tick(d: &Daemon, context: Arc<polylogue_reading::operation::Context>) -> Resu
                 held_rules.push(held_rule(&id));
                 definitions.push(json!({
                     "id":id,"name":definition.rule.name,"query":definition.rule.query,
-                    "author":"unavailable",
+                    "author":assertion.fact.author.to_string(),
                 }));
             }
             Err(reason) => unusable.push(json!({"id":assertion.fact.id,"reason":reason})),
@@ -249,9 +248,7 @@ fn tick(d: &Daemon, context: Arc<polylogue_reading::operation::Context>) -> Resu
             held_rules.push(held_rule(&kept.version.id));
         }
     }
-    if let Ok(mut status) = d.signals.lock() {
-        *status = json!({"rules":definitions,"unusable":unusable,"held":held_rules});
-    }
+    *d.signals.locked() = json!({"rules":definitions,"unusable":unusable,"held":held_rules});
     #[cfg(test)]
     observations::status(d);
     drop(reader);

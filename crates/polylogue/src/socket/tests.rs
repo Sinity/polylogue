@@ -68,6 +68,19 @@ fn private_publication_keeps_a_long_archive_socket_path_supported() {
     std::os::unix::net::UnixStream::connect(path).unwrap();
 }
 
+#[test]
+fn a_socket_path_no_client_can_connect_to_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let padding = 108 - dir.path().as_os_str().as_bytes().len() - "/daemon.sock".len() - 1;
+    let archive = dir.path().join("a".repeat(padding));
+    std::fs::create_dir(&archive).unwrap();
+    let path = archive.join("daemon.sock");
+    assert_eq!(path.as_os_str().as_bytes().len(), 108);
+    let error = bind(&path).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert!(!path.exists());
+}
+
 #[tokio::test]
 async fn an_already_published_socket_is_seen_after_registering_the_watch() {
     let dir = tempfile::tempdir().unwrap();

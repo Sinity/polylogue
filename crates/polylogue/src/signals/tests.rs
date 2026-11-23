@@ -447,7 +447,10 @@ fn completion_commit_wakes_rules_while_operation_clock_is_stopped() {
             status["rules"]
                 .as_array()
                 .is_some_and(|rules| rules.iter().any(|rule| {
-                    rule["name"] == "completion-wake" && rule["author"] == "unavailable"
+                    rule["name"] == "completion-wake"
+                        && rule["author"]
+                            .as_str()
+                            .is_some_and(|author| author != "unavailable")
                 })),
             "status changed after the observed rule: {:?}",
             observe.seen
@@ -586,12 +589,11 @@ fn unavailable_dependencies_keep_the_assertion_pending() {
         .unwrap();
     assert_eq!(delivered, 0);
     let status = fixture.daemon.signals.lock().unwrap();
-    assert!(
-        status["rules"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|rule| rule["name"] == "waiting" && rule["author"] == "unavailable")
-    );
+    assert!(status["rules"].as_array().unwrap().iter().any(|rule| {
+        rule["name"] == "waiting"
+            && rule["author"]
+                .as_str()
+                .is_some_and(|author| author != "unavailable")
+    }));
     assert!(!status["held"].as_array().unwrap().is_empty());
 }

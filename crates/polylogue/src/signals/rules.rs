@@ -1,3 +1,5 @@
+//! Validates signal assertions into rule definitions for the evaluator; a
+//! definition is validated content, not an active revision.
 use polylogue_model::assertion::{Assertion, AssertionKind, values};
 
 /// Validated content is distinct from an active evaluator revision. Neither a

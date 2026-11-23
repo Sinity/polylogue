@@ -147,8 +147,9 @@ pub fn agent_command(harness: &str, session_id: Option<&str>) -> Option<Vec<Stri
 pub(crate) struct Tracker {
     protocol: HostProtocol,
     word: &'static str,
-    /// Prompt request IDs in flight (ACP).
-    prompts: Vec<Value>,
+    /// Turns in flight: ACP prompt request IDs, or one placeholder per Claude
+    /// user message awaiting its result.
+    turns: Vec<Value>,
     /// The agent's unanswered requests: (request ID, line).
     open: Vec<(Value, Vec<u8>)>,
 }
@@ -158,7 +159,7 @@ impl Tracker {
         Self {
             protocol,
             word: "idle",
-            prompts: Vec::new(),
+            turns: Vec::new(),
             open: Vec::new(),
         }
     }
@@ -184,7 +185,7 @@ impl Tracker {
     /// A turn runs: an ACP prompt awaits its answer, or a Claude user
     /// message awaits its result.
     fn busy(&self) -> bool {
-        !self.prompts.is_empty()
+        !self.turns.is_empty()
     }
 
     /// A line the daemon sent the agent; the new status word if it changed.
@@ -192,7 +193,7 @@ impl Tracker {
         match self.protocol {
             HostProtocol::ClaudeStreamJson => match message["type"].as_str() {
                 Some("user") => {
-                    self.prompts.push(Value::Bool(true));
+                    self.turns.push(Value::Bool(true));
                 }
                 Some("control_response") => {
                     let id = &message["response"]["request_id"];
@@ -202,7 +203,7 @@ impl Tracker {
             },
             _ => {
                 if message["method"] == "session/prompt" {
-                    self.prompts.push(message["id"].clone());
+                    self.turns.push(message["id"].clone());
                 } else if message.get("method").is_none() {
                     let id = &message["id"];
                     self.open.retain(|(open, _)| open != id);
@@ -223,8 +224,8 @@ impl Tracker {
                 Some("result") => {
                     // One turn finished; messages sent during it run next,
                     // and its permission requests are moot.
-                    if !self.prompts.is_empty() {
-                        self.prompts.remove(0);
+                    if !self.turns.is_empty() {
+                        self.turns.remove(0);
                     }
                     self.open.clear();
                 }
@@ -241,9 +242,9 @@ impl Tracker {
                     }
                 } else {
                     let id = &message["id"];
-                    let before = self.prompts.len();
-                    self.prompts.retain(|p| p != id);
-                    if self.prompts.len() < before && self.prompts.is_empty() {
+                    let before = self.turns.len();
+                    self.turns.retain(|p| p != id);
+                    if self.turns.len() < before && self.turns.is_empty() {
                         // The finished prompt's requests are moot.
                         self.open.clear();
                     }

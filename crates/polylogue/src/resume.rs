@@ -17,8 +17,9 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// A command line to run in a directory. A harness resume runs in the
-/// session's resume directory ([`Reader::resume_directory`]); without one it
-/// is refused, never run in the caller's directory.
+/// session's resume directory ([`Reader::resume_directory`]). `cwd` is `None`
+/// when none was recorded: a preview prints the bare line, and running it is
+/// refused, never done in the caller's directory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Command {

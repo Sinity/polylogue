@@ -8,9 +8,22 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 
+/// The longest Unix socket path in bytes (`sun_path` is 108 with its NUL).
+const SOCKET_PATH_LIMIT: usize = 107;
+
 /// The caller owns the path through its archive lock or hosted-session identity.
 /// Publish only after bind has also made the socket listen.
 pub(crate) fn bind(path: &Path) -> io::Result<UnixListener> {
+    // A longer path would be published but no client could connect to it.
+    if path.as_os_str().as_bytes().len() > SOCKET_PATH_LIMIT {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "the socket path {} is longer than the {SOCKET_PATH_LIMIT} bytes a Unix socket allows; use a shorter archive directory",
+                path.display()
+            ),
+        ));
+    }
     let mut private = path.as_os_str().to_os_string();
     private.push(".binding");
     let private = PathBuf::from(private);

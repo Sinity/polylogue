@@ -47,8 +47,17 @@ pub(crate) fn reader_url_in(dir: &Path) -> io::Result<String> {
         .trim()
         .parse::<u16>()
         .map_err(|_| io::Error::other("the reader port file is unreadable"))?;
-    if listener_owner(port).is_none() || listener_owner(port) != my_uid() {
-        return Err(io::Error::other("the reader listener is unavailable"));
+    let Some(me) = my_uid() else {
+        return Err(io::Error::other("cannot read this uid"));
+    };
+    match listener_owner(port) {
+        None => return Err(io::Error::other("no reader listens on the recorded port")),
+        Some(owner) if owner != me => {
+            return Err(io::Error::other(
+                "another user owns the reader listener on the recorded port",
+            ));
+        }
+        Some(_) => {}
     }
     Ok(format!("http://127.0.0.1:{port}/auth#{}", token.trim()))
 }

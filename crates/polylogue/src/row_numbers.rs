@@ -61,6 +61,9 @@ pub(crate) fn select(word: &str, shown: &ShownRows) -> Result<Vec<String>, Strin
         return Ok(shown.rows.iter().map(|row| row.reference.clone()).collect());
     }
     let row = |number: &str| -> Result<&Row, String> {
+        if number == "0" {
+            return Err("@0: rows start at 1".into());
+        }
         number
             .parse::<usize>()
             .ok()
@@ -76,6 +79,9 @@ pub(crate) fn select(word: &str, shown: &ShownRows) -> Result<Vec<String>, Strin
     {
         if part.is_empty() {
             return Err(format!("{word}: a row number is missing between commas"));
+        }
+        if part.contains('.') && part.contains('-') {
+            return Err(format!("@{part}: a row range has no hit; use @1-2 or @2.1"));
         }
         if let Some((number, hit)) = part.split_once('.') {
             let selected = row(number)?;
