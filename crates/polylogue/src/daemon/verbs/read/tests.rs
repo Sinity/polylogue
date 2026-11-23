@@ -5,9 +5,7 @@ fn refusal(format: &str) -> (String, String) {
         format: Some(format.into()),
         ..ReadStep::default()
     };
-    let failure = arguments(&step, "sessions".into())
-        .err()
-        .expect("format is refused");
+    let failure = arguments(&step, "sessions".into()).expect_err("format is refused");
     (failure.code().to_owned(), failure.error.message.clone())
 }
 
