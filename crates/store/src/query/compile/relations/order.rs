@@ -214,6 +214,11 @@ impl Compiler<'_> {
             )),
         );
         let mut identity = identity_columns(outer);
+        for key in identity_columns(&inner) {
+            let slot = self.slot();
+            select_list.push(format!("i.{} AS {}", column_sql(&key), column_sql(&slot)));
+            identity.push(slot);
+        }
         if matches!(on, JoinOn::Order { .. }) {
             for value in [&pair.coarse, &pair.distance_key] {
                 let slot = self.slot();
@@ -225,7 +230,6 @@ impl Compiler<'_> {
             let slot = self.slot();
             select_list.push(format!("i.{} AS {}", column_sql(&key), column_sql(&slot)));
             outer.program.order.push(OrderKey::ascending(&slot));
-            identity.push(slot);
         }
         let ctes = if pair.ctes.is_empty() {
             String::new()
@@ -355,7 +359,7 @@ impl Compiler<'_> {
         }
         if outer.sources.is_empty() || inner.sources.is_empty() {
             return Err(QueryError::Unavailable {
-                what: "source time accuracy was not kept for this relation".into(),
+                reason: "source time accuracy was not kept for this relation".into(),
             });
         }
         let (left, left_storage) = self.order_time(outer, "r");
@@ -458,7 +462,7 @@ impl Compiler<'_> {
             .find(|source| source.prefix.is_empty())
         else {
             return Err(QueryError::Unavailable {
-                what: "full-scope step positions were not kept for this relation".into(),
+                reason: "full-scope step positions were not kept for this relation".into(),
             });
         };
         if scope.is_some_and(|name| name != "session_tool_calls") {
