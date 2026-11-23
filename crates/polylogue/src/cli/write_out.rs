@@ -713,7 +713,7 @@ fn consume(
     });
     if let Err(error) = result {
         let kept = if let Some(Sink::Directory(bundle)) = sink.as_mut() {
-            Some(bundle.abort(error.to_string()).to_string())
+            Some(bundle.error(error.to_string()).to_string())
         } else {
             None
         };

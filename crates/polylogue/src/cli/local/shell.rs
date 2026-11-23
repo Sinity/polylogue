@@ -41,7 +41,7 @@ pub(super) fn install(
         File::read(path).map_err(|error| io::Error::new(error.kind(), format!("{error}; print the managed script with `polylogue install {shell} --dry-run --program {program}`")))
     };
     let completion = read(&path)?;
-    let init_path = match shell {
+    let startup_path = match shell {
         "zsh" => Some(startup.zsh_directory.join(".zshrc")),
         "fish" => Some(
             paths
@@ -51,7 +51,7 @@ pub(super) fn install(
         ),
         _ => None,
     };
-    let init = init_path.as_ref().map(|path| read(path)).transpose()?;
+    let startup_file = startup_path.as_ref().map(|path| read(path)).transpose()?;
     let marker = format!("# Polylogue {program}");
     let source = match shell {
         "zsh" => format!(
@@ -62,10 +62,10 @@ pub(super) fn install(
         _ => String::new(),
     };
     // Validate every file before changing either of them.
-    let init_bytes = init
+    let startup_bytes = startup_file
         .as_ref()
         .map(|file| {
-            edit_init(
+            edit_startup_file(
                 file.current().unwrap_or_default(),
                 &marker,
                 &source,
@@ -86,7 +86,7 @@ pub(super) fn install(
         )));
     }
     let mut files = vec![path.clone()];
-    files.extend(init_path.iter().cloned());
+    files.extend(startup_path.iter().cloned());
     if !arguments.dry_run {
         for path in &files {
             eprintln!(
@@ -106,10 +106,15 @@ pub(super) fn install(
         } else {
             completion.write(script.as_bytes())?;
         }
-        if let Some((file, bytes)) = init.as_ref().zip(init_bytes.as_ref()) {
+        if let Some((file, bytes)) = startup_file.as_ref().zip(startup_bytes.as_ref()) {
             if arguments.remove
                 && (file.current().is_none()
-                    || file.backup() == Some(bytes.as_slice())
+                    || file.backup().is_some_and(|original| {
+                        bytes.as_slice() == original
+                            // Install added a newline after a last line that lacked one.
+                            || (!original.ends_with(b"\n")
+                                && bytes.strip_suffix(b"\n") == Some(original))
+                    })
                     || (bytes.is_empty() && file.backup().is_none()))
             {
                 file.restore()?;
@@ -141,7 +146,12 @@ pub(super) fn install(
     Ok(())
 }
 
-fn edit_init(current: &[u8], marker: &str, source: &str, remove: bool) -> io::Result<Vec<u8>> {
+fn edit_startup_file(
+    current: &[u8],
+    marker: &str,
+    source: &str,
+    remove: bool,
+) -> io::Result<Vec<u8>> {
     let text = std::str::from_utf8(current)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let start = format!("{marker}\n");
