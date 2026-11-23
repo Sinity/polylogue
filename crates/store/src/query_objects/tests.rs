@@ -125,10 +125,16 @@ fn query_objects_keep_one_body_and_reject_forged_identity() {
     let read = pool
         .reader()
         .unwrap()
-        .query_object(&first.id.to_string()[..12], None)
+        .query_object(&first.id.to_string()[..8], None)
         .unwrap()
         .unwrap();
     assert_eq!(read, first);
+    assert!(
+        pool.reader()
+            .unwrap()
+            .query_object(&first.id.to_string()[..7], None)
+            .is_err()
+    );
     let equivalent = question("sessions  where title:focus | limit 5");
     assert_eq!(equivalent.id, first.id);
     archive.writer.query_object(equivalent, None).unwrap();

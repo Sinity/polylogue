@@ -2,7 +2,7 @@
 
 Alternates are written with `note --as` ([annotations.md](annotations.md#note)) and follow the revision and withdrawal rules of [annotations.md](annotations.md#current-revisions), with `base` in place of `revises`. Reading them is [reading.md](reading.md#alternates).
 
-An alternate is another rendering of content: a translation, transliteration, simplification or summary. It is its own record, not an annotation, and annotations may be about it. Its purpose is that agents can render anything in the archive for the reader, such as translating a session the operator wants to read in Polish. The unit is `alternates`, the reference `alternate:<id>[@revision]`.
+An alternate is another rendering of content: a translation, transliteration, simplification or summary. It is its own record, not an annotation, and annotations may be about it. Its purpose is that agents can render anything in the archive for the reader, such as translating a session the operator wants to read in Polish. The unit is `alternates`, the reference `alternate:<root>[@<rev>][#<n>]` ([references.md](references.md)).
 
 ```sql
 CREATE TABLE variant (
@@ -15,7 +15,7 @@ CREATE TABLE variant (
   from_lang   TEXT, to_lang TEXT,  -- BCP 47
   author      TEXT NOT NULL, via TEXT NOT NULL,
   method      TEXT,                -- free text or a reference: model, prompt, rubric used
-  machine     TEXT NOT NULL, created_at INTEGER NOT NULL, commit_seq INTEGER NOT NULL
+  machine     TEXT NOT NULL, created_at TEXT NOT NULL, commit_seq INTEGER NOT NULL  -- created_at is RFC 3339
 ) STRICT;
 
 CREATE TABLE variant_part (

@@ -564,6 +564,7 @@ pub fn rule(id: FieldId) -> Rule {
         AnnotationsValue => Rule::NONE.sql("{r}.value"),
         AnnotationsAuthor => Rule::NONE.sql("{r}.author"),
         AnnotationsAgent => Rule::NONE.sql("({r}.author = 'agent' OR {r}.author LIKE 'agent:%')"),
+        AnnotationsVia => Rule::NONE.sql("{r}.via"),
         AnnotationsJudged => Rule::NONE.sql_fn(notes_judged),
         AnnotationsAbout => Rule::NONE.custom(custom::assertion_about).sql("(SELECT group_concat(ref, ' ') FROM (SELECT nt.ref FROM source_link nt WHERE nt.record = {r}.id AND nt.role = 'about' ORDER BY nt.ref))"),
         AnnotationsWriteCounter => Rule::NONE.sql("{r}.commit_seq"),

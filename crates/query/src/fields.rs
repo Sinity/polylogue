@@ -1119,6 +1119,7 @@ fields! {
         "operator, a session ID, agent or script",
     ),
     AnnotationsAgent = f(Annotations, "agent", Bool, "an agent wrote it"),
+    AnnotationsVia = f(Annotations, "via", Match, "the channel it was written through"),
     AnnotationsJudged = f(
         Annotations,
         "judged",
