@@ -171,6 +171,14 @@ fn a_quote_finds_its_text_once_or_not_at_all() {
         suffix: "!".into(),
     };
     assert_eq!(bare.find(text), None);
+    // Overlapping occurrences are two places: "aa" starts at 0 and 1 in "aaa".
+    let overlapping = Quote {
+        exact: "aa".into(),
+        prefix: String::new(),
+        suffix: String::new(),
+    };
+    assert_eq!(overlapping.find("aaa"), None);
+    assert_eq!(overlapping.find("baab"), Some((1, 3)));
     assert_eq!(Quote::of(text, 3, 99), None);
 }
 

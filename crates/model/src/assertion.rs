@@ -87,56 +87,54 @@ pub struct KindSpec {
     pub uniqueness: Option<Uniqueness>,
     pub about: About,
     pub key: KeyShape,
-    pub markup: bool,
-    pub briefs: bool,
 }
 macro_rules! assertion_kinds {
-    ($($kind:ident => ($name:literal,$value:ident,$uniqueness:ident,$about:ident,$key:ident,$markup:literal,$briefs:literal)),+ $(,)?) => {
+    ($($kind:ident => ($name:literal,$value:ident,$uniqueness:ident,$about:ident,$key:ident)),+ $(,)?) => {
         #[derive(Debug,Clone,Copy,PartialEq,Eq,Hash,Serialize,Deserialize,schemars::JsonSchema)]
         #[serde(rename_all="snake_case")]
         pub enum AssertionKind {$($kind),+}
         stored_names!(AssertionKind {$($kind=>$name),+});
         impl AssertionKind {
             pub fn spec(self)->KindSpec {match self {$(
-                Self::$kind=>KindSpec {value:ValueShape::$value,uniqueness:$uniqueness,about:About::$about,key:KeyShape::$key,markup:$markup,briefs:$briefs}
+                Self::$kind=>KindSpec {value:ValueShape::$value,uniqueness:$uniqueness,about:About::$about,key:KeyShape::$key}
             ),+}}
         }
     };
 }
 assertion_kinds! {
-    Note => ("note",Text,MANY,Anything,None,true,true),
-    Tag => ("tag",Tag,TAG,Anything,Required,true,true),
-    Highlight => ("highlight",OptionalText,MANY,Span,Required,true,false),
-    Title => ("title",Text,ONE_PER_ABOUT,Session,None,true,false),
-    Outcome => ("outcome",Outcome,ONE_PER_ABOUT,Session,None,true,true),
-    Hidden => ("hidden",OptionalText,ONE_PER_ABOUT,Session,None,false,false),
-    Claim => ("claim",Claim,MANY,Anything,Optional,true,true),
-    Finding => ("finding",Finding,MANY,Anything,Optional,true,true),
-    Decision => ("decision",Decision,MANY,Anything,Optional,true,true),
-    Lesson => ("lesson",Text,MANY,Anything,Optional,true,true),
-    Question => ("question",Question,MANY,Anything,Optional,true,true),
-    Goal => ("goal",Text,MANY,Anything,Optional,true,true),
-    Problem => ("problem",Text,MANY,Anything,Optional,true,true),
-    Handoff => ("handoff",Text,MANY,Anything,Optional,true,true),
-    Correction => ("correction",Text,MANY,Anything,Optional,true,true),
-    Forecast => ("forecast",Forecast,MANY,Anything,Required,true,true),
-    Judgment => ("judgment",Judgment,JUDGMENT,ExactAssertion,Required,false,false),
-    Comparison => ("comparison",Comparison,MANY,Several,Required,false,false),
-    Rubric => ("rubric",Rubric,ONE_PER_NAME,None,Required,false,false),
-    Pass => ("pass",Pass,MANY,None,None,false,false),
-    Annotation => ("annotation",Annotation,ANNOTATION,One,Required,true,false),
-    Memory => ("memory",Text,MEMORY,None,Required,false,true),
-    Method => ("method",Method,ONE_PER_NAME,None,Required,false,true),
-    SavedQuery => ("saved_query",SavedQuery,ONE_PER_NAME,None,Required,false,false),
-    Signal => ("signal",Signal,ONE_PER_NAME,None,Required,false,false),
-    Page => ("page",Page,ONE_PER_NAME,None,Required,false,false),
-    Slot => ("slot",Slot,MANY,OptionalOne,None,false,false),
-    Member => ("member",Member,MANY,Session,Required,false,false),
-    Role => ("role",Role,ONE_PER_NAME,None,Required,false,false),
-    Ping => ("ping",Ping,MANY,Session,None,false,false),
-    Withdrawal => ("withdrawal",OptionalText,MANY,None,None,false,false),
-    Setting => ("setting",Setting,SETTING,None,Required,false,false),
-    Seen => ("seen",Seen,SEEN,None,Required,false,false),
+    Note => ("note",Text,MANY,Anything,None),
+    Tag => ("tag",Tag,TAG,Anything,Required),
+    Highlight => ("highlight",OptionalText,MANY,Span,Required),
+    Title => ("title",Text,ONE_PER_ABOUT,Session,None),
+    Outcome => ("outcome",Outcome,ONE_PER_ABOUT,Session,None),
+    Hidden => ("hidden",OptionalText,ONE_PER_ABOUT,Session,None),
+    Claim => ("claim",Claim,MANY,Anything,Optional),
+    Finding => ("finding",Finding,MANY,Anything,Optional),
+    Decision => ("decision",Decision,MANY,Anything,Optional),
+    Lesson => ("lesson",Text,MANY,Anything,Optional),
+    Question => ("question",Question,MANY,Anything,Optional),
+    Goal => ("goal",Text,MANY,Anything,Optional),
+    Problem => ("problem",Text,MANY,Anything,Optional),
+    Handoff => ("handoff",Text,MANY,Anything,Optional),
+    Correction => ("correction",Text,MANY,Anything,Optional),
+    Forecast => ("forecast",Forecast,MANY,Anything,Required),
+    Judgment => ("judgment",Judgment,JUDGMENT,ExactAssertion,Required),
+    Comparison => ("comparison",Comparison,MANY,Several,Required),
+    Rubric => ("rubric",Rubric,ONE_PER_NAME,None,Required),
+    Pass => ("pass",Pass,MANY,None,None),
+    Annotation => ("annotation",Annotation,ANNOTATION,One,Required),
+    Memory => ("memory",Text,MEMORY,None,Required),
+    Method => ("method",Method,ONE_PER_NAME,None,Required),
+    SavedQuery => ("saved_query",SavedQuery,ONE_PER_NAME,None,Required),
+    Signal => ("signal",Signal,ONE_PER_NAME,None,Required),
+    Page => ("page",Page,ONE_PER_NAME,None,Required),
+    Slot => ("slot",Slot,MANY,OptionalOne,None),
+    Member => ("member",Member,MANY,Session,Required),
+    Role => ("role",Role,ONE_PER_NAME,None,Required),
+    Ping => ("ping",Ping,MANY,Session,None),
+    Withdrawal => ("withdrawal",OptionalText,MANY,None,None),
+    Setting => ("setting",Setting,SETTING,None,Required),
+    Seen => ("seen",Seen,SEEN,None,Required),
 }
 impl KindSpec {
     /// A single-valued mark (`title`, `outcome`, `hidden`): one value per
@@ -202,16 +200,7 @@ impl LinkRole {
         )
     }
     pub fn requires_exact_assertion(self) -> bool {
-        matches!(
-            self,
-            Self::Revises
-                | Self::Answers
-                | Self::Challenges
-                | Self::Supports
-                | Self::Qualifies
-                | Self::Corrects
-                | Self::Blocks
-        )
+        self == Self::Revises || self.is_relation()
     }
 }
 
@@ -271,10 +260,15 @@ impl Quote {
         if self.exact.is_empty() {
             return None;
         }
-        let places: Vec<usize> = text
-            .match_indices(self.exact.as_str())
-            .map(|(start, _)| start)
-            .collect();
+        // Overlapping occurrences count as separate places, so the search
+        // resumes one character after each start.
+        let mut places = Vec::new();
+        let mut from = 0;
+        while let Some(offset) = text[from..].find(self.exact.as_str()) {
+            let start = from + offset;
+            places.push(start);
+            from = start + self.exact.chars().next().map_or(1, char::len_utf8);
+        }
         let with_context: Vec<usize> = places
             .iter()
             .copied()

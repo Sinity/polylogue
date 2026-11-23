@@ -386,16 +386,6 @@ fn stop_failure(data: &Json) -> Stall {
     }
 }
 
-fn continue_open(open: &mut Vec<OpenInterval>, aspect: Aspect, value: Option<&str>, at: i64) {
-    if let Some(value) = value {
-        open.push(OpenInterval {
-            aspect,
-            value: value.to_owned(),
-            start: at,
-        });
-    }
-}
-
 impl LiveFacts {
     fn set_activity(&mut self, activity: Activity, at: i64) {
         if self.hook_activity.map(|a| a.value) != Some(activity) {
@@ -550,7 +540,7 @@ impl LiveFacts {
             && self.root.as_ref() == Some(&identity)
             && self.root_gone_at.is_none()
         {
-            // A root gone mid-turn is stale, not ended: its edited files stays
+            // A root gone mid-turn is stale, not ended: its edited files stay
             // until a commit takes the files or the session ends.
             self.root_gone_at = Some(at);
             self.open_call = None;
@@ -652,17 +642,15 @@ impl LiveFacts {
                 let o = self.open_intervals.remove(i);
                 // Events at one instant that pass through a value
                 // measures no time and leaves no interval.
-                if o.start == at {
-                    continue_open(&mut self.open_intervals, aspect, value, at);
-                    continue;
+                if o.start != at {
+                    closed.push(LiveInterval {
+                        aspect,
+                        value: o.value,
+                        start: o.start,
+                        end: at,
+                        closed_by: closed_by.to_owned(),
+                    });
                 }
-                closed.push(LiveInterval {
-                    aspect,
-                    value: o.value,
-                    start: o.start,
-                    end: at,
-                    closed_by: closed_by.to_owned(),
-                });
             }
             if let Some(value) = value {
                 self.open_intervals.push(OpenInterval {
@@ -734,7 +722,7 @@ pub fn view(facts: Option<&LiveFacts>, grew_at: Option<i64>, now: i64) -> LiveVi
         stall: None,
         process_alive: None,
     };
-    let Some(facts) = facts.filter(|f| f.last_at.is_some()) else {
+    let Some((facts, last_at)) = facts.and_then(|f| f.last_at.map(|last| (f, last))) else {
         // Only the transcript's growth: the inference by time that remains.
         return match grew_at.map(|g| g.min(now)) {
             Some(g) if now - g <= LIVE_WINDOW_MS => LiveView {
@@ -760,7 +748,7 @@ pub fn view(facts: Option<&LiveFacts>, grew_at: Option<i64>, now: i64) -> LiveVi
             ..ended(Some(at))
         };
     }
-    let last = facts.last_at.unwrap_or(i64::MIN).min(now);
+    let last = last_at.min(now);
     // A stale session is ended once its latest event is a day old.
     let aged_out = last.saturating_add(STALE_FOR_MS);
     let stale = |since: i64| {

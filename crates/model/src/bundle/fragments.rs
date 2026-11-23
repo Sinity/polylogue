@@ -279,6 +279,15 @@ impl TextFragment {
         if self.coverage.start > other.coverage.end || other.coverage.start > self.coverage.end {
             return Ok(None);
         }
+        // A total declared by one side bounds the other's coverage too.
+        if self
+            .coverage
+            .total_bytes
+            .or(other.coverage.total_bytes)
+            .is_some_and(|total| self.coverage.end.max(other.coverage.end) > total)
+        {
+            return Err(TextFragmentError::Coverage);
+        }
         let (left, right) = if self.coverage.start <= other.coverage.start {
             (self, other)
         } else {

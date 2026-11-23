@@ -326,7 +326,7 @@ impl Message {
         Ok(())
     }
 
-    /// Prose text of the message, blocks joined by blank lines.
+    /// Text and thinking text of the message, blocks joined by blank lines.
     pub fn text(&self) -> String {
         let parts: Vec<&str> = self.blocks.iter().filter_map(|b| b.text()).collect();
         parts.join("\n\n")

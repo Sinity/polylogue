@@ -16,7 +16,7 @@ fn cloned_clock_uses_one_explicit_sampler() {
     assert_eq!(copy.now().as_second(), 200);
 }
 #[test]
-fn fixed_clock_has_no_environment_or_day_default() {
+fn a_fixed_clock_returns_its_instant() {
     let instant = "2026-03-29T01:00:00Z".parse().unwrap();
     assert_eq!(WallClock::fixed(instant).now(), instant);
 }
