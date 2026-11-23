@@ -724,7 +724,7 @@ fn changing_a_shared_event_marks_the_old_and_restored_sessions() {
                 &[]
             )
             .unwrap(),
-        json!([{"id":"claude-code:b"}])
+        [json!({"id":"claude-code:b"})]
     );
 }
 
