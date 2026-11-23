@@ -61,7 +61,7 @@ static FIELDS: Fields = Fields::new(
     ],
 );
 
-fn conversation(path: &Path) -> Option<SessionId> {
+fn session_of(path: &Path) -> Option<SessionId> {
     if path.file_name()? != "transcript_full.jsonl" {
         return None;
     }
@@ -80,10 +80,10 @@ fn conversation(path: &Path) -> Option<SessionId> {
         .and_then(|native| session_id(super::ORIGIN, native))
 }
 pub fn recognize(path: &Path) -> bool {
-    conversation(path).is_some()
+    session_of(path).is_some()
 }
 pub fn open(path: &Path) -> Option<Parse> {
-    conversation(path).map(|session| Parse::Lines(Box::new(Transcript { session })))
+    session_of(path).map(|session| Parse::Lines(Box::new(Transcript { session })))
 }
 
 struct Transcript {

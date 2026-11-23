@@ -31,7 +31,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 use crate::document::{first_key, session_id};
 use crate::fields::ExpectedType as T;
@@ -187,10 +187,20 @@ impl Parser for HookSpool {
         };
         // The hook command's lines from before it named the harness are
         // Claude Code's.
-        let Some(prefix) = route_prefix(value.str("route").filter(|s| !s.is_empty())) else {
+        let route = match value.get("route") {
+            None | Some(Json::Null) => None,
+            Some(Json::String(route)) => Some(route.as_str()).filter(|s| !s.is_empty()),
+            Some(_) => return RecordOutcome::unreadable("route is not a string"),
+        };
+        let Some(prefix) = route_prefix(route) else {
             return RecordOutcome::unreadable("unknown route");
         };
-        let provider = match value.str("provider").filter(|s| !s.is_empty()) {
+        let provider = match value.get("provider") {
+            None | Some(Json::Null) => None,
+            Some(Json::String(provider)) => Some(provider.as_str()).filter(|s| !s.is_empty()),
+            Some(_) => return RecordOutcome::unreadable("provider is not a string"),
+        };
+        let provider = match provider {
             Some(p) => p,
             None if value.get("at_ns").is_some() => "claude-code",
             None => return RecordOutcome::unreadable("no provider"),

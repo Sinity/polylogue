@@ -13,34 +13,34 @@ pub struct Record<'a> {
     pub bytes: &'a [u8],
 }
 
-/// Complete records in `bytes`, which start at `base` in the input, and how
+/// Complete records in `bytes`, which start at `input_offset` in the input, and how
 /// many bytes they cover. Blank lines are skipped: they hold no record.
 /// `finished` says the bytes reach the end of an input that will not grow,
 /// so a trailing line without its newline is a record too.
-pub fn lines<'a>(bytes: &'a [u8], base: u64, finished: bool) -> (Vec<Record<'a>>, usize) {
+pub fn lines<'a>(bytes: &'a [u8], input_offset: u64, finished: bool) -> (Vec<Record<'a>>, usize) {
     let mut records = Vec::new();
-    let mut push = |start: usize, mut line: &'a [u8]| {
+    let mut push = |line_start: usize, mut line: &'a [u8]| {
         if let [rest @ .., b'\r'] = line {
             line = rest;
         }
         if !line.iter().all(u8::is_ascii_whitespace) {
             records.push(Record {
-                offset: base + start as u64,
+                offset: input_offset + line_start as u64,
                 bytes: line,
             });
         }
     };
-    let mut start = 0;
-    while let Some(len) = bytes[start..].iter().position(|&b| b == b'\n') {
-        let end = start + len;
-        push(start, &bytes[start..end]);
-        start = end + 1;
+    let mut consumed = 0;
+    while let Some(len) = bytes[consumed..].iter().position(|&b| b == b'\n') {
+        let end = consumed + len;
+        push(consumed, &bytes[consumed..end]);
+        consumed = end + 1;
     }
-    if finished && start < bytes.len() {
-        push(start, &bytes[start..]);
-        start = bytes.len();
+    if finished && consumed < bytes.len() {
+        push(consumed, &bytes[consumed..]);
+        consumed = bytes.len();
     }
-    (records, start)
+    (records, consumed)
 }
 
 #[cfg(test)]

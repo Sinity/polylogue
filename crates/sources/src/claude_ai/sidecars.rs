@@ -18,17 +18,17 @@ use std::path::Path;
 #[derive(Clone, Copy)]
 enum Shape {
     Memories,
-    Projects,
-    Project,
+    ProjectList,
+    ProjectFile,
 }
 fn shape(path: &Path) -> Option<Shape> {
     match path.file_name()?.to_str()? {
         "memories.json" => Some(Shape::Memories),
-        "projects.json" => Some(Shape::Projects),
+        "projects.json" => Some(Shape::ProjectList),
         _ if path.extension().is_some_and(|e| e == "json")
             && path.parent()?.file_name().is_some_and(|p| p == "projects") =>
         {
-            Some(Shape::Project)
+            Some(Shape::ProjectFile)
         }
         _ => None,
     }
@@ -37,7 +37,7 @@ pub(super) fn recognize(path: &Path, head: &[u8]) -> bool {
     shape(path).is_some_and(|shape| {
         matches!(
             (shape, crate::document::first_byte(head)),
-            (Shape::Memories | Shape::Projects, Some(b'[')) | (Shape::Project, Some(b'{'))
+            (Shape::Memories | Shape::ProjectList, Some(b'[')) | (Shape::ProjectFile, Some(b'{'))
         )
     })
 }
@@ -341,7 +341,7 @@ impl ExportParser for Sidecars {
         };
         let (objects, stats) = export::scan_objects(
             reader,
-            !matches!(self.shape, Shape::Project),
+            !matches!(self.shape, Shape::ProjectFile),
             frames,
             keep,
             |parent, field, key, range, raw| {

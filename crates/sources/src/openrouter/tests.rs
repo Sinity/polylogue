@@ -247,3 +247,15 @@ fn many_room_entries_scan_with_one_message_buffer() {
     );
     assert!(growth < 8 * 1024, "room scan grew by {growth}KiB");
 }
+
+#[test]
+fn content_parts_become_the_message_text() {
+    let bytes = room(json!({
+        "msg-1-aaa": {"id": "msg-1-aaa", "type": "user", "characterId": "USER",
+                      "contentType": "text", "context": "main-chat",
+                      "createdAt": "2025-08-04T20:00:00.000Z",
+                      "content": [{"type": "text", "text": "Use"}, {"type": "text", "text": "flakes."}]}
+    }));
+    let step = parse(&bytes);
+    assert_eq!(step.output.messages[0].message.text(), "Use\nflakes.");
+}
