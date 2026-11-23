@@ -207,7 +207,7 @@ fn a_stored_instant_out_of_range_is_an_error() {
     assert_eq!(valid, "1970-01-01T00:00:01Z");
     let mut broken = serde_json::json!(i64::MAX);
     let error = shape_value(ColKind::Time, &zone, &mut broken).unwrap_err();
-    assert!(error.to_string().contains("invalid stored time"), "{error}");
+    assert_eq!(error.code(), polylogue_model::Code::Store);
 }
 
 #[test]

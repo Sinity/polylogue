@@ -16,7 +16,7 @@ fn count(fixture: &Fixture, text: &str) -> usize {
 }
 
 #[test]
-fn two_archives_first_title_then_bundle_import_shows_conflict() {
+fn two_titles_written_apart_show_conflict_until_one_write_names_every_head() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(dir.path()).unwrap();
     fixture
@@ -27,8 +27,8 @@ fn two_archives_first_title_then_bundle_import_shows_conflict() {
             ..Default::default()
         })
         .unwrap();
-    // This archive's title, then another archive's first title for the same
-    // session arriving in a bundle: both through the apply path.
+    // Two first titles for the same session, as two archives would each have
+    // written them, both through the apply path.
     for title in ["From the laptop", "From the desktop"] {
         fixture
             .note("title", None, Some(title), "session:claude-code:titled")
@@ -60,5 +60,13 @@ fn two_archives_first_title_then_bundle_import_shows_conflict() {
         0
     );
     assert_eq!(count(&fixture, "annotations where kind:title"), 1);
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let program = compile("annotations where kind:title | fields value", &opts(&[])).unwrap();
+    let mut rows = reader.query_rows(&program).unwrap();
+    for row in &mut rows {
+        crate::query::execute::present(&program, row).unwrap();
+    }
+    assert_eq!(rows, [serde_json::json!({"value": "Settled"})]);
     assert_eq!(count(&fixture, "sessions where has:conflict"), 0);
 }
