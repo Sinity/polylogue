@@ -142,6 +142,7 @@ fn trace_span_does_not_require_unknown_text_after_its_end() {
 fn trace_states_when_the_reader_checkpoint_stops_before_the_record() {
     let mut archive = WriterArchive::new();
     archive.write("trace", prose("trace", 1, 1, "first"));
+    archive.write("trace", prose("trace", 2, 2, "second"));
     let index = Connection::open(archive.archive.index_db()).unwrap();
     index.execute("UPDATE message_source SET source_start=1,source_end=3 WHERE message_pk=(SELECT pk FROM message WHERE id='claude-code:trace-p1')",[]).unwrap();
     index.execute("UPDATE parse_state SET parsed_upto=0 WHERE input_pk=(SELECT pk FROM input_ref WHERE id='input-trace')",[]).unwrap();
