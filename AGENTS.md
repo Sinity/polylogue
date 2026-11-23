@@ -202,7 +202,7 @@ caused it fixes it next. Hooks stay enabled.
 **PR descriptions** are plain prose: what changed and why, the design
 decisions taken and their reasons, what was verified (commands and run IDs)
 and what was not, and before and after figures for anything performance
-related.
+related. The body ends with a line `Task: <id>` naming the task it lands.
 
 **Decide technical details yourself.** Low-level design choices are yours,
 made from the principles here and the pages in `docs/`, and recorded on the
