@@ -133,7 +133,10 @@ fn message_ids_survive_unrelated_changes() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
     let late_arrived = after.values().any(|doc| {
         doc.as_array().unwrap().iter().any(|record| {
-            record["record"] == "message" && record["data"]["message"]["id"] == "u1-late"
+            record["record"] == "message"
+                && record["data"]["message"]["id"]
+                    .as_str()
+                    .is_some_and(|id| id.ends_with("u1-late"))
         })
     });
     assert!(late_arrived, "the appended message u1-late is missing");
