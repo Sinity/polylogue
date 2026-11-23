@@ -81,10 +81,14 @@ export class Backfill {
         const held = listed.length
           ? (await this.host.conversations(job.provider, listed.map((c) => c.id))).conversations
           : [];
+        // Reports name the position of the page's start, so the page's
+        // outcomes join the totals only once the page is done; a resumed job
+        // lists the page again and must not count it twice.
+        const tally = { captured: 0, unchanged: 0, failed: 0 };
         let sinceReport = 0;
         for (const [i, conversation] of listed.entries()) {
           if (current(held[i], conversation)) {
-            counts.unchanged += 1;
+            tally.unchanged += 1;
             sinceReport += 1;
             if (sinceReport >= REPORT_EVERY) {
               sinceReport = 0;
@@ -94,7 +98,7 @@ export class Backfill {
           }
           try {
             const done = await this.capturer.capture(tab.id, job.provider, { id: conversation.id, reason: "backfill", before: async () => { if (!(await report("progress"))) throw new ClaimLost("backfill claim lost"); } });
-            counts[done.outcome === "unchanged" ? "unchanged" : "captured"] += 1;
+            tally[done.outcome === "unchanged" ? "unchanged" : "captured"] += 1;
           } catch (error) {
             if (error instanceof ClaimLost) throw error;
             if (error.until) throw new ProviderDeferred(error.until, error.message);
@@ -102,7 +106,7 @@ export class Backfill {
               await report("progress", "The provider asked to wait; continuing later.");
               return;
             }
-            counts.failed += 1;
+            tally.failed += 1;
             this.log(`Backfill could not capture ${job.provider} conversation ${conversation.id}: ${error.message}`);
           }
           sinceReport += 1;
@@ -113,6 +117,7 @@ export class Backfill {
           await this.sleep(PAUSE_MS);
         }
         counts.listed += page.info.conversations.length;
+        for (const [name, number] of Object.entries(tally)) counts[name] += number;
         // A list ordered by change time ends where it passes `since`.
         const passedSince = since && page.info.newest_first
           && page.info.conversations.some((c) => c.updated_at && Date.parse(c.updated_at) < since);

@@ -20,6 +20,16 @@ describe("the native messaging host", () => {
     expect([error.code, error.status, error.message]).toEqual(["reader_unavailable", 503, "no reader"]);
   });
 
+  it("does not take an answer that is not JSON for a success", async () => {
+    const chrome = fakeChrome({ routes: {
+      "POST /v1/captures": () => ({ bytes: new TextEncoder().encode("<html>not json"), type: "text/html" }),
+      "GET /v1/reader": () => ({ status: 502, bytes: new TextEncoder().encode("bad gateway"), type: "text/plain" }),
+    } });
+    const host = new Host(chrome.runtime);
+    expect((await host.storeCapture(new Blob(["x"])).catch((e) => e)).code).toBe("host_answer_unreadable");
+    expect((await host.reader().catch((e) => e)).code).toBe("host_http_502");
+  });
+
   it("tells a missing host apart from one that stopped", async () => {
     const missing = fakeChrome({ installed: false });
     expect((await new Host(missing.runtime).status().catch((e) => e)).code).toBe("host_missing");
@@ -39,6 +49,10 @@ describe("a note on a selected passage", () => {
     expect(notePayload(note, sender)).toEqual(note);
     expect(() => notePayload({ ...note, source: { ...note.source, conversation_id: "other" } }, sender)).toThrow("the_page_is_not_that_conversation");
     expect(() => notePayload(note, { ...sender, url: "https://chatgpt.com/c/c2" })).toThrow("page_changed_since_the_selection");
+    const inProject = "https://chatgpt.com/g/g-p-abc/c/c1";
+    expect(notePayload({ ...note, source: { ...note.source, page_url: inProject } }, { ...sender, url: inProject })).toMatchObject({ source: { conversation_id: "c1" } });
+    const query = "https://gemini.google.com/?conversation=c1";
+    expect(notePayload({ ...note, source: { ...note.source, provider: "gemini", page_url: query } }, { ...sender, url: query }).source.provider).toBe("gemini");
     expect(() => notePayload(note, { ...sender, frameId: 3 })).toThrow("note_not_from_a_chat_page");
     expect(() => notePayload({ ...note, body: " " }, sender)).toThrow("the_note_needs_text_and_a_quote");
   });

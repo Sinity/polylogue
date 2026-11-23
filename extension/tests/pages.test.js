@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ProviderScheduler } from "../src/background/provider.js";
 import { chatActionInPage } from "../src/actions/chatgpt.js";
+import { PROVIDERS } from "../src/background/tabs.js";
 import { JSDOM } from "jsdom";
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "../src");
@@ -246,6 +247,17 @@ it("stops a MAIN-world action immediately on a retryable provider failure", asyn
   window.close();
 });
 
+it("refuses a requested effort on an account whose model switcher has no effort menu", async () => {
+  const { window } = page("https://chatgpt.com/", [], {
+    html: "<body><div id='prompt-textarea'></div><button data-testid='model-switcher-dropdown-button'>Model</button></body>",
+  });
+  const execute = window.eval(`(${chatActionInPage.toString()})`);
+  const result = await execute({ provider: "chatgpt", conversation: null, text: "hello", model: "X", effort: "Extended", submit: false }, "run");
+  expect(result).toMatchObject({ ok: false, submission_may_have_occurred: false });
+  expect(result.detail).toContain("unsupported effort");
+  window.close();
+});
+
 it("charges each background HTTP request before fetch, including hidden authentication", async () => {
   const scheduler = new ProviderScheduler({ dailyBudget: 1, now: () => 0 });
   const { window, fetched } = page("https://chatgpt.com/c/c1", ["content/chatgpt.js", "content/page.js"], {
@@ -273,4 +285,12 @@ it("the content fetch wrapper stops an operation on the first retryable response
     .rejects.toMatchObject({ status: 503, retryAfter: "30" });
   expect(fetched).toHaveLength(1);
   window.close();
+});
+
+it("has a page script and host permission for every host of every provider it reads", () => {
+  const manifest = JSON.parse(readFileSync(join(SRC, "../manifest.json"), "utf8"));
+  const scripted = manifest.content_scripts.flatMap((entry) => entry.matches);
+  const hosts = Object.values(PROVIDERS).flatMap((site) => site.hosts.map((host) => `https://${host}/*`));
+  expect([...hosts].sort()).toEqual([...scripted].sort());
+  expect([...hosts].sort()).toEqual([...manifest.host_permissions].sort());
 });

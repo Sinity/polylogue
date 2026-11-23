@@ -530,3 +530,59 @@ it("confirms a submitted turn only from a stored provider snapshot", async () =>
   expect(await capture("other", "hello")).toMatchObject({ confirmedTurn: null });
   expect(await capture("m1", "different")).toMatchObject({ confirmedTurn: null });
 });
+
+describe("the background worker's own messages", () => {
+  function worker(extra = {}) {
+    const host = storingHost();
+    Object.assign(host.routes, extra);
+    const page = chatgptPage();
+    const chrome = fakeChrome({ routes: host.routes, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    return { host, chrome, extension: start(chrome, { indexedDB: new IDBFactory() }) };
+  }
+
+  it("does not capture a tab that closed while its capture waited out the spacing", async () => {
+    const { host, chrome, extension } = worker();
+    await extension.changed(1, "changed");
+    expect(host.stored).toHaveLength(1);
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      const second = extension.changed(1, "changed");
+      for (let i = 0; i < 1000 && vi.getTimerCount() === 0; i += 1) await Promise.resolve();
+      chrome.tabs.list.length = 0;
+      await vi.advanceTimersByTimeAsync(10_000);
+      await expect(second).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(host.stored).toHaveLength(1);
+  });
+
+  it("stops automatic captures when they are switched off, and hides and shows the panel per site", async () => {
+    const { host, extension } = worker();
+    const { handlers } = extension;
+    const tab = { id: 1, url: "https://chatgpt.com/c/c1" };
+    expect(await handlers["polylogue.settings"]({ automatic: false })).toMatchObject({ automatic: false, panel: true });
+    await extension.changed(1, "changed");
+    expect(host.stored).toHaveLength(0);
+    await handlers["polylogue.hide-panel"]({ site: "chatgpt.com" });
+    expect((await extension.pageState(tab)).panel).toBe(false);
+    await handlers["polylogue.settings"]({ show_site: "chatgpt.com" });
+    expect((await extension.pageState(tab)).panel).toBe(true);
+  });
+
+  it("shows the running backfill jobs, the last three ended ones and the actions awaiting approval", async () => {
+    const jobs = [
+      { id: "e1", status: "finished" }, { id: "r1", status: "running" }, { id: "e2", status: "finished" },
+      { id: "e3", status: "cancelled" }, { id: "e4", status: "finished" },
+    ];
+    const actions = [{ id: "a1", status: "awaiting_approval" }, { id: "a2", status: "submitted" }];
+    const { extension } = worker({
+      "GET /v1/backfill": () => ({ json: { jobs } }),
+      "GET /v1/chat-actions": () => ({ json: { actions } }),
+    });
+    const shown = await extension.popup(null);
+    expect(shown.backfill.map((job) => job.id)).toEqual(["r1", "e2", "e3", "e4"]);
+    expect(shown.approvals.map((action) => action.id)).toEqual(["a1"]);
+    expect(shown.version).toBe("9.9.9");
+  });
+});

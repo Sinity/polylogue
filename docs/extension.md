@@ -10,7 +10,7 @@ Live capture is the core of the extension and works in about real time.
 
 | Site | Route |
 |---|---|
-| chatgpt.com, chat.openai.com (Codex task pages on chatgpt.com → origin `codex-cloud`) | the conversation API JSON, plus file downloads |
+| chatgpt.com (Codex task pages on chatgpt.com → origin `codex-cloud`) | the conversation API JSON, plus file downloads |
 | claude.ai (Claude Design → origin `claude-design`) | the conversation API JSON with the full tree and all tool renderings |
 | grok.com, x.com/i/grok | the conversation API JSON and responses |
 | gemini.google.com | the page's own data responses, intercepted; reading the DOM is a fallback whose captures are marked *partial fidelity* and are outranked by any route through the page's data |

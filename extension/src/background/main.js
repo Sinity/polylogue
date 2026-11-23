@@ -18,6 +18,9 @@ const SWEEP = "polylogue.sweep";
 // The least time between two automatic captures of one tab.
 const SPACING_MS = 10_000;
 const PROBLEMS_KEPT = 20;
+// Backfill job states that are over.
+const JOB_ENDED = ["finished", "cancelled"];
+const JOBS_ENDED_SHOWN = 3;
 const DEFAULT_SETTINGS = { automatic: true, panel: true, hidden_sites: [] };
 
 export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
@@ -66,8 +69,9 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
 
   /** Captures a tab's conversation now; answers what happened. */
   async function captureTab(tabId, reason, force = false) {
-    const tab = await chrome.tabs.get(tabId);
-    const provider = providerOf(tab.url);
+    // The tab may have closed since the capture was asked for.
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    const provider = providerOf(tab?.url);
     if (!provider) return null;
     try {
       const done = await capturer.capture(tabId, provider, { reason, force });
@@ -154,8 +158,10 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
       status,
       page: tab ? await pageState(tab) : null,
       waiting: await outbox.count(),
-      backfill: jobs.filter((job) => !["finished", "cancelled"].includes(job.status)).concat(
-        jobs.filter((job) => ["finished", "cancelled"].includes(job.status)).slice(-3)),
+      backfill: [
+        ...jobs.filter((job) => !JOB_ENDED.includes(job.status)),
+        ...jobs.filter((job) => JOB_ENDED.includes(job.status)).slice(-JOBS_ENDED_SHOWN),
+      ],
       approvals: actions.filter((action) => action.status === "awaiting_approval"),
       problems,
       settings: await settings(),
@@ -243,5 +249,5 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
   chrome.runtime.onInstalled.addListener(() => void wake("installed"));
   chrome.runtime.onStartup.addListener(() => void wake("started"));
 
-  return { capturer, backfill, chatActions, outbox, host, tick, wake, changed, captureTab, pageState, popup, handlers };
+  return { capturer, outbox, tick, changed, captureTab, pageState, popup, handlers };
 }

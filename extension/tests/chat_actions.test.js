@@ -68,6 +68,10 @@ describe("a chat action queued with `polylogue chat send`", () => {
     expect(failureOutcome(new Error("HTTP 429 Too Many Requests")).outcome).toBe("rate_limited");
     expect(failureOutcome(new Error("protocol_selector_missing")).outcome).toBe("provider_drift");
     expect(failureOutcome(new Error("Cloudflare challenge")).outcome).toBe("auth_challenge");
+    // The page's waits end with their label and `_timeout`.
+    expect(failureOutcome(new Error("provider_turn_receipt_timeout")).outcome).toBe("provider_drift");
+    expect(failureOutcome(new Error("chat_surface_selection_timeout")).outcome).toBe("capability_mismatch");
+    expect(failureOutcome(new Error("model_menu_timeout")).outcome).toBe("capability_mismatch");
   });
 
   it("keeps each run's files apart", () => {
