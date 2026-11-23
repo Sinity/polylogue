@@ -251,13 +251,15 @@ fn failing_text(data: &Value, zone: &jiff::tz::TimeZone) -> String {
     if items.is_empty() {
         return "no command's latest run failed\n".into();
     }
-    // Repositories in the order of their most recent failure.
-    let mut groups: Vec<(&str, Vec<String>)> = Vec::new();
+    // Repositories in the order of their most recent failure. The root commit
+    // is the identity; repositories that share a display name stay apart.
+    let mut groups: Vec<(&str, &str, Vec<String>)> = Vec::new();
     for u in items {
-        let repo = u["repo"]
+        let identity = u["repository"]
             .as_str()
-            .or(u["repository"].as_str())
+            .or(u["repo"].as_str())
             .unwrap_or("?");
+        let label = u["repo"].as_str().unwrap_or(identity);
         let exit = u["exit_code"]
             .as_i64()
             .map_or(String::new(), |c| format!(" (exit {c})"));
@@ -272,14 +274,14 @@ fn failing_text(data: &Value, zone: &jiff::tz::TimeZone) -> String {
             u["session"].as_str().unwrap_or("?"),
             u["failures_since_ok"],
         );
-        match groups.iter_mut().find(|(r, _)| *r == repo) {
-            Some((_, lines)) => lines.push(line),
-            None => groups.push((repo, vec![line])),
+        match groups.iter_mut().find(|(known, ..)| *known == identity) {
+            Some((.., lines)) => lines.push(line),
+            None => groups.push((identity, label, vec![line])),
         }
     }
     let mut out = String::new();
-    for (repo, lines) in groups {
-        out.push_str(&format!("{repo}\n"));
+    for (_, label, lines) in groups {
+        out.push_str(&format!("{label}\n"));
         out.extend(lines);
     }
     out

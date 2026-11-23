@@ -93,7 +93,11 @@ impl DefaultId {
     /// `--why`.
     pub fn describe(self) -> String {
         if self == Self::LogicalSessions {
-            return "default: continuations, subagents and forks fold into their logical session (a top-level physical:, kind:, id:, parent:, root:, depth:, connected:, link: or a reference lifts it)".into();
+            let fields: Vec<String> = self.lifted_by().iter().map(|f| format!("{f}:")).collect();
+            return format!(
+                "default: continuations, subagents and forks fold into their logical session (a top-level {} or a reference lifts it)",
+                fields.join(", ")
+            );
         }
         let mut back: Vec<String> = self.lifted_by().iter().map(|f| format!("{f}:")).collect();
         if self.lifted_by_reference() {
@@ -239,3 +243,5 @@ pub fn id_shaped(word: &str) -> bool {
         && word.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
         && word.chars().any(|c| c.is_ascii_digit() || c == '-')
 }
+#[cfg(test)]
+mod tests;

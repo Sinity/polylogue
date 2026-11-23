@@ -78,7 +78,7 @@ pub fn with_catalog(
         }
         Ok(())
     })?;
-    bind_lone_reference(&mut query);
+    read_lone_revision_as_annotations(&mut query);
     Ok(query)
 }
 
@@ -114,7 +114,7 @@ fn sinex_local_error(
 /// A query that is only an exact assertion revision (`annotation:R@X`) reads
 /// the annotations unit: the revision is one row whatever the default unit.
 /// Every other lone reference stays a condition on the default unit.
-fn bind_lone_reference(query: &mut Query) {
+fn read_lone_revision_as_annotations(query: &mut Query) {
     if !query.transforms.is_empty() || !query.attach.is_empty() {
         return;
     }

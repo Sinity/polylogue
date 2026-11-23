@@ -162,3 +162,27 @@ fn a_context_reading_shows_a_fragment_only_of_a_selected_message() {
     ));
     project_fragment(&record, &options, &facts(Some(state(true)))).unwrap();
 }
+
+#[test]
+fn an_origin_reads_as_its_message_and_distinct_body_kinds() {
+    let origin = FragmentOrigin {
+        message: Some(FragmentMessageOrigin {
+            role: Role::User,
+            prompt_kind: Some(PromptKind::Prose),
+        }),
+        bodies: vec![
+            body(0, 4, BlockKind::Text),
+            body(5, 9, BlockKind::ToolResult),
+            body(10, 12, BlockKind::Text),
+        ],
+    };
+    assert_eq!(
+        origin.to_string(),
+        "user message (prose) · text, tool_result"
+    );
+    let document = FragmentOrigin {
+        message: None,
+        bodies: vec![],
+    };
+    assert_eq!(document.to_string(), "document");
+}

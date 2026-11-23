@@ -2516,7 +2516,7 @@ fn project_layout(
         facts: &facts,
         selected,
         ready_attachment,
-        by_source: true,
+        per_item_source: true,
         backwards: false,
         page_start: None,
     };

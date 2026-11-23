@@ -1044,7 +1044,7 @@ fn root_text(
 
 /// Context boundaries and other in-place events read as one line at their
 /// position; figures the source did not record say so.
-fn event_indicator(event: &polylogue_model::Event) -> Option<(IndicatorKind, String)> {
+pub(crate) fn event_indicator(event: &polylogue_model::Event) -> Option<(IndicatorKind, String)> {
     let tokens = crate::measures::tokens;
     match event.kind.as_str() {
         "compaction" => {
@@ -1072,14 +1072,19 @@ fn event_indicator(event: &polylogue_model::Event) -> Option<(IndicatorKind, Str
             let boundary: polylogue_model::MicrocompactionBoundary =
                 serde_json::from_value(event.data.clone()).ok()?;
             let saved = boundary.tokens_saved;
+            // An empty list means the harness named none, not that none were removed.
+            let removed = match boundary.removed_calls.len() {
+                0 => String::new(),
+                count => format!("{count} "),
+            };
             Some((
                 IndicatorKind::Microcompacted,
                 match saved {
                     Some(saved) => format!(
-                        "tool results removed from context (−{} tokens)",
+                        "{removed}tool results removed from context (−{} tokens)",
                         tokens(saved)
                     ),
-                    None => "tool results removed from context".into(),
+                    None => format!("{removed}tool results removed from context"),
                 },
             ))
         }

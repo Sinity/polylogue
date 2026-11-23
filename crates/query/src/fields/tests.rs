@@ -35,3 +35,21 @@ fn catalog_matches_declarations() {
         }
     }
 }
+
+/// A whole number beyond `i64` is refused rather than rounded to a float.
+#[test]
+fn numbers_beyond_i64_are_refused_not_rounded() {
+    assert_eq!(
+        Kind::Number.scalar("depth", "9223372036854775807").unwrap(),
+        "9223372036854775807"
+    );
+    for text in [
+        "9223372036854775808",
+        "-9223372036854775809",
+        "+99999999999999999999",
+    ] {
+        assert!(Kind::Number.scalar("depth", text).is_err(), "{text}");
+    }
+    assert_eq!(Kind::Number.scalar("depth", "1.5").unwrap(), "1.5");
+    assert!(Kind::Number.scalar("depth", "abc").is_err());
+}

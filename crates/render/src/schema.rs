@@ -58,6 +58,9 @@ fn render_text(data: &Value, out: &mut dyn Write) -> io::Result<()> {
     }
     if let Some(changes) = data["changes"].as_array() {
         for change in changes {
+            if let Some(table) = change["table"].as_str() {
+                write!(out, "table {}: ", inline(table))?;
+            }
             writeln!(
                 out,
                 "{} {}: types {} -> {}, required {} -> {}",

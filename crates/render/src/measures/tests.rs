@@ -78,3 +78,55 @@ fn token_counts_change_unit_at_the_rounded_figure() {
         assert_eq!(tokens(count), expected, "{count}");
     }
 }
+
+#[test]
+fn failing_groups_by_repository_identity_not_display_name() {
+    let data = json!([
+        {"repository":"root-a","repo":"same","command":"cargo test","at":0,"last_ok_at":null},
+        {"repository":"root-b","repo":"same","command":"cargo test","at":0,"last_ok_at":null},
+        {"repository":"root-a","repo":"same","command":"cargo clippy","at":0,"last_ok_at":null},
+    ]);
+    let output = failing(&data, &jiff::tz::TimeZone::UTC);
+    assert_eq!(output.matches("same\n").count(), 2, "{output}");
+    assert_eq!(output.matches("cargo").count(), 3, "{output}");
+    let first = output.find("cargo test").unwrap();
+    let second = output.rfind("same\n").unwrap();
+    assert!(output.find("cargo clippy").unwrap() < second && first < second);
+}
+
+#[test]
+fn partial_money_and_token_counts_state_what_is_missing() {
+    assert_eq!(
+        money(&json!({"known":null,"unpriced_messages":3})),
+        "unknown (3 unpriced)"
+    );
+    assert_eq!(
+        money(&json!({"known":null,"unpriced_messages":0})),
+        "unknown"
+    );
+    assert_eq!(
+        money(&json!({"known":null,"response_total_unknown":true})),
+        "unknown (response grouping unknown)"
+    );
+    assert_eq!(
+        token_count(&json!({"tokens":5000,"unknown_messages":2})),
+        "5.0k (+2 unreported)"
+    );
+    assert_eq!(
+        token_count(&json!({"tokens":0,"unknown_messages":2})),
+        "unknown"
+    );
+    assert_eq!(
+        token_count(&json!({"tokens":900,"response_total_unknown":true})),
+        "900 known + unknown response usage"
+    );
+}
+
+#[test]
+fn drift_names_each_format_or_says_everything_was_recognized() {
+    assert_eq!(drift(&json!([])), "every record and field was recognized\n");
+    let item = json!({"format":"sample","by_design":true});
+    assert!(drift_text(&json!([item])).contains(" (kept as a count by design)"));
+    let item = json!({"format":"sample","by_design":false});
+    assert!(!drift_text(&json!([item])).contains("by design"));
+}

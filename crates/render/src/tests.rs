@@ -3378,3 +3378,70 @@ fn variant_indicator_names_partial_omission_and_stale_state() {
         ["[variant en · translates · variant:synthetic@revision · stale]"]
     );
 }
+#[test]
+fn short_duration_changes_unit_at_each_boundary() {
+    let cases = [
+        (-5, "0s"),
+        (59_999, "59s"),
+        (60_000, "1m"),
+        (3_599_999, "59m"),
+        (3_600_000, "1h0m"),
+        (86_399_999, "23h59m"),
+        (86_400_000, "1d0h"),
+    ];
+    for (ms, expected) in cases {
+        assert_eq!(short_duration(ms), expected, "{ms} ms");
+    }
+}
+#[test]
+fn shell_quote_quotes_what_the_shell_would_split_or_expand() {
+    assert_eq!(shell_quote(""), "''");
+    assert_eq!(shell_quote("id:claude-code:s1"), "id:claude-code:s1");
+    assert_eq!(
+        shell_quote("read the 'clock' file"),
+        r"'read the '\''clock'\'' file'"
+    );
+    assert_eq!(shell_quote("a;b"), "'a;b'");
+    assert_eq!(shell_quote("$HOME"), "'$HOME'");
+}
+#[test]
+fn saved_query_times_print_in_the_reading_zone() {
+    let zone = jiff::tz::TimeZone::get("Europe/Warsaw").unwrap();
+    let at = polylogue_model::Timestamp::parse_rfc3339("2026-11-23T10:00:00Z").unwrap();
+    let kept = SavedQueryItem::Kept(polylogue_model::saved_queries::KeptSummary {
+        result: "result:one".into(),
+        rows: 3,
+        at,
+    });
+    assert_eq!(
+        encode::saved_query_item_lines(&kept, &zone),
+        ["Kept: result:one · 3 rows · 2026-11-23 11:00 +01:00"]
+    );
+    let revision = SavedQueryItem::Revision(polylogue_model::saved_queries::SavedRevision {
+        revision: 2,
+        reference: "query:q@2".into(),
+        text: "sessions".into(),
+        hash: "h".into(),
+        saved_at: None,
+        author: "a".into(),
+    });
+    assert_eq!(
+        encode::saved_query_item_lines(&revision, &zone),
+        ["Revision 2: query:q@2 · h · a · time unknown", "sessions"]
+    );
+}
+#[test]
+fn microcompaction_line_counts_the_removed_tool_results_when_named() {
+    let event = |data| -> polylogue_model::Event {
+        serde_json::from_value(json!({"kind":"microcompaction","data":data})).unwrap()
+    };
+    let text = |data| layout::event_indicator(&event(data)).unwrap().1;
+    assert_eq!(
+        text(json!({"tokens_saved":400,"removed_calls":["a","b","c"]})),
+        "3 tool results removed from context (−400 tokens)"
+    );
+    assert_eq!(
+        text(json!({"tokens_saved":null,"removed_calls":[]})),
+        "tool results removed from context"
+    );
+}

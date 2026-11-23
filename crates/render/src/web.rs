@@ -28,12 +28,13 @@ pub fn read(
         table,
         request,
     )?;
-    let query = request
+    let selection = request
         .arguments
         .str("target")
         .unwrap_or(&page.snapshot.query);
-    let query_display = crate::terminal::json(&Value::String(query.into()), false);
-    frame.query = &query_display[1..query_display.len() - 1];
+    // JSON escapes keep controls visible as `\uXXXX` in the query field.
+    let selection_display = crate::terminal::json(&Value::String(selection.into()), false);
+    frame.query = &selection_display[1..selection_display.len() - 1];
     frame.navigation = navigation_entries();
     frame.status = freshness(&page.snapshot.freshness.sinex);
     let body = html! {
@@ -47,7 +48,7 @@ pub fn read(
             dt { "Index" } dd { (page.snapshot.read_at.index) }
             dt { "Archive" } dd { (page.snapshot.read_at.archive) }
             dt { "Ran at" } dd { (page.snapshot.ran_at) }
-            dt { "Caught up" } dd { (page.snapshot.freshness.up_to_date()) }
+            dt { "Up to date" } dd { (page.snapshot.freshness.up_to_date()) }
         } }
     };
     Ok(crate::terminal::escape(
@@ -70,7 +71,7 @@ fn paging_link(
 ) -> Result<Markup, Failure> {
     Ok(match http_url(table, &call.request) {
         Ok(url) => {
-            html! { a href=(url) rel=(if next {"next"}else{"prev"}) data-next[next] data-previous[!next] { (label) } }
+            html! { a href=(url) rel=(if next {"next"}else{"prev"}) { (label) } }
         }
         Err(_) => {
             html! { span class="view-state" { (label) ": " code { (table.cli_command(&call.request)?) } } }

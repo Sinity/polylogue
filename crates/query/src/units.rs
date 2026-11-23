@@ -916,3 +916,5 @@ pub static UNITS: &[UnitSpec] = &[
         relations: &[],
     },
 ];
+#[cfg(test)]
+mod tests;

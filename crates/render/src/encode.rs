@@ -403,7 +403,7 @@ impl<'a> Encoder<'a> {
                 ))?;
                 self.line(&format!(
                     "Source classification: {} · recorded source length: {}",
-                    fragment_origin_label(origin),
+                    value_text(origin),
                     fragment
                         .coverage
                         .total_bytes
@@ -492,7 +492,7 @@ impl<'a> Encoder<'a> {
     fn card(&mut self, card: &Card) -> io::Result<()> {
         match card {
             Card::SavedQuery { item } => {
-                for line in saved_query_item_lines(item) {
+                for line in saved_query_item_lines(item, &self.zone) {
                     self.line(&line)?;
                 }
                 if let SavedQueryItem::Dependent { resave, .. } = item.as_ref() {
@@ -890,22 +890,6 @@ pub(crate) fn call_label(call: &CallItem) -> String {
     }
 }
 
-pub(crate) fn fragment_origin_label(origin: &ValueState<FragmentOrigin>) -> &'static str {
-    match origin {
-        ValueState::Value { .. } => "known",
-        ValueState::Unknown { .. } => "unknown",
-        ValueState::NotRecorded => "not recorded",
-        ValueState::Unavailable { .. } => "unavailable",
-        ValueState::NotApplicable => "not applicable",
-        ValueState::Partial { .. } => "partial",
-        ValueState::Inferred { .. } => "inferred",
-        ValueState::Pending => "pending",
-        ValueState::Error { .. } => "error",
-        ValueState::Stale { .. } => "stale",
-        ValueState::Inherited { .. } => "inherited",
-    }
-}
-
 /// The logical header's line: the root, the physical sessions it joins and
 /// its messages.
 pub(crate) fn logical_line(kind: &HeaderKind) -> Option<String> {
@@ -1015,7 +999,10 @@ fn saved_query_header_line(kind: &HeaderKind) -> Option<String> {
     ))
 }
 
-pub(crate) fn saved_query_item_lines(item: &SavedQueryItem) -> Vec<String> {
+pub(crate) fn saved_query_item_lines(
+    item: &SavedQueryItem,
+    zone: &jiff::tz::TimeZone,
+) -> Vec<String> {
     match item {
         SavedQueryItem::Revision(revision) => vec![
             format!(
@@ -1024,15 +1011,18 @@ pub(crate) fn saved_query_item_lines(item: &SavedQueryItem) -> Vec<String> {
                 revision.reference,
                 revision.hash,
                 revision.author,
-                revision
-                    .saved_at
-                    .map_or_else(|| "time unknown".into(), |at| at.to_string())
+                revision.saved_at.map_or_else(
+                    || "time unknown".into(),
+                    |at| polylogue_model::local_minute(at, zone)
+                )
             ),
             revision.text.clone(),
         ],
         SavedQueryItem::Kept(kept) => vec![format!(
             "Kept: {} · {} rows · {}",
-            kept.result, kept.rows, kept.at
+            kept.result,
+            kept.rows,
+            polylogue_model::local_minute(kept.at, zone)
         )],
         SavedQueryItem::Watch { reference } => vec![reference.as_ref().map_or_else(
             || "Watch: none".into(),
