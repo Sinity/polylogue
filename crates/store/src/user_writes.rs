@@ -1,7 +1,9 @@
-//! Writes people and agents make to `archive.db`: notes and their
-//! withdrawals, context deliveries and settings. They go through the one
-//! writer thread like everything else, each in its own small transaction,
-//! so a note never waits behind a first build for longer than one group.
+//! Writes people and agents make to `archive.db`: annotations (tags, notes,
+//! judgments and the rest) and their withdrawals, seen marks, saved
+//! queries, signals, alternates, chat actions, import jobs, context
+//! deliveries and their events, and settings. They go through the one writer
+//! thread like everything else, each in its own small transaction, so a write
+//! never waits behind a first build for longer than one group.
 //!
 //! Every write carries a client request ID. The same ID with the same
 //! intent writes nothing and returns what the first write created; the

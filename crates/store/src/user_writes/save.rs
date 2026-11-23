@@ -1,4 +1,4 @@
-//! One accepted Save: immutable rows and any changed question and watch.
+//! One accepted Save: immutable rows and any changed saved query and watch.
 use super::*;
 use crate::assertions::{SavedInput, SavedResolver, WriteContext, single_named_current};
 use polylogue_model::user::{KeptPart, SaveReport, SavedPart, WatchPart};
@@ -23,16 +23,16 @@ fn statement(
             .into_iter()
             .map(|row| NewAssertionLink {
                 role: LinkRole::Revises,
-                reference: Reference::Assertion(RevisionReference {
-                    root: row.fact.root.clone(),
-                    revision: Some(row.fact.id.clone()),
-                }),
+                reference: Reference::Assertion(RevisionReference::exact(
+                    row.fact.root.clone(),
+                    row.fact.id.clone(),
+                )),
             })
             .collect(),
     }
 }
 
-/// Withdrawing a current named question also withdraws its current watch.
+/// Withdrawing a current saved query also withdraws its current watch.
 pub(super) fn withdrawal_targets(
     conn: &Connection,
     targets: &[Reference],
@@ -96,7 +96,7 @@ pub(super) fn apply(
         return Err(StoreError::invalid("a watch needs a saved query name"));
     }
     if save.name.is_none() && save.denominator.is_some() {
-        return Err(StoreError::invalid("a figure is a named question"));
+        return Err(StoreError::invalid("a figure needs a saved query name"));
     }
     if let Some(watch) = &save.watch
         && let Some(hold) = &watch.hold
@@ -130,13 +130,13 @@ pub(super) fn apply(
                     row.fact
                         .value
                         .clone()
-                        .ok_or_else(|| StoreError::invalid("saved question has no value"))?,
+                        .ok_or_else(|| StoreError::invalid("saved query has no value"))?,
                 )
                 .map_err(StoreError::from)
             })
             .transpose()?;
         // An own-name Save keeps the accepted original text. Reading its stored
-        // object validates the old hash without parsing it as a new question.
+        // object validates the old hash without parsing it as a new query.
         let value = match &previous_value {
             Some(previous) if previous.text == save.query && save.denominator.is_none() => {
                 resolve(SavedInput::Stored {
@@ -157,10 +157,7 @@ pub(super) fn apply(
             .map(|row| {
                 crate::assertions::saved_revision_number(
                     conn,
-                    &RevisionReference {
-                        root: row.fact.root.clone(),
-                        revision: Some(row.fact.id.clone()),
-                    },
+                    &RevisionReference::exact(row.fact.root.clone(), row.fact.id.clone()),
                 )
             })
             .transpose()?

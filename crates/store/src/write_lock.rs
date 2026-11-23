@@ -110,8 +110,7 @@ pub(crate) fn commit(tx: rusqlite::Transaction<'_>) -> Result<()> {
     if let Some(log) = log
         && let Err(error) = sync_log(&log)
     {
-        let failure = crate::storage_failure::StorageFailure::of(log, &error);
-        crate::storage_failure::record(failure.clone());
+        let failure = crate::storage_failure::StorageFailure::record_sync_failure(log, &error);
         panic!("{failure}");
     }
     Ok(())
@@ -139,8 +138,7 @@ pub(crate) fn sync_register(archive: &Archive) -> Result<()> {
         _ => (database.clone(), sync_database()),
     };
     synced.map_err(|error| {
-        let failure = crate::storage_failure::StorageFailure::of(path, &error);
-        crate::storage_failure::record(failure.clone());
+        let failure = crate::storage_failure::StorageFailure::record_sync_failure(path, &error);
         StoreError::StorageFailed(failure)
     })
 }

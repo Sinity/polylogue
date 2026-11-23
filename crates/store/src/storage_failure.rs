@@ -35,7 +35,14 @@ impl std::fmt::Display for StorageFailure {
 }
 
 impl StorageFailure {
-    pub(crate) fn of(path: PathBuf, error: &crate::StoreError) -> Self {
+    /// Records the failed sync of `path` for this process and returns it.
+    pub(crate) fn record_sync_failure(path: PathBuf, error: &crate::StoreError) -> Self {
+        let failure = Self::of(path, error);
+        record(failure.clone());
+        failure
+    }
+
+    fn of(path: PathBuf, error: &crate::StoreError) -> Self {
         let errno = match error {
             crate::StoreError::Io(error) => error.raw_os_error(),
             _ => None,

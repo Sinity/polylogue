@@ -114,18 +114,6 @@ pub fn reset() {
     }
 }
 
-pub(crate) struct WriterTime(Instant);
-
-pub(crate) fn writer_started() -> WriterTime {
-    WriterTime(Instant::now())
-}
-
-impl Drop for WriterTime {
-    fn drop(&mut self) {
-        add(Stage::Writer, self.0.elapsed());
-    }
-}
-
 /// A stage whose time includes its final operation, including early returns.
 pub struct Running(Stage, Instant);
 pub fn enter(stage: Stage) -> Running {

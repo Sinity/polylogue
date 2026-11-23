@@ -1252,7 +1252,7 @@ fn unnamed_save_keeps_only_rows_and_named_only_options_explain_the_refusal() {
         }),
     ));
     assert_eq!(figure.code.as_deref(), Some("bad_request"));
-    assert_eq!(figure.message, "a figure is a named question");
+    assert_eq!(figure.message, "a figure needs a saved query name");
     for (option, value) in [("hold", json!("20m")), ("notify", json!(true))] {
         let mut step = json!({"verb":"save","name":"refined"});
         step[option] = value;

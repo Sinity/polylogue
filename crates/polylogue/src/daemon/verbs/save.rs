@@ -43,7 +43,7 @@ impl Verb for Save {
                 saved
                     .fact
                     .value
-                    .ok_or_else(|| Failure::internal("saved question has no value"))?,
+                    .ok_or_else(|| Failure::internal("saved query has no value"))?,
             )
             .map_err(|error| Failure::internal(error.to_string()))?;
             question = value.text;
@@ -168,7 +168,7 @@ fn check(step: &SaveStep, selection: &Selection) -> Result<(), Failure> {
         )));
     }
     if step.denominator.is_some() && step.name.is_none() {
-        return Err(Failure::bad_request("a figure is a named question"));
+        return Err(Failure::bad_request("a figure needs a saved query name"));
     }
     Ok(())
 }

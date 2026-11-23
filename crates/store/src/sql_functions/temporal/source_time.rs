@@ -1,5 +1,5 @@
 //! Stored source times and the possible latest time of a set of source periods.
-use super::{Failure, period};
+use super::Failure;
 use crate::query::fields::TimeStorage;
 use polylogue_model::{Event, Precision, TimeEvidence, TimeQuality, Timestamp};
 use query_language::time::Time;
@@ -21,7 +21,28 @@ pub(super) struct SourceTime {
 }
 impl SourceTime {
     pub fn period(&self) -> Option<Time> {
-        period(self.at, self.precision, self.until)
+        let at: jiff::Timestamp = self.at?.into();
+        if self.precision == Some(Precision::Instant) {
+            return Some(Time::Instant { at });
+        }
+        let end = match self.until {
+            Some(end) => end.into(),
+            None => match self.precision {
+                Some(Precision::Second | Precision::Minute) => {
+                    let seconds = if self.precision == Some(Precision::Second) {
+                        1
+                    } else {
+                        60
+                    };
+                    at.checked_add(jiff::SignedDuration::from_secs(seconds))
+                        .ok()?
+                }
+                // A calendar grain needs the source's boundary or upper bound.
+                // The operation's own zone cannot stand in for the source's.
+                _ => return None,
+            },
+        };
+        Some(Time::Span { start: at, end })
     }
     fn from_source(at: Option<Timestamp>, source: TimeEvidence) -> Result<Self, Failure> {
         source.validate(at)?;
@@ -56,6 +77,10 @@ impl SourceTime {
 
 pub(super) fn read(bytes: Option<&[u8]>, storage: &str) -> Result<SourceTime, Failure> {
     let storage = TimeStorage::from_name(storage).ok_or("unknown time storage")?;
+    read_stored(bytes, storage)
+}
+
+fn read_stored(bytes: Option<&[u8]>, storage: TimeStorage) -> Result<SourceTime, Failure> {
     let Some(bytes) = bytes else {
         return Ok(SourceTime::default());
     };
@@ -177,7 +202,9 @@ impl Aggregate<LatestState, Option<Vec<u8>>> for Latest {
     }
     fn step(&self, ctx: &mut Context<'_>, state: &mut LatestState) -> rusqlite::Result<()> {
         let bytes: Option<Vec<u8>> = ctx.get(0)?;
-        state.add(read(bytes.as_deref(), "tuple").map_err(Error::UserFunctionError)?);
+        state.add(
+            read_stored(bytes.as_deref(), TimeStorage::Tuple).map_err(Error::UserFunctionError)?,
+        );
         Ok(())
     }
     fn finalize(

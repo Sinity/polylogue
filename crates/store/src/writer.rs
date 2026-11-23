@@ -1005,7 +1005,7 @@ impl Inner {
                 Ok(first) => first,
                 Err(_) => break,
             };
-            let _busy = crate::timing::writer_started();
+            let _busy = crate::timing::enter(crate::timing::Stage::Writer);
             self.serve_users();
             let turn = Arc::clone(&self.search.turn);
             let _turn = turn.locked();
