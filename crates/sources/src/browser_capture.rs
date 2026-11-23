@@ -382,8 +382,7 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
     sink.records.record("session", &RecordOutcome::Used);
     let mut list: Vec<&Json> = session.array("turns").into_iter().flatten().collect();
     list.sort_by_key(|t| t.i64("ordinal").unwrap_or(i64::MAX));
-    let mut ids = crate::content_ids::ContentIds::default();
-    for turn in list {
+    for (position, turn) in list.into_iter().enumerate() {
         let role_name = turn
             .str("role")
             .filter(|s| !s.is_empty())
@@ -444,7 +443,12 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
         let (id, id_kind) = match turn.str("provider_turn_id").filter(|s| !s.is_empty()) {
             Some(native) => (message_id(origin, native), IdKind::Native),
             None => (
-                ids.next(&sid, role, &crate::content_ids::text(&blocks)),
+                crate::content_ids::named(
+                    &sid,
+                    role,
+                    &crate::content_ids::text(&blocks),
+                    position as u64,
+                ),
                 IdKind::Content,
             ),
         };
@@ -484,6 +488,7 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
         let offset = sink.position();
         // The extension's own turns are the page's text (docs/extension.md).
         sink.out.messages.push(MessageRow {
+            response: None,
             page_text: true,
             id_kind,
             offset,

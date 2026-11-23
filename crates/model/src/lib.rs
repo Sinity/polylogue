@@ -34,7 +34,6 @@ pub mod injection;
 pub mod kept;
 pub mod live;
 pub mod markdown;
-pub mod parser_context;
 pub mod sinex_event;
 pub use injection::{HookContextEmission, HookFieldClaim};
 mod message;
@@ -63,8 +62,8 @@ pub use variant::{
 };
 
 pub use batch::{
-    BackgroundUpdate, CountMismatch, DocumentRow, ExtractedBlob, IdKind, MessageRow, OrderKey,
-    Output, RecordCounts, RecordOutcome, RepoLookup, WireShape,
+    Alias, BackgroundUpdate, CountMismatch, DocumentRow, ExtractedBlob, IdKind, MessageRow,
+    OrderKey, Output, RecordCounts, RecordOutcome, RepoLookup, WireShape,
 };
 pub use block::{
     Attachment, AttachmentDirection, Block, BlockKind, CallOutcome, ErrorReason, ToolAction,

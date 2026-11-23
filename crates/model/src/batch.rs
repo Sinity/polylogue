@@ -98,6 +98,10 @@ pub struct Output {
     pub block_selections: BTreeMap<usize, crate::bundle::MessageProjection>,
     /// Exact statements of provider relationships or references.
     pub links: Vec<Link>,
+    /// Records that are not messages but stand in a chain of parents, each
+    /// saying which name it stands for ([`Alias`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<Alias>,
     /// Copied-prefix evidence is independent of provider relationship markers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prefix_copies: Vec<crate::PrefixCopy>,
@@ -138,6 +142,19 @@ pub struct ExtractedBlob {
     pub bytes: Vec<u8>,
 }
 
+/// A name that stands for another: a record that is not a message of its
+/// own (a later record of a split response, a progress or attachment
+/// record) but that a child may name as its parent. `target` is the name as
+/// the record writes it; `None` stands for no message at all. A parent named
+/// through aliases is the nearest message they lead to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Alias {
+    pub offset: u64,
+    pub end: u64,
+    pub name: crate::MessageId,
+    pub target: Option<crate::MessageId>,
+}
+
 /// A document as one input holds it, with the record's byte range.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct DocumentRow {
@@ -173,6 +190,11 @@ pub struct MessageRow {
     /// fidelity, outranked by every other route ([`crate::Route::PageText`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub page_text: bool,
+    /// The key the source gives the records of one response written as
+    /// several records (Claude Code's `message.id`). Rows of one chain with
+    /// the same session and key are one message, named by the first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<String>,
     pub message: Message,
 }
 

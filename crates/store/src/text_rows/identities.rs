@@ -9,16 +9,9 @@ use rusqlite::{Connection, OptionalExtension};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-/// The row key and whether its prepared payload was supplied in this transaction.
-pub(crate) struct ResolvedText {
-    pub id: i64,
-    pub written: bool,
-}
-
 #[derive(Default)]
 struct TextMark {
     indexed: i64,
-    written: bool,
 }
 
 pub(crate) struct TextIds {
@@ -27,7 +20,6 @@ pub(crate) struct TextIds {
     known: RefCell<KeyRows>,
     marked: RefCell<HashMap<i64, TextMark>>,
     marked_entries: usize,
-    in_transaction: Cell<bool>,
     groups: super::StoredGroups,
     next: Cell<i64>,
     reload: Cell<bool>,
@@ -41,7 +33,6 @@ impl TextIds {
             known: RefCell::new(KeyRows::new(bytes / 2)?),
             marked: RefCell::new(HashMap::new()),
             marked_entries: (bytes / 4 / 64).max(1) as usize,
-            in_transaction: Cell::new(false),
             groups: super::StoredGroups::new(bytes / 4),
             next: Cell::new(next(max)?),
             reload: Cell::new(preload),
@@ -85,17 +76,11 @@ impl TextIds {
         hash: &[u8; 32],
         body: Option<super::groups::Prepared<'_>>,
         membership: Option<&super::NewMembership<'_>>,
-    ) -> Result<ResolvedText> {
+    ) -> Result<i64> {
         self.refresh(conn)?;
         let known = self.known.borrow().get(hash)?;
         if let Some(id) = known.filter(|id| *id > 0) {
-            let written = self.in_transaction.get()
-                && self
-                    .marked
-                    .borrow()
-                    .get(&id)
-                    .is_some_and(|mark| mark.written);
-            return Ok(ResolvedText { id, written });
+            return Ok(id);
         }
         let allocated = known.map(i64::abs);
         if let Some(body) = body {
@@ -114,12 +99,9 @@ impl TextIds {
                     }
                     self.mark(id, bits);
                 }
-                if self.in_transaction.get() {
-                    self.mark_written(id);
-                }
                 self.next.set(self.next.get().max(after));
                 self.known.borrow_mut().set(*hash, id)?;
-                return Ok(ResolvedText { id, written: true });
+                return Ok(id);
             }
         }
         if !self.complete.get() {
@@ -135,7 +117,7 @@ impl TextIds {
                 }
                 self.known.borrow_mut().set(*hash, id)?;
                 self.next.set(self.next.get().max(next(id)?));
-                return Ok(ResolvedText { id, written: false });
+                return Ok(id);
             }
         }
         Err(StoreError::Invalid(
@@ -188,14 +170,6 @@ impl TextIds {
         marked.entry(id).or_default().indexed |= bit;
     }
 
-    /// Records that this transaction wrote the text's payload.
-    fn mark_written(&self, id: i64) {
-        self.mark(id, 0);
-        if let Some(mark) = self.marked.borrow_mut().get_mut(&id) {
-            mark.written = true;
-        }
-    }
-
     pub(super) fn unmark(&self, id: i64, bit: i64) {
         if let Some(mark) = self.marked.borrow_mut().get_mut(&id) {
             mark.indexed &= !bit;
@@ -204,7 +178,6 @@ impl TextIds {
 
     pub(crate) fn transaction(&self) -> TextTransaction<'_> {
         self.marked.borrow_mut().clear();
-        self.in_transaction.set(true);
         TextTransaction {
             texts: self,
             committed: false,
@@ -228,7 +201,6 @@ impl TextTransaction<'_> {
 }
 impl Drop for TextTransaction<'_> {
     fn drop(&mut self) {
-        self.texts.in_transaction.set(false);
         self.texts.marked.borrow_mut().clear();
         if !self.committed {
             self.texts.reload.set(true);

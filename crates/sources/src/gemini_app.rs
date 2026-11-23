@@ -36,8 +36,9 @@ pub fn open(_path: &Path) -> Option<Parse> {
 
 #[derive(Default)]
 pub struct GeminiApp {
-    /// Names the turns, which the activity page gives no IDs.
-    ids: crate::content_ids::ContentIds,
+    /// Turns named so far, which the activity page gives no IDs: tells
+    /// their written names apart ([`crate::content_ids`]).
+    named: u64,
 }
 
 const CELL: &str = "<div class=\"outer-cell";
@@ -57,17 +58,32 @@ struct Entry {
 
 mod stream;
 
-impl ExportParser for GeminiApp {
-    fn bind_context(&mut self, context: polylogue_model::parser_context::Handle) {
-        self.ids.bind_context(context, "gemini-app".into());
+impl GeminiApp {
+    /// A turn's message, named by the text its routes agree on.
+    fn name(
+        &mut self,
+        session: &polylogue_model::SessionId,
+        role: Role,
+        blocks: &[Block],
+    ) -> Option<polylogue_model::MessageId> {
+        self.named += 1;
+        crate::content_ids::named(
+            session,
+            role,
+            &crate::content_ids::text(blocks),
+            self.named - 1,
+        )
     }
+}
+
+impl ExportParser for GeminiApp {
     fn scan(
         &mut self,
         _input: &str,
         reader: &mut dyn crate::export::Input,
         items: &mut dyn crate::export::ItemSink,
     ) -> Result<crate::export::ScanStats, crate::export::ScanError> {
-        self.ids = Default::default();
+        self.named = 0;
         stream::scan(reader, |range, bytes| {
             let cell = String::from_utf8_lossy(bytes);
             let at = entry(&cell).and_then(|e| e.at).map(|t| t.unix_ms());
@@ -156,10 +172,7 @@ impl ExportParser for GeminiApp {
                 data: Json::String(note.clone()),
             });
         }
-        let Some(user_id) =
-            self.ids
-                .next(&sid, Role::User, &crate::content_ids::text(&prompt_blocks))
-        else {
+        let Some(user_id) = self.name(&sid, Role::User, &prompt_blocks) else {
             sink.records
                 .record(&e.verb, &RecordOutcome::unreadable("unusable message ID"));
             return Ok(());
@@ -171,11 +184,7 @@ impl ExportParser for GeminiApp {
         let mut last = user_id.clone();
         let mut rows = vec![user];
         if !reply_blocks.is_empty() {
-            let Some(reply_id) = self.ids.next(
-                &sid,
-                Role::Assistant,
-                &crate::content_ids::text(&reply_blocks),
-            ) else {
+            let Some(reply_id) = self.name(&sid, Role::Assistant, &reply_blocks) else {
                 sink.records
                     .record(&e.verb, &RecordOutcome::unreadable("unusable message ID"));
                 return Ok(());
@@ -191,6 +200,7 @@ impl ExportParser for GeminiApp {
         for row in rows {
             let offset = sink.position();
             sink.out.messages.push(MessageRow {
+                response: None,
                 page_text: false,
                 id_kind: polylogue_model::IdKind::Content,
                 offset,

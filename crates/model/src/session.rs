@@ -196,6 +196,9 @@ impl Session {
         }
         if other.cwd.starts_with(&self.cwd) {
             self.cwd.clone_from(&other.cwd);
+        } else if other.cwd.len() > 1 && other.cwd.first() == self.cwd.last() {
+            // Moves that continue from where this ended.
+            self.cwd.extend(other.cwd[1..].iter().cloned());
         } else if !self.cwd.starts_with(&other.cwd) {
             for dir in &other.cwd {
                 if !self.cwd.contains(dir) {

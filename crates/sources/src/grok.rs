@@ -294,6 +294,7 @@ impl Export {
             };
             let offset = sink.position();
             sink.out.messages.push(MessageRow {
+                response: None,
                 page_text: false,
                 id_kind,
                 offset,

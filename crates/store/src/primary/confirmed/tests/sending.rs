@@ -16,6 +16,7 @@ fn message(input: &str, offset: u64) -> Product {
             &step,
         ),
         facts: Box::new(polylogue_model::MessageRow {
+            response: None,
             offset,
             end: offset + 10,
             page_text: false,

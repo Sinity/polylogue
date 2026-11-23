@@ -11,10 +11,12 @@ pub fn parse(parser: &mut Parse, bytes: &[u8]) -> Result<Step, String> {
 
 pub fn parse_input(parser: &mut Parse, input: &str, bytes: &[u8]) -> Result<Step, String> {
     let Parse::Export(export) = parser else {
-        return parser
-            .step(None, bytes, 0, &Default::default())
-            .map(|(step, _)| step)
-            .map_err(|e| e.to_string());
+        let (mut step, _) = parser.step(None, bytes, 0).map_err(|e| e.to_string())?;
+        polylogue_sources::chain_names::settle(
+            &mut step.output,
+            &mut polylogue_sources::chain_names::NoEarlierRows,
+        )?;
+        return Ok(step);
     };
     let mut sink = Items::default();
     if let Err(error) = export.scan(input, &mut std::io::Cursor::new(bytes), &mut sink) {
@@ -44,7 +46,20 @@ pub fn parse_input(parser: &mut Parse, input: &str, bytes: &[u8]) -> Result<Step
             &mut first_sessions,
         )?);
     }
-    for step in steps {
+    let repeats = steps
+        .first()
+        .is_some_and(|step| step.repeats_whole_conversations);
+    let mut names =
+        polylogue_sources::chain_names::Formed::new(polylogue_sources::chain_names::NoEarlierRows);
+    for mut step in steps {
+        if repeats {
+            polylogue_sources::chain_names::settle(
+                &mut step.output,
+                &mut polylogue_sources::chain_names::NoEarlierRows,
+            )?;
+        } else {
+            names.settle(&mut step.output)?;
+        }
         counts.merge(&step.counts);
         append_output(&mut output, step.output);
     }
@@ -76,6 +91,7 @@ fn append_output(output: &mut polylogue_sources::Output, next: polylogue_sources
         message_order,
         block_selections,
         mut links,
+        mut aliases,
         mut prefix_copies,
         mut prefix_members,
         mut background,
@@ -101,6 +117,7 @@ fn append_output(output: &mut polylogue_sources::Output, next: polylogue_sources
         fragments,
         events,
         links,
+        aliases,
         prefix_copies,
         prefix_members,
         background,

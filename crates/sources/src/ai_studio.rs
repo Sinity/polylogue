@@ -144,8 +144,9 @@ struct PromptState {
     position: usize,
     started: bool,
     parents: std::collections::BTreeSet<polylogue_model::SessionId>,
-    /// Names the chunks that carry no `id`.
-    ids: crate::content_ids::ContentIds,
+    /// Chunks without an `id` named so far: tells their written names
+    /// apart ([`crate::content_ids`]).
+    named: u64,
 }
 
 static DOCUMENT_FIELDS: Fields = Fields::new(
@@ -277,9 +278,6 @@ static CHUNK_FIELDS: Fields = Fields::new(
 );
 
 impl ExportParser for AiStudio {
-    fn bind_context(&mut self, context: polylogue_model::parser_context::Handle) {
-        self.state.ids.bind_context(context, "ai-studio".into());
-    }
     fn message_range(&self, message: &Message) -> Option<std::ops::Range<u64>> {
         (message.role == Role::System).then_some(0..self.state.length)
     }
@@ -420,6 +418,7 @@ impl ExportParser for AiStudio {
                         let id = message_id(ORIGIN, &message_key(&self.native, "system", ""))
                             .ok_or("unusable system id")?;
                         sink.out.messages.push(MessageRow {
+                            response: None,
                             page_text: false,
                             id_kind: polylogue_model::IdKind::Native,
                             offset: 0,
@@ -450,6 +449,7 @@ impl ExportParser for AiStudio {
                 self.state.previous = Some(message.id.clone());
                 let offset = sink.position();
                 sink.out.messages.push(MessageRow {
+                    response: None,
                     page_text: false,
                     id_kind,
                     offset,
@@ -536,7 +536,13 @@ impl AiStudio {
                 message_id(ORIGIN, &message_key(&self.native, "id", id)),
                 IdKind::Native,
             ),
-            None => (self.state.ids.next(sid, role, chunk), IdKind::Content),
+            None => {
+                self.state.named += 1;
+                (
+                    crate::content_ids::named(sid, role, chunk, self.state.named - 1),
+                    IdKind::Content,
+                )
+            }
         };
         let id = id.ok_or_else(|| RecordOutcome::unreadable("unusable id"))?;
         let native = id.native().as_str().to_owned();

@@ -418,7 +418,7 @@ impl From<rusqlite::Error> for StoreError {
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
-pub mod parser_context;
+pub mod chain_names;
 
 fn holder_suffix(holder: &Option<u32>) -> String {
     holder.map_or_else(String::new, |pid| format!(" (pid {pid})"))

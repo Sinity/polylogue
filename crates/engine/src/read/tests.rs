@@ -519,7 +519,7 @@ fn new_empty_file_has_body_and_eof_without_progress() {
         true,
     );
     plan.observation = Some(engine.observation(&path, Some(facts)));
-    plan.parser_deferred = true;
+    plan.storing_only = true;
     assert!(
         !plan.finished(),
         "an unrecorded observation is still local capture work"
@@ -529,7 +529,7 @@ fn new_empty_file_has_body_and_eof_without_progress() {
     let mut context = engine.sampling_context(&path, origin.name).unwrap();
     context.facts = Some(facts);
     job.source_read = Some(context);
-    let (prepared, done) = crate::pool::run(job, &engine.archive, &engine.blobs, true);
+    let (prepared, done) = crate::pool::run(job, &engine.archive, &engine.blobs, true, None);
     assert!(done.error.is_none(), "{:?}", done.error);
     let prepared = prepared.unwrap();
     assert!(prepared.batch.parse.is_empty());

@@ -62,126 +62,6 @@ fn cleanup_steps(conn: &Connection) -> u64 {
     steps.load(Ordering::Relaxed)
 }
 
-fn context_reference_cleanup_steps(unrelated: i64, without_index: bool) -> u64 {
-    let conn = database(0);
-    if without_index {
-        conn.execute_batch("DROP INDEX IF EXISTS parser_context_version")
-            .unwrap();
-    }
-    conn.execute_batch(
-        "INSERT INTO input_ref(pk,id) VALUES(1,'synthetic');
-         INSERT INTO session(pk,id,origin,native_id,kind,changed)
-             VALUES(1,'codex:synthetic','codex','synthetic','main',1);
-         INSERT INTO message(pk,id,session_pk,session_order,role,written_by,input_pk)
-             VALUES(1,'codex:response',1,'0001','assistant','model',1);",
-    )
-    .unwrap();
-    let orphan = [0u8; 32];
-    let winner = [255u8; 32];
-    for hash in [orphan, winner] {
-        insert_version(&conn, &hash, &[0]);
-    }
-    for id in 1..=unrelated + 1 {
-        let mut hash = [0u8; 32];
-        hash[..8].copy_from_slice(&id.to_le_bytes());
-        insert_version(&conn, &hash, &[0]);
-        conn.execute(
-            "INSERT INTO parser_context_response VALUES(1,7,'','s',?1,?2,0,0)",
-            params![format!("context-{id}"), message_key(&conn, &hash).unwrap()],
-        )
-        .unwrap();
-    }
-    conn.execute("INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,session_pk,route,completion,version_pk) VALUES(1,1,7,0,1,'native',1,'live','finished',(SELECT pk FROM message_version WHERE version_hash=?1))",[orphan]).unwrap();
-    let mut protected = [0u8; 32];
-    protected[..8].copy_from_slice(&1i64.to_le_bytes());
-    conn.execute_batch("SAVEPOINT reading").unwrap();
-    // Changing the source reference queues both versions for collection.
-    for hash in [protected, winner] {
-        conn.execute(
-            "UPDATE message_source SET version_pk=(SELECT pk FROM message_version WHERE version_hash=?1) WHERE message_pk=1",
-            [hash],
-        )
-        .unwrap();
-    }
-    let steps = cleanup_steps(&conn);
-    assert_eq!(
-        conn.query_row(
-            "SELECT count(*) FROM message_version WHERE version_hash=?1",
-            [orphan],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        0
-    );
-    assert_eq!(
-        conn.query_row(
-            "SELECT count(*) FROM message_version WHERE version_hash=?1",
-            [protected],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        1
-    );
-    assert_eq!(
-        conn.query_row("SELECT count(*) FROM parser_context_response", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        unrelated + 1
-    );
-    assert_eq!(
-        conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
-            .get::<_, i64>(
-            0
-        ))
-        .unwrap(),
-        0
-    );
-    conn.execute_batch("ROLLBACK TO reading; RELEASE reading")
-        .unwrap();
-    assert_eq!(
-        conn.query_row(
-            "SELECT v.version_hash FROM message_source s JOIN message_version v ON v.pk=s.version_pk WHERE message_pk=1",
-            [],
-            |r| r.get::<_, Vec<u8>>(0)
-        )
-        .unwrap(),
-        orphan
-    );
-    assert_eq!(
-        conn.query_row(
-            "SELECT count(*) FROM message_version WHERE version_hash=?1",
-            [orphan],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        1
-    );
-    assert_eq!(
-        conn.query_row("SELECT count(*) FROM temp.unreferenced_value", [], |r| {
-            r.get::<_, i64>(0)
-        })
-        .unwrap(),
-        0
-    );
-    steps
-}
-
-#[test]
-fn version_cleanup_checks_context_references_without_scanning_history() {
-    let small = context_reference_cleanup_steps(0, false);
-    let large = context_reference_cleanup_steps(8192, false);
-    assert!(
-        large <= small + 64,
-        "SQLite {}: candidate version cleanup {small} -> {large} VM steps",
-        rusqlite::version()
-    );
-    let unindexed = context_reference_cleanup_steps(8192, true);
-    assert!(
-        unindexed >= 8192 * 4,
-        "the unindexed case used only {unindexed} steps"
-    );
-}
-
 #[test]
 fn empty_text_cleanup_does_not_read_unrelated_history() {
     let small = cleanup_steps(&database(0));
@@ -308,8 +188,7 @@ fn build_cleanup_keeps_text_and_forgets_deleted_ids() {
                 .get(blake3::hash(b"kept").as_bytes()),
             None,
         )
-        .unwrap()
-        .id;
+        .unwrap();
     let version_pk = insert_version(&tx, &version, &[0]);
     tx.execute(
         "INSERT INTO message_version_text(version_pk,idx,text_id) VALUES(?1,0,?2)",
@@ -322,7 +201,7 @@ fn build_cleanup_keeps_text_and_forgets_deleted_ids() {
     )
     .unwrap();
     remove_unreferenced(&tx, &upkeep, &identities).unwrap();
-    assert_eq!(identities.resolve(&tx, &hash, None, None).unwrap().id, id);
+    assert_eq!(identities.resolve(&tx, &hash, None, None).unwrap(), id);
     tx.execute(
         "DELETE FROM message_version WHERE version_hash=?1",
         [version.as_slice()],
@@ -339,8 +218,7 @@ fn build_cleanup_keeps_text_and_forgets_deleted_ids() {
                 .get(blake3::hash(b"again").as_bytes()),
             None,
         )
-        .unwrap()
-        .id;
+        .unwrap();
     assert_eq!(
         tx.query_row(
             "SELECT count(*) FROM text WHERE id=?1 AND hash=?2",
@@ -353,7 +231,7 @@ fn build_cleanup_keeps_text_and_forgets_deleted_ids() {
     tx.commit().unwrap();
     texts.commit();
     assert_eq!(
-        identities.resolve(&conn, &hash, None, None).unwrap().id,
+        identities.resolve(&conn, &hash, None, None).unwrap(),
         replacement
     );
 }
@@ -392,11 +270,6 @@ fn version_keys_and_payload_children_survive_failed_removal() {
         params![keys[0], [8u8; 32]],
     )
     .unwrap();
-    conn.execute(
-        "INSERT INTO parser_context_response VALUES(1,1,'','s','response',?1,0,91)",
-        [keys[0]],
-    )
-    .unwrap();
     assert!(
         conn.execute("INSERT INTO message_version_text VALUES(999999,0,1)", [])
             .is_err()
@@ -417,24 +290,6 @@ fn version_keys_and_payload_children_survive_failed_removal() {
         crate::archive::MemoryBudget::default().keys() / 3,
     )
     .unwrap();
-    remove_unreferenced(
-        &conn,
-        &IndexUpkeep::AtBuildEnd(Arc::new(KeyMaps::default())),
-        &ids,
-    )
-    .unwrap();
-    assert_eq!(
-        conn.query_row(
-            "SELECT count(*) FROM message_version_body WHERE version_pk=?1",
-            [keys[0]],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        1,
-        "kept parser context owns the old payload"
-    );
-    conn.execute_batch("DELETE FROM parser_context_response")
-        .unwrap();
     remove_unreferenced(
         &conn,
         &IndexUpkeep::AtBuildEnd(Arc::new(KeyMaps::default())),

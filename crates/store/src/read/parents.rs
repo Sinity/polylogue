@@ -345,7 +345,7 @@ pub(crate) fn compare_session_messages(
         .ok_or_else(|| StoreError::NotFound(format!("session:{target}")))?;
     let coordinate =
         |id: &MessageId| -> Result<(String, i64, String)> {
-            let id = crate::parser_context::resolved_message(conn, id)?.to_string();
+            let id = crate::chain_names::resolved_message(conn, id)?.to_string();
             let (session, order) = conn.query_row(
             "SELECT session_pk,session_order FROM message WHERE id=?1 AND duplicate_of IS NULL",
             [&id], |row| <(i64, String)>::try_from(row),

@@ -118,7 +118,7 @@ fn a_codex_import_retry_reads_only_after_its_committed_checkpoint() {
             .unwrap();
         let job = plan.next_job(&engine.stopped_attempt);
         assert_eq!((job.start, job.end), (0, cursor));
-        let (batch, done) = pool::run(job, &engine.archive, &engine.blobs, true);
+        let (batch, done) = pool::run(job, &engine.archive, &engine.blobs, true, None);
         assert!(done.error.is_none(), "{done:?}");
         assert_eq!(done.parsed_upto, cursor);
         for result in engine

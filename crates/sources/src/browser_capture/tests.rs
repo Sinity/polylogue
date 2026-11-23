@@ -106,7 +106,8 @@ fn without_provider_json_the_extension_turns_are_read() {
             {"role": "user", "text": "question", "ordinal": 0, "blocks": []}
         ]}),
     );
-    let step = run_document(&Capture, &bytes).unwrap();
+    let step =
+        crate::chain_names::tests::settled(&[run_document(&Capture, &bytes).unwrap()]).remove(0);
     let got: Vec<(String, String)> = step
         .output
         .messages
@@ -136,8 +137,8 @@ fn gemini_partial_page_capture_keeps_earlier_ids() {
             json!({}),
             json!({"provider": "gemini", "provider_session_id": "g1", "turns": turns}),
         );
-        run_document(&Capture, &bytes)
-            .unwrap()
+        crate::chain_names::tests::settled(&[run_document(&Capture, &bytes).unwrap()])
+            .remove(0)
             .output
             .messages
             .iter()

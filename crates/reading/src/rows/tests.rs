@@ -56,6 +56,7 @@ fn previous_coordinates_invert_the_existing_session_family_order() {
             message.id = MessageId::parse(id).unwrap();
             message.session = target.clone();
             MessageRow {
+                response: None,
                 page_text: false,
                 id_kind: IdKind::Native,
                 offset: ordinal as u64,

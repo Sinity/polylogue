@@ -135,10 +135,11 @@ pub(crate) struct Plan {
     pub(crate) stored_upto: u64,
     pub(crate) parse_pos: u64,
     pub(crate) storing_started: bool,
-    /// Capture continues while a missing same-version continuation defers parsing.
-    pub(crate) parser_deferred: bool,
+    /// Capture continues and parsing waits: a byte read, a source not yet
+    /// confirmed, or a parse that failed after its bytes were stored.
+    pub(crate) storing_only: bool,
     pub(crate) parser_state: Option<Json>,
-    /// The selected source chain for parser context, kept across jobs.
+    /// The chain the parse continues, kept across jobs.
     pub(crate) parser_chain: Option<i64>,
     pub(crate) tail: Option<Vec<u8>>,
     pub(crate) span: u64,
@@ -211,7 +212,7 @@ impl Plan {
             stored_upto: size,
             parse_pos,
             storing_started: false,
-            parser_deferred: false,
+            storing_only: false,
             parser_state: None,
             parser_chain,
             tail: None,
@@ -238,7 +239,7 @@ impl Plan {
                 .is_none_or(|cursor| cursor.range().end >= self.size);
         }
         self.failed
-            || (self.parser_deferred && self.observation.is_none() && self.stored_upto >= self.size)
+            || (self.storing_only && self.observation.is_none() && self.stored_upto >= self.size)
             || (self.observation.is_none()
                 && self.stored_upto >= self.size
                 && (self.waiting || self.parse_pos >= self.size))
@@ -253,7 +254,7 @@ impl Plan {
                 .expect("a continuing byte read has a verified cursor")
                 .range()
                 .end
-        } else if self.parser_deferred {
+        } else if self.storing_only {
             self.stored_upto
         } else {
             self.parse_pos
@@ -317,8 +318,7 @@ impl Plan {
             length,
             parser_state: self.parser_state.take(),
             parser_chain: self.parser_chain,
-            parser_context: None,
-            parser_deferred: self.parser_deferred,
+            store_only: self.storing_only,
             priority: self.priority,
             source: self.source.clone(),
         }
@@ -342,9 +342,13 @@ impl Plan {
             }
             self.tail = Some(d.tail);
         }
-        if d.continuation_missing {
-            self.parser_deferred = true;
-            self.waiting = true;
+        if d.restart {
+            // Without the reading it continues, the chain is read again
+            // from its first byte, which gives the same reading.
+            self.parse_pos = 0;
+            self.read_to = 0;
+            self.parser_state = None;
+            self.replace = true;
             return;
         }
         if d.error.is_some() {
@@ -352,7 +356,7 @@ impl Plan {
             if d.stored > 0 && !d.write_failed {
                 // The parser failed after its bytes were stored. Keep its last
                 // valid cursor while continuing byte cursor through EOF.
-                self.parser_deferred = true;
+                self.storing_only = true;
                 self.parser_state = d.parser_state;
                 return;
             }

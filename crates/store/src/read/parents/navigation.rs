@@ -60,7 +60,7 @@ impl MessageSelection<'_, '_> {
     }
 
     pub fn message_key(&self, id: &polylogue_model::MessageId) -> Result<Option<i64>> {
-        let id = crate::parser_context::resolved_message(self.reader.conn()?, id)?.to_string();
+        let id = crate::chain_names::resolved_message(self.reader.conn()?, id)?.to_string();
         if let Some(keys) = &self.with_parents {
             return Ok(keys
                 .iter()
@@ -84,7 +84,7 @@ impl MessageSelection<'_, '_> {
     ) -> Result<Option<MessagePosition>> {
         if let Some(keys) = &self.with_parents {
             let id = id
-                .map(|id| crate::parser_context::resolved_message(self.reader.conn()?, id))
+                .map(|id| crate::chain_names::resolved_message(self.reader.conn()?, id))
                 .transpose()?
                 .map(|id| id.to_string());
             return Ok(match &id {

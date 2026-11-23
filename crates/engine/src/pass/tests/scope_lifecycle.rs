@@ -125,16 +125,12 @@ static CONTROL: Mutex<Option<Control>> = Mutex::new(None);
 static READS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 struct Held(Box<dyn StepParser>, PathBuf);
 impl StepParser for Held {
-    fn uses_context(&self) -> bool {
-        self.0.uses_context()
-    }
     fn step(
         &self,
         state: Option<&Json>,
         bytes: &[u8],
         base: u64,
         finished: bool,
-        context: &polylogue_model::parser_context::Handle,
     ) -> Result<(Step, Json), polylogue_sources::ParseError> {
         READS.lock().unwrap().push(self.1.clone());
         let control = CONTROL.lock().unwrap().take();
@@ -142,7 +138,7 @@ impl StepParser for Held {
             control.started.send(()).unwrap();
             control.release.recv().unwrap();
         }
-        self.0.step(state, bytes, base, finished, context)
+        self.0.step(state, bytes, base, finished)
     }
 }
 fn held(path: &Path) -> Option<Parse> {

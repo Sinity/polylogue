@@ -1,6 +1,9 @@
-//! The parser interface. A parser maps one record to rows, keeping a small
-//! state between records; [`run`] does everything around it: splitting into records,
-//! JSON decoding, record counts and their check.
+//! The parser interface. A parser maps one record to rows, keeping between
+//! records only what is still open; [`run`] does everything around it:
+//! splitting into records, JSON decoding, record counts and their check.
+//! The rows a record yields depend on the bytes of its chain up to the end
+//! of that record and on nothing else: names that belong to the chain are
+//! settled afterwards from its rows ([`crate::chain_names`]).
 
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 2;
@@ -13,19 +16,12 @@ use polylogue_model::{CountMismatch, RecordCounts, RecordOutcome};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 pub trait Parser {
-    /// The parser state: state a parser keeps between records and between
-    /// appends of one input (open tool calls, the current message), so an
-    /// append is parsed without reading the file again. Small by design (at
-    /// most a few hundred KB on the real archive).
+    /// The parser state: what a parser carries from one record to the next
+    /// and between appends of one input, so an append is parsed without
+    /// reading the file again. It holds only what is still open (the
+    /// message before this one, the open turn's tool calls), never anything
+    /// that grows with the bytes read.
     type ParserState: Default + Clone + Serialize + DeserializeOwned;
-
-    fn uses_context(&self) -> bool {
-        false
-    }
-    fn bind_context(&self, _: &mut Self::ParserState, _: polylogue_model::parser_context::Handle) {}
-    fn check_context(&self, _: &Self::ParserState) -> Result<(), ParseError> {
-        Ok(())
-    }
 
     /// The kind name the record counts use for a record (`user`, `progress`).
     fn kind(&self, value: &Json) -> String;
@@ -42,7 +38,7 @@ pub trait Parser {
     /// Called when no complete record remains. Sends anything still open
     /// (a message whose continuation may arrive later) as an upsert, and
     /// keeps it open in the parser state.
-    fn flush(&self, parser_state: &mut Self::ParserState, out: &mut Output);
+    fn flush(&self, _parser_state: &mut Self::ParserState, _out: &mut Output) {}
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -70,8 +66,6 @@ pub enum ParseError {
     Counts(#[from] CountMismatch),
     #[error("parser state is unreadable: {0}")]
     ParserState(serde_json::Error),
-    #[error("parser context: {0}")]
-    Context(String),
 }
 
 /// Parses the complete records in `bytes`, which start at `base` in an input
@@ -122,7 +116,6 @@ pub fn run_to<P: Parser>(
         }
     }
     parser.flush(parser_state, &mut output);
-    parser.check_context(parser_state)?;
     let counts = sink.finish()?;
     Ok(Step {
         output,
@@ -137,36 +130,28 @@ pub fn run_to<P: Parser>(
 /// origin without knowing its parser state type.
 /// `finished` says the bytes reach the end of an input that will not grow.
 pub trait StepParser: Send {
-    fn uses_context(&self) -> bool;
     fn step(
         &self,
         parser_state: Option<&Json>,
         bytes: &[u8],
         base: u64,
         finished: bool,
-        context: &polylogue_model::parser_context::Handle,
     ) -> Result<(Step, Json), ParseError>;
 }
 
 impl<P: Parser + Send> StepParser for P {
-    fn uses_context(&self) -> bool {
-        Parser::uses_context(self)
-    }
     fn step(
         &self,
         parser_state: Option<&Json>,
         bytes: &[u8],
         base: u64,
         finished: bool,
-        context: &polylogue_model::parser_context::Handle,
     ) -> Result<(Step, Json), ParseError> {
         let mut state = match parser_state {
             Some(c) => P::ParserState::deserialize(c).map_err(ParseError::ParserState)?,
             None => P::ParserState::default(),
         };
-        self.bind_context(&mut state, context.clone());
         let step = run_to(self, &mut state, bytes, base, finished)?;
-        context.check().map_err(ParseError::Context)?;
         let parser_state = serde_json::to_value(&state).map_err(ParseError::ParserState)?;
         Ok((step, parser_state))
     }
@@ -233,9 +218,6 @@ pub enum Parse {
 }
 
 impl Parse {
-    pub fn uses_context(&self) -> bool {
-        matches!(self,Self::Lines(parser) if parser.uses_context())
-    }
     pub fn is_capture_log(&self) -> bool {
         matches!(self, Parse::CaptureLog(_))
     }
@@ -258,9 +240,8 @@ impl Parse {
         parser_state: Option<&Json>,
         bytes: &[u8],
         base: u64,
-        context: &polylogue_model::parser_context::Handle,
     ) -> Result<(Step, Json), ParseError> {
-        self.step_to(parser_state, bytes, base, false, context)
+        self.step_to(parser_state, bytes, base, false)
     }
 
     /// [`Parse::step`], where `finished` says the bytes reach the end of an
@@ -271,14 +252,12 @@ impl Parse {
         bytes: &[u8],
         base: u64,
         finished: bool,
-        context: &polylogue_model::parser_context::Handle,
     ) -> Result<(Step, Json), ParseError> {
         match self {
             Parse::Export(_) => Err(ParseError::Export),
-            Parse::Lines(p) => p.step(parser_state, bytes, base, finished, context),
+            Parse::Lines(p) => p.step(parser_state, bytes, base, finished),
             Parse::CaptureLog(_) => {
-                let (mut steps, parser_state) =
-                    self.steps(parser_state, bytes, base, finished, context)?;
+                let (mut steps, parser_state) = self.steps(parser_state, bytes, base, finished)?;
                 if steps.len() != 1 {
                     return Err(ParseError::CaptureLog(
                         "use steps for a range holding several captures".into(),
@@ -304,12 +283,11 @@ impl Parse {
         bytes: &[u8],
         base: u64,
         finished: bool,
-        context: &polylogue_model::parser_context::Handle,
     ) -> Result<(Vec<Step>, Json), ParseError> {
         match self {
             Parse::CaptureLog(parser) => Ok((capture_steps(&**parser, bytes, base)?, Json::Null)),
             _ => self
-                .step_to(parser_state, bytes, base, finished, context)
+                .step_to(parser_state, bytes, base, finished)
                 .map(|(step, parser_state)| (vec![step], parser_state)),
         }
     }

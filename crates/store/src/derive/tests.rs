@@ -576,6 +576,7 @@ fn forked_subagent(w: &mut WriterArchive, description: Option<&str>) {
             .into_iter()
             .enumerate()
             .map(|(i, message)| polylogue_model::MessageRow {
+                response: None,
                 page_text: false,
                 id_kind: polylogue_model::IdKind::Native,
                 offset: i as u64,
@@ -719,6 +720,7 @@ fn write_shell_sessions(w: &mut WriterArchive, from: u32, to: u32) {
             .into_iter()
             .enumerate()
             .map(|(i, message)| polylogue_model::MessageRow {
+                response: None,
                 page_text: false,
                 id_kind: polylogue_model::IdKind::Native,
                 offset: i as u64,
@@ -879,6 +881,7 @@ fn user_write_served_between_derive_commits() {
             .collect(),
         messages: (0..sessions)
             .map(|n| polylogue_model::MessageRow {
+                response: None,
                 page_text: false,
                 id_kind: polylogue_model::IdKind::Native,
                 offset: n,

@@ -55,6 +55,20 @@ fn merge_of_unrelated_directories_appends_new_ones() {
     assert_eq!(a.cwd, ["/x", "/y"]);
 }
 
+/// A later step's directories start where the earlier ones ended, so a
+/// move back to an earlier directory is kept.
+#[test]
+fn merge_continues_moves_from_the_last_directory() {
+    let mut a = session();
+    a.offer_cwd("/a");
+    a.offer_cwd("/a/module");
+    let mut b = session();
+    b.offer_cwd("/a/module");
+    b.offer_cwd("/a");
+    a.merge(&b);
+    assert_eq!(a.cwd, ["/a", "/a/module", "/a"]);
+}
+
 fn session() -> Session {
     Session::new(
         SessionId::parse("claude-code:s").unwrap(),

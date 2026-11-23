@@ -995,7 +995,7 @@ impl Reader<'_> {
         id: &MessageId,
     ) -> Result<Option<(Message, MessageProjection)>> {
         let conn = self.conn()?;
-        let id = crate::parser_context::resolved_message(conn, id)?;
+        let id = crate::chain_names::resolved_message(conn, id)?;
         let hash = conn.query_row(
             "SELECT (SELECT version_hash FROM message_version WHERE pk=s.version_pk) FROM message m LEFT JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
              WHERE m.id=?1",
@@ -1013,7 +1013,7 @@ impl Reader<'_> {
     /// older record without one stays unknown.
     pub fn message_commit(&self, id: &MessageId) -> Result<Option<u64>> {
         let conn = self.conn()?;
-        let id = crate::parser_context::resolved_message(conn, id)?;
+        let id = crate::chain_names::resolved_message(conn, id)?;
         let commit = conn
             .query_row(
                 "SELECT p.committed,i.id,s.chain,s.source_end FROM message m

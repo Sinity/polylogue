@@ -13,21 +13,17 @@ static PARSED: Mutex<Option<Sender<()>>> = Mutex::new(None);
 
 struct Together(Box<dyn StepParser>);
 impl StepParser for Together {
-    fn uses_context(&self) -> bool {
-        self.0.uses_context()
-    }
     fn step(
         &self,
         state: Option<&polylogue_model::Json>,
         bytes: &[u8],
         base: u64,
         finished: bool,
-        context: &polylogue_model::parser_context::Handle,
     ) -> Result<(Step, polylogue_model::Json), ParseError> {
         if STARTED.fetch_add(1, Ordering::SeqCst) < 2 {
             TOGETHER.wait();
         }
-        let result = self.0.step(state, bytes, base, finished, context);
+        let result = self.0.step(state, bytes, base, finished);
         PARSED.lock().unwrap().as_ref().unwrap().send(()).unwrap();
         result
     }
@@ -219,22 +215,18 @@ struct LiveParser {
 }
 
 impl StepParser for LiveParser {
-    fn uses_context(&self) -> bool {
-        self.parser.uses_context()
-    }
     fn step(
         &self,
         state: Option<&polylogue_model::Json>,
         bytes: &[u8],
         base: u64,
         finished: bool,
-        context: &polylogue_model::parser_context::Handle,
     ) -> Result<(Step, polylogue_model::Json), ParseError> {
         if self.second {
             let resume = RESUME_SECOND.lock().unwrap().take().unwrap();
             resume.recv().unwrap();
         }
-        let result = self.parser.step(state, bytes, base, finished, context);
+        let result = self.parser.step(state, bytes, base, finished);
         if !self.second {
             let new = String::from_utf8_lossy(bytes).contains("\"later\"");
             let signal = if new { &LIVE_APPEND } else { &OLD_READING };
@@ -352,16 +344,12 @@ struct ChainPause {
 static CHAIN_PAUSE: Mutex<Option<ChainPause>> = Mutex::new(None);
 
 impl StepParser for PausedChain {
-    fn uses_context(&self) -> bool {
-        self.0.uses_context()
-    }
     fn step(
         &self,
         state: Option<&polylogue_model::Json>,
         bytes: &[u8],
         base: u64,
         finished: bool,
-        context: &polylogue_model::parser_context::Handle,
     ) -> Result<(Step, polylogue_model::Json), ParseError> {
         let (started, resume) = {
             let pause = CHAIN_PAUSE.lock().unwrap();
@@ -374,7 +362,7 @@ impl StepParser for PausedChain {
         while !*resumed {
             resumed = changed.wait(resumed).unwrap();
         }
-        self.0.step(state, bytes, base, finished, context)
+        self.0.step(state, bytes, base, finished)
     }
 }
 

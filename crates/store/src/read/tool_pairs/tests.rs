@@ -276,6 +276,7 @@ fn hidden_current_blocks_never_fall_back_to_old_bodies() {
         sessions: vec![Session::new(call.session.clone(), SessionKind::Main)],
         messages: vec![
             MessageRow {
+                response: None,
                 page_text: false,
                 id_kind: polylogue_model::IdKind::Native,
                 offset: 0,
@@ -283,6 +284,7 @@ fn hidden_current_blocks_never_fall_back_to_old_bodies() {
                 message: call.clone(),
             },
             MessageRow {
+                response: None,
                 page_text: false,
                 id_kind: polylogue_model::IdKind::Native,
                 offset: 1,

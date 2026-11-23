@@ -1,5 +1,4 @@
 use super::*;
-use polylogue_model::parser_context::{Handle, Memory};
 use serde_json::json;
 
 fn records(many_sessions: bool) -> Vec<Vec<u8>> {
@@ -38,39 +37,7 @@ fn records(many_sessions: bool) -> Vec<Vec<u8>> {
 }
 
 #[test]
-fn real_parser_state_buffer_matches_independent_memory_at_every_cut() {
-    let origin = polylogue_sources::origin::by_name("claude-code").unwrap();
-    let parser = (origin.open)(std::path::Path::new("/synthetic/keyed.jsonl")).unwrap();
-    let expected = Handle::new(Memory::default());
-    let overlay = polylogue_store::parser_context::Overlay::temporary().unwrap();
-    let actual = Handle::new(overlay.clone());
-    let mut expected_state = None;
-    let mut actual_state = None;
-    let mut offset = 0;
-    for bytes in records(true) {
-        let (wanted, wanted_state) = parser
-            .steps(expected_state.as_ref(), &bytes, offset, false, &expected)
-            .unwrap();
-        let (got, got_state) = parser
-            .steps(actual_state.as_ref(), &bytes, offset, false, &actual)
-            .unwrap();
-        expected.check().unwrap();
-        actual.check().unwrap();
-        assert_eq!(
-            serde_json::to_value(&got).unwrap(),
-            serde_json::to_value(&wanted).unwrap()
-        );
-        assert_eq!(got_state, wanted_state);
-        offset += bytes.len() as u64;
-        let delta = overlay.checkpoint_delta(offset).unwrap();
-        assert_eq!(delta.through, offset);
-        expected_state = Some(wanted_state);
-        actual_state = Some(got_state);
-    }
-}
-
-#[test]
-fn state_buffer_reopen_resumes_match_one_whole_normal_parse_and_citations() {
+fn appends_read_one_by_one_match_one_whole_parse_and_citations() {
     let pieces = records(false);
     let full = ClaudeHome::new();
     let resumed = ClaudeHome::new();

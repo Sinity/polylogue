@@ -69,6 +69,7 @@ fn old_message(input: &InputKey, message: Message, offset: u64, length: u64) -> 
             progress: polylogue_model::batch::StepProgress::AtEnd,
         },
         facts: Box::new(MessageRow {
+            response: None,
             offset,
             end: length - 1,
             id_kind: Default::default(),

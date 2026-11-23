@@ -93,37 +93,17 @@ pub(crate) fn message_key(conn: &Connection, hash: &[u8]) -> Result<i64> {
 struct StoredValue {
     message_pk: Option<i64>,
     text_ids: Option<BTreeMap<usize, i64>>,
-    written_payload: bool,
 }
 
-/// Keys and identity from this registration. Context can trust the prepared
-/// payload only when this call wrote its body and every text payload was
-/// supplied in this transaction. Text IDs from earlier transactions keep
-/// full stored-message validation, as do ignored duplicate bodies.
-pub(crate) struct RegisteredMessage<'a> {
+/// Keys from this registration.
+pub(crate) struct RegisteredMessage {
     pk: i64,
-    message: &'a Message,
-    hash: &'a [u8; 32],
     text_ids: Option<BTreeMap<usize, i64>>,
-    written_payload: bool,
 }
 
-impl RegisteredMessage<'_> {
+impl RegisteredMessage {
     pub fn pk(&self) -> i64 {
         self.pk
-    }
-
-    pub fn response_key(
-        &self,
-        hash: &[u8; 32],
-        message: &polylogue_model::MessageId,
-        session: &str,
-    ) -> Option<i64> {
-        (self.written_payload
-            && self.hash == hash
-            && &self.message.id == message
-            && self.message.session.to_string() == session)
-            .then_some(self.pk)
     }
 
     pub fn text_ids(&self) -> Option<&BTreeMap<usize, i64>> {
@@ -208,11 +188,9 @@ fn store_value(
         return Ok(StoredValue {
             message_pk: pk,
             text_ids: None,
-            written_payload: false,
         });
     }
     let mut text_ids = pk.map(|_| BTreeMap::new());
-    let mut written_payload = true;
     if replace {
         conn.prepare_cached(&format!(
             "DELETE FROM {name}_version_text WHERE {column}=?1"
@@ -224,9 +202,7 @@ fn store_value(
     ))?;
     for (idx, hash) in texts.iter().enumerate() {
         if let Some(hash) = hash {
-            let resolved = identities.resolve(conn, hash, packed.get(hash), membership)?;
-            let id = resolved.id;
-            written_payload &= resolved.written;
+            let id = identities.resolve(conn, hash, packed.get(hash), membership)?;
             text.execute(params![key, idx as i64, id])?;
             if let Some(ids) = &mut text_ids {
                 ids.insert(idx, id);
@@ -246,7 +222,6 @@ fn store_value(
     Ok(StoredValue {
         message_pk: pk,
         text_ids,
-        written_payload,
     })
 }
 
@@ -257,7 +232,7 @@ pub(crate) fn store_message<'a>(
     text_rows: TextRows<'_>,
     replace: bool,
     committed: Option<u64>,
-) -> Result<RegisteredMessage<'a>> {
+) -> Result<RegisteredMessage> {
     if prepared.id != message.id {
         return Err(crate::StoreError::Invalid(
             "prepared version has another message identity".into(),
@@ -302,10 +277,7 @@ pub(crate) fn store_message<'a>(
     ])?;
     Ok(RegisteredMessage {
         pk,
-        message,
-        hash: &prepared.hash,
         text_ids: stored.text_ids,
-        written_payload: stored.written_payload,
     })
 }
 
@@ -509,15 +481,6 @@ fn reference_triggers() -> String {
         "unreferenced_value",
         Some("message"),
     );
-    // Context a parser keeps holds an earlier message body after the shown
-    // source moved on; releasing the context makes the body a candidate.
-    trigger(
-        "parser_context_response",
-        "parser_context_response",
-        "version_pk",
-        "unreferenced_value",
-        Some("message"),
-    );
     for name in ["event", "link"] {
         trigger(
             &format!("{name}_source"),
@@ -586,15 +549,10 @@ pub(crate) fn remove_unreferenced(
                 "unreferenced_value",
             )
         };
-        let context = if matches!(kind, VersionKind::Message) {
-            " AND NOT EXISTS(SELECT 1 FROM parser_context_response c WHERE c.version_pk=t.pk)"
-        } else {
-            ""
-        };
         let candidate_key = target_key(candidates);
         conn.prepare_cached(&format!(
             "DELETE FROM {table} AS t WHERE {stored_key} IN (SELECT {candidate_key} FROM temp.{candidates} WHERE kind=?1)
-             AND NOT EXISTS(SELECT 1 FROM {name}_source s WHERE s.{key}=t.{stored_key}){context}"
+             AND NOT EXISTS(SELECT 1 FROM {name}_source s WHERE s.{key}=t.{stored_key})"
         ))?
         .execute([name])?;
     }

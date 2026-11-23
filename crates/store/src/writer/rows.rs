@@ -303,6 +303,15 @@ fn apply_rows(
         }
         rows.write_event(i)?;
     }
+    for alias in &p.output.aliases {
+        let position = |value: u64| {
+            i64::try_from(value).map_err(|_| {
+                StoreError::Invalid("a source position exceeds SQLite's integer range".into())
+            })
+        };
+        tx.prepare_cached("INSERT INTO message_alias(input_pk,chain,name,target,source_start,source_end) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(input_pk,chain,name) DO UPDATE SET target=excluded.target,source_start=excluded.source_start,source_end=excluded.source_end")?
+            .execute(params![input_pk, chain, alias.name.to_string(), alias.target.as_ref().map(ToString::to_string), position(alias.offset)?, position(alias.end)?])?;
+    }
     for prefix in &p.output.prefix_copies {
         let parent = prefix.parent.to_string();
         let child = prefix.child.to_string();
@@ -511,9 +520,6 @@ fn apply_rows(
         },
         p,
     )?;
-    if !crate::parser_context::apply(tx, input_pk, chain, p, &rows.versions, upkeep)? {
-        rows.checkpoint.forget_context();
-    }
     rows.write_parse_state(b, p)?;
     Ok(written)
 }
@@ -587,7 +593,7 @@ struct StoredBlock<'a> {
 pub(super) struct RowWriter<'a, 't> {
     messages: BTreeMap<i64, MessageWrite<'a>>,
     /// Results of registering this transaction's message payloads.
-    versions: HashMap<[u8; 32], crate::versions::RegisteredMessage<'a>>,
+    versions: HashMap<[u8; 32], crate::versions::RegisteredMessage>,
     checkpoint: checkpoint::Update,
     source_committed: Option<i64>,
     tx: &'a Transaction<'t>,
@@ -949,19 +955,34 @@ impl RowWriter<'_, '_> {
         let id_kind = row.id_kind.as_str();
         let (route, completion) = (route.as_str(), completion.as_str());
         let sql = if new {
-            "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_pk,session_pk,main,route,seq,record_position,order_time,at)
-                 VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12,?14,?15)"
+            "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_pk,session_pk,main,route,seq,record_position,order_time,at,response_key,content_name)
+                 VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12,?14,?15,?16,?17)"
         } else {
-            "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_pk,session_pk,main,route,seq,record_position,order_time,at)
-             VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12,?14,?15)
-             ON CONFLICT(message_pk,input_pk,chain) DO UPDATE SET source_start=excluded.source_start,
+            "INSERT INTO message_source(message_pk,input_pk,chain,source_start,source_end,id_kind,completion,version_pk,session_pk,main,route,seq,record_position,order_time,at,response_key,content_name)
+             VALUES (?1,?2,?3,?4,?5,?13,?6,?7,?8,?9,?10,?11,?12,?14,?15,?16,?17)
+             ON CONFLICT(message_pk,input_pk,chain) DO UPDATE SET source_start=excluded.source_start,response_key=excluded.response_key,content_name=excluded.content_name,
              source_end=excluded.source_end,id_kind=excluded.id_kind,completion=excluded.completion,version_pk=excluded.version_pk,
              session_pk=excluded.session_pk,main=excluded.main,route=excluded.route,
              seq=excluded.seq,record_position=excluded.record_position,order_time=excluded.order_time,at=excluded.at"
         };
         self.tx.prepare_cached(sql)?.execute(params![
-            pk, v.input_pk, v.chain, v.start, v.end, completion, version_pk, session_pk, main,
-            route, position.0, position.1, id_kind, order_time, at
+            pk,
+            v.input_pk,
+            v.chain,
+            v.start,
+            v.end,
+            completion,
+            version_pk,
+            session_pk,
+            main,
+            route,
+            position.0,
+            position.1,
+            id_kind,
+            order_time,
+            at,
+            row.response,
+            crate::chain_names::content_name(row)
         ])?;
         Ok((source_pk, new))
     }

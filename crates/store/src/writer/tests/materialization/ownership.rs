@@ -7,11 +7,7 @@ fn fresh_message_selection_shares_one_value_through_preparation_and_spill() {
     let body = "unique synthetic version payload ".repeat(8192);
     let message = text_message("large", "s", Role::Assistant, &body, Some("end_turn"));
     let hash = message.content_hash().unwrap();
-    let mut b = reading(
-        "large-source",
-        vec![message.clone()],
-        vec![reference(&message, "large")],
-    );
+    let mut b = reading("large-source", vec![message.clone()]);
     b.parse[0].prepare();
     let (_, input_bytes) = crate::text_rows::PreparedTexts::count_input_bytes(|| {
         resolve::prepare_index(&conn, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
@@ -112,7 +108,7 @@ fn selected_version_references_refuse_missing_mismatched_or_sparse_values_atomic
                 Some("end_turn"),
             )
         });
-        let mut b = reading("reference-source", messages.to_vec(), Vec::new());
+        let mut b = reading("reference-source", messages.to_vec());
         resolve::prepare_index(&conn, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
         let retry = b.clone();
         let choices = &mut b.parse[0].resolution.as_mut().unwrap().choices;
@@ -172,12 +168,12 @@ fn composed_and_sparse_selections_keep_their_owned_metadata_and_values() {
         "shared body",
         Some("end_turn"),
     );
-    apply(&mut conn, reading("live", vec![base.clone()], Vec::new()))
+    apply(&mut conn, reading("live", vec![base.clone()]))
         .0
         .unwrap();
     let mut richer = base.clone();
     richer.model = Some("synthetic-model".into());
-    let mut b = reading("export", vec![richer], Vec::new());
+    let mut b = reading("export", vec![richer]);
     b.input.route = Route::Export;
     resolve::prepare_index(&conn, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
     let choices = &b.parse[0].resolution.as_ref().unwrap().choices;
@@ -201,7 +197,7 @@ fn composed_and_sparse_selections_keep_their_owned_metadata_and_values() {
     });
     let mut part = full.clone();
     part.blocks.remove(0);
-    let mut b = reading("sparse", vec![part], Vec::new());
+    let mut b = reading("sparse", vec![part]);
     b.parse[0].output.block_selections.insert(
         0,
         polylogue_model::bundle::MessageProjection {
@@ -230,11 +226,7 @@ fn complete_staged_reading_reopens_its_selected_version_without_payload_duplicat
     let w = test_archive();
     let body = "disk-staged unique payload ".repeat(4096);
     let message = text_message("disk", "s", Role::Assistant, &body, Some("end_turn"));
-    let b = reading(
-        "disk-source",
-        vec![message.clone()],
-        vec![reference(&message, "disk")],
-    );
+    let b = reading("disk-source", vec![message.clone()]);
     let mut b = w.commit_source(b, &SOURCE_RECORD).unwrap();
     let mut staged = ChainReading::new().unwrap();
     staged.push(&mut b.parse[0]).unwrap();
@@ -280,11 +272,7 @@ fn referenced_complete_values_preserve_unknown_time_and_prepared_headers() {
             message.at_until = None;
         }
         let hash = message.content_hash().unwrap();
-        let mut b = reading(
-            "clock-source",
-            vec![message.clone()],
-            vec![reference(&message, "clock")],
-        );
+        let mut b = reading("clock-source", vec![message.clone()]);
         resolve::prepare_index(&conn, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
         let choices = &b.parse[0].resolution.as_ref().unwrap().choices;
         let choice = choices.messages.values().flatten().next().unwrap();

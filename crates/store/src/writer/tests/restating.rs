@@ -4,6 +4,7 @@ fn restating(input: &str, at: u64, texts: &[(&str, &str)]) -> Batch {
     let rows = texts
         .iter()
         .map(|(id, text)| MessageRow {
+            response: None,
             page_text: false,
             id_kind: polylogue_model::IdKind::Native,
             offset: at,

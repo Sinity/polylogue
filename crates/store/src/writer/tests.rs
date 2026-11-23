@@ -243,6 +243,7 @@ fn batch(input: &str, route: Route, start: u64, rows: Vec<MessageRow>, sessions:
 
 fn row(offset: u64, message: Message) -> MessageRow {
     MessageRow {
+        response: None,
         page_text: false,
         id_kind: polylogue_model::IdKind::Native,
         offset,
@@ -1284,6 +1285,7 @@ fn parse_positions_and_rows_commit_atomically_during_build() {
             Route::Live,
             0,
             vec![MessageRow {
+                response: None,
                 page_text: false,
                 id_kind: polylogue_model::IdKind::Native,
                 offset: 0,
@@ -1342,6 +1344,7 @@ fn interrupted_secondary_index_finish_retries_build() {
             Route::Live,
             0,
             vec![MessageRow {
+                response: None,
                 page_text: false,
                 id_kind: polylogue_model::IdKind::Native,
                 offset: 0,

@@ -79,6 +79,7 @@ impl Fixture {
                     SessionKind::Main,
                 )],
                 messages: vec![MessageRow {
+                    response: None,
                     page_text: false,
                     id_kind: polylogue_model::IdKind::Native,
                     offset: 0,

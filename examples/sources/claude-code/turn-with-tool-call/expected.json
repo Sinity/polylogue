@@ -69,7 +69,8 @@
           "at_quality": "intrinsic",
           "at_precision": "second"
         },
-        "offset": 196
+        "offset": 196,
+        "response": "msg_1"
       },
       {
         "end": 1178,
@@ -137,7 +138,8 @@
           "at_quality": "intrinsic",
           "at_precision": "second"
         },
-        "offset": 1179
+        "offset": 1179,
+        "response": "msg_2"
       },
       {
         "end": 1846,
@@ -230,7 +232,8 @@
           "at_quality": "intrinsic",
           "at_precision": "second"
         },
-        "offset": 2162
+        "offset": 2162,
+        "response": "msg_3"
       }
     ],
     "sessions": [
@@ -245,6 +248,14 @@
         "tool_version": "2.1.200",
         "started_quality": "intrinsic",
         "started_precision": "second"
+      }
+    ],
+    "aliases": [
+      {
+        "end": 846,
+        "name": "claude-code:a2",
+        "offset": 519,
+        "target": "claude-code:a1"
       }
     ]
   }

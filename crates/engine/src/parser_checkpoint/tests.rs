@@ -1,4 +1,4 @@
-mod state_buffer;
+mod appends;
 
 use super::*;
 use polylogue_testkit::{ClaudeHome, claude_user};
@@ -89,15 +89,14 @@ fn job(
         parser_state: None,
         stopped_attempt: None,
         parser_chain: None,
-        parser_context: None,
-        parser_deferred: false,
+        store_only: false,
         priority: crate::pool::Priority::Bulk,
         source: crate::pool::Bytes::File,
     }
 }
 
 #[test]
-fn missing_same_version_state_defers_parse_while_every_raw_suffix_chunk_commits() {
+fn missing_parser_state_reads_the_chain_again_from_its_start() {
     let home = ClaudeHome::new();
     home.append(
         "missing.jsonl",
@@ -111,7 +110,7 @@ fn missing_same_version_state_defers_parse_while_every_raw_suffix_chunk_commits(
         let origin = polylogue_sources::origin::by_name("claude-code").unwrap();
         let first = job(&engine, &path, origin, prefix);
         input = first.input.id.clone();
-        let (batch, done) = crate::pool::run(first, &engine.archive, &engine.blobs, true);
+        let (batch, done) = crate::pool::run(first, &engine.archive, &engine.blobs, true, None);
         assert!(done.error.is_none());
         let mut batch = batch.unwrap();
         // A stored source reading whose parser control is unavailable.
@@ -133,16 +132,14 @@ fn missing_same_version_state_defers_parse_while_every_raw_suffix_chunk_commits(
     home.append("missing.jsonl", &suffix);
     let (mut engine, _lock) = crate::import::tests::engine(&home, 1024);
     let pass = engine.run_pass().unwrap();
-    assert_eq!(pass.errors.len(), 1, "{pass:?}");
-    assert!(
-        pass.errors[0].contains("parser continuation unavailable"),
-        "{pass:?}"
-    );
+    assert!(pass.errors.is_empty(), "{pass:?}");
     assert_eq!(pass.bytes_stored, suffix.len() as u64);
     let reader = engine.reads.reader().unwrap();
     let progress = reader.input_progress(&input).unwrap().unwrap();
     assert_eq!(progress.length, prefix + suffix.len() as u64);
-    assert_eq!(progress.parsed_upto, prefix);
+    // docs/archive.md, Reading versions: without its carried state the
+    // chain is read from its start, which gives the same reading.
+    assert_eq!(progress.parsed_upto, prefix + suffix.len() as u64);
     assert_eq!(
         reader
             .stored_range(
@@ -155,7 +152,7 @@ fn missing_same_version_state_defers_parse_while_every_raw_suffix_chunk_commits(
             .unwrap(),
         suffix.as_bytes()
     );
-    assert_eq!(home.texts("missing").len(), 1);
+    assert_eq!(home.texts("missing").len(), 21);
 }
 
 #[test]
@@ -179,6 +176,7 @@ fn one_call_multiple_capture_steps_only_checkpoints_its_final_cursor() {
         &engine.archive,
         &engine.blobs,
         false,
+        None,
     );
     assert!(done.error.is_none(), "{done:?}");
     let steps = batch.unwrap().batch.parse;
@@ -272,7 +270,7 @@ fn keyed_fragment(uuid: &str, key: &str, text: &str) -> String {
 }
 
 #[test]
-fn a_response_growing_across_resumed_appends_keeps_only_its_latest_context() {
+fn a_response_growing_across_appends_is_joined_from_the_chains_rows() {
     let home = ClaudeHome::new();
     let mut length = 0;
     for (uuid, text) in [("first", "one"), ("second", "two"), ("third", "three")] {
@@ -308,25 +306,29 @@ fn a_response_growing_across_resumed_appends_keeps_only_its_latest_context() {
             .collect::<rusqlite::Result<_>>()
             .unwrap()
     };
-    // Each checkpoint rewrote the open response; only the value at the
-    // latest checkpoint remains, naming the version the session shows
-    // (docs/archive.md, keyed continuation).
+    // The chain's rows keep the response key as written and an alias row
+    // for each later record (docs/sessions.md, Names and references).
     assert_eq!(
         column(
-            "SELECT c.key,CASE WHEN c.version_pk=s.version_pk THEN 'shown' ELSE 'other' END
-             FROM parser_context_response c JOIN message m ON m.id='claude-code:first'
-             JOIN message_source s ON s.message_pk=m.pk ORDER BY c.key"
+            "SELECT s.response_key,m.id FROM message_source s JOIN message m ON m.pk=s.message_pk
+             WHERE s.response_key IS NOT NULL"
         ),
-        [("response-a".to_owned(), "shown".to_owned())]
+        [("response-a".to_owned(), "claude-code:first".to_owned())]
     );
     assert_eq!(
-        column("SELECT uuid,target FROM parser_context_alias ORDER BY uuid"),
+        column("SELECT name,target FROM message_alias ORDER BY name"),
         [
-            ("second".to_owned(), "claude-code:first".to_owned()),
-            ("third".to_owned(), "claude-code:first".to_owned()),
+            (
+                "claude-code:second".to_owned(),
+                "claude-code:first".to_owned()
+            ),
+            (
+                "claude-code:third".to_owned(),
+                "claude-code:first".to_owned()
+            ),
         ]
     );
-    // The earlier readings of the growing response leave with their context.
+    // The earlier readings of the growing response leave.
     assert_eq!(
         index
             .query_row(
@@ -341,7 +343,7 @@ fn a_response_growing_across_resumed_appends_keeps_only_its_latest_context() {
 }
 
 #[test]
-fn restart_reopens_evicted_response_and_resolves_its_alias() {
+fn an_append_continues_an_earlier_response_and_resolves_its_alias() {
     let home = ClaudeHome::new();
     home.append(
         "keyed.jsonl",
@@ -357,8 +359,7 @@ fn restart_reopens_evicted_response_and_resolves_its_alias() {
         assert!(pass.errors.is_empty(), "{pass:?}");
     }
     home.append("keyed.jsonl", &keyed_fragment("late", "response-a", "last"));
-    // The later replacement spans chunks: its evicted response key must
-    // remain in the private context until the whole reading commits.
+    // The append joins a response stated before it from the chain's rows.
     let (mut engine, _lock) = crate::import::tests::engine(&home, 128);
     let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
@@ -486,7 +487,7 @@ fn restart_reopens_evicted_response_and_resolves_its_alias() {
 }
 
 #[test]
-fn lost_context_replays_bytes_keeping_message_sessions() {
+fn lost_parser_state_reads_again_keeping_message_sessions() {
     let home = ClaudeHome::new();
     home.append(
         "keyed.jsonl",
@@ -500,7 +501,7 @@ fn lost_context_replays_bytes_keeping_message_sessions() {
         assert!(engine.run_pass().unwrap().errors.is_empty());
         let index = rusqlite::Connection::open(engine.archive.index_db()).unwrap();
         index
-            .execute_batch("DELETE FROM parser_context_response; DELETE FROM parser_context_alias; DELETE FROM parser_context_state;")
+            .execute_batch("UPDATE parse_state SET checkpoint=NULL")
             .unwrap();
     }
     home.append("keyed.jsonl", &keyed_fragment("late", "response-a", "last"));
@@ -523,4 +524,89 @@ fn lost_context_replays_bytes_keeping_message_sessions() {
             .text(),
         "first\n\nlast"
     );
+}
+
+/// docs/archive.md, Readings: equal content-named messages are numbered in
+/// chain order, and an append numbers its messages after the committed ones.
+#[test]
+fn an_append_numbers_equal_content_named_messages_after_the_committed_ones() {
+    let home = ClaudeHome::new();
+    let unnamed = |text: &str| {
+        format!(
+            "{}\n",
+            serde_json::json!({"type":"user","sessionId":"unnamed","timestamp":"2026-03-01T10:00:00Z",
+                "message":{"role":"user","content":text}})
+        )
+    };
+    home.append("unnamed.jsonl", &unnamed("same words"));
+    {
+        let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
+        let pass = engine.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "{pass:?}");
+    }
+    home.append(
+        "unnamed.jsonl",
+        &(unnamed("other words") + &unnamed("same words")),
+    );
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    let reader = engine.reads.reader().unwrap();
+    let ids: Vec<String> = reader
+        .messages(
+            &polylogue_model::SessionId::parse("claude-code:unnamed").unwrap(),
+            false,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|m| m.id.native().as_str().to_owned())
+        .collect();
+    assert_eq!(ids.len(), 3);
+    let (first, number) = ids[0].rsplit_once('-').unwrap();
+    assert_eq!(number, "0");
+    assert_eq!(ids[2], format!("{first}-1"));
+    assert!(ids[1].ends_with("-0") && !ids[1].starts_with(first));
+}
+
+/// A file history snapshot appended after a later record of a resumed
+/// session's response follows the latest message that session opened before
+/// it, found from the chain's committed rows: the snapshot names no session
+/// and is stated for the file's own.
+#[test]
+fn an_appended_sessionless_event_follows_the_resumed_sessions_response() {
+    let home = ClaudeHome::new();
+    home.append("own.jsonl", &claude_user("u1", "own", "start"));
+    let resumed = |uuid: &str, key: &str, text: &str| {
+        format!(
+            "{}\n",
+            serde_json::json!({"type":"assistant","uuid":uuid,"sessionId":"resumed","message":{"id":key,"role":"assistant","content":[{"type":"text","text":text}]}})
+        )
+    };
+    home.append("own.jsonl", &resumed("r1", "response-r", "first"));
+    home.append("own.jsonl", &resumed("q1", "response-q", "other"));
+    home.append("own.jsonl", &resumed("r2", "response-r", "second"));
+    {
+        let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
+        let pass = engine.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "{pass:?}");
+    }
+    home.append(
+        "own.jsonl",
+        &format!(
+            "{}\n",
+            serde_json::json!({"type":"file-history-snapshot","messageId":"r2","snapshot":{}})
+        ),
+    );
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    let reader = engine.reads.reader().unwrap();
+    let placed = reader
+        .query(
+            "SELECT m.id FROM event e JOIN message m ON m.pk=e.after_message_pk WHERE e.kind='file_history'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(placed.len(), 1, "{placed:?}");
+    assert_eq!(placed[0]["id"], "claude-code:q1");
 }

@@ -11,16 +11,12 @@ static CONTROL: Mutex<Option<Control>> = Mutex::new(None);
 
 struct Held;
 impl StepParser for Held {
-    fn uses_context(&self) -> bool {
-        false
-    }
     fn step(
         &self,
         _: Option<&Json>,
         bytes: &[u8],
         _: u64,
         _: bool,
-        _: &polylogue_model::parser_context::Handle,
     ) -> Result<(Step, Json), polylogue_sources::ParseError> {
         let control = CONTROL.lock().unwrap().take();
         if let Some(Control { started, release }) = control {

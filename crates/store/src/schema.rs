@@ -98,7 +98,6 @@ pub(crate) const INDEX_SCHEMA: &[&str] = &[
     INDEX,
     crate::coverage::SCHEMA,
     crate::variants::SCHEMA,
-    crate::parser_context::SCHEMA,
     OPEN_INDEXES,
 ];
 /// The `embedded` (vectors) and `embed_failure` tables of `embeddings.db`, as the first build at
@@ -231,7 +230,6 @@ fn base_index_in(conn: &Connection, deferring: bool) -> Result<()> {
     execute_index_sql(conn, INDEX, deferring)?;
     conn.execute_batch(crate::coverage::SCHEMA)?;
     conn.execute_batch(crate::variants::SCHEMA)?;
-    conn.execute_batch(crate::parser_context::SCHEMA)?;
     Ok(())
 }
 

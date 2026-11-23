@@ -84,7 +84,6 @@ impl Failure {
                 ParseError::CaptureLog(_) => "capture_log",
                 ParseError::Counts(_) => "counts",
                 ParseError::ParserState(_) => "parser_state",
-                ParseError::Context(_) => "context",
             },
         }
     }
@@ -126,7 +125,8 @@ fn scan_file(origin: &str, path: &Path) -> Scanned {
 fn scan_reader(parser: &Parse, mut reader: impl Read) -> Scanned {
     let mut counts = Counts::default();
     let mut parser_state = None;
-    let context = polylogue_model::parser_context::Handle::default();
+    let mut names =
+        polylogue_sources::chain_names::Formed::new(polylogue_sources::chain_names::NoEarlierRows);
     let mut pending = Vec::new();
     let mut base = 0;
     let mut chunk = vec![0; STEP];
@@ -150,23 +150,32 @@ fn scan_reader(parser: &Parse, mut reader: impl Read) -> Scanned {
         if parser.is_document() && n != 0 {
             continue;
         }
-        let (steps, next) =
-            match parser.steps(parser_state.as_ref(), &pending, base, false, &context) {
-                Ok(result) => result,
-                Err(error) => {
-                    return Scanned {
-                        outcome: Outcome::Failed {
-                            stage: "parse",
-                            error: Failure::parse(error),
-                        },
-                        counts,
-                        remaining: pending.len(),
-                    };
-                }
-            };
+        let (steps, next) = match parser.steps(parser_state.as_ref(), &pending, base, false) {
+            Ok(result) => result,
+            Err(error) => {
+                return Scanned {
+                    outcome: Outcome::Failed {
+                        stage: "parse",
+                        error: Failure::parse(error),
+                    },
+                    counts,
+                    remaining: pending.len(),
+                };
+            }
+        };
         let mut consumed = 0;
-        for step in steps {
+        for mut step in steps {
             consumed = consumed.max(step.consumed as usize);
+            if step.repeats_whole_conversations {
+                polylogue_sources::chain_names::settle(
+                    &mut step.output,
+                    &mut polylogue_sources::chain_names::NoEarlierRows,
+                )
+                .map(|_| ())
+            } else {
+                names.settle(&mut step.output)
+            }
+            .unwrap_or_else(|error| panic!("settling names: {error}"));
             counts.counts.merge(&step.counts);
             counts.messages += step.output.messages.len() as u64;
             counts.documents += step.output.documents.len() as u64;

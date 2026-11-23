@@ -401,6 +401,14 @@
         "parent": "claude-code:claude-normalization-other",
         "child": "claude-code:claude-normalization-main"
       }
+    ],
+    "aliases": [
+      {
+        "end": 3446,
+        "name": "claude-code:main-bg-notification",
+        "offset": 3018,
+        "target": null
+      }
     ]
   }
 }
