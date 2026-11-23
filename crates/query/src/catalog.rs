@@ -212,7 +212,7 @@ pub fn complete(text: &str, position: usize, catalog: &Catalog) -> Vec<Completio
     query_language::complete::complete(text, position, &surface)
 }
 
-/// The row domain a read target selects; every target has one.
+/// The unit a read target selects; every target has one.
 pub fn target_unit(target: &polylogue_model::read::ReadTarget) -> Unit {
     use polylogue_model::read::ReadTarget;
     match target {
@@ -226,7 +226,7 @@ pub fn target_unit(target: &polylogue_model::read::ReadTarget) -> Unit {
     }
 }
 
-/// The row domain a typed address names. This is pure product vocabulary;
+/// The unit a typed address names. This is pure product vocabulary;
 /// membership and source availability remain Store responsibilities.
 pub fn reference_unit(reference: &polylogue_model::Reference) -> Option<Unit> {
     use polylogue_model::Reference;

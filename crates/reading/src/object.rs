@@ -136,15 +136,20 @@ fn execute<T>(
                 ..Default::default()
             };
             let mut footer = ReadFooter::default();
+            // A request the view hides (annotations off) counts as no record.
+            let mut hidden = false;
             let projected = match record {
-                polylogue_store::read::ObjectRecord::Request(record) => output::project(
-                    records::SelectedRecord::from(*record),
-                    options,
-                    &facts,
-                    false,
-                    &mut footer,
-                )?
-                .unwrap_or(ReadRecord::Presentation { parts: vec![] }),
+                polylogue_store::read::ObjectRecord::Request(record) => {
+                    let shown = output::project(
+                        records::SelectedRecord::from(*record),
+                        options,
+                        &facts,
+                        false,
+                        &mut footer,
+                    )?;
+                    hidden = shown.is_none();
+                    shown.unwrap_or(ReadRecord::Presentation { parts: vec![] })
+                }
                 polylogue_store::read::ObjectRecord::Run(record) => {
                     let kind = if options.view == View::Raw {
                         ItemKind::Other {
@@ -207,12 +212,20 @@ fn execute<T>(
             scope.check()?;
             Ok(crate::execution::Completed {
                 value,
-                count: Some(1),
+                count: Some(if hidden { 0 } else { 1 }),
                 exact: true,
                 next: if is_run { next } else { None },
             })
         },
     )
+}
+
+fn record_kind(reference: &Reference) -> ReadRecordKind {
+    if matches!(reference, Reference::Run(_)) {
+        ReadRecordKind::Run
+    } else {
+        ReadRecordKind::Authored
+    }
 }
 
 pub(super) fn page(
@@ -225,11 +238,7 @@ pub(super) fn page(
         Ok(reference) => reference,
         Err(error) => return Some(Err(error)),
     };
-    let kind = if matches!(&reference, Reference::Run(_)) {
-        ReadRecordKind::Run
-    } else {
-        ReadRecordKind::Authored
-    };
+    let kind = record_kind(&reference);
     Some(execute(
         reader,
         services,
@@ -271,11 +280,7 @@ pub(super) fn stream(
         Ok(reference) => reference,
         Err(error) => return Some(Err(error)),
     };
-    let kind = if matches!(&reference, Reference::Run(_)) {
-        ReadRecordKind::Run
-    } else {
-        ReadRecordKind::Authored
-    };
+    let kind = record_kind(&reference);
     Some(execute(
         reader,
         services,

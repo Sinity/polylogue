@@ -106,7 +106,9 @@ impl Invocation {
     }
 }
 
-/// The private policy is never serialized, rendered, or included in a schema.
+/// The evaluation context of one accepted invocation: its clock, authorship,
+/// Sinex mode, calling session and parent lifetime. The accepted request and
+/// calling session stay out of `Debug` output and the run context.
 #[derive(Clone)]
 pub struct Context {
     pub ran_at: Timestamp,

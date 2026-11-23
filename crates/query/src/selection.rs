@@ -358,7 +358,7 @@ fn similar_unit(unit: Unit) -> Option<Unit> {
 }
 
 fn similar_text(value: &Value, origins: &[String], span: Span) -> Result<String, QueryError> {
-    let Value::Scalar { text, .. } = value else {
+    let Value::Scalar { text, quoted } = value else {
         return Err(QueryError::Invalid {
             message: "similar takes similar:VALUE".into(),
             position: span.start,
@@ -366,6 +366,11 @@ fn similar_text(value: &Value, origins: &[String], span: Span) -> Result<String,
     };
     // Ranking by a reference's own stored vectors is designed and not built;
     // embedding the reference's spelling as text would be a wrong, paid answer.
+    // Quoted words with spaces are prose, even when they begin like an
+    // origin's reference (`"codex: rate limit exceeded"`).
+    if *quoted && text.contains(char::is_whitespace) {
+        return Ok(text.clone());
+    }
     let origin_reference = text.split_once(':').is_some_and(|(origin, rest)| {
         !rest.is_empty() && origins.iter().any(|known| known == origin)
     });

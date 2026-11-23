@@ -57,7 +57,7 @@ fn links_of(
     let mut tree = Vec::new();
     let mut references = Vec::new();
     for link in reader.child_links(&id)? {
-        if link.kind == "reference" {
+        if link.is_reference() {
             references.push(link);
         } else {
             tree.push(link);
@@ -72,7 +72,7 @@ fn structural_parents(reader: &Reader<'_>, session: &str) -> Result<Vec<SessionL
         Ok(id) => reader
             .parent_links(&id)?
             .into_iter()
-            .filter(|link| link.kind != "reference")
+            .filter(|link| !link.is_reference())
             .collect(),
         Err(_) => Vec::new(),
     })

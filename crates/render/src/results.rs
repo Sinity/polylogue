@@ -12,7 +12,8 @@ pub fn render(data: &Value, format: Format, out: &mut dyn Write) -> io::Result<(
     render_with_links(data, format, out, None, false)
 }
 
-/// The displaying client supplies its captured output policy.
+/// The numbered terminal table. The caller decides `color` (a terminal and
+/// no `NO_COLOR`); with it, snippet matches are wrapped in bold ANSI.
 pub fn terminal_with_color(data: &Value, color: bool, out: &mut dyn Write) -> io::Result<()> {
     render_with_links(data, Format::Terminal, out, None, color)
 }
@@ -34,21 +35,30 @@ fn render_with_links(
     if matches!(format, Format::Json | Format::Jsonl) {
         return writeln!(out, "{}", crate::terminal::json(data, false));
     }
-    let columns: Vec<String> = data["columns"]
+    let described: Vec<(String, bool)> = data["columns"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|c| c["name"].as_str().map(str::to_owned))
+        .filter_map(|c| {
+            let name = c["name"].as_str()?;
+            Some((name.to_owned(), c["kind"] == "money"))
+        })
         .collect();
+    let columns: Vec<String> = described.iter().map(|(name, _)| name.clone()).collect();
     let rows: Vec<&Value> = data["rows"].as_array().into_iter().flatten().collect();
     let cells: Vec<Vec<String>> = rows
         .iter()
         .map(|r| {
-            columns
+            described
                 .iter()
-                .map(|c| {
+                .map(|(c, money)| {
                     let value = &r[c.as_str()];
-                    if format == Format::Terminal {
+                    if let (true, Value::Number(n)) = (money, value)
+                        && let Some(text) = polylogue_model::money::nusd_from_usd(&n.to_string())
+                            .map(polylogue_model::money::usd_display)
+                    {
+                        text
+                    } else if format == Format::Terminal {
                         terminal_cell(value)
                     } else {
                         cell(value)
@@ -90,6 +100,12 @@ fn terminal_cell(value: &Value) -> String {
 
 fn one_line(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Whether any row carries a text-hit snippet: Markdown and HTML tables add
+/// the snippet column together.
+fn has_snippets(rows: &[&Value]) -> bool {
+    rows.iter().any(|r| r["snippet"].is_object())
 }
 
 /// The snippet with its marks (character ranges) wrapped by `open`/`close`.
@@ -162,13 +178,13 @@ fn terminal(
     // Rows are numbered: `@N` names row N of this list in a later command.
     let num = cells.len().to_string().len() + 1;
     writeln!(out, "{:num$}  {}", "", line(&columns))?;
+    let (open, close) = if color {
+        ("\x1b[1m", "\x1b[0m")
+    } else {
+        ("", "")
+    };
     for (n, (r, row)) in cells.iter().zip(rows).enumerate() {
         writeln!(out, "{:<num$}  {}", format!("@{}", n + 1), line(r))?;
-        let (open, close) = if color {
-            ("\x1b[1m", "\x1b[0m")
-        } else {
-            ("", "")
-        };
         if let Some(s) = marked(&row["snippet"], open, close, crate::terminal::escape) {
             writeln!(out, "    {s}")?;
         }
@@ -211,7 +227,7 @@ fn markdown(
         return Ok(());
     }
     let esc = crate::encode::markdown_cell;
-    let with_snippet = rows.iter().any(|r| r["snippet"].is_object());
+    let with_snippet = has_snippets(rows);
     let mut head: Vec<String> = columns.iter().map(|c| esc(c)).collect();
     if with_snippet {
         head.push("snippet".into());
@@ -249,7 +265,7 @@ fn html(
     } else {
         writeln!(out, "<table>")?;
     }
-    let with_snippet = rows.iter().any(|r| r["snippet"].is_object());
+    let with_snippet = has_snippets(rows);
     write!(out, "<thead><tr>")?;
     for c in columns {
         write!(out, "<th>{}</th>", escape(c))?;

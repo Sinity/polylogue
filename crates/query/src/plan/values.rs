@@ -92,26 +92,26 @@ fn condition(
                 condition(c, typing, at.field("condition"), normalize)?
             }
             ConditionKind::Match { value, .. } => {
-                values(typing, &at.field("field"), value, position, normalize)?;
+                comparison_value(typing, &at.field("field"), value, position, normalize)?;
             }
             ConditionKind::Compare {
                 left: Expression::Field { .. },
                 right: Expression::Value { value },
                 ..
-            } => values(typing, &at.field("left"), value, position, normalize)?,
+            } => comparison_value(typing, &at.field("left"), value, position, normalize)?,
             ConditionKind::Compare {
                 left: Expression::Value { value },
                 right: Expression::Field { .. },
                 ..
-            } => values(typing, &at.field("right"), value, position, normalize)?,
+            } => comparison_value(typing, &at.field("right"), value, position, normalize)?,
             ConditionKind::Between {
                 left: Expression::Field { .. },
                 from,
                 to,
                 ..
             } => {
-                values(typing, &at.field("left"), from, position, normalize)?;
-                values(typing, &at.field("left"), to, position, normalize)?;
+                comparison_value(typing, &at.field("left"), from, position, normalize)?;
+                comparison_value(typing, &at.field("left"), to, position, normalize)?;
             }
             ConditionKind::In { query: q, .. } | ConditionKind::Order { query: q, .. } => {
                 visit(q, typing, at.field("query"), normalize)?
@@ -165,7 +165,7 @@ fn extension(
 
 /// Reference values normalize before binding an identity; numeric values are
 /// checked against the declared field. Other kinds retain their own rules.
-fn values(
+fn comparison_value(
     typing: &Typing,
     operand: &NodePath,
     value: &mut Value,
@@ -182,7 +182,7 @@ fn values(
                 && let Some(field) = crate::fields::lookup(unit, field)
                 && field.declaration().reference_argument
             {
-                return reference_values(value, position, field);
+                return reference_value(value, position, field);
             }
             return Ok(());
         }
@@ -209,7 +209,7 @@ fn values(
             }
             Value::Set { values: members } => {
                 for member in members {
-                    values(typing, operand, member, position, normalize)?;
+                    comparison_value(typing, operand, member, position, normalize)?;
                 }
                 Ok(())
             }
@@ -219,7 +219,7 @@ fn values(
 }
 
 /// Reference fields keep their storage identity while the query uses human names.
-fn reference_values(
+fn reference_value(
     value: &mut Value,
     position: usize,
     field: crate::fields::FieldId,
@@ -245,7 +245,7 @@ fn reference_values(
         },
         Value::Set { values } => {
             for value in values {
-                reference_values(value, position, field)?;
+                reference_value(value, position, field)?;
             }
         }
         _ => {}

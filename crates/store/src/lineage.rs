@@ -38,6 +38,13 @@ pub struct SessionLink {
     pub spawning_call: Option<String>,
 }
 
+impl SessionLink {
+    /// A reference link never joins ancestry.
+    pub fn is_reference(&self) -> bool {
+        self.kind == polylogue_model::LinkKind::Reference.as_str()
+    }
+}
+
 /// The walk advances only when all recorded structural edges name one parent.
 /// Different branch points on that parent remain recorded alternatives, but do not
 /// change structural depth. No path is selected between different parents.
@@ -229,7 +236,7 @@ impl crate::read::Reader<'_> {
             let parents = self
                 .parent_links(&session)?
                 .into_iter()
-                .filter(|link| link.kind != "reference")
+                .filter(|link| !link.is_reference())
                 .map(|link| SessionId::parse(&link.parent).map_err(crate::StoreError::invalid))
                 .collect::<Result<Vec<_>>>()?
                 .into_iter()

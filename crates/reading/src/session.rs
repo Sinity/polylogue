@@ -468,7 +468,7 @@ fn children(
         at += 1;
         for link in reader.child_links(&session)? {
             still_wanted()?;
-            if link.kind == "reference" {
+            if link.is_reference() {
                 continue;
             }
             let Ok(child) = SessionId::parse(&link.child) else {
