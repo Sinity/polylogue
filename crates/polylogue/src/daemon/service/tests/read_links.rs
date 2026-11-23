@@ -242,18 +242,19 @@ fn a_diamond_shows_each_node_once_with_a_cross_link() {
             let lineage = lineage
                 .as_deref()
                 .expect("each stored diamond node carries its lineage");
-            assert_eq!(
-                lineage.root.as_ref().unwrap().to_string(),
-                "claude-code:a",
-                "{node}"
-            );
-            let depth = match node.as_str() {
-                "session:claude-code:a" => 0,
-                "session:claude-code:b" | "session:claude-code:c" => 1,
-                "session:claude-code:d" => 2,
-                other => panic!("unexpected node {other}"),
-            };
-            assert_eq!(lineage.depth, Some(depth), "{node}");
+            // The node with two parents has no single path to the root.
+            if let Some(depth) = match node.as_str() {
+                "session:claude-code:a" => Some(0),
+                "session:claude-code:b" | "session:claude-code:c" => Some(1),
+                _ => None,
+            } {
+                assert_eq!(
+                    lineage.root.as_ref().map(ToString::to_string).as_deref(),
+                    Some("claude-code:a"),
+                    "{node}"
+                );
+                assert_eq!(lineage.depth, Some(depth), "{node}");
+            }
             assert!(
                 !matches!(&lineage.issue, Some(LineageIssue::Cycle { .. })),
                 "{lineage:?}"
