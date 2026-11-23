@@ -120,11 +120,8 @@ in
     }:
     pkgs.runCommand "polylogue-default-commands" { } ''
       mkdir -p "$out/bin"
-      ${lib.concatMapStringsSep "\n"
-        (name: ''
-          ln -s ${lib.escapeShellArg "${wrappers.${selected}}/bin/${cfg.archives.${selected}.command}"} "$out/bin/${name}"
-        '')
-        aliasNames
-      }
+      ${lib.concatMapStringsSep "\n" (name: ''
+        ln -s ${lib.escapeShellArg "${wrappers.${selected}}/bin/${cfg.archives.${selected}.command}"} "$out/bin/${name}"
+      '') aliasNames}
     '';
 }
