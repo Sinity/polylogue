@@ -372,7 +372,8 @@ fn the_count_cache_holds_at_most_64_answers() {
         .unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let options = options();
+    let mut options = options();
+    options.fields = vec!["id".into()];
     for number in 0..70 {
         let program = crate::query::compile(
             &format!("sessions where id:\"test:none{number}\""),
