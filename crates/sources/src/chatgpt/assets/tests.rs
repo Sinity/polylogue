@@ -74,3 +74,59 @@ fn supplied_library_fields_with_unknown_types_do_not_silently_become_absent() {
         );
     }
 }
+
+#[test]
+fn members_with_empty_or_traversing_path_parts_have_no_identity() {
+    for member in [
+        "../file-AbC.dat",
+        "a//file-AbC.dat",
+        "images/./file-AbC.dat",
+        "images\\file-AbC.dat",
+        "/file-AbC.dat",
+    ] {
+        assert_eq!(member_id(member), None, "{member}");
+    }
+    for member in [
+        "../library_files.json",
+        "a//library_files.json",
+        "dir\\library_files.json",
+    ] {
+        assert_eq!(sidecar_kind(member), None, "{member}");
+    }
+    assert_eq!(
+        sidecar_kind("export/library_files.json"),
+        Some("library_files.json")
+    );
+}
+
+#[test]
+fn absent_library_fields_are_unknown_and_empty_ids_are_rejected() {
+    let mut entries = Vec::new();
+    metadata(
+        "library_files.json",
+        br#"[{"file_id":"file-A"},{"file_id":"file-B","file_name":null,"mime_type":null,"file_size_bytes":null}]"#
+            .as_slice(),
+        |entry| {
+            entries.push(entry);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(entries.len(), 2);
+    for entry in &entries {
+        assert_eq!(entry.name, None);
+        assert_eq!(entry.media_type, None);
+        assert_eq!(entry.size, None);
+    }
+    assert!(
+        metadata(
+            "library_files.json",
+            br#"[{"file_id":""}]"#.as_slice(),
+            |_| Ok(())
+        )
+        .is_err()
+    );
+    for bytes in [br#"{".dat":"a"}"#.as_slice(), br#"{"":"a"}"#.as_slice()] {
+        assert!(metadata("conversation_asset_file_names.json", bytes, |_| Ok(())).is_err());
+    }
+}
