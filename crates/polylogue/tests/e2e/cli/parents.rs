@@ -104,6 +104,7 @@ fn write_bundle(path: &Path, sessions: Vec<Vec<Record>>) -> Vec<u8> {
 struct Reading {
     items: Vec<polylogue_model::read::ReadItem>,
     pages: usize,
+    exit_code: Option<i32>,
 }
 fn read(
     env: &crate::Fixture,
@@ -130,6 +131,7 @@ fn read(
     }
     let out = cli(env, &args.iter().map(String::as_str).collect::<Vec<_>>());
     assert!(matches!(out.status.code(), Some(0 | 5)), "{out:?}");
+    let exit_code = out.status.code();
     let mut page = read_page(json(&out));
     let mut items = super::read_current::Items::default();
     let mut seen = std::collections::BTreeSet::new();
@@ -150,6 +152,7 @@ fn read(
     Reading {
         items: items.into_values(),
         pages,
+        exit_code,
     }
 }
 fn messages(reading: &Reading) -> Vec<String> {
@@ -279,6 +282,7 @@ fn cli_reads_deep_parents_and_reports_incomplete_parent_prefixes() {
     wait_status(&env, |status| status["store"]["messages"] == 1037);
     use polylogue_model::read::{ParentIssue, ValueState};
     let deep = read(&env, "claude-code:s1029", true, "json", "10000");
+    assert_eq!(deep.exit_code, Some(0));
     assert_eq!(lineage(&deep), &ValueState::known(true));
     assert!(issues(&deep).is_empty());
     assert_eq!(
@@ -294,6 +298,7 @@ fn cli_reads_deep_parents_and_reports_incomplete_parent_prefixes() {
             .collect::<Vec<_>>()
     );
     let prefix = read(&env, "claude-code:prefix-child", true, "json", "10000");
+    assert_eq!(prefix.exit_code, Some(0));
     assert_eq!(lineage(&prefix), &ValueState::known(true));
     assert!(issues(&prefix).is_empty());
     assert_eq!(
@@ -442,17 +447,17 @@ fn cli_reads_deep_parents_and_reports_incomplete_parent_prefixes() {
     );
     assert!(context.status.success(), "{context:?}");
     let context = json(&context)["reply"]["steps"][0]["outcome"]["reply"]["reply"].clone();
+    let issue = "fork from claude-code:s0 to claude-code:missing-branch-point has no available branch point (claude-code:absent-message)";
     assert!(
         context["prepared"]["text"]
             .as_str()
             .unwrap()
-            .contains("Parents incomplete")
+            .lines()
+            .any(|line| line == format!("Parents incomplete: {issue}")),
+        "{context}"
     );
-    assert!(
-        context["prepared"]["left_out"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|row| row["what"] == "inherited session content")
+    assert_eq!(
+        context["prepared"]["left_out"],
+        json!([{"what": "inherited session content", "reason": issue}])
     );
 }

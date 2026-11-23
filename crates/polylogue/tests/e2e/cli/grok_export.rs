@@ -159,30 +159,22 @@ fn grok_native_ids_blank_content_and_unknown_shapes_are_visible() {
     assert!(messages[2].get("at").is_none());
     assert_eq!(messages[3]["model"], "");
     assert_eq!(messages[3]["at"], "1970-01-01T00:00:00Z");
-    let exported = records(&env, "grok:native-account");
-    let mut exported_messages: Vec<_> = exported
-        .iter()
+    let diagnostics: Vec<_> = records(&env, "grok:native-account")
+        .into_iter()
         .filter_map(|record| match record {
-            Record::Message(record) => {
-                Some((record.order, serde_json::to_value(&record.message).unwrap()))
+            Record::Event(record) if record.event.kind == "grok_import_diagnostic" => {
+                Some(record.event.data["warnings"].clone())
             }
             _ => None,
         })
         .collect();
-    exported_messages.sort_by_key(|(order, _)| *order);
     assert_eq!(
-        exported_messages
-            .into_iter()
-            .map(|(_, message)| message)
-            .collect::<Vec<_>>(),
-        messages
-    );
-    assert!(
-        exported
-            .iter()
-            .any(|record| matches!(record, Record::Event(record)
-        if record.event.kind == "grok_import_diagnostic"
-        && serde_json::to_string(&record.event).unwrap().contains("unrecognized response sender")))
+        diagnostics,
+        [json!([
+            "a response is not an object; original bytes stay in the stored input",
+            "missing, null or structured message is not read as text; original bytes stay in the stored input",
+            "unrecognized response sender; original bytes stay in the stored input",
+        ])]
     );
 }
 

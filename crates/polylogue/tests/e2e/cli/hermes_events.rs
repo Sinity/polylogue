@@ -202,6 +202,8 @@ fn hermes_observer_keeps_events_and_rebuilds_without_conversations() {
                 .unwrap()
                 .contains("synthetic-later-value")
         );
+        let missing = cli(&env, &["--json", "events where text:no-such-text"]);
+        assert_eq!(query_rows(&missing)["count"], 0, "{missing:?}");
         for unit in ["sessions", "messages"] {
             let out = cli(&env, &["--json", unit]);
             assert_eq!(query_rows(&out)["count"], 0);
@@ -289,6 +291,7 @@ fn hermes_verification_restart_and_rebuild_agree() {
             COMMIT;").unwrap();
         drop(db);
         let daemon = start_daemon(&env);
+        let started = Instant::now();
         loop {
             let out = cli(
                 &env,
@@ -303,6 +306,10 @@ fn hermes_verification_restart_and_rebuild_agree() {
             if json(&out)[0]["n"].as_u64().is_some_and(|n| n >= 2) {
                 break;
             }
+            assert!(
+                started.elapsed() < READY_DEADLINE,
+                "future-schema row was never skipped: {out:?}"
+            );
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(
@@ -391,6 +398,11 @@ fn hermes_atif_documents_preserve_roles_unknown_media_and_ordered_parts() {
             assert!(doc["blocks"][1].get("blob").is_none());
         } else {
             assert_eq!(doc["metadata"]["llm_call_count"], 0);
+            assert_eq!(doc["blocks"][0]["text"], "-----BEGIN PRIVATE KEY-----\n");
+            assert_eq!(
+                doc["blocks"][1]["text"],
+                "synthetic-atif-message-tail\n-----END PRIVATE KEY-----"
+            );
             assert_eq!(doc["blocks"][3]["call_id"], "native-call");
             assert_eq!(doc["blocks"][3]["outcome"]["kind"], "unknown");
             // Tool output is shown in full only with `--tools full`

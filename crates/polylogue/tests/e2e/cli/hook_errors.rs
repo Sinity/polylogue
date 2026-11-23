@@ -2,7 +2,7 @@ use super::*;
 use serde_json::json;
 
 #[test]
-fn cli_read_shows_hook_errors_without_context_message() {
+fn cli_read_shows_hook_error_events_in_every_format() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let archive = dir.path().join("archive");

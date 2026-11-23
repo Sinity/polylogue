@@ -209,11 +209,18 @@ fn dialogue_filters_tool_output_without_rewriting_the_remaining_source() {
         |fixture, _| {
             assert_eq!(texts(&page(fixture, &["--view", "dialogue"])), [visible]);
             let full = page(fixture, &["--show", "tools:full"]);
-            assert!(
-                serde_json::to_string(&full.document.items)
-                    .unwrap()
-                    .contains("private-hidden")
-            );
+            let results = full
+                .document
+                .items
+                .iter()
+                .filter(|item| match &item.kind {
+                    ItemKind::Call { call } => {
+                        call.output.as_deref() == Some("-----BEGIN PRIVATE KEY-----private-hidden")
+                    }
+                    _ => false,
+                })
+                .count();
+            assert_eq!(results, 1, "{:?}", full.document.items);
         },
     );
 }

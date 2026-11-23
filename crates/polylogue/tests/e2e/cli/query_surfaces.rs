@@ -158,7 +158,7 @@ fn answer(
 }
 
 #[test]
-fn mcp_records_only_nonempty_context_deliveries() {
+fn mcp_brief_names_a_delivery_only_when_the_brief_is_not_empty() {
     let dir = tempfile::tempdir().unwrap();
     let env = crate::Fixture::new(
         &dir.path().join("archive"),
@@ -394,9 +394,8 @@ fn a_degraded_answer_keeps_its_outcome_and_notes_on_every_surface() {
         assert_eq!(answer.exit_code(), 5, "{surface}");
         assert_eq!(listing(value.clone())["count"], 1, "{surface}: {value}");
         assert!(
-            notes
-                .iter()
-                .any(|note| note.starts_with("incomplete: semantic search is not enabled")),
+            notes.iter().any(|note| note
+                == "incomplete: semantic search is not enabled; rows are ordered by time and unranked"),
             "{surface}: {notes:?}"
         );
         answers.push(notes.clone());

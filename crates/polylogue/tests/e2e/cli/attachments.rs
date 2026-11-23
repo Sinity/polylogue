@@ -177,10 +177,7 @@ fn directory_and_zip_imports_describe_stored_attachment_bytes() {
                 destination.to_str().unwrap(),
             ],
         );
-        assert!(
-            matches!(delivered.status.code(), Some(0 | 5)),
-            "{delivered:?}"
-        );
+        assert_eq!(delivered.status.code(), Some(0), "{delivered:?}");
         let records: Vec<polylogue_model::bundle::Record> =
             std::fs::read_to_string(destination.join("records.jsonl"))
                 .unwrap()
@@ -228,7 +225,7 @@ fn directory_and_zip_imports_describe_stored_attachment_bytes() {
 }
 
 #[test]
-fn attachment_output_is_available_to_agents_without_terminal_stdout() {
+fn attachment_out_writes_the_file_and_prints_only_its_path() {
     let fixture = TestArchive::new(true);
     let target = fixture._dir.path().join("exact.bin");
     let args = [
@@ -241,16 +238,11 @@ fn attachment_output_is_available_to_agents_without_terminal_stdout() {
         "--length",
         "7",
     ];
-    for agent in [false, true] {
-        std::fs::write(&target, b"previous complete output").unwrap();
-        let mut child = command(&fixture.env());
-        if agent {
-            child.env("CODEX_SESSION_ID", "synthetic-harness");
-        }
-        let output = child.args(args).output().unwrap();
-        assert!(output.status.success(), "{output:?}");
-        assert_eq!(std::fs::read(&target).unwrap(), SECRET);
-    }
+    std::fs::write(&target, b"previous complete output").unwrap();
+    let output = cli(&fixture.env(), &args);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(std::fs::read(&target).unwrap(), SECRET);
+    assert_eq!(json(&output)["written"], target.to_str().unwrap());
 }
 
 #[test]
@@ -273,7 +265,12 @@ fn changed_attachment_between_ranges_does_not_replace_existing_output() {
     ];
     let operator = std::thread::scope(|scope| {
         let operator = scope.spawn(|| cli(&fixture.env(), &args));
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
         loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no partial output file appeared within 60s"
+            );
             let partial = std::fs::read_dir(&directory)
                 .unwrap()
                 .filter_map(Result::ok)
