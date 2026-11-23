@@ -54,7 +54,11 @@ pub(crate) fn heads(conn: &Connection, root: &str) -> Result<Vec<Variant>> {
         .collect()
 }
 pub(crate) fn reference_string(root: &str, id: &str) -> String {
-    format!("alternate:{root}@{id}")
+    polylogue_model::Reference::Variant {
+        revision: polylogue_model::RevisionReference::exact(root.into(), id.into()),
+        part: None,
+    }
+    .to_string()
 }
 pub(crate) use rows::{get as get_record, parts_while};
 

@@ -1059,12 +1059,12 @@ fn range(record: Record<'_>) -> (u64, u64) {
 pub const QUOTA_LIMITS: &[QuotaLimit] = &[
     QuotaLimit {
         limit: Cow::Borrowed("five_hour"),
-        minutes: 300,
+        minutes: polylogue_model::FIVE_HOUR_MINUTES,
         from_first_response: true,
     },
     QuotaLimit {
         limit: Cow::Borrowed("seven_day"),
-        minutes: 10_080,
+        minutes: polylogue_model::WEEK_MINUTES,
         from_first_response: false,
     },
 ];
@@ -1073,9 +1073,10 @@ pub const QUOTA_LIMITS: &[QuotaLimit] = &[
 /// `{status, resetsAt, rateLimitType}`.
 fn quota(q: &Json) -> Option<QuotaReading> {
     let kind = q.str("rateLimitType").filter(|s| !s.is_empty())?;
-    let limit = QUOTA_LIMITS
-        .iter()
-        .find(|l| kind == l.limit || (l.minutes == 10_080 && kind.starts_with("seven_day")))?;
+    let limit = QUOTA_LIMITS.iter().find(|l| {
+        kind == l.limit
+            || (l.minutes == polylogue_model::WEEK_MINUTES && kind.starts_with("seven_day"))
+    })?;
     let status = q.str("status").filter(|s| !s.is_empty()).map(str::to_owned);
     Some(QuotaReading {
         windows: vec![QuotaWindow {
@@ -1086,10 +1087,7 @@ fn quota(q: &Json) -> Option<QuotaReading> {
             // A refused turn means the window is used up; other states do
             // not say how much.
             used_percent: (status.as_deref() == Some("rejected")).then_some(100.0),
-            resets_at: q
-                .i64("resetsAt")
-                .and_then(|s| s.checked_mul(1000))
-                .and_then(Timestamp::from_unix_ms),
+            resets_at: q.i64("resetsAt").and_then(Timestamp::from_unix_seconds),
             status,
         }],
         ..QuotaReading::default()

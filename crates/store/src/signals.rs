@@ -5,6 +5,7 @@ use crate::ConnExt as _;
 use crate::OptionExt as _;
 use crate::{Result, StoreError, source::Source};
 use polylogue_model::{
+    DeliverySender,
     authored::{AuthoredEffect, DeliveryRecord, ExecutionEligibility},
     signal::{Checkpoint, Commit, EventRecord, Metadata},
     user::{UserOutcome, UserRequest},
@@ -78,7 +79,7 @@ pub(crate) fn write(
     let mut ids = BTreeSet::new();
     for pending in &commit.outbox {
         identity(&pending.metadata)?;
-        if pending.record.sender != "signal" {
+        if pending.record.sender != DeliverySender::Signal.as_str() {
             return Err(StoreError::Invalid(
                 "signal delivery must keep its typed sender".into(),
             ));

@@ -310,22 +310,22 @@ pub(crate) fn seen_by(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, 
 }
 
 pub(crate) fn changes_after(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
-    let cursor = x
+    let position = x
         .one()
         .and_then(|text| polylogue_model::ChangePosition::parse(&text));
-    let Some(cursor) = cursor else {
+    let Some(position) = position else {
         return Err(QueryError::Invalid {
-            message: "after: takes a cursor `GENERATION:INDEX:ARCHIVE`".into(),
+            message: "after: takes a feed position `GENERATION:INDEX:ARCHIVE`".into(),
             position: x.span.start,
         });
     };
-    c.change_generations.push(cursor.generation);
+    c.change_generations.push(position.generation);
     Ok(format!(
         "(({r}.kind = 'assertion' AND {r}.seq > {archive}) OR ({r}.kind = 'removed' AND {r}.seq > {index}) \
          OR ({r}.kind = 'session' AND ({r}.changed > {index} OR {r}.live_changed > {index} OR {r}.derived_changed > {index})))",
         r = x.row(),
-        index = cursor.index,
-        archive = cursor.archive,
+        index = position.index,
+        archive = position.archive,
     ))
 }
 

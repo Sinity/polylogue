@@ -185,8 +185,8 @@ fn quota_text(o: &Value) -> String {
         for w in t["windows"].as_array().into_iter().flatten() {
             let minutes = w["window_minutes"].as_i64().unwrap_or(0);
             let name = match minutes {
-                300 => "5-hour".to_owned(),
-                10_080 => "weekly".to_owned(),
+                polylogue_model::FIVE_HOUR_MINUTES => "5-hour".to_owned(),
+                polylogue_model::WEEK_MINUTES => "weekly".to_owned(),
                 m => format!("{m}-minute"),
             };
             let used = match w["used_percent"].as_f64() {

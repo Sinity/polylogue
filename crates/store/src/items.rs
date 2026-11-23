@@ -1541,9 +1541,10 @@ fn decode_counts(bytes: &[u8]) -> Result<ItemCounts> {
             .and_then(|bits| u16::try_from(bits).ok())
             .and_then(EntryClass::from_bits)
             .ok_or_else(invalid)?;
-        counts
-            .classes
-            .insert(class, input.leb128().ok_or_else(invalid)?);
+        let count = input.leb128().ok_or_else(invalid)?;
+        if counts.classes.insert(class, count).is_some() {
+            return Err(invalid());
+        }
     }
     Ok(counts)
 }
