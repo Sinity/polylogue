@@ -35,6 +35,20 @@ pub enum Tool {
 impl Tool {
     pub const ALL: [Tool; 3] = [Tool::Read, Tool::Write, Tool::Act];
 
+    /// The tool called `name`.
+    pub fn named(name: &str) -> Option<Tool> {
+        Self::ALL.into_iter().find(|tool| tool.name() == name)
+    }
+
+    /// The tool whose access is exactly `access`.
+    pub fn with_access(access: ToolAccess) -> Tool {
+        match access {
+            ToolAccess::Read => Tool::Read,
+            ToolAccess::Write => Tool::Write,
+            ToolAccess::Act => Tool::Act,
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Tool::Read => "polylogue_read",

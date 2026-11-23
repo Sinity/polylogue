@@ -319,13 +319,18 @@ fn status_line(
     let _ = relay.spool.append(&config.spool, &boot, &[line]);
 }
 
+/// Writes out the spool's pending lines, adding none.
+fn flush_spool(relay: &mut Relay, config: &HostConfig) -> std::io::Result<()> {
+    let boot = crate::live_events::boot_id().unwrap_or_else(|| "unknown".into());
+    relay.spool.append(&config.spool, &boot, &[])
+}
+
 /// Called under the relay lock, as is the stop decision and the final flush.
 fn retry_status(relay: &mut Relay, config: &HostConfig) {
     if relay.stopping.load(Ordering::Acquire) {
         return;
     }
-    let boot = crate::live_events::boot_id().unwrap_or_else(|| "unknown".into());
-    let _ = relay.spool.append(&config.spool, &boot, &[]);
+    let _ = flush_spool(relay, config);
 }
 
 /// The session a protocol line names, once the agent has said it.
@@ -519,8 +524,7 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
             None,
         );
     }
-    let boot = crate::live_events::boot_id().unwrap_or_else(|| "unknown".into());
-    let spool_result = relay.locked().spool.append(&config.spool, &boot, &[]);
+    let spool_result = flush_spool(&mut relay.locked(), config);
     if let Some(dir) = config.socket.parent()
         && let Some(key) = config.socket.file_stem().and_then(|s| s.to_str())
     {
@@ -943,13 +947,10 @@ impl HostedStdio {
         claude_id: Option<String>,
         text: &str,
     ) -> std::io::Result<(Self, SessionId)> {
-        let (hosted, native) = match protocol {
-            HostProtocol::ClaudeStreamJson => {
-                let hosted = Self::connect(socket, protocol, String::new())?;
-                (hosted, claude_id.unwrap_or_default())
-            }
+        let hosted = Self::connect(socket, protocol, String::new())?;
+        let native = match protocol {
+            HostProtocol::ClaudeStreamJson => claude_id.unwrap_or_default(),
             _ => {
-                let hosted = Self::connect(socket, protocol, String::new())?;
                 hosted.call(
                     "initialize",
                     json!({"protocolVersion": 1, "clientCapabilities": {
@@ -961,7 +962,7 @@ impl HostedStdio {
                     .ok_or_else(|| std::io::Error::other("session/new named no session"))?
                     .to_owned();
                 hosted.state.0.locked().protocol_session.clone_from(&id);
-                (hosted, id)
+                id
             }
         };
         let session = SessionId::parse(&format!("{harness}:{native}"))

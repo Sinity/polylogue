@@ -1,6 +1,6 @@
 //! Merge only the hook commands this installer owns, into Claude Code's
 //! `settings.json` or Codex's `hooks.json` (the same layout). Hermes reads
-//! its hooks from `config.yaml`; its entries are listed in the README.
+//! its hooks from `config.yaml`; `settings_path` returns the entry to add.
 
 use super::{EVENTS, Harness};
 use serde_json::{Value, json};

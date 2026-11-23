@@ -70,6 +70,9 @@ pub(crate) fn select(word: &str, shown: &ShownRows) -> Result<Vec<String>, Strin
         .ok_or("row number starts with @")?
         .split(',')
     {
+        if part.is_empty() {
+            return Err(format!("{word}: a row number is missing between commas"));
+        }
         if let Some((number, hit)) = part.split_once('.') {
             let selected = row(number)?;
             let reference = hit
@@ -121,7 +124,10 @@ pub(crate) fn remember_listing(paths: &crate::config::Paths, root: &Path, shown:
 pub(crate) fn last_listing(paths: &crate::config::Paths, root: &Path) -> Result<ShownRows, String> {
     let path = rows_file(paths, root)
         .ok_or("row numbers work on a terminal; use the references printed above")?;
-    let file = fs::File::open(path).map_err(|_| "no list has been printed in this terminal yet")?;
+    let file = fs::File::open(path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => "no list has been printed in this terminal yet".to_owned(),
+        _ => format!("the last list cannot be read: {error}"),
+    })?;
     serde_json::from_reader(file).map_err(|error| error.to_string())
 }
 

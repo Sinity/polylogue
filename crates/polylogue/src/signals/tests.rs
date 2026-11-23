@@ -149,7 +149,6 @@ fn restart_recovers_confirmed_deliveries_and_unknown_attempts() {
                 .collect()
         )
         .unwrap()
-        .1
     );
     fixture.restart();
     fixture.wait_for(|_| {
@@ -541,7 +540,6 @@ fn unavailable_dependencies_keep_the_assertion_pending() {
             vec![]
         )
         .unwrap()
-        .1
     );
     let before = checkpoint.identity().unwrap();
     at.fetch_add(2 * shared_signals::HOUR, Ordering::SeqCst);

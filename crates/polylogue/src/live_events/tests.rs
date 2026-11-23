@@ -99,11 +99,17 @@ fn the_watcher_writes_only_changes_and_reads_nothing_without_roots() {
         events(&w.update_roots(&roots, now())),
         [("Started".into(), 10)]
     );
+    let started = w.sample(now());
     assert_eq!(
-        events(&w.sample(now())),
+        events(&started),
         [("Started".into(), 11), ("Started".into(), 12)]
     );
-    // The child carries argv and cwd as read; environment is never read.
+    // The child carries argv as read and no cwd, since the fake process has
+    // none; environment is never read.
+    assert_eq!(started[0]["payload"]["argv"], json!(["bash", "--flag"]));
+    assert_eq!(started[0]["payload"]["cwd"], Value::Null);
+    assert_eq!(started[0]["payload"]["ppid"], 10);
+    assert_eq!(started[1]["payload"]["comm"], "cargo");
     // A sample with no change writes nothing.
     w.watched.get_mut("claude-code:s").unwrap().next_sample = Instant::now();
     assert!(w.sample(now()).is_empty());
@@ -113,6 +119,28 @@ fn the_watcher_writes_only_changes_and_reads_nothing_without_roots() {
     assert_eq!(events(&w.sample(now())), [("Ended".into(), 12)]);
     // The same roots again add nothing.
     assert!(w.update_roots(&roots, now()).is_empty());
+}
+
+#[test]
+fn descendants_are_sampled_each_second_during_a_tool_call_and_each_fifteen_seconds_otherwise() {
+    let dir = tempfile::tempdir().unwrap();
+    let proc_root = dir.path().join("proc");
+    fake_proc(&proc_root, &[(10, 1, 500, "claude")]);
+    let mut w = Watcher::new(proc_root, "b1".into(), Some(0), Default::default());
+    w.update_roots(&[root("s", 10, 500, "b1")], now());
+    for (open_call, cadence) in [
+        (true, Duration::from_secs(1)),
+        (false, Duration::from_secs(15)),
+    ] {
+        let watched = w.watched.get_mut("claude-code:s").unwrap();
+        watched.open_call = open_call;
+        watched.next_sample = Instant::now();
+        let before = Instant::now();
+        w.sample(now());
+        let after = Instant::now();
+        let next = w.watched["claude-code:s"].next_sample;
+        assert!(next >= before + cadence && next <= after + cadence);
+    }
 }
 
 #[test]
@@ -138,6 +166,10 @@ fn a_root_from_another_boot_or_start_time_is_written_gone() {
     assert_eq!(lines[0]["at_ns"], "1700000000000000000");
     assert_eq!(lines[0]["route"], "process");
     assert_eq!(lines[0]["session_id"], "old");
+    // A root of this boot with another start time is gone as of now.
+    assert_eq!(lines[1]["at_ns"], "1790000000000000000");
+    assert_eq!(lines[1]["route"], "process");
+    assert_eq!(lines[1]["session_id"], "reused");
     assert!(w.watched.is_empty());
     // Until the live events stop naming them, gone roots are not written again.
     assert!(
@@ -384,7 +416,8 @@ fn a_registry_change_is_preserved_after_its_reader_has_advanced() {
 
 /// A stand-in for `codex app-server proxy`: answers `thread/loaded/list`
 /// from the file `threads` and `thread/read` from the file `status` beside
-/// it, and every other request with an empty result.
+/// it, and every other request with an empty result. The lines of the file
+/// `notification`, when present, are sent once the session is initialized.
 fn fake_codex(dir: &Path) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let program = dir.join("codex");
@@ -394,7 +427,10 @@ fn fake_codex(dir: &Path) -> PathBuf {
 dir=$(dirname "$0")
 while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
-  [ -z "$id" ] && continue
+  if [ -z "$id" ]; then
+    case "$line" in *'"initialized"'*) [ -f "$dir/notification" ] && cat "$dir/notification" ;; esac
+    continue
+  fi
   case "$line" in
     *'"thread/loaded/list"'*) printf '{"id":%s,"result":{"data":%s,"nextCursor":null}}\n' "$id" "$(cat "$dir/threads")" ;;
     *'"thread/read"'*) printf '{"id":%s,"result":{"thread":{"status":%s}}}\n' "$id" "$(cat "$dir/status")" ;;
@@ -464,6 +500,42 @@ fn the_codex_reader_writes_each_thread_status_change_once() {
     );
     std::fs::remove_file(&socket).unwrap();
     assert!(reader.read(now()).is_empty());
+}
+
+/// A `thread/status/changed` notification becomes one line, unless the status
+/// is the one already seen; other notifications are ignored.
+#[test]
+fn the_codex_reader_turns_status_notifications_into_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = fake_codex(dir.path());
+    let socket = dir.path().join("app-server-control.sock");
+    let thread = "0199a1b2-3c4d-7e8f-9012-345678901234";
+    let changed = format!(
+        r#"{{"method":"thread/status/changed","params":{{"threadId":"{thread}","status":{{"type":"active","activeFlags":["waitingOnUserInput"]}}}}}}"#
+    );
+    let other = r#"{"method":"thread/started","params":{}}"#;
+    std::fs::write(
+        dir.path().join("notification"),
+        format!("{changed}\n{changed}\n{other}\n"),
+    )
+    .unwrap();
+    let mut reader = CodexStatus::new(program.clone(), socket.clone());
+    reader.connection = Some(CodexConnection::open(&program, &socket).unwrap());
+    let wait = Duration::from_secs(5);
+    let line = reader.next_change(wait, now()).unwrap();
+    assert_eq!(line["event"], "ThreadStatus");
+    assert_eq!(line["session_id"], thread);
+    assert_eq!(line["payload"]["status"], "waitingOnUserInput");
+    assert!(
+        reader.next_change(wait, now()).is_none(),
+        "same status again"
+    );
+    assert!(reader.next_change(wait, now()).is_none(), "another method");
+    assert!(
+        reader
+            .next_change(Duration::from_millis(50), now())
+            .is_none()
+    );
 }
 
 /// The live clock announces a session once its instant from the previous
@@ -586,14 +658,14 @@ fn commit_in_the_worktree_names_its_edited_files() {
 
 #[test]
 fn commit_lists_parse_into_commits_and_files() {
-    let text = "\u{0}aaa 1790000000\n\nsrc/a.rs\nsrc/b.rs\n\u{0}bbb 1790000060\n\n";
+    let text = "\u{1}aaa 1790000000\0\nsrc/a.rs\0src/b \"c\".rs\0\u{1}bbb 1790000060\0";
     assert_eq!(
         parse_commits(text),
         vec![
             (
                 "aaa".to_owned(),
                 1_790_000_000,
-                vec!["src/a.rs".to_owned(), "src/b.rs".to_owned()]
+                vec!["src/a.rs".to_owned(), "src/b \"c\".rs".to_owned()]
             ),
             ("bbb".to_owned(), 1_790_000_060, vec![])
         ]

@@ -33,20 +33,15 @@ pub fn tools() -> Vec<Value> {
     let mut tools = declared.clone();
     for tool in &mut tools {
         let name = tool["name"].as_str().unwrap_or_default().to_owned();
-        let Some(access) = Tool::ALL
-            .into_iter()
-            .find(|family| family.name() == name)
-            .map(Tool::access)
-        else {
+        let Some(own) = Tool::named(&name) else {
             continue;
         };
-        if matches!(name.as_str(), "polylogue_write" | "polylogue_act") {
+        let access = own.access();
+        if matches!(own, Tool::Write | Tool::Act) {
             for smaller in &declared {
                 let smaller_name = smaller["name"].as_str().unwrap_or_default();
-                if Tool::ALL
-                    .into_iter()
-                    .find(|family| family.name() == smaller_name)
-                    .is_some_and(|family| family.access() <= access && family.name() != name)
+                if Tool::named(smaller_name)
+                    .is_some_and(|family| family.access() <= access && family != own)
                 {
                     merge_tool(tool, smaller);
                 }
@@ -77,7 +72,7 @@ pub fn tools() -> Vec<Value> {
             json!({"key":{"type":"string"},"machine":{"type":"string"}});
         if let Some(read) = tools
             .iter_mut()
-            .find(|tool| tool["name"] == "polylogue_read")
+            .find(|tool| tool["name"] == Tool::Read.name())
         {
             merge_tool(read, &listing);
         }
@@ -257,6 +252,26 @@ fn refusal(
     )
 }
 
+/// A refusal that carries the corrected call: `call` as the arguments of
+/// `tool`, in the text and as the one `next` request.
+fn refusal_with_call(
+    failure: command_surface::Failure,
+    tool: Tool,
+    call: &Value,
+    request: command_surface::RunnableRequest,
+) -> (String, Value, bool) {
+    let correction = format!("{} {call}", tool.name());
+    let mut result = refusal(
+        failure,
+        Some(command_surface::Next {
+            label: correction.clone(),
+            request,
+        }),
+    );
+    result.0.push_str(&format!("\nnext: {correction}"));
+    result
+}
+
 /// A `tools/call`: the tool's operation named by the call, run with its
 /// arguments.
 fn call_with_limit(
@@ -267,7 +282,7 @@ fn call_with_limit(
     cancelled: &tokio_util::sync::CancellationToken,
     tool_call_id: Option<String>,
 ) -> Result<(String, Value, bool), String> {
-    let Some(tool) = Tool::ALL.into_iter().find(|tool| tool.name() == name) else {
+    let Some(tool) = Tool::named(name) else {
         return Err(bad_request(&format!("unknown MCP tool {name}")));
     };
     let operation = match arguments.get("operation") {
@@ -317,11 +332,7 @@ fn call_with_limit(
         home.access().max(access)
     };
     if needed > tool.access() {
-        let next_tool = match needed {
-            ToolAccess::Read => Tool::Read,
-            ToolAccess::Write => Tool::Write,
-            ToolAccess::Act => Tool::Act,
-        };
+        let next_tool = Tool::with_access(needed);
         let failure = crate::protocol::failure(
             polylogue_model::Code::BadRequest,
             format!(
@@ -332,16 +343,7 @@ fn call_with_limit(
         );
         let mut next = arguments_for(&request);
         next["operation"] = json!(command.name);
-        let correction = format!("{} {}", next_tool.name(), next);
-        let mut result = refusal(
-            failure,
-            Some(command_surface::Next {
-                label: correction.clone(),
-                request,
-            }),
-        );
-        result.0.push_str(&format!("\nnext: {correction}"));
-        return Ok(result);
+        return Ok(refusal_with_call(failure, next_tool, &next, request));
     }
     run(archive, request, deadline_ms, cancelled, tool_call_id)
 }
@@ -384,19 +386,15 @@ fn run(
             } else {
                 next.arguments["delivery"] = json!("page");
             }
-            let correction = format!("polylogue_read {}", arguments_for(&next));
-            let mut result = refusal(
+            return Ok(refusal_with_call(
                 crate::protocol::failure(
                     polylogue_model::Code::BadRequest,
                     "a model cannot hold a stream; read again to continue",
                 ),
-                Some(command_surface::Next {
-                    label: correction.clone(),
-                    request: next,
-                }),
-            );
-            result.0.push_str(&format!("\nnext: {correction}"));
-            return Ok(result);
+                Tool::Read,
+                &arguments_for(&next),
+                next,
+            ));
         }
     }
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -455,11 +453,7 @@ fn run(
                     })
                 })
                 .unwrap_or(ToolAccess::Read);
-            let tool = match access {
-                ToolAccess::Read => Tool::Read,
-                ToolAccess::Write => Tool::Write,
-                ToolAccess::Act => Tool::Act,
-            };
+            let tool = Tool::with_access(access);
             text.push_str(&format!(
                 "\nnext: {} {}",
                 tool.name(),
@@ -470,13 +464,29 @@ fn run(
     Ok((text, structured, failed))
 }
 
+/// The newest version negotiated by `initialize`, and the one offered to a
+/// client that asks for a version this server does not know.
+const INITIALIZE_FALLBACK: &str = "2025-11-25";
+
+/// The first version whose requests carry the protocol version and client
+/// capabilities in each request's `_meta` instead of an `initialize`.
+const REQUEST_METADATA_FROM: &str = "2026-07-28";
+
 const VERSIONS: &[&str] = &[
     "2024-11-05",
     "2025-03-26",
     "2025-06-18",
-    "2025-11-25",
-    "2026-07-28",
+    INITIALIZE_FALLBACK,
+    REQUEST_METADATA_FROM,
 ];
+
+fn capabilities() -> Value {
+    json!({"tools": {}, "completions": {}})
+}
+
+fn server_info() -> Value {
+    json!({"name": "polylogue", "version": env!("CARGO_PKG_VERSION")})
+}
 
 #[derive(Default)]
 struct Session {
@@ -545,17 +555,17 @@ impl Session {
             {
                 return invalid(-32602, "clientInfo and capabilities are required");
             }
-            let version = if VERSIONS[..4].contains(&version) {
+            let version = if VERSIONS.contains(&version) && version != REQUEST_METADATA_FROM {
                 version
             } else {
-                "2025-11-25"
+                INITIALIZE_FALLBACK
             };
             self.initialized = true;
             return Reply::Message(success(
                 id,
                 json!({
-                    "protocolVersion": version, "capabilities": {"tools": {}, "completions": {}},
-                    "serverInfo": {"name": "polylogue", "version": env!("CARGO_PKG_VERSION")},
+                    "protocolVersion": version, "capabilities": capabilities(),
+                    "serverInfo": server_info(),
                     "instructions": crate::manual::card(),
                 }),
             ));
@@ -564,11 +574,12 @@ impl Session {
         let version = meta["io.modelcontextprotocol/protocolVersion"].as_str();
         if method == "ping"
             && !self.request_metadata
-            && (!self.initialized || version.is_none_or(|version| version < "2026-07-28"))
+            && (!self.initialized || version.is_none_or(|version| version < REQUEST_METADATA_FROM))
         {
             return Reply::Message(success(id, json!({})));
         }
-        let with_result_type = self.request_metadata || version.is_some_and(|v| v >= "2026-07-28");
+        let with_result_type =
+            self.request_metadata || version.is_some_and(|v| v >= REQUEST_METADATA_FROM);
         if !self.initialized || with_result_type || method == "server/discover" {
             let mut missing = Vec::new();
             if version.is_none() {
@@ -600,9 +611,9 @@ impl Session {
                 id,
                 json!({
                     "resultType": "complete", "supportedVersions": VERSIONS,
-                    "capabilities": {"tools": {}, "completions": {}}, "instructions": crate::manual::card(),
+                    "capabilities": capabilities(), "instructions": crate::manual::card(),
                     "ttlMs": 0, "cacheScope": "private",
-                    "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "polylogue", "version": env!("CARGO_PKG_VERSION")}},
+                    "_meta": {"io.modelcontextprotocol/serverInfo": server_info()},
                 }),
             ));
         }

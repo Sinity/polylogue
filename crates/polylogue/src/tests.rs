@@ -15,7 +15,7 @@ fn deployment_flags_preserve_daemon_signal_policy_and_native_host_selection() {
             "daemon",
         ])
         .unwrap();
-    assert!(super::daemon_command(&daemon));
+    assert!(super::keeps_sigpipe_ignored(&daemon));
     assert!(super::cli::needs_engine(
         &daemon,
         &super::daemon::service::ArchiveMode::Standalone

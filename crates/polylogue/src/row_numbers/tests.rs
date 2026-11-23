@@ -31,7 +31,18 @@ fn row_number_ranges_and_hits_resolve() {
         ]
     );
     assert_eq!(select("@1.2", &shown).unwrap(), ["message:codex:first#2"]);
-    assert_eq!(select("@all", &shown).unwrap().len(), 3);
+    assert_eq!(
+        select("@all", &shown).unwrap(),
+        [
+            "session:codex:first",
+            "session:codex:second",
+            "session:codex:third"
+        ]
+    );
+    assert_eq!(
+        select("@1,", &shown).unwrap_err(),
+        "@1,: a row number is missing between commas"
+    );
     assert_eq!(
         select("@2.1", &shown).unwrap_err(),
         "row @2 has no hit 1; use @2"
@@ -48,4 +59,16 @@ fn row_number_ranges_and_hits_resolve() {
         select("@2-4", &shown).unwrap_err(),
         "@2-4: the last list has 3 rows"
     );
+}
+
+#[test]
+fn only_row_selections_are_rewritten() {
+    for word in ["@all", "@1", "@12", "@1,3", "@1-3", "@2.1", "@1-2,4.1"] {
+        assert!(is_selection(word), "{word}");
+    }
+    for word in [
+        "@", "@a", "all", "@0x", "@,1", "@-1", "1", "@all1", "user@1",
+    ] {
+        assert!(!is_selection(word), "{word}");
+    }
 }
