@@ -196,3 +196,23 @@ fn one_session_adapter_block_does_not_delay_another() {
     std::fs::write(fixture.path().join("release"), "").unwrap();
     let _ = waiting.join().unwrap();
 }
+
+/// A delivery is released before the flag is raised, so a failed raise still
+/// leaves the delivery for the next claim.
+#[test]
+fn a_delivery_is_released_even_when_the_flag_cannot_be_raised() {
+    let (reports, _received) = std::sync::mpsc::channel();
+    let acts = Acts::new(
+        PathBuf::from("/nonexistent"),
+        PathBuf::new(),
+        PathBuf::new(),
+        PathBuf::new(),
+        PathBuf::new(),
+        reports,
+    );
+    let session = SessionId::parse("claude-code:s1").unwrap();
+    acts.take(vec![("ping".to_owned(), ())]);
+    assert!(acts.handed_out("ping"));
+    assert!(acts.hand_to_hook("ping", &session).is_err());
+    assert!(!acts.handed_out("ping"));
+}

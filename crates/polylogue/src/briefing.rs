@@ -941,11 +941,7 @@ impl Deadline {
     ) -> Result<Option<T>, StoreError> {
         match reader.check().and_then(|()| work()) {
             Ok(value) => Ok(Some(value)),
-            // A query's own failure wraps the deadline; the reader knows it.
-            Err(error)
-                if matches!(error, StoreError::ReadDeadlineExceeded)
-                    || matches!(reader.check(), Err(StoreError::ReadDeadlineExceeded)) =>
-            {
+            Err(StoreError::ReadDeadlineExceeded) => {
                 self.late.push(what);
                 Ok(None)
             }

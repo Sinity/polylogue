@@ -378,6 +378,15 @@ impl Acts {
         self.claimed.locked().remove(id);
     }
 
+    /// Makes a delivery claimable and tells the session's hook. It is
+    /// released first: a claim running in between then takes it, and the
+    /// flag raised after is harmless, whereas the other order lets that
+    /// claim lower the flag and leaves the delivery pending with no flag.
+    pub(crate) fn hand_to_hook(&self, id: &str, session: &SessionId) -> std::io::Result<()> {
+        self.release(id);
+        crate::mailbox::raise(&self.mail, session)
+    }
+
     /// Whether a delivery was handed out.
     pub(crate) fn handed_out(&self, id: &str) -> bool {
         self.claimed.locked().contains(id)
