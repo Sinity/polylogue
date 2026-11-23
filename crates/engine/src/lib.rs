@@ -129,7 +129,8 @@ pub struct Config {
     pub machine: String,
     pub host: String,
     /// The range one job reads at most (default 16 MiB), so a large file
-    /// is stored and parsed in steps; an export's items commit in batches
+    /// is stored and parsed in steps (a document origin's file is read whole
+    /// in one job); an export's items commit in batches
     /// of about this many of its bytes. Not a limit: a record longer than
     /// this doubles the range for its input until it fits.
     pub chunk: u64,
@@ -488,7 +489,7 @@ pub struct Engine {
     captures: Databases,
     wake: Option<Sender<LoopMsg>>,
     watcher: Option<watch::Roots>,
-    databases: BTreeMap<PathBuf, &'static str>,
+    databases: BTreeMap<PathBuf, &'static OriginSpec>,
     live_checked: Instant,
     pass_open: bool,
     collectors_at: Option<Instant>,

@@ -351,8 +351,8 @@ impl<'a> InputWriter<'a> {
                     source_read.raw_total =
                         (source_read.range.end == window.end).then_some(window.end);
                     // Sibling body addresses are assigned when the group is
-                    // spooled as one unit; no operation ID is inferred from its ordinal.
-                    source_read.raw_predecessor = None;
+                    // spooled as one unit; no operation ID is inferred from its ordinal,
+                    // so no predecessor is set.
                 }
             }
         }
@@ -391,18 +391,21 @@ impl<'a> InputWriter<'a> {
 }
 
 impl Engine {
+    /// The stored input ID of a database file, or its location ID before
+    /// the first capture.
+    fn database_input_id(&self, path: &Path, origin: &OriginSpec) -> String {
+        self.inputs
+            .get(path)
+            .filter(|state| state.origin.name == origin.name)
+            .map(|state| state.input_id.clone())
+            .unwrap_or_else(|| self.location_id(path))
+    }
+
     pub(super) fn refresh_database_progress(&mut self) -> Result<(), EngineError> {
         let reader = self.reads.reader()?;
-        for (path, name) in &self.databases {
-            let origin = polylogue_sources::origin::by_name(name).ok_or_else(|| {
-                polylogue_store::StoreError::invalid(format!("unknown database origin {name}"))
-            })?;
-            let input_id = self
-                .inputs
-                .get(path)
-                .filter(|state| state.origin.name == *name)
-                .map(|state| state.input_id.clone())
-                .unwrap_or_else(|| self.location_id(path));
+        for (path, origin) in &self.databases {
+            let origin: &'static OriginSpec = *origin;
+            let input_id = self.database_input_id(path, origin);
             let Some(progress) = reader.input_progress(&input_id)? else {
                 continue;
             };
@@ -422,10 +425,7 @@ impl Engine {
     ) -> Result<(bool, bool), EngineError> {
         let mut new_database = false;
         for f in found.iter().filter(|f| f.origin.is_row_dump(&f.path)) {
-            new_database |= self
-                .databases
-                .insert(f.path.clone(), f.origin.name)
-                .is_none();
+            new_database |= self.databases.insert(f.path.clone(), f.origin).is_none();
         }
         if self.archive.is_primary() {
             // The database worker can finish before Sinex confirms its spooled
@@ -435,7 +435,7 @@ impl Engine {
                 let source = self
                     .source_read_context(
                         path,
-                        origin,
+                        origin.name,
                         polylogue_store::primary::AcquisitionRoute::NativeCapture,
                     )
                     .source;
@@ -478,21 +478,11 @@ impl Engine {
                 .collect();
             let mut databases = Vec::with_capacity(sources.len());
             for (path, origin) in sources {
-                polylogue_sources::origin::by_name(origin).ok_or_else(|| {
-                    polylogue_store::StoreError::invalid(format!(
-                        "unknown database origin {origin}"
-                    ))
-                })?;
-                let source_read = self.sampling_context(&path, origin)?;
+                let source_read = self.sampling_context(&path, origin.name)?;
                 databases.push(databases::DatabaseInput {
                     input: InputKey {
-                        id: self
-                            .inputs
-                            .get(&path)
-                            .filter(|state| state.origin.name == origin)
-                            .map(|state| state.input_id.clone())
-                            .unwrap_or_else(|| self.location_id(&path)),
-                        format: origin.into(),
+                        id: self.database_input_id(&path, origin),
+                        format: origin.name.into(),
                         route: polylogue_model::Route::Live,
                     },
                     observation: self.observation(&path, None),
