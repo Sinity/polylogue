@@ -109,14 +109,14 @@ fn trace_preserves_missing_range_and_checks_block_span_and_call_identity() {
             .iter()
             .any(|step| matches!(step, ChainStep::StoredBytes { .. }))
     );
-    assert!(card.chain.iter().any(|step|matches!(step,ChainStep::Unavailable{reason} if reason.contains("byte end is not recorded"))));
+    assert!(card.chain.iter().any(|step|matches!(step,ChainStep::Unavailable{reason} if reason=="record byte end is not recorded for input-trace chain 1")));
     assert!(
         !card
             .chain
             .iter()
             .any(|step| matches!(step, ChainStep::ReaderVersion { .. }))
     );
-    assert!(card.chain.iter().any(|step| matches!(step,ChainStep::Unavailable{reason} if reason.contains("reader version is unavailable"))));
+    assert!(card.chain.iter().any(|step| matches!(step,ChainStep::Unavailable{reason} if reason=="reader version is unavailable for input-trace chain 1")));
     assert_eq!(
         card.missing,
         ["quote origins", "paste origins", "file-line lineage"]

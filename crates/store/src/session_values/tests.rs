@@ -42,7 +42,7 @@ fn stored_and_recounted(archive: &WriterArchive) -> (Vec<Json>, Vec<Json>) {
 }
 
 #[test]
-fn stored_values_equal_a_recount_after_each_write() {
+fn stored_values_equal_a_recount_at_each_checkpoint() {
     let mut archive = WriterArchive::new();
     let check = |archive: &WriterArchive, step: &str| {
         let (stored, recounted) = stored_and_recounted(archive);
@@ -64,6 +64,19 @@ fn stored_values_equal_a_recount_after_each_write() {
     rewritten.extend(prose("s", 0, 50, "an earlier prompt"));
     archive.write_snapshot("s", rewritten);
     check(&archive, "a rewrite");
+    let counts = archive.rows(
+        "SELECT v.field, v.value, v.n FROM session_value v JOIN session s ON s.pk = v.session_pk
+         WHERE s.id LIKE '%:s' AND v.n > 0 ORDER BY 1, 2",
+    );
+    assert_eq!(
+        counts,
+        [
+            json!({"field": "model", "value": "model-a", "n": 2}),
+            json!({"field": "model", "value": "model-c", "n": 1}),
+            json!({"field": "tool", "value": "Grep", "n": 1}),
+            json!({"field": "tool", "value": "Read", "n": 2}),
+        ]
+    );
     let gone = archive.rows(
         "SELECT v.value, v.n FROM session_value v WHERE v.value IN ('Bash', 'model-b') ORDER BY 1",
     );

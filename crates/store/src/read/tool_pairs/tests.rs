@@ -83,7 +83,10 @@ fn indexed_pairs_keep_original_ordinals_and_provider_payload_in_either_arrival_o
         );
         assert_eq!(
             reader.message_tool_pair_sources(&result.id, 7).unwrap(),
-            Some((pair.call.source, pair.result.map(|result| result.source)))
+            Some((
+                Source::block(&call.id, &call.session, 1, false),
+                Some(Source::block(&result.id, &result.session, 7, false))
+            ))
         );
     }
 }
@@ -382,7 +385,7 @@ fn a_corrupt_cross_session_or_mismatched_id_relation_cannot_expose_a_result_body
     }
 }
 #[test]
-fn scope_and_cancellation_fail_before_pair_payload_work() {
+fn cancellation_and_scope_reset_are_reported_by_the_pair_readers() {
     let mut archive = WriterArchive::new();
     let (call, result) = pair("s", 1, "payload");
     archive.write("s", vec![call.clone(), result]);

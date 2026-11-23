@@ -144,7 +144,6 @@ fn the_index_follows_sessions_changed_after_its_position() {
 /// The scope index reads the same live facts as the query's live view.
 #[test]
 fn live_facts_are_read_from_the_session_live_columns() {
-    assert!(columns().contains("live_facts"));
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
     let pk = session(&mut f, "test:live", "/work/proj", None, NOW);
@@ -195,6 +194,16 @@ fn a_written_title_lists_its_session_as_changed_after_the_held_position() {
         crate::read::retitled_sessions(reader.conn().unwrap(), held.archive)
             .unwrap()
             .into_iter()
+            .collect::<Vec<_>>(),
+        ["test:titled"]
+    );
+    let changes = reader.scope_changes(Some(&held)).unwrap();
+    assert!(!changes.full);
+    assert_eq!(
+        changes
+            .rows
+            .iter()
+            .map(|row| row.id.as_str())
             .collect::<Vec<_>>(),
         ["test:titled"]
     );

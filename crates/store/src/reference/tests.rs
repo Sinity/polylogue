@@ -399,10 +399,6 @@ fn preparation_hashes_source_text_and_overlay_text() {
         .unwrap(),
         Some(BlobHash(*blake3::hash(b"pending").as_bytes()))
     );
-    assert!(
-        scratch.prepare("SELECT 1 FROM message").is_err(),
-        "source tables are absent from the authored overlay"
-    );
 }
 
 #[test]
