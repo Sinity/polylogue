@@ -66,7 +66,11 @@ fn workspace_root() -> Result<PathBuf, String> {
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
     }
-    let manifest = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    let manifest = PathBuf::from(
+        String::from_utf8(output.stdout)
+            .map_err(|_| "the workspace path is not valid UTF-8".to_owned())?
+            .trim(),
+    );
     manifest
         .parent()
         .map(Path::to_owned)

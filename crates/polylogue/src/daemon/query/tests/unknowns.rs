@@ -108,7 +108,7 @@ fn near_says_how_many_rows_have_no_vector() {
     let v = run_q(&w, request).unwrap();
     assert_eq!(v["count"], 8, "{v}");
     // #2 has vectors; every other session follows it, unranked.
-    assert_eq!(v["unknown"]["near"], 7, "{v}");
+    assert_eq!(v["unknown"]["similar"], 7, "{v}");
     assert_eq!(ids(&v)[0], "#2");
     assert!(
         v["notes"].as_array().unwrap().iter().any(|n| n
@@ -151,7 +151,7 @@ fn hybrid_search_keeps_text_ranks_when_vectors_are_missing() {
     request.near = Some(&near);
     let answer = run_q(&w, request).unwrap();
     assert_eq!(answer["count"], 4);
-    assert_eq!(answer["unknown"]["near"], 2);
+    assert_eq!(answer["unknown"]["similar"], 2);
     assert!(
         answer["rows"]
             .as_array()
@@ -166,7 +166,7 @@ fn hybrid_search_keeps_text_ranks_when_vectors_are_missing() {
             .unwrap()
             .iter()
             .any(|note| note.as_str()
-                == Some("2 of 4 rows have no vector; their semantic similarity is unknown")),
+                == Some("2 of 4 rows have no vector; their semantic ranking is unknown")),
         "{answer}"
     );
 }
@@ -184,14 +184,14 @@ fn distinct_near_counts_the_answer_rows_without_vectors() {
     let answer = run_q(&w, request).unwrap();
     // Displaying only origin keeps the eight session identities.
     assert_eq!(answer["count"], 8, "{answer}");
-    assert_eq!(answer["unknown"]["near"], answer["count"], "{answer}");
+    assert_eq!(answer["unknown"]["similar"], answer["count"], "{answer}");
     let mut limited = ask("kind:* similar:dates | distinct | limit 2");
     limited.fields = &fields;
     limited.embeddings = true;
     limited.near = Some(&near);
     let limited = run_q(&w, limited).unwrap();
     assert_eq!(limited["count"], 2, "{limited}");
-    assert_eq!(limited["unknown"]["near"], 2, "{limited}");
+    assert_eq!(limited["unknown"]["similar"], 2, "{limited}");
     assert!(
         answer["rows"]
             .as_array()
@@ -290,7 +290,7 @@ fn combining_queries_counts_only_the_answers_own_semantic_similarities() {
     request.near = Some(&near);
     let answer = run_q(&w, request).unwrap();
     assert_eq!(answer["count"], 4, "{answer}");
-    assert_eq!(answer["unknown"]["near"], 2, "{answer}");
+    assert_eq!(answer["unknown"]["similar"], 2, "{answer}");
 
     for complete in [true, false] {
         let similarity =
@@ -306,7 +306,7 @@ fn combining_queries_counts_only_the_answers_own_semantic_similarities() {
             request.embeddings = true;
             request.near = Some(&near);
             let answer = run_q(&w, request).unwrap();
-            assert!(answer["unknown"]["near"].is_null(), "{text}: {answer}");
+            assert!(answer["unknown"]["similar"].is_null(), "{text}: {answer}");
         }
     }
 }

@@ -173,7 +173,7 @@ when it starts, so what an earlier process committed and the kernel still
 holds is written before it replies to anything. A failed sync stops writing for
 the rest of the boot: the commit is visible, so a retry would find it stored
 and report success, and the kernel may have marked the unwritten pages clean,
-so no later sync in that boot, in the same process or a new one, shows that
+so no later sync in that boot, in the same process or a new one (where the machine has a boot identifier), shows that
 they reached the disk. Recovery starts with a reboot
 ([operations.md#storage-failure](operations.md#storage-failure)).
 
