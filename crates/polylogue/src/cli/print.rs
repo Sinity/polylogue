@@ -165,7 +165,6 @@ fn wrote_each(report: &polylogue_model::user::AssertQueryOutcome, verb: &str) ->
 }
 
 pub fn saved(report: &protocol::line::SaveReport, _style: TextStyle) -> String {
-    use std::fmt::Write as _;
     let mut text = String::new();
     if let Some(saved) = &report.saved {
         let description = if saved.new_revision && !report.repeat {

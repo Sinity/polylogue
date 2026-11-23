@@ -323,12 +323,17 @@ impl State {
             Mode::Query => &mut self.query,
         }
     }
+    /// The selection text the current mode asks for.
+    fn selection(&self) -> &str {
+        match self.mode {
+            Mode::Fuzzy => &self.question,
+            Mode::Query => &self.query,
+        }
+    }
+
     fn request(&self) -> PageRequest {
         PageRequest {
-            selection: match self.mode {
-                Mode::Fuzzy => self.question.clone(),
-                Mode::Query => self.query.clone(),
-            },
+            selection: self.selection().to_owned(),
             fuzzy: (self.mode == Mode::Fuzzy).then(|| self.fuzzy.clone()),
             cursor: self.cursors[self.page_number].clone(),
         }
@@ -466,14 +471,7 @@ fn run<S: Source>(source: Arc<S>, options: Options, screen: &mut Screen) -> Resu
         return Err(failure);
     }
     screen.enter()?;
-    let result = interact(
-        &*source,
-        source.clone(),
-        &options,
-        screen,
-        &runtime,
-        &mut state,
-    );
+    let result = interact(source.clone(), &options, screen, &runtime, &mut state);
     let restored = screen.leave();
     let choice = result?;
     restored?;
@@ -491,7 +489,6 @@ fn finish(source: &impl Source, options: &Options, references: Vec<String>) -> R
 }
 
 fn interact<S: Source>(
-    actions: &S,
     source: Arc<S>,
     options: &Options,
     screen: &mut Screen,
@@ -530,7 +527,10 @@ fn interact<S: Source>(
                     tokio::time::timeout(PREVIEW_DEADLINE, source.preview(request))
                         .await
                         .map_err(|_| {
-                            Failure::deadline_exceeded("overview exceeded its 100 ms deadline")
+                            Failure::deadline_exceeded(format!(
+                                "overview exceeded its {} ms deadline",
+                                PREVIEW_DEADLINE.as_millis()
+                            ))
                         })?
                 }));
             }
@@ -545,7 +545,7 @@ fn interact<S: Source>(
             dirty = true;
         }
         if dirty {
-            draw(actions, options, screen, state, width, height)?;
+            draw(&*source, options, screen, state, width, height)?;
             dirty = false;
         }
         if !event::poll(FRAME).map_err(Failure::io)? {
@@ -629,7 +629,7 @@ fn interact<S: Source>(
                     preview = None;
                     state.clear_preview();
                     screen.leave()?;
-                    let result = actions.act(action, &[reference]);
+                    let result = source.act(action, &[reference]);
                     screen.enter()?;
                     if let Err(error) = result {
                         state.message = error.message.clone();
@@ -719,12 +719,9 @@ fn draw(
     }
     let shown = &state.page.rows
         [state.top.min(state.page.rows.len())..(state.top + row_lines).min(state.page.rows.len())];
-    let question = match state.mode {
-        Mode::Fuzzy => &state.question,
-        Mode::Query => &state.query,
-    };
+    let question = state.selection();
     let remembered = (
-        question.clone(),
+        question.to_owned(),
         shown.iter().map(|row| row.reference.clone()).collect(),
     );
     if remembered != state.shown {

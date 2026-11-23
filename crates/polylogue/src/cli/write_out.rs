@@ -41,7 +41,6 @@ fn delivery_failure(
             json,
             polylogue_model::Code::ReadOutput,
             &error,
-            4,
         ),
         DeliveryError::Answer(answer) => match &answer.outcome {
             command_surface::Outcome::Error(error) => {
@@ -465,12 +464,7 @@ fn consume(
             }
             return Ok(false);
         }
-        if frame.event == "record"
-            && parsed
-                .steps
-                .get(state.offset)
-                .is_some_and(|step| step.step["follow"] == true)
-        {
+        if follow_record {
             let step = &parsed.steps[state.offset].step;
             if super::follow::record(startup, step, &frame.data, json)? {
                 completed = true;

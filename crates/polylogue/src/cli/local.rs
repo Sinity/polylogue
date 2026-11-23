@@ -175,7 +175,6 @@ fn install_with_output(
                 json,
                 polylogue_model::Code::BadRequest,
                 &error.to_string(),
-                2,
             );
         }
     };
@@ -186,7 +185,6 @@ fn install_with_output(
             json,
             polylogue_model::Code::NotBuilt,
             &format!("install {part} is not built yet"),
-            2,
         )
     };
     if arguments.instructions {
@@ -201,7 +199,6 @@ fn install_with_output(
                     polylogue_model::Code::Io
                 },
                 &error.to_string(),
-                1,
             ),
         };
     }
@@ -217,7 +214,6 @@ fn install_with_output(
                     polylogue_model::Code::Io
                 },
                 &error.to_string(),
-                1,
             ),
         };
     }
@@ -234,12 +230,19 @@ fn install_with_output(
     if target == "drive" {
         return install_drive(v, startup, &arguments, json, output, drive);
     }
+    let Some(harness) = crate::hook::Harness::parse(target) else {
+        return fail(
+            startup.output,
+            json,
+            polylogue_model::Code::BadRequest,
+            &format!(
+                "`{target}` is not an install target; targets are claude-code, codex, gemini-cli, hermes, chrome, zsh, bash, fish and drive"
+            ),
+        );
+    };
     if arguments.dry_run {
         return not_built("--dry-run");
     }
-    let Some(harness) = crate::hook::Harness::parse(target) else {
-        return not_built(target);
-    };
     let path = match arguments.settings {
         Some(path) => std::path::PathBuf::from(path),
         None => match crate::hook::settings_path(harness, &startup.engine) {
@@ -250,7 +253,6 @@ fn install_with_output(
                     json,
                     polylogue_model::Code::BadRequest,
                     &message,
-                    2,
                 );
             }
         },
@@ -288,7 +290,6 @@ fn install_with_output(
                     json,
                     polylogue_model::Code::Io,
                     &error.to_string(),
-                    1,
                 ),
             }
         }
@@ -297,7 +298,6 @@ fn install_with_output(
             json,
             polylogue_model::Code::Io,
             &error.to_string(),
-            1,
         ),
     }
 }
@@ -391,7 +391,6 @@ fn install_drive(
                 polylogue_model::Code::Io
             },
             &error.to_string(),
-            1,
         ),
     }
 }
@@ -439,7 +438,6 @@ pub fn not_built(
         json,
         polylogue_model::Code::NotBuilt,
         &format!("`{}` is not built yet", c.name),
-        2,
     )
 }
 
@@ -481,7 +479,6 @@ fn install_chrome(
                 json,
                 polylogue_model::Code::BadRequest,
                 "`--extension-id` (the ID chrome://extensions shows) is required",
-                2,
             );
         };
         let binary = match std::env::current_exe().and_then(std::fs::canonicalize) {
@@ -492,7 +489,6 @@ fn install_chrome(
                     json,
                     polylogue_model::Code::Io,
                     &error.to_string(),
-                    1,
                 );
             }
         };
@@ -504,7 +500,6 @@ fn install_chrome(
                     json,
                     polylogue_model::Code::Io,
                     &error.to_string(),
-                    1,
                 );
             }
         }
@@ -577,7 +572,6 @@ fn install_chrome(
             json,
             polylogue_model::Code::Io,
             &error.to_string(),
-            1,
         ),
     }
 }
@@ -624,9 +618,8 @@ fn open_reader(startup: &crate::config::Startup, json: bool) -> ExitCode {
             return fail(
                 startup.output,
                 json,
-                polylogue_model::Code::ReaderUnavailable,
+                polylogue_model::Code::DaemonRequired,
                 &error.to_string(),
-                crate::EXIT_DAEMON_REQUIRED,
             );
         }
     };
@@ -680,7 +673,6 @@ pub fn host(
             json,
             polylogue_model::Code::BadRequest,
             &format!("{harness} is not a harness Polylogue hosts over stdio"),
-            2,
         );
     };
     let path = |name: &str| {
@@ -698,7 +690,6 @@ pub fn host(
             json,
             polylogue_model::Code::BadRequest,
             "host takes --socket, --cwd and --spool",
-            2,
         );
     };
     let config = crate::hosting::HostConfig {
@@ -712,7 +703,7 @@ pub fn host(
     };
     match crate::hosting::serve(&config) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(e) => fail(output, json, polylogue_model::Code::Io, &e.to_string(), 1),
+        Err(e) => fail(output, json, polylogue_model::Code::Io, &e.to_string()),
     }
 }
 

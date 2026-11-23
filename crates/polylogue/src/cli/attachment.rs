@@ -19,13 +19,7 @@ pub(crate) fn output(
     ) {
         Ok(options) => options.out,
         Err(e) => {
-            return fail(
-                startup.output,
-                json,
-                polylogue_model::Code::BadRequest,
-                &e,
-                2,
-            );
+            return fail(startup.output, json, polylogue_model::Code::BadRequest, &e);
         }
     };
     let Some(out) = out else {
@@ -60,7 +54,6 @@ pub(crate) fn output(
             json,
             polylogue_model::Code::AttachmentOutput,
             &e,
-            1,
         ),
     }
 }

@@ -367,6 +367,10 @@ fn picker_footer_shows_keys_and_enter_action() {
         footer.join(" "),
         "↑ up · ↓ down · Tab mark · Enter tag reviewed · Esc cancel · ^j down · ^k up · ^y copy · ^r read · ^o browser · ^p print · ^e query/fuzzy · ^/ preview"
     );
+    assert!(
+        output.contains("session:codex:Beta\r\n"),
+        "Ctrl-p prints the highlighted reference"
+    );
     let actions: Vec<_> = events
         .iter()
         .filter(|event| event.get("action").is_some())

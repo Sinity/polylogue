@@ -190,6 +190,13 @@ fn split_option(word: &str) -> (&str, Option<&str>) {
     word.split_once('=')
         .map_or((word, None), |(name, value)| (name, Some(value)))
 }
+/// A flag's value: true when bare, else the text after `=` as true or false.
+fn flag_value(word: &str, assigned: Option<&str>) -> Result<bool, Refusal> {
+    assigned.map_or(Ok(true), |text| {
+        text.parse()
+            .map_err(|_| Refusal::new(Code::BadValue, format!("{word} needs true or false")))
+    })
+}
 /// The value of an option: the text after `=`, else the next word.
 fn value(args: &[String], index: &mut usize, assigned: Option<&str>) -> Result<String, Refusal> {
     if let Some(assigned) = assigned {
@@ -215,11 +222,7 @@ fn line_option(
         _ => None,
     };
     if let Some(flag) = flag {
-        *flag = assigned
-            .map(str::parse::<bool>)
-            .transpose()
-            .map_err(|_| Refusal::new(Code::BadValue, format!("{word} needs true or false")))?
-            .unwrap_or(true);
+        *flag = flag_value(word, assigned)?;
         return Ok(true);
     }
     match word {
@@ -248,13 +251,7 @@ fn listing_option(
                 .map(str::to_owned)
                 .collect()
         }
-        "--why" => {
-            listing.why = assigned
-                .map(str::parse::<bool>)
-                .transpose()
-                .map_err(|_| Refusal::new(Code::BadValue, "--why needs true or false"))?
-                .unwrap_or(true)
-        }
+        "--why" => listing.why = flag_value(word, assigned)?,
         "--to" => listing.to = Some(Destination::parse(&value(args, index, assigned)?)),
         "--cursor" => listing.cursor = Some(value(args, index, assigned)?),
         "--budget" => listing.budget = Some(value(args, index, assigned)?),
@@ -288,17 +285,18 @@ pub(crate) fn parse(
     if literal_selection {
         index += 1;
     }
-    parsed.first = command_surface::line::classify_first(
-        args.get(index).map(String::as_str),
-        catalog,
-        &declarations,
-    );
-    if literal_selection {
+    parsed.first = if literal_selection {
         if index == args.len() {
             return Err(Refusal::new(Code::BadRequest, "-- needs a selection"));
         }
-        parsed.first = FirstWord::QueryText;
-    }
+        FirstWord::QueryText
+    } else {
+        command_surface::line::classify_first(
+            args.get(index).map(String::as_str),
+            catalog,
+            &declarations,
+        )
+    };
     if parsed.first == FirstWord::Command {
         return Ok(parsed);
     }
@@ -355,8 +353,11 @@ pub(crate) fn parse(
                             .any(|verb| verb.verb() == args[i])
                     })
                     .unwrap_or(args.len());
-                corrected = args[..selection_index].to_vec();
-                corrected.push(args[selection_index..end].join(" "));
+                // The `--` marker stays its own word, so the suggested line
+                // keeps taking the next word literally.
+                let query_start = selection_index + usize::from(literal_selection);
+                corrected = args[..query_start].to_vec();
+                corrected.push(args[query_start..end].join(" "));
                 corrected.extend_from_slice(&args[end..]);
                 message.push_str("; a query is one argument");
             } else if let Some(step) = parsed.steps.last() {
@@ -369,11 +370,12 @@ pub(crate) fn parse(
                     .iter()
                     .filter(|field| field.form == ArgumentForm::Positional)
                     .count();
-                message.push_str(&format!(
-                    "; {} takes {words} word{}",
-                    step.verb,
-                    if words == 1 { "" } else { "s" }
-                ));
+                let count = match words {
+                    0 => "no words".to_owned(),
+                    1 => "one word".to_owned(),
+                    n => format!("{n} words"),
+                };
+                message.push_str(&format!("; {} takes {count}", step.verb));
                 if matches!(step.verb, "note" | "send" | "edit" | "answer") {
                     corrected = args[..step.words.start + 1].to_vec();
                     corrected.push(args[step.words.start + 1..].join(" "));
