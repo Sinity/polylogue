@@ -60,8 +60,9 @@ pub struct KeptEntry {
 impl Reader<'_> {
     /// Streams session-grain catalog rows. `None` is the single startup
     /// snapshot; later calls read only the rows changed since `after`:
-    /// sessions whose own row or first prompt changed, the values whose
-    /// counts the writer changed (`session_value`), and removed sessions.
+    /// sessions whose own row, first prompt or authored title changed, the
+    /// values whose counts the writer changed (`session_value`), and removed
+    /// sessions.
     /// Sessions come first, then values, then removals.
     pub fn visit_completion_sessions(
         &self,

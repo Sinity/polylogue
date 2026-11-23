@@ -404,7 +404,7 @@ pub(crate) struct Compiler<'a> {
     /// search leg.
     rank_index: Option<polylogue_query::search::SnippetIndex>,
     /// A top-level alternate or language condition admits this text source.
-    alternate_words: Option<Vec<String>>,
+    alternate_languages: Option<Vec<String>>,
     source_near_allowed: bool,
     /// An unavailable semantic order affects the answer or an earlier selection.
     near_unavailable: bool,
@@ -461,7 +461,7 @@ impl<'a> Compiler<'a> {
             definitions: vec![],
             near_request: None,
             rank_index: None,
-            alternate_words: None,
+            alternate_languages: None,
             source_near_allowed: true,
             near_unavailable: false,
             measuring: false,
@@ -469,6 +469,11 @@ impl<'a> Compiler<'a> {
             answer: false,
             slots: Default::default(),
         }
+    }
+
+    /// The catalog of the plan being compiled, or the options' own.
+    fn catalog(&self) -> std::sync::Arc<query_language::catalog::Catalog> {
+        self.catalog.clone().unwrap_or_else(|| self.opts.catalog())
     }
 
     /// A compiler for a query inside this one, naming its slots and steps

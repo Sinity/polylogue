@@ -17,7 +17,7 @@ impl Reader<'_> {
             .next()?
             .map(<(i64, i64)>::try_from)
             .transpose()?
-            .unwrap_or_default();
+            .ok_or_else(|| StoreError::invalid("count query returned no row"))?;
         let count = |value| crate::to_u64(value, "query returned a negative count");
         Ok((count(total)?, count(without)?))
     }

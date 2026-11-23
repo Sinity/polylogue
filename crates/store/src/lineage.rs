@@ -38,13 +38,6 @@ pub struct SessionLink {
     pub spawning_call: Option<String>,
 }
 
-/// Which way a lineage walk goes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Lineage {
-    Ancestors,
-    Descendants,
-}
-
 /// The walk advances only when all recorded structural edges name one parent.
 /// Different branch points on that parent remain recorded alternatives, but do not
 /// change structural depth. No path is selected between different parents.
@@ -180,32 +173,6 @@ impl crate::read::Reader<'_> {
     /// Links from `id`'s parents to it, in the order they were stored.
     pub fn parent_links(&self, id: &SessionId) -> Result<Vec<SessionLink>> {
         self.links_where("child_id", &id.to_string())
-    }
-
-    /// Every session reached from `id` through links other than
-    /// `reference`, transitively, each once; a cycle ends where it closes.
-    pub fn lineage(&self, id: &SessionId, direction: Lineage) -> Result<Vec<String>> {
-        let mut seen = std::collections::HashSet::from([id.to_string()]);
-        let mut queue = std::collections::VecDeque::from([id.to_string()]);
-        let mut out = Vec::new();
-        while let Some(current) = queue.pop_front() {
-            self.check()?;
-            let links = match direction {
-                Lineage::Ancestors => self.links_where("child_id", &current)?,
-                Lineage::Descendants => self.links_where("parent_id", &current)?,
-            };
-            for link in links.into_iter().filter(|link| link.kind != "reference") {
-                let next = match direction {
-                    Lineage::Ancestors => link.parent,
-                    Lineage::Descendants => link.child,
-                };
-                if seen.insert(next.clone()) {
-                    out.push(next.clone());
-                    queue.push_back(next);
-                }
-            }
-        }
-        Ok(out)
     }
 
     /// Current structural root and depth in this pinned read. Missing sessions

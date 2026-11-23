@@ -8,6 +8,7 @@ pub use metadata::Mode;
 
 use crate::ConnExt as _;
 use crate::OptionExt as _;
+use crate::read::scope::InitialInvalidation;
 use crate::{Result, StoreError, schema};
 use rusqlite::{Connection, OpenFlags, Transaction};
 use std::fs::{self, File, OpenOptions};
@@ -134,7 +135,7 @@ impl Archive {
         root: &Path,
         invalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
     ) -> Result<crate::read::scope::ScopeInvalidation> {
-        crate::read::scope::state(root).register(invalidate, true)
+        crate::read::scope::state(root).register(invalidate, InitialInvalidation::Invalidate)
     }
 
     /// A transition guard without SQL. Currentness still comes from a reader's
@@ -287,7 +288,9 @@ impl Archive {
         invalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
     ) -> Result<(Self, ArchiveLock, crate::ScopeInvalidation)> {
         Self::open_configured(Self::at(root), |archive| {
-            archive.read_scope.register(invalidate, false)
+            archive
+                .read_scope
+                .register(invalidate, InitialInvalidation::Keep)
         })
     }
 
@@ -298,7 +301,9 @@ impl Archive {
         invalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
     ) -> Result<(Self, ArchiveLock, crate::ScopeInvalidation)> {
         Self::open_configured(Self::on_sinex(root, store), |archive| {
-            archive.read_scope.register(invalidate, true)
+            archive
+                .read_scope
+                .register(invalidate, InitialInvalidation::Invalidate)
         })
     }
 
@@ -308,7 +313,9 @@ impl Archive {
         invalidate: impl Fn() -> Result<()> + Send + Sync + 'static,
     ) -> Result<(Self, ArchiveLock, crate::ScopeInvalidation)> {
         Self::open_configured(Self::primary_cache(root), |archive| {
-            archive.read_scope.register(invalidate, true)
+            archive
+                .read_scope
+                .register(invalidate, InitialInvalidation::Invalidate)
         })
     }
 
@@ -377,7 +384,9 @@ impl Archive {
             }
         };
         Self::open_configured(archive, |archive| {
-            archive.read_scope.register(invalidate, true)
+            archive
+                .read_scope
+                .register(invalidate, InitialInvalidation::Invalidate)
         })
     }
 

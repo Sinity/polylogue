@@ -98,7 +98,9 @@ fn plans(reader: &Reader<'_>, provider: &str, now: i64) -> Result<Vec<(i64, Plan
     for (at, value) in reader.archive_setting_history(&format!("plan.{provider}"), now)? {
         let plan = match value {
             SettingAt::Value(Some(polylogue_model::settings::Value::Plan(plan))) => {
-                validate_plan(&plan)?;
+                validate_plan(&plan).map_err(|error| {
+                    StoreError::Invalid(format!("plan.{provider} set at {at}: {error}"))
+                })?;
                 PlanAt::Set(plan)
             }
             SettingAt::Value(None) => PlanAt::Unset,

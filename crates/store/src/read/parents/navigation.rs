@@ -83,7 +83,10 @@ impl MessageSelection<'_, '_> {
         id: Option<&polylogue_model::MessageId>,
     ) -> Result<Option<MessagePosition>> {
         if let Some(keys) = &self.with_parents {
-            let id = id.map(ToString::to_string);
+            let id = id
+                .map(|id| crate::parser_context::resolved_message(self.reader.conn()?, id))
+                .transpose()?
+                .map(|id| id.to_string());
             return Ok(match &id {
                 Some(id) => keys.iter().enumerate().find(|(_, key)| key.id == *id),
                 None => keys.iter().enumerate().next_back(),
@@ -126,11 +129,7 @@ impl MessageSelection<'_, '_> {
         if kinds.is_empty() {
             return Ok(None);
         }
-        let kinds = kinds
-            .iter()
-            .map(|kind| format!("'{}'", kind.as_str()))
-            .collect::<Vec<_>>()
-            .join(",");
+        let kinds = block_kind_list(kinds);
         let sql = format!(
             "SELECT m.pk,m.id FROM message m WHERE m.session_pk=?1 AND m.duplicate_of IS NULL
             AND (?2=0 OR (pl_is_prompt(m.role,m.prompt_kind)))
@@ -168,10 +167,11 @@ impl MessageSelection<'_, '_> {
     ) -> Result<Option<MessagePosition>> {
         let Some(key) = from.key else { return Ok(None) };
         let conn = self.reader.conn()?;
+        let kinds = block_kind_list(kinds);
         if let Some(keys) = &self.with_parents {
             let at = from.message.min(keys.len());
             for (index, item) in keys[..at].iter().enumerate().rev() {
-                if self.visible_key(item.message_pk, kinds, prompts)? {
+                if self.visible_key(item.message_pk, &kinds, prompts)? {
                     return Ok(Some(MessagePosition {
                         message: index,
                         key: Some(item.message_pk),
@@ -183,11 +183,6 @@ impl MessageSelection<'_, '_> {
         let Some((session, _)) = &self.own else {
             return Ok(None);
         };
-        let kinds = kinds
-            .iter()
-            .map(|kind| format!("'{}'", kind.as_str()))
-            .collect::<Vec<_>>()
-            .join(",");
         let sql = format!(
             "SELECT m.pk FROM message m WHERE m.session_pk=?1 AND m.duplicate_of IS NULL
             AND (m.session_order,m.id)<(SELECT session_order,id FROM message WHERE pk=?2)
@@ -213,17 +208,7 @@ impl MessageSelection<'_, '_> {
             .transpose()
     }
 
-    fn visible_key(
-        &self,
-        key: i64,
-        kinds: &[polylogue_model::BlockKind],
-        prompts: bool,
-    ) -> Result<bool> {
-        let kinds = kinds
-            .iter()
-            .map(|kind| format!("'{}'", kind.as_str()))
-            .collect::<Vec<_>>()
-            .join(",");
+    fn visible_key(&self, key: i64, kinds: &str, prompts: bool) -> Result<bool> {
         self.reader.conn()?.exists(&format!("SELECT EXISTS(SELECT 1 FROM message m JOIN block b ON b.message_pk=m.pk WHERE m.pk=?1 AND b.kind IN ({kinds}) AND (?2=0 OR (pl_is_prompt(m.role,m.prompt_kind))))"), params![key,prompts])
     }
 }

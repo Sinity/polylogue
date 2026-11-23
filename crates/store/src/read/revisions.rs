@@ -21,18 +21,17 @@ impl Reader<'_> {
         length: u64,
         mut visit: impl FnMut(RevisionPoint) -> Result<bool>,
     ) -> Result<()> {
-        let length = i64::try_from(length).map_err(|_| {
-            StoreError::Invalid("revision length exceeds archive address space".into())
-        })?;
+        let sql_length = i64::try_from(length)
+            .map_err(|_| StoreError::invalid("revision length exceeds archive address space"))?;
         let conn = self.conn()?;
         let mut statement = conn.prepare("SELECT max(number),chain FROM source_revision WHERE input=?1 AND length=?2 GROUP BY chain ORDER BY max(number) DESC")?;
-        let mut rows = statement.query(params![input, length])?;
+        let mut rows = statement.query(params![input, sql_length])?;
         while let Some(row) = rows.next()? {
             let chain = row.get(1)?;
             if visit(RevisionPoint {
                 number: row.get(0)?,
                 chain,
-                length: length as u64,
+                length,
             })? {
                 break;
             }

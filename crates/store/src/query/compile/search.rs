@@ -39,6 +39,8 @@ pub(super) struct ScopeBuild {
     pub spans: Vec<Span>,
 }
 
+/// The filter with the word and field terms at `spans` removed, keeping
+/// every other predicate; `None` when no predicate remains.
 fn without_terms(filter: &Filter, spans: &[Span]) -> Option<Filter> {
     match filter {
         Filter::All(all) => {
@@ -59,6 +61,9 @@ fn without_terms(filter: &Filter, spans: &[Span]) -> Option<Filter> {
 }
 
 impl Compiler<'_> {
+    /// Scopes the text search to the rows the filter and recent order select,
+    /// so it ranks blocks only within them. It does nothing when the search
+    /// has no scope to build.
     pub(super) fn search_scope(
         &mut self,
         selection: &Selection,

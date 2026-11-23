@@ -52,6 +52,15 @@ pub(super) struct Visibility {
     pub(super) prompts: bool,
 }
 
+/// Block kinds as the comma-separated SQL list of an `IN (...)` test.
+fn block_kind_list(kinds: &[polylogue_model::BlockKind]) -> String {
+    kinds
+        .iter()
+        .map(|kind| format!("'{}'", kind.as_str()))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// A message selection belongs to the reader that made it. Bodies are read
 /// lazily; the parents' history keeps keys for ordering, branch points and deduplication.
 pub struct MessageSelection<'r, 'a> {
@@ -489,11 +498,7 @@ impl MessageSelection<'_, '_> {
     pub fn for_blocks(mut self, kinds: &[polylogue_model::BlockKind], prompts: bool) -> Self {
         self.structured = false;
         self.visibility = Some(Visibility {
-            kinds: kinds
-                .iter()
-                .map(|kind| format!("'{}'", kind.as_str()))
-                .collect::<Vec<_>>()
-                .join(","),
+            kinds: block_kind_list(kinds),
             prompts,
         });
         self

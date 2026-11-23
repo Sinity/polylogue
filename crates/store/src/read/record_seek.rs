@@ -29,13 +29,14 @@ impl Reader<'_> {
             .optional()?;
         counts
             .map(|(events, links)| {
-                let checked = |count| {
-                    u64::try_from(count)
-                        .map_err(|_| crate::StoreError::stored(0, "negative physical record count"))
+                let checked = |count, column| {
+                    u64::try_from(count).map_err(|_| {
+                        crate::StoreError::stored(column, "negative physical record count")
+                    })
                 };
                 Ok(PhysicalRecordCounts {
-                    events: checked(events)?,
-                    links: checked(links)?,
+                    events: checked(events, 0)?,
+                    links: checked(links, 1)?,
                 })
             })
             .transpose()

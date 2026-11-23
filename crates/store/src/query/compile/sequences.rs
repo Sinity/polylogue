@@ -134,27 +134,13 @@ impl<'a> Compiler<'a> {
             let mut w = vec![format!("{o}.session_pk = {s}.pk"), conds[i].clone()];
             if i > 0 {
                 let prev = format!("o{}", aliases[i - 1].t);
-                match &gaps[i - 1] {
-                    Gap::Later => w.push(format!("{o}.n > {prev}.n")),
-                    Gap::Next => w.push(format!("{o}.n = {prev}.n + 1")),
-                    Gap::Within {
-                        distance: Distance::Steps { count },
-                    } => {
-                        w.push(format!("{o}.n > {prev}.n"));
-                        w.push(format!("{o}.n - {prev}.n <= {count}"));
-                    }
-                    // Both times known, the later strictly later: a missing
-                    // or reversed time does not satisfy a window.
-                    Gap::Within {
-                        distance: Distance::Time { duration },
-                    } => {
-                        let ms = time::duration_ms(value_text(duration)?)
-                            .ok_or_else(|| not_built("this sequence duration"))?;
-                        w.push(format!("{o}.n > {prev}.n"));
-                        w.push(format!("{o}.at > {prev}.at"));
-                        w.push(format!("{o}.at - {prev}.at <= {ms}"));
-                    }
-                }
+                w.extend(gap_conditions(
+                    &gaps[i - 1],
+                    &o,
+                    &format!("{prev}.n"),
+                    &format!("{prev}.at"),
+                    span,
+                )?);
             }
             if !inner.is_empty() {
                 w.push(inner.clone());
@@ -290,30 +276,6 @@ impl<'a> Compiler<'a> {
                 sa = a.s
             )
         };
-        let gap = |i: usize, prev_n: &str, prev_at: &str| -> Result<Vec<String>, QueryError> {
-            let oi = o(i);
-            Ok(match &gaps[i - 1] {
-                Gap::Later => vec![format!("{oi}.n > {prev_n}")],
-                Gap::Next => vec![format!("{oi}.n = {prev_n} + 1")],
-                Gap::Within {
-                    distance: Distance::Steps { count },
-                } => vec![
-                    format!("{oi}.n > {prev_n}"),
-                    format!("{oi}.n - {prev_n} <= {count}"),
-                ],
-                Gap::Within {
-                    distance: Distance::Time { duration },
-                } => {
-                    let ms = time::duration_ms(value_text(duration)?)
-                        .ok_or_else(|| not_built("this sequence duration"))?;
-                    vec![
-                        format!("{oi}.n > {prev_n}"),
-                        format!("{oi}.at > {prev_at}"),
-                        format!("{oi}.at - {prev_at} <= {ms}"),
-                    ]
-                }
-            })
-        };
         // rest[i]: steps i.. can still follow step i-1 (alias o(i-1)).
         let mut rest = vec![String::new(); k + 1];
         for i in (1..k).rev() {
@@ -322,7 +284,13 @@ impl<'a> Compiler<'a> {
                 format!("{}.session_pk = {prev}.session_pk", o(i)),
                 conds[i].clone(),
             ];
-            w.extend(gap(i, &format!("{prev}.n"), &format!("{prev}.at"))?);
+            w.extend(gap_conditions(
+                &gaps[i - 1],
+                &o(i),
+                &format!("{prev}.n"),
+                &format!("{prev}.at"),
+                span,
+            )?);
             if !rest[i + 1].is_empty() {
                 w.push(rest[i + 1].clone());
             }
@@ -334,7 +302,7 @@ impl<'a> Compiler<'a> {
                 if i == 0 {
                     w.push(format!("{}.n > {prev_n}", o(i)));
                 } else {
-                    w.extend(gap(i, prev_n, prev_at)?);
+                    w.extend(gap_conditions(&gaps[i - 1], &o(i), prev_n, prev_at, span)?);
                 }
                 if !rest[i + 1].is_empty() {
                     w.push(rest[i + 1].clone());
@@ -517,4 +485,41 @@ pub(super) fn project_match_parent(result: &mut Program, parent: &Program) {
         parent.rows(),
         order_by(&result.order)
     );
+}
+
+/// The conditions that put step `o` after the step before it (`prev_n`,
+/// `prev_at`: that step's position and time) by `gap`.
+fn gap_conditions(
+    gap: &Gap,
+    o: &str,
+    prev_n: &str,
+    prev_at: &str,
+    span: Span,
+) -> Result<Vec<String>, QueryError> {
+    Ok(match gap {
+        Gap::Later => vec![format!("{o}.n > {prev_n}")],
+        Gap::Next => vec![format!("{o}.n = {prev_n} + 1")],
+        Gap::Within {
+            distance: Distance::Steps { count },
+        } => vec![
+            format!("{o}.n > {prev_n}"),
+            format!("{o}.n - {prev_n} <= {count}"),
+        ],
+        // Both times known, the later strictly later: a missing or reversed
+        // time does not satisfy a window.
+        Gap::Within {
+            distance: Distance::Time { duration },
+        } => {
+            let text = value_text(duration)?;
+            let ms = time::duration_ms(text).ok_or_else(|| QueryError::Invalid {
+                message: format!("`{text}` is not a duration"),
+                position: span.start,
+            })?;
+            vec![
+                format!("{o}.n > {prev_n}"),
+                format!("{o}.at > {prev_at}"),
+                format!("{o}.at - {prev_at} <= {ms}"),
+            ]
+        }
+    })
 }
