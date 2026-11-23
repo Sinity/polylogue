@@ -106,10 +106,9 @@ fn where_stages_that_change_meaning_stay_stages() {
 fn defaults_come_from_the_source_alone() {
     let all = defaults::declared(Unit::Sessions).to_vec();
     assert_eq!(selection("sessions").defaults, all);
-    assert!(
-        !selection("sessions where hidden:true")
-            .defaults
-            .contains(&DefaultId::SessionsVisible)
+    assert_eq!(
+        selection("sessions where hidden:true").defaults,
+        vec![DefaultId::LogicalSessions, DefaultId::NotStub]
     );
     assert_eq!(
         selection("sessions where repo:morrow | where hidden:true").defaults,

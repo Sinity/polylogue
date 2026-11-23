@@ -12,6 +12,19 @@ fn clock() -> Clock {
     )
 }
 
+/// The whole logical day 2026-01-01 in a clock whose day starts at 04:00 UTC.
+fn first_of_january() -> crate::time::ResolvedTime {
+    let at = |text: &str| text.parse::<jiff::Timestamp>().unwrap();
+    crate::time::ResolvedTime {
+        expression: "2026-01-01".into(),
+        value: crate::time::Time::Span {
+            start: at("2026-01-01T04:00:00Z"),
+            end: at("2026-01-02T04:00:00Z"),
+        },
+        notes: vec![],
+    }
+}
+
 fn origins() -> Vec<String> {
     vec!["claude-code".into(), "codex".into()]
 }
@@ -91,7 +104,7 @@ fn values_bind_in_stored_form() {
 /// A time is resolved once, against the query's clock, when it binds.
 #[test]
 fn times_resolve_against_the_clock() {
-    let expected = crate::time::resolve("2026-01-01", &clock()).unwrap();
+    let expected = first_of_january();
     assert_eq!(
         field("sessions where started > 2026-01-01"),
         (
@@ -134,7 +147,7 @@ fn fields_resolve_through_the_session_and_relations() {
         }) if text == "Morrow"
     ));
     let (_, _, inner) = related("messages where session.started > 2026-01-01");
-    let expected = crate::time::resolve("2026-01-01", &clock()).unwrap();
+    let expected = first_of_january();
     assert!(matches!(
         inner,
         Filter::Field(FieldTest {
@@ -145,7 +158,14 @@ fn fields_resolve_through_the_session_and_relations() {
     ));
     assert!(matches!(
         filter("messages where session.cost > 1").unwrap(),
-        Filter::Written(_)
+        Filter::Written(Condition {
+            kind: ConditionKind::Compare {
+                left: Expression::Field { ref name },
+                op: Op::Gt,
+                right: Expression::Value { value: Value::Scalar { ref text, .. } },
+            },
+            ..
+        }) if name == "session.cost" && text == "1"
     ));
 }
 
@@ -211,8 +231,13 @@ fn values_outside_the_field_are_refused() {
         }
     );
     assert_eq!(
-        filter("sessions where cost > cheap").unwrap_err().kind(),
-        polylogue_model::Code::BadValue
+        filter("sessions where cost > cheap").unwrap_err(),
+        QueryError::BadValue {
+            field: "cost".into(),
+            value: "cheap".into(),
+            position: 15,
+            message: "cost is an amount in dollars such as 2.90".into(),
+        }
     );
     assert_eq!(
         filter("sessions where colour:red").unwrap_err().kind(),
@@ -258,10 +283,6 @@ fn sinex_local_reference_correction_reaches_selection_errors() {
         panic!("quoted reference text is a search term")
     };
     assert_eq!(word.text, "ev:opaque");
-    assert_eq!(
-        filter("sessions where colour:red").unwrap_err().kind(),
-        polylogue_model::Code::UnknownField,
-    );
 }
 
 #[test]
@@ -275,13 +296,17 @@ fn declared_annotation_request_field_precedes_request_object_refusal() {
         clock: &operation_clock,
         provider_catalog: None,
     };
-    assert!(matches!(
-        binder.field(
-            Unit::Sessions,
-            "request",
-            Comparison::Match(Value::scalar("write-root")),
-            Span::default()
-        ),
-        Err(QueryError::NotBuilt { .. })
-    ));
+    assert_eq!(
+        binder
+            .field(
+                Unit::Sessions,
+                "request",
+                Comparison::Match(Value::scalar("write-root")),
+                Span::default()
+            )
+            .unwrap_err(),
+        QueryError::NotBuilt {
+            what: "accepted request objects have no query row-domain producer".into()
+        }
+    );
 }

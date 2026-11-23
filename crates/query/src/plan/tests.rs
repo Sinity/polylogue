@@ -472,7 +472,12 @@ fn an_original_authored_binding_keeps_identity_across_catalog_changes() {
         fixture["question_hash"].as_str().unwrap()
     );
     let stale = replay_binding(&execution.replay).unwrap_err();
-    assert!(stale.to_string().contains("catalog"), "{stale}");
+    assert_eq!(
+        stale,
+        QueryError::NotBuilt {
+            what: "the captured query catalog version".into()
+        }
+    );
     let restored = replay(&object, catalog_fingerprint()).unwrap();
     assert_eq!(restored.query_object().unwrap(), object);
     assert_eq!(
@@ -534,10 +539,25 @@ fn human_reference_spellings_bind_the_existing_stored_question_identity() {
         |_| Ok(()),
     )
     .unwrap();
-    let text = serde_json::to_string(plan.identity_query()).unwrap();
-    assert!(
-        text.contains("alternate:opaque"),
-        "opaque root IDs keep their bytes"
+    // Opaque root IDs keep their bytes.
+    let Source::Unit {
+        condition:
+            Some(Condition {
+                kind:
+                    ConditionKind::Match {
+                        field,
+                        value: Value::Scalar { text, .. },
+                    },
+                ..
+            }),
+        ..
+    } = &plan.identity_query().source
+    else {
+        panic!("{:?}", plan.identity_query().source);
+    };
+    assert_eq!(
+        (field.as_str(), text.as_str()),
+        ("root", "alternate:opaque")
     );
 }
 

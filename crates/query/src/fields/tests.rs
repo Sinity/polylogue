@@ -48,8 +48,21 @@ fn numbers_beyond_i64_are_refused_not_rounded() {
         "-9223372036854775809",
         "+99999999999999999999",
     ] {
-        assert!(Kind::Number.scalar("depth", text).is_err(), "{text}");
+        assert_eq!(
+            Kind::Number.scalar("depth", text),
+            Err("depth is out of range for a whole number".to_string()),
+            "{text}"
+        );
     }
+    assert_eq!(
+        Kind::Number
+            .scalar("depth", "-9223372036854775808")
+            .unwrap(),
+        "-9223372036854775808"
+    );
     assert_eq!(Kind::Number.scalar("depth", "1.5").unwrap(), "1.5");
-    assert!(Kind::Number.scalar("depth", "abc").is_err());
+    assert_eq!(
+        Kind::Number.scalar("depth", "abc"),
+        Err("depth is a number".to_string())
+    );
 }
