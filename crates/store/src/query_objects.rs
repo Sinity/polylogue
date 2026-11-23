@@ -283,26 +283,18 @@ fn first_run(conn: &Connection, source: Source, question: &str) -> Result<()> {
 }
 
 /// The caller's source transaction holds the whole question and its edges.
-pub(crate) fn apply_object(conn: &Connection, object: &QueryObject, counter: i64) -> Result<()> {
+pub(crate) fn apply_object(conn: &Connection, object: &QueryObject, commit_seq: i64) -> Result<()> {
     validate_integrity(object)?;
-    if counter <= 0 {
+    if commit_seq <= 0 {
         return Err(StoreError::Invalid(
             "query commit position must be positive".into(),
         ));
     }
-    let source = Source::of(conn)?;
-    let id = object.id.to_string();
-    let existing: Option<Vec<u8>> = conn.scalar_optional(
-        &source.sql("SELECT object FROM @source.query WHERE hash=?1"),
-        [&id],
-    )?;
-    if let Some(existing) = existing {
-        let existing: QueryObject = crate::encoding::unpack_json(&existing)?;
-        if !equivalent(&existing, object) {
-            return Err(StoreError::Conflict(format!("query:{id}")));
-        }
+    if known_object(conn, object)? {
         return Ok(());
     }
+    let source = Source::of(conn)?;
+    let id = object.id.to_string();
     conn.execute(
         &source.sql(
             "INSERT INTO @source.query(hash,normal_form,object,commit_seq) VALUES (?1,?2,?3,?4)",
@@ -311,7 +303,7 @@ pub(crate) fn apply_object(conn: &Connection, object: &QueryObject, counter: i64
             id,
             serde_json::to_string(&object.normal_form)?,
             pack(object)?,
-            counter,
+            commit_seq,
         ],
     )?;
     for edge in &object.edges {
@@ -400,7 +392,7 @@ pub(crate) fn apply_run(
 pub(crate) fn validate_run_outcome(outcome: &QueryRunOutcome) -> Result<()> {
     if outcome.exact && outcome.count.is_none() {
         return Err(crate::StoreError::invalid(
-            "a run outcome requires its run and a known exact count",
+            "an exact run outcome requires a known count",
         ));
     }
     if let polylogue_model::query_objects::RunOutcome::Error { kind } = &outcome.outcome

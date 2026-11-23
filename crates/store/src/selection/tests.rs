@@ -1128,9 +1128,7 @@ fn session_field_uses_session_index() {
         .collect();
     assert!(
         plan.iter()
-            .any(|step| step.contains("USING INDEX tool_call_session")
-                || step.contains("USING INDEX tool_call_failed")
-                || step.contains("USING INDEX tool_call_pairing")),
+            .any(|step| step.contains("USING INDEX tool_call_session")),
         "{plan:#?}"
     );
     assert!(

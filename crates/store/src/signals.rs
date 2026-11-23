@@ -44,7 +44,7 @@ pub(crate) fn events(conn: &Connection, source: Source, id: &str) -> Result<Vec<
     rows.map(|body| crate::encoding::unpack_json(&body?))
         .collect()
 }
-fn identity(value: &Metadata) -> Result<()> {
+fn check_pending_identity(value: &Metadata) -> Result<()> {
     let fired = &value.delivery.fired;
     if fired.id != fired.trigger.delivery_id()
         || value.notice.delivery_id != fired.id
@@ -78,7 +78,7 @@ pub(crate) fn write(
     }
     let mut ids = BTreeSet::new();
     for pending in &commit.outbox {
-        identity(&pending.metadata)?;
+        check_pending_identity(&pending.metadata)?;
         if pending.record.sender != DeliverySender::Signal.as_str() {
             return Err(StoreError::Invalid(
                 "signal delivery must keep its typed sender".into(),
@@ -146,8 +146,11 @@ fn store_checkpoint(conn: &Connection, value: &Checkpoint, counter: i64) -> Resu
     conn.execute(&source.sql("INSERT INTO @source.signal_state(owner,body,commit_seq) VALUES(?1,?2,?3) ON CONFLICT(owner) DO UPDATE SET body=excluded.body,commit_seq=excluded.commit_seq"),params![value.owner,crate::primary::authored::pack(value)?,counter])?;
     Ok(())
 }
-fn number(value: u64) -> Result<i64> {
-    crate::to_i64(value, "signal commit order exceeds SQLite range")
+fn ordinal(value: &EventRecord) -> Result<i64> {
+    crate::to_i64(value.ordinal, "signal event ordinal exceeds SQLite range")
+}
+fn position(value: &EventRecord) -> Result<i64> {
+    crate::to_i64(value.position, "signal event position exceeds SQLite range")
 }
 fn insert_event(conn: &Connection, value: &EventRecord, counter: i64) -> Result<()> {
     if value.position == 0 || value.request.is_empty() {
@@ -155,7 +158,7 @@ fn insert_event(conn: &Connection, value: &EventRecord, counter: i64) -> Result<
     }
     let source = Source::of(conn)?;
     let id = value.event.delivery_id();
-    let old:Option<Vec<u8>>=conn.scalar_optional(&source.sql("SELECT body FROM @source.signal_event WHERE (request=?1 AND ordinal=?2) OR (delivery=?3 AND position=?4)"),params![value.request,number(value.ordinal)?,id,number(value.position)?])?;
+    let old:Option<Vec<u8>>=conn.scalar_optional(&source.sql("SELECT body FROM @source.signal_event WHERE (request=?1 AND ordinal=?2) OR (delivery=?3 AND position=?4)"),params![value.request,ordinal(value)?,id,position(value)?])?;
     if let Some(old) = old {
         let old: EventRecord = crate::encoding::unpack_json(&old)?;
         return if old == *value {
@@ -164,7 +167,7 @@ fn insert_event(conn: &Connection, value: &EventRecord, counter: i64) -> Result<
             Err(StoreError::Conflict("signal event identity reused".into()))
         };
     }
-    conn.execute(&source.sql("INSERT INTO @source.signal_event(request,ordinal,delivery,position,at,body,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7)"),params![value.request,number(value.ordinal)?,id,number(value.position)?,value.at.unix_ms(),crate::primary::authored::pack(value)?,counter])?;
+    conn.execute(&source.sql("INSERT INTO @source.signal_event(request,ordinal,delivery,position,at,body,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7)"),params![value.request,ordinal(value)?,id,position(value)?,value.at.unix_ms(),crate::primary::authored::pack(value)?,counter])?;
     Ok(())
 }
 pub(crate) fn capture(
@@ -227,7 +230,7 @@ pub(crate) fn validate(prepared: &polylogue_model::authored::PreparedRequest) ->
     let mut positions = std::collections::BTreeMap::<&str, Vec<u64>>::new();
     for change in &effect.deliveries {
         if let Some(metadata) = &change.delivery.signal {
-            identity(metadata)?;
+            check_pending_identity(metadata)?;
             if change.delivery.id != metadata.delivery.id() {
                 return Err(StoreError::Invalid(
                     "signal delivery row identity differs".into(),

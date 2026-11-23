@@ -32,7 +32,7 @@ CREATE TABLE input (
   id            TEXT PRIMARY KEY,        -- named as its origin declares (InputIdentity): a location is the first
                                          -- 32 hex digits of BLAKE3(machine, 0x00, real path bytes); a Codex rollout
                                          -- is 'codex:rollout:<session id>'; an imported file is its full hex BLAKE3
-  format        TEXT NOT NULL            -- 'claude-code-jsonl', 'codex-rollout', 'codex-state-sqlite', 'chatgpt-export', ...
+  format        TEXT NOT NULL            -- the origin's name: 'claude-code', 'codex', 'chatgpt', ...
                                          -- (when it was first seen is a query over its observations, so an input
                                          --  named by content is the same row on every machine)
 ) STRICT;

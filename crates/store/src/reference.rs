@@ -16,7 +16,7 @@ type Visit<'a> = dyn FnMut(&str) -> Result<ControlFlow<()>> + 'a;
 struct Text<'a, 'v> {
     visit: &'a mut Visit<'v>,
     offsets: TextBodyOffsets,
-    reference: String,
+    reference: &'a Reference,
 }
 impl Text<'_, '_> {
     fn body(&mut self, text: &str) -> Result<ControlFlow<()>> {
@@ -27,10 +27,7 @@ impl Text<'_, '_> {
         (self.visit)(text)
     }
     fn block(&mut self, block: &Block) -> Result<ControlFlow<()>> {
-        match text_body(block).map_err(|error| StoreError::ReferenceUnavailable {
-            reference: self.reference.clone(),
-            reason: error.to_string(),
-        })? {
+        match text_body(block).map_err(|error| unavailable(self.reference, &error.to_string()))? {
             Some(text) => self.body(text),
             None => Ok(ControlFlow::Continue(())),
         }
@@ -163,7 +160,7 @@ impl<'a> ReferenceText<'a> {
                 let mut text = Text {
                     visit,
                     offsets: TextBodyOffsets::default(),
-                    reference: reference.to_string(),
+                    reference,
                 };
                 crate::ordered_blocks::visit_text(conn, pk, |block| text.block(&block))?;
                 Ok(true)
@@ -195,7 +192,7 @@ impl<'a> ReferenceText<'a> {
                 let mut text = Text {
                     visit,
                     offsets: TextBodyOffsets::default(),
-                    reference: reference.to_string(),
+                    reference,
                 };
                 let mut present = part.is_none();
                 crate::variants::parts_while(self.authored, &variant.id, |value| {
@@ -322,7 +319,7 @@ impl<'a> ReferenceText<'a> {
         let mut text = Text {
             visit,
             offsets: TextBodyOffsets::default(),
-            reference: reference.to_string(),
+            reference: &reference,
         };
         while let Some(row) = rows.next()? {
             if text

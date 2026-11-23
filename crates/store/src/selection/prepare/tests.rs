@@ -398,3 +398,26 @@ fn numeric_saved_revision_binds_the_original_recorded_question_and_body() {
         polylogue_model::Code::NotFound
     );
 }
+
+/// Two prepared questions sharing a prefix are ambiguous, as stored ones are
+/// (docs/references.md, hash prefixes).
+#[test]
+fn provisional_prefix_shared_by_two_questions_is_ambiguous() {
+    let plan =
+        polylogue_query::plan::prepare("sessions where repo:new", &Bindings::default(), |_| Ok(()))
+            .unwrap();
+    let mut provisional = ProvisionalQueries::default();
+    provisional.record(&plan).unwrap();
+    let prefix = plan.question_id().to_string()[..12].to_owned();
+    assert_eq!(
+        provisional.by_prefix(&prefix).unwrap(),
+        Some(plan.question_id())
+    );
+    assert_eq!(provisional.by_prefix("ffffffffffff").unwrap(), None);
+    let twin = provisional.object(plan.question_id()).unwrap().clone();
+    provisional.objects.insert("twin".into(), twin);
+    assert_eq!(
+        provisional.by_prefix(&prefix).unwrap_err().kind(),
+        polylogue_model::Code::Ambiguous
+    );
+}

@@ -95,7 +95,7 @@ impl ScopeSession {
 pub struct ScopedLiveSession<'a> {
     pub session: &'a ScopeSession,
     /// `waiting`, `working` or `idle`.
-    pub state: &'static str,
+    pub state: polylogue_model::live::LiveState,
 }
 
 /// A Bead whose latest claim under a directory is still open.
@@ -103,7 +103,8 @@ pub struct ScopedLiveSession<'a> {
 pub struct OpenBead {
     pub id: String,
     pub session: String,
-    pub since: Option<Timestamp>,
+    /// When the claiming session was last active; the claim's own time is not stored.
+    pub last_active: Option<Timestamp>,
 }
 
 /// Session rows read from the index for the scope index: all of them, or
@@ -351,8 +352,13 @@ impl ScopeIndex {
         let mut out = BTreeSet::new();
         for dir in dirs {
             let base = dir.trim_end_matches('/');
-            for key in [dir.as_str(), base] {
-                if let Some(pks) = self.by_directory.get(key) {
+            let exact: &[&str] = if dir == base {
+                &[base]
+            } else {
+                &[dir.as_str(), base]
+            };
+            for key in exact {
+                if let Some(pks) = self.by_directory.get(*key) {
                     out.extend(pks);
                 }
             }
@@ -427,18 +433,14 @@ impl ScopeIndex {
                 );
                 view.state.active().then_some(ScopedLiveSession {
                     session: s,
-                    state: view.state.as_str(),
+                    state: view.state,
                 })
             })
             .collect();
-        let rank = |state: &str| match state {
-            "waiting" => 0,
-            "working" => 1,
-            _ => 2,
-        };
         out.sort_by(|a, b| {
-            rank(a.state)
-                .cmp(&rank(b.state))
+            a.state
+                .rank()
+                .cmp(&b.state.rank())
                 .then(b.session.live.last_at.cmp(&a.session.live.last_at))
                 .then_with(|| a.session.session.id.cmp(&b.session.session.id))
         });
@@ -459,7 +461,7 @@ impl ScopeIndex {
                 out.push(OpenBead {
                     id: task.clone(),
                     session: s.session.id.to_string(),
-                    since: s.session.last_activity,
+                    last_active: s.session.last_activity,
                 });
             }
         }

@@ -380,7 +380,7 @@ pub(crate) fn waiting(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, 
 }
 
 pub(crate) fn running(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
-    live_flag(c, x, "('working', 'waiting', 'idle', 'unknown')")
+    live_flag(c, x, &fields::running_states_sql())
 }
 
 /// A true/false field: the live state is one of `states`.

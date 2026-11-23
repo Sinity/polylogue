@@ -189,10 +189,10 @@ impl Inner {
             object,
         )?;
         let tx = self.archive.transaction()?;
-        let counter = bump_counter(&tx)?;
+        let commit_seq = bump_counter(&tx)?;
         let before = tx.total_changes();
-        crate::query_objects::apply_object(&tx, object, counter)?;
-        crate::query_objects::apply_run(&tx, run, counter, 0)?;
+        crate::query_objects::apply_object(&tx, object, commit_seq)?;
+        crate::query_objects::apply_run(&tx, run, commit_seq, 0)?;
         crate::query_objects::apply_run_outcome(&tx, outcome)?;
         if tx.total_changes() != before {
             crate::write_lock::commit(tx)?;
@@ -271,9 +271,9 @@ impl Inner {
             return Ok(());
         }
         let tx = self.archive.transaction()?;
-        let counter = bump_counter(&tx)?;
+        let commit_seq = bump_counter(&tx)?;
         let before = tx.total_changes();
-        crate::query_objects::apply_object(&tx, object, counter)?;
+        crate::query_objects::apply_object(&tx, object, commit_seq)?;
         if tx.total_changes() != before {
             scoped::require_current(&self.location, scope)?;
             crate::write_lock::commit(tx)?;
@@ -334,9 +334,9 @@ impl Inner {
             return Ok(());
         }
         let tx = self.archive.transaction()?;
-        let sequence = bump_counter(&tx)?;
+        let commit_seq = bump_counter(&tx)?;
         let before = tx.total_changes();
-        crate::query_objects::apply_run(&tx, run, sequence, 0)?;
+        crate::query_objects::apply_run(&tx, run, commit_seq, 0)?;
         if tx.total_changes() != before {
             crate::write_lock::commit(tx)?;
             self.commits

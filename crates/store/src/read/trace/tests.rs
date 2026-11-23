@@ -49,6 +49,27 @@ fn trace_maps_a_record_across_every_stored_extent() {
 }
 
 #[test]
+fn trace_states_a_record_beyond_the_reader_checkpoint() {
+    let mut archive = WriterArchive::new();
+    archive.write("trace", prose("trace", 1, 1, "first"));
+    archive.write("trace", prose("trace", 2, 2, "second"));
+    let index = Connection::open(archive.archive.index_db()).unwrap();
+    index.execute("UPDATE message_source SET source_start=1,source_end=3 WHERE message_pk=(SELECT pk FROM message WHERE id='claude-code:trace-p1')",[]).unwrap();
+    for (parsed_upto, covered) in [(3_i64, true), (2, false)] {
+        index.execute("UPDATE parse_state SET parsed_upto=?1 WHERE input_pk=(SELECT pk FROM input_ref WHERE id='input-trace')",[parsed_upto]).unwrap();
+        let pool = crate::ReadPool::open(&archive.archive).unwrap();
+        let reader = pool.reader().unwrap();
+        let card = reader
+            .record_chain(&Reference::parse("message:claude-code:trace-p1").unwrap())
+            .unwrap()
+            .unwrap();
+        let flagged = card.chain.iter().any(|step| matches!(step, ChainStep::Unavailable { reason } if reason.contains("does not cover this record")));
+        assert_eq!(flagged, !covered, "parsed_upto {parsed_upto}");
+        assert!(card.chain.iter().any(|step| matches!(step, ChainStep::ReaderVersion { parsed_upto: at, .. } if *at == parsed_upto as u64)));
+    }
+}
+
+#[test]
 fn trace_preserves_missing_range_and_checks_block_span_and_call_identity() {
     let mut archive = WriterArchive::new();
     archive.write("trace", prose("trace", 1, 1, "hello"));

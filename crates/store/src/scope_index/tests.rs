@@ -99,7 +99,7 @@ fn live_sessions_and_open_beads_come_from_the_held_facts() {
     let live: Vec<(String, &str)> = index
         .live_under(&dirs, Some("test:idle"), NOW)
         .into_iter()
-        .map(|l| (l.session.session.id.to_string(), l.state))
+        .map(|l| (l.session.session.id.to_string(), l.state.as_str()))
         .collect();
     assert_eq!(
         live,
@@ -171,5 +171,32 @@ fn equal_activity_orders_by_session_identity() {
     assert_eq!(
         ids(index.sessions_under(&["/work/proj".into()], None)),
         ["test:a", "test:b"]
+    );
+}
+
+#[test]
+fn a_written_title_lists_its_session_as_changed_after_the_held_position() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    session(&mut f, "test:titled", "/work/proj", None, NOW - 2_000);
+    session(&mut f, "test:plain", "/work/proj", None, NOW - 1_000);
+    let pool = f.reads().unwrap();
+    let held = pool.reader().unwrap().scope_changes(None).unwrap().position;
+    let reader = pool.reader().unwrap();
+    assert!(
+        crate::read::retitled_sessions(reader.conn().unwrap(), held.archive)
+            .unwrap()
+            .is_empty()
+    );
+    f.note("title", None, Some("Authored"), "session:test:titled")
+        .unwrap();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    assert_eq!(
+        crate::read::retitled_sessions(reader.conn().unwrap(), held.archive)
+            .unwrap()
+            .into_iter()
+            .collect::<Vec<_>>(),
+        ["test:titled"]
     );
 }

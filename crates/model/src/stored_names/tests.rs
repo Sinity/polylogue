@@ -39,6 +39,7 @@ fn stored_name_round_trips_for_every_enum() {
     use crate::variant::{VariantKind, VariantRelation};
     use crate::{DeliveryEvent, DeliveryOutcome, DeliverySender};
     check!(SessionKind);
+    check!(crate::TitleSource);
     check!(Role);
     check!(PromptKind);
     check!(WrittenBy);

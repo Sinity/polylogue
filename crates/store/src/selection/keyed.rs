@@ -9,7 +9,7 @@ impl Reader<'_> {
         &self,
         selection: &PreparedSelection<'_>,
         at: &OrderPosition,
-    ) -> Result<Option<OrderPosition>, SelectionError> {
+    ) -> Result<Option<Vec<serde_json::Value>>, SelectionError> {
         let program = &selection.program;
         if program.order.is_empty() {
             return Err(SelectionError::invalid(
@@ -36,14 +36,13 @@ impl Reader<'_> {
         );
         self.query_each(&page, &params, |row| {
             selection.scope.check()?;
-            found = Some(OrderPosition {
-                values: program
+            found = Some(
+                program
                     .order
                     .iter()
                     .map(|key| row[&key.column].clone())
                     .collect(),
-                row_identity: String::new(),
-            });
+            );
             Ok::<_, SelectionError>(())
         })?;
         Ok(found)
