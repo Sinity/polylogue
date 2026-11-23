@@ -681,7 +681,10 @@ proptest! {
                     .find(|i| reference::session_id(&rows, *i) == id)
                     .unwrap();
                 let s = &rows.sessions[i];
-                let children: Vec<Value> = row[field].as_array().cloned().unwrap_or_default();
+                let children: Vec<Value> = row[field]
+                    .as_array()
+                    .cloned()
+                    .expect("every parent row carries its attached list");
                 let want: Vec<Value> = match attach {
                     "with messages(id)[role:assistant]" => {
                         let mut found: Vec<(Option<i64>, usize)> = s
@@ -1040,40 +1043,5 @@ fn repeated_or_does_not_lift_the_active_path_default() {
         ),
     ] {
         assert_eq!(all(&archive, query)["count"], count, "{query}");
-    }
-}
-
-#[test]
-fn an_error_only_on_an_abandoned_branch_does_not_satisfy_session_has() {
-    let rows = Rows {
-        sessions: vec![SessionRow {
-            origin: "claude-code",
-            subagent: false,
-            repo: None,
-            messages: vec![MessageRow {
-                speaker: ("assistant", "model"),
-                model: None,
-                cost: None,
-                at: None,
-                text: Some("discarded".into()),
-                path: Some(false),
-                calls: vec![CallRow {
-                    tool: ("Bash", "shell"),
-                    command: Some("cargo test"),
-                    outcome: "error",
-                    exit_code: Some(101),
-                    at: None,
-                }],
-            }],
-        }],
-    };
-    let archive = build(&rows);
-    for name in ["errors", "tool_calls"] {
-        let condition = Cond::Leaf(Leaf::Has(name));
-        assert!(reference::answer(&rows, Unit::Sessions, &condition).is_empty());
-        assert_eq!(
-            all(&archive, &format!("sessions where {}", condition.text()))["count"],
-            0
-        );
     }
 }

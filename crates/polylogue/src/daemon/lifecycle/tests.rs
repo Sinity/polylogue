@@ -46,14 +46,33 @@ fn service_inputs_keep_watchdog_and_raw_socket_names() {
         .watchdog
         .is_none()
     );
-    for values in [
-        vec![("NOTIFY_SOCKET", "relative")],
-        vec![("NOTIFY_SOCKET", "@")],
-        vec![("WATCHDOG_USEC", "many")],
-        vec![("WATCHDOG_USEC", "1000000")],
-        vec![("WATCHDOG_PID", "other")],
+    for (values, message) in [
+        (
+            vec![("NOTIFY_SOCKET", "relative")],
+            "configuration NOTIFY_SOCKET: socket path must be absolute or abstract",
+        ),
+        (
+            vec![("NOTIFY_SOCKET", "@")],
+            "configuration NOTIFY_SOCKET: abstract socket name is empty",
+        ),
+        (
+            vec![("WATCHDOG_USEC", "many")],
+            "configuration WATCHDOG_USEC must be an unsigned integer",
+        ),
+        (
+            vec![("WATCHDOG_USEC", "1000000")],
+            "configuration WATCHDOG_USEC requires NOTIFY_SOCKET",
+        ),
+        (
+            vec![("WATCHDOG_PID", "other")],
+            "configuration WATCHDOG_PID must be a process ID",
+        ),
     ] {
-        assert!(inputs(&values, 7).is_err(), "{values:?}");
+        assert_eq!(
+            inputs(&values, 7).unwrap_err().to_string(),
+            message,
+            "{values:?}"
+        );
     }
 }
 
@@ -187,11 +206,17 @@ fn sigterm_and_sigint_drain_daemons_keeping_accepted_writes() {
                 .unwrap(),
             Some(polylogue_model::settings::Value::Boolean(true))
         );
+        let request = reader
+            .user_request("accepted-before-signal")
+            .unwrap()
+            .expect("the accepted write's request is stored");
+        assert_eq!(request.id, "accepted-before-signal");
         assert!(
-            reader
-                .user_request("accepted-before-signal")
-                .unwrap()
-                .is_some()
+            matches!(
+                &request.write,
+                polylogue_model::user::UserWrite::SetSetting { key, .. } if key == "browser.actions"
+            ),
+            "{request:?}"
         );
         drop(reader);
         drop(reads);
@@ -288,7 +313,9 @@ fn continuous_worker_exit_wakes_supervision_without_a_watchdog() {
         let mut output = String::new();
         std::io::Read::read_to_string(process.0.stdout.as_mut().unwrap(), &mut output).unwrap();
         assert!(
-            output.contains("observed:signal worker terminated"),
+            output
+                .lines()
+                .any(|line| line == "observed:signal worker terminated"),
             "{output}"
         );
     }
@@ -474,7 +501,7 @@ fn readiness_succeeds_during_a_vector_load() {
 }
 
 #[test]
-fn watchdog_ping_answers_during_a_vector_load() {
+fn probe_fits_the_watchdog_budget_during_a_vector_load() {
     let daemon = crate::test_daemon::start("watchdog during a vector load");
     let _load = VectorLoad::start(&daemon.daemon);
     // The watchdog budget is a quarter of the period; 2 s is the shortest

@@ -1,6 +1,8 @@
 use super::*;
 use std::time::{Duration, Instant};
 
+/// `Cancellation` is a flag with no waiter to block on, so this polls it up
+/// to a 10-second deadline; a passing run returns as soon as the flag is set.
 fn cancelled_soon(cancellation: &Cancellation) -> bool {
     let until = Instant::now() + Duration::from_secs(10);
     while !cancellation.is_cancelled() {

@@ -35,7 +35,12 @@ fn input_observations_are_typed_general_rows_and_do_not_enter_session_scopes() {
     let all = run(&reader, ask("events")).unwrap();
     assert_eq!(all["count"], 2);
     let rows = all["rows"].as_array().unwrap();
-    assert_eq!(rows.iter().filter(|r| r["session"].is_null()).count(), 1);
+    assert_eq!(
+        rows.iter()
+            .filter(|r| r.get("session") == Some(&Value::Null))
+            .count(),
+        1
+    );
     for row in rows {
         assert_eq!(row["input"], "ledger");
         assert_eq!(row["source"], "hermes");
@@ -50,7 +55,12 @@ fn input_observations_are_typed_general_rows_and_do_not_enter_session_scopes() {
     let mut query_fields = ask("events");
     query_fields.fields = &fields;
     let projected = run(&reader, query_fields).unwrap();
-    assert_eq!(projected["rows"][0]["data"], data);
+    assert_eq!(projected["count"], 2);
+    for row in projected["rows"].as_array().unwrap() {
+        assert_eq!(row["input"], "ledger");
+        assert_eq!(row["source"], "hermes");
+        assert_eq!(row["data"], data);
+    }
     assert_eq!(
         run(&reader, ask("events where text:λ.rs")).unwrap()["count"],
         2
@@ -70,5 +80,13 @@ fn input_observations_are_typed_general_rows_and_do_not_enter_session_scopes() {
         "field labels are not supplied textual values"
     );
     let kept = save_rows(&reader, ask("events")).unwrap();
-    assert_eq!(kept["rows"][0]["data"], data);
+    let kept_rows = kept["rows"].as_array().unwrap();
+    assert_eq!(kept_rows.len(), 2);
+    for row in kept_rows {
+        assert_eq!(row["data"], data);
+    }
+    assert_eq!(
+        kept_rows.iter().filter(|r| r["session"].is_null()).count(),
+        1
+    );
 }

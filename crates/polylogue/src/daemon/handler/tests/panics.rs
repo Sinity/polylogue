@@ -18,8 +18,18 @@ fn a_panicking_operation_answers_internal_and_the_next_request_succeeds() {
     let failed = crate::client::call_ready(&daemon.daemon.archive, &call).unwrap();
     let failure = failed.failure().unwrap();
     assert_eq!(failure.code.as_deref(), Some("internal"));
-    assert!(failure.message.contains("panic"), "{failure:?}");
-    assert!(failure.message.contains("request ID"), "{failure:?}");
+    assert!(
+        failure
+            .message
+            .starts_with("a Polylogue bug stopped this request: injected panic at read.query ("),
+        "{failure:?}"
+    );
+    assert!(
+        failure
+            .message
+            .ends_with("); report it with the request ID"),
+        "{failure:?}"
+    );
     let next = crate::client::call_ready(&daemon.daemon.archive, &call).unwrap();
     assert_eq!(next.exit_code(), 0, "{next:?}");
     assert_eq!(

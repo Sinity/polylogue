@@ -943,12 +943,9 @@ fn text_search_ranks_and_cuts_snippets() {
     let v = q(&w, "chrono");
     assert_eq!(v["ranked"], true);
     // #3's hit makes its root #2 match; subagents are not their own rows.
-    let got = ids(&v);
-    assert!(
-        got.contains(&"#2".to_owned()) && got.contains(&"#8".to_owned()),
-        "{got:?}"
-    );
-    assert!(!got.contains(&"#3".to_owned()));
+    let mut got = ids(&v);
+    got.sort();
+    assert_eq!(got, ["#2", "#8"]);
     let snippet = &v["rows"][0]["snippet"];
     let text = snippet["text"].as_str().unwrap();
     let (s, e) = (
@@ -957,8 +954,9 @@ fn text_search_ranks_and_cuts_snippets() {
     );
     let shown: String = text.chars().skip(s).take(e - s).collect();
     assert_eq!(shown.to_lowercase(), "chrono");
-    // Punctuation inside a word searches its parts.
-    assert_eq!(q(&w, "messages where weekday_offset()")["outcome"], "empty");
+    // Punctuation after a word is dropped, not searched literally: the
+    // three prompts "please fix the parser" match.
+    assert_eq!(q(&w, "messages where parser()")["count"], 3);
     let v = q(&w, "tool_calls where output:weekday_offset");
     assert_eq!(v["count"], 1);
     // Trigram substring on commands.
@@ -1053,12 +1051,9 @@ fn errors_point_at_the_problem_and_offer_a_fix() {
         assert_same_question(correction, "messages where cargo");
         assert!(run_q(&w, ask(correction)).is_ok());
     }
-    for words in [
-        "brief yesterday",
-        "\"messges\" cargo",
-        "bug fix",
-        "date parsing",
-    ] {
+    // A quoted word is searched as written, never corrected to "messages".
+    assert_eq!(q(&w, "\"messges\" cargo")["outcome"], "empty");
+    for words in ["brief yesterday", "bug fix", "date parsing"] {
         assert!(run_q(&w, ask(words)).is_ok());
     }
 }

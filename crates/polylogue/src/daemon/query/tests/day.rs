@@ -14,7 +14,7 @@ fn executions_keep_their_explicit_day_in_the_resolved_context() {
 }
 
 #[test]
-fn until_date_uses_logical_day_end_and_until_instant_stays_exclusive() {
+fn until_date_uses_logical_day_end_and_until_instant_covers_its_precision_unit() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let session = fixture

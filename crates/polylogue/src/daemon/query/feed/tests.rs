@@ -51,6 +51,16 @@ fn replacement_delivers_every_reference_and_policy_before_its_only_new_checkpoin
     assert_eq!(result.last().unwrap()["type"], "complete");
     assert_eq!(result.last().unwrap()["count"], 301);
     assert_eq!(result.len(), 303);
+    let target = fixture
+        .reads()
+        .unwrap()
+        .reader()
+        .unwrap()
+        .change_position()
+        .unwrap()
+        .to_string();
+    assert!(target.ends_with(":1:3"), "{target}");
+    assert_eq!(result.last().unwrap()["position"], target);
     let events = &result[1..result.len() - 1];
     assert!(
         events
@@ -82,7 +92,7 @@ fn an_output_failure_never_returns_a_deliverable_file() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let pool = fixture.reads().unwrap();
-    // Read-only file reaches the first private staging write, never delivery.
+    // A read-only file fails the first write (the begin line), never delivery.
     let path = dir.path().join("read-only");
     std::fs::write(&path, []).unwrap();
     assert_eq!(
@@ -123,6 +133,7 @@ fn delta_uses_both_counters_keeps_peers_and_repeats_a_completed_checkpoint_idemp
     assert_eq!(result[0]["replacement"], false);
     assert_eq!(result.last().unwrap()["count"], 3);
     let events = &result[1..result.len() - 1];
+    assert_eq!(events.len(), 3);
     assert!(events.iter().all(|line| line["position"] == initial));
     assert!(
         events
@@ -133,6 +144,7 @@ fn delta_uses_both_counters_keeps_peers_and_repeats_a_completed_checkpoint_idemp
         .as_str()
         .unwrap()
         .to_owned();
+    assert_eq!(completed, reader.change_position().unwrap().to_string());
     drop(reader);
     let reader = reads.reader().unwrap();
     let repeated =
@@ -188,6 +200,13 @@ fn archive_counter_peers_arrive_in_local_order_without_cross_component_clock_cla
     tx.commit().unwrap();
     let result = batch(&fixture, Some(&initial));
     assert_eq!(result.last().unwrap()["count"], 2);
+    // Equal counters, so the fixed query's `sort by seq, kind, ref` orders
+    // the two lines by ref.
+    let refs: Vec<&str> = result[1..3]
+        .iter()
+        .map(|line| line["change"]["ref"].as_str().unwrap())
+        .collect();
+    assert!(refs[0] < refs[1], "{refs:?}");
     assert!(
         result[1..3]
             .iter()
