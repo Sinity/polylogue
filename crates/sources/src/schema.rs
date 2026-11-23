@@ -217,12 +217,17 @@ impl Tree {
         }
         let grouped = !forced && (self.nodes[parent].grouped || identifier(name));
         let index = self.child(parent, if grouped { "*".into() } else { key });
-        let node = &mut self.nodes[index];
-        if node.last_parent != object {
-            node.present += 1;
-            node.last_parent = object;
-        }
+        self.count_in_parent(index, object);
         index
+    }
+
+    /// Counts a node once for each parent it appears under.
+    fn count_in_parent(&mut self, index: usize, parent: u64) {
+        let node = &mut self.nodes[index];
+        if node.last_parent != parent {
+            node.present += 1;
+            node.last_parent = parent;
+        }
     }
 
     fn group(&mut self, parent: usize, names: &BTreeSet<String>) {

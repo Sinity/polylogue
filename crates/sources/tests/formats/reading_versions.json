@@ -1,6 +1,6 @@
 {
   "ai-studio": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::ai_studio::VERSION=5,crate::export::VERSION=2",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::ai_studio::VERSION=6,crate::export::VERSION=2",
     "5cc1d8795cc234f2c565c3dd344e45dce90bf0a1daba7cb05b0672e992e29680"
   ],
   "aider": [
@@ -100,7 +100,7 @@
     "2d8ae752d9d757f1e57a9cae94c8c29f80007f661e4a37e735f1469734870e9b"
   ],
   "polylogue-repo-lookup": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::repo_lookup::VERSION=2",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::repo_lookup::VERSION=3",
     "8448c4cabe1dac0d91f9d82d170e3e996fb7b87968bb77b6fd9fcf64a9c2c632"
   ]
 }

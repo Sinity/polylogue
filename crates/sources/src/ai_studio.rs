@@ -13,7 +13,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 
 use crate::document::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, time_of};
@@ -66,10 +66,11 @@ pub fn open(path: &Path) -> Option<Parse> {
         return Some(Parse::Export(Box::new(Listing::default())));
     }
     let name = name_of(path)?;
+    // Only the collector's spool names files by Drive ID; a download in some
+    // other folder called `ai-studio` is named by its title.
     let in_spool = path
         .parent()
-        .and_then(|p| p.file_name())
-        .is_some_and(|n| n == "ai-studio");
+        .is_some_and(|p| p.ends_with("polylogue/drive/ai-studio"));
     Some(Parse::Export(Box::new(if in_spool {
         AiStudio {
             drive_id: Some(name),
@@ -761,6 +762,35 @@ fn text_blocks(chunk: &Json, thought: bool) -> Vec<Block> {
     blocks
 }
 
+/// Stores the base64 `data` of an inline part as a blob and names it on the
+/// attachment. A value that is not base64 leaves the attachment without a blob.
+fn store_inline_bytes(a: &mut Attachment, inline: &Json, sink: &mut Sink<'_>) {
+    use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
+    let Some(data) = inline.str("data").filter(|s| !s.is_empty()) else {
+        return;
+    };
+    // Clients wrap base64 across lines, drop the padding or use the URL-safe
+    // alphabet; all of them state the same bytes.
+    let data: String = data.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    let Some(bytes) = STANDARD
+        .decode(&data)
+        .or_else(|_| STANDARD_NO_PAD.decode(&data))
+        .or_else(|_| URL_SAFE.decode(&data))
+        .or_else(|_| URL_SAFE_NO_PAD.decode(&data))
+        .ok()
+    else {
+        return;
+    };
+    let hash = BlobHash::of(&bytes);
+    a.size = Some(bytes.len() as u64);
+    a.blob = Some(hash);
+    sink.out.blobs.push(ExtractedBlob {
+        hash,
+        size: bytes.len() as u64,
+        bytes,
+    });
+}
+
 /// Inline bytes (`{mimeType, data}`), stored as a blob: an image when the
 /// type says so, else a file.
 fn inline_block(inline: &Json, role: Role, sink: &mut Sink<'_>) -> Block {
@@ -780,20 +810,7 @@ fn inline_block(inline: &Json, role: Role, sink: &mut Sink<'_>) -> Block {
         },
         ..Attachment::default()
     };
-    if let Some(bytes) = inline
-        .str("data")
-        .filter(|s| !s.is_empty())
-        .and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok())
-    {
-        let hash = BlobHash::of(&bytes);
-        a.size = Some(bytes.len() as u64);
-        a.blob = Some(hash);
-        sink.out.blobs.push(ExtractedBlob {
-            hash,
-            size: bytes.len() as u64,
-            bytes,
-        });
-    }
+    store_inline_bytes(&mut a, inline, sink);
     let image = a
         .media_type
         .as_deref()
@@ -868,20 +885,7 @@ fn media_blocks(chunk: &Json, role: Role, sink: &mut Sink<'_>) -> Vec<Block> {
                 direction,
                 ..Attachment::default()
             };
-            if let Some(bytes) = inline
-                .str("data")
-                .filter(|s| !s.is_empty())
-                .and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok())
-            {
-                let hash = BlobHash::of(&bytes);
-                a.size = Some(bytes.len() as u64);
-                a.blob = Some(hash);
-                sink.out.blobs.push(ExtractedBlob {
-                    hash,
-                    size: bytes.len() as u64,
-                    bytes,
-                });
-            }
+            store_inline_bytes(&mut a, inline, sink);
             blocks.push(if image {
                 Block::Image(a)
             } else {

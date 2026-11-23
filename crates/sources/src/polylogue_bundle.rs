@@ -15,21 +15,7 @@ pub fn visit(
     reader: &mut dyn std::io::BufRead,
     mut accept: impl FnMut(Range<u64>, Record, &[u8]) -> Result<(), String>,
 ) -> Result<ScanStats, ScanError> {
-    let mut prefix = Vec::new();
-    let first = loop {
-        let bytes = reader
-            .fill_buf()
-            .map_err(|error| ScanError::Callback(error.to_string()))?;
-        if bytes.is_empty() {
-            break None;
-        }
-        let byte = bytes[0];
-        reader.consume(1);
-        prefix.push(byte);
-        if !byte.is_ascii_whitespace() {
-            break Some(byte);
-        }
-    };
+    let (first, prefix) = crate::export::peek_first_byte(reader)?;
     let input = std::io::Read::chain(std::io::Cursor::new(prefix), reader);
     let mut one = |range, raw: &serde_json::value::RawValue| {
         let record: Record = serde_json::from_str(raw.get()).map_err(|error| error.to_string())?;
@@ -245,23 +231,17 @@ impl ExportParser for Bundle {
                 sink.out.links.push(record.link);
                 "link"
             }
-            Record::Authored(_) | Record::Assertion(_) => {
+            Record::Authored(_)
+            | Record::Assertion(_)
+            | Record::Variant(_)
+            | Record::VariantPart(_) => {
+                let kind = match record {
+                    Record::Variant(_) => "variant",
+                    Record::VariantPart(_) => "variant_part",
+                    _ => "authored",
+                };
                 sink.records.record(
-                    "authored",
-                    &RecordOutcome::skipped("historical state restored by import"),
-                );
-                return Ok(());
-            }
-            Record::Variant(_) => {
-                sink.records.record(
-                    "variant",
-                    &RecordOutcome::skipped("historical state restored by import"),
-                );
-                return Ok(());
-            }
-            Record::VariantPart(_) => {
-                sink.records.record(
-                    "variant_part",
+                    kind,
                     &RecordOutcome::skipped("historical state restored by import"),
                 );
                 return Ok(());

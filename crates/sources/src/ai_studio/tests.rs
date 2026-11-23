@@ -521,6 +521,30 @@ fn the_drive_collector_names_a_prompt_by_its_file_id() {
 }
 
 #[test]
+fn a_download_in_a_folder_named_ai_studio_is_named_by_content() {
+    let step = parse_at(
+        "/h/Downloads/ai-studio/Notes",
+        &prompt(vec![json!({"role": "user", "text": "hello"})]),
+    );
+    assert_ne!(step.output.sessions[0].id.to_string(), "ai-studio:Notes");
+}
+
+#[test]
+fn inline_base64_wrapped_unpadded_or_url_safe_is_decoded() {
+    for data in ["aGVs\nbG8=", "aGVsbG8", "aGVsbG8="] {
+        let bytes = prompt(vec![
+            json!({"role": "user", "inlineFile": {"mimeType": "text/plain", "data": data}}),
+        ]);
+        let step = parse("p", &bytes);
+        assert_eq!(step.output.blobs[0].bytes, b"hello", "{data:?}");
+    }
+    let bytes = prompt(vec![
+        json!({"role": "user", "inlineFile": {"mimeType": "application/octet-stream", "data": "-_8"}}),
+    ]);
+    assert_eq!(parse("p", &bytes).output.blobs[0].bytes, [0xfb, 0xff]);
+}
+
+#[test]
 fn a_drive_prompt_records_the_name_its_takeout_copy_has() {
     let bytes = prompt(vec![
         json!({"role": "user", "text": "about rivers", "createTime": "2026-01-01T00:00:00Z"}),

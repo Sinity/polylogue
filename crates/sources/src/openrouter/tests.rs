@@ -49,6 +49,7 @@ fn a_room_becomes_one_session_named_by_its_first_message() {
     assert_eq!(a.usage.output, Some(2394));
     assert_eq!(a.duration_ms, Some(41006));
     assert_eq!(a.production.first_token_ms, Some(5889));
+    assert_eq!(a.production.requested_model, None);
     assert_eq!(a.reported_cost_usd.as_ref().unwrap().to_string(), "0.0012");
     assert!(step.output.events.iter().any(|e| e.kind == "room_models"));
     let expected: std::collections::BTreeMap<String, u64> = [
@@ -69,6 +70,30 @@ fn a_room_becomes_one_session_named_by_its_first_message() {
     .map(|path| (path.to_owned(), 1))
     .collect();
     assert_eq!(step.counts.unread_fields, expected);
+}
+
+#[test]
+fn reasoning_comes_first_and_a_different_variant_is_the_requested_model() {
+    let bytes = room(json!({
+        "msg-1-aaa": {"id": "msg-1-aaa", "type": "assistant", "characterId": "char-1",
+                      "contentType": "text", "context": "main-chat",
+                      "createdAt": "2025-08-04T20:00:00.000Z",
+                      "content": "Use flakes.",
+                      "metadata": {"reasoning": "pinning needs a lock file",
+                                   "variantSlug": "openrouter/other-variant"}}
+    }));
+    let step = parse(&bytes);
+    let message = &step.output.messages[0].message;
+    assert!(matches!(
+        &message.blocks[0],
+        Block::Thinking { text: Some(text), .. } if text == "pinning needs a lock file"
+    ));
+    assert!(matches!(&message.blocks[1], Block::Text { text } if text == "Use flakes."));
+    assert_eq!(
+        message.production.requested_model.as_deref(),
+        Some("openrouter/other-variant")
+    );
+    assert_eq!(message.model.as_deref(), Some("openrouter/horizon-beta"));
 }
 
 #[test]
