@@ -188,3 +188,24 @@ fn unparseable_message_attrs_fail_the_read() {
         "{error}"
     );
 }
+
+/// An `attrs` entry that is not an object is a read error, never empty attributes.
+#[test]
+fn non_object_message_attrs_fail_the_read() {
+    let directory = tempfile::tempdir().unwrap();
+    let (fixture, session) = stored_message(directory.path());
+    fixture
+        .index
+        .execute("UPDATE message SET attrs_json = '{\"attrs\":[1]}'", [])
+        .unwrap();
+    let reads = fixture.reads().unwrap();
+    let error = reads
+        .reader()
+        .unwrap()
+        .messages(&session, false)
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("unparseable attributes"),
+        "{error}"
+    );
+}

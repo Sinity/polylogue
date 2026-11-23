@@ -803,9 +803,10 @@ pub fn shape_value(
         }
         ColKind::Time => {
             if let Some(ms) = v.as_i64() {
-                *v = polylogue_model::Timestamp::from_unix_ms(ms).map_or(Value::Null, |t| {
-                    Value::String(polylogue_model::rfc3339_in(t, zone))
-                });
+                let time = polylogue_model::Timestamp::from_unix_ms(ms).ok_or_else(|| {
+                    SelectionError::invalid(polylogue_model::Code::Store, "invalid stored time")
+                })?;
+                *v = Value::String(polylogue_model::rfc3339_in(time, zone));
             }
         }
         ColKind::Bool => {
