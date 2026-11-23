@@ -286,18 +286,18 @@ impl<'a> Compiler<'a> {
         let parameter_start = self.params.len();
         let param = self.text_param(&match_text);
         let cte = format!("h{}", self.ctes.len() + 1);
-        let ranks = match index {
+        let snippet_index = match index {
             Index::Prose => Some(polylogue_query::search::SnippetIndex::Prose),
             Index::Output => Some(polylogue_query::search::SnippetIndex::Output),
             Index::Thinking => None,
         };
         let alternate_languages = (scope.unit == Unit::Messages && index == Index::Prose)
-            .then(|| self.alternate_words.clone())
+            .then(|| self.alternate_languages.clone())
             .flatten();
         let source = alternate_languages.is_none()
             && top
-            && ranks.is_some()
-            && ranks == self.rank_index
+            && snippet_index.is_some()
+            && snippet_index == self.rank_index
             && self.rank.is_none();
         let scoped = source
             && self.answer
@@ -350,7 +350,7 @@ impl<'a> Compiler<'a> {
             None
         };
         let mut prefix = String::new();
-        if let Some(rank_index) = ranks
+        if let Some(rank_index) = snippet_index
             && top
             && Some(rank_index) == self.rank_index
             && self.rank.is_none()
@@ -396,8 +396,8 @@ impl<'a> Compiler<'a> {
         })
     }
 
-    /// A word that names something: `last`, `latest`, `self`, or a pasted
-    /// ID (8+ hex digits and dashes).
+    /// A word that names something: `latest`, `self`, `here`, or any other
+    /// word, read as a native session ID or unique prefix.
     pub(super) fn reference_word(
         &mut self,
         word: &str,
@@ -617,7 +617,8 @@ impl<'a> Compiler<'a> {
         top: bool,
     ) -> Result<String, QueryError> {
         let def = t.field.declaration();
-        // `F:*` names a field without restricting it, whatever its rule.
+        // `F:*` names a field without restricting it; the one exception is
+        // `queries where name:*`, which selects the named queries.
         if matches!(t.test, Test::Any) {
             return Ok(if def.unit == Unit::Queries && def.name == "name" {
                 scope.a.expand("{r}.name IS NOT NULL")

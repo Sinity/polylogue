@@ -38,13 +38,6 @@ pub struct SessionLink {
     pub spawning_call: Option<String>,
 }
 
-/// Which way a lineage walk goes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Lineage {
-    Ancestors,
-    Descendants,
-}
-
 /// The walk advances only when all recorded structural edges name one parent.
 /// Different branch points on that parent remain recorded alternatives, but do not
 /// change structural depth. No path is selected between different parents.
@@ -68,7 +61,7 @@ fn walk(session: &str) -> String {
     )
 }
 
-fn root_sql(session: &str) -> String {
+fn observed_lineage_sql(session: &str) -> String {
     format!(
         "{} SELECT CASE WHEN cycle=0 AND parents='[]' THEN id END AS root,
       CASE WHEN cycle=0 AND parents='[]' THEN depth END AS depth,
@@ -82,7 +75,7 @@ fn root_sql(session: &str) -> String {
 
 /// Cached products are used only while their structural causes are unchanged.
 /// A query during ingestion uses the very same walk, without exposing stale roots.
-pub(crate) fn value_sql(session: &str, column: &str) -> String {
+pub(crate) fn lineage_column_sql(session: &str, column: &str) -> String {
     let valid = format!("v.session_pk={session} AND EXISTS(
       SELECT 1 FROM derive_state ds WHERE ds.session_pk=v.session_pk AND ds.name='lineage' AND pl_derived_current(ds.name,ds.version))
       AND NOT EXISTS(SELECT 1 FROM derive_due dd WHERE dd.session_pk=v.session_pk AND dd.lineage=1)");
@@ -90,12 +83,12 @@ pub(crate) fn value_sql(session: &str, column: &str) -> String {
         "(CASE WHEN EXISTS(SELECT 1 FROM session_lineage v WHERE {valid})
       THEN (SELECT v.{column} FROM session_lineage v WHERE v.session_pk={session})
       ELSE (SELECT {column} FROM ({})) END)",
-        root_sql(session)
+        observed_lineage_sql(session)
     )
 }
 
-pub(crate) fn compute(conn: &Connection, session: i64) -> Result<Option<SessionLineage>> {
-    let sql = root_sql("?1");
+pub(crate) fn compute_lineage(conn: &Connection, session: i64) -> Result<Option<SessionLineage>> {
+    let sql = observed_lineage_sql("?1");
     let row = conn
         .prepare_cached(&sql)?
         .query_row([session], |r| {
@@ -182,32 +175,6 @@ impl crate::read::Reader<'_> {
         self.links_where("child_id", &id.to_string())
     }
 
-    /// Every session reached from `id` through links other than
-    /// `reference`, transitively, each once; a cycle ends where it closes.
-    pub fn lineage(&self, id: &SessionId, direction: Lineage) -> Result<Vec<String>> {
-        let mut seen = std::collections::HashSet::from([id.to_string()]);
-        let mut queue = std::collections::VecDeque::from([id.to_string()]);
-        let mut out = Vec::new();
-        while let Some(current) = queue.pop_front() {
-            self.check()?;
-            let links = match direction {
-                Lineage::Ancestors => self.links_where("child_id", &current)?,
-                Lineage::Descendants => self.links_where("parent_id", &current)?,
-            };
-            for link in links.into_iter().filter(|link| link.kind != "reference") {
-                let next = match direction {
-                    Lineage::Ancestors => link.parent,
-                    Lineage::Descendants => link.child,
-                };
-                if seen.insert(next.clone()) {
-                    out.push(next.clone());
-                    queue.push_back(next);
-                }
-            }
-        }
-        Ok(out)
-    }
-
     /// Current structural root and depth in this pinned read. Missing sessions
     /// return None; unresolved ancestry is an explicit typed issue.
     pub fn lineage_root(&self, session: &SessionId) -> Result<Option<SessionLineage>> {
@@ -227,7 +194,7 @@ impl crate::read::Reader<'_> {
                 root_pending,
                 issue: issue.map(|s| serde_json::from_str(&s)).transpose()?,
             })),
-            None => compute(self.conn()?, pk),
+            None => compute_lineage(self.conn()?, pk),
         }
     }
     /// Graph entry points for inspecting a session family. A known root is

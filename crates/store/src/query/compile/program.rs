@@ -102,7 +102,7 @@ impl<'a> Compiler<'a> {
     ) -> Result<SelectionSql, QueryError> {
         self.measuring = selection.measured;
         self.rank_index = selection.search.rank;
-        self.alternate_words = if selection.unit == Unit::Messages {
+        self.alternate_languages = if selection.unit == Unit::Messages {
             let mut admitted = false;
             let mut languages = Vec::new();
             for condition in selection.top_level() {
@@ -182,7 +182,7 @@ impl<'a> Compiler<'a> {
                 transforms: vec![],
                 attach: vec![],
             };
-            let catalog = self.catalog.clone().unwrap_or_else(|| self.opts.catalog());
+            let catalog = self.catalog();
             let clause = query_language::format::format_query(&clause, &catalog)
                 .map_err(|error| QueryError::language(error, self.text))?;
             let prefix = format!("{} where ", scope.unit.name());

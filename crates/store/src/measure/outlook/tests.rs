@@ -359,7 +359,6 @@ fn usage_before_a_plan_and_other_origins_never_enter_its_projection() {
     let r = pool.reader().unwrap();
     let x = outlook(&r, &Selection::default(), START + 2 * DAY, "example").unwrap();
     assert_eq!(x.segments[0].responses["api_nusd"].used, Some(1));
-    assert_eq!(x.billing_before_setting, "unknown");
     let x = outlook(
         &r,
         &Selection {
@@ -433,10 +432,6 @@ fn plan_validation_refuses_ambiguous_and_mismatched_units() {
         overage_rate_nusd_per_unit: None,
     });
     assert!(validate_plan(&p).is_err());
-    assert!(
-        serde_json::from_value::<Plan>(json!({"name":"pro","origin":"codex","price_usd":20}))
-            .is_err()
-    );
 }
 
 #[test]

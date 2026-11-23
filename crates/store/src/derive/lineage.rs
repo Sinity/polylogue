@@ -12,7 +12,7 @@ pub(super) const DERIVATION: Derivation = Derivation {
     dirtied_by: &[Cause::LineageChanged],
     compute: |conn, pk, _| {
         Ok(Output::Lineage(
-            crate::lineage::compute(conn, pk)?.expect("derived session exists"),
+            crate::lineage::compute_lineage(conn, pk)?.expect("derived session exists"),
         ))
     },
 };

@@ -1,10 +1,12 @@
+//! Reads of the source observation, boundary and subject records, and of the
+//! import receipts they hold.
 use super::Reader;
 use crate::Result;
 use crate::primary::{ConfirmedSource, SourceSelector, SourceStatus, SourceSubject};
 
 impl Reader<'_> {
     /// Receiver-authored receipts whose selected input, path, format and member
-    /// agree on the same observation. Uses the confirmed source in primary mode.
+    /// agree on the same observation.
     pub fn import_receipts(
         &self,
         input: &str,

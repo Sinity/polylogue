@@ -1,11 +1,12 @@
 //! The only crate that opens SQLite. The archive is a directory of three
-//! database files and a blob directory:
+//! database files and the segment log:
 //!
 //! - `archive.db`: what cannot be recomputed (inputs, revisions, notes,
 //!   deliveries, settings);
-//! - `index.db`: everything parsed and derived, rebuilt by the loop;
-//! - `embeddings.db`: purchased vectors, never destroyed by a reindex;
-//! - `segments/`: every input blob, in append-only shared frame segments.
+//! - `index.db`: everything parsed and derived, written by an index build;
+//! - `embeddings.db`: purchased vectors, never destroyed by an index build;
+//! - `segments/`: the segment log, every input blob in append-only shared
+//!   frame segments.
 
 mod helpers;
 pub use helpers::{ConnExt, OptionExt, ResultExt, meta_get, meta_set, to_i64, to_u64};
@@ -206,7 +207,7 @@ pub enum StoreError {
     /// Sinex could not be reached, or refused what was sent (primary mode).
     #[error("capture {identity} is saved and waiting for Sinex confirmation")]
     PrimaryPending { identity: String },
-    #[error("capture read {spooled:?} stored original bytes after a source base conflict")]
+    #[error("capture read {spooled:?} stored original bytes after a source basis conflict")]
     UnresolvedBasisConflict { spooled: primary::SpooledGroup },
     #[error("Sinex denied confirmed read access: {0}")]
     ConfirmedReadDenied(String),

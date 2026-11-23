@@ -1,3 +1,6 @@
+//! Usage and API-equivalent cost over a selection's own model responses,
+//! plus recorded usage readings and per-session totals at the own and
+//! with-parents grains.
 use super::{Selection, hidden_sessions};
 use crate::ConnExt as _;
 use crate::encoding::Columns;
@@ -126,6 +129,11 @@ const TOKEN_SUMS: &str = "
     sum(m.provider_cost_nusd), sum(m.provider_cost_nusd IS NOT NULL),
     sum(m.provider_cost_nusd IS NULL)";
 
+/// Every timed item of a session: a session is in a selection by the times
+/// of its messages and events.
+const SESSION_TIMES: &str =
+    "(SELECT session_pk,at FROM message UNION ALL SELECT session_pk,at FROM event)";
+
 struct Row {
     messages: u64,
     tokens: TokensByKind,
@@ -147,11 +155,7 @@ fn row(r: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<Row> {
     let money = |i: usize| -> rusqlite::Result<Money> {
         let priced = u(i + 1)?;
         Ok(Money {
-            known: (priced > 0)
-                .then(|| r.get::<_, Option<i64>>(at + i))
-                .transpose()?
-                .flatten()
-                .map(Amount),
+            known: r.get::<_, Option<i64>>(at + i)?.map(Amount),
             priced_messages: priced,
             unpriced_messages: u(i + 2)?,
             response_total_unknown: false,
@@ -218,7 +222,7 @@ pub(super) fn report(reader: &Reader<'_>, selection: &Selection) -> Result<Usage
         grain: "own",
         timed_by: "source_record_time",
         sessions: conn.query_row(
-            &format!("SELECT count(DISTINCT m.session_pk) FROM (SELECT session_pk,at FROM message UNION ALL SELECT session_pk,at FROM event) m WHERE {cond}"),
+            &format!("SELECT count(DISTINCT m.session_pk) FROM {SESSION_TIMES} m WHERE {cond}"),
             rusqlite::params_from_iter(params.iter()),
             |r| r.get::<_, i64>(0).map(|n| n as u64),
         )?,
@@ -266,7 +270,7 @@ pub(super) fn per_session(reader: &Reader<'_>, selection: &Selection) -> Result<
     let (cond, params) = selection.condition();
     let conn = reader.conn()?;
     let mut stmt = conn.prepare(&format!(
-        "SELECT DISTINCT s.pk, s.id FROM (SELECT session_pk,at FROM message UNION ALL SELECT session_pk,at FROM event) m JOIN session s ON s.pk = m.session_pk
+        "SELECT DISTINCT s.pk, s.id FROM {SESSION_TIMES} m JOIN session s ON s.pk = m.session_pk
          WHERE {cond} ORDER BY s.started_at, s.id"
     ))?;
     let sessions: Vec<(i64, polylogue_model::SessionId)> = stmt

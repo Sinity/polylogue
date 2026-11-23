@@ -1103,7 +1103,6 @@ pub fn turns() -> String {
         AND lx.role = 'assistant' AND lx.written_by = 'model' AND lx.at >= g.last_prompt_at) - g.last_prompt_at AS latency, \
      (g.answer IS NULL AND g.turn = max(g.turn) OVER (PARTITION BY g.session_pk)) AS abandoned \
    FROM (SELECT tm.session_pk AS session_pk, tm.turn AS turn, min(tm.pk) AS pk, \
-       substr(min(CASE WHEN tm.hp THEN printf('%012d ', tm.ord) || tm.id END), 14) AS first_prompt, \
        substr(min(printf('%012d ', tm.ord) || tm.id), 14) AS first_id, \
        COALESCE(substr(min(CASE WHEN tm.hp THEN printf('%012d ', tm.ord) || tm.id END), 14), \
                 substr(min(printf('%012d ', tm.ord) || tm.id), 14)) AS id, \

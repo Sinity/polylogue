@@ -42,7 +42,7 @@ pub fn query(expression: &str, options: &Options) -> Result<Explanation, QueryEr
 fn selected_units(query: &ast::Query) -> Vec<ast::Unit> {
     let mut units = Vec::new();
     query.visit_units(&mut |name| {
-        if let Some(unit) = ast::Unit::from_name(name.strip_prefix("pl.").unwrap_or(name))
+        if let Some(unit) = ast::Unit::from_bound_name(name.strip_prefix("pl.").unwrap_or(name))
             && !units.contains(&unit)
         {
             units.push(unit);

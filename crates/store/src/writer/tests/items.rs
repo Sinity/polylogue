@@ -1065,42 +1065,6 @@ fn a_late_hook_line_is_placed_by_its_time_from_the_suffix() {
     assert_matches_rows(&w, "s");
 }
 
-#[test]
-fn lineage_walks_links_transitively_and_skips_references() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut fixture = crate::fixture::Fixture::new(dir.path()).unwrap();
-    for id in ["test:a", "test:b", "test:c", "test:d"] {
-        fixture
-            .session(crate::fixture::SessionFacts {
-                id,
-                ..Default::default()
-            })
-            .unwrap();
-    }
-    fixture.link("test:a", "test:b", "spawn", None).unwrap();
-    fixture.link("test:b", "test:c", "resume", None).unwrap();
-    fixture
-        .link("test:a", "test:d", "reference", Some("mention"))
-        .unwrap();
-    fixture.link("test:c", "test:a", "fork", None).unwrap();
-    let pool = fixture.reads().unwrap();
-    let reader = pool.reader().unwrap();
-    let a = SessionId::parse("test:a").unwrap();
-    let c = SessionId::parse("test:c").unwrap();
-    assert_eq!(
-        reader
-            .lineage(&a, crate::lineage::Lineage::Descendants)
-            .unwrap(),
-        ["test:b", "test:c"]
-    );
-    assert_eq!(
-        reader
-            .lineage(&c, crate::lineage::Lineage::Ancestors)
-            .unwrap(),
-        ["test:b", "test:a"]
-    );
-}
-
 /// A failed item refresh must reject the rows, even when the old index exists.
 #[test]
 fn indexing_errors_abort_the_changed_rows_transaction() {

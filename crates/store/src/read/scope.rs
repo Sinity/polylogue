@@ -95,18 +95,25 @@ pub(crate) fn root_key(root: &Path) -> PathBuf {
         _ => root.to_path_buf(),
     }
 }
+/// Whether a newly registered callback runs once at registration.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InitialInvalidation {
+    Invalidate,
+    Keep,
+}
+
 impl ReadScopeState {
     pub(crate) fn register(
         self: &Arc<Self>,
         callback: impl Fn() -> Result<()> + Send + Sync + 'static,
-        invalidate_initial: bool,
+        initial: InitialInvalidation,
     ) -> Result<ScopeInvalidation> {
         let callback: Arc<Invalidator> = Arc::new(callback);
         let mut fence = self.fence.write().map_err(|_| poisoned())?;
         // Unknown scopes revoke their previous pointer immediately. Standalone
         // opens install this callback before index setup and invalidate when
         // that setup actually changes the local generation.
-        if invalidate_initial {
+        if initial == InitialInvalidation::Invalidate {
             callback()?;
         }
         fence.retain(|callback| callback.strong_count() > 0);
