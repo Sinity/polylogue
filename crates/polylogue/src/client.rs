@@ -27,13 +27,13 @@ pub(crate) async fn wait_for_socket(
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let archive = Archive::at(parent);
-    let last_error = std::cell::Cell::new(None);
+    let last_error = std::sync::Mutex::new(None);
     let wait = async {
         loop {
             match tokio::net::UnixStream::connect(path).await {
                 Ok(_) => return Ok(()),
                 Err(error) if crate::cli::is_down(&error) && archive.lock_held() => {
-                    last_error.set(Some(error.kind()));
+                    *last_error.lock().expect("error slot") = Some(error.kind());
                 }
                 Err(error) => return Err(error),
             }
@@ -59,9 +59,10 @@ pub(crate) async fn wait_for_socket(
         Some(until) => tokio::time::timeout_at(until.into(), wait)
             .await
             .map_err(|_| {
-                let cause = last_error.get().map_or_else(String::new, |kind| {
-                    format!(" (last connection error: {kind})")
-                });
+                let cause = (*last_error.lock().expect("error slot"))
+                    .map_or_else(String::new, |kind| {
+                        format!(" (last connection error: {kind})")
+                    });
                 io::Error::new(
                     io::ErrorKind::TimedOut,
                     format!("the daemon did not start before the deadline{cause}"),

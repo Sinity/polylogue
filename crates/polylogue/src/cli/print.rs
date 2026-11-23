@@ -295,7 +295,7 @@ fn chat_actions_text(actions: &[crate::browser::actions::ActionSummary]) -> Stri
     }
     let mut out = String::new();
     for action in actions {
-        let target = a
+        let target = action
             .request
             .conversation
             .as_deref()
