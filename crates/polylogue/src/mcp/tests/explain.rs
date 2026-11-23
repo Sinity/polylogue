@@ -46,7 +46,8 @@ fn help_pages_declarations_and_lines_explain_queries() {
         args(json!({"selection":"messages where invalid:x", "explain":true})),
     )
     .unwrap_err();
-    assert!(error.starts_with("error (invalid_query):"), "{error}");
+    // docs/interfaces.md, exit codes: an unknown field has its own code.
+    assert!(error.starts_with("error (unknown_field):"), "{error}");
 }
 
 #[test]
