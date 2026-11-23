@@ -3,7 +3,8 @@
 Polylogue is an archive and workbench for AI work. This page states what it is
 for, the principles every area follows, the two modes it runs in, how data
 flows from a file on disk to a reply, where it is stored, what a crash can
-leave behind, and how configuration and time reach the code. Each area's
+leave behind, what the path from stored bytes to index rows guarantees, and
+how configuration and time reach the code. Each area's
 behaviour is on its own page (see the [index](README.md)); the crates and how
 to build them are in [`AGENTS.md`](../AGENTS.md).
 
@@ -49,8 +50,13 @@ treats as normal ([durability](#durability)). Reads of content-addressed bytes
 check their hashes as they read.
 
 **Overlap everything.** No stage waits on another that has nothing to do with
-its data. The one serial stage in a pipeline only appends and commits
+its data. Whatever can be done for one input alone is done on every core at
+once, and the serial stages only merge, load and commit
 ([pipeline](#pipeline)).
+
+**One path.** Keeping the index current and building it from nothing give the
+same index, and neither depends on the order in which inputs arrived
+([pipeline](#one-path)).
 
 **Configuration only where the choice is open.** A behaviour with a dominant
 option is not configurable. Polylogue reads each tool's data where the tool
@@ -68,12 +74,13 @@ the other's.
 **Standalone**: Polylogue alone, on SQLite and its own segment log. It is a
 complete product: capture, archive, index, authored records, every surface.
 
-**Primary**: Polylogue on Sinex. Polylogue captures and parses exactly as it
-does standalone, but its bytes become Sinex materials and its parsed and
-authored records become Sinex events; Polylogue keeps a local index that one
-subscription to Sinex's confirmed stream keeps current. Everything a user can
-do is the same in both modes. [Primary mode](primary-mode.md) owns what
-changes.
+**Primary**: Polylogue on Sinex. Polylogue keeps the same record and the same
+index, written by the same code. Three parts are added beside them: its bytes
+are handed to Sinex's store and read from there, so they exist once; its
+record is shipped to Sinex in commit order and can be restored from it; and
+one reader of Sinex's committed log applies what other hosts recorded and what
+Sinex's lifecycle decided. Everything a user can do is the same in both modes.
+[Primary mode](primary-mode.md) owns what is added.
 
 ## Data flow
 
@@ -81,14 +88,15 @@ changes.
    browser extension's captures and hook events as they arrive, and takes
    exports when a user runs `polylogue import PATH`
    ([capture](capture.md), [extension](extension.md)).
-2. **Store.** Each new revision of an input is hashed, compressed and appended
-   to the segment log; its extents and the input's revision and chain rows
-   commit together ([archive](archive.md#stored-inputs)).
-3. **Parse.** A per-origin parser reads each changed chain into sessions,
-   messages, blocks, tool calls and attachments, versioned so that every
-   reading is kept ([archive](archive.md#parsing), [sessions](sessions.md)).
-4. **Derive.** Derived values are computed at session grain as their data
-   arrives, and stored with the rows they belong to
+2. **Store.** Each new revision of an input is hashed, compressed and made
+   durable; its extents and the input's revision and chain rows commit
+   together to the record ([archive](archive.md#stored-inputs)).
+3. **Parse.** A per-origin parser reads each chain that is due into a reading:
+   the sessions, messages, blocks, tool calls and attachments its records
+   state ([archive](archive.md#parsing)).
+4. **Compose and derive.** The rows shown for a session are composed from
+   every reading that states it ([sessions](sessions.md)), and its derived
+   values are computed at session grain from those rows
    ([measures](measures.md#rules)).
 5. **Serve.** The daemon serves the CLI, MCP, HTTP and the web workbench from
    one operation table ([interfaces](interfaces.md#operation-table)). Queries
@@ -108,42 +116,48 @@ that needs the archive with no daemon running fails with "daemon down"
 | Store | Holds | Rebuilt from |
 |---|---|---|
 | segment log | the bytes of every input revision, as content-addressed blobs in append-only segment files of seekable zstd frames | nothing: it is the source |
-| `archive.db` | what cannot be recomputed: inputs, revisions, chains, extents, observations; the request log (every query run and kept result); annotations, settings among them; alternates; delivery records | nothing |
-| `index.db` | everything parsed and derived: sessions, messages, blocks, tool calls, attachments, links, derived columns and tables, the search indexes; the positions in `archive.db` and the request log it has applied. Built whole in a private file and installed when the build ends ([durability](#durability)) | the segment log and `archive.db` |
+| `archive.db` | the record, which cannot be recomputed: inputs, revisions, chains, extents, observations; the request log (every query run and kept result); annotations, settings among them; alternates; delivery records | nothing |
+| `index.db` and its full-text files | everything parsed and derived: each chain's reading, the shown sessions, messages, blocks, tool calls, attachments and links composed from them, each text once, derived columns and tables, the search indexes; which reading it holds of each chain and the record position it has taken in. Built whole in private files and installed when the build ends ([durability](#durability)) | the stored bytes and `archive.db` |
 | embeddings store | message vectors for semantic ranking, selected by the [paid-vector restore policy](search.md#what-is-embedded), with earlier values preserved in original source stores | the model that made them (vectors bought from a paid provider are kept as data) |
 
 The segment container, blob hashing and member access are the common
 [`hashed-blobs`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/hashed-blobs/README.md)
-crate. In primary mode, Sinex holds the bytes and the records, and Polylogue's
-local state is `index.db`, the embeddings store and the producer spool
-([primary mode](primary-mode.md)).
+crate. In primary mode the stores are the same except for the bytes, which
+live in Sinex's store, with a holding directory on the host for bytes Sinex
+has not acknowledged yet ([primary mode](primary-mode.md#local-state)).
 
 ## Durability
 
 Writes reach disk in one order:
 
-1. Bytes are appended to a segment and synced, once per write group, on a
-   dedicated thread. Groups waiting together share one append and one sync.
-   The next group is appended only after this group commits: appending it
-   during the sync left its pages unwritten while the commit's database syncs
-   ran, which then paid for them. In paired release-build runs with groups
-   arriving faster than they are stored, the overlapped writer acknowledged a
-   group later than the serial one (typical latency 3.2 s against 2.4 s for
-   2 MiB groups, 1.2 s against 0.8 s for 256 KiB groups), also when each
-   appended range's writeback was started early.
-2. The extents and the rows that cite them commit in one transaction.
-3. `index.db` saves the archive and request-log positions it has applied, in
-   the same transaction as the rows it applied.
+1. Bytes are made durable: appended to a segment and synced, once for all the
+   write groups waiting together.
+2. The record rows that cite them (extents, revisions, chains and
+   observations) commit in one transaction, together with any authored
+   records of the same group.
+3. `index.db` commits a reading's rows together with the state of the chain
+   they were read from, the shown rows of the sessions they touch, and the
+   record position the index has taken in.
 4. Source cursors (how far a growing file has been read) are saved only for
-   committed rows.
+   committed bytes.
 
-A crash therefore leaves at most these states, and the normal start resumes from
-each: a segment tail past the last committed extent, which is truncated when
-the segment opens; `index.db` behind its saved position, which catches up; a
-source cursor behind its committed rows, which re-reads and finds the bytes
-already stored. Deduplication checks the hash index together with the hashes
-appended in groups not yet committed, so a resumed write never stores a blob
-twice.
+Three invariants hold at every commit. No row of the record names bytes that
+are not durable. Every reading in the index is the reading of its chain's
+bytes up to the length its state names. The shown rows equal the composition
+of the readings present ([pipeline](#pipeline)).
+
+A crash therefore leaves at most these states, and the normal start resumes
+from each:
+
+| Left by a crash | The start |
+|---|---|
+| a segment tail past the last committed extent | truncates it when the segment opens |
+| the record ahead of the index: a chain stored further than its reading, or record rows the index has not taken in | reads on from where each reading ends; a reading is a function of the bytes, so the rows are those an uninterrupted run would have written |
+| sessions marked due for their derived values, texts waiting for their search entries | computes and writes them |
+| a source cursor behind its committed bytes | re-reads and finds the bytes already stored |
+| the files of an unfinished index build | discards them and builds again from the stored bytes |
+
+A blob is stored once: a resumed write finds the bytes it was storing.
 
 Those states cover a process crash. A power loss or kernel panic also drops
 writes the kernel had not yet flushed, so the stores that hold irreplaceable
@@ -163,187 +177,238 @@ so no later sync in that boot, in the same process or a new one, shows that
 they reached the disk. Recovery starts with a reboot
 ([operations.md#storage-failure](operations.md#storage-failure)).
 
-**Building `index.db`.** A build of the index, the first one or one that
-replaces an index from another schema, writes a private file,
-`index-build/index.db`, in a directory with copy-on-write (and so
-filesystem compression) off, with SQLite's rollback journal and temporary
-sorts on disk and no transaction syncs. A failed transaction still
-rolls back in the process; a lost process or boot may leave the file torn.
-Before the build's first unsynced write the writer creates and syncs the
-marker `index-build/unsynced`. A clean stop syncs the file and removes the
-marker, and the next start resumes the build in it. A start that finds the
-marker discards the file and builds again from the stored bytes, which a
-build never changes, so a crash or power loss during a build costs the build
-so far and nothing else. When the build ends, its writer syncs the file,
-closes it, switches it to WAL while nothing else has it open, renames it
-`index-build/built.db`, removes the marker and renames it over `index.db`,
-syncing the directory after each step; a start that finds `built.db`
-completes the rename. Pipeline reads use `built.db` between the two renames.
-The active file changes with each rename under the same lock that selects
-read paths and reads their file identity, including when a following sync
-fails. A reader opened before a rename is refused as replaced before its
-first database read; an already-started read keeps its open snapshot.
-Only the build pipeline opens the private file: the
-writer, its resolver and parser-context reads, the engine's planning reads
-and tool-database catalog reads. Readers of that owned private file permit
-SQLite's native rollback-journal recovery while refusing application writes.
-The pool retains temporary tables for read hydration; serving and preserved
-source databases stay genuinely read-only. Serving readers, the search thread and the
-derive thread open `index.db` once it is installed, so no reader can hold up
-the switch to WAL or a stop. With a rollback journal a held read blocks
-the writer, so the pipeline's reads of the build file are short: a resumed
-parse looks up its committed context one statement at a time, and a
-tool-database comparison copies its recorded rows out in one read. While the build runs, reads are served from
-the previous index when it has this build's schema identity, and otherwise
-reply `index_building` with the build's progress
-([installing.md](installing.md#replacing-an-index-from-another-schema)).
+**The index file.** A build of the index writes private files in a directory
+of its own, without syncing as it goes, and installs them by rename when it
+ends; until then nothing but the build opens them. A build never changes the
+record or the stored bytes, so losing one costs the build and nothing else: a
+start that finds an unfinished build discards its files and builds again, and
+a start that finds a finished build not yet installed installs it. While a
+build runs, reads are served from the installed index when this build of
+Polylogue can read it, and otherwise reply `index_building` with the build's
+progress
+([installing.md](installing.md#replacing-an-index-from-another-schema)). A
+reader opened before an install is refused as replaced before its next read
+begins; a read already started keeps the file it opened.
 
 ## Pipeline
 
-Building the archive overlaps every stage:
-- read-ahead, bounded by memory;
-- workers within the process's CPU and memory allowance that hash, compress,
-  parse, and resolve keys and versions against a read snapshot and bounded
-  key dictionaries backed by sorted spill files; a new job
-  goes to the worker that went idle last, so the ranges of one large input
-  run on one worker and reuse the memory its previous range freed, and the
-  pass holds about one job's memory per job in flight rather than one per
-  worker; a new input starts only when its first range can be queued at
-  once, so the inputs a pass has started finish before it starts more, and
-  the parser state kept between an input's ranges leaves out the keyed
-  context's changes, which the next range reads from the index. The same
-  pool replaces stored chains' readings: one task parses a chain's ranges
-  in order into a staged reading and hands it to the writer for one commit.
-  Its unparsed bytes count against the pool's memory budget until the
-  reading is handed to the writer; only batches carrying decoded blobs
-  retain their own charge until the writer consumes them. A task larger
-  than the budget parses alone, but its staged reading waiting for commit
-  leaves room for live ranges. With more than
-  one worker, at most all but one parse replacement chains at once, leaving
-  a worker for live ranges. A chain starts after any queued or running
-  range plan of its path; readings of the same path may run together;
-- one writer that resolves text hashes to row identities, appends and commits;
-  a bounded dictionary with sorted spill files keeps text identities for the
-  writer's lifetime, including while an unreferenced text has no row.
-  Builds preload hashes by row order; other writes learn identities as needed.
-  The resolver reads existing messages' selected rows, routes and source claims
-  in bounded groups within its existing snapshot. Shared version/layout and
-  input facts are fetched once per key group. Session kinds are read only for
-  latest readings that can win content selection; a single reading and lower
-  priority candidates need none. Needed stored kinds belong to that snapshot,
-  while a step's session facts govern its own new or changed readings.
-  Missing build keys skip database probes. A fixed-size Bloom filter skips
-  spill-file probes for unseen keys; possible matches still compare the stored
-  row's complete key. Session and required foreign-key indexes remain live.
-  The resolver switches to transaction upkeep after installation and releases
-  its build dictionaries.
-  After a failed index transaction the writer reloads row presence without
-  forgetting allocated identities. Workers prepare text hashes and compress
-  each step's texts together in groups ([text bodies](archive.md#evolution))
-  without reserving text rows; the writer stores a group with the first of
-  its texts the index lacks. Registering a version returns its row
-  key and the text references it just wrote; selected blocks consume those
-  references. When every text payload was supplied in the same transaction,
-  parser continuation checks consume its prepared identity rather than reading
-  and decoding its body again. The writer's bounded text-mark cache keeps this
-  proof until commit, rollback, removal or scope invalidation; evicted proofs
-  use full stored-message validation. Resolver preparation and version
-  registration share one immutable message value. An uncomplicated complete selection refers to that version
-  entry in the same prepared unit instead of copying its body and encoded rows;
-  the reference survives a staged reading's disk roundtrip. Composition and
-  sparse enrichment keep their owned selected value and time/item overlays.
-  Missing or mismatched selected references refuse the transaction normally.
-  Older and unchanged bodies, and texts from earlier transactions, keep full
-  payload, hash and layout validation. A new message is inserted with its resolved
-  selected metadata before stated sources refer to it. During a private build,
-  an ordinary fresh reservation lets the insert check for the row itself. A
-  split write retry can then reuse a row installed by an earlier retry. The
-  first body installation consumes an actual creation. Later installations
-  replace the existing blocks and routes, including multiple changes within one transaction;
-  after a row application installs its selected messages and stated sources,
-  one indexed operation resolves their event placements from that final state.
-  Deleting a referenced message first detaches its events to preserve their
-  natural placements and the foreign-key constraint;
-- consumers of committed positions: derived data (computed on a thread of
-  its own and written by the writer only if its inputs are unchanged), the
-  request-log view and the completion catalog;
-- at the end of an index build, the writer fills both full-text tables in one
-  transaction in the private index. A bounded scan reads each referenced text
-  group once per window and visits its texts in rowid order. Each table uses
-  its installed schema's tokenizer and configuration. A stop or error rolls
-  back both tables together. The writer builds the trigram and deferred
-  secondary indexes before installing the build as `index.db` ([durability](#durability));
-- live inputs ahead of bulk work.
+What the path from a stored byte to an index row guarantees. Each rule below
+is one a caller could see broken or an invariant the code holds, with its
+reason. How the code meets them is the business of the engine's and the
+store's module documentation, not of this page.
 
-The writer's transactions are sized by the bytes and rows they cover, not
-by record or input boundaries: a growing file is read and committed in
-chunks (16 MiB by default), queued batches share a transaction up to a row and
-byte bound, and the items of an export or tool-database dump commit in
-batches of about one chunk of its bytes. Each record lies whole inside one
-transaction, together with the position it advances (a parser checkpoint, or
-an export's delivery cursor), so readers never see part of a record and an
-interrupted parse resumes after the last committed batch. An export holds
-at most two batches in memory: one committing while the next is parsed. A whole-chain
-replacement is the exception: it commits once, because readers must see
-either the old reading or the new one. Live ranges go ahead of queued bulk chain
-tasks through the pool's live queue, including while replacements run.
-Between transactions the writer starts
-a write-ahead log over once it passes its checkpoint size (about 1 GB),
-waiting briefly for readers still reading it, so the log stays bounded while
-readers follow every commit. The pipeline's database connections do not checkpoint on close.
+### The record and the index
 
-**Build memory.** The binary captures CPU affinity, CPU quotas, physical memory
-and enclosing memory limits once. The pipeline's allowance is at most 3 GiB
-and at most three quarters of that process limit. At a 4 GiB limit this gives
-a 384 MiB index cache, 96 MiB register cache, at most 192 MiB each for readers,
-queued input and key dictionaries, and 48 MiB per search/derive connection.
-Workers take a 128 MiB share each from one third of the allowance, so there
-are at most eight, and never more than the CPU allowance or requested count.
-These shares include both raw range buffers and prepared parser work; one
-third is reserved for the worker working sets rather than added to the
-in-flight allowance. The two full-text builders also have 64 MiB hash buffers
-each, their page caches and one shared 64 MiB text queue. The remaining space
-covers parser context, planning caches, SQLite bookkeeping and allocator
-retention; the process limit leaves a further quarter outside the allowance.
-Memory maps are disabled and temporary sorts spill to disk.
+- **The record is the one account of what was captured and authored.** It is
+  `archive.db` with the bytes it cites: inputs, their chains and
+  observations, authored records and the request log. The same code writes
+  it in both modes through four operations: put bytes (durable on this host
+  before the call returns), open bytes by hash and range, commit a group of
+  captured inputs or authored writes, and read what was committed after a
+  position. Nothing above those operations knows where bytes are kept or
+  whether Sinex is present, so the engine, the parsers, the index, queries
+  and every surface are the same code in both modes
+  ([primary mode](primary-mode.md)).
+- **The index is a function of the record.** `index.db` is what the parsers,
+  at their current reading versions, make of the stored bytes. The same
+  record gives the same index whatever order its inputs arrived in, in
+  however many steps their bytes were read, on whichever host, and whether
+  it was kept current as the record grew or built from nothing. "The same
+  index" means every reply a reader can give: the rows, their values and
+  their order. Arrival order is an accident of capture; an index that
+  depended on it could be made right only by repairing it.
+- **The index holds nothing that cannot be computed again.** Beside its rows
+  it keeps which reading it holds of each chain and the record position it
+  has taken in, each committed with the rows it describes. Row keys and
+  positions that are local to one index never appear in a reply, in a
+  reference or in an order a reader returns: where rows tie, a natural key
+  breaks the tie. Two indexes of one record may therefore differ in their
+  local keys and in nothing a reader can see, and an index can be replaced
+  at any time.
 
-Stored-input planning takes fixed pages of input IDs in input order, newest
-chain first. Queued requests get a turn between planning queries. Catch-up
-resumes at the last completed page, retrying a partly handled page from its
-committed parser checkpoints. A finite scan retains its upper input key;
-sources admitted behind its bookmark are picked up by the next pass. The
-bookmark is discarded when the archive scope changes or the process stops.
-Historical layouts, extents, comparisons and copy stops live on disk
-with fixed page caches, so a large archive or one input's many revisions does
-not retain their complete plan in memory. Shared prefixes stay adjacent and
-are compared once. Progress reports committed parsed bytes out of the bytes
-to parse, including a partially read chain. Completed parser state is restored
-from its stored checkpoint when needed instead of kept for every recent file.
-A record or text is still processed whole; an oversized unit runs alone and
-can exceed a normal chunk or queue target. The budgets bound archive-count
-growth, while its largest individual processing unit determines that extra
-working space.
+### Readings
+
+- **A reading is the parsed form of one chain under one reading version.**
+  It is a function of the chain's bytes up to a length and of its parser's
+  reading version, and of nothing else. It is owned by its chain: its rows
+  carry the input and the chain, and no other chain's reading shares a row
+  with it. Only text is shared, stored once
+  ([text](archive.md#text)). Because a reading owns its rows, replacing or
+  removing one touches no other reading and needs no count of who else
+  refers to a row.
+- **One row for each thing a chain states.** A reading holds, for each
+  session, message, event, link, document and alias its records state, what
+  those records say about it, taken together in byte order. Reading a chain
+  further changes only the things the added records state, so the work an
+  append causes is in proportion to the records appended and what they
+  state, never to the size of the session, the input or the archive.
+- **A chain is in one of three states**: it has no reading; its reading is
+  complete at a length under a reading version; or reading it failed at a
+  version, with the reason
+  ([reading versions](archive.md#reading-versions)). A chain is read when
+  its stored length or its parser's reading version differs from what its
+  state names, and for no other cause.
+- **A chain that a newer chain of its input covers has no reading**, and a
+  chain that begins like a newer one holds rows only for the records the
+  newer one lacks ([covered chains](archive.md#readings)). The rows it would
+  have held are the newer chain's rows for the same bytes.
+- **Readers see a reading appear whole.** The first reading of a chain and
+  the replacement of a reading under a new reading version each commit in
+  one transaction; a chain that grows commits record by record, each record
+  whole and together with the position it advances. A session is never
+  shown half through one reading and half through its replacement.
+
+### Parsers
+
+- **Parsers are pure.** The rows a record yields depend on the bytes of its
+  chain up to the end of that record, and on nothing else: no stored state,
+  no other input, no lookup in the index. What a parser carries from one
+  record to the next is bounded by what is still open (an unfinished
+  record, the session a file's header names, the message before this one),
+  not by how much it has read. Two consequences are relied on everywhere: any
+  chain can be parsed alone, on any host, in any order; and a chain parsed
+  in pieces gives the reading it gives parsed at once.
+- **Rows name things as the source names them.** A message names its parent
+  by the source's parent ID, a tool result names its call by the call ID, a
+  link names its ends by their session IDs, and a record that is not a
+  message but stands in a chain of parents yields an alias row saying which
+  name it stands for. No row a parser yields depends on whether the thing it
+  names is in the archive.
+- **Names are resolved by joining rows, never by writing into them.** Three
+  scopes, each resolved from rows alone: names that belong to one chain (a
+  response written as several records, the number that tells equal
+  content-named messages apart) when that chain's reading is formed; names
+  within a session (a parent, an alias, a tool call) when the session is
+  composed, from every input that carries it; names of other sessions (a
+  link's ends, a branch point) when they are read. A name whose item is not
+  in the archive reads as unresolved and is shown as such; when the item
+  arrives, from any input and in any order, the name resolves and no row
+  that held it is changed.
+
+### Composition
+
+- **A session's shown rows are a function of the readings that state it**,
+  by the composition rules of
+  [sessions.md](sessions.md#one-conversation-through-several-routes): which
+  session an ID names, which reading supplies each field group of a message,
+  where each message is placed.
+- **Shown rows are computed, never adjusted.** When a reading is added,
+  extended, replaced or removed, the rows of the sessions it states are
+  computed again from the readings then present, in the same transaction.
+  Nothing is corrected by the difference a step made, so there is no case
+  in which the rows depend on the order of the steps. Recomputing may be
+  confined to the part of a session a step can have changed, on the
+  condition that the result is that of recomputing all of it.
+- **Session-grain values have one mechanism.** A value of one session that
+  is not a column of one of its rows (its counts, spans, active path,
+  links, the place of each transcript entry among the others) is a
+  derivation: declared, versioned, computed from the session's shown rows
+  for the sessions marked due, and never kept by adding and subtracting
+  what a change contributed ([measures](measures.md#convergence)).
+
+### One path
+
+The daemon reaches the index two ways, which must agree.
+
+- **Upkeep** keeps the installed index current as the record grows: for each
+  chain whose state is behind, it reads on, and commits the new rows with
+  the recomputed rows of the sessions they touch.
+- **A build** makes an index from nothing. Every chain that is due a reading
+  is prepared on its own, on as many workers as there are; the prepared rows
+  are merged by key, which is where rows of one session from different
+  inputs meet and are composed, equal texts become one, and row keys are
+  given in key order; the tables are loaded in key order into fresh files,
+  their indexes are created afterwards, and the full-text files are built
+  beside them at the same time ([search](search.md#index-maintenance)). A
+  build looks nothing up in what it is writing.
+- **They give the same index.** For any set of inputs, bringing them in
+  through upkeep in any order and in any division into steps gives the index
+  a build gives from the same record, as read through the reader. This is
+  the property the write path is tested by: one property test over generated
+  inputs, orders and divisions, comparing replies and not tables
+  ([testing](testing.md)).
+- **Either may stand in for the other.** Because they agree, the daemon
+  builds anew instead of catching up when that is less work (an index far
+  behind its record, a reading version changed for most of the corpus, a
+  large import into a small archive), and nothing a reader sees depends on
+  which it chose.
+- **A build reads the record as it stood at one position.** It writes only
+  its own private files; upkeep writes only the installed index. What is
+  captured while a build runs is stored and committed to the record at once,
+  as always, and kept current in the installed index if there is one. When
+  the build installs, it is an index behind its record like any other and
+  upkeep brings it forward from the position it was built at. Preparing may
+  start on a chain as soon as its bytes are stored, also while other inputs
+  are still being captured; the merge takes only readings that are of their
+  chain at the length the build's position gives.
+- **Live inputs go before bulk work.** A file being written now is read and
+  committed ahead of stored chains waiting for a reading.
+- **Memory is bounded by streaming.** A build's memory does not grow with
+  the number of chains, sessions or texts: prepared rows go to sorted files,
+  the merge reads them forward, and the largest single record, text or
+  message is the largest thing held whole. A unit larger than a working
+  share runs alone. No valid input is refused or cut for its size.
+
+A writer's transactions are sized by the bytes and rows they cover, not by
+input boundaries: a growing file is read and committed in steps, and each
+record lies whole inside one transaction. A user's write waits for at most
+the transaction being written.
 
 **Stopping.** A process has one stop request, carried by the archive it
 opened; the daemon makes it on `SIGTERM`. Each request's cancellation is a
-child of it. Every reader the store hands out checks it in its SQLite
-progress handler and every blocking wait registers a wake on it; the loop and
-its workers run under it, so the store connections opened there, their
-source-byte reads and their parsing steps observe it; the writer's
-reconstructible work (derivation, deferred indexes, replay of stored bytes,
-copies of identical chains' readings) rolls back to its last commit. Captured
-bytes in hand and writes already handed to the writer commit. A stop skips
-optional checkpoint work and leaves committed WAL frames beside their
-databases; normal commit syncing is unchanged, and the next open reads those
-frames and resumes from committed positions
-([operations](operations.md#the-daemon)).
+child of it. Every reader checks it and every blocking wait wakes on it. Work
+that can be done again from stored bytes (a build, a reading in progress,
+derivation) is dropped at the stop and resumes from its last commit; captured
+bytes in hand and writes already handed to the writer commit. The next open
+resumes from committed positions ([operations](operations.md#the-daemon)).
 
-**Targets**, on the full corpus of an active user (about 40 GB): at least
-40 MB/s; searchable in about 25 minutes; at most 0.6 bytes written per input
-byte; no stage idle while another holds a queue for it. Results are reported
-as hardware-independent figures (bytes written per input byte, syncs per
-group, stage utilisation) beside the absolute rates of the host that ran them
-([benchmarks](testing.md#benchmarks)).
+### Targets
+
+**The target is a rate.** A first build runs at 40 MB/s of input or better,
+from the source files to an installed, searchable index, on eight cores and
+within a few GB of memory, measured on a corpus whose index is several times
+larger than that memory. At that rate a corpus of 40 GB builds in under
+twenty minutes and one of 110 GB in about three quarters of an hour.
+
+**Why it is believed reachable.**
+- Parsing, decoding and preparing rows cost about 0.09 CPU-seconds per MB of
+  input with the production parsers (measured on 8.59 GB of generated Claude
+  Code input). At 40 MB/s that is fewer than four of eight cores, and
+  preparing has no serial part.
+- Two prototypes of a build that writes each page once, with the production
+  parser and keeping the original bytes, message identity, citations and
+  phrase search, ran that corpus at 37 and 41 MB/s, in about 440 CPU-seconds
+  and writing about half a byte per input byte.
+
+**What that evidence does not show.** The prototypes left out composition
+across inputs, blocks and tool calls, events and links, derived values and
+upkeep, and their corpus had one origin, one reading for each file and a
+narrow vocabulary. The rate is therefore shown for a simpler index and a
+simpler corpus than the real ones. A rate also means nothing without its
+memory: a build whose index fits in memory runs faster than the same build
+of a larger corpus, so a figure counts only when memory was scaled with the
+corpus.
+
+**What holds the design to it.** Before the build path is written, a
+prototype of the whole of it (prepare, merge with composition and equal
+texts made one, load in key order, index creation, full-text in several
+files, derived values) is run with the production parsers on a corpus shaped
+like real inputs: every origin, files that grew and files that were
+rewritten, sessions carried by several inputs, many small files, and memory
+scaled to the corpus. It reports the hardware-independent figures a build is
+judged by: CPU-seconds per input GB; bytes read and bytes written per input
+byte; the wall time of each serial stage as a share of the build; peak
+memory, which must stay flat as the corpus grows; and that search over
+several full-text files ranks as search over one. Where it shows a lower
+rate than the target, the stage that bounds the rate is named with its
+figures, and this section is restated to the rate that was shown and the
+corpus it was shown on.
+
+The index may be larger than its input. What the design excludes is a second
+copy of anything in it: each text once, each message body once for each
+reading, and no table that restates another. Results are reported as
+hardware-independent figures beside the absolute rates of the host that ran
+them ([benchmarks](testing.md#benchmarks)); no test asserts elapsed time.
 
 ## Configuration and clocks
 
@@ -382,11 +447,12 @@ replies, never connections or SQL.
 ## Deletion
 
 Polylogue has no deletion. Re-parse is not deletion: it replaces a chain's
-parsed rows with a new reading of the same stored bytes, which stay, so any
-reading can be produced again; rows read from other chains and other inputs
-stay as they are ([versioned rows](archive.md#versioned-rows)).
+reading with a new reading of the same stored bytes, which stay, so any
+reading can be produced again; the readings of other chains and other inputs
+stay as they are ([readings](archive.md#readings)).
 A secret that matters is edited out of its source by the operator or an agent,
 as an exceptional act; both revisions stay in the archive. In primary mode,
 Sinex's lifecycle (archive, restore, tombstone) applies to Polylogue's
-materials as to any other source's
-([Sinex lifecycle](https://github.com/Sinity/sinex/blob/master/docs/lifecycle.md)).
+materials as to any other source's, and reaches Polylogue through its record
+([primary mode](primary-mode.md#what-sinex-decides);
+[Sinex lifecycle](https://github.com/Sinity/sinex/blob/master/docs/lifecycle.md)).

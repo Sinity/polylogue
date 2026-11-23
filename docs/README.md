@@ -18,11 +18,11 @@ runtime and its tests. The target card and tool descriptions are
 
 | Page | Covers |
 |---|---|
-| [architecture](architecture.md) | purpose, principles, the two modes, data flow, the stores, durability, the pipeline and its targets, configuration and clocks, the store boundary, deletion |
+| [architecture](architecture.md) | purpose, principles, the two modes, data flow, the stores, durability, the pipeline (the record and the index, readings, pure parsers, composition, one path for upkeep and build) and its targets, configuration and clocks, the store boundary, deletion |
 | [capture](capture.md) | where inputs come from: locations, origins, hooks, tool databases, import, AI Studio through Drive, capture status |
 | [extension](extension.md) | the browser extension: live capture, provider import, its own UI, chat actions |
-| [archive](archive.md) | stored inputs, versioned rows, evolution, parsers and reading versions, goldens, field accounting, format drift and `dev schema`, trace data |
-| [sessions](sessions.md) | the parsed model: sessions, messages, message authorship, times, session links, compaction, attachments, logical sessions |
+| [archive](archive.md) | stored inputs and their chains, readings and covered chains, text, evolution, parsers and reading versions, goldens, field accounting, format drift and `dev schema`, trace data |
+| [sessions](sessions.md) | the parsed model: sessions and what identifies them, messages, names and references, message authorship, times, session links, compaction, attachments, logical sessions |
 | [references](references.md) | the one reference grammar and its rules |
 | [interfaces](interfaces.md) | the operation table, the line grammar, verb words, chains, the verbs and commands, option names and exit codes |
 | [latency](latency.md) | latency classes and budgets, deadlines, the daemon's states, warm state |
@@ -55,7 +55,7 @@ runtime and its tests. The target card and tool descriptions are
 | [web views](web-views.md) | home, running, search, notes, comparisons, judging passes, pages and workspaces, timelines, cost, analysis, status and settings |
 | [operations](operations.md) | the daemon, storage failure, idle work, `status` and `--verify`, notices, the change feed |
 | [installing](installing.md) | `install`, configuration and `set`, `embed`, `demo`, several machines, deployment, upgrades, backup and restore |
-| [primary mode](primary-mode.md) | Polylogue on Sinex, and the move to it |
+| [primary mode](primary-mode.md) | Polylogue on Sinex: one record in both modes, bytes kept in Sinex's store, the record shipped, the reader of Sinex's log, several machines, and the move to it |
 | [testing](testing.md) | test archives, properties tested, fault and crash tests, fuzzing, benchmarks |
 | [development](development.md) | building, the dev shell, xtask, CI, the deployment modules |
 | [vocabulary](vocabulary.md) | each concept and its one name, and the removed words |

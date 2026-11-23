@@ -9,7 +9,7 @@ and annotate that history. Agents are primary users: they get the same powers
 as the operator, through MCP first and the CLI second.
 
 Polylogue runs alone (standalone, on SQLite) or on Sinex (primary mode), where
-Sinex stores its bytes and records and Polylogue keeps a local index. Primary
+its bytes live in Sinex's store and its record is shipped to Sinex. Primary
 mode is the integration the operator runs; standalone is a complete product
 for everyone else and for development.
 
@@ -50,6 +50,7 @@ copy.
 - **The archive keeps the original inputs** (inputs, revisions, chains,
   extents, content-addressed blobs in an append-only segment log) and holds
   what cannot be recomputed; `index.db` holds everything parsed and derived
+  and is a function of that record, whatever order inputs arrived in
   (`docs/archive.md`, `docs/architecture.md`).
 - **Sessions and lineage**: a message is stored once; links between sessions
   come only from explicit markers; a compaction is a context boundary; the
@@ -73,10 +74,11 @@ copy.
   reference, a row number or a saved name) followed by verbs, or a command;
   agents use the same grammar through three MCP tools (`docs/interfaces.md`,
   `docs/agents.md`).
-- **Polylogue has no deletion**; re-parse replaces a chain's rows with a new
-  reading of the same bytes (`docs/architecture.md`).
-- **Primary mode** sends bytes and records to Sinex and applies Sinex's
-  confirmed stream to the local index (`docs/primary-mode.md`).
+- **Polylogue has no deletion**; re-parse replaces a chain's reading with a
+  new reading of the same bytes (`docs/architecture.md`).
+- **Primary mode** keeps the same record and index, hands its bytes to
+  Sinex's store, ships the record to Sinex, and applies what other hosts and
+  Sinex's lifecycle decided (`docs/primary-mode.md`).
 
 ## Repository layout
 
@@ -89,7 +91,7 @@ copy.
 | `crates/render` | text, markdown and HTML over typed replies |
 | `crates/reading` | reading stored sessions and records as pages and streams: composition, paging both ways, the links walk, layout facts, the invocation context. No SQL |
 | `crates/engine` | discovery, the overlapped ingest pipeline, tool-database capture, recognition, derivations |
-| `crates/sinex` | primary mode: Sinex's producer client wiring, the confirmed-stream consumer, Polylogue's kind declarations (behind the `sinex` feature) |
+| `crates/sinex` | primary mode: the hand-over of bytes, the shipper, the reader of Sinex's log, Polylogue's kind declarations (behind the `sinex` feature) |
 | `crates/polylogue` | daemon, CLI, MCP, web, browser host and brief builder |
 | `crates/testkit` | test archives built through the real loop: the synthetic Morrow archive (`examples/morrow/`), independent goldens |
 | `clients/python/` | standard-library Python client and real-daemon contract tests |
