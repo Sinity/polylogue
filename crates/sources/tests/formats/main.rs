@@ -14,6 +14,7 @@ mod gemini_cli_tool_output;
 mod golden;
 mod hermes_exports;
 mod optional_numeric;
+mod streaming_memory;
 mod support;
 
 mod hermes_trajectories;
