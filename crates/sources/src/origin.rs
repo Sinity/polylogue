@@ -133,7 +133,8 @@ pub struct OriginSpec {
     /// Which inputs are row dumps.
     pub database: Option<Database>,
     /// Whether a file is this origin's, from its path and first bytes. Runs
-    /// before the origin is decided; a suffix alone never decides it.
+    /// after the location pattern matched and before the file is tracked; a
+    /// suffix alone never decides it.
     pub recognize: fn(&Path, &[u8]) -> bool,
     /// The parser for one input, which also says whether the input is read
     /// line by line or whole; `None` when the path is not one this origin

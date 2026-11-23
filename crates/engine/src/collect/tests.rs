@@ -68,6 +68,34 @@ fn changed_directories_find_files_written_before_the_watch_was_added() {
 }
 
 #[test]
+fn a_trailing_double_star_location_finds_every_file_beneath_it() {
+    let home = tempfile::tempdir().unwrap();
+    let memory = home.path().join(".claude/memory");
+    let nested = memory.join("project");
+    fs::create_dir_all(&nested).unwrap();
+    let note = nested.join("note.md");
+    fs::write(&note, "x").unwrap();
+    let top = memory.join("top.md");
+    fs::write(&top, "x").unwrap();
+    fs::write(memory.join("untouched.md"), "x").unwrap();
+    let scanned = |changed: &Path| {
+        let (found, unreadable) = scan_paths(
+            &config(home.path()),
+            &[changed.to_path_buf()].into_iter().collect(),
+        );
+        assert!(unreadable.is_empty());
+        let mut paths: Vec<_> = found.into_iter().map(|f| f.path).collect();
+        paths.sort();
+        paths
+    };
+    assert_eq!(scanned(&note), std::slice::from_ref(&note));
+    assert_eq!(
+        scanned(&memory),
+        [note.clone(), top, memory.join("untouched.md")]
+    );
+}
+
+#[test]
 fn database_sidecars_name_the_database_for_its_capture_scheduler() {
     let home = tempfile::tempdir().unwrap();
     let config = config(home.path());

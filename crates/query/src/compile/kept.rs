@@ -1,3 +1,4 @@
+//! Kept result shapes: validating stored declarations and deriving the output schema each result exposes.
 use super::*;
 use query_language::catalog::{Field, FieldKind, OutputSchema};
 

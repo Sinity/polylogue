@@ -1,9 +1,9 @@
 //! Finding inputs at the origins' fixed locations.
 //! The layout each tool writes: each origin's location patterns are
 //! walked under its root (the tool's own directory variable, or a default
-//! under home), and a recognizer runs before a new
-//! path's origin is decided. An unreadable root is a state, never an empty
-//! backlog.
+//! under home), and a file found there is tracked only once its origin's
+//! recognizer confirms its shape. An unreadable root is a state, never an
+//! empty backlog.
 
 use crate::Config;
 use polylogue_sources::{Arrival, ORIGINS, OriginSpec};
@@ -160,8 +160,12 @@ fn walk_paths(
             })
             .collect();
         for child in children {
-            if fs::symlink_metadata(&child).is_ok_and(|m| m.is_dir()) {
+            let metadata = fs::symlink_metadata(&child);
+            if metadata.as_ref().is_ok_and(|m| m.is_dir()) {
                 walk_paths(&child, segs, paths, out, unreadable);
+            } else if rest.is_empty() && metadata.is_ok_and(|m| m.is_file()) {
+                // A trailing `**` names every file beneath the directory.
+                out.push(child);
             }
         }
     } else if seg.contains('*') {
@@ -590,8 +594,12 @@ fn walk(dir: &Path, segs: &[&str], out: &mut Vec<PathBuf>, unreadable: &mut Vec<
     if *seg == "**" {
         walk(dir, rest, out, unreadable);
         for sub in entries(dir, unreadable) {
-            if fs::symlink_metadata(&sub).is_ok_and(|m| m.is_dir()) {
+            let metadata = fs::symlink_metadata(&sub);
+            if metadata.as_ref().is_ok_and(|m| m.is_dir()) {
                 walk(&sub, segs, out, unreadable);
+            } else if rest.is_empty() && metadata.is_ok_and(|m| m.is_file()) {
+                // A trailing `**` names every file beneath the directory.
+                out.push(sub);
             }
         }
         return;
@@ -644,7 +652,6 @@ fn entries(dir: &Path, unreadable: &mut Vec<PathBuf>) -> Vec<PathBuf> {
     }
 }
 
-/// `*` matches any run of characters within one path segment.
 /// Whether `path` ends in the layout `pattern` describes: its last
 /// components match the pattern's segments, a `**` matching any number.
 pub fn ends_in(path: &Path, pattern: &str) -> bool {
@@ -676,6 +683,7 @@ fn ends_with(names: &[&str], segs: &[&str]) -> bool {
     }
 }
 
+/// `*` matches any run of characters within one path segment.
 fn wildcard(pattern: &str, name: &str) -> bool {
     if !pattern.contains('*') {
         return pattern == name;

@@ -1262,7 +1262,12 @@ fields! {
         Substring,
         "its arguments, as a JSON array",
     ),
-    ProcessesCwd = f(Processes, "cwd", Prefix, "its working directory"),
+    ProcessesCwd = f(
+        Processes,
+        "cwd",
+        Subtree,
+        "its working directory, and the directories below it",
+    ),
     ProcessesStartedAt = f(
         Processes,
         "started_at",

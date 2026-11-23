@@ -3,7 +3,7 @@
 //! value in the form the store keeps (nano-dollars, milliseconds, times
 //! resolved against the query's clock, closed sets in their declared
 //! spelling), so lowering is a match on the field and never reads the
-//! value's spelling again (docs/query.md: Fields, Times). Conditions over
+//! value's spelling again (docs/query.md: Units and fields, Times). Conditions over
 //! other rows (exists, count, membership, saved queries, sequences) and
 //! computed comparisons stay as written; the store binds their inner
 //! conditions when it lowers them.
