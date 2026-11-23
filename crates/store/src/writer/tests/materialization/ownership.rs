@@ -222,7 +222,7 @@ fn composed_and_sparse_selections_keep_their_owned_metadata_and_values() {
 }
 
 #[test]
-fn complete_staged_reading_reopens_its_selected_version_without_payload_duplication() {
+fn complete_staged_reading_reopens_its_selected_version() {
     let w = test_archive();
     let body = "disk-staged unique payload ".repeat(4096);
     let message = text_message("disk", "s", Role::Assistant, &body, Some("end_turn"));
@@ -255,7 +255,7 @@ fn complete_staged_reading_reopens_its_selected_version_without_payload_duplicat
 }
 
 #[test]
-fn referenced_complete_values_preserve_unknown_time_and_prepared_headers() {
+fn referenced_complete_values_preserve_unknown_time() {
     for unknown in [false, true] {
         let mut conn = database();
         let mut message = text_message(

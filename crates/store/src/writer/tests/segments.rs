@@ -49,7 +49,7 @@ fn append(archive: &Archive, writer: &Writer, input: &str, bytes: &[u8]) -> Resu
 }
 
 #[test]
-fn group_commits_one_sync_and_one_extent_for_equal_bytes() {
+fn group_commits_one_sync_and_one_blob_for_equal_bytes() {
     let directory = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();

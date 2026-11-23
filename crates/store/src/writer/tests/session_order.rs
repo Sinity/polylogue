@@ -262,6 +262,17 @@ proptest! {
         let expected = order(&store(&[&a_first, &a_appended, &b_whole]));
         prop_assert_eq!(&order(&store(&[&a_first, &b_whole, &a_appended])), &expected);
         prop_assert_eq!(&order(&store(&[&b_whole, &a_first, &a_appended])), &expected);
+        let mut held_names: Vec<&str> = timeline
+            .turns
+            .iter()
+            .zip(&names)
+            .filter(|(turn, _)| turn.1 || turn.2)
+            .map(|(_, name)| name.as_str())
+            .collect();
+        held_names.sort_unstable();
+        let mut got: Vec<&str> = expected.iter().map(String::as_str).collect();
+        got.sort_unstable();
+        prop_assert_eq!(got, held_names);
         let times: std::collections::BTreeMap<&str, i64> = names
             .iter()
             .zip(&timeline.turns)

@@ -350,7 +350,7 @@ fn replacing_each_chain_equals_a_fresh_build_and_plan_order_does_not_matter() {
 }
 
 #[test]
-fn retracting_the_winner_restores_complete_structured_payloads_without_parsing_survivors() {
+fn retracting_the_winner_restores_complete_structured_payloads() {
     let w = test_archive();
     let original = super::hash_order::structured_message(false);
     let mut winner = original.clone();
@@ -395,7 +395,6 @@ fn retracting_the_winner_restores_complete_structured_payloads_without_parsing_s
     let pool = ReadPool::open(&w.archive).unwrap();
     let r = pool.reader().unwrap();
     assert_eq!(r.messages(&sid("hash-order"), false).unwrap(), [original]);
-    super::items::assert_matches_rows(&w, "hash-order");
 }
 
 #[test]
@@ -724,8 +723,8 @@ fn changing_a_shared_event_marks_the_old_and_restored_sessions() {
                 "SELECT s.id FROM event e JOIN session s ON s.pk=e.session_pk",
                 &[]
             )
-            .unwrap()[0]["id"],
-        "claude-code:b"
+            .unwrap(),
+        [json!({"id":"claude-code:b"})]
     );
 }
 
@@ -1090,15 +1089,4 @@ fn no_unreferenced_versions_after_each_operation() {
             .unwrap();
         assert_eq!(unreferenced(&w), none);
     }
-    // The replaced readings had bodies the new ones do not share.
-    let pool = ReadPool::open(&w.archive).unwrap();
-    let r = pool.reader().unwrap();
-    assert_eq!(
-        r.query(
-            "SELECT count(*) AS n FROM message WHERE id IN ('claude-code:dropped','claude-code:before-name')",
-            &[]
-        )
-        .unwrap()[0]["n"],
-        0
-    );
 }

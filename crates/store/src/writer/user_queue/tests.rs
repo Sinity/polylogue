@@ -63,7 +63,7 @@ fn cancelled_enqueue_wakes_without_a_deadline() {
 }
 
 #[test]
-fn enqueue_uses_the_original_deadline() {
+fn enqueue_reports_an_expired_deadline() {
     let queue = Arc::new(UserQueue::default());
     let _reservations = (0..USER_QUEUE)
         .map(|_| queue.reserve(None).unwrap())

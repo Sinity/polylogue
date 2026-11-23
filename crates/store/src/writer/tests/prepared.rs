@@ -328,7 +328,7 @@ fn prepared_hook_events_keep_waiting_reasons_and_current_tool_facts() {
 }
 
 #[test]
-fn complete_products_restore_prepared_structured_values_without_an_index_read() {
+fn complete_products_restore_prepared_structured_values() {
     use polylogue_model::{Document, DocumentId, DocumentPurpose, DocumentRow};
     let mut message = text_message("m", "s", Role::Assistant, "exact text", None);
     message.blocks.extend([
