@@ -188,7 +188,7 @@ impl FieldGroup {
 }
 
 /// Whether a reading's message is finished. Between two readings of the
-/// same route, a finished one wins over one of unknown message completion, which
+/// same route, a finished one wins over one of unknown completion, which
 /// wins over one still being produced.
 #[derive(
     Debug,
@@ -204,7 +204,7 @@ impl FieldGroup {
     schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
-pub enum MessageCompletion {
+pub enum Completion {
     Finished,
     /// The source does not say: an assistant message without a stop reason
     /// from an origin that does not record one.
@@ -214,7 +214,7 @@ pub enum MessageCompletion {
     InProgress,
 }
 
-stored_names!(MessageCompletion {
+stored_names!(Completion {
     Finished => "finished",
     Unknown => "unknown",
     InProgress => "in_progress",
@@ -223,7 +223,7 @@ stored_names!(MessageCompletion {
 /// Origins whose finished assistant messages always carry a stop reason.
 const RECORDS_STOP_REASON: &[&str] = &["claude-code", "claude-ai", "ai-studio", "hermes"];
 
-impl MessageCompletion {
+impl Completion {
     /// A message's completion as its route read it. Page text records no
     /// stop reasons.
     pub fn of(message: &Message, route: Route) -> Self {
