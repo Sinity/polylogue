@@ -307,7 +307,7 @@ fn explicit_pick_keeps_the_outer_row_and_its_order() {
 }
 
 #[test]
-fn explicit_absolute_distance_choice_keeps_exact_nanosecond_ties() {
+fn explicit_absolute_distance_choice_orders_by_exact_nanoseconds() {
     use polylogue_model::{Precision, TimeEvidence, TimeQuality, Timestamp};
     let directory = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(directory.path()).unwrap();

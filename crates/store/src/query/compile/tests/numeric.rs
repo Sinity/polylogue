@@ -95,10 +95,18 @@ fn computed_conditions_keep_unknowns_and_units() {
         ids("sessions where cost / 2 > 1 | sort by id"),
         ["claude-code:b", "claude-code:c"]
     );
+    // Every session started at 1000 ms and was last active at 3000 ms, a
+    // 2 s interval: a bound read in the wrong unit would move it across 3s.
     assert_eq!(
-        ids("sessions where last_active - started >= 1s | sort by id").len(),
-        4
+        ids("sessions where last_active - started >= 2s | sort by id"),
+        [
+            "claude-code:a",
+            "claude-code:b",
+            "claude-code:c",
+            "claude-code:u"
+        ]
     );
+    assert!(ids("sessions where last_active - started >= 3s").is_empty());
     assert!(ids("sessions where NOT (input_tokens / output_tokens > 0)").is_empty());
     let zero_denominator =
         "sessions | fields id, input_tokens, output_tokens - output_tokens as denominator";
