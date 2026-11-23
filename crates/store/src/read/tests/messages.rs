@@ -206,4 +206,10 @@ fn visible_tool_outcomes_use_original_source_block_indices() {
         .filter_map(|entry| entry.event_kind.as_deref())
         .collect();
     assert_eq!(events, ["compaction"]);
+    let at = items
+        .entries
+        .iter()
+        .position(|entry| entry.event_kind.is_some())
+        .unwrap();
+    assert!(at > 0, "the event follows the message entry, not before it");
 }

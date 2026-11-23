@@ -42,11 +42,12 @@ fn explanation_uses_the_same_closed_saved_binding_as_lowering() {
     };
     let explanation = query("query:daily | where count > 1", &options).unwrap();
     assert!(matches!(
-        explanation.parsed.source,
+        &explanation.parsed.source,
         Source::Saved {
+            name,
             output: SourceColumns::Known,
             ..
-        }
+        } if name == "daily"
     ));
     assert_eq!(explanation.units, [ast::Unit::Sessions]);
     assert_eq!(explanation.program.unit, ast::Unit::Sessions);

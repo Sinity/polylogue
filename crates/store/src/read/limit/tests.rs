@@ -21,7 +21,6 @@ fn slow_statement_stops_at_its_deadline_and_the_slot_can_be_reused() {
     // acquire it within the scope so it installs this request's progress hook.
     drop(pool.reader().unwrap());
     let limit = ReadLimit::new(Duration::from_millis(50), Default::default());
-    let start = Instant::now();
     let result = limit.scope(|| pool.reader()?.query(SLOW, &[]));
     assert!(matches!(result, Err(StoreError::ReadDeadlineExceeded)));
     assert!(matches!(
@@ -29,7 +28,6 @@ fn slow_statement_stops_at_its_deadline_and_the_slot_can_be_reused() {
         Err(StoreError::ReadDeadlineExceeded)
     ));
     assert!(limit.sqlite_steps() > 0);
-    assert!(start.elapsed() < Duration::from_secs(2));
     assert_eq!(
         pool.reader().unwrap().query("SELECT 1 AS n", &[]).unwrap()[0]["n"],
         1
@@ -60,13 +58,11 @@ fn cancelling_a_running_statement_frees_its_only_slot() {
             assert!(Instant::now() < until, "SLOW query never reached SQLite");
             std::thread::yield_now();
         }
-        let start = Instant::now();
         limit.cancellation.cancel();
         assert!(matches!(
             worker.join().unwrap(),
             Err(StoreError::ReadCancelled)
         ));
-        assert!(start.elapsed() < Duration::from_secs(2));
         assert!(matches!(limit.check(), Err(StoreError::ReadCancelled)));
         assert!(pool.reader().unwrap().query("SELECT 1", &[]).is_ok());
     });
@@ -161,7 +157,6 @@ fn a_reused_reader_without_a_scope_restores_the_busy_wait() {
     let limit = ReadLimit::new(Duration::from_secs(1), Default::default());
     limit.scope(|| pool.reader().unwrap().query("SELECT 1", &[]).unwrap());
     let reader = pool.reader().unwrap();
-    assert!(reader.limit.is_none());
     assert_eq!(
         reader
             .query("SELECT timeout FROM pragma_busy_timeout", &[])

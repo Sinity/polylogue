@@ -3,7 +3,7 @@ use crate::fixture::{MessageFacts, SessionFacts};
 use std::ops::ControlFlow;
 
 #[test]
-fn tied_source_positions_use_ids_in_physical_logical_prompt_and_fingerprint_reads() {
+fn tied_source_positions_use_ids_in_physical_logical_and_prompt_reads() {
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let session = fixture

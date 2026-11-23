@@ -404,13 +404,19 @@ fn active_archive_or_missing_custody_lock_changes_no_preserved_entries() {
     let lock = std::fs::File::open(source.path().join("lock")).unwrap();
     lock.lock().unwrap();
     let target = destination.path().join("current.db");
-    assert!(convert_preserved(&register, &target, |_| Ok(())).is_err());
+    assert!(matches!(
+        convert_preserved(&register, &target, |_| Ok(())),
+        Err(crate::StoreError::Invalid(_))
+    ));
     assert!(!target.exists());
     assert_eq!(preserved_tree(source.path()), original);
     drop(lock);
     std::fs::remove_file(source.path().join("lock")).unwrap();
     let before = preserved_tree(source.path());
-    assert!(convert_preserved(&register, &target, |_| Ok(())).is_err());
+    assert!(matches!(
+        convert_preserved(&register, &target, |_| Ok(())),
+        Err(crate::StoreError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound
+    ));
     assert_eq!(preserved_tree(source.path()), before);
     assert!(!source.path().join("lock").exists());
     assert!(!target.exists());

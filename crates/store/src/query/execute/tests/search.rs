@@ -249,7 +249,12 @@ fn rare_ranked_pages_skip_a_catalog_sized_scope_probe() {
             let pool = fixture.reads().unwrap();
             let reader = pool.reader().unwrap();
             let (rows, steps) = counted(&reader, || pages(&reader, &program));
-            assert_eq!(rows.len(), 2);
+            let mut ids = rows
+                .iter()
+                .map(|row| row["id"].as_str().unwrap())
+                .collect::<Vec<_>>();
+            ids.sort();
+            assert_eq!(ids, ["test:root-a", "test:root-b"]);
             work.push((unrelated, analyzed, steps));
         }
     }
@@ -883,7 +888,13 @@ fn many_hit_page_and_continuation_work_grows_with_input_not_its_square() {
                 .unwrap();
         program.page_size = 1;
         let (rows, steps) = counted(&reader, || pages(&reader, &program));
-        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows.iter()
+                .map(|row| row["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["test:new", "test:old"],
+            "{blocks} blocks"
+        );
         work.push(steps);
     }
     // A fourfold input grows the prefix fold roughly by N log N. The old

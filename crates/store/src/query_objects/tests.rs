@@ -609,7 +609,7 @@ fn writer_keeps_normalized_span_metadata_bound_to_the_accepted_direct_target() {
 }
 
 #[test]
-fn object_run_has_no_question_and_query_or_continuation_cannot_omit_one() {
+fn object_run_has_no_question_and_query_run_cannot_omit_one() {
     use polylogue_model::query_objects::ObjectExecutionBinding;
     let object = question("sessions");
     let position = ChangePosition {
