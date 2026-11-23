@@ -553,3 +553,40 @@ fn early_copy_materialization_then_refresh_keeps_one_body_through_release() {
         crate::items::computed_entries(r.conn().unwrap(), index.session_pk).unwrap()
     );
 }
+
+#[test]
+fn a_copy_three_sessions_of_one_batch_record_joins_none_of_them() {
+    let w = test_archive();
+    let copy = SessionId::parse("ai-studio:content-ab").unwrap();
+    let mut message = text_message("unused", "s", Role::User, "copied body", None);
+    message.id = MessageId::parse("ai-studio:content-ab~user-0123-0").unwrap();
+    message.session = copy.clone();
+    let mut copied = batch(
+        "copied",
+        Route::Capture,
+        0,
+        vec![row(7, message.clone())],
+        &[],
+    );
+    copied.parse[0]
+        .output
+        .sessions
+        .push(Session::new(copy.clone(), SessionKind::Main));
+    w.store_reading(copied, Some(&SOURCE_RECORD)).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let mut declared = batch("declared", Route::Live, 0, vec![], &[]);
+    for name in ["ai-studio:file-a", "ai-studio:file-b", "ai-studio:file-c"] {
+        let mut session = Session::new(SessionId::parse(name).unwrap(), SessionKind::Main);
+        session.aliases.push(copy.clone());
+        declared.parse[0].output.sessions.push(session);
+    }
+    w.store_reading(declared, Some(&SOURCE_RECORD)).unwrap();
+    assert!(w.writer.flush().unwrap().errors.is_empty());
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let r = pool.reader().unwrap();
+    assert_eq!(r.messages(&copy, false).unwrap(), [message]);
+    for name in ["ai-studio:file-a", "ai-studio:file-b", "ai-studio:file-c"] {
+        let session = SessionId::parse(name).unwrap();
+        assert!(r.messages(&session, false).unwrap().is_empty());
+    }
+}

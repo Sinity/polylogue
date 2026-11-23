@@ -8,7 +8,15 @@ fn observe(tx: &Transaction<'_>, b: &Batch, seq: i64) {
         format: b.input.format.clone(),
         revision: None,
         extents: Vec::new(),
-        observation: bytes::observation(tx, b, "deleted", None, seq).unwrap(),
+        observation: bytes::observation(
+            tx,
+            b,
+            "deleted",
+            None,
+            seq,
+            &std::collections::BTreeSet::new(),
+        )
+        .unwrap(),
     };
     rows.insert(tx, seq).unwrap();
 }

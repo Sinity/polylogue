@@ -1,4 +1,4 @@
-//! Register rows for stored bytes: blobs, revisions, extents and
+//! Archive rows for stored bytes: blobs, revisions, extents and
 //! observations, numbered by the archive's write counter.
 
 use super::*;
@@ -6,7 +6,7 @@ use crate::input_rows::{Extent, InputRows, ObservationRow, Revision};
 
 /// Stores the bytes' rows and returns the revision chain the batch's
 /// records are in (`None` when there is none: a disappearance before any
-/// revision), with the register rows it wrote, if any.
+/// revision), with the archive rows it wrote, if any.
 pub(super) fn write_bytes(
     tx: &Transaction<'_>,
     b: &Batch,
@@ -15,14 +15,14 @@ pub(super) fn write_bytes(
     tx.prepare_cached("INSERT OR IGNORE INTO input(id, format) VALUES (?1, ?2)")?
         .execute(params![b.input.id, b.input.format])?;
     for part in b.blobs.iter().flat_map(NewBlob::parts) {
-        insert_blob(tx, part)?;
+        check_blob_size(tx, part)?;
     }
     if matches!(b.change, Change::Reparse { .. }) {
         return Ok((Some(stored_reading_chain(tx, b)?), None));
     }
     let (chain, rows) = input_rows(tx, b, seq)?;
     for part in b.new_blob.iter().flat_map(NewBlob::parts) {
-        insert_blob(tx, part)?;
+        check_blob_size(tx, part)?;
     }
     rows.insert(tx, seq)?;
     Ok((chain, Some(rows)))
@@ -63,7 +63,7 @@ pub(super) fn stored_reading_chain(conn: &Connection, batch: &Batch) -> Result<i
     Ok(chain)
 }
 
-/// What one step of an input adds to the register, from the input's latest
+/// What one step of an input adds to the archive, from the input's latest
 /// revision and the step's change.
 /// Returns it with the revision chain the step's records are in.
 fn input_rows(tx: &Connection, b: &Batch, seq: i64) -> Result<(Option<i64>, InputRows)> {
@@ -83,14 +83,14 @@ pub(super) fn capture_rows(
     tx: &Connection,
     b: &Batch,
     latest: Option<Revision>,
-    known: &std::collections::BTreeSet<String>,
+    staged: &std::collections::BTreeSet<String>,
 ) -> Result<(Option<i64>, InputRows)> {
     input_rows_at(
         tx,
         b,
         0,
         latest.map(|r| (r.number, r.chain, r.length, r.produced)),
-        known,
+        staged,
     )
 }
 
@@ -99,7 +99,7 @@ fn input_rows_at(
     b: &Batch,
     seq: i64,
     latest: Option<(i64, i64, i64, String)>,
-    known: &std::collections::BTreeSet<String>,
+    staged: &std::collections::BTreeSet<String>,
 ) -> Result<(Option<i64>, InputRows)> {
     let next = latest.as_ref().map_or(1, |l| l.0 + 1);
     let mut rows = InputRows {
@@ -138,7 +138,7 @@ fn input_rows_at(
                 "observed revision point is not stored".into(),
             ));
         }
-        rows.observation = observation_known(tx, b, "back", Some(number), seq, known)?;
+        rows.observation = observation(tx, b, "back", Some(number), seq, staged)?;
         return Ok((Some(chain), rows));
     }
     let revision = |number, produced: &str, chain| Revision {
@@ -149,7 +149,7 @@ fn input_rows_at(
     };
     let (number, chain, offset) = match (&b.change, b.continues, latest) {
         (Change::Disappeared, _, latest) => {
-            rows.observation = observation_known(tx, b, "deleted", None, seq, known)?;
+            rows.observation = observation(tx, b, "deleted", None, seq, staged)?;
             return Ok((latest.map(|l| l.1), rows));
         }
         (_, true, Some((number, chain, length, produced))) => {
@@ -210,7 +210,7 @@ fn input_rows_at(
             Change::Reparse { .. } | Change::Observed { .. } => unreachable!(),
             Change::Disappeared => "deleted",
         };
-        rows.observation = observation_known(tx, b, class, Some(number), seq, known)?;
+        rows.observation = observation(tx, b, class, Some(number), seq, staged)?;
     }
     Ok((Some(chain), rows))
 }
@@ -238,7 +238,9 @@ pub(super) fn extents(new_blob: &NewBlob, chain: i64, offset: u64) -> Vec<Extent
         .collect()
 }
 
-fn insert_blob(tx: &Transaction<'_>, new_blob: crate::Chunk) -> Result<()> {
+/// Refuses a chunk whose blob row already exists with another size. A new
+/// blob's row is written by the segment log, not here.
+fn check_blob_size(tx: &Transaction<'_>, new_blob: crate::Chunk) -> Result<()> {
     let size: Option<i64> = tx.scalar_optional(
         "SELECT size FROM blob WHERE hash=?1",
         [&new_blob.hash.0[..]],
@@ -289,38 +291,22 @@ pub(super) fn check_import_format(
 }
 
 /// The observation a step records, checked against what the archive
-/// already holds for the input.
-#[cfg(test)]
+/// already holds for the input. `staged` holds the inputs staged earlier in
+/// this capture group, which are not in the archive yet.
 pub(super) fn observation(
     tx: &Connection,
     b: &Batch,
     class: &str,
     revision: Option<i64>,
     seq: i64,
-) -> Result<Option<ObservationRow>> {
-    observation_known(
-        tx,
-        b,
-        class,
-        revision,
-        seq,
-        &std::collections::BTreeSet::new(),
-    )
-}
-fn observation_known(
-    tx: &Connection,
-    b: &Batch,
-    class: &str,
-    revision: Option<i64>,
-    seq: i64,
-    known: &std::collections::BTreeSet<String>,
+    staged: &std::collections::BTreeSet<String>,
 ) -> Result<Option<ObservationRow>> {
     let Some(o) = &b.observation else {
         return Ok(None);
     };
     check_import_format(tx, &b.input.id, o.import.as_ref())?;
     let container = match o.container.as_ref() {
-        Some(container) if known.contains(&container.input) => {
+        Some(container) if staged.contains(&container.input) => {
             if container.input == b.input.id
                 || container.kind.is_empty()
                 || i64::try_from(container.member_index).is_err()

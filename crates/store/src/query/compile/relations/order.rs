@@ -409,7 +409,7 @@ impl Compiler<'_> {
                 "pl_time_distance_key({left}, '{left_storage}', {right}, '{right_storage}', '{point}')"
             ),
             coarse: format!(
-                "NOT (pl_time_is_point({left}, '{left_storage}') AND pl_time_is_point({right}, '{right_storage}'))"
+                "NOT (pl_time_is_instant({left}, '{left_storage}') AND pl_time_is_instant({right}, '{right_storage}'))"
             ),
             outer_unknown: format!(
                 "pl_time_order({left}, '{left_storage}', {left}, '{left_storage}', 'near', NULL, 'when') IS NULL"

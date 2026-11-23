@@ -90,7 +90,7 @@ fn an_unreferenced_private_stage_is_refused_before_any_group_installation() {
         .unwrap();
     assert!(
         result[0].is_err(),
-        "a private stage from another archive was stored"
+        "a group with an unreferenced private stage was stored"
     );
     assert!(matches!(
         store.extent(&hashed_blobs::Hash(source_hash.0)),
@@ -109,7 +109,7 @@ fn an_unreferenced_private_stage_is_refused_before_any_group_installation() {
 }
 
 #[test]
-fn preparation_encodes_once_and_hands_off_the_same_inode_after_seekable_inspection() {
+fn a_prepared_stream_hands_off_the_same_inode_after_seekable_inspection() {
     use std::io::{Read, Seek, SeekFrom};
     use std::os::unix::fs::MetadataExt;
     let directory = tempfile::tempdir().unwrap();

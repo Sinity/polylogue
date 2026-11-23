@@ -55,7 +55,7 @@ pub(crate) fn heads(conn: &Connection, root: &str) -> Result<Vec<Variant>> {
         })
         .collect()
 }
-fn reference_string(root: &str, id: &str) -> String {
+pub(crate) fn reference_string(root: &str, id: &str) -> String {
     format!("alternate:{root}@{id}")
 }
 pub(crate) use rows::{get as get_record, parts_while};
@@ -105,10 +105,10 @@ pub(crate) fn write(
         let current = heads(conn, &previous.root)?;
         if !current.iter().any(|v| v.id == *base) {
             return Err(StoreError::Stale {
-                reference: format!("alternate:{}@{base}", previous.root),
+                reference: reference_string(&previous.root, base),
                 current: current
                     .iter()
-                    .map(|v| format!("alternate:{}@{}", v.root, v.id))
+                    .map(|v| reference_string(&v.root, &v.id))
                     .collect(),
             });
         }
@@ -248,7 +248,7 @@ impl Reader<'_> {
                     reference: preference.clone(),
                     candidates: matched
                         .iter()
-                        .map(|v| format!("alternate:{}@{}", v.root, v.id))
+                        .map(|v| reference_string(&v.root, &v.id))
                         .collect(),
                 });
             }

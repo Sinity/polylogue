@@ -245,6 +245,11 @@ impl Inner {
         }) else {
             return results;
         };
+        if independent && let [(position, _)] = parsed.as_slice() {
+            // The other members carry no parsed rows: their stored bytes stand.
+            results[*position] = rows_refused(results[*position].as_ref().ok(), error);
+            return results;
+        }
         if parsed.len() > 1 && (independent || matches!(error, StoreError::Stopped)) {
             for (position, batch) in &parsed {
                 if let Err(error) = crate::timing::time(crate::timing::Stage::Rows, || {

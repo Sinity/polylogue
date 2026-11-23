@@ -3,7 +3,9 @@ use crate::query::{fields::TimeAttribute, time::TimePredicate};
 use polylogue_model::{Precision, Timestamp};
 use query_language::semantics::Truth;
 use query_language::time::{Time, TimeValue};
-use rusqlite::{Connection, functions::FunctionFlags};
+use rusqlite::Connection;
+
+use super::FLAGS;
 
 type Failure = Box<dyn std::error::Error + Send + Sync + 'static>;
 
@@ -76,10 +78,9 @@ fn test(
 }
 
 pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
-    let flags = FunctionFlags::SQLITE_UTF8.union(FunctionFlags::SQLITE_DETERMINISTIC);
-    conn.create_aggregate_function("pl_time_latest", 1, flags, source_time::Latest)?;
+    conn.create_aggregate_function("pl_time_latest", 1, FLAGS, source_time::Latest)?;
     order::register(conn)?;
-    conn.create_scalar_function("pl_time_attribute", 3, flags, |ctx| {
+    conn.create_scalar_function("pl_time_attribute", 3, FLAGS, |ctx| {
         let bytes: Option<Vec<u8>> = ctx.get(0)?;
         let storage: String = ctx.get(1)?;
         let attribute: String = ctx.get(2)?;
@@ -98,14 +99,14 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
                 .map(|precision| precision.as_str().to_owned()),
         })
     })?;
-    conn.create_scalar_function("pl_time_is_point", 2, flags, |ctx| {
+    conn.create_scalar_function("pl_time_is_instant", 2, FLAGS, |ctx| {
         let bytes: Option<Vec<u8>> = ctx.get(0)?;
         let storage: String = ctx.get(1)?;
         let time =
             source_time(bytes.as_deref(), &storage).map_err(rusqlite::Error::UserFunctionError)?;
         Ok(time.at.is_some() && time.precision == Some(Precision::Instant))
     })?;
-    conn.create_scalar_function("pl_time_test", 3, flags, |ctx| {
+    conn.create_scalar_function("pl_time_test", 3, FLAGS, |ctx| {
         let bytes: Option<Vec<u8>> = ctx.get(0)?;
         let storage: String = ctx.get(1)?;
         let predicate: String = ctx.get(2)?;

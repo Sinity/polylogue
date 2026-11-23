@@ -149,10 +149,10 @@ fn open_indexes_are_added_in_place_and_survive_reopen() {
     ensure_index(&conn).unwrap();
     let base = Connection::open_in_memory().unwrap();
     base_index(&base).unwrap();
-    let base_shape = shape(&base).unwrap();
+    let base_shape = schema_rows(&base).unwrap();
     base.execute_batch(OPEN_INDEXES).unwrap();
-    let expected = shape(&base).unwrap();
-    let open_indexes: Vec<_> = shape(&conn)
+    let expected = schema_rows(&base).unwrap();
+    let open_indexes: Vec<_> = schema_rows(&conn)
         .unwrap()
         .into_iter()
         .filter(|item| item.0 == "index" && !base_shape.contains(item))
@@ -166,9 +166,9 @@ fn open_indexes_are_added_in_place_and_survive_reopen() {
             "missing {name}"
         );
         ensure_index(&conn).unwrap();
-        assert_eq!(shape(&conn).unwrap(), expected);
+        assert_eq!(schema_rows(&conn).unwrap(), expected);
     }
-    assert_eq!(shape(&conn).unwrap(), expected);
+    assert_eq!(schema_rows(&conn).unwrap(), expected);
     assert_eq!(version(&conn).unwrap(), INDEX_VERSION);
     assert_eq!(
         conn.query_row("SELECT id FROM input_ref", [], |row| row
@@ -263,7 +263,7 @@ fn an_unversioned_file_with_tables_is_refused_unchanged() {
         assert_eq!(format_id(&conn).unwrap(), 0, "{name}");
         assert_eq!(version(&conn).unwrap(), 0, "{name}");
         assert_eq!(
-            shape(&conn).unwrap(),
+            schema_rows(&conn).unwrap(),
             vec![(
                 "table".to_owned(),
                 "unrelated".to_owned(),

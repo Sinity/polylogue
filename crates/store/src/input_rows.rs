@@ -1,4 +1,4 @@
-//! The register rows one stored step of an input writes: its revision, the
+//! The archive rows one stored step of an input writes: its revision, the
 //! extents its new bytes fill and the observation that found them. The writer
 //! builds one [`InputRows`] per step and inserts it; in primary mode Sinex
 //! keeps it with the bytes it describes (or alone, when the step found no new

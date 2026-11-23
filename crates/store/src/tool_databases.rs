@@ -1,5 +1,5 @@
 //! Tool databases read in one SQLite transaction and emitted as row-dump
-//! records. The writer stores these bytes as an input like any other. Comparison
+//! records. The writer stores these bytes as an input like any other. Row-comparison
 //! hashes live in the index, beside the parsed rows. Every completed read
 //! records an observation with the database's and its log's file facts, so
 //! a database left as it was when the process restarts is not read again.
@@ -16,7 +16,7 @@ use std::{
 };
 
 mod catalog;
-pub use catalog::Comparison;
+pub use catalog::RowComparison;
 
 const BUSY_READ: Duration = Duration::from_secs(3600);
 /// A batching threshold, never a record-size limit.
@@ -76,7 +76,8 @@ pub struct ReadReport {
     /// Created only inside the consistent provider read. It records where the
     /// bytes came from, never a resumable database revision or data_version.
     pub snapshot: Option<crate::primary::DatabaseSnapshotToken>,
-    pub rows: u64,
+    /// Rows written as changed since the last read.
+    pub changed: u64,
     pub gone: u64,
     pub visited: u64,
 }
@@ -540,7 +541,7 @@ fn read_rows(
                 )
                 .map_err(std::io::Error::from)?;
                 bytes.push(b'\n');
-                done.rows += 1;
+                done.changed += 1;
                 crate::fault::check("database.after_row", &table.name)?;
             }
             if bytes.len() >= APPEND_BYTES {

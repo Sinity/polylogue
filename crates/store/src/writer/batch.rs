@@ -112,7 +112,7 @@ pub struct ParseStep {
     /// step reaches the writer of `index.db` rows.
     #[serde(skip)]
     pub(crate) resolution: Option<super::resolve::Resolution>,
-    pub(crate) comparison: Option<crate::tool_databases::Comparison>,
+    pub(crate) comparison: Option<crate::tool_databases::RowComparison>,
 }
 
 mod export;
@@ -137,7 +137,7 @@ impl ParseStep {
 
     /// The comparison hashes of the row-dump records parsed in this step.
     pub fn compare_records(&mut self, bytes: &[u8]) -> crate::Result<()> {
-        let mut update = crate::tool_databases::Comparison::records(bytes)?;
+        let mut update = crate::tool_databases::RowComparison::records(bytes)?;
         update.from = self.start;
         update.length = self.parsed_upto;
         self.comparison = Some(update);
@@ -146,7 +146,7 @@ impl ParseStep {
 
     /// Whole row-dump parsers commit their comparison with completion.
     pub fn compare_reader(&mut self, reader: impl std::io::BufRead) -> crate::Result<()> {
-        let mut update = crate::tool_databases::Comparison::read(reader)?;
+        let mut update = crate::tool_databases::RowComparison::read(reader)?;
         update.from = self.start;
         update.length = self.parsed_upto;
         self.comparison = Some(update);

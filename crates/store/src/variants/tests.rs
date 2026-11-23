@@ -157,7 +157,9 @@ fn variant_application_keeps_forks_and_restores_base() {
         &["variant:first@correction", "variant:first@fork"],
         20,
     );
-    assert_eq!(heads(&to, "first").unwrap()[0].id, "first");
+    let remaining = heads(&to, "first").unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].id, "first");
     assert_eq!(sql_heads("first"), graph_heads("first"));
     withdraw("restore", &["assertion:withdraw@withdraw"], 21);
     assert_eq!(heads(&to, "first").unwrap().len(), 2);
