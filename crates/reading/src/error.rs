@@ -35,24 +35,25 @@ pub enum Error {
 }
 impl Error {
     pub fn code(&self) -> &str {
+        use polylogue_model::Code;
         match self {
             Self::Store(error) => error.code().as_str(),
             Self::Selection(error) => error.code().as_str(),
             Self::Layout(polylogue_render::ReadError::MissingPreparedData { .. }) => {
-                "not_yet_available"
+                Code::NotYetAvailable.as_str()
             }
-            Self::Layout(_) => "bad_request",
+            Self::Layout(_) => Code::BadRequest.as_str(),
             Self::Page(PageError::ItemChanged | PageError::InvalidPosition)
-            | Self::StaleCursor { .. } => "stale_cursor",
-            Self::Page(_) | Self::BadRequest(_) => "bad_request",
-            Self::InvalidCursor(_) => "invalid_query",
-            Self::BadValue(_) => "bad_value",
-            Self::NotFound(_) => "not_found",
-            Self::NotYetAvailable(_) => "not_yet_available",
-            Self::Conflict(_) => "conflict",
-            Self::Io(_) => "io",
-            Self::Internal(_) => "internal",
-            Self::Operation(error) => error.code.as_deref().unwrap_or("internal"),
+            | Self::StaleCursor { .. } => Code::StaleCursor.as_str(),
+            Self::Page(_) | Self::BadRequest(_) => Code::BadRequest.as_str(),
+            Self::InvalidCursor(_) => Code::InvalidQuery.as_str(),
+            Self::BadValue(_) => Code::BadValue.as_str(),
+            Self::NotFound(_) => Code::NotFound.as_str(),
+            Self::NotYetAvailable(_) => Code::NotYetAvailable.as_str(),
+            Self::Conflict(_) => Code::Conflict.as_str(),
+            Self::Io(_) => Code::Io.as_str(),
+            Self::Internal(_) => Code::Internal.as_str(),
+            Self::Operation(error) => error.code.as_deref().unwrap_or(Code::Internal.as_str()),
         }
     }
 }

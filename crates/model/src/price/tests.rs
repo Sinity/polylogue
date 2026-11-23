@@ -194,3 +194,21 @@ fn more_one_hour_writes_than_writes_is_unknown() {
     u.cache_write_1h = Some(2);
     assert_eq!(c.cost_nusd(Some("claude-opus-5-5"), &u), None);
 }
+
+#[test]
+fn one_hour_writes_without_the_write_total_are_unknown() {
+    let c = Catalog::builtin();
+    let mut u = usage(1_000_000, None, None, 0);
+    assert_eq!(
+        c.cost_nusd(Some("claude-opus-5-5"), &u),
+        Some(4_000_000_000)
+    );
+    // No one-hour writes reported as zero changes nothing.
+    u.cache_write_1h = Some(0);
+    assert_eq!(
+        c.cost_nusd(Some("claude-opus-5-5"), &u),
+        Some(4_000_000_000)
+    );
+    u.cache_write_1h = Some(2);
+    assert_eq!(c.cost_nusd(Some("claude-opus-5-5"), &u), None);
+}
