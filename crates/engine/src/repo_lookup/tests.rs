@@ -384,7 +384,7 @@ fn working_directories_are_the_last_cwd_and_listed_cwds_that_exist_here() {
     let gone = temp.path().join("gone");
     let rows = vec![
         serde_json::json!({"cwd": first, "cwd_json": list(&[second.clone(), gone])}),
-        serde_json::json!({"cwd": null, "cwd_json": list(&[third.clone()])}),
+        serde_json::json!({"cwd": null, "cwd_json": list(std::slice::from_ref(&third))}),
         serde_json::json!({"cwd": "relative/dir", "cwd_json": null}),
         serde_json::json!({"cwd": second, "cwd_json": "not json"}),
     ];
