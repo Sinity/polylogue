@@ -200,9 +200,9 @@ pub(crate) fn write_recomputed_live(
     session_pk: i64,
     recomputed: &RecomputedLive,
 ) -> Result<()> {
-    let counter: i64 = tx
-        .prepare_cached("SELECT changed FROM session WHERE pk = ?1")?
-        .query_row([session_pk], |r| r.get(0))?;
+    // The derive transaction's own write counter, so a follower asking for
+    // sessions changed after its last look sees the recomputed live state.
+    let counter = crate::session_values::write_counter(tx)?;
     tx.prepare_cached("DELETE FROM live_interval WHERE session_pk = ?1")?
         .execute([session_pk])?;
     tx.prepare_cached("DELETE FROM process WHERE session_pk = ?1")?

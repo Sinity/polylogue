@@ -723,3 +723,32 @@ fn explicit_reference_metadata_shadows_match_sources() {
     let joined = c("sessions | join (sessions | fields id) on id = id | fields match.id");
     assert_eq!(joined.columns[0].reference, Some(ColumnReference::Session));
 }
+
+#[test]
+fn pull_request_filter_forms() {
+    let repo = |name: &str| Some(name.to_owned());
+    for (text, expected) in [
+        ("42", Some((None, 42))),
+        ("o/n#42", Some((repo("o/n"), 42))),
+        ("https://github.com/o/n/pull/42", Some((repo("o/n"), 42))),
+        (
+            "https://github.com/o/n/pull/42/files",
+            Some((repo("o/n"), 42)),
+        ),
+        (
+            "https://github.com/o/n/pull/42#discussion_r1",
+            Some((repo("o/n"), 42)),
+        ),
+        ("o/n#abc", None),
+        ("https://github.com/o/n/issues/42", None),
+    ] {
+        assert_eq!(parse_pr(text), expected, "{text}");
+    }
+}
+
+#[test]
+fn a_random_seed_that_is_not_a_number_is_a_bad_value() {
+    let refusal = compile("sessions | sort by random(\"alpha\")", &opts(&[])).unwrap_err();
+    assert_eq!(refusal.kind(), polylogue_model::Code::BadValue);
+    assert!(refusal.to_string().contains("alpha"), "{refusal}");
+}

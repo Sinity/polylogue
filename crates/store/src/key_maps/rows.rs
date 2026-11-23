@@ -193,14 +193,14 @@ impl KeyRows {
             sequence: 0,
         })
     }
-    fn positions(&self, key: &[u8; 32]) -> impl Iterator<Item = usize> {
+    /// The filter bits a key sets, for a filter of `bits` bits.
+    fn positions(key: &[u8; 32], bits: u64) -> impl Iterator<Item = usize> {
         let a = u64::from_le_bytes(key[..8].try_into().expect("hash bytes"));
         let b = u64::from_le_bytes(key[8..16].try_into().expect("hash bytes")) | 1;
-        let bits = self.filter.len() as u64 * 64;
         (0..7u64).map(move |i| a.wrapping_add(i.wrapping_mul(b)).wrapping_rem(bits) as usize)
     }
     fn possible(&self, key: &[u8; 32]) -> bool {
-        self.positions(key)
+        Self::positions(key, self.filter.len() as u64 * 64)
             .all(|bit| self.filter[bit / 64] & (1 << (bit % 64)) != 0)
     }
     pub(crate) fn set(&mut self, key: [u8; 32], value: i64) -> Result<()> {
@@ -209,11 +209,7 @@ impl KeyRows {
             .checked_add(1)
             .or_invalid("key history exhausted")?;
         self.entries.insert((key, value), self.sequence);
-        let mut positions = [0; 7];
-        for (slot, position) in positions.iter_mut().zip(self.positions(&key)) {
-            *slot = position;
-        }
-        for bit in positions {
+        for bit in Self::positions(&key, self.filter.len() as u64 * 64) {
             self.filter[bit / 64] |= 1 << (bit % 64);
         }
         if self.entries.len() >= self.limit {
@@ -353,6 +349,9 @@ impl KeyRows {
         self.sequence = 0;
     }
 }
+/// Merges two sorted runs into one. When a key and value appear in both,
+/// the record with the later sequence is kept, since the highest sequence
+/// is the latest write.
 fn merge(first: &Run, second: &Run, buffer: usize) -> Result<Run> {
     let (mut a, mut b) = (
         RunReader::new(first, buffer)?,

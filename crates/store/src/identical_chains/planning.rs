@@ -4,6 +4,9 @@ use crate::ConnExt as _;
 use crate::{Result, source::Source};
 use rusqlite::{Connection, OptionalExtension, params};
 
+/// A private temporary database for one input's planning state. Its page
+/// cache is small so planning memory stays fixed; the rest spills to a
+/// temporary file.
 fn scratch() -> Result<Connection> {
     let conn = Connection::open("")?;
     conn.execute_batch("PRAGMA cache_size=-256; PRAGMA mmap_size=0; PRAGMA temp_store=FILE; PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA cache_spill=ON;")?;
@@ -244,15 +247,15 @@ impl SharedPrefixes {
         newer: (i64, u64),
         bytes: u64,
     ) -> Result<()> {
-        if self.conn.is_none() {
-            let conn = scratch()?;
-            conn.execute_batch("CREATE TABLE shared(input TEXT,older INTEGER,older_length INTEGER,newer INTEGER,newer_length INTEGER,bytes INTEGER,PRIMARY KEY(input,older,older_length,newer,newer_length)) WITHOUT ROWID; BEGIN;")?;
-            self.conn = Some(conn);
-        }
-        self.conn
-            .as_ref()
-            .expect("comparison database")
-            .prepare_cached("INSERT OR REPLACE INTO shared VALUES(?1,?2,?3,?4,?5,?6)")?
+        let conn = match &mut self.conn {
+            Some(conn) => conn,
+            empty => {
+                let conn = scratch()?;
+                conn.execute_batch("CREATE TABLE shared(input TEXT,older INTEGER,older_length INTEGER,newer INTEGER,newer_length INTEGER,bytes INTEGER,PRIMARY KEY(input,older,older_length,newer,newer_length)) WITHOUT ROWID; BEGIN;")?;
+                empty.insert(conn)
+            }
+        };
+        conn.prepare_cached("INSERT OR REPLACE INTO shared VALUES(?1,?2,?3,?4,?5,?6)")?
             .execute(params![input, older.0, older.1, newer.0, newer.1, bytes])?;
         Ok(())
     }

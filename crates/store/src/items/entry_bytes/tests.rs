@@ -275,3 +275,12 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn unknown_codes_are_refused() {
+    // Flags 0, then a kind code past the last kind (8).
+    assert!(decode(&[0, 9], EntryOf::Message(message_id()), None).is_err());
+    // A valid kind (Event, 8) with an author code past the last author.
+    let event = EntryOf::Event("claude-code:event-1".into());
+    assert!(decode(&[0, 8 | (15 << 4)], event, None).is_err());
+}

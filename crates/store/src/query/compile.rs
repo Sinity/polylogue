@@ -311,24 +311,24 @@ pub fn lower(plan: &polylogue_query::plan::Plan, opts: &Options) -> Result<Progr
     compiler.catalog = Some(catalog.clone());
     compiler.answer = true;
     let mut program = compiler.program(bound.query())?;
-    for definition in plan.definitions() {
-        let used = Definition {
+    let mut used: Vec<Definition> = plan
+        .definitions()
+        .iter()
+        .map(|definition| Definition {
             name: definition.name.clone(),
             revision: definition.revision.clone(),
-        };
-        if !program.definitions.contains(&used) {
-            program.definitions.push(used);
-        }
-    }
-    for (name, id) in &plan.bindings().kept_names {
-        let used = Definition {
-            name: format!("result:{name}"),
-            revision: format!("result:{id}"),
-        };
-        if !program.definitions.contains(&used) {
-            program.definitions.push(used);
-        }
-    }
+        })
+        .collect();
+    used.extend(
+        plan.bindings()
+            .kept_names
+            .iter()
+            .map(|(name, id)| Definition {
+                name: format!("result:{name}"),
+                revision: format!("result:{id}"),
+            }),
+    );
+    join(&mut program.definitions, &mut used);
     program.query = plan.text().to_owned();
     Ok(program)
 }
@@ -608,19 +608,20 @@ fn parse_pr(v: &str) -> Option<(Option<String>, i64)> {
     if let Ok(n) = v.parse::<i64>() {
         return Some((None, n));
     }
-    if let Some((repo, n)) = v.rsplit_once('#') {
-        return Some((Some(repo.to_owned()), n.parse().ok()?));
+    // https://github.com/owner/name/pull/42, with any path, query or fragment after the number
+    if let Some((_, rest)) = v.split_once("github.com/") {
+        let path = rest.split(['?', '#']).next().unwrap_or(rest);
+        let parts: Vec<&str> = path.split('/').collect();
+        if parts.len() >= 4 && parts[2] == "pull" {
+            return Some((
+                Some(format!("{}/{}", parts[0], parts[1])),
+                parts[3].parse().ok()?,
+            ));
+        }
+        return None;
     }
-    // https://github.com/owner/name/pull/42
-    let rest = v.split_once("github.com/")?.1;
-    let parts: Vec<&str> = rest.split('/').collect();
-    if parts.len() >= 4 && parts[2] == "pull" {
-        return Some((
-            Some(format!("{}/{}", parts[0], parts[1])),
-            parts[3].parse().ok()?,
-        ));
-    }
-    None
+    let (repo, n) = v.rsplit_once('#')?;
+    Some((Some(repo.to_owned()), n.parse().ok()?))
 }
 
 #[cfg(test)]
@@ -658,7 +659,7 @@ fn literal_expression(expression: &Expression) -> Result<&Value, QueryError> {
         _ => Err(not_built("a computed value in this position")),
     }
 }
-fn parse_random_seed(operand: &Expression) -> Result<Option<u64>, QueryError> {
+fn parse_random_seed(operand: &Expression, at: usize) -> Result<Option<u64>, QueryError> {
     let Expression::Function { name, arguments } = operand else {
         return Ok(None);
     };
@@ -668,11 +669,15 @@ fn parse_random_seed(operand: &Expression) -> Result<Option<u64>, QueryError> {
     arguments
         .first()
         .map(|v| {
-            literal_expression(v)?
+            let text = literal_expression(v)?
                 .text()
-                .ok_or_else(|| not_built("this random seed"))?
-                .parse()
-                .map_err(|_| not_built("this random seed"))
+                .ok_or_else(|| not_built("this random seed"))?;
+            text.parse().map_err(|_| QueryError::BadValue {
+                field: "random".into(),
+                value: text.to_string(),
+                position: at,
+                message: format!("random seed {text:?} is not an unsigned integer"),
+            })
         })
         .transpose()
 }

@@ -11,7 +11,7 @@ pub(crate) use rows::KeyRows;
 pub(crate) struct KeyMaps {
     messages: RwLock<Rows>,
     events: RwLock<Rows>,
-    versions: RwLock<Rows>,
+    message_versions: RwLock<Rows>,
 }
 struct Rows(KeyRows);
 fn hash_of(key: &[u8]) -> [u8; 32] {
@@ -62,7 +62,7 @@ impl Default for KeyMaps {
         Self {
             messages: RwLock::new(Rows::default()),
             events: RwLock::new(Rows::default()),
-            versions: RwLock::new(Rows::default()),
+            message_versions: RwLock::new(Rows::default()),
         }
     }
 }
@@ -94,11 +94,11 @@ impl KeyMaps {
         Ok(Self {
             messages: RwLock::new(messages),
             events: RwLock::new(events),
-            versions: RwLock::new(versions),
+            message_versions: RwLock::new(versions),
         })
     }
     pub(crate) fn message_version(&self, conn: &Connection, hash: &[u8]) -> Result<Option<i64>> {
-        self.versions.read().expect("key map lock").find(
+        self.message_versions.read().expect("key map lock").find(
             conn,
             "SELECT version_hash FROM message_version WHERE pk=?1",
             hash_of(hash),
@@ -106,7 +106,7 @@ impl KeyMaps {
         )
     }
     pub(crate) fn add_message_version(&self, hash: &[u8], pk: i64) -> Result<()> {
-        self.versions
+        self.message_versions
             .write()
             .expect("key map lock")
             .add(hash_of(hash), pk)
