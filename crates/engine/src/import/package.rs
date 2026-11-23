@@ -19,7 +19,7 @@ pub(super) struct Member {
 pub(super) fn stage(
     path: &Path,
     archive: &Archive,
-    format: Option<&str>,
+    origin: Option<&str>,
 ) -> std::io::Result<Vec<Member>> {
     let mut members = Vec::new();
     let mut seen = Expansion::default();
@@ -46,7 +46,7 @@ pub(super) fn stage(
             &mut members,
         )?;
     }
-    classify(&mut members, format)?;
+    classify(&mut members, origin)?;
     super::bundle::preflight(&mut members)?;
     Ok(members)
 }
@@ -247,15 +247,15 @@ fn expand(
     Ok(())
 }
 
-fn classify(members: &mut [Member], format: Option<&str>) -> std::io::Result<()> {
+fn classify(members: &mut [Member], origin: Option<&str>) -> std::io::Result<()> {
     #[derive(Default)]
     struct Package {
         chatgpt: bool,
         claude: bool,
         recognized: bool,
         conversations: bool,
-        user: bool,
-        users: bool,
+        chatgpt_account_file: bool,
+        claude_accounts_file: bool,
         aider_llm: bool,
         aider_md: bool,
         takeout: bool,
@@ -265,8 +265,15 @@ fn classify(members: &mut [Member], format: Option<&str>) -> std::io::Result<()>
         member.origin = super::recognition::declared(
             &member.path,
             &mut member.bytes.reader().map_err(std::io::Error::other)?,
-            format,
+            origin,
         )?;
+        if member.origin.is_none()
+            && let Some(name) = origin
+        {
+            member.refusal = Some(format!(
+                "origin {name} is not an importable origin or does not recognize this file"
+            ));
+        }
         let name = member
             .path
             .file_name()
@@ -321,8 +328,8 @@ fn classify(members: &mut [Member], format: Option<&str>) -> std::io::Result<()>
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("");
-        package.user |= name == "user.json";
-        package.users |= name == "users.json";
+        package.chatgpt_account_file |= name == "user.json";
+        package.claude_accounts_file |= name == "users.json";
         package.aider_llm |= name == polylogue_sources::aider::HISTORY;
         package.aider_md |= name == polylogue_sources::aider::COMPANION;
         if name.starts_with("conversations") && name.ends_with(".json") {
@@ -334,8 +341,8 @@ fn classify(members: &mut [Member], format: Option<&str>) -> std::io::Result<()>
         }
     }
     for package in packages.values_mut() {
-        package.chatgpt |= package.conversations && package.user;
-        package.claude |= package.conversations && package.users;
+        package.chatgpt |= package.conversations && package.chatgpt_account_file;
+        package.claude |= package.conversations && package.claude_accounts_file;
         if package.chatgpt && package.claude {
             return Err(std::io::Error::other(
                 "export package declares conflicting ChatGPT and claude.ai structures",

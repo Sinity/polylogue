@@ -121,3 +121,36 @@ fn export_names_lacking_a_signature_are_refused() {
     assert_eq!(report.members[0].class, "refused");
     assert_eq!(w.count("SELECT count(*) AS n FROM a.input"), 0);
 }
+
+#[test]
+fn a_refusal_names_the_origin_the_operator_asked_for() {
+    let w = ClaudeHome::new();
+    let path = w.dir.path().join("unrelated.jsonl");
+    std::fs::write(&path, b"{\"type\":\"arbitrary\"}\n").unwrap();
+    let (mut e, _lock) = engine(&w, 64);
+    let report = e
+        .import_with_options(
+            std::slice::from_ref(&path),
+            &ImportOptions {
+                format: Some("no-such-origin".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(report.refused.len(), 1);
+    assert!(report.refused[0].reason.contains("no-such-origin"));
+    assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.input"), 0);
+}
+
+#[test]
+fn a_directory_import_skips_links_that_lead_to_no_file() {
+    let w = ClaudeHome::new();
+    let dir = w.dir.path().join("export");
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("real.txt"), b"x").unwrap();
+    std::os::unix::fs::symlink(dir.join("sub"), dir.join("to-directory")).unwrap();
+    std::os::unix::fs::symlink(dir.join("missing"), dir.join("broken")).unwrap();
+    let mut found = Vec::new();
+    files_under(&dir, &mut found).unwrap();
+    assert_eq!(found, [dir.join("real.txt")]);
+}

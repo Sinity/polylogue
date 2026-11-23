@@ -333,3 +333,94 @@ fn a_local_fifo_without_a_writer_is_reported_unreadable() {
         "FIFO child: {output:?}"
     );
 }
+
+fn visited(value: Json) -> Vec<String> {
+    let mut found = Vec::new();
+    visit(&value, &mut |raw| {
+        found.push(raw.to_owned());
+        Ok(())
+    })
+    .unwrap();
+    found
+}
+
+#[test]
+fn each_local_image_reference_is_visited_once() {
+    assert_eq!(
+        visited(serde_json::json!({"payload":{"local_images":[
+            "plain.png",
+            {"path":"object.png"},
+            {"type":"local_image","path":"typed.png"}
+        ]}})),
+        ["plain.png", "object.png", "typed.png"]
+    );
+    assert_eq!(
+        visited(serde_json::json!({"content":[
+            {"type":"input_image","image_url":"file:///abs/a.png"},
+            {"type":"image","url":"file:///abs/b.png"},
+            {"type":"input_image","image_url":"https://example.com/c.png"},
+            {"type":"local_image","path":"d.png"}
+        ]})),
+        ["file:///abs/a.png", "file:///abs/b.png", "d.png"]
+    );
+}
+
+#[test]
+fn recorded_directory_follows_turn_context_and_ignores_relative_cwd() {
+    let w = ClaudeHome::new();
+    let first = w.dir.path().join("first");
+    let second = w.dir.path().join("second");
+    std::fs::create_dir_all(&first).unwrap();
+    std::fs::create_dir_all(&second).unwrap();
+    std::fs::write(first.join("shot.png"), b"from first").unwrap();
+    std::fs::write(second.join("shot.png"), b"from second").unwrap();
+    let image = serde_json::json!({"type":"event_msg","payload":{"local_images":["shot.png"]}});
+    let lines = [
+        serde_json::json!({"type":"session_meta","payload":{"cwd":first}}),
+        image.clone(),
+        serde_json::json!({"type":"turn_context","payload":{"cwd":second}}),
+        image.clone(),
+        serde_json::json!({"type":"older_header","payload":{"cwd":"relative/dir"}}),
+        image,
+    ];
+    let text = lines.iter().map(|l| format!("{l}\n")).collect::<String>();
+    let (mut e, _lock) = engine(&w, 64);
+    e.capture_local_files(
+        std::io::Cursor::new(text.into_bytes()),
+        "cwd-tracking",
+        &mut Pass::default(),
+    )
+    .unwrap();
+    let r = e.reads.reader().unwrap();
+    let rows = r
+        .query(
+            "SELECT DISTINCT o.input FROM a.observation o WHERE o.path='codex-local-references/cwd-tracking.jsonl'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let input = rows[0]["input"].as_str().unwrap();
+    let p = r.input_progress(input).unwrap().unwrap();
+    let bytes = r
+        .stored_range(input, p.chain, 0, p.length, &e.blobs)
+        .unwrap();
+    let records: Vec<Json> = bytes
+        .split(|b| *b == b'\n')
+        .filter(|l| !l.is_empty())
+        .map(|l| serde_json::from_slice(l).unwrap())
+        .collect();
+    let status: Vec<_> = records
+        .iter()
+        .map(|r| r["status"].as_str().unwrap())
+        .collect();
+    assert_eq!(status, ["collected", "collected", "unresolved"]);
+    for (record, expected) in records
+        .iter()
+        .zip([b"from first".as_slice(), b"from second"])
+    {
+        assert_eq!(
+            record["input"].as_str(),
+            Some(blake3::hash(expected).to_hex().to_string().as_str())
+        );
+    }
+}

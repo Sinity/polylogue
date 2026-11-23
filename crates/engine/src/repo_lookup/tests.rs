@@ -368,3 +368,28 @@ fn remote_paths_keep_their_spaces_and_newlines() {
         Some(remote)
     );
 }
+
+#[test]
+fn working_directories_are_the_last_cwd_and_listed_cwds_that_exist_here() {
+    let temp = tempfile::tempdir().unwrap();
+    let (first, second, third) = (
+        temp.path().join("first"),
+        temp.path().join("second"),
+        temp.path().join("third"),
+    );
+    for dir in [&first, &second, &third] {
+        fs::create_dir_all(dir).unwrap();
+    }
+    let list = |dirs: &[PathBuf]| serde_json::to_string(dirs).unwrap();
+    let gone = temp.path().join("gone");
+    let rows = vec![
+        serde_json::json!({"cwd": first, "cwd_json": list(&[second.clone(), gone])}),
+        serde_json::json!({"cwd": null, "cwd_json": list(std::slice::from_ref(&third))}),
+        serde_json::json!({"cwd": "relative/dir", "cwd_json": null}),
+        serde_json::json!({"cwd": second, "cwd_json": "not json"}),
+    ];
+    assert_eq!(
+        working_directories(&rows),
+        BTreeSet::from([first, second, third])
+    );
+}

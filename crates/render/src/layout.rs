@@ -971,9 +971,7 @@ fn variant_indicator(
 ) -> bool {
     let mut shown = std::collections::BTreeSet::new();
     for (original, variant) in facts.variants.for_source(source) {
-        if !shown.insert(original)
-            || variant.mark.stale && !options.variants.contains(&variant.mark.key)
-        {
+        if !shown.insert(original) || !variant.is_active(options) {
             continue;
         }
         if !visit(ReadItem {

@@ -98,7 +98,11 @@ impl crate::Engine {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
                 Err(error) => return Err(error.to_string()),
             };
-            if known.facts != Some(facts) || facts.size != length {
+            if !known
+                .facts
+                .is_some_and(|stored| stored.unchanged_as(&facts))
+                || facts.size != length
+            {
                 return Ok(false);
             }
             let chain = reader

@@ -3326,3 +3326,55 @@ fn visible_reference_names_leave_structured_source_records_unchanged() {
         assert_eq!(doc.items[0].source.reference, stored);
     }
 }
+
+#[test]
+fn variant_indicator_names_partial_omission_and_stale_state() {
+    use polylogue_model::VariantRelation::{Expands, Omits, Translates};
+    let reference = "block:test:session:message#0";
+    let indicators = |relations: Vec<polylogue_model::VariantRelation>, stale: bool| {
+        let mut variant = text_variant(reference, "translated thinking", vec![]);
+        variant.relations = relations;
+        variant.mark.stale = stale;
+        let mut facts = LayoutFacts::default();
+        facts
+            .variants
+            .insert(
+                polylogue_model::Reference::parse(reference).unwrap(),
+                variant,
+            )
+            .unwrap();
+        let options = ReadOptions {
+            thinking: Some(Expansion::Full),
+            variants: vec!["en".into()],
+            ..Default::default()
+        };
+        let record = message(vec![Block::Thinking {
+            text: Some("original thinking".into()),
+            redacted: false,
+            signature: None,
+        }]);
+        layout(record, &options, &facts)
+            .into_iter()
+            .filter_map(|item| match item.kind {
+                ItemKind::Indicator {
+                    indicator: IndicatorKind::Variant,
+                    text,
+                    ..
+                } => Some(text),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        indicators(vec![Omits, Expands], false),
+        ["[variant en · omits, expands · variant:synthetic@revision · partly omitted]"]
+    );
+    assert_eq!(
+        indicators(vec![Omits], false),
+        ["[variant en · omits · variant:synthetic@revision]"]
+    );
+    assert_eq!(
+        indicators(vec![Translates], true),
+        ["[variant en · translates · variant:synthetic@revision · stale]"]
+    );
+}

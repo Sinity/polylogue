@@ -640,6 +640,7 @@ fn acknowledge_groups(pending: Receiver<Pending>, done: Sender<Finished>) {
                                     &error
                                 {
                                     result.chain = Some(stored.chain);
+                                    result.stored = stored.bytes_written;
                                 }
                             }
                             Some(Ok(stored)) => {
