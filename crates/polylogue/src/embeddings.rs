@@ -146,15 +146,18 @@ impl Provider {
             _ => return Err("the typed settings snapshot lacks embed.provider".into()),
         };
         let (endpoint, model) = match kind {
-            ProviderKind::Local => ("http://127.0.0.1:11434/v1", "qwen3-embedding:0.6b"),
-            ProviderKind::Voyage => ("https://api.voyageai.com/v1", "voyage-4"),
+            ProviderKind::Local => (
+                "http://127.0.0.1:11434/v1".to_owned(),
+                "qwen3-embedding:0.6b",
+            ),
+            ProviderKind::Voyage => (format!("{VOYAGE_ORIGIN}/v1"), "voyage-4"),
         };
         let endpoint = match settings
             .get("embed.endpoint")
             .map_err(|error| error.to_string())?
         {
             Some(Value::Endpoint(value)) => value.clone(),
-            None => endpoint.into(),
+            None => endpoint.as_str().into(),
             _ => return Err("invalid typed embed.endpoint".into()),
         };
         if kind == ProviderKind::Local && !is_loopback(&endpoint) {

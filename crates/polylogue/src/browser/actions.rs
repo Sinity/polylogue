@@ -20,14 +20,22 @@ use std::path::Path;
 /// The providers whose pages the extension can draft and submit on, by
 /// the extension's names for them.
 pub fn providers() -> impl Iterator<Item = &'static str> {
+    providers_where(|web| web.actions)
+}
+
+/// The extension's names for the providers whose web declaration passes `keep`.
+pub(super) fn providers_where(
+    keep: impl Fn(&polylogue_sources::origin::WebChat) -> bool,
+) -> impl Iterator<Item = &'static str> {
     polylogue_sources::origin::ORIGINS
         .iter()
         .filter_map(|o| o.web.as_ref())
-        .filter(|w| w.actions)
+        .filter(move |w| keep(w))
         .filter_map(|w| w.extension_names.first().copied())
 }
 
-/// A refusal: an HTTP status for the route and a stable code.
+/// A refusal with its stable code; the daemon's operation boundary maps
+/// the code to an HTTP status.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Refused(pub polylogue_model::Code);
 
@@ -131,7 +139,7 @@ pub fn attachment(file: &ChatFile, blob: BlobHash) -> ChatAttachment {
     }
 }
 
-fn iso(ms: i64) -> Option<String> {
+pub(super) fn iso(ms: i64) -> Option<String> {
     jiff::Timestamp::from_millisecond(ms)
         .ok()
         .map(|t| t.to_string())
@@ -220,11 +228,6 @@ pub fn view(a: &ChatAction, now: i64) -> Result<ActionSummary, serde_json::Error
         receipt: a.events.iter().rev().find_map(|e| e.receipt.clone()),
         events: a.events.clone(),
     })
-}
-
-/// The product code is classified at the shared operation boundary.
-pub fn refusal(code: polylogue_model::Code) -> Refused {
-    Refused(code)
 }
 
 #[cfg(test)]
