@@ -360,7 +360,7 @@ fn install_drive(
                 Installation::Authorized { path } => {
                     writeln!(output, "Drive authorized; credentials: {}", path.display())?
                 }
-                Installation::AuthorizationPreview { url, scope } => {
+                Installation::AuthorizationDryRun { url, scope } => {
                     writeln!(output, "Authorize {scope}:\n{url}")?
                 }
                 Installation::Removed { path } => writeln!(
@@ -368,7 +368,7 @@ fn install_drive(
                     "Drive authorization revoked and {} removed",
                     path.display()
                 )?,
-                Installation::RemovalPreview { path } => writeln!(
+                Installation::RemovalDryRun { path } => writeln!(
                     output,
                     "would revoke Drive authorization and remove {}",
                     path.display()

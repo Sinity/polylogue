@@ -37,9 +37,9 @@ impl Default for Drive {
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum Installation {
     Authorized { path: PathBuf },
-    AuthorizationPreview { url: String, scope: &'static str },
+    AuthorizationDryRun { url: String, scope: &'static str },
     Removed { path: PathBuf },
-    RemovalPreview { path: PathBuf },
+    RemovalDryRun { path: PathBuf },
     NotAuthorized { path: PathBuf },
 }
 
@@ -74,10 +74,10 @@ impl Drive {
             Err(error) => return Err(error),
         };
         if let Some(bytes) = existing {
-            let user: AuthorizedUser = serde_json::from_slice(&bytes).map_err(|_| {
+            let user: AuthorizedUser = serde_json::from_slice(&bytes).map_err(|error| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "Drive credentials are not an authorized-user record",
+                    format!("Drive credentials are not an authorized-user record: {error}"),
                 )
             })?;
             if user.client_id.is_empty() || user.refresh_token.is_empty() {
@@ -90,24 +90,28 @@ impl Drive {
                 return Ok(Installation::Authorized { path });
             }
             if dry_run {
-                return Ok(Installation::RemovalPreview { path });
+                return Ok(Installation::RemovalDryRun { path });
             }
             let mut response = agent
                 .post(&self.revoke)
                 .send_form([("token", user.refresh_token.as_str())])
                 .map_err(|error| io::Error::other(format!("Drive revocation failed: {error}")))?;
-            let invalid_token = response.status() == 400
-                && response
+            let status = response.status();
+            let failure = if status.is_success() {
+                serde_json::Value::Null
+            } else {
+                response
                     .body_mut()
                     .read_json::<serde_json::Value>()
-                    .is_ok_and(|value| {
-                        value.get("error").and_then(serde_json::Value::as_str)
-                            == Some("invalid_token")
-                    });
-            if !response.status().is_success() && !invalid_token {
+                    .unwrap_or_default()
+            };
+            let invalid_token = status == 400
+                && failure.get("error").and_then(serde_json::Value::as_str)
+                    == Some("invalid_token");
+            if !status.is_success() && !invalid_token {
                 return Err(io::Error::other(format!(
-                    "Drive revocation returned HTTP {}; credentials were kept",
-                    response.status()
+                    "Drive revocation returned HTTP {status}{}; credentials were kept",
+                    provider_reason(&failure)
                 )));
             }
             // Keep a replacement observed after the revocation request.
@@ -133,7 +137,7 @@ impl Drive {
         let redirect = format!("http://{}/", callback.address);
         let url = consent_url(&self.authorization, client_id, &redirect, &state, &verifier)?;
         if dry_run {
-            return Ok(Installation::AuthorizationPreview {
+            return Ok(Installation::AuthorizationDryRun {
                 url: url.into(),
                 scope: SCOPE,
             });
@@ -150,10 +154,15 @@ impl Drive {
                 ("redirect_uri", redirect.as_str()),
             ])
             .map_err(|error| io::Error::other(format!("Drive token exchange failed: {error}")))?;
-        if !response.status().is_success() {
+        let status = response.status();
+        if !status.is_success() {
+            let failure = response
+                .body_mut()
+                .read_json::<serde_json::Value>()
+                .unwrap_or_default();
             return Err(io::Error::other(format!(
-                "Drive token exchange returned HTTP {}",
-                response.status()
+                "Drive token exchange returned HTTP {status}{}",
+                provider_reason(&failure)
             )));
         }
         let value: serde_json::Value = response.body_mut().read_json().map_err(io::Error::other)?;
@@ -243,6 +252,7 @@ impl Callback {
         let address = listener.local_addr()?;
         // The first result wins; later requests find the one slot full.
         let (send, reply) = mpsc::sync_channel(1);
+        let report_failure = send.clone();
         let (stop, stopped) = tokio::sync::oneshot::channel();
         let worker = polylogue_model::spawn_named("drive-consent", move || {
             let serve = || -> io::Result<()> {
@@ -268,7 +278,9 @@ impl Callback {
                     }
                 })
             };
-            let _ = serve();
+            if let Err(error) = serve() {
+                let _ = report_failure.try_send(Err(error));
+            }
         })?;
         Ok(Self {
             address,
@@ -305,6 +317,27 @@ impl Drop for Callback {
         }
     }
 }
+/// The provider's error code and description from a failed token or
+/// revocation reply, as a message suffix; empty when the body had neither.
+fn provider_reason(body: &serde_json::Value) -> String {
+    let text = |key| {
+        body.get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(|value| {
+                value
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .collect::<String>()
+            })
+            .filter(|value| !value.is_empty())
+    };
+    match (text("error"), text("error_description")) {
+        (Some(error), Some(description)) => format!(": {error} ({description})"),
+        (Some(error), None) => format!(": {error}"),
+        (None, Some(description)) => format!(": {description}"),
+        (None, None) => String::new(),
+    }
+}
 fn callback_code(query: &str, state: &str) -> io::Result<String> {
     let url = Url::parse(&format!("http://127.0.0.1/?{query}")).map_err(io::Error::other)?;
     let pairs: Vec<_> = url.query_pairs().collect();
@@ -326,10 +359,14 @@ fn callback_code(query: &str, state: &str) -> io::Result<String> {
             "Drive authorization state did not match",
         ));
     }
-    if pairs.iter().any(|(name, _)| name == "error") {
+    if let Some((_, reason)) = pairs.iter().find(|(name, _)| name == "error") {
+        let reason: String = reason
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "Drive authorization was denied",
+            format!("Drive authorization failed: {reason}"),
         ));
     }
     field("code")

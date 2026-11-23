@@ -323,16 +323,16 @@ async fn selection_note(
 
 #[derive(Deserialize)]
 struct ClaimQuery {
-    claim_by: Option<String>,
+    by: Option<String>,
 }
 
-/// Lists chat actions, or with `claim_by` hands that extension instance
+/// Lists chat actions, or with `by` hands that extension instance
 /// one queued action (`action`, null when none) while chat actions are on.
 async fn chat_actions(
     State(host): State<Arc<BrowserHost>>,
     Query(q): Query<ClaimQuery>,
 ) -> HttpResponse {
-    match q.claim_by.filter(|by| !by.is_empty()) {
+    match q.by.filter(|by| !by.is_empty()) {
         None => answer(host, "chat list", json!({})).await,
         Some(by) => answer(host, "internal chat claim", json!({ "by": by })).await,
     }

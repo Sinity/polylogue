@@ -737,8 +737,25 @@ pub fn respond(
 pub fn run(harness: Harness, event: &str, startup: &Startup) -> ExitCode {
     let until = Instant::now() + CONTEXT_BUDGET;
     let mut input = String::new();
-    let _ = std::io::stdin().read_to_string(&mut input);
-    let payload: Value = serde_json::from_str(&input).unwrap_or(Value::Null);
+    if let Err(error) = std::io::stdin().read_to_string(&mut input) {
+        eprintln!(
+            "{}",
+            polylogue_render::terminal::escape(&format!(
+                "polylogue hook: could not read the {event} payload: {error}"
+            ))
+        );
+    }
+    let payload: Value = serde_json::from_str(&input).unwrap_or_else(|error| {
+        if !input.trim().is_empty() {
+            eprintln!(
+                "{}",
+                polylogue_render::terminal::escape(&format!(
+                    "polylogue hook: the {event} payload is not JSON: {error}"
+                ))
+            );
+        }
+        Value::Null
+    });
     let observed = environment::snapshot(
         event,
         &payload,

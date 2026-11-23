@@ -158,7 +158,7 @@ pub struct StoredFiles {
 }
 
 /// A selection in a chat web page saved as the operator's note on that
-/// message. The request ID is the draft's ID.
+/// message. The request ID is the note's idempotency key.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SelectionNote {

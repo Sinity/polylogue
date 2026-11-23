@@ -235,7 +235,7 @@ fn pasted_and_search_briefs_use_rows() {
 }
 
 #[test]
-fn each_harness_gets_context_in_its_own_shape() {
+fn hooks_fail_open_without_a_daemon() {
     // Without a daemon the hooks fail open: no context, no output.
     let start = json!({"session_id": "a", "cwd": "/nonexistent", "source": "startup"});
     assert!(
@@ -509,7 +509,10 @@ fn decoded_hook_context_has_visible_terminal_controls() {
             Harness::Hermes => &value["context"],
             _ => &value["hookSpecificOutput"]["additionalContext"],
         };
-        assert_eq!(context, &polylogue_render::terminal::escape(text));
+        assert_eq!(
+            context,
+            "\\x1b]8;;https://example.test\\x1b\\link\\x1b]8;;\\x1b\\\\x7f\\u{202e}\n\tcontext"
+        );
     }
 }
 

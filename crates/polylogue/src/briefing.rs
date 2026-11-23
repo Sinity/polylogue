@@ -13,7 +13,7 @@
 //!   as observations rather than verified external tracker state;
 //! - what the recent sessions here did: commits, pull requests, files
 //!   changed, Beads, what they left open, the last answer;
-//! - signal notices of the last day;
+//! - pending signal notices;
 //! - on resume, only what changed since the session's last brief; after
 //!   compaction, every prompt the operator typed in the session, verbatim.
 //!
@@ -1348,7 +1348,10 @@ fn session_start(
             polylogue_render::shell_quote(&here)
         ));
     }
-    let no_candidates = fit.refs.is_empty() && fit.sections.is_empty();
+    let no_candidates = fit.refs.is_empty()
+        && fit.sections.is_empty()
+        && fit.pointers.is_empty()
+        && fit.late.is_none();
     let closing = if no_candidates && previous.is_some() {
         "Nothing changed."
     } else {
@@ -1442,17 +1445,22 @@ fn takeover(
         messages.push(message);
         std::ops::ControlFlow::Continue(())
     })?;
+    // The newest assistant message that has text: a trailing tool-only
+    // message does not hide the answer before it.
     let last_answer = messages.iter().rev().find_map(|m| {
-        (m.role == polylogue_model::Role::Assistant).then(|| {
-            m.blocks
-                .iter()
-                .filter_map(|b| match b {
-                    polylogue_model::Block::Text { text, .. } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
+        if m.role != polylogue_model::Role::Assistant {
+            return None;
+        }
+        let text = m
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                polylogue_model::Block::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        (!text.trim().is_empty()).then_some(text)
     });
     let notes = operator_notes(
         reader,
@@ -1587,7 +1595,7 @@ fn takeover(
         &pull,
     );
     let (text, refs, left_out) = fit.finish(
-        &format!("\nThe full session: `{pull}`; its tool calls: `{pull} --view actions`."),
+        &format!("\nThe full session: `{pull}`; its dialogue: `{pull} --view dialogue`; its changes: `{pull} --view changes`."),
         |_| Ok(None),
     )?;
     Ok(Prepared {
@@ -1783,6 +1791,12 @@ fn recall(
                 format!(" all of: {}", words.join(", "))
             }
         );
+        if !similarity && similarity_failed.is_none() {
+            let _ = writeln!(
+                out,
+                "No exact matches; semantic search is not enabled, so related work under other wording may exist."
+            );
+        }
     }
     let mut items = Vec::new();
     for sid in &sessions {
@@ -1845,35 +1859,42 @@ fn recall(
         more: next.is_some(),
     };
     let mut closing = String::new();
-    let _ = writeln!(
-        closing,
-        "\nHow this was found: {}, ranked together by reciprocal rank fusion{}; \
+    if search_summary.indexes.is_empty() {
+        let _ = writeln!(
+            closing,
+            "\nNo search ran: the text has no words to look for."
+        );
+    } else {
+        let _ = writeln!(
+            closing,
+            "\nHow this was found: {}, ranked together by reciprocal rank fusion{}; \
          {} hits in {} sessions{}.",
-        search_summary
-            .indexes
-            .iter()
-            .map(|i| match i.as_str() {
-                "prose" => "every word in prose",
-                "output" => "every word in tool output",
-                _ => "similarity to the whole text",
-            })
-            .collect::<Vec<_>>()
-            .join(", "),
-        if directory.is_some() {
-            ", with this directory's sessions ranked in one more list"
-        } else {
-            ""
-        },
-        search_summary.hits,
-        search_summary.sessions,
-        match &next {
-            Some(c) => format!(
-                "; more: `polylogue {} brief --cursor {c}`",
-                polylogue_render::shell_quote(text_in.trim())
-            ),
-            None => String::new(),
-        }
-    );
+            search_summary
+                .indexes
+                .iter()
+                .map(|i| match i.as_str() {
+                    "prose" => "every word in prose",
+                    "output" => "every word in tool output",
+                    _ => "similarity to the whole text",
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+            if directory.is_some() {
+                ", with this directory's sessions ranked in one more list"
+            } else {
+                ""
+            },
+            search_summary.hits,
+            search_summary.sessions,
+            match &next {
+                Some(c) => format!(
+                    "; more: `polylogue {} brief --cursor {c}`",
+                    polylogue_render::shell_quote(text_in.trim())
+                ),
+                None => String::new(),
+            }
+        );
+    }
     let mut fit = Fitter::new(budget, out)?;
     fit.section(
         "Stored context:",

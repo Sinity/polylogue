@@ -45,6 +45,24 @@ pub struct QueryObject {
     pub edges: Vec<QueryEdge>,
 }
 
+impl QueryObject {
+    /// The kept results the object reads: those named by its own source
+    /// outputs and by each dependency definition's.
+    pub fn result_references(&self) -> impl Iterator<Item = &str> {
+        self.source_outputs
+            .iter()
+            .chain(
+                self.definitions
+                    .iter()
+                    .flat_map(|node| &node.source_outputs),
+            )
+            .filter_map(|output| match &output.source {
+                OutputSource::Result { reference, .. } => Some(reference.as_str()),
+                _ => None,
+            })
+    }
+}
+
 /// The complete semantic body of a dependency, addressed by its own hash.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]

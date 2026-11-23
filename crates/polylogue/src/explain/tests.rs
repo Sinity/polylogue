@@ -9,12 +9,12 @@ fn explain(expression: Option<&str>) -> crate::test_daemon::Call {
 
 #[test]
 fn declaration_pages_preserve_every_entry() {
-    for subject in &SUBJECTS[1..] {
+    for subject in SUBJECTS {
         let expected = entries(subject, None).unwrap();
         let mut seen = Vec::new();
         let mut cursor = None;
         loop {
-            let page = answer(subject, None, None, Some(1), cursor.as_deref()).unwrap();
+            let page = answer(subject, None, Some(1), cursor.as_deref()).unwrap();
             assert_eq!(page["subject"], *subject);
             assert_eq!(page["total"], expected.len());
             assert!(page.get("syntax").is_none());
@@ -29,14 +29,14 @@ fn declaration_pages_preserve_every_entry() {
         }
         assert_eq!(seen, expected);
     }
-    let page = answer("fields", None, Some("messages"), Some(u64::MAX), None).unwrap();
+    let page = answer("fields", Some("messages"), Some(u64::MAX), None).unwrap();
     assert_eq!(
         page["entries"].as_array().unwrap().len(),
         fields::names(Unit::Messages).count()
     );
-    assert!(answer("fields", None, None, Some(0), None).is_err());
-    assert!(answer("fields", None, None, None, Some("units//1")).is_err());
-    assert!(answer("fields", None, Some("bananas"), None, None).is_err());
+    assert!(answer("fields", None, Some(0), None).is_err());
+    assert!(answer("fields", None, None, Some("units//1")).is_err());
+    assert!(answer("fields", Some("bananas"), None, None).is_err());
     let capabilities = entries("capabilities", None).unwrap();
     let views: Vec<_> = capabilities
         .iter()
@@ -48,7 +48,7 @@ fn declaration_pages_preserve_every_entry() {
 
 #[test]
 fn every_grammar_keyword_is_discoverable() {
-    let page = answer("syntax", None, None, None, None).unwrap();
+    let page = answer("syntax", None, None, None).unwrap();
     let keywords = page["entries"][0]["keywords"].as_array().unwrap();
     for function in [
         "day",
@@ -63,7 +63,7 @@ fn every_grammar_keyword_is_discoverable() {
     }
     assert!(!keywords.contains(&json!("fingerprint")));
     assert!(
-        page["entries"][0]["stages"]
+        page["entries"][0]["transforms"]
             .as_array()
             .unwrap()
             .contains(&json!("sort by"))
@@ -188,13 +188,13 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
 
 #[test]
 fn derived_pages_and_fields_expose_the_same_validity_and_parameters() {
-    let page = answer("derived", None, None, Some(100), None).unwrap();
+    let page = answer("derived", None, Some(100), None).unwrap();
     let entries = page["entries"].as_array().unwrap();
     assert_eq!(entries.len(), polylogue_model::derived::all().len());
     assert!(entries.iter().any(|e| e["name"] == "session_span"
         && e["validity"] == "parameterized"
         && e["parameters"][0]["value"] == 300000));
-    let page = answer("fields", None, Some("sessions"), Some(1000), None).unwrap();
+    let page = answer("fields", Some("sessions"), Some(1000), None).unwrap();
     let field = page["entries"]
         .as_array()
         .unwrap()
@@ -236,7 +236,7 @@ fn capabilities_list_each_operation_with_unlisted_arguments_and_answer() {
 
 #[test]
 fn transforms_subject_lists_the_pipe_stages() {
-    let page = answer("transforms", None, None, Some(100), None).unwrap();
+    let page = answer("transforms", None, Some(100), None).unwrap();
     let completions: Vec<_> = page["entries"]
         .as_array()
         .unwrap()

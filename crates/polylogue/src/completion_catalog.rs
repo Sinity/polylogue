@@ -8,12 +8,14 @@ use query_language::{
 use std::path::Path;
 pub mod publisher;
 
-pub(super) fn base_catalog() -> Catalog {
-    let origins = polylogue_sources::origin::ORIGINS
+pub(super) fn origin_names() -> Vec<String> {
+    polylogue_sources::origin::ORIGINS
         .iter()
         .map(|origin| origin.name.to_owned())
-        .collect::<Vec<_>>();
-    (*polylogue_query::catalog::catalog(&origins)).clone()
+        .collect()
+}
+pub(super) fn base_catalog() -> Catalog {
+    (*polylogue_query::catalog::catalog(&origin_names())).clone()
 }
 pub(crate) fn grammar(text: &str, position: usize) -> Vec<Completion> {
     if position > text.len() || !text.is_char_boundary(position) {
@@ -25,14 +27,14 @@ pub(crate) fn grammar(text: &str, position: usize) -> Vec<Completion> {
 /// Completion opens only the supplied derived catalog, never the archive.
 pub(crate) fn complete_file(
     path: &Path,
-    archive: &str,
+    archive_key: &str,
     text: &str,
     position: usize,
 ) -> Vec<Completion> {
     if position > text.len() || !text.is_char_boundary(position) {
         return vec![];
     }
-    let reader = CatalogReader::open(path, archive).ok().flatten();
+    let reader = CatalogReader::open(path, archive_key).ok().flatten();
     complete_snapshot(reader.as_ref(), text, position).unwrap_or_else(|_| grammar(text, position))
 }
 fn complete_snapshot(
@@ -295,11 +297,11 @@ fn session_help(session: &polylogue_store::completion::Session) -> String {
 /// Setting consumers use their command table position, outside the query grammar.
 pub(crate) fn settings_file(
     path: &Path,
-    archive: &str,
+    archive_key: &str,
     key: Option<&str>,
     prefix: &str,
 ) -> Vec<(String, String)> {
-    let Ok(Some(reader)) = CatalogReader::open(path, archive) else {
+    let Ok(Some(reader)) = CatalogReader::open(path, archive_key) else {
         return vec![];
     };
     let Ok(settings) = reader.settings(key.unwrap_or(prefix)) else {
