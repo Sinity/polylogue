@@ -931,7 +931,8 @@ impl CommitWatcher {
                     &top,
                     &[
                         "log",
-                        "--format=%x00%H %ct",
+                        "-z",
+                        "--format=%x01%H %ct",
                         "--name-only",
                         &format!("{old}..{new}"),
                     ],
@@ -974,20 +975,29 @@ impl CommitWatcher {
     }
 }
 
-/// `git log --format=%x00%H %ct --name-only` output as (commit, commit
-/// time in seconds, files).
+/// `git log -z --format=%x01%H %ct --name-only` output as (commit, commit
+/// time in seconds, files). `-z` keeps paths unquoted, so a path with
+/// unusual characters equals the one the session edited.
 pub(crate) fn parse_commits(text: &str) -> Vec<(String, i64, Vec<String>)> {
-    text.split('\0')
-        .filter_map(|chunk| {
-            let mut lines = chunk.lines().map(str::trim).filter(|l| !l.is_empty());
-            let (commit, seconds) = lines.next()?.split_once(' ')?;
-            Some((
-                commit.to_owned(),
-                seconds.parse().ok()?,
-                lines.map(str::to_owned).collect(),
-            ))
-        })
-        .collect()
+    let mut commits: Vec<(String, i64, Vec<String>)> = Vec::new();
+    let mut open = false;
+    for token in text.split('\0') {
+        if let Some(header) = token.strip_prefix('\u{1}') {
+            let parsed = header
+                .split_once(' ')
+                .and_then(|(commit, seconds)| Some((commit, seconds.parse().ok()?)));
+            open = parsed.is_some();
+            if let Some((commit, seconds)) = parsed {
+                commits.push((commit.to_owned(), seconds, Vec::new()));
+            }
+        } else if open && let Some(last) = commits.last_mut() {
+            let file = token.strip_prefix('\n').unwrap_or(token);
+            if !file.is_empty() {
+                last.2.push(file.to_owned());
+            }
+        }
+    }
+    commits
 }
 
 /// The live clock: a session whose `live_until` has passed changed state

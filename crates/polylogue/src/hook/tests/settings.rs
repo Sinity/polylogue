@@ -245,3 +245,23 @@ fn uninstall_restores_original_bytes() {
         "{\"model\":\"other\"}"
     );
 }
+
+#[test]
+fn appended_events_keep_the_declared_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    std::fs::write(&path, r#"{"hooks":{"Other":[]}}"#).unwrap();
+    install(&path, Harness::Codex, || None, true).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    let position = |event: &str| text.find(&format!("\"{event}\"")).unwrap();
+    let order = [
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "Stop",
+    ];
+    for pair in order.windows(2) {
+        assert!(position(pair[0]) < position(pair[1]), "{text}");
+    }
+}

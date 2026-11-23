@@ -156,6 +156,8 @@ mod tests {
 
     #[test]
     fn a_partial_registry_line_is_not_interleaved_with_another_producer() {
+        // Shorter than the one pending line, so the write stops inside it.
+        const PREFIX_BYTES: usize = 13;
         struct FullAfterPrefix {
             file: std::fs::File,
             remaining: usize,
@@ -191,10 +193,10 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let mut writer = FullAfterPrefix {
             file: std::fs::File::create(&path).unwrap(),
-            remaining: 13,
+            remaining: PREFIX_BYTES,
         };
         assert!(super::super::write_pending(&mut first.bytes, &mut writer).is_err());
-        assert_eq!(first.bytes, expected[13..]);
+        assert_eq!(first.bytes, expected[PREFIX_BYTES..]);
         drop(writer);
         other
             .append(&spool, "boot", &[json!({"event":"other"})])

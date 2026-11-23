@@ -232,7 +232,7 @@ impl EmissionRecorder<'_> {
                     append_record(
                         self.dir,
                         self.harness,
-                        "HookContextEmitted",
+                        polylogue_sources::hook_spool::CONTEXT_EMITTED,
                         &payload,
                         self.observed,
                         Some(session.clone()),

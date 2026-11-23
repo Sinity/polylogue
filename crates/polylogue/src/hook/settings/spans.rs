@@ -176,10 +176,14 @@ pub(super) struct Edit {
 
 /// Applies non-overlapping edits. Of two edits starting at one byte, the
 /// removal applies before the insertion, so inserted text is never removed.
+/// Insertions at one offset keep the order they were given in.
 pub(super) fn apply(text: &str, mut edits: Vec<Edit>) -> String {
-    edits.sort_by_key(|edit| std::cmp::Reverse((edit.range.start, edit.range.end)));
+    // Applied from the end backwards, so earlier offsets stay valid; the
+    // stable ascending sort, reversed, applies equal-offset insertions last
+    // to first, which leaves them in their given order.
+    edits.sort_by_key(|edit| (edit.range.start, edit.range.end));
     let mut out = text.to_owned();
-    for edit in edits {
+    for edit in edits.into_iter().rev() {
         out.replace_range(edit.range, &edit.text);
     }
     out
