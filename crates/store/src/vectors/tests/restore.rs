@@ -137,19 +137,30 @@ fn paid_time_only_changes_are_written_and_ambiguous_or_dimension_conflicts_are_r
         before.revision + 1,
         "actual row trigger advances once"
     );
-    for invalid in [paid(1, 20, &[0., 1.]), paid(1, 30, &[1., 0., 0.])] {
-        assert!(matches!(
-            v.restore(&[invalid]).unwrap().as_slice(),
-            [Restored::Refused(_)]
-        ));
+    for (invalid, reason) in [
+        (
+            paid(1, 20, &[0., 1.]),
+            "this address holds different vector values with the same purchase time",
+        ),
+        (
+            paid(1, 30, &[1., 0., 0.]),
+            "this address has another vector dimension under the same embedding key",
+        ),
+    ] {
+        assert_eq!(
+            v.restore(&[invalid]).unwrap(),
+            vec![Restored::Refused(reason.into())]
+        );
         assert_eq!(state(&v), after);
     }
     let mut overflow = paid(1, 30, &[1., 0.]);
     overflow.dims = i64::MAX;
-    assert!(matches!(
-        v.restore(&[overflow]).unwrap().as_slice(),
-        [Restored::Refused(_)]
-    ));
+    assert_eq!(
+        v.restore(&[overflow]).unwrap(),
+        vec![Restored::Refused(
+            "it holds 8 bytes, not 9223372036854775807 four-byte values".into()
+        )]
+    );
     let mut chunk = paid(1, 30, &[0., 1.]);
     chunk.chunk = 1;
     let mut model = paid(1, 30, &[1., 0., 0.]);
@@ -158,9 +169,31 @@ fn paid_time_only_changes_are_written_and_ambiguous_or_dimension_conflicts_are_r
         v.restore(&[chunk, model]).unwrap(),
         vec![Restored::Stored; 2]
     );
+    let addressed: Vec<(i64, i64, String, Vec<u8>, i64)> = v
+        .conn
+        .prepare("SELECT id,chunk,model,vector,embedded_at FROM embedded ORDER BY id")
+        .unwrap()
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    let bytes =
+        |values: &[f32]| -> Vec<u8> { values.iter().flat_map(|v| v.to_le_bytes()).collect() };
     assert_eq!(
-        state(&v).rows.len(),
-        3,
+        addressed,
+        vec![
+            (1, 0, KEY.to_string(), bytes(&[1., 0.]), 20),
+            (2, 1, KEY.to_string(), bytes(&[0., 1.]), 30),
+            (
+                3,
+                0,
+                "synthetic/model/3/document/unit".to_string(),
+                bytes(&[1., 0., 0.]),
+                30
+            ),
+        ],
         "full model and chunk stay in the address"
     );
 }
@@ -283,7 +316,7 @@ fn seeded_old_revision_and_failed_first_loads_do_not_loop() {
     .unwrap();
     let empty = v.load(other).unwrap();
     assert_eq!(empty.vectors(), 0);
-    assert!(empty.revision > 0);
+    assert_eq!(empty.revision, 1);
     let mut incoming = paid(8, 20, &[1., 0.]);
     incoming.model = other.into();
     v.restore(&[incoming]).unwrap();

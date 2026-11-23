@@ -74,8 +74,8 @@ fn absolute_values_preserve_unknowns_and_handle_the_minimum_integer() {
     register(&conn).unwrap();
     let values: (Option<f64>, i64, f64, f64) = conn
         .query_row(
-            "SELECT pl_abs(NULL), pl_abs(-7), pl_abs(-1.25), pl_abs(-9223372036854775808)",
-            [],
+            "SELECT pl_abs(NULL), pl_abs(-7), pl_abs(-1.25), pl_abs(?1)",
+            [i64::MIN],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .unwrap();

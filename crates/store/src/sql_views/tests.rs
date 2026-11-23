@@ -63,11 +63,13 @@ fn the_views_read_sessions_messages_and_assertions() {
     let sessions = reader
         .query("SELECT id, title FROM v1_sessions", &[])
         .unwrap();
+    assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0]["id"], "test:s1");
     assert_eq!(sessions[0]["title"], "parser work");
     let messages = reader
         .query("SELECT session, text FROM v1_messages", &[])
         .unwrap();
+    assert_eq!(messages.len(), 1);
     assert_eq!(messages[0]["session"], "test:s1");
     assert_eq!(messages[0]["text"], "fix the parser");
     let assertions = reader
@@ -145,6 +147,7 @@ fn the_views_keep_unknown_values_null_and_read_calls_and_links() {
             &[],
         )
         .unwrap();
+    assert_eq!(messages.len(), 2);
     assert_eq!(messages[0]["cost_nusd"], 2500);
     assert!(messages[0]["input_tokens"].is_null());
     assert!(messages[0]["output_tokens"].is_null());

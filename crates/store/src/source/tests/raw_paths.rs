@@ -170,7 +170,8 @@ fn source_read_keeps_body_when_extent_is_trimmed() {
             source_read
         );
         row.observation = None;
-        assert!(row.insert(&conn, 9).is_err());
+        let refused = "the capture read does not describe these source rows";
+        assert_eq!(row.insert(&conn, 9).unwrap_err().to_string(), refused);
         row.extents = vec![crate::input_rows::Extent {
             chain: 1,
             offset: 8,
@@ -178,7 +179,7 @@ fn source_read_keeps_body_when_extent_is_trimmed() {
             blob: source_read.hash,
             blob_offset: 0,
         }];
-        assert!(row.insert(&conn, 9).is_err());
+        assert_eq!(row.insert(&conn, 9).unwrap_err().to_string(), refused);
         let count: i64 = conn
             .query_row(
                 &source.sql("SELECT count(*) FROM @source.extent"),

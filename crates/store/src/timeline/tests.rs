@@ -143,9 +143,20 @@ fn every_leap_year_record_and_undated_record_is_reachable() {
             break;
         }
     }
-    assert_eq!(ids.len(), 9);
-    assert_eq!(ids[0], "codex:ancient");
-    assert_eq!(ids[8], "codex:2024");
+    assert_eq!(
+        ids,
+        [
+            "codex:ancient",
+            "codex:1996",
+            "codex:2000",
+            "codex:2004",
+            "codex:2008",
+            "codex:2012",
+            "codex:2016",
+            "codex:2020",
+            "codex:2024"
+        ]
+    );
     let ancient = page(
         &reader,
         &day,
@@ -155,6 +166,7 @@ fn every_leap_year_record_and_undated_record_is_reachable() {
     )
     .unwrap();
     assert_eq!(ancient["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(ancient["rows"][0]["id"], "codex:ancient");
     let first = page(&reader, &day, &all(None, false, true), None, 1).unwrap();
     let next: Position = serde_json::from_value(first["after"].clone()).unwrap();
     let second = page(&reader, &day, &all(None, false, true), Some(&next), 1).unwrap();

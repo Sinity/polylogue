@@ -122,6 +122,8 @@ fn variant_application_keeps_forks_and_restores_base() {
     apply(&to, &unrelated, 5).unwrap();
     assert_eq!(sql_heads("first"), graph_heads("first"));
     assert_eq!(sql_heads("another-root"), graph_heads("another-root"));
+    assert_eq!(sql_heads("first"), ["correction", "fork"]);
+    assert_eq!(sql_heads("another-root"), ["unrelated"]);
 
     assert_eq!(heads(&to, "first").unwrap().len(), 2);
     let withdraw = |id: &str, targets: &[&str], counter| {
@@ -259,6 +261,19 @@ fn variant_restoration_is_idempotent_and_refuses_changed_facts() {
     let restored = archive();
     apply(&restored, &effect, 10).unwrap();
     apply(&restored, &effect, 11).unwrap();
+    let stored = rows::get(&restored, "first").unwrap().unwrap();
+    assert_eq!(stored.id, "first");
+    assert_eq!(stored.root, "first");
+    assert_eq!(stored.base, None);
+    assert_eq!(stored.source, "message:codex:source");
+    assert_eq!(stored.source_hash, BlobHash([1; 32]));
+    assert_eq!(stored.kind, VariantKind::Translation);
+    assert_eq!(stored.from_lang.as_deref(), Some("en"));
+    assert_eq!(stored.to_lang.as_deref(), Some("pl"));
+    assert_eq!(stored.method.as_deref(), Some("translation"));
+    assert_eq!(stored.machine, "machine");
+    assert_eq!(stored.created_at, request.at);
+    assert_eq!(stored.commit_seq, 10);
     let mut expected = effect.variants[0].clone();
     expected.commit_seq = 10;
     assert_eq!(rows::get(&restored, "first").unwrap(), Some(expected));

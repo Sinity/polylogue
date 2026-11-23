@@ -285,10 +285,16 @@ fn verifying_changes_no_row() {
         tables
             .into_iter()
             .map(|table| {
-                let rows: i64 = conn
-                    .query_row(&format!("SELECT count(*) FROM \"{table}\""), [], |row| {
-                        row.get(0)
+                let mut select = conn.prepare(&format!("SELECT * FROM \"{table}\"")).unwrap();
+                let columns = select.column_count();
+                let rows: Vec<Vec<String>> = select
+                    .query_map([], |row| {
+                        (0..columns)
+                            .map(|column| row.get_ref(column).map(|value| format!("{value:?}")))
+                            .collect::<rusqlite::Result<Vec<_>>>()
                     })
+                    .unwrap()
+                    .collect::<rusqlite::Result<_>>()
                     .unwrap();
                 (table, rows)
             })
@@ -305,7 +311,8 @@ fn verifying_changes_no_row() {
             .unwrap()
     };
     let (before, counter) = (snapshot(), write_counter());
-    let _ = stored.verify(Some(&mut Vec::new()));
+    let found = stored.verify(Some(&mut Vec::new()));
+    assert_eq!(found.problems, []);
     assert_eq!(snapshot(), before);
     assert_eq!(write_counter(), counter);
 }
@@ -348,14 +355,11 @@ fn a_negative_revision_length_is_reported() {
     let stored = two_inputs();
     stored.edit("UPDATE revision SET length = -1 WHERE input = 'whole'");
     let found = stored.verify(None);
-    assert!(
-        found.problems.iter().any(|problem| {
-            problem.kind == ProblemKind::RevisionUncovered
-                && problem.subject.starts_with("whole#")
-                && problem.detail.starts_with("length -1,")
-        }),
-        "{:?}",
-        found.problems
+    assert_eq!(kinds(&found), [ProblemKind::RevisionUncovered]);
+    assert_eq!(found.problems[0].subject, "whole#1");
+    assert_eq!(
+        found.problems[0].detail,
+        "length -1, extents of chain 1 cover 15"
     );
 }
 

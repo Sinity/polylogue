@@ -4,8 +4,11 @@ use polylogue_model::Timestamp;
 #[test]
 fn request_ids_are_uuid_v7() {
     let id = new_request_id();
+    let parsed = uuid::Uuid::parse_str(&id).unwrap();
+    assert_eq!(parsed.get_version_num(), 7);
+    assert_eq!(parsed.get_variant(), uuid::Variant::RFC4122);
     assert_eq!(id.len(), 36);
-    assert_eq!(&id[14..15], "7");
+    assert_eq!(id.matches('-').count(), 4);
     assert_ne!(id, new_request_id());
 }
 
