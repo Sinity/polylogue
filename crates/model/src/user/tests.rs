@@ -29,11 +29,19 @@ fn request_uses_the_supplied_clock_and_machine() {
 #[test]
 fn write_intent_refuses_caller_supplied_identity() {
     for write in [
-        serde_json::json!({"write":"withdraw", "note":"root", "author":"operator"}),
+        serde_json::json!({"write":"withdraw_assertions", "targets":[], "reason":null, "author":"operator"}),
         serde_json::json!({"write":"set_setting", "key":"browser.actions", "value":"on", "machine":null, "author":"operator"}),
-        serde_json::json!({"write":"add_note", "note":{"kind":"note", "value":"text", "targets":["repo:synthetic"], "author":"operator"}}),
+        serde_json::json!({"write":"assert", "assertions":[], "author":"operator"}),
+        serde_json::json!({"write":"mark_seen", "marks":[], "author":"operator"}),
     ] {
-        assert!(serde_json::from_value::<UserWrite>(write).is_err());
+        let error = serde_json::from_value::<UserWrite>(write.clone())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unknown field `author`"), "{write}: {error}");
+        // The same write without the identity is accepted.
+        let mut anonymous = write;
+        anonymous.as_object_mut().unwrap().remove("author");
+        serde_json::from_value::<UserWrite>(anonymous).unwrap();
     }
 }
 

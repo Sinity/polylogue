@@ -38,16 +38,36 @@ fn all_declared_defaults_validate_and_variants_keep_order() {
 }
 #[test]
 fn typed_values_refuse_invalid_minutes_counts_and_plans() {
-    for (key, value) in [
-        ("signal.quiet_hours", r#"{"from":1440,"to":10}"#),
-        ("signal.interrupts_per_hour", "-1"),
-        ("embed.price_per_mtok", "NaN"),
+    for (key, value, expected) in [
+        (
+            "signal.quiet_hours",
+            r#"{"from":1440,"to":10}"#,
+            "civil minutes from 0 through 1439",
+        ),
+        (
+            "signal.interrupts_per_hour",
+            "-1",
+            "a nonnegative whole interrupt count",
+        ),
+        (
+            "embed.price_per_mtok",
+            "NaN",
+            "a nonnegative decimal with at most six decimals",
+        ),
         (
             "plan.example",
             r#"{"name":"named","origin":"example","cycle_anchor_day":32,"price_nusd":1,"budget":null}"#,
+            PLAN_EXPECTED,
         ),
     ] {
-        assert!(parse(key, value, SettingMode::Standalone).is_err(), "{key}");
+        assert_eq!(
+            parse(key, value, SettingMode::Standalone),
+            Err(Error::Invalid {
+                key: key.into(),
+                expected,
+            }),
+            "{key}"
+        );
     }
     assert_eq!(
         parse(
@@ -74,8 +94,20 @@ fn scope_resolution_uses_accepting_host_and_rejects_archive_overrides() {
         target_machine("reading.alternates", None, "host-a").unwrap(),
         None
     );
-    assert!(target_machine("reading.alternates", Some("host-b"), "host-a").is_err());
-    assert!(target_machine("signal.quiet_hours", Some("*"), "host-a").is_err());
+    assert_eq!(
+        target_machine("reading.alternates", Some("host-b"), "host-a"),
+        Err(Error::Invalid {
+            key: "reading.alternates".into(),
+            expected: "archive scope without a machine override",
+        })
+    );
+    assert_eq!(
+        target_machine("signal.quiet_hours", Some("*"), "host-a"),
+        Err(Error::Invalid {
+            key: "signal.quiet_hours".into(),
+            expected: "a nonempty host machine identity",
+        })
+    );
 }
 
 #[test]
@@ -130,8 +162,10 @@ fn old_drive_setting_replays_but_is_not_a_current_control() {
             .all(|declaration| declaration.key != "drive.ai-studio")
     );
     let hint = historical_hint("drive.ai-studio").unwrap();
-    assert!(hint.contains("polylogue install drive"));
-    assert!(hint.contains("polylogue install drive --remove"));
+    assert_eq!(
+        hint,
+        "This setting is historical. Use `polylogue install drive` to authorize collection or `polylogue install drive --remove` to revoke it."
+    );
     assert_eq!(
         parse(
             "drive.client_id",

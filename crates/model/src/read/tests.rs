@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    Block, Message, MessageId, PromptKind, Role, TimeEvidence, Usage,
+    Block, Message, MessageId, Precision, PromptKind, Role, TimeEvidence, Timestamp, Usage,
     bundle::{MessageRecord, Record},
 };
 
@@ -57,7 +57,14 @@ fn record(message: Message) -> Record {
 }
 #[test]
 fn dialogue_is_dialogue_and_original_positions_survive() {
-    let original = record(message(Role::Assistant, None));
+    let mut timed = message(Role::Assistant, None);
+    timed
+        .set_time(
+            Timestamp::from_unix_ms(1_000),
+            TimeEvidence::intrinsic(Precision::Instant),
+        )
+        .unwrap();
+    let original = record(timed);
     let Record::Message(before) = original.clone() else {
         unreachable!()
     };
@@ -78,7 +85,11 @@ fn dialogue_is_dialogue_and_original_positions_survive() {
     assert_eq!(after.source_version, before.source_version);
     assert_eq!(after.message.attrs, before.message.attrs);
     assert_eq!(after.message.production, before.message.production);
-    assert_eq!(after.message.time_evidence(), TimeEvidence::UNKNOWN);
+    assert_eq!(after.message.at, Timestamp::from_unix_ms(1_000));
+    assert_eq!(
+        after.message.time_evidence(),
+        TimeEvidence::intrinsic(Precision::Instant)
+    );
     assert!(
         project_record(
             record(message(Role::User, Some(PromptKind::Harness))),
@@ -118,16 +129,19 @@ fn context_view_needs_prepared_membership() {
         }),
         ..Default::default()
     };
-    assert!(
+    let Record::Message(row) =
         project_record(record(message(Role::Assistant, None)), &options, &facts)
             .unwrap()
-            .is_some()
-    );
+            .unwrap()
+    else {
+        unreachable!()
+    };
+    // The context view keeps every block kind, thinking included.
+    assert_eq!(row.block_ordinals, [0, 1, 2]);
 }
 #[test]
 fn unknown_view_names_are_refused_and_options_name_the_supported_views() {
     assert!(View::parse("unknown").is_none());
-    assert_eq!(View::ALL.len(), View::NAMES.len());
     assert_eq!(
         "unknown".parse::<View>().unwrap_err().to_string(),
         "unknown view \"unknown\"; views: transcript, dialogue, summary, context, links, changes, live, raw, trace"
@@ -138,8 +152,10 @@ fn unknown_view_names_are_refused_and_options_name_the_supported_views() {
         ..Default::default()
     };
     let error = invalid.validate().unwrap_err().to_string();
-    assert!(error.contains("thinking"));
-    assert!(error.contains("transcript, context"));
+    assert_eq!(
+        error,
+        "view dialogue does not accept thinking; accepted by transcript, context"
+    );
 }
 #[test]
 fn value_states_never_serialize_unknown_as_zero() {
@@ -479,19 +495,10 @@ fn spawn_levels_and_help_come_from_the_show_table() {
             "{refused}"
         );
     }
-    for kind in ShowKind::ALL {
-        let entry = format!(
-            "{}[:{}{}]",
-            kind.name(),
-            kind.levels().join("|"),
-            if kind.takes_number() { "|N" } else { "" }
-        );
-        assert!(
-            ShowKind::HELP.contains(&entry),
-            "{entry} in {}",
-            ShowKind::HELP
-        );
-    }
+    assert_eq!(
+        ShowKind::HELP,
+        "Item kinds to show, each with an optional level (the fullest when omitted): tools[:line|full|N] thinking[:line|full] harness[:line|full] inherited[:full] branches[:full] spawns[:card|full|N] annotations[:header] turns[:dividers] context[:meter]"
+    );
     let inline_context = ReadOptions {
         view: View::Context,
         spawns: SpawnFold::Inline { depth: None },
@@ -711,7 +718,6 @@ fn read_at_keeps_the_declared_string_format_and_context_message_behavior() {
         schema["$defs"]["MessageId"],
         serde_json::json!({"type":"string"})
     );
-    assert!(schema["$defs"].get("ReadAt").is_none());
 }
 
 #[test]

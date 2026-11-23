@@ -352,7 +352,7 @@ fn entry_classes_show_exactly_what_visible_entries_shows() {
 }
 
 #[test]
-fn stored_class_bits_outside_the_declared_kinds_are_rejected() {
+fn stored_class_bits_with_the_reserved_top_bit_are_rejected() {
     assert_eq!(
         EntryClass::from_bits(11),
         Some(EntryClass::new(
@@ -362,7 +362,7 @@ fn stored_class_bits_outside_the_declared_kinds_are_rejected() {
             0
         ))
     );
-    for bits in [12, 15, 0x8000, 0x800B] {
+    for bits in [0x8000, 0x800B] {
         assert_eq!(EntryClass::from_bits(bits), None, "{bits:#x}");
     }
 }

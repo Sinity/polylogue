@@ -78,11 +78,25 @@ fn session() -> Session {
 
 #[test]
 fn custom_title_beats_generated_and_summary_in_any_order() {
-    let mut s = session();
-    s.offer_title("summary", TitleSource::Summary);
-    s.offer_title("custom", TitleSource::Custom);
-    s.offer_title("generated", TitleSource::Generated);
-    assert_eq!(s.title.unwrap().text, "custom");
+    let offers = [
+        ("summary", TitleSource::Summary),
+        ("custom", TitleSource::Custom),
+        ("generated", TitleSource::Generated),
+    ];
+    for order in [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ] {
+        let mut s = session();
+        for at in order {
+            s.offer_title(offers[at].0, offers[at].1);
+        }
+        assert_eq!(s.title.unwrap().text, "custom", "{order:?}");
+    }
 }
 
 #[test]

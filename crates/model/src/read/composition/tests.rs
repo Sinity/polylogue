@@ -79,9 +79,11 @@ fn the_newest_boundary_replaces_everything_before_it() {
     let context = context_at(&parts, |_| &entries, last);
     assert!(context.complete);
     assert_eq!(context.boundary, Some(Place { part: 0, entry: 6 }));
-    assert_eq!(context.evicted.len(), 3);
-    assert_eq!(context.members.first(), Some(&Place { part: 0, entry: 7 }));
-    assert_eq!(context.members.len(), entries.len() - 7);
+    // Entries 0..=5 are three messages (header and text each), 6 the boundary,
+    // 7 and 8 the summary, 9..=14 the three messages after it.
+    let at = |entry| Place { part: 0, entry };
+    assert_eq!(context.evicted, [at(0), at(2), at(4)]);
+    assert_eq!(context.members, (7..=14).map(at).collect::<Vec<Place>>());
     // Before the boundary everything so far is in context.
     let early = context_at(&parts, |_| &entries, Place { part: 0, entry: 3 });
     assert_eq!(early.members.len(), 4);
@@ -150,6 +152,12 @@ fn an_incomplete_newest_boundary_never_falls_back_to_an_older_summary() {
             entry: entries.len() - 3
         })
     );
+    // The second boundary is entry 15; every message header before it is
+    // evicted (the old summary's at 7 included) and only the message after
+    // it (entries 16 and 17) remains.
+    let at = |entry| Place { part: 0, entry };
+    assert_eq!(context.evicted, [0, 2, 4, 7, 9, 11, 13].map(at));
+    assert_eq!(context.members, [at(16), at(17)]);
 }
 
 #[test]

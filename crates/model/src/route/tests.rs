@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Block, MessageId, PromptKind, SessionId, TimeQuality, Timestamp, Usage};
+use crate::{Block, MessageId, Precision, PromptKind, SessionId, TimeQuality, Timestamp, Usage};
 
 fn message(role: Role) -> Message {
     serde_json::from_value(serde_json::json!({
@@ -20,6 +20,8 @@ fn full() -> Message {
     m.parent = Some(MessageId::parse("claude-code:m0").unwrap());
     m.at = Timestamp::from_unix_ms(1_000);
     m.at_quality = TimeQuality::Intrinsic;
+    m.at_precision = Some(Precision::Bounded);
+    m.at_until = Timestamp::from_unix_ms(2_000);
     m.model = Some("model-a".into());
     m.prompt_kind = Some(PromptKind::Prose);
     m.blocks = vec![Block::Text { text: "a".into() }];
@@ -41,20 +43,30 @@ fn every_message_field_belongs_to_a_group() {
     let mut shown = message(Role::User);
     for group in FieldGroup::ALL {
         assert!(group.present(&from), "{group:?}");
-        assert!(!group.present(&shown) || *group == FieldGroup::Content);
+        assert!(!group.present(&shown), "{group:?}");
         group.take(&mut shown, &from);
     }
     assert_eq!(shown, from);
 }
 
 #[test]
-fn page_text_is_last_for_every_group() {
+fn every_group_ranks_routes_in_the_documented_order() {
+    // docs/sessions.md, one conversation through several routes.
     for group in FieldGroup::ALL {
-        for route in Route::ALL {
-            if *route != Route::PageText {
-                assert!(group.rank(*route) < group.rank(Route::PageText));
-            }
-        }
+        let mut order = Route::ALL.to_vec();
+        order.sort_by_key(|route| group.rank(*route));
+        assert_eq!(
+            order,
+            [
+                Route::Live,
+                Route::Capture,
+                Route::Recorded,
+                Route::Export,
+                Route::Copy,
+                Route::PageText
+            ],
+            "{group:?}"
+        );
     }
 }
 
