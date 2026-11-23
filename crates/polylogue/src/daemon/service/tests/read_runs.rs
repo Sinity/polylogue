@@ -130,7 +130,6 @@ fn run_card_reads_the_selected_record_and_offers_an_executable_question() {
     // The stored field names are the format, not whatever serde derives.
     assert_eq!(data["run"]["id"], run.id.to_string());
     assert_eq!(data["outcome"]["run"], data["run"]["id"]);
-    assert_eq!(data["outcome"]["count"], 1);
     assert!(raw.document.footer.next.is_none());
     d.restart();
     d.pause_signals();

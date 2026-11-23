@@ -144,7 +144,10 @@ fn all_tagged_rows_create_no_step_request_and_retries_keep_the_original_result()
     assert_eq!(repeated.id, first.id);
     assert_eq!(repeated.written, 1);
     assert!(repeated.already.is_empty());
-    assert_eq!(text, "tagged 1 row\nrepeat; no new writes\n");
+    assert_eq!(
+        text,
+        "tagged 1 row\nrepeat; no new writes\nundo: printf '%s\\n' 'annotation:tag-original-1@tag-original-1' | polylogue --request-id tag-original-1-undo - withdraw\n"
+    );
 }
 
 #[test]
@@ -161,7 +164,12 @@ fn tag_skips_rows_already_tagged_and_reports_the_accepted_population() {
     let (report, text) = wrote(&d, intended.clone());
     assert_eq!((report.targets, report.written), (2, 1));
     assert_eq!(report.already, vec![first.clone()]);
-    assert_eq!(text, format!("tagged 1 row\nalready tagged: {first}\n"));
+    assert_eq!(
+        text,
+        format!(
+            "tagged 1 row\nalready tagged: {first}\nundo: printf '%s\\n' 'annotation:tag-bulk-1.2@tag-bulk-1.2' | polylogue --request-id tag-bulk-1-undo - withdraw\n"
+        )
+    );
     let request = d
         .daemon
         .reads
