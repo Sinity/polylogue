@@ -241,7 +241,7 @@ pub struct Command {
     pub reason: &'static str,
     pub latency: command_surface::LatencyClass,
     pub failures: &'static [command_surface::FailureKind],
-    /// The command-line words (`assert-query`), also the operation's name
+    /// The command-line words (`dev sql`), also the operation's name
     /// within its MCP tool; the HTTP route joins them with `/`.
     pub name: &'static str,
     pub help: &'static str,
@@ -283,7 +283,7 @@ impl Command {
     }
 }
 
-/// A word that groups commands on the command line (`note`, `measure`).
+/// A word that groups commands on the command line (`chat`, `measure`).
 pub struct Group {
     pub name: &'static str,
     pub help: &'static str,
@@ -828,7 +828,7 @@ const WRITTEN: &[Command] = &[
     },
 ];
 
-/// The command called `name` (`assert-query`).
+/// The command called `name` (`dev sql`).
 pub fn command(name: &str) -> Option<&'static Command> {
     COMMANDS.iter().find(|c| c.name == name)
 }

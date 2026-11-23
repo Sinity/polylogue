@@ -22,22 +22,18 @@ pub struct ActionCommand {
     pub arguments: Vec<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct NotificationSettings {
     /// Receives each notice the route function sends away, as JSON on
     /// standard input.
     pub away_command: Option<ActionCommand>,
-    #[serde(default = "deadline")]
     pub deadline_ms: u64,
-}
-fn deadline() -> u64 {
-    5_000
 }
 impl Default for NotificationSettings {
     fn default() -> Self {
         Self {
             away_command: None,
-            deadline_ms: deadline(),
+            deadline_ms: 5_000,
         }
     }
 }
@@ -117,13 +113,18 @@ impl ActionCommand {
                 .program
                 .to_str()
                 .is_some_and(|value| value.trim().is_empty() || value.contains('\0'))
-            || self
-                .arguments
-                .iter()
-                .any(|argument| argument.contains('\0'))
         {
             return Err(Error::Invalid(
                 "configured command program cannot be blank".into(),
+            ));
+        }
+        if self
+            .arguments
+            .iter()
+            .any(|argument| argument.contains('\0'))
+        {
+            return Err(Error::Invalid(
+                "configured command arguments cannot contain NUL".into(),
             ));
         }
         self.program = super::absolute(self.program.clone(), base);

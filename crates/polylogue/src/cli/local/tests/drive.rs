@@ -235,7 +235,7 @@ fn install_drive_dry_run_has_scope_pkce_and_no_requests_or_files() {
     let (exit, output) = install(&startup, &server.driver(), &["--dry-run"]);
     assert_eq!(exit, ExitCode::SUCCESS);
     let report: Value = serde_json::from_slice(&output).unwrap();
-    assert_eq!(report["status"], "authorization_preview");
+    assert_eq!(report["status"], "authorization_dry_run");
     assert_eq!(report["scope"], auth::SCOPE);
     let url = reqwest::Url::parse(report["url"].as_str().unwrap()).unwrap();
     let query = pairs(url.query().unwrap());

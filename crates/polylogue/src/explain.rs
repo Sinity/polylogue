@@ -7,7 +7,6 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 pub const SUBJECTS: &[&str] = &[
-    "query",
     "syntax",
     "units",
     "fields",
@@ -17,7 +16,7 @@ pub const SUBJECTS: &[&str] = &[
     "derived",
 ];
 
-const SYNTAX: &str = "FIELD:VALUE matches by the field's kind; * includes every value, including unknown; unknown matches missing values. Comparisons use = != < <= > >=. Adjacent conditions and uppercase AND mean both, OR means either, NOT or - negates; parentheses group conditions. exists UNIT(CONDITION) tests related rows; count(UNIT where CONDITION) compares their count. seq(CONDITION -> CONDITION) follows tool calls. FIELD in (QUERY) matches a grouped query's values. Pipe stages sort by, group by, agg, count, limit, offset, distinct and matches shape rows; a unit stage selects related rows; union, intersect, except and fuse combine queries; measure ends a sessions query.";
+const SYNTAX: &str = "FIELD:VALUE matches by the field's kind; * includes every value, including unknown; unknown matches missing values. Comparisons use = != < <= > >=. Adjacent conditions and uppercase AND mean both, OR means either, NOT or - negates; parentheses group conditions. exists UNIT(CONDITION) tests related rows; count(UNIT where CONDITION) compares their count. seq(CONDITION -> CONDITION) follows tool calls. FIELD in (QUERY) matches a grouped query's values. Pipe transforms sort by, group by, agg, count, limit, offset, distinct and matches shape rows; a unit transform selects related rows; union, intersect, except and fuse combine queries; measure ends a sessions query.";
 
 #[derive(Serialize)]
 struct Page {
@@ -30,17 +29,15 @@ struct Page {
 
 pub fn answer(
     subject: &str,
-    expression: Option<&str>,
     unit: Option<&str>,
     page_size: Option<u64>,
     cursor: Option<&str>,
 ) -> Result<Value, Failure> {
-    declarations(subject, expression, unit, page_size, cursor).map_err(Failure::bad_request)
+    declarations(subject, unit, page_size, cursor).map_err(Failure::bad_request)
 }
 
 fn declarations(
     subject: &str,
-    expression: Option<&str>,
     unit: Option<&str>,
     page_size: Option<u64>,
     cursor: Option<&str>,
@@ -50,9 +47,6 @@ fn declarations(
             "unknown subject {subject:?}; choose {}",
             SUBJECTS.join(", ")
         ));
-    }
-    if expression.is_some() {
-        return Err("expression applies to query".into());
     }
     if unit.is_some() && subject != "fields" {
         return Err("unit applies to fields".into());
@@ -99,7 +93,7 @@ fn entries(subject: &str, unit: Option<Unit>) -> Result<Vec<Value>, String> {
             let keywords: Vec<_> = polylogue_query::catalog::FUNCTIONS.iter().copied()
                 .chain(catalog.functions.iter().map(|function| function.name.as_str()))
                 .collect();
-            vec![json!({"syntax": SYNTAX, "stages": polylogue_query::catalog::TRANSFORMS.iter().map(|s| s.completion).collect::<Vec<_>>(), "aggregates": polylogue_query::catalog::AGGREGATES, "keywords": keywords})]
+            vec![json!({"syntax": SYNTAX, "transforms": polylogue_query::catalog::TRANSFORMS.iter().map(|s| s.completion).collect::<Vec<_>>(), "aggregates": polylogue_query::catalog::AGGREGATES, "keywords": keywords})]
         },
         "units" => units::UNITS.iter().map(|u| json!({
             "name": u.name,
@@ -125,13 +119,16 @@ fn entries(subject: &str, unit: Option<Unit>) -> Result<Vec<Value>, String> {
                     .iter()
                     .find(|description| description.spec.name == name)
             };
-            let mut entries: Vec<_> = COMMANDS.iter().map(|c| json!({
-                "kind": "command", "name": c.name, "help": c.help,
-                "tool": c.tool.map(commands::Tool::name), "http": c.http, "writes": c.writes,
-                "arguments": declared(c.name).map(|description| description.input_schema.clone()),
-                "unlisted": commands::declarations().spec_named(c.name).map(|spec| spec.arguments.as_slice()).unwrap_or_default().iter().filter(|a| !a.listed && !a.calling_process).map(|a| a.name.as_str()).collect::<Vec<_>>(),
-                "answer": declared(c.name).map(|description| description.output_schema.clone()),
-            })).collect();
+            let mut entries: Vec<_> = COMMANDS.iter().map(|c| {
+                let description = declared(c.name);
+                json!({
+                    "kind": "command", "name": c.name, "help": c.help,
+                    "tool": c.tool.map(commands::Tool::name), "http": c.http, "writes": c.writes,
+                    "arguments": description.map(|d| d.input_schema.clone()),
+                    "unlisted": description.map(|d| d.spec.arguments.as_slice()).unwrap_or_default().iter().filter(|a| !a.listed && !a.calling_process).map(|a| a.name.as_str()).collect::<Vec<_>>(),
+                    "answer": description.map(|d| d.output_schema.clone()),
+                })
+            }).collect();
             entries.push(json!({"kind": "answer", "schema": schemars::schema_for!(command_surface::Answer<Value>).to_value()}));
             entries.extend(polylogue_model::read::View::NAMES.iter().map(|name| json!({"kind": "read_view", "name": name})));
             entries.extend(polylogue_render::Format::NAMES.iter().map(|name| json!({"kind": "format", "name": name})));

@@ -118,7 +118,7 @@ export class Host {
   conversations(provider, ids) { return this.json("POST", "/v1/conversations", { provider, ids }); }
   saveNote(note) { return this.json("POST", "/v1/notes", note); }
   chatActions() { return this.json("GET", "/v1/chat-actions"); }
-  claimChatAction(by) { return this.json("GET", `/v1/chat-actions?claim_by=${encodeURIComponent(by)}`); }
+  claimChatAction(by) { return this.json("GET", `/v1/chat-actions?by=${encodeURIComponent(by)}`); }
   reportChatAction(id, update) { return this.json("POST", `/v1/chat-actions/${encodeURIComponent(id)}/report`, update); }
   decideChatAction(id, by, approve) {
     return this.json("POST", `/v1/chat-actions/${encodeURIComponent(id)}/decision`, { by, approve });

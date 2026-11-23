@@ -369,7 +369,6 @@ impl Handler for Help {
         };
         crate::explain::answer(
             subject,
-            None,
             arguments.unit.as_deref(),
             arguments.page_size,
             call.cursor,

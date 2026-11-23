@@ -3,10 +3,10 @@ use super::BrowserHost;
 use crate::daemon::Failure;
 use command_surface::Answer;
 use polylogue_model::{MessageId, Reference};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Source {
     pub(crate) provider: String,
@@ -42,7 +42,7 @@ pub(super) fn save(host: &BrowserHost, input: SelectionNote) -> Answer<Value> {
         .unwrap_or_else(|| {
             crate::daemon::service::error(
                 polylogue_model::Code::DaemonRequired,
-                "save outcome unknown; retry this draft with the same ID",
+                "save outcome unknown; retry this note with the same request ID",
             )
         })
 }
@@ -58,7 +58,7 @@ impl SelectionNote {
             || source.selected_at.parse::<jiff::Timestamp>().is_err()
         {
             return Err(Failure::bad_request(
-                "the note needs a draft ID, a body, a selection and its source",
+                "the note needs a request ID, a body, a selection and its source",
             ));
         }
         let Ok(url) = source.page_url.parse::<axum::http::Uri>() else {

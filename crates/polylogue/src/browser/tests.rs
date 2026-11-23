@@ -290,15 +290,7 @@ fn report(host: &Arc<BrowserHost>, id: &str, by: &str, outcome: &str) -> Answer 
 fn the_extension_claims_and_reports_actions_the_operator_queued() {
     let w = test_daemon::start("x");
     let host = host(&w);
-    let claim = |by: &str| {
-        exchange(
-            &host,
-            "GET",
-            &format!("/v1/chat-actions?claim_by={by}"),
-            b"",
-        )
-        .json()
-    };
+    let claim = |by: &str| exchange(&host, "GET", &format!("/v1/chat-actions?by={by}"), b"").json();
     // Off by default: nothing queues and nothing is handed out.
     assert_eq!(
         send(&w, "k1", chat_request(None, false), vec![]).unwrap_err(),
@@ -715,7 +707,7 @@ fn expired_sending_action_accepts_only_its_holders_late_confirmation() {
     let queued = send(&w, "late-capture", chat_request(None, true), vec![]).unwrap();
     let id = queued["id"].as_str().unwrap();
     assert_eq!(
-        exchange(&host, "GET", "/v1/chat-actions?claim_by=tab-a", b"").json()["action"]["id"],
+        exchange(&host, "GET", "/v1/chat-actions?by=tab-a", b"").json()["action"]["id"],
         id
     );
     for phase in ["sending", "claimed"] {
@@ -739,7 +731,7 @@ fn expired_sending_action_accepts_only_its_holders_late_confirmation() {
     assert_eq!(action["claimed_by"], Value::Null);
     assert_eq!(action["claim_expires_at"], Value::Null);
     assert_eq!(
-        exchange(&host, "GET", "/v1/chat-actions?claim_by=tab-b", b"").json()["action"],
+        exchange(&host, "GET", "/v1/chat-actions?by=tab-b", b"").json()["action"],
         Value::Null
     );
     assert_eq!(report(&host, id, "tab-a", "progress").status, 409);

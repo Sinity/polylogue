@@ -494,18 +494,7 @@ impl State {
                     }
                 };
                 if let Some(object) = object {
-                    for output in object.source_outputs.iter().chain(
-                        object
-                            .definitions
-                            .iter()
-                            .flat_map(|node| &node.source_outputs),
-                    ) {
-                        if let query_language::catalog::OutputSource::Result { reference, .. } =
-                            &output.source
-                        {
-                            sources.insert(reference.clone());
-                        }
-                    }
+                    sources.extend(object.result_references().map(str::to_owned));
                 }
             }
             update.families.insert(
@@ -593,33 +582,21 @@ impl State {
                 ..
             } = &value.body
             {
-                for output in object.source_outputs.iter().chain(
-                    object
-                        .definitions
-                        .iter()
-                        .flat_map(|node| &node.source_outputs),
-                ) {
-                    if let query_language::catalog::OutputSource::Result { reference, .. } =
-                        &output.source
-                    {
-                        let result = reference.strip_prefix("result:").unwrap_or(reference);
-                        let cached = match update.kept.get(result) {
-                            Some((_, value)) => value.as_ref(),
-                            None if !update.replaced => self.vocabulary.kept.get(result),
-                            None => None,
-                        };
-                        if let Some(cached) = cached {
-                            kept.insert(result.to_owned(), cached.clone());
-                        }
+                for reference in object.result_references() {
+                    let result = reference.strip_prefix("result:").unwrap_or(reference);
+                    let cached = match update.kept.get(result) {
+                        Some((_, value)) => value.as_ref(),
+                        None if !update.replaced => self.vocabulary.kept.get(result),
+                        None => None,
+                    };
+                    if let Some(cached) = cached {
+                        kept.insert(result.to_owned(), cached.clone());
                     }
                 }
             }
         }
         let bindings = polylogue_query::Bindings {
-            origins: polylogue_sources::origin::ORIGINS
-                .iter()
-                .map(|origin| origin.name.to_owned())
-                .collect(),
+            origins: super::origin_names(),
             saved: change.queries.clone(),
             kept,
             kept_names: Default::default(),
@@ -699,10 +676,7 @@ impl State {
                 writer.remove_saved(family)?;
             }
         }
-        let origins = polylogue_sources::ORIGINS
-            .iter()
-            .map(|origin| origin.name.to_owned())
-            .collect::<Vec<_>>();
+        let origins = super::origin_names();
         for shipped in polylogue_model::saved_queries::SHIPPED_QUERIES {
             let changed = first
                 || update.replaced

@@ -12,7 +12,7 @@ const ACTION = {
 function setup(pageResult) {
   const reports = [];
   const routes = {
-    "GET /v1/chat-actions": (_body, path) => ({ json: { action: path.includes("claim_by=ext-1") ? ACTION : null } }),
+    "GET /v1/chat-actions": (_body, path) => ({ json: { action: path.includes("by=ext-1") ? ACTION : null } }),
     "GET /v1/chat-actions/a1/attachments/f1": () => ({ bytes: new TextEncoder().encode("hello"), type: "text/plain" }),
     "POST /v1/chat-actions/a1/report": (body) => { reports.push(json(body)); return { json: { action: {} } }; },
   };
