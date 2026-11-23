@@ -46,13 +46,11 @@ Evidence: Morrow #2, 18 own messages: clustered 62 minutes at a 5-minute gap, 75
 
 Wall span divided between tool commands, waiting for the model, waiting for the human and unattributed time
 
-Kind: Parameterized. Unit: milliseconds. Denominator: session_span.wall_ms.
+Kind: Exact. Unit: milliseconds. Denominator: session_span.wall_ms.
 
 Unknown: Missing or reversed transitions are unattributed; a session without a clock has no time rows.
 
 Reads: message.at, message.written_by, message.prompt_kind, message.stop_reason, message.on_active_path, message.duplicate_of, block.kind, tool_call.at, tool_call.result_block_pk, tool_call.outcome, tool_call.command_norm, tool_call.action, tool_call.tool, event.at.
-
-Parameter: cluster_gap = 300000 milliseconds.
 
 Tests: span_and_parties_match_a_hand_computed_session, tool_intervals_extend_clusters_and_share_overlap, party_times_sum_to_wall_for_overlapping_intervals.
 
@@ -68,11 +66,11 @@ Unknown: Each unit counts known and unknown items; absent usage stays null; unti
 
 Reads: setting.set_at, setting.value, message.at, message.cost_nusd, message.provider_cost_nusd, message token kinds, usage_report.
 
-Parameter: trailing_observed_days = 7 observed UTC days.
+Parameter: trailing_observed_days = 7 observed UTC days (trailing-7d-mean method only).
 
 Tests: projections_preserve_history_zero_elapsed_and_recent_spike, grouped_billing_keeps_nano_usd_unknowns_and_future_rows_apart, a_plan_change_splits_the_cycle_and_prices_only_its_own_span.
 
-Evidence: Ten synthetic observed days, nine at 0 then 700: projected 2700 with a 7-observed-day trailing mean, 2100 with a 10-observed-day trailing mean, for a 30-day cycle at day 10 (2026-10-28).
+Evidence: Ten synthetic observed days, nine at 0 then 700: projected 2700 with the trailing-7d-mean method, 2100 with the linear method (used divided by elapsed days, times cycle days), for a 30-day cycle at day 10 (2026-10-28).
 
 ## facet counts (K29)
 
@@ -92,7 +90,7 @@ Recorded fields side by side, with varying fields and unknown counts over the wh
 
 Kind: Exact. Unit: field values per physical session. Denominator: the full selected population, before paging.
 
-Unknown: Missing values remain null and are counted by field; pending stored products are excluded from population summaries.
+Unknown: Missing values remain null and are counted by field; sessions whose stored products are not yet derived are counted as pending and show no value.
 
 Reads: session count columns, session_span, session_time, message.cost_nusd.
 

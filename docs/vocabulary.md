@@ -95,8 +95,9 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **provider import**: `import PROVIDER`, the browser extension fetching a web
   chat's conversations the archive lacks or holds older copies of; one
   **import job** per provider, listed in the unit `import_jobs`.
-- **chat action**: a turn the extension drafts or sends in a web chat on a
-  user's request (`send`, `start --in chatgpt`); the unit `chat_actions`.
+- **chat action**: a turn the extension sends, a new conversation it drafts
+  or submits, or a rename it makes in a web chat on a user's request (`send`,
+  `start --in chatgpt`, `note --rename`); the unit `chat_actions`.
 - **native ID**: the ID an origin itself gives a session or message.
 - **content ID**: the ID of a message whose source gives none: its session, a
   hash of its role and content, and its occurrence among equal messages
@@ -428,8 +429,9 @@ generated page of the thing they belong to, or on the area page that owns them.
   waiting for (`allow`, `deny` or text). **interrupt**: stop a session's
   current turn. **resume**: reopen a session in its own harness; with `--in`,
   continue its work in a new session of another harness.
-- **web chat**: a conversation on ChatGPT, Claude.ai or Grok, captured and
-  reached through the browser extension.
+- **web chat**: a conversation on ChatGPT, Claude.ai, Grok, Gemini, AI Studio
+  or Codex Cloud, captured through the browser extension; chat actions reach
+  only ChatGPT, Claude.ai and Grok ([extension.md](extension.md)).
 - **held web-chat turn**: a turn Polylogue wrote into an existing web chat,
   waiting for the operator's `answer allow`.
 - **peers**: other live sessions in the same repository, or in the same

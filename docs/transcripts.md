@@ -130,7 +130,7 @@ The context view reconstructs what the model had at the selected message from th
 
   ```
   Date parsing
-  claude-code · Oct 02 10:00–11:15 (1h 15m wall, 41m clustered) · /home/op/morrow · branch main
+  claude-code · Oct 02 10:00–11:15 (1h 15m wall, 62m clustered) · /home/op/morrow · branch main
   claude-fable-5-1 · 18 messages · 3 prompts · 13 tool calls (1 error) · $2.85 API-eq.
   tags project:morrow
   ```
