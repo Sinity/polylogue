@@ -177,7 +177,7 @@ Every surface returns the shared typed reply: `outcome`, a `value` on success or
   "notes": [], "incomplete": [],
   "unknown": {"similar": 0, "cost": 2, "unparsed_inputs": 0},
   "up_to_date": true,
-  "read_at": {"generation": "…", "index": 1234, "archive": 87, "vectors": 167943},
+  "read_at": {"generation": "…", "index": 1234, "archive": 87, "cursor": "…"},
   "resolved": {"now": "…Z", "zone": "Europe/Lisbon", "day_start_minutes": 240},
   "positions": null
 }

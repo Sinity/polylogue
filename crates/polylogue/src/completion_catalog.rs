@@ -85,11 +85,11 @@ fn complete_snapshot(
     let mut descriptions = std::collections::BTreeMap::new();
     let mut value_order = std::collections::BTreeMap::new();
     if let Some(value) = &requirements.value {
-        let short = value.field.strip_prefix("session.").unwrap_or(&value.field);
+        let bare_field = value.field.strip_prefix("session.").unwrap_or(&value.field);
         let origin = polylogue_sources::origin::ORIGINS
             .iter()
-            .find(|origin| origin.name == short);
-        let values = if short == "query" {
+            .find(|origin| origin.name == bare_field);
+        let values = if bare_field == "query" {
             reader
                 .saved_names(&value.prefix)?
                 .into_iter()
@@ -101,7 +101,7 @@ fn complete_snapshot(
                     }
                 })
                 .collect()
-        } else if short == "result" {
+        } else if bare_field == "result" {
             reader
                 .kept_names(&value.prefix)?
                 .into_iter()
@@ -122,7 +122,7 @@ fn complete_snapshot(
                     }
                 })
                 .collect()
-        } else if short == "session" || origin.is_some() {
+        } else if bare_field == "session" || origin.is_some() {
             let prefix = origin.map_or_else(
                 || value.prefix.clone(),
                 |origin| format!("{}:{}", origin.name, value.prefix),
@@ -148,7 +148,7 @@ fn complete_snapshot(
                 })
                 .collect()
         } else {
-            reader.values(short, &value.prefix)?
+            reader.values(bare_field, &value.prefix)?
         };
         for (rank, item) in values.iter().enumerate() {
             counts.insert(item.value.clone(), item.count);
@@ -362,7 +362,7 @@ pub(crate) fn settings_file(
 
 fn fill_values(
     catalog: &mut Catalog,
-    name: &str,
+    wanted: &str,
     values: &[polylogue_store::completion::ValueCount],
 ) {
     for field in catalog
@@ -376,7 +376,7 @@ fn fill_values(
                 .flat_map(|source| &mut source.schema.fields),
         )
     {
-        if field.name == name || field.name.strip_prefix("session.") == Some(name) {
+        if field.name == wanted || field.name.strip_prefix("session.") == Some(wanted) {
             for value in values {
                 if !field.values.contains(&value.value)
                     && !value.value.chars().any(char::is_control)

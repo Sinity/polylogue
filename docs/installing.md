@@ -88,7 +88,7 @@ Use a bound in the query to select a finite set, for example `polylogue embed --
 
 ## Demo
 
-`polylogue demo DIR` builds the Morrow sample archive ([testing.md#morrow](testing.md#morrow)) in a new directory `DIR` and prints the first lines to try on it. It creates `DIR`, refusing a directory that exists, lays out Morrow's tool files under `DIR/home`, reads them and imports Morrow's exports into the archive `DIR/archive` with the real engine, and exits. It then prints the line that starts a daemon on that archive with sources off, and about six lines to try, each with `--archive DIR/archive`: a word search, a listing of one repository's week, a read of one row, a note with its undo line, a measure, and `help`. Each printed line is checked on Morrow by a test. The demo archive is an ordinary archive; deleting `DIR` removes it.
+`polylogue demo DIR` builds the Morrow sample archive ([testing.md#morrow](testing.md#morrow)) in a new directory `DIR` and walks through it. It creates `DIR`, refusing a directory that exists, lays out Morrow's tool files under `DIR/home`, reads them and imports Morrow's exports into the archive `DIR/archive` with the real engine, runs a daemon on that archive for the walk, and stops it. The walk is ten steps (a search, reading a session, tool failures, parent and child sessions, unknown costs, a usage measure, a note, reading the note and a takeover brief), each shown with its command line and output. The transcript is printed and also written to `DIR/transcript.md`; with `--json` the steps and their timings are printed instead. The demo archive is an ordinary archive; deleting `DIR` removes it.
 
 ## Several archives and machines
 

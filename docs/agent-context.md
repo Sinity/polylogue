@@ -62,7 +62,7 @@ A brief for continuing work lets its recipient recover the goal, the constraints
 
 1. Header ([trust rendering](agents.md#trust-rendering)).
 2. The skill file ([agents.md](agents.md)), on `startup`, `clear` and `compact` only.
-3. **Annotations:** the operator's annotations and operator-accepted agent annotations (decisions, lessons, handoffs, problems, goals, questions, findings) scoped to the repository, the directory and the listed sessions. Unjudged agent, script and unattributed annotations are counted, with the query that lists them, and not inlined; judgment is what inlines them ([judging.md](judging.md)).
+3. **Annotations:** the operator's annotations and operator-accepted agent annotations (corrections, decisions, lessons, handoffs, problems, goals, questions, findings) scoped to the repository, the directory and the listed sessions. Unjudged agent, script and unattributed annotations are counted, with the query that lists them, and not inlined; judgment is what inlines them ([judging.md](judging.md)).
 4. **Pages in full:** the text of pages here whose `brief` is `full` ([below](#pages-here)).
 5. **Other agents working in this repository now** ([live sessions](live-sessions.md#live-state)): worktree, live state, task, last event; the caller left out; "⚠ 2 agents in this worktree" when a peer shares the worktree.
 6. **Observed task claims here:** last-observed claims with no observed close or release, without an age cutoff. Their observation time and the unknown state of the outside tracker are labelled; Polylogue does not infer that the work is still active.
@@ -149,7 +149,7 @@ Each harness's inline cap is declared with its hooks. A brief larger than the ca
 ## Deliveries
 
 A **delivery** records each time prepared content is handed to a session or a person: the hooks' injected briefs, advisories, notices to sessions, sent messages, live-session acts, the first turn of a session Polylogue starts, and turns written into web chats. A delivery records:
-- `delivery:<id>`; sender (`hook`, `signal`, `send`, `act`); event (`session_start`, `resume`, `compaction`, `takeover`, `advice`, `notice`, `message`, `control`, `first_turn`);
+- `delivery:<id>`; sender (`hook`, `mcp`, `signal`, `ping`, `act`); event (`session_start`, `resume`, `compaction`, `takeover`, `recall`, `signal`, `advice`, `ping`, `notice`, `control`, `first_turn`);
 - its computed author; recipient kind and reference (session, role instance, web conversation, or the operator when a brief names no recipient session; the operator has no reference); `cwd`;
 - the delivered bytes, `refs`, `left_out`, `content_hash`, and its outcome events.
 

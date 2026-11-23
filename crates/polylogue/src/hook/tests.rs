@@ -395,14 +395,14 @@ fn a_silent_daemon_cannot_hold_a_hook_past_its_deadline() {
         stream.read_to_end(&mut request).unwrap();
         assert!(!request.is_empty());
     });
-    assert!(
-        crate::client::call_with_budget(
-            &socket,
-            &crate::client::request("status", serde_json::json!({}), "status".into()),
-            Duration::from_millis(20)
-        )
-        .is_err()
-    );
+    let Err(error) = crate::client::call_with_budget(
+        &socket,
+        &crate::client::request("status", serde_json::json!({}), "status".into()),
+        Duration::from_millis(20),
+    ) else {
+        panic!("a silent daemon cannot answer");
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
     peer.join().unwrap();
 }
 

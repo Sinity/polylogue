@@ -9,10 +9,12 @@ use std::{
     fs, io,
     net::{Ipv4Addr, TcpListener},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, mpsc},
+    sync::mpsc,
     thread::JoinHandle,
     time::Duration,
 };
+
+const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) struct Drive {
     pub authorization: String,
@@ -53,7 +55,10 @@ impl Drive {
         let path = token_path(archive);
         let agent = ureq::Agent::new_with_config(
             ureq::Agent::config_builder()
-                .timeout_global(wait.map(|duration| duration.min(Duration::from_secs(30))))
+                // The deadline bounds the consent wait; each HTTP call has its own bound.
+                .timeout_global(Some(
+                    wait.map_or(HTTP_TIMEOUT, |duration| duration.min(HTTP_TIMEOUT)),
+                ))
                 .http_status_as_error(false)
                 .max_redirects(0)
                 .build(),
@@ -112,6 +117,7 @@ impl Drive {
                 ));
             }
             fs::remove_file(&path)?;
+            // Make the unlink itself durable, not only the file contents.
             fs::File::open(archive)?.sync_all()?;
             return Ok(Installation::Removed { path });
         }
@@ -121,8 +127,8 @@ impl Drive {
         let client_id = client_id.filter(|id| !id.trim().is_empty()).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "Register a Google Desktop OAuth client, then run `polylogue set drive.client_id CLIENT_ID` before `polylogue install drive`")
         })?;
-        let verifier = nonce();
-        let state = nonce();
+        let verifier = random_secret();
+        let state = random_secret();
         let callback = Callback::start(state.clone())?;
         let redirect = format!("http://{}/", callback.address);
         let url = consent_url(&self.authorization, client_id, &redirect, &state, &verifier)?;
@@ -193,19 +199,20 @@ pub(crate) fn consent_url(
         ("access_type", "offline"),
         ("prompt", "consent"),
         ("state", state),
-        ("code_challenge", &challenge(verifier)),
+        ("code_challenge", &pkce_challenge(verifier)),
         ("code_challenge_method", "S256"),
     ]);
     Ok(url)
 }
 
-fn nonce() -> String {
+fn random_secret() -> String {
     let mut bytes = [0; 32];
     bytes[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
     bytes[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
     URL_SAFE_NO_PAD.encode(bytes)
 }
-pub(crate) fn challenge(verifier: &str) -> String {
+/// The S256 code challenge of a PKCE verifier.
+pub(crate) fn pkce_challenge(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
@@ -234,8 +241,8 @@ impl Callback {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         listener.set_nonblocking(true)?;
         let address = listener.local_addr()?;
-        let (send, reply) = mpsc::channel();
-        let send = Arc::new(Mutex::new(Some(send)));
+        // The first result wins; later requests find the one slot full.
+        let (send, reply) = mpsc::sync_channel(1);
         let (stop, stopped) = tokio::sync::oneshot::channel();
         let worker = polylogue_model::spawn_named("drive-consent", move || {
             let serve = || -> io::Result<()> {
@@ -250,9 +257,7 @@ impl Callback {
                         async move {
                             let result = callback_code(query.as_deref().unwrap_or(""), &state);
                             let good = result.is_ok();
-                            if let Some(send) = polylogue_model::LockExt::locked(&*send).take() {
-                                let _ = send.send(result);
-                            }
+                            let _ = send.try_send(result);
                             (if good { axum::http::StatusCode::OK } else { axum::http::StatusCode::BAD_REQUEST },
                                 if good { "Drive authorization received. You may close this window." } else { "Drive authorization was refused. Return to your terminal." })
                         }

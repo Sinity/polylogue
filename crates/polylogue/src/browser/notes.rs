@@ -64,8 +64,8 @@ impl SelectionNote {
         let Ok(url) = source.page_url.parse::<axum::http::Uri>() else {
             return Err(Failure::bad_request("the source page URL is invalid"));
         };
-        let Some(chat) = polylogue_sources::origin::by_extension_name(&source.provider)
-            .and_then(|origin| origin.web.as_ref())
+        let Some((origin, chat)) = polylogue_sources::origin::by_extension_name(&source.provider)
+            .and_then(|origin| origin.web.as_ref().map(|chat| (origin, chat)))
         else {
             return Err(Failure::bad_request(
                 "this provider has no selection-note target",
@@ -92,8 +92,8 @@ impl SelectionNote {
                 "the supplied conversation ID is invalid",
             ));
         };
-        let origin = polylogue_sources::browser_capture::origin_of(&source.provider);
-        let Ok(message) = MessageId::parse(&format!("{origin}:{}", source.message_id)) else {
+        let Ok(message) = MessageId::parse(&format!("{}:{}", origin.name, source.message_id))
+        else {
             return Err(Failure::bad_request("the supplied message ID is invalid"));
         };
         Ok((Reference::Session(session), message))

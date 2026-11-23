@@ -311,7 +311,7 @@ fn install_drive_authorizes_reopens_collects_and_removes_through_one_token() {
     );
     assert_eq!(
         exchanges[0].form["code"],
-        auth::challenge(&exchanges[0].form["code_verifier"])
+        auth::pkce_challenge(&exchanges[0].form["code_verifier"])
     );
     assert_eq!(
         exchanges[0].form["code"],

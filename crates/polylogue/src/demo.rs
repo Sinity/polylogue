@@ -376,6 +376,13 @@ fn command_line(command: &Command, arguments: &Value) -> String {
     words.join(" ")
 }
 
+/// An argument value as the command line writes it.
+fn scalar_text(value: &Value) -> String {
+    value
+        .as_str()
+        .map_or_else(|| value.to_string(), str::to_owned)
+}
+
 fn append_arguments(
     words: &mut Vec<String>,
     arguments: &Value,
@@ -401,9 +408,9 @@ fn append_arguments(
             continue;
         }
         if let Some(values) = value.as_array() {
-            words.extend(values.iter().map(|v| quote(v.as_str().unwrap_or(""))));
+            words.extend(values.iter().map(|v| quote(&scalar_text(v))));
         } else {
-            words.push(quote(value.as_str().unwrap_or("")));
+            words.push(quote(&scalar_text(value)));
         }
     }
 }
