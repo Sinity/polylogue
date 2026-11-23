@@ -65,6 +65,7 @@ fn stated_hook_fields_bind_record_and_text_block() {
             2 => claim.block = 2,
             3 => claim.pointer = "/hookAdditionalContext/03".into(),
             4 => claim.pointer = "/content/0/text".into(),
+            // A claim for a message index the step does not have.
             _ => {
                 invalid.output.hook_fields.insert(1, Vec::new());
             }

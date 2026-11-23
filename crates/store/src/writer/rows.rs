@@ -673,7 +673,6 @@ impl RowWriter<'_, '_> {
         Ok(())
     }
 
-    /// The message with natural ID `id`.
     /// Moves what a copy's session holds to the session its name is an alias
     /// of (docs/capture.md, AI Studio through Drive): each reading's
     /// statements and events, and links naming it. Its messages move with
@@ -1692,7 +1691,8 @@ impl RowWriter<'_, '_> {
     }
 }
 
-/// The search index a block's text belongs to: 2 for tool output, 1 for prose.
+/// The search index a block's text belongs to: 2 for tool results and tool
+/// calls (the `output:` field, which includes written file bodies), 1 for prose.
 fn search_bit(block: &Block) -> i64 {
     if matches!(block, Block::ToolResult { .. } | Block::ToolCall { .. }) {
         2

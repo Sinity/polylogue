@@ -25,7 +25,7 @@ impl BlobCatalog {
 pub struct Blobs {
     root: PathBuf,
     catalog: PathBuf,
-    layout: BlobCatalog,
+    catalog_table: BlobCatalog,
     connection: Mutex<Option<Connection>>,
     #[cfg(feature = "fixture")]
     bytes_read: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -41,11 +41,11 @@ impl std::fmt::Debug for Blobs {
 }
 
 impl Blobs {
-    pub(crate) fn new(root: PathBuf, catalog: PathBuf, layout: BlobCatalog) -> Self {
+    pub(crate) fn new(root: PathBuf, catalog: PathBuf, catalog_table: BlobCatalog) -> Self {
         Self {
             root,
             catalog,
-            layout,
+            catalog_table,
             connection: Mutex::new(None),
             #[cfg(feature = "fixture")]
             bytes_read: Default::default(),
@@ -58,7 +58,7 @@ impl Blobs {
         self.bytes_read.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    fn count_reads(&self, reader: hashed_blobs::BlobReader) -> super::BlobReader {
+    fn count_bytes(&self, reader: hashed_blobs::BlobReader) -> super::BlobReader {
         #[cfg(feature = "fixture")]
         {
             super::BlobReader::new(reader, self.bytes_read.clone())
@@ -85,7 +85,10 @@ impl Blobs {
             )?);
         }
         let bytes: Option<Vec<u8>> = slot.as_ref().expect("opened catalog").scalar_optional(
-            &format!("SELECT storage FROM {} WHERE hash=?1", self.layout.table()),
+            &format!(
+                "SELECT storage FROM {} WHERE hash=?1",
+                self.catalog_table.table()
+            ),
             [hash.0.as_slice()],
         )?;
         bytes
@@ -96,7 +99,7 @@ impl Blobs {
 
     pub fn read(&self, hash: &hashed_blobs::Hash) -> Result<super::BlobReader> {
         let extent = self.extent(hash)?;
-        Ok(self.count_reads(hashed_blobs::Reader::new(&self.root).open(&[extent], None)?))
+        Ok(self.count_bytes(hashed_blobs::Reader::new(&self.root).open(&[extent], None)?))
     }
 
     pub fn read_range(
@@ -115,7 +118,7 @@ impl Blobs {
         let conn = Connection::open_with_flags(&self.catalog, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         let mut statement = conn.prepare(&format!(
             "SELECT storage FROM {} ORDER BY hash",
-            self.layout.table()
+            self.catalog_table.table()
         ))?;
         let mut rows = statement.query([])?;
         let reader = hashed_blobs::Reader::new(&self.root);
@@ -139,7 +142,7 @@ impl Blobs {
             return Err(StoreError::BlobCorrupt(BlobHash(hash.0)));
         }
         Ok(
-            self.count_reads(hashed_blobs::Reader::new(&self.root).open_checked(
+            self.count_bytes(hashed_blobs::Reader::new(&self.root).open_checked(
                 &[extent],
                 None,
                 check,
