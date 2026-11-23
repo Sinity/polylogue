@@ -56,7 +56,7 @@ Paths are relative to each root. "Parse" says what becomes sessions, documents o
 | `sessions/*.json` | live-state records (process to session) |
 | `debug/*`, `mcp-logs/**` | bytes only |
 
-Ignored: `.credentials.json`, `.claude.json`, `mcp-needs-auth-cache.json` (secrets or account state); `plugins/`, `skills/`, `agents/`, `hooks/`, `statsig/`, `telemetry/`, `cache/`, `ccusage/`, `stats-cache.json`, `backups/`, `chrome/`, `ide/` (configuration, program files, caches); the user's own projects that happen to sit under the root.
+Ignored: `.credentials.json`, `.claude.json`, `mcp-needs-auth-cache.json` (secrets or account state); `plugins/`, `skills/`, `agents/`, `hooks/`, `statsig/`, `telemetry/`, `cache/`, `ccusage/`, `stats-cache.json`, `backups/`, `chrome/`, `ide/` (configuration, program files, caches); the user's own projects that happen to sit under the root. A user project is a file no location names that lies inside a git working tree below the root (a `.git` in the root itself does not count). A file a location names is collected whatever git metadata sits above it, so a projects folder kept as a git repository is still collected; only its `.git` is ignored.
 
 **Codex** (root `$CODEX_HOME`, default `~/.codex`)
 
