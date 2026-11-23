@@ -5,11 +5,31 @@ use crate::bundle::{
     fragments::seek::NativeSpanSeek,
 };
 use crate::{ChangePosition, Timestamp, authorship::Authorship};
-use query_language::{ast::Query, cursor::CursorContext, identity::QuestionId, time::ClockWire};
+use query_language::{
+    ast::Query,
+    catalog::{OutputSchema, OutputSource},
+    cursor::CursorContext,
+    identity::QuestionId,
+    time::ClockWire,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub use query_language::catalog::SourceOutput;
+/// Semantic source declaration captured with a question.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SourceOutput {
+    pub source: OutputSource,
+    pub schema: OutputSchema,
+}
+impl SourceOutput {
+    pub fn catalog_output(&self) -> query_language::catalog::SourceOutput {
+        query_language::catalog::SourceOutput {
+            source: self.source.clone(),
+            schema: self.schema.clone(),
+        }
+    }
+}
 
 /// Semantic identity excludes display names and the clock of an execution.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
