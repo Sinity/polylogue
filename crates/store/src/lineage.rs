@@ -194,7 +194,7 @@ impl crate::read::Reader<'_> {
                 root_pending,
                 issue: issue.map(|s| serde_json::from_str(&s)).transpose()?,
             })),
-            None => compute(self.conn()?, pk),
+            None => compute_lineage(self.conn()?, pk),
         }
     }
     /// Graph entry points for inspecting a session family. A known root is
