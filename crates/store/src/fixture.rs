@@ -33,13 +33,14 @@ pub struct Fixture {
     pub archive: Archive,
     _lock: ArchiveLock,
     index: Connection,
-    notes: Connection,
+    archive_conn: Connection,
     input_pk: i64,
     seq: i64,
     commit_seq: i64,
 }
 
-/// A session's facts; everything not given is unknown.
+/// A session's facts; everything not given is unknown, except that an empty
+/// `kind` is `main` and an id without a colon gets origin `test`.
 #[derive(Debug, Clone, Default)]
 pub struct SessionFacts<'a> {
     pub id: &'a str,
@@ -102,7 +103,7 @@ impl Fixture {
         // Fixture rows are written directly into a fully installed index.
         crate::Writer::start(&archive)?.derive()?;
         let index = open_write(&archive.index_db(), crate::archive::cache::SETUP)?;
-        let notes = open_write(&archive.archive_db(), crate::archive::cache::SETUP)?;
+        let archive_conn = open_write(&archive.archive_db(), crate::archive::cache::SETUP)?;
         index.execute(
             "INSERT INTO input_ref(id,format) VALUES ('fixture','fixture')",
             [],
@@ -112,16 +113,16 @@ impl Fixture {
             archive,
             _lock: lock,
             index,
-            notes,
+            archive_conn,
             input_pk,
             seq: 0,
             commit_seq: 0,
         })
     }
 
-    /// Queues search work without committing it, for reader and index tests.
     /// Rows changed outside the writer, which describes its changes row by
-    /// row: the session's next derivation reads it from the start.
+    /// row: clears the session's settled search prefix, so its next
+    /// derivation reads it from the start.
     fn forget_settled(&self, session_pk: i64) -> Result<()> {
         self.index.execute(
             "UPDATE session_span SET prefix=NULL WHERE session_pk=?1",
@@ -139,6 +140,7 @@ impl Fixture {
         )
     }
 
+    /// Queues search work without committing it, for reader and index tests.
     pub fn queue_search_text(&self, body: &str) -> Result<i64> {
         let tx = self.index.unchecked_transaction()?;
         let id = crate::text_rows::intern(
@@ -290,7 +292,12 @@ impl Fixture {
             Some("question") => {
                 apply_live_event(&mut facts, "hook_elicitation", at, &none);
             }
-            _ => {}
+            None => {}
+            Some(other) => {
+                return Err(crate::StoreError::invalid(format!(
+                    "unsupported waiting_on {other:?}"
+                )));
+            }
         }
         self.live_facts(session_pk, &facts)?;
         self.index.execute(
@@ -313,7 +320,7 @@ impl Fixture {
         Ok(())
     }
 
-    fn text(&self, body: &str, bit: i64) -> Result<i64> {
+    fn text(&self, body: &str, search_index: i64) -> Result<i64> {
         let tx = rusqlite::Transaction::new_unchecked(
             &self.index,
             rusqlite::TransactionBehavior::Immediate,
@@ -321,7 +328,7 @@ impl Fixture {
         let id = crate::text_rows::intern(
             &tx,
             body,
-            bit,
+            search_index,
             None,
             &crate::writer::resolve::IndexUpkeep::PerTransaction,
         )?;
@@ -409,7 +416,8 @@ impl Fixture {
         Ok(pk)
     }
 
-    /// A tool call in its own message, with its result when it has one.
+    /// A tool call appended as the next block of `message_pk`, followed by its
+    /// result block when `output` is given.
     pub fn tool_call(&mut self, session_pk: i64, message_pk: i64, t: CallFacts<'_>) -> Result<i64> {
         let idx: i64 = self.index.scalar(
             "SELECT COALESCE(max(idx), -1) + 1 FROM block WHERE message_pk = ?1",
@@ -704,7 +712,7 @@ impl Fixture {
     /// A kept result, as the writer stores one.
     pub fn kept_result(&mut self, id: &str, query: &str, rows_json: &str) -> Result<()> {
         crate::kept::validate_body(id, rows_json)?;
-        self.notes.execute(
+        self.archive_conn.execute(
             "INSERT INTO kept_result(id, query, ran_at, read_at, rows_json) VALUES (?1, ?2, 0, '{}', ?3)",
             params![id, query, rows_json],
         )?;
@@ -713,7 +721,7 @@ impl Fixture {
 
     /// Replace a stored kept body with deliberately damaged bytes for read tests.
     pub fn corrupt_kept_body(&mut self, id: &str, body: &str) -> Result<()> {
-        self.notes.execute(
+        self.archive_conn.execute(
             "UPDATE kept_result SET rows_json=?1 WHERE id=?2",
             params![body, id],
         )?;
@@ -771,7 +779,7 @@ impl Fixture {
             write,
         };
         let original = self.index.unchecked_transaction()?;
-        let tx = self.notes.transaction()?;
+        let tx = self.archive_conn.transaction()?;
         crate::user_writes::apply_resolving(
             &tx,
             &original,
@@ -823,7 +831,7 @@ impl Fixture {
                 quote: None,
             }],
         };
-        let tx = self.notes.transaction()?;
+        let tx = self.archive_conn.transaction()?;
         crate::assertions::apply(&tx, std::slice::from_ref(&fact), self.commit_seq)?;
         tx.commit()?;
         Ok(id)
@@ -859,7 +867,7 @@ impl Fixture {
             valid_until: None,
             links: vec![],
         };
-        let tx = self.notes.transaction()?;
+        let tx = self.archive_conn.transaction()?;
         crate::query_objects::apply_object(&tx, &object, self.commit_seq)?;
         crate::assertions::apply(&tx, &[fact], self.commit_seq)?;
         tx.commit()?;

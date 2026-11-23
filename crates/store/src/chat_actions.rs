@@ -6,7 +6,7 @@
 //! same action.
 
 /// The report fields recorded for one chat action event.
-pub(crate) struct ChatEvent<'a> {
+pub(crate) struct ChatEventReport<'a> {
     pub request: &'a str,
     pub id: &'a str,
     pub at: i64,
@@ -24,8 +24,7 @@ use polylogue_model::JsonExt;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use polylogue_model::user::{
-    ChatAction, ChatAttachment, ChatEvent as StoredChatEvent, ChatStatus, NewChatAction,
-    chat_outcome,
+    ChatAction, ChatAttachment, ChatEvent, ChatStatus, NewChatAction, chat_outcome,
 };
 
 impl Reader<'_> {
@@ -118,7 +117,7 @@ pub(crate) fn read(conn: &Connection, schema: &str, id: &str) -> Result<Option<C
         .query_map([id], |r| <(i64, String, String, Option<String>, Option<String>, Option<String>, String)>::try_from(r))?
         .map(|row| {
             let (at, kind, phase, detail, by, receipt, request) = row?;
-            Ok(StoredChatEvent {
+            Ok(ChatEvent {
                 request,
                 at,
                 kind,
@@ -216,7 +215,7 @@ pub(crate) fn enqueue(
     };
     add_event(
         tx,
-        ChatEvent {
+        ChatEventReport {
             request,
             id: &new.id,
             at,
@@ -242,9 +241,8 @@ pub(crate) fn claim(tx: &Connection, by: &str, at: i64, seq: i64, request: &str)
         .collect::<rusqlite::Result<_>>()?;
     let mut next = None;
     for id in ids {
-        let Some(action) = read(tx, source.prefix(), &id)? else {
-            continue;
-        };
+        let action = read(tx, source.prefix(), &id)?
+            .ok_or_else(|| StoreError::NotFound(format!("chat action {id}")))?;
         match action.status(at).0 {
             ChatStatus::Claimed => return Err(StoreError::NotFound("a queued chat action".into())),
             ChatStatus::Queued if next.is_none() => next = Some(id),
@@ -254,7 +252,7 @@ pub(crate) fn claim(tx: &Connection, by: &str, at: i64, seq: i64, request: &str)
     let id = next.ok_or_else(|| StoreError::NotFound("a queued chat action".into()))?;
     add_event(
         tx,
-        ChatEvent {
+        ChatEventReport {
             request,
             id: &id,
             at,
@@ -270,8 +268,8 @@ pub(crate) fn claim(tx: &Connection, by: &str, at: i64, seq: i64, request: &str)
 }
 
 /// A report from the extension instance holding the claim.
-pub(crate) fn report(tx: &Connection, event: ChatEvent<'_>) -> Result<()> {
-    let ChatEvent {
+pub(crate) fn report(tx: &Connection, event: ChatEventReport<'_>) -> Result<()> {
+    let ChatEventReport {
         request,
         id,
         at,
@@ -320,7 +318,7 @@ pub(crate) fn report(tx: &Connection, event: ChatEvent<'_>) -> Result<()> {
     }
     add_event(
         tx,
-        ChatEvent {
+        ChatEventReport {
             request,
             id,
             at,
@@ -357,7 +355,7 @@ pub(crate) fn decide(
     };
     add_event(
         tx,
-        ChatEvent {
+        ChatEventReport {
             request: &request.id,
             id,
             at,
@@ -371,8 +369,8 @@ pub(crate) fn decide(
     )
 }
 
-fn add_event(tx: &Connection, event: ChatEvent<'_>) -> Result<()> {
-    let ChatEvent {
+fn add_event(tx: &Connection, event: ChatEventReport<'_>) -> Result<()> {
+    let ChatEventReport {
         request,
         id,
         at,

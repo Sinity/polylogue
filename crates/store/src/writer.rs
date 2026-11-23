@@ -1782,11 +1782,7 @@ impl Inner {
             [&request.id],
         )?;
         let seq = if known {
-            tx.scalar_optional(
-                "SELECT CAST(value AS INTEGER) FROM meta WHERE key='write_counter'",
-                [],
-            )?
-            .unwrap_or(0)
+            crate::session_values::write_counter(&tx)?
         } else {
             bump_counter(&tx)?
         };

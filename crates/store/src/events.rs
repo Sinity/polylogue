@@ -5,6 +5,8 @@ use polylogue_model::bundle::{ImportedEventIdentity, InputEventRecord, SourceCla
 use polylogue_model::{Event, SessionId};
 use rusqlite::OptionalExtension;
 
+/// An event's metadata and its payload are stored as two separate blobs; the
+/// payload is decoded into `event.data`.
 pub(crate) fn decode_event(fields: &[u8], data: &[u8]) -> Result<Event> {
     let mut event: Event = crate::encoding::unpack_json(fields)?;
     event.data = crate::encoding::unpack_json(data)?;
@@ -48,20 +50,15 @@ impl Reader<'_> {
             .map(u64::try_from)
             .transpose()
             .map_err(|_| StoreError::stored(5, "negative event source coordinate"))?;
-        let stored_commit = committed
-            .map(|value| {
-                u64::try_from(value)
-                    .ok()
-                    .filter(|value| *value > 0)
-                    .ok_or_else(|| StoreError::stored(6, "invalid event commit position"))
-            })
-            .transpose()?;
-        let committed = match stored_commit {
-            Some(commit) => Some(commit),
-            None => self.source_commit(&input, chain, through)?,
+        let commit = match committed {
+            Some(value) => u64::try_from(value)
+                .ok()
+                .filter(|value| *value > 0)
+                .ok_or_else(|| StoreError::stored(6, "invalid event commit position"))?,
+            None => self.source_commit(&input, chain, through)?.ok_or_else(|| {
+                StoreError::stored(6, "selected event has no stored commit position")
+            })?,
         };
-        let commit = committed
-            .ok_or_else(|| StoreError::stored(6, "selected event has no stored commit position"))?;
         let mut sources = Vec::new();
         let mut statement = self.conn()?.prepare_cached(
             "SELECT i.id,i.format,s.chain,s.source_start,s.source_end,s.imported_sources
@@ -121,11 +118,6 @@ impl Reader<'_> {
             }
         }
         Ok(())
-    }
-
-    pub fn event_sources(&self, id: &str) -> Result<Vec<polylogue_model::Json>> {
-        self.query("SELECT i.id AS input,i.format AS source,s.chain,s.source_start,s.source_end
-            FROM event_source s JOIN event e ON e.pk=s.event_pk JOIN input_ref i ON i.pk=s.input_pk WHERE e.id=?1 ORDER BY i.id,s.chain",&[crate::SqlValue::Text(id.into())])
     }
 }
 

@@ -16,13 +16,13 @@ use rusqlite::OptionalExtension;
 use rusqlite::{Connection, TransactionBehavior, params};
 
 /// The text row for `body`, stored once per distinct content, and its
-/// entry in the search index `bit` names (1 prose, 2 tool output). During a
+/// entry in the search index `search_index` names (1 prose, 2 tool output). During a
 /// build, its search membership is marked for the final scan.
 #[cfg(any(test, feature = "fixture"))]
 pub(crate) fn intern(
     conn: &Connection,
     body: &str,
-    bit: i64,
+    search_index: i64,
     prepared: Option<&PreparedTexts>,
     upkeep: &IndexUpkeep,
 ) -> Result<i64> {
@@ -48,7 +48,7 @@ pub(crate) fn intern(
                 .expect("the text was just prepared");
             // A first build marks the text for its search index now and
             // writes the entry when the build ends.
-            let marked = if at_build_end { bit } else { 0 };
+            let marked = if at_build_end { search_index } else { 0 };
             let id = groups::insert(
                 conn,
                 &StoredGroups::default(),
@@ -66,8 +66,8 @@ pub(crate) fn intern(
     // `indexed` marks a text for its search index; the entry itself is
     // written after this transaction commits: by the search thread, or by
     // the final build scan.
-    if bit != 0 && indexed & bit == 0 {
-        join_index(conn, id, bit, at_build_end)?;
+    if search_index != 0 && indexed & search_index == 0 {
+        join_index(conn, id, search_index, at_build_end)?;
     }
     Ok(id)
 }

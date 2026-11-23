@@ -168,24 +168,36 @@ impl ReadLimit {
     /// runs under: its stop request and its request's limit, if any.
     pub(crate) fn observe_current(conn: &Connection) -> Result<()> {
         let limit = Self::current();
-        let stop = crate::cancellation::thread_stop();
-        if let Some(limit) = &limit {
-            limit.install(conn)?;
-        }
-        if let Some(stop) = stop {
-            stop.check()?;
-            crate::cancellation::interrupt_on(conn, move || {
+        match crate::cancellation::thread_stop() {
+            None => {
+                if let Some(limit) = &limit {
+                    limit.install(conn)?;
+                }
+            }
+            Some(stop) => {
+                if let Some(limit) = &limit {
+                    limit.wait_while_within(conn)?;
+                }
                 stop.check()?;
-                limit.as_ref().map_or(Ok(()), Self::count_and_check)
-            })?;
+                crate::cancellation::interrupt_on(conn, move || {
+                    stop.check()?;
+                    limit.as_ref().map_or(Ok(()), Self::count_and_check)
+                })?;
+            }
         }
         Ok(())
     }
 
     pub(crate) fn install(&self, conn: &Connection) -> Result<()> {
-        self.check()?;
+        self.wait_while_within(conn)?;
         let limit = self.clone();
-        crate::cancellation::interrupt_on(conn, move || limit.count_and_check())?;
+        crate::cancellation::interrupt_on(conn, move || limit.count_and_check())
+    }
+
+    /// Fails when the limit is already exceeded, and makes a busy database
+    /// wait only while it stays within the limit.
+    fn wait_while_within(&self, conn: &Connection) -> Result<()> {
+        self.check()?;
         conn.busy_handler(Some(|attempt| {
             std::thread::sleep(Duration::from_millis(5));
             Self::current().map_or(attempt < 6000, |limit| limit.check().is_ok())
