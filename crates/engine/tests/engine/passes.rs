@@ -773,9 +773,13 @@ fn rebuilding_multiple_inputs_without_provider_files_preserves_order_and_title()
         assert!(rebuilt.errors.is_empty(), "{:?}", rebuilt.errors);
         assert!(rebuilt.bytes_read > 0);
     }
+    // The three messages share one timestamp, so their order is not fixed;
+    // the shared message is stored once.
+    let mut texts = before.0.clone();
+    texts.sort();
     assert_eq!(
-        before.0,
-        ["First question", "Shared question", "Last question"]
+        texts,
+        ["First question", "Last question", "Shared question"]
     );
     assert_eq!(view(), before);
 }

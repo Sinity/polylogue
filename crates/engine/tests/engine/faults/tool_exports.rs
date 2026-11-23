@@ -48,7 +48,7 @@ fn interrupted_database_read_keeps_committed_batches_and_retries_without_duplica
             let id = record["r"]["id"].as_i64().unwrap();
             assert_eq!(
                 record["r"]["body"].as_str().unwrap(),
-                format!("{id:0width$}", width = 1_000_000),
+                format!("{}{id}", "0".repeat(1_000_000 - id.to_string().len())),
                 "{action:?}: row {id}"
             );
         }
