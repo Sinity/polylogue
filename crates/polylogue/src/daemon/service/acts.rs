@@ -5,7 +5,7 @@
 //! `hand-off`). Each act is recorded as a delivery with its computed
 //! author, and reaches its session only through the channel
 //! [`polylogue_model::live::channel::channel`] chooses; a new session
-//! starts on the protocol [`polylogue_model::live::channel::host_channel`]
+//! starts on the protocol [`polylogue_model::live::channel::host_protocol`]
 //! names.
 use super::{Daemon, Failure, authored_preparation, error, ok, writer};
 use crate::daemon::handler::{Call, Handler};
@@ -1048,14 +1048,14 @@ struct NewSession<'a> {
 /// Starts a hosted session on the harness's control protocol, its first
 /// turn opening with the delivery reference, and records that turn as a
 /// `first_turn` delivery to the new session. The channel is
-/// [`polylogue_model::live::channel::host_channel`]'s.
+/// [`polylogue_model::live::channel::host_protocol`]'s.
 fn start_session(
     d: &Daemon,
     invocation: &Invocation,
     new: NewSession<'_>,
 ) -> Result<Result<SessionId, Answer<Value>>, Failure> {
-    use polylogue_model::live::channel::{HostProtocol, host_channel};
-    let protocol = match host_channel(new.harness) {
+    use polylogue_model::live::channel::{HostProtocol, host_protocol};
+    let protocol = match host_protocol(new.harness) {
         Ok(protocol) => protocol,
         Err(refusal) => {
             return Ok(Err(error(
@@ -1333,7 +1333,7 @@ fn hand_off(
     refs.extend(at.as_ref().map(polylogue_model::Reference::stored_form));
     refs.extend(prepared.refs.iter().cloned());
     if h.print {
-        let channel = polylogue_model::live::channel::host_channel(h.to);
+        let channel = polylogue_model::live::channel::host_protocol(h.to);
         return Ok(ok(json!({
             "to": h.to,
             "cwd": cwd,

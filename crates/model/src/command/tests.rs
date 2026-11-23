@@ -31,7 +31,8 @@ fn prefixes_do_not_change_the_key() {
 fn quotes_keep_separators_inside_one_word() {
     assert_eq!(n("jq '.a | .b' file.json"), "jq");
     assert_eq!(n("python3 -c \"import x; print(1)\""), "python3");
-    assert_eq!(n("echo $(date; uptime) && ls"), "ls");
+    assert_eq!(n("echo $(date; uptime)"), "echo");
+    assert_eq!(effective_stages("echo $(date; uptime) && ls").len(), 2);
 }
 
 #[test]
@@ -97,6 +98,8 @@ fn runners_expose_the_command_they_run() {
 fn redirections_are_not_arguments() {
     assert_eq!(n("bd 2>/dev/null update x-1 --claim"), "bd update");
     assert_eq!(n("git > out.txt log"), "git log");
+    assert_eq!(n("2> /dev/null bd update x-1 --claim"), "bd update");
+    assert_eq!(n("FOO=1 2> /dev/null git log"), "git log");
     let heads: Vec<String> = effective_stages("cd /r && git commit -q -F - <<'EOF'\nmsg\nEOF")
         .iter()
         .map(Stage::normalized)

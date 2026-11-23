@@ -89,6 +89,36 @@ fn the_newest_boundary_replaces_everything_before_it() {
 }
 
 #[test]
+fn replacement_history_in_the_boundary_makes_the_context_incomplete() {
+    let mut entries = compacted();
+    let reading = |entries: &[IndexEntry]| {
+        let parts = [whole("one", entries)];
+        context_at(
+            &parts,
+            |_| entries,
+            Place {
+                part: 0,
+                entry: entries.len() - 1,
+            },
+        )
+    };
+    let boundary = |history| crate::CompactionBoundary {
+        summary: Some(MessageId::parse("test:one:m99").unwrap()),
+        replacement_history: history,
+        ..Default::default()
+    };
+    entries[6].compaction = Some(boundary(serde_json::json!([])));
+    assert!(reading(&entries).complete);
+    entries[6].compaction = Some(boundary(serde_json::json!([{"type": "message"}])));
+    let context = reading(&entries);
+    assert!(!context.complete);
+    assert_eq!(
+        context.reason.as_deref(),
+        Some("replacement context is kept in the boundary event but is not fully reconstructed")
+    );
+}
+
+#[test]
 fn an_incomplete_newest_boundary_never_falls_back_to_an_older_summary() {
     let mut entries = compacted();
     entries.push(event_entry("second", "compaction", None, 10, Vec::new()));
@@ -107,7 +137,10 @@ fn an_incomplete_newest_boundary_never_falls_back_to_an_older_summary() {
         },
     );
     assert!(!context.complete);
-    assert!(context.reason.is_some());
+    assert_eq!(
+        context.reason.as_deref(),
+        Some("the newest compaction's summary is not recorded")
+    );
     assert_eq!(
         context.boundary,
         Some(Place {

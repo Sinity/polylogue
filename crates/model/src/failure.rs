@@ -2,10 +2,8 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Code {
-    ReadFailed,
     Empty,
     ModelCallsOff,
-    DaemonUnavailable,
     Query,
     Sql,
     InvalidQuery,
@@ -29,7 +27,6 @@ pub enum Code {
     UnknownReport,
     Ambiguous,
     NotAVerb,
-    TooManyWords,
     NeedsAll,
     RowNumbersOffTerminal,
     StaleCursor,
@@ -68,7 +65,6 @@ pub enum Code {
     DaemonRequired,
     ShuttingDown,
     DaemonProtocolMismatch,
-    Timeout,
     DeadlineExceeded,
     Cancelled,
     Demo,
@@ -86,10 +82,8 @@ pub enum Code {
     PrimaryContextInvalid,
 }
 stored_names!(Code {
-    ReadFailed => "read_failed",
     Empty => "empty",
     ModelCallsOff => "model_calls_off",
-    DaemonUnavailable => "daemon_unavailable",
     Query => "query",
     Sql => "sql",
     InvalidQuery => "invalid_query",
@@ -113,7 +107,6 @@ stored_names!(Code {
     UnknownReport => "unknown_report",
     Ambiguous => "ambiguous",
     NotAVerb => "not_a_verb",
-    TooManyWords => "too_many_words",
     NeedsAll => "needs_all",
     RowNumbersOffTerminal => "row_numbers_off_terminal",
     StaleCursor => "stale_cursor",
@@ -152,7 +145,6 @@ stored_names!(Code {
     DaemonRequired => "daemon_required",
     ShuttingDown => "shutting_down",
     DaemonProtocolMismatch => "daemon_protocol_mismatch",
-    Timeout => "timeout",
     DeadlineExceeded => "deadline_exceeded",
     Cancelled => "cancelled",
     Demo => "demo",

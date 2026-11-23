@@ -64,7 +64,7 @@ impl<T: Serialize> Serialize for Structured<T> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut value = serde_json::to_value(&self.fields).map_err(serde::ser::Error::custom)?;
         let object = value.as_object_mut().ok_or_else(|| {
-            serde::ser::Error::custom("structured assertion fields must be an object")
+            serde::ser::Error::custom("structured annotation fields must be an object")
         })?;
         if let Some(predecessor) = &self.predecessor {
             object.insert("predecessor".into(), predecessor.clone());
@@ -77,7 +77,7 @@ impl<'de, T: serde::de::DeserializeOwned> Deserialize<'de> for Structured<T> {
         let mut value = Json::deserialize(deserializer)?;
         let object = value
             .as_object_mut()
-            .ok_or_else(|| serde::de::Error::custom("expected structured assertion fields"))?;
+            .ok_or_else(|| serde::de::Error::custom("expected structured annotation fields"))?;
         let predecessor = object.remove("predecessor");
         let fields = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
         Ok(Self {
@@ -714,7 +714,7 @@ pub fn decode(
                         })
                     )
                 }) {
-                    return Err("comparison rubric must name an exact assertion revision".into());
+                    return Err("comparison rubric must name an exact annotation revision".into());
                 }
                 Value::Comparison(Box::new(comparison))
             }
@@ -734,7 +734,7 @@ pub fn decode(
                         })
                     )
                 }) {
-                    return Err("pass rubric must name an exact assertion revision".into());
+                    return Err("pass rubric must name an exact annotation revision".into());
                 }
                 if pass.fields.population.as_ref().is_some_and(|reference| {
                     !matches!(reference, Reference::Result { row: None, .. })
@@ -770,7 +770,7 @@ pub fn decode(
             ValueShape::Signal => {
                 let rule: Structured<shared_signals::Rule> = parse(required()?)?;
                 if Some(rule.fields.name.as_str()) != key {
-                    return Err("signal name must match its assertion key".into());
+                    return Err("signal name must match its annotation key".into());
                 }
                 Value::Signal(Box::new(rule))
             }

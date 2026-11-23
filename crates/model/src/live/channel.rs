@@ -8,7 +8,7 @@
 //! What each harness offers is declared once, in [`HARNESSES`]: the hook
 //! events that accept context, the synchronous permission hook, the
 //! headless resume and the control protocol a hosted session runs on. The
-//! hook command, the act handlers and the channel table in `docs/agents.md`
+//! hook command, the act handlers and the channel table in `docs/live-sessions.md`
 //! ([`channel_table`]) all read these declarations.
 
 use super::LiveState;
@@ -57,9 +57,9 @@ pub enum HostProtocol {
     /// app-server keeps the thread, so Polylogue reconnects to it.
     CodexAppServer,
     /// Claude Code's `--print` stream-json input and output with control
-    /// requests, held by a `polylogue host` process.
+    /// requests, held by a `polylogue internal host` process.
     ClaudeStreamJson,
-    /// The Agent Client Protocol over stdio, held by a `polylogue host`
+    /// The Agent Client Protocol over stdio, held by a `polylogue internal host`
     /// process.
     Acp,
 }
@@ -71,7 +71,7 @@ stored_names!(HostProtocol {
 });
 
 impl HostProtocol {
-    /// Whether the agent's stdio must be held by a `polylogue host`
+    /// Whether the agent's stdio must be held by a `polylogue internal host`
     /// process so that a daemon restart does not end it.
     pub fn stdio(self) -> bool {
         !matches!(self, Self::CodexAppServer)
@@ -184,7 +184,7 @@ pub fn channel(act: Act, state: LiveState, probe: &Probe) -> Result<Channel, Ref
                 refuse(
                     "session_not_live",
                     format!(
-                        "the session is {}; a live ping never resumes it",
+                        "the session is {}; a live send never resumes it",
                         state.as_str()
                     ),
                 )
@@ -261,7 +261,7 @@ pub fn channel(act: Act, state: LiveState, probe: &Probe) -> Result<Channel, Ref
 
 /// The protocol a new session of `harness` is started and hosted on: what
 /// `start`, a role start and a hand-off use.
-pub fn host_channel(harness: &str) -> Result<HostProtocol, Refusal> {
+pub fn host_protocol(harness: &str) -> Result<HostProtocol, Refusal> {
     match self::harness(harness) {
         Some(Harness {
             host: Some(protocol),
@@ -291,7 +291,7 @@ pub fn declared_probe(harness: &Harness, hosted: bool) -> Probe {
     }
 }
 
-/// The channel table in `docs/agents.md`: per harness, observed (its hook
+/// The channel table in `docs/live-sessions.md`: per harness, observed (its hook
 /// installed) and hosted, the channel each act takes or why it is refused.
 /// Generated from [`HARNESSES`] through [`channel`], so the docs cannot
 /// differ from what the acts do.

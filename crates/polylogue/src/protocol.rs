@@ -324,7 +324,6 @@ pub fn kind(code: polylogue_model::Code) -> FailureKind {
         | Code::UnknownAttachment
         | Code::UnknownReport
         | Code::NotAVerb
-        | Code::TooManyWords
         | Code::NeedsAll
         | Code::RowNumbersOffTerminal => FailureKind::BadRequest,
         Code::Ambiguous => FailureKind::Ambiguous,
@@ -363,18 +362,16 @@ pub fn kind(code: polylogue_model::Code) -> FailureKind {
         | Code::DaemonRequired
         | Code::ShuttingDown
         | Code::DaemonProtocolMismatch => FailureKind::NotRunning,
-        Code::Timeout | Code::DeadlineExceeded => FailureKind::Timeout,
+        Code::DeadlineExceeded => FailureKind::Timeout,
         Code::Cancelled => FailureKind::Cancelled,
         Code::Empty
         | Code::ModelCallsOff
-        | Code::DaemonUnavailable
         | Code::Degraded
         | Code::Demo
         | Code::AttachmentOutput
         | Code::ReaderUnavailable
         | Code::Schema
         | Code::ReadOutput
-        | Code::ReadFailed
         | Code::Io
         | Code::Store
         | Code::Internal

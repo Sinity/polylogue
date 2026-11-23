@@ -232,13 +232,21 @@ fn canonical_text_is_equal_exactly_when_values_are_equal() {
         ("1", "1.0"),
         ("10e-1", "1"),
         ("-0", "0"),
+        ("-1.0", "-1"),
         (r#"{"b":1,"a":[2.50]}"#, r#"{"a":[2.5],"b":1.0}"#),
     ] {
         let left: Json = serde_json::from_str(left).unwrap();
         let right: Json = serde_json::from_str(right).unwrap();
         assert_eq!(values::canonical(&left), values::canonical(&right));
     }
-    for (left, right) in [("1", "2"), ("0.1", "1"), (r#""1""#, "1"), ("100", "1e3")] {
+    for (left, right) in [
+        ("1", "2"),
+        ("0.1", "1"),
+        (r#""1""#, "1"),
+        ("100", "1e3"),
+        ("-1", "1"),
+        ("-0.5", "0.5"),
+    ] {
         let left: Json = serde_json::from_str(left).unwrap();
         let right: Json = serde_json::from_str(right).unwrap();
         assert_ne!(values::canonical(&left), values::canonical(&right));

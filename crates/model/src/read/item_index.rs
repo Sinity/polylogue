@@ -408,10 +408,9 @@ impl ShowProfile {
                 EntryKind::Header => Some(entry.tokens_line),
                 // Laid out as the call's line, with its edit when it has one.
                 EntryKind::Call
-                    if matches!(
-                        entry.action,
-                        Some(ToolAction::FileEdit | ToolAction::FileWrite | ToolAction::Shell)
-                    ) =>
+                    if entry
+                        .action
+                        .is_some_and(ToolAction::changes_files_or_runs_commands) =>
                 {
                     Some(entry.tokens_line)
                 }

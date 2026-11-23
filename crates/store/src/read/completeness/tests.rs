@@ -154,7 +154,7 @@ fn stream_is_complete_only_at_the_latest_sinex_position() {
         let completeness = pool.reader().unwrap().completeness(&[]).unwrap();
         (
             completeness.confirmed_stream.clone(),
-            completeness.degraded(),
+            !completeness.caught_up(),
         )
     };
     assert_eq!(

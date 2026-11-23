@@ -133,7 +133,7 @@ pub enum CompletenessReason {
     FirstBuild,
     /// Primary mode: the index has not yet applied the confirmed stream.
     StreamNotApplied,
-    /// Primary mode: the index is behind Sinex's commit position; the lag is
+    /// Primary mode: the index is behind Sinex's latest position; the lag is
     /// in the read's position report.
     StreamBehind,
 }
@@ -180,9 +180,6 @@ impl ReadCompleteness {
             && self.derivation.current()
             && self.search.current()
             && self.confirmed_stream.current()
-    }
-    pub fn degraded(&self) -> bool {
-        !self.caught_up()
     }
 }
 
