@@ -35,10 +35,16 @@ fn hermes_atof_reports_are_input_owned_observations_without_conversations() {
 }
 
 #[test]
-fn hermes_atof_future_versions_and_bad_scope_phases_are_kept_as_unsupported() {
-    for mut value in [
-        json!({"atof_version":"9","kind":"mark","uuid":"synthetic","timestamp":"2026-01-02T00:00:00Z","name":"future"}),
-        json!({"atof_version":"0.1","kind":"scope","scope_category":"future","category":"tool","uuid":"synthetic","timestamp":"2026-01-02T00:00:00Z","name":"terminal"}),
+fn hermes_atof_future_versions_and_bad_scope_phases_are_skipped_with_their_reason() {
+    for (mut value, reason) in [
+        (
+            json!({"atof_version":"9","kind":"mark","uuid":"synthetic","timestamp":"2026-01-02T00:00:00Z","name":"future"}),
+            "atof: unsupported ATOF version; original record kept",
+        ),
+        (
+            json!({"atof_version":"0.1","kind":"scope","scope_category":"future","category":"tool","uuid":"synthetic","timestamp":"2026-01-02T00:00:00Z","name":"terminal"}),
+            "atof: unsupported ATOF envelope or scope phase; original record kept",
+        ),
     ] {
         value["data"] = json!({"text":"literal kept evidence"});
         let raw = crate::support::jsonl(&[value]);
@@ -46,13 +52,7 @@ fn hermes_atof_future_versions_and_bad_scope_phases_are_kept_as_unsupported() {
         assert!(sessions(&parsed).is_empty());
         assert!(messages(&parsed).is_empty());
         assert!(parsed["output"]["events"].as_array().unwrap().is_empty());
-        assert!(
-            parsed["counts"]["skipped"]
-                .as_object()
-                .unwrap()
-                .keys()
-                .any(|reason| reason.contains("ATOF"))
-        );
+        assert_eq!(parsed["counts"]["skipped"], json!({ (reason): 1 }));
     }
 }
 
@@ -80,7 +80,7 @@ fn verification_rows_are_kept_without_guesses() {
         assert!(event.get("session").is_none());
         assert_eq!(&event["data"], original);
     }
-    assert!(found[0].get("at").is_some());
+    assert_eq!(found[0]["at"], "2026-01-02T03:04:05Z");
     assert!(found[1].get("at").is_none());
     assert_eq!(events(&parsed, "hermes_import_diagnostic").len(), 1);
     let state = events(&parsed, "hermes_verification_state");
@@ -101,12 +101,13 @@ fn hermes_verification_needs_its_schema_not_markers() {
         assert!(sessions(&parsed).is_empty());
         assert!(messages(&parsed).is_empty());
         assert!(parsed["output"]["events"].as_array().unwrap().is_empty());
-        assert!(
-            parsed["counts"]["skipped"]
-                .as_object()
-                .unwrap()
-                .keys()
-                .any(|k| k.contains("unsupported or absent Hermes verification schema version"))
+        let reason = "unsupported or absent Hermes verification schema version; original rows kept";
+        assert_eq!(
+            parsed["counts"]["skipped"],
+            json!({
+                (format!("verification_events: {reason}")): 1,
+                (format!("meta: {reason}")): 1,
+            })
         );
     }
     let marker = br#"{"polylogue_artifact":"hermes_verification_evidence_db","verification_db_path":"/neutral/never-open.db"}"#;

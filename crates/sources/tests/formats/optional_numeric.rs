@@ -36,6 +36,12 @@ fn counted(origin: &str, supplied: Option<Value>) -> Value {
     assert_eq!(authored.len(), 1);
     assert_eq!(authored[0]["blocks"][0]["text"], "Neutral authored answer");
     assert_eq!(authored[0]["role"], "assistant");
+    if origin == "gemini-cli" {
+        assert_eq!(
+            authored[0]["usage"]["output"], 3,
+            "the supplied output count"
+        );
+    }
     authored[0]["usage"][if origin == "gemini-cli" {
         "input"
     } else {

@@ -21,8 +21,37 @@ fn empty_and_single_input_have_structure_without_values() {
     assert!(one.fields["/id"].required);
     let text = serde_json::to_string(&one).unwrap();
     assert!(!text.contains("private-"));
-    assert!(!text.contains("enum"));
-    assert!(!text.contains("examples"));
+    let keys = |value: &serde_json::Value| {
+        let mut keys: Vec<String> = value.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        keys
+    };
+    let value = serde_json::to_value(&one).unwrap();
+    assert_eq!(
+        keys(&value),
+        [
+            "fields",
+            "named_fields",
+            "origin",
+            "records",
+            "rule_version",
+            "sample",
+            "selection",
+            "unreadable_inputs",
+            "unreadable_records",
+        ]
+    );
+    assert_eq!(
+        keys(&value["fields"]["/count"]),
+        [
+            "missing",
+            "occurrences",
+            "parents",
+            "present",
+            "required",
+            "types"
+        ]
+    );
 }
 
 #[test]
@@ -99,11 +128,33 @@ fn sibling_names_across_records_and_observers_are_grouped_after_fifty() {
             .json(format!(r#"{{"entry{i}":0}}"#).as_bytes())
             .unwrap();
     }
-    assert!(
-        observer
-            .finish("synthetic".into(), vec![])
+    let fifty = observer.finish("synthetic".into(), vec![]);
+    assert!(!fifty.fields.contains_key("/*"));
+    for i in 0..50 {
+        assert_eq!(fifty.fields[&format!("/entry{i}")].present, 1);
+    }
+    assert_eq!(
+        fifty
             .fields
-            .contains_key("/entry49")
+            .keys()
+            .filter(|path| path.starts_with("/entry"))
+            .count(),
+        50
+    );
+
+    let mut observer = Observer::default();
+    for i in 0..51 {
+        observer
+            .json(format!(r#"{{"entry{i}":0}}"#).as_bytes())
+            .unwrap();
+    }
+    let fifty_one = observer.finish("synthetic".into(), vec![]);
+    assert!(fifty_one.fields.contains_key("/*"));
+    assert!(
+        !fifty_one
+            .fields
+            .keys()
+            .any(|path| path.starts_with("/entry"))
     );
 }
 
@@ -124,9 +175,11 @@ fn forced_names_and_literal_path_markers_keep_their_paths() {
         .json(serde_json::to_vec(&object).unwrap().as_slice())
         .unwrap();
     let schema = observer.finish("synthetic".into(), vec![]);
-    for path in ["/a~1b", "/1234567890", "/fixed", "/*"] {
+    for path in ["/a~1b", "/1234567890", "/fixed"] {
         assert!(schema.fields.contains_key(path));
     }
+    // "/*" is where grouping puts the 51 other names; the literal "*" key is
+    // checked below in an object too small to group.
     assert_eq!(schema.fields["/*"].present, 1);
     let schema = infer(br#"{"*":true,"[]":[],"~":false}"#, Framing::Json);
     for path in ["/~2", "/~3", "/~0"] {

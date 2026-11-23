@@ -75,7 +75,16 @@ fn append_boundaries_keep_outcomes_fields_offsets_and_parser_state() {
     assert_eq!(whole.counts.records, 4);
     assert_eq!(whole.counts.used["message"], 1);
     assert_eq!(whole.counts.skipped["metadata: not parsed"], 1);
-    assert_eq!(whole.counts.unreadable.values().sum::<u64>(), 2);
+    assert_eq!(whole.counts.unreadable.len(), 2);
+    assert_eq!(whole.counts.unreadable["wrong: not a supported record"], 1);
+    let malformed: Vec<_> = whole
+        .counts
+        .unreadable
+        .iter()
+        .filter(|(key, _)| key.starts_with("?: malformed JSON: "))
+        .collect();
+    assert_eq!(malformed.len(), 1);
+    assert_eq!(*malformed[0].1, 1);
     assert_eq!(whole.counts.unread_fields["message.extra"], 1);
     assert!(whole.consumed < bytes.len() as u64);
     for split in 0..=bytes.len() {
@@ -124,10 +133,30 @@ fn capture_logs_verify_complete_captures_and_wait_on_incomplete_suffixes() {
         .unwrap();
     assert_eq!(waiting[0].consumed, 0);
     bytes[end - 1] = b'[';
-    assert!(matches!(
-        parser.steps(None, &bytes, 0, false),
-        Err(ParseError::CaptureLog(_))
-    ));
+    match parser.steps(None, &bytes, 0, false) {
+        Err(ParseError::CaptureLog(message)) => assert_eq!(message, "capture digest mismatch"),
+        other => panic!(
+            "expected a digest mismatch, got {:?}",
+            other.map(|(s, _)| s.len())
+        ),
+    }
+}
+
+#[test]
+fn a_capture_frame_has_the_documented_literal_layout() {
+    use polylogue_model::capture_log::{Header, MAGIC};
+    // A 20-digit zero-padded length, a space, the blake3 hex digest of the
+    // body (computed outside this code) and a newline.
+    let header =
+        b"00000000000000000002 6e46dd10defc9b56c29a6ec56b508c21f54c08192194e4df25bf36f0c9c3c279\n";
+    assert_eq!(Header::of(b"{}").encode(), header);
+    let mut bytes = MAGIC.to_vec();
+    bytes.extend(header);
+    bytes.extend(b"{}");
+    let parser = Parse::CaptureLog(Box::new(EmptyDocument));
+    let (steps, _) = parser.steps(None, &bytes, 0, false).unwrap();
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].consumed, bytes.len() as u64);
 }
 
 struct DocumentEvent;

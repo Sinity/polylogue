@@ -88,13 +88,24 @@ fn line_per_document_exports_are_read() {
                   json!([{"role": "user", "parts": [{"type": "text", "content": "q"}]}]),
                   json!([{"role": "assistant", "parts": [{"type": "text", "content": "a"}]}]),
                   (1, 1))]}]}]});
-    let bytes = format!("{one}\n{one}\n");
+    let two = wrapped(vec![named("b", Some(2_000_000_000_000), "second")]);
+    let bytes = format!("{one}\n{two}\n");
     let step = parse(bytes.as_bytes());
-    assert_eq!(step.output.messages.len(), 2);
+    assert_eq!(
+        step.output
+            .messages
+            .iter()
+            .map(|r| r.message.text())
+            .collect::<Vec<_>>(),
+        ["q", "a", "second"]
+    );
+    assert_eq!(step.output.events.len(), 2);
+    assert_eq!(step.counts.records, 2);
     assert!(recognize(
         Path::new("/x/traces.jsonl"),
         br#"{"resourceSpans":"#
     ));
+    assert!(!recognize(Path::new("/x/traces.jsonl"), br#"{"other":"#));
 }
 
 fn wrapped(spans: Vec<Json>) -> Json {
@@ -133,14 +144,37 @@ fn malformed_middle_lines_discard_their_prefix_and_preserve_later_spans() {
         let (a, b) = event.range.unwrap();
         let raw: Json = serde_json::from_slice(&bytes.as_bytes()[a as usize..b as usize]).unwrap();
         assert_eq!(raw, event.data);
-        assert_ne!(raw["spanId"], "a");
     }
-    for row in &step.output.messages {
-        let raw: Json =
-            serde_json::from_slice(&bytes.as_bytes()[row.offset as usize..row.end as usize])
-                .unwrap();
-        assert!(raw.get("spanId").is_some());
-    }
+    let span_ids = |ranges: Vec<(u64, u64)>| -> Vec<Json> {
+        ranges
+            .into_iter()
+            .map(|(a, b)| {
+                let raw: Json =
+                    serde_json::from_slice(&bytes.as_bytes()[a as usize..b as usize]).unwrap();
+                raw["spanId"].clone()
+            })
+            .collect()
+    };
+    assert_eq!(
+        span_ids(
+            step.output
+                .events
+                .iter()
+                .map(|e| e.range.unwrap())
+                .collect()
+        ),
+        [json!("b"), json!("c")]
+    );
+    assert_eq!(
+        span_ids(
+            step.output
+                .messages
+                .iter()
+                .map(|row| (row.offset, row.end))
+                .collect()
+        ),
+        [json!("b"), json!("c")]
+    );
 }
 
 #[test]
@@ -247,9 +281,8 @@ fn span_without_a_clock_does_not_invent_time() {
         step.output.sessions[0].started_quality,
         TimeQuality::Unknown
     );
-    assert!(
-        step.output.events.iter().all(|e| e.at.is_none()
-            && e.at_until.is_none()
-            && e.at_quality == TimeQuality::Unknown)
-    );
+    assert_eq!(step.output.events.len(), 1);
+    let event = &step.output.events[0];
+    assert!(event.at.is_none() && event.at_until.is_none());
+    assert_eq!(event.at_quality, TimeQuality::Unknown);
 }

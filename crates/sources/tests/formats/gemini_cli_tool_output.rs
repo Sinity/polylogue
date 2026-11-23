@@ -81,9 +81,10 @@ fn marker_text_and_longer_ui_keep_source_streams() {
         let parsed = parsed(&wire);
         let result = result(&parsed);
         assert_eq!(result["output"], format!("{output}\nDISTINCT_STDERR"));
-        assert_eq!(result["data"]["result"], wire["result"]);
-        assert_eq!(result["data"]["resultDisplay"], display);
-        assert!(result["data"].get("output_was_truncated").is_none());
+        assert_eq!(
+            result["data"],
+            json!({"result": wire["result"], "resultDisplay": display, "status": "error"})
+        );
     }
 }
 

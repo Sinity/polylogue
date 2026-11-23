@@ -511,13 +511,22 @@ fn hook_prevention_and_errors_do_not_require_additional_context_or_each_other() 
 
 #[test]
 fn malformed_hook_diagnostics_keep_valid_entries() {
-    for extra in [
-        json!({"hookErrors":"scalar"}),
-        json!({"hookErrors":[false,"valid error"]}),
-        json!({"preventedContinuation":"true"}),
-        json!({"preventedContinuation":null}),
-        json!({"preventedContinuation":true,"stopReason":3}),
-        json!({"hookAdditionalContext":null,"hookErrors":["valid error"]}),
+    for (extra, expected) in [
+        (json!({"hookErrors":"scalar"}), vec![]),
+        (
+            json!({"hookErrors":[false,"valid error"]}),
+            vec!["Stop hook error:\nvalid error"],
+        ),
+        (json!({"preventedContinuation":"true"}), vec![]),
+        (json!({"preventedContinuation":null}), vec![]),
+        (
+            json!({"preventedContinuation":true,"stopReason":3}),
+            vec!["Stop hook prevented continuation."],
+        ),
+        (
+            json!({"hookAdditionalContext":null,"hookErrors":["valid error"]}),
+            vec!["Stop hook error:\nvalid error"],
+        ),
     ] {
         let hook_record = hook_summary("sy1", extra);
         let p = run(std::slice::from_ref(&hook_record));
@@ -531,28 +540,22 @@ fn malformed_hook_diagnostics_keep_valid_entries() {
                 .sum::<u64>(),
             1
         );
-        if let Some(items) = hook_record["hookErrors"].as_array() {
-            for error in items.iter().filter_map(Value::as_str) {
-                assert!(
-                    blocks(&p)
-                        .iter()
-                        .any(|b| b["text"].as_str().unwrap().contains(error))
-                );
-            }
-        }
+        let texts: Vec<&str> = blocks(&p)
+            .iter()
+            .map(|b| b["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(texts, expected, "{hook_record}");
     }
 }
 
 #[test]
 fn a_pr_link_record_is_kept_whole_as_an_event() {
-    let p = run(&[
-        json!({"type": "pr-link", "sessionId": "s1", "timestamp": "2026-03-01T10:00:00Z",
-        "prNumber": 3126, "prUrl": "https://github.com/example/repo/pull/3126", "prRepository": "example/repo"}),
-    ]);
+    let record = json!({"type": "pr-link", "sessionId": "s1", "timestamp": "2026-03-01T10:00:00Z",
+        "prNumber": 3126, "prUrl": "https://github.com/example/repo/pull/3126", "prRepository": "example/repo"});
+    let p = run(std::slice::from_ref(&record));
     let links = events(&p, "pr_link");
     assert_eq!(links.len(), 1);
-    assert_eq!(links[0]["data"]["prNumber"], 3126);
-    assert_eq!(links[0]["data"]["prRepository"], "example/repo");
+    assert_eq!(links[0]["data"], record);
 }
 
 fn user(uuid: &str, content: Value) -> Value {

@@ -93,8 +93,12 @@ fn bundle_import_keeps_stated_hook_fields_declared() {
     for (index, record) in records.iter().enumerate() {
         assert_eq!(step.output.messages[index].message, record.message);
         assert_eq!(
-            step.output.block_selections[&index].source_version,
-            record.source_version
+            step.output.block_selections[&index],
+            MessageProjection {
+                source_version: record.source_version,
+                block_count: 1,
+                block_ordinals: vec![0],
+            }
         );
         assert_eq!(step.output.message_order[&index], record.order);
         let [declared] = &step.output.declared_injections[&index][..] else {
