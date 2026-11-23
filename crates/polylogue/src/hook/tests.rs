@@ -44,7 +44,8 @@ fn hook_spool_files_get_one_line_per_event() {
         .map(|l| serde_json::from_str(l).unwrap())
         .collect();
     assert_eq!(lines.len(), 2);
-    assert!(lines[0]["event_id"].is_string());
+    let event_id = uuid::Uuid::parse_str(lines[0]["event_id"].as_str().unwrap()).unwrap();
+    assert_eq!(event_id.get_timestamp().unwrap().to_unix().0, 1767225600);
     assert_eq!(lines[0]["at_ns"], "1767225600000000000");
     assert_ne!(lines[0]["event_id"], lines[1]["event_id"]);
     assert_eq!(lines[0]["provider"], "claude-code");
@@ -95,16 +96,11 @@ fn hermes_session_uses_the_resolved_source_profile_and_machine() {
     let mut startup = startup();
     startup.engine.tool_dirs.insert(
         "HERMES_HOME".into(),
-        PathBuf::from("/synthetic/other-hermes"),
+        PathBuf::from("/synthetic/hermes/profiles/work"),
     );
-    let expected = polylogue_sources::hermes::session_at(
-        Path::new("/synthetic/other-hermes/state.db"),
-        "turn-1",
-    )
-    .unwrap();
     assert_eq!(
         session_of(Harness::Hermes, &json!({"session_id":"turn-1"}), &startup),
-        Some(expected)
+        Some(SessionId::parse("hermes:turn-1@profile-work").unwrap())
     );
 }
 
@@ -141,10 +137,13 @@ fn context_uses_the_configured_archive_socket_and_clock() {
             request["arguments"],
             json!({"steps": [{"verb":"brief", "cwd":"/synthetic/project", "for":"codex:turn-1", "source":"startup"}]})
         );
+        // The caller's 400 ms budget, less the time spent reaching the call.
         assert!(
             request["deadline"]
                 .as_u64()
-                .is_some_and(|milliseconds| (1..=400).contains(&milliseconds))
+                .is_some_and(|milliseconds| (250..=400).contains(&milliseconds)),
+            "{}",
+            request["deadline"]
         );
         assert!(request.get("budget_tokens").is_none());
         let id = uuid::Uuid::parse_str(request["request_id"].as_str().unwrap()).unwrap();
@@ -236,23 +235,27 @@ fn pasted_and_search_briefs_use_rows() {
 
 #[test]
 fn hooks_fail_open_without_a_daemon() {
-    // Without a daemon the hooks fail open: no context, no output.
+    // Without a daemon the hooks fail open: no context, no output, for an
+    // event that asks the daemon for session-start context and for one that
+    // asks it for an advisory.
     let start = json!({"session_id": "a", "cwd": "/nonexistent", "source": "startup"});
     assert!(
         respond(
             Harness::Codex,
-            "Stop",
+            "SessionStart",
             &start,
             &startup(),
             Instant::now() + CONTEXT_BUDGET
         )
         .is_none()
     );
+    let prompt =
+        json!({"session_id": "a", "cwd": "/synthetic/project", "prompt": "Inspect src/parser.rs"});
     assert!(
         respond(
-            Harness::Hermes,
-            "SessionStart",
-            &start,
+            Harness::ClaudeCode,
+            "UserPromptSubmit",
+            &prompt,
             &startup(),
             Instant::now() + CONTEXT_BUDGET
         )
@@ -759,8 +762,7 @@ fn a_context_timeout_emits_an_unreferenced_notice_and_names_only_the_original_pr
     .unwrap();
     peer.join().unwrap();
     assert!(deliveries.is_empty());
-    assert!(text.contains("timed out"));
-    assert!(!text.contains("delivery:"));
+    assert_eq!(text, TIMEOUT_NOTICE);
 }
 
 #[test]
@@ -786,11 +788,7 @@ fn file_advisory_hook_uses_the_shared_request_and_silences_timeout() {
                 request["arguments"],
                 json!({"prompt":"Inspect src/parser.rs", "cwd":"/synthetic/project", "session":"codex:turn-1"})
             );
-            assert!(
-                request["deadline"]
-                    .as_u64()
-                    .is_some_and(|milliseconds| (1..=20).contains(&milliseconds))
-            );
+            assert_eq!(request["deadline"], 20);
             assert!(request.get("budget_tokens").is_none());
             let id = uuid::Uuid::parse_str(request["request_id"].as_str().unwrap()).unwrap();
             assert_eq!(id.get_timestamp().unwrap().to_unix().0, 1767225600);

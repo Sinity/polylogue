@@ -84,6 +84,14 @@ fn unknown_hook_kinds_and_json_numbers_survive_setup() {
     std::fs::write(&path, original).unwrap();
     let expected: Value = serde_json::from_str(original).unwrap();
     install(&path, Harness::ClaudeCode, || None, true).unwrap();
+    let installed: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(installed["large"], expected["large"]);
+    assert_eq!(installed["real"], expected["real"]);
+    assert_eq!(installed["hooks"]["Stop"][0], expected["hooks"]["Stop"][0]);
+    assert_eq!(
+        installed["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+        "polylogue internal hook SessionStart"
+    );
     install(&path, Harness::ClaudeCode, || None, false).unwrap();
     let actual: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     assert_eq!(actual, expected);

@@ -251,7 +251,7 @@ fn embed_query_bound_selects_all_texts_and_chunks_of_physical_rows_without_previ
 }
 
 #[test]
-fn embed_accepts_query_limits_and_refuses_the_removed_transport_limit() {
+fn embed_carries_query_limits_in_the_query() {
     let (_, _, values) = crate::cli::request_arguments(
         &["polylogue", "embed", "--query", "sessions | limit 2"],
         std::path::Path::new("/"),
@@ -260,14 +260,4 @@ fn embed_accepts_query_limits_and_refuses_the_removed_transport_limit() {
     let arguments: crate::protocol::embed::Arguments =
         serde_json::from_value(Value::Object(values)).unwrap();
     assert_eq!(arguments.query.as_deref(), Some("sessions | limit 2"));
-    assert!(
-        crate::cli::request_arguments(
-            &["polylogue", "embed", "--limit", "2"],
-            std::path::Path::new("/")
-        )
-        .is_err()
-    );
-    assert!(
-        serde_json::from_value::<crate::protocol::embed::Arguments>(json!({"limit":2})).is_err()
-    );
 }

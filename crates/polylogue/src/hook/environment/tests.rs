@@ -26,21 +26,29 @@ fn terminal_identity_needs_adapter_process_and_window() {
     );
     assert_eq!(captured["terminal_identity"]["window_id"], "42");
     assert_eq!(captured["terminal_identity"]["boot_id"], "synthetic-boot");
-    let missing = Environment {
-        kitty_pid: None,
-        ..environment
+    let incomplete = |host: &str, process: Option<u32>, window: Option<&str>| Environment {
+        host: host.into(),
+        boot: Some("synthetic-boot".into()),
+        kitty_pid: process,
+        kitty_window: window.map(str::to_owned),
     };
-    assert!(
-        snapshot(
-            "Stop",
-            &json!({}),
-            &missing,
-            &paths(dir.path()),
-            Instant::now() + Duration::from_secs(10)
-        )
-        .get("terminal_identity")
-        .is_none()
-    );
+    for missing in [
+        incomplete("synthetic-host", None, Some("42")),
+        incomplete("synthetic-host", Some(std::process::id()), None),
+        incomplete("", Some(std::process::id()), Some("42")),
+    ] {
+        assert!(
+            snapshot(
+                "Stop",
+                &json!({}),
+                &missing,
+                &paths(dir.path()),
+                Instant::now() + Duration::from_secs(10)
+            )
+            .get("terminal_identity")
+            .is_none()
+        );
+    }
 }
 
 #[test]
@@ -126,22 +134,34 @@ fn the_session_start_snapshot_never_stores_remote_credentials() {
         "origin",
         "https://user:secret@example.test/synthetic.git",
     ]);
-    let (_, repository, _) = git_identity(
-        dir.path(),
+    let captured = snapshot(
+        "SessionStart",
+        &json!({"cwd":dir.path()}),
+        &Environment {
+            host: "synthetic".into(),
+            boot: None,
+            kitty_pid: None,
+            kitty_window: None,
+        },
         &paths(dir.path()),
         Instant::now() + Duration::from_secs(10),
-    )
-    .unwrap();
+    );
+    assert_eq!(captured["repository"], "https://example.test/synthetic.git");
+    assert!(!captured.to_string().contains("secret"), "{captured}");
+}
+
+#[test]
+fn an_elapsed_budget_starts_no_git_probe() {
+    let dir = tempfile::tempdir().unwrap();
     assert_eq!(
-        repository.as_deref(),
-        Some("https://example.test/synthetic.git")
+        git_identity(dir.path(), &paths(dir.path()), Instant::now()).unwrap_err(),
+        "git identity: git did not answer before the deadline"
     );
 }
 
 #[test]
-fn unavailable_git_stays_unknown_and_an_elapsed_budget_starts_no_probe() {
+fn a_directory_outside_any_repository_leaves_git_identity_unknown() {
     let dir = tempfile::tempdir().unwrap();
-    assert!(git_identity(dir.path(), &paths(dir.path()), Instant::now()).is_err());
     let captured = snapshot(
         "SessionStart",
         &json!({"cwd":dir.path()}),
@@ -155,10 +175,9 @@ fn unavailable_git_stays_unknown_and_an_elapsed_budget_starts_no_probe() {
         Instant::now() + Duration::from_secs(10),
     );
     assert!(captured.get("git_identity").is_none());
-    assert!(
-        captured["native_unavailable"]
-            .as_array()
-            .is_some_and(|reasons| !reasons.is_empty())
+    assert_eq!(
+        captured["native_unavailable"],
+        json!(["git identity: not in a repository with a commit"])
     );
 }
 

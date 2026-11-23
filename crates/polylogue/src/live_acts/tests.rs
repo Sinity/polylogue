@@ -43,22 +43,22 @@ fn resumed_runs_of_one_session_queue_in_order() {
         PathBuf::new(),
         reports,
     );
-    drop(received);
     let session = SessionId::parse("codex:0199a1b2-3c4d-7e8f-9012-345678901234").unwrap();
     let run = |n: u8| ResumeRun {
         session: session.clone(),
         delivery: format!("d{n}"),
         text: String::new(),
     };
-    // With no acts worker nothing runs, and the session is free again.
-    assert!(!acts.resume(run(1)));
-    assert_eq!(acts.resume_finished(&session), None);
-    acts.resuming
-        .lock()
-        .unwrap()
-        .insert(session.to_string(), VecDeque::new());
+    let reported = || match received.try_recv() {
+        Ok(Report::Resume(run)) => Some(run.delivery),
+        Ok(_) => panic!("only resumes are reported"),
+        Err(_) => None,
+    };
+    assert!(acts.resume(run(1)));
+    assert_eq!(reported(), Some("d1".into()));
     assert!(!acts.resume(run(2)));
     assert!(!acts.resume(run(3)));
+    assert_eq!(reported(), None, "queued runs wait for the running one");
     assert_eq!(
         acts.resume_finished(&session).map(|r| r.delivery),
         Some("d2".into())
@@ -68,7 +68,32 @@ fn resumed_runs_of_one_session_queue_in_order() {
         Some("d3".into())
     );
     assert_eq!(acts.resume_finished(&session), None);
-    assert!(!acts.resume(run(4)));
+    assert!(acts.resume(run(4)));
+    assert_eq!(reported(), Some("d4".into()));
+}
+
+/// With no acts worker nothing runs, and the session is free again.
+#[test]
+fn a_resume_nobody_can_run_leaves_the_session_free() {
+    let (reports, received) = std::sync::mpsc::channel();
+    let acts = Acts::new(
+        PathBuf::from("/nonexistent"),
+        PathBuf::from("/nonexistent"),
+        PathBuf::new(),
+        PathBuf::new(),
+        PathBuf::new(),
+        reports,
+    );
+    drop(received);
+    let session = SessionId::parse("codex:0199a1b2-3c4d-7e8f-9012-345678901234").unwrap();
+    let run = |n: u8| ResumeRun {
+        session: session.clone(),
+        delivery: format!("d{n}"),
+        text: String::new(),
+    };
+    assert!(!acts.resume(run(1)));
+    assert_eq!(acts.resume_finished(&session), None);
+    assert!(!acts.resume(run(2)));
     assert_eq!(acts.resume_finished(&session), None);
 }
 
@@ -100,16 +125,23 @@ fn hosted_answers_take_each_request_shape() {
         .unwrap(),
         json!({"answers": {"q1": {"answers": ["use main"]}, "q2": {"answers": ["use main"]}}})
     );
-    assert!(
+    assert_eq!(
         answer_result(
             "item/tool/requestUserInput",
             &json!({"questions": [{"prompt": "no id"}]}),
             true,
             None
         )
-        .is_err()
+        .unwrap_err()
+        .to_string(),
+        "the user-input request names no question to answer"
     );
-    assert!(answer_result("item/permissions/requestApproval", &Value::Null, true, None).is_err());
+    assert_eq!(
+        answer_result("item/permissions/requestApproval", &Value::Null, true, None)
+            .unwrap_err()
+            .to_string(),
+        "unsupported: Polylogue does not answer item/permissions/requestApproval requests"
+    );
 }
 
 /// A fixture Codex app-server behind `codex app-server proxy`: each
@@ -194,7 +226,7 @@ fn one_session_adapter_block_does_not_delay_another() {
     // the blocked one to give up (its adapter answer limit).
     assert!(!waiting.is_finished(), "the blocked act was still waiting");
     std::fs::write(fixture.path().join("release"), "").unwrap();
-    let _ = waiting.join().unwrap();
+    assert_eq!(waiting.join().unwrap(), Ok(true));
 }
 
 /// A delivery is released before the flag is raised, so a failed raise still
