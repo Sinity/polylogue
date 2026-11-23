@@ -49,8 +49,14 @@ pub enum ParentIssue {
     },
 }
 
+/// What a read could not reach of a session's parents; no issue means every
+/// parent and copied message was available.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Parents {
-    pub complete: bool,
     pub issues: Vec<ParentIssue>,
+}
+impl Parents {
+    pub fn complete(&self) -> bool {
+        self.issues.is_empty()
+    }
 }

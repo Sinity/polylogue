@@ -91,7 +91,7 @@ impl Route {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum FieldGroup {
-    /// Role, prompt kind, blocks and the provider fields indexed by block.
+    /// Role, prompt kind, blocks and the message's provider fields.
     /// The route that supplies them is the message's main route: its
     /// version is the stored reading.
     Content,

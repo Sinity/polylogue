@@ -21,6 +21,8 @@ pub struct Usage {
     /// billed at a higher rate than the default five-minute writes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_write_1h: Option<u64>,
+    /// The provider's service tier as recorded. A tier other than standard is
+    /// priced by the model's rate for it; without one the cost is unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<String>,
     /// A generation mode priced differently from the standard one, as the

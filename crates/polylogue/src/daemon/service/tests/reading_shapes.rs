@@ -306,8 +306,8 @@ fn the_links_view_is_a_tree_from_the_root_with_the_seed_marked() {
         .into_iter()
         .filter_map(|card| match card {
             Card::LinkNode {
-                reference, seed, ..
-            } => Some((reference.clone(), *seed)),
+                reference, asked, ..
+            } => Some((reference.clone(), *asked)),
             _ => None,
         })
         .collect();
@@ -329,7 +329,7 @@ fn the_links_view_is_a_tree_from_the_root_with_the_seed_marked() {
     assert_eq!(
         nodes
             .iter()
-            .filter(|(_, seed)| *seed)
+            .filter(|(_, asked)| *asked)
             .map(|(node, _)| node.as_str())
             .collect::<Vec<_>>(),
         ["session:claude-code:cont"]

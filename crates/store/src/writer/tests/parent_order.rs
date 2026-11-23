@@ -113,7 +113,7 @@ fn copied_parent_families_follow_child_coordinates_instead_of_link_insertion() {
         ]
     );
     let selected = reader.select_messages(&sid("c1"), true).unwrap();
-    assert!(selected.parents().complete);
+    assert!(selected.parents().complete());
     let actual = reader.messages(&sid("c1"), true).unwrap();
     assert_eq!(
         actual.iter().map(Message::text).collect::<Vec<_>>(),
@@ -139,7 +139,7 @@ fn conflicting_child_orders_remain_explicit_without_a_chosen_parent_prefix() {
     let pool = ReadPool::open(&w.archive).unwrap();
     let reader = pool.reader().unwrap();
     let selected = reader.select_messages(&sid("c1"), true).unwrap();
-    assert!(!selected.parents().complete);
+    assert!(!selected.parents().complete());
     assert!(
         matches!(&selected.parents().issues[..], [crate::read::ParentIssue::ConflictingOrder { child, .. }] if *child == sid("c1"))
     );
@@ -168,7 +168,7 @@ fn tied_historical_child_coordinates_never_gain_order_from_link_or_message_keys(
         let pool = ReadPool::open(&w.archive).unwrap();
         let reader = pool.reader().unwrap();
         let selected = reader.select_messages(&sid("c1"), true).unwrap();
-        assert!(!selected.parents().complete);
+        assert!(!selected.parents().complete());
         let [
             crate::read::ParentIssue::UnknownOrder {
                 child,

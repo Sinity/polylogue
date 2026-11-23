@@ -54,7 +54,7 @@ pub struct ModelUsage {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
-pub struct UsageReport {
+pub struct UsageMeasure {
     /// Recorded usage records, with known response rows and independent observations apart.
     pub grain: &'static str,
     /// Time bounds select source record times, not API spend times.
@@ -171,7 +171,7 @@ fn row(r: &rusqlite::Row<'_>, at: usize) -> rusqlite::Result<Row> {
     })
 }
 
-pub(super) fn report(reader: &Reader<'_>, selection: &Selection) -> Result<UsageReport> {
+pub(super) fn report(reader: &Reader<'_>, selection: &Selection) -> Result<UsageMeasure> {
     let (cond, params) = selection.condition();
     let conn = reader.conn()?;
     let mut total = conn.query_row(
@@ -214,7 +214,7 @@ pub(super) fn report(reader: &Reader<'_>, selection: &Selection) -> Result<Usage
         || unknown_scope(reader, selection)?;
     mark_unknown(&mut total.tokens, &mut total.api, unknown);
     total.reported.response_total_unknown = unknown;
-    Ok(UsageReport {
+    Ok(UsageMeasure {
         grain: "own",
         timed_by: "source_record_time",
         sessions: conn.query_row(

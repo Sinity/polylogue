@@ -70,6 +70,11 @@ fn stored_name_round_trips_for_every_enum() {
     check!(crate::read::Format);
     check!(crate::read::View);
     check!(crate::read::EntryKind);
+    check!(LinkKind);
+    check!(crate::ReferenceReason);
+    check!(crate::Route);
+    check!(crate::FieldGroup);
+    check!(crate::Completion);
 }
 
 #[test]

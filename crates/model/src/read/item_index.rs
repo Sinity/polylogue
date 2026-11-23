@@ -171,14 +171,7 @@ fn message_header(message: &Message, place: MessagePlace, written_by: WrittenBy)
         header.boundary = Some(Boundary::CompactionSummary);
     }
     if written_by == WrittenBy::Model {
-        let usage = &message.usage;
-        if usage.input.is_some() || usage.cached_input.is_some() || usage.cache_write.is_some() {
-            header.context_tokens = Some(
-                usage.input.unwrap_or(0)
-                    + usage.cached_input.unwrap_or(0)
-                    + usage.cache_write.unwrap_or(0),
-            );
-        }
+        header.context_tokens = message.usage.total_input();
     }
     header
 }

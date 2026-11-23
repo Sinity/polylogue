@@ -920,7 +920,7 @@ fn rows_page(
         let cursor = PageCursor {
             session_read: None,
             target: reading.target.clone(),
-            options: reading.digest.clone(),
+            digest: reading.digest.clone(),
             variants: reading.options.variants.clone(),
             versions,
             position: PagePosition::Record {

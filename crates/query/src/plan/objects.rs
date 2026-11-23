@@ -28,8 +28,7 @@ pub fn catalog_fingerprint() -> &'static str {
 fn catalog(outputs: &[SourceOutput]) -> Arc<Catalog> {
     let mut catalog = built_in_catalog();
     if !outputs.is_empty() {
-        Arc::make_mut(&mut catalog).source_outputs =
-            outputs.iter().map(SourceOutput::catalog_output).collect();
+        Arc::make_mut(&mut catalog).source_outputs = outputs.to_vec();
         for output in outputs {
             if let Some(unit) = &output.schema.unit {
                 recorded_unit(&mut catalog, unit);
@@ -249,11 +248,8 @@ fn sources(query: &Query) -> Result<Vec<(Source, OutputSource)>, QueryError> {
     )?;
     Ok(sources)
 }
-fn used_outputs(
-    query: &Query,
-    catalog: &Catalog,
-) -> Result<Vec<query_language::catalog::SourceOutput>, QueryError> {
-    let mut outputs: Vec<query_language::catalog::SourceOutput> = Vec::new();
+fn used_outputs(query: &Query, catalog: &Catalog) -> Result<Vec<SourceOutput>, QueryError> {
+    let mut outputs: Vec<SourceOutput> = Vec::new();
     for (source, key) in sources(query)? {
         // Shared binding matches arguments, including lexical
         // quoting and argument order. Its validated catalog rejects duplicates.
@@ -261,7 +257,7 @@ fn used_outputs(
             .source_output(&source)
             .cloned()
             .ok_or_else(|| QueryError::invalid("source needs exactly one saved output schema"))?;
-        let output = query_language::catalog::SourceOutput {
+        let output = SourceOutput {
             source: key,
             schema,
         };
@@ -270,17 +266,6 @@ fn used_outputs(
         }
     }
     Ok(outputs)
-}
-fn capture_outputs(query: &Query, catalog: &Catalog) -> Result<Vec<SourceOutput>, QueryError> {
-    used_outputs(query, catalog)?
-        .into_iter()
-        .map(|output| {
-            Ok(SourceOutput {
-                source: output.source,
-                schema: output.schema,
-            })
-        })
-        .collect()
 }
 fn edge_key(edge: &QueryEdge) -> String {
     match edge {
@@ -353,7 +338,7 @@ pub(super) fn from_plan(plan: &Plan) -> Result<QueryObject, QueryError> {
     if let Some(object) = &plan.saved_object {
         return Ok(object.clone());
     }
-    let outputs = capture_outputs(&plan.identity, &plan.identity_catalog)?;
+    let outputs = used_outputs(&plan.identity, &plan.identity_catalog)?;
     let catalog = &plan.identity_catalog;
     let mut saved_definitions = plan.saved_definitions.clone();
     // Inline composition bodies are saved as definitions, like named inputs.
@@ -378,7 +363,7 @@ pub(super) fn from_plan(plan: &Plan) -> Result<QueryObject, QueryError> {
                         .map_err(language)?,
                     parameters: BTreeMap::new(),
                     query: query.clone(),
-                    source_outputs: capture_outputs(query, &plan.identity_catalog)?,
+                    source_outputs: used_outputs(query, &plan.identity_catalog)?,
                 });
             }
             Ok(())
@@ -633,8 +618,7 @@ fn check_node(
             "saved question changes when bound to built-in declarations",
         ));
     }
-    let recorded: Vec<_> = outputs.iter().map(SourceOutput::catalog_output).collect();
-    if used_outputs(query, &catalog)? != recorded {
+    if used_outputs(query, &catalog)? != outputs {
         return Err(QueryError::invalid(
             "question contains unused or unordered output schemas",
         ));
@@ -737,15 +721,7 @@ pub fn validate_object(object: &QueryObject) -> Result<(), QueryError> {
 pub fn replay_binding(
     binding: &polylogue_model::query_objects::ReplayBinding,
 ) -> Result<Plan, QueryError> {
-    let outputs: Vec<SourceOutput> = binding
-        .source_outputs
-        .iter()
-        .map(|output| SourceOutput {
-            source: output.source.clone(),
-            schema: output.schema.clone(),
-        })
-        .collect();
-    let mut catalog = catalog(&outputs);
+    let mut catalog = catalog(&binding.source_outputs);
     recorded_units(&mut catalog, &binding.bound_ast)?;
     for definition in &binding.definitions {
         recorded_units(&mut catalog, &definition.ast)?;
@@ -774,7 +750,7 @@ pub fn replay_binding(
                         normal_form: identity::normal_form(query, &catalog).map_err(language)?,
                         parameters: BTreeMap::new(),
                         query: query.clone(),
-                        source_outputs: capture_outputs(query, &catalog)?,
+                        source_outputs: used_outputs(query, &catalog)?,
                     });
                 }
                 Ok(())
@@ -788,7 +764,7 @@ pub fn replay_binding(
         normal_form: identity::normal_form(&binding.bound_ast, &catalog).map_err(language)?,
         parameters: BTreeMap::new(),
         query: binding.bound_ast.clone(),
-        source_outputs: capture_outputs(&binding.bound_ast, &catalog)?,
+        source_outputs: used_outputs(&binding.bound_ast, &catalog)?,
         definitions,
         dependencies: dependencies(&edges),
         edges,

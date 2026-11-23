@@ -1627,7 +1627,7 @@ pub(super) fn page(
         let next = PageCursor {
             session_read: session_read(request).cloned(),
             target: continuation.target.clone(),
-            options: digest.clone(),
+            digest: digest.clone(),
             variants: request.options.variants.clone(),
             versions,
             position: PagePosition::Entry {
@@ -1710,7 +1710,7 @@ pub(super) fn page(
             let cursor = PageCursor {
                 session_read: session_read(request).cloned(),
                 target: continuation.target.clone(),
-                options: digest.clone(),
+                digest: digest.clone(),
                 variants: request.options.variants.clone(),
                 versions,
                 position: PagePosition::Entry {

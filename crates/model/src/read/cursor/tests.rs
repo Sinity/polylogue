@@ -5,7 +5,7 @@ fn cursor() -> PageCursor {
         session_read: None,
         variants: vec![],
         target: "session:test:one".into(),
-        options: options_digest(&("transcript", 4000)),
+        digest: options_digest(&("transcript", 4000)),
         versions: PageCursor::version(&[SessionVersion {
             session: crate::SessionId::parse("test:one").unwrap(),
             rewrite_version: 3,
@@ -59,9 +59,9 @@ fn a_changed_byte_or_another_key_is_refused() {
 #[test]
 fn a_cursor_names_its_own_reading() {
     let cursor = cursor();
-    assert!(cursor.check("session:test:one", &cursor.options).is_ok());
+    assert!(cursor.check("session:test:one", &cursor.digest).is_ok());
     assert_eq!(
-        cursor.check("session:test:two", &cursor.options),
+        cursor.check("session:test:two", &cursor.digest),
         Err(CursorError::OtherReading("the target differs"))
     );
     assert_eq!(

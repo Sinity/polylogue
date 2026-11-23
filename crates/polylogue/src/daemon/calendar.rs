@@ -446,7 +446,7 @@ pub fn timeline(
 
 /// A usage report as measure data, or the store's failure to read it.
 fn measured(
-    report: Result<polylogue_store::measure::UsageReport, polylogue_store::StoreError>,
+    report: Result<polylogue_store::measure::UsageMeasure, polylogue_store::StoreError>,
 ) -> Measured {
     match report.map(serde_json::to_value) {
         Ok(Ok(data)) => Measured::Ready { data },

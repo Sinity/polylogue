@@ -165,7 +165,7 @@ fn typed_lineage_issues_keep_unknowns_and_evidence_in_every_encoder() {
                     },
                     own_cost: ValueState::NotRecorded,
                     tree_cost: ValueState::default(),
-                    seed: false,
+                    asked: false,
                     open: None,
                 }),
             },

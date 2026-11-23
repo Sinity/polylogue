@@ -5,7 +5,7 @@
 //! when it refuses a turn); a window nothing reported is inferred and
 //! labelled so. A figure no source gives is `None`.
 
-use super::{Selection, UsageReport, usage};
+use super::{Selection, UsageMeasure, usage};
 use crate::{Reader, Result};
 use polylogue_model::{QuotaLimit, QuotaReading, Timestamp};
 use serde::Serialize;
@@ -75,7 +75,7 @@ pub struct Window {
     /// Burn known and the window lasts to its reset.
     pub lasts_to_reset: bool,
     pub status: Option<String>,
-    pub usage: Option<UsageReport>,
+    pub usage: Option<UsageMeasure>,
     /// Tokens of every kind per hour since the window's first response.
     pub tokens_per_hour: Option<f64>,
     /// API-equivalent money per hour, over priced responses.
@@ -452,7 +452,7 @@ fn percent_burn(inside: &[&Observation]) -> Option<f64> {
     })
 }
 
-fn total_tokens(u: &UsageReport) -> u64 {
+fn total_tokens(u: &UsageMeasure) -> u64 {
     let l = &u.tokens;
     l.input.tokens
         + l.cached_input.tokens
