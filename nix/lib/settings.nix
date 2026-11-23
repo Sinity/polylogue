@@ -2,7 +2,7 @@
 { lib, pkgs }:
 let
   inherit (lib) mkOption types;
-  absolutePath = types.strMatching "/.*";
+  absolutePath    =   types.strMatching "/.*";
   nullableOption =
     type: description:
     mkOption {
