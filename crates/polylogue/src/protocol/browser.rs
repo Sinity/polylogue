@@ -135,8 +135,8 @@ pub struct BackfillReport {
     pub report: polylogue_model::user::BackfillReport,
 }
 
-/// What the archive holds of some of a web chat's conversations: the
-/// session, its message count and when it was last captured.
+/// Asks what the archive holds of some of a web chat's conversations (the
+/// session, its message count and when it was last captured).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Conversations {
@@ -146,8 +146,8 @@ pub struct Conversations {
     pub ids: Vec<String>,
 }
 
-/// The files of a web chat's conversation whose bytes the archive holds,
-/// so the extension does not download them again.
+/// Asks which files of a web chat's conversation the archive already holds
+/// bytes for, so the extension does not download them again.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StoredFiles {

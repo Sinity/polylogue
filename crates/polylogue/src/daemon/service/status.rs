@@ -86,7 +86,7 @@ pub(super) fn answer(
         missing.push(format!("notices: {error}"));
     }
     #[cfg(feature = "sinex")]
-    let primary = primary(d, reader);
+    let primary = primary(d, reader, &freshness);
     #[cfg(feature = "sinex")]
     if let Some(crate::protocol::status::Primary::Unavailable { error }) = &primary {
         missing.push(format!("primary status: {error}"));
@@ -157,7 +157,13 @@ pub(super) fn building(
                 CompletenessReason::DerivationBehind,
             ]),
             search: CompletenessDimension::Incomplete(vec![CompletenessReason::FirstBuild]),
-            confirmed_stream: CompletenessDimension::NotApplicable,
+            // Primary mode cannot say what the stream has applied before
+            // the index exists.
+            confirmed_stream: if d.archive.is_primary() {
+                CompletenessDimension::Unknown(vec![CompletenessReason::FirstBuild])
+            } else {
+                CompletenessDimension::NotApplicable
+            },
             kept_chains: 0,
             raw_only_chains: 0,
         },
@@ -204,6 +210,7 @@ pub(super) fn building(
 fn primary(
     d: &Daemon,
     reader: &polylogue_store::Reader<'_>,
+    freshness: &polylogue_model::freshness::ReadFreshness,
 ) -> Option<crate::protocol::status::Primary> {
     use crate::protocol::status::Primary;
     let super::ModeState::Primary { connection } = &d.mode else {
@@ -222,10 +229,14 @@ fn primary(
                     (None, None)
                 }
             };
-            let lag_positions = producer
-                .sinex_position
-                .zip(applied_position)
-                .and_then(|(sinex, applied)| sinex.checked_sub(applied).filter(|lag| *lag >= 0));
+            // The lag the answer's freshness reports, which is known only
+            // while Sinex is reachable and recently observed.
+            let lag_positions = match &freshness.sinex {
+                polylogue_model::freshness::IndexFreshness::Primary { lag_positions, .. } => {
+                    *lag_positions
+                }
+                _ => None,
+            };
             Primary::Observed {
                 producer: Box::new(producer),
                 applied_position,

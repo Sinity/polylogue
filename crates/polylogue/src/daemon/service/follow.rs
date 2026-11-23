@@ -62,8 +62,7 @@ pub(crate) fn run(
                 let Some(snapshot) = reader.follow_snapshot(
                     &session,
                     now,
-                    mark.map_or(0, |m| m.message),
-                    mark.map_or(0, |m| m.tool_call),
+                    mark.map(|m| (m.message, m.tool_call)),
                 )?
                 else {
                     continue;

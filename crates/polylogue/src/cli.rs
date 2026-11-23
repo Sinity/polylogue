@@ -32,9 +32,8 @@ fn version() -> String {
 
 /// The global options that take their value as the next word. A reader of a
 /// raw command line (the hook and daemon peer checks) skips each with its value.
-pub(crate) const GLOBAL_VALUED_OPTIONS: [&str; 10] = [
+pub(crate) const GLOBAL_VALUED_OPTIONS: [&str; 9] = [
     "--deadline",
-    "--timeout",
     "--archive",
     "--config",
     "--listen",

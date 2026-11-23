@@ -27,11 +27,7 @@ fn seed(d: &Daemon) -> Notice {
         .unwrap();
     let checkpoint = previous.unwrap_or_else(|| initial(d, &context, Some(&attention)).unwrap());
     // This fixture only records a pending delivery; no rule fired it.
-    assert!(
-        persist(d, &context, prior, checkpoint, vec![outbox], vec![])
-            .unwrap()
-            .1
-    );
+    assert!(persist(d, &context, prior, checkpoint, vec![outbox], vec![]).unwrap());
     notice
 }
 

@@ -1,7 +1,7 @@
 //! The `polylogue` binary: daemon, CLI, MCP server, hook command and
 //! browser-extension host. Archive reads and writes go through the daemon;
-//! schema diff compares explicit local artifacts. Commands
-//! requiring a stopped daemon exit with code 6 (`daemon_required`).
+//! schema diff compares explicit local artifacts. A command that needs
+//! the daemon exits with code 6 when it is not running.
 
 mod advisory;
 mod briefing;
@@ -41,13 +41,9 @@ mod web;
 
 use std::process::ExitCode;
 
-/// mimalloc instead of glibc's allocator: a first build's sixteen parse
-/// threads fragmented glibc's arenas by about 1 GB beyond the live heap
-/// (heaptrack against RSS, 2026-10-19); mimalloc kept RSS 650 MB lower at
-/// the same speed. Built without transparent huge pages (`no_thp`): marking
-/// its arena for them cost every short-lived process about 2 ms at the
-/// median and 15–30 ms at p95 (hook and `--version`), and the daemon parsed
-/// a 457 MB first build faster without them (2026-11-09).
+/// mimalloc instead of glibc's allocator: it fragments less across parse
+/// threads. Built without transparent huge pages (`no_thp`): marking its
+/// arena for them slows every short-lived process (hook, `--version`).
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -224,7 +220,7 @@ fn run() -> ExitCode {
                 return cli::parse_error(error, process.output);
             }
         };
-        if !daemon_command(&matches) {
+        if !keeps_sigpipe_ignored(&matches) {
             client_pipe_signal();
         }
         if let Some(result) = cli::run_local(&matches, process.output) {
@@ -290,7 +286,7 @@ fn attempt_from_executable(
 
 /// The daemon and `polylogue internal host` write to peers that may go away, so a
 /// closed pipe is an error to them, never a reason to die.
-fn daemon_command(matches: &clap::ArgMatches) -> bool {
+fn keeps_sigpipe_ignored(matches: &clap::ArgMatches) -> bool {
     matches!(matches.subcommand_name(), Some("daemon"))
         || matches!(matches.subcommand(), Some(("internal", internal)) if internal.subcommand_name() == Some("host"))
 }

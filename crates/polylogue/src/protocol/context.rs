@@ -54,9 +54,12 @@ pub struct Recall {
     pub for_session: Option<SessionId>,
 }
 
+/// The context prepared for a hook, with the delivery that records its outcome.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Answer {
+    /// The delivery's ID, which the hook reports the outcome of; none when no
+    /// delivery was queued
     pub delivery: Option<String>,
     pub prepared: Prepared,
 }

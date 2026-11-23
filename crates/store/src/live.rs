@@ -498,13 +498,14 @@ impl crate::Reader<'_> {
 
     /// What `follow` shows of one session at `now`: its live view, its open
     /// tool, and the messages and tool calls stored after the given row
-    /// keys, oldest first.
+    /// keys, oldest first. Without keys (the session is first looked at)
+    /// only the latest message and tool call come back: the caller needs
+    /// their keys, not the history.
     pub fn follow_snapshot(
         &self,
         session: &str,
         now: i64,
-        after_message: i64,
-        after_tool_call: i64,
+        after: Option<(i64, i64)>,
     ) -> Result<Option<FollowSnapshot>> {
         let conn = self.conn()?;
         let found = conn
@@ -517,6 +518,18 @@ impl crate::Reader<'_> {
             return Ok(None);
         };
         let facts: Option<LiveFacts> = facts.map(|f| serde_json::from_str(&f)).transpose()?;
+        let (after_message, after_tool_call) = match after {
+            Some(keys) => keys,
+            None => {
+                let before_latest = |table: &str| -> rusqlite::Result<i64> {
+                    conn.prepare_cached(&format!(
+                        "SELECT COALESCE(MAX(pk), 0) - 1 FROM {table} WHERE session_pk = ?1"
+                    ))?
+                    .query_row([pk], |r| r.get(0))
+                };
+                (before_latest("message")?, before_latest("tool_call")?)
+            }
+        };
         let messages = conn
             .prepare_cached(
                 "SELECT pk, id, role, at FROM message WHERE session_pk = ?1 AND pk > ?2 ORDER BY pk",

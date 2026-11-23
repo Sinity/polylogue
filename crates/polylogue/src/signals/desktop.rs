@@ -20,25 +20,7 @@ async fn persist_update(d: &Daemon, update: &NotificationUpdate) -> Result<bool,
         .await
         .map_err(Held::from)?;
     let reader = d.reads.reader().map_err(|e| e.to_string())?;
-    let previous = reader
-        .signal_checkpoint(&context.machine)
-        .map_err(|e| e.to_string())?;
-    let prior = previous
-        .as_ref()
-        .map(Checkpoint::identity)
-        .transpose()
-        .map_err(|e| e.to_string())?;
-    let mut checkpoint = match previous {
-        Some(value) => value,
-        None => {
-            let attention = if d.archive.is_primary() {
-                None
-            } else {
-                Some(local_attention(&reader, &context)?)
-            };
-            initial(d, &context, attention.as_ref())?
-        }
-    };
+    let (prior, mut checkpoint) = load_or_initial(d, &reader, &context)?;
     drop(reader);
     checkpoint.notifications = Some(update.state.clone());
     let events = update
@@ -47,7 +29,7 @@ async fn persist_update(d: &Daemon, update: &NotificationUpdate) -> Result<bool,
         .cloned()
         .map(|receipt| Event::Desktop { receipt })
         .collect();
-    Ok(persist(d, &context, prior, checkpoint, vec![], events)?.1)
+    persist(d, &context, prior, checkpoint, vec![], events).map_err(Held::from)
 }
 
 fn recover(
