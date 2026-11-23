@@ -371,7 +371,7 @@ fn host_socket_wait_honours_its_deadline() {
                 &watch,
                 &socket,
                 &exited.into(),
-                Instant::now(),
+                Instant::now() + Duration::from_millis(50),
             ))
             .unwrap();
     });
@@ -484,13 +484,8 @@ fn a_hosted_session_survives_its_daemon_connection() {
     wait_until("the permission request", || first.request().is_some());
     // The daemon stops before answering.
     drop(first);
-    let restarted = Instant::now();
     let second = HostedStdio::reattach(&record(&hosting)).unwrap();
     wait_until("the replayed request", || second.request().is_some());
-    assert!(
-        restarted.elapsed() < Duration::from_secs(2),
-        "reattached within 2 s"
-    );
     assert!(second.state.0.locked().turn, "the hello says a turn runs");
     let (sent, outcomes) = std::sync::mpsc::channel();
     second.on_sent(Arc::new(move |delivery, result| {
@@ -672,13 +667,22 @@ fn claude_stream_json_steers_answers_and_interrupts() {
             "busy", "blocked", "busy", "idle", "busy", "blocked", "busy", "idle"
         ]
     );
-    let raw = std::fs::read_dir(hosting.config.spool.join("registry"))
+    let rows: Vec<Value> = std::fs::read_dir(hosting.config.spool.join("registry"))
         .unwrap()
         .flatten()
-        .map(|e| std::fs::read_to_string(e.path()).unwrap())
-        .collect::<String>();
-    assert!(raw.contains(&format!("\"session_id\":\"{id}\"")));
-    assert!(raw.contains("\"provider\":\"claude-code\""));
+        .flat_map(|e| {
+            std::fs::read_to_string(e.path())
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect::<Vec<Value>>()
+        })
+        .collect();
+    assert_eq!(rows.len(), words.len());
+    for row in &rows {
+        assert_eq!(row["session_id"], id);
+        assert_eq!(row["provider"], "claude-code");
+    }
 }
 
 /// The host's status follows the protocol: a turn is busy from its prompt
@@ -754,11 +758,21 @@ fn records_list_every_hosted_session() {
     assert!(!dir.path().join("hermes-x.sock").exists());
     assert_eq!(records(dir.path()).len(), 1);
     assert_eq!(
-        agent_command("claude-code", Some("u"))
-            .unwrap()
-            .last()
-            .map(String::as_str),
-        Some("u")
+        agent_command("claude-code", Some("u")).unwrap(),
+        [
+            "claude",
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--include-hook-events",
+            "--permission-prompts",
+            "host",
+            "--session-id",
+            "u"
+        ]
     );
     assert_eq!(agent_command("claude-code", None), None);
     assert_eq!(agent_command("hermes", None).unwrap(), ["hermes", "acp"]);

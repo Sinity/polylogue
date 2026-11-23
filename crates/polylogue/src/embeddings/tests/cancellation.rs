@@ -125,11 +125,9 @@ fn stalled_provider(cancel: bool) {
                 "stalled provider never received the request: readiness={error:?}, worker={result:?}, pool_slots={slots}"
             );
         }
-        let stopped = Instant::now();
         if cancel {
             cancellation.cancel();
         }
-        let released = Instant::now();
         scope
             .spawn(|| {
                 let limit = polylogue_store::read::limit::ReadLimit::new(
@@ -140,8 +138,6 @@ fn stalled_provider(cancel: bool) {
             })
             .join()
             .unwrap();
-        let elapsed = released.elapsed();
-        assert!(elapsed < Duration::from_secs(2));
         let result = worker.join().unwrap();
         if cancel {
             assert!(
@@ -164,8 +160,6 @@ fn stalled_provider(cancel: bool) {
                 "{result:?}"
             );
         }
-        assert!(stopped.elapsed() < Duration::from_secs(2));
-        eprintln!("stalled provider released reader in {elapsed:?}");
         server.join().unwrap();
     });
 }

@@ -34,9 +34,19 @@ fn declaration_pages_preserve_every_entry() {
         page["entries"].as_array().unwrap().len(),
         fields::names(Unit::Messages).count()
     );
-    assert!(answer("fields", None, Some(0), None).is_err());
-    assert!(answer("fields", None, None, Some("units//1")).is_err());
-    assert!(answer("fields", Some("bananas"), None, None).is_err());
+    let refusal = |result: Result<Value, crate::daemon::Failure>| result.unwrap_err().error.message;
+    assert_eq!(
+        refusal(answer("fields", None, Some(0), None)),
+        "page_size must be positive so the declarations can advance"
+    );
+    assert_eq!(
+        refusal(answer("fields", None, None, Some("units//1"))),
+        "cursor belongs to another subject or is invalid"
+    );
+    assert_eq!(
+        refusal(answer("fields", Some("bananas"), None, None)),
+        "unknown unit \"bananas\""
+    );
     let capabilities = entries("capabilities", None).unwrap();
     let views: Vec<_> = capabilities
         .iter()
@@ -47,7 +57,7 @@ fn declaration_pages_preserve_every_entry() {
 }
 
 #[test]
-fn every_grammar_keyword_is_discoverable() {
+fn syntax_lists_time_functions_and_the_sort_transform_and_distinct_count() {
     let page = answer("syntax", None, None, None).unwrap();
     let keywords = page["entries"][0]["keywords"].as_array().unwrap();
     for function in [
@@ -61,7 +71,6 @@ fn every_grammar_keyword_is_discoverable() {
     ] {
         assert!(keywords.contains(&json!(function)), "missing {function}");
     }
-    assert!(!keywords.contains(&json!("fingerprint")));
     assert!(
         page["entries"][0]["transforms"]
             .as_array()

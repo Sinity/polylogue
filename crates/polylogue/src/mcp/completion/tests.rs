@@ -99,6 +99,14 @@ fn completion_without_a_position_completes_at_the_end_of_the_text() {
         reply["result"]["completion"]["values"].clone()
     };
     let default = complete(json!({}));
+    let values = default.as_array().expect("completion values are an array");
+    assert!(!values.is_empty());
+    assert!(
+        values
+            .iter()
+            .all(|value| value.as_str().unwrap().starts_with("live:")),
+        "{values:?}"
+    );
     let explicit = complete(json!({"polylogue/position": text.len()}));
     assert_eq!(default, explicit);
 }

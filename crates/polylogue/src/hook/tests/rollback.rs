@@ -102,16 +102,19 @@ fn the_hook_writes_exactly_the_line_shapes_the_rollback_fixture_holds() {
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(written.len(), expected.len(), "{written:#?}");
+    // Each fixture line is the shape of exactly one written line.
+    let mut unmatched = expected.clone();
     for line in &written {
         assert!(
             RECOGNIZED_FIRST_KEYS.contains(&first_key(line)),
             "a reader recognizes a spool file by its first key: {line}"
         );
         let mut value: Value = serde_json::from_str(line).unwrap();
-        let fixture = expected
+        let position = unmatched
             .iter()
-            .find(|fixture| fixture["event"] == value["event"])
-            .unwrap_or_else(|| panic!("no fixture line for {line}"));
+            .position(|fixture| fixture["event"] == value["event"])
+            .unwrap_or_else(|| panic!("no unmatched fixture line for {line}"));
+        let fixture = unmatched.remove(position);
         assert!(value["event_id"].as_str().is_some_and(|id| !id.is_empty()));
         assert!(value["harness_pid"].is_u64());
         value["event_id"] = fixture["event_id"].clone();
@@ -124,8 +127,9 @@ fn the_hook_writes_exactly_the_line_shapes_the_rollback_fixture_holds() {
             assert_eq!(invocation_value.as_str(), Some(invocation.as_str()));
             *invocation_value = fixture["payload"]["invocation"].clone();
         }
-        assert_eq!(&value, fixture);
+        assert_eq!(value, fixture);
     }
+    assert!(unmatched.is_empty(), "{unmatched:#?}");
     for line in LINES.lines() {
         assert!(RECOGNIZED_FIRST_KEYS.contains(&first_key(line)), "{line}");
     }
