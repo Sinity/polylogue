@@ -1,4 +1,4 @@
-use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard};
 
 /// Recover the value returned by a lock or condition-variable wait after a panic.
 pub fn unpoisoned<T>(result: std::sync::LockResult<T>) -> T {
@@ -30,23 +30,6 @@ impl<T: ?Sized> LockExt for RwLock<T> {
         unpoisoned(self.read())
     }
 }
-/// Exclusive access to an RwLock, with the same poisoning policy as LockExt.
-pub trait WriteLockExt {
-    type Guard<'a>
-    where
-        Self: 'a;
-    fn write_locked(&self) -> Self::Guard<'_>;
-}
-impl<T: ?Sized> WriteLockExt for RwLock<T> {
-    type Guard<'a>
-        = RwLockWriteGuard<'a, T>
-    where
-        T: 'a;
-    fn write_locked(&self) -> Self::Guard<'_> {
-        unpoisoned(self.write())
-    }
-}
-
 /// Typed fields of a JSON object. Absent fields and other types return None.
 pub trait JsonExt {
     fn str(&self, key: &str) -> Option<&str>;

@@ -6,7 +6,7 @@ mod stored_names;
 pub use stored_names::StoredName;
 
 mod helpers;
-pub use helpers::{JsonExt, LockExt, WriteLockExt, hex, spawn_named, unpoisoned};
+pub use helpers::{JsonExt, LockExt, hex, spawn_named, unpoisoned};
 pub mod failure;
 pub use failure::Code;
 

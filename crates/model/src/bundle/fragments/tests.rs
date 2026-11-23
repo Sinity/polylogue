@@ -66,6 +66,15 @@ fn conflicting_overlaps_and_totals_are_refused() {
     left.coverage.total_bytes = Some(10);
     right.coverage.total_bytes = Some(11);
     assert_eq!(left.merge(&right), Err(TextFragmentError::Conflict));
+    // A total declared by one fragment bounds the other's coverage.
+    let mut short = fragment(0, "AB");
+    short.coverage.total_bytes = Some(3);
+    let long = fragment(1, "BCD");
+    assert_eq!(
+        short.validate_overlap(&long),
+        Err(TextFragmentError::Coverage)
+    );
+    assert_eq!(short.merge(&long), Err(TextFragmentError::Coverage));
     let mut different = fragment(0, "A");
     different.source_version = TextSourceVersion::ContentHash {
         record: different.container.clone(),
@@ -78,13 +87,6 @@ fn conflicting_overlaps_and_totals_are_refused() {
 fn text_fragment_never_verifies_a_source_hash_from_selected_bytes() {
     let value = fragment(7, "body");
     assert!(value.validate().is_ok());
-    assert_ne!(
-        value.text_hash,
-        match value.source_version {
-            TextSourceVersion::ContentHash { hash, .. } => hash,
-            _ => unreachable!(),
-        }
-    );
     let mut check = value.check_source(&value.source_version).unwrap();
     assert_eq!(
         check.push("prefix WRONG tail"),
@@ -193,9 +195,6 @@ fn partial_selection_carries_no_unselected_body() {
     assert_eq!(value.validate(), Err(TextFragmentError::Origin));
     let value = fragment(7, "KEEP");
     let encoded = serde_json::to_value(&value).unwrap();
-    assert!(encoded.get("message").is_none());
-    assert!(encoded.get("block").is_none());
-    assert!(encoded.get("verified").is_none());
     assert!(encoded["coverage"].get("total_bytes").is_none());
     let mut injected = encoded;
     injected

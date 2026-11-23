@@ -17,8 +17,6 @@ fn poisoned_locks_keep_their_values() {
         panic!("poison");
     });
     assert_eq!(*lock.locked(), 9);
-    *lock.write_locked() = 10;
-    assert_eq!(*lock.locked(), 10);
 }
 
 #[test]
