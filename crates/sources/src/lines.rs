@@ -3,7 +3,7 @@
 //! finished (an import, an export member): then the end of the bytes ends the last record.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 1;
 
 use crate::document::after_byte_order_mark;
 

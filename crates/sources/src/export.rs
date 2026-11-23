@@ -1,7 +1,7 @@
 //! Export records and conversation scan state, with a Serde reader that splits
 //! JSON arrays into records.
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 2;
 
 use crate::document::{BYTE_ORDER_MARK, after_byte_order_mark};
 use serde::Deserialize;
