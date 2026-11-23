@@ -121,7 +121,7 @@ fn query_and_typed_about_share_forks_and_withdrawal() {
     assert_eq!(selected(&fresh, "annotations"), ["right"]);
     assert!(selected(&fresh, "annotations where conflict:true").is_empty());
     let mut associated = Vec::new();
-    fresh
+    let flow = fresh
         .visit_assertion_references_linked(
             &Reference::parse_stored(about.1).unwrap(),
             &[polylogue_model::assertion::LinkRole::About],
@@ -131,6 +131,7 @@ fn query_and_typed_about_share_forks_and_withdrawal() {
             },
         )
         .unwrap();
+    assert!(matches!(flow, std::ops::ControlFlow::Continue(())));
     assert_eq!(associated, ["right"]);
     let exact = fresh
         .assertion(&polylogue_model::RevisionReference::exact(
