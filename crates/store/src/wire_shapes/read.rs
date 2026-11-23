@@ -266,7 +266,6 @@ fn coverage_status(wire: CoverageStatus, parser: Option<&str>) -> CoverageStatus
         wire,
         CoverageStatus::Unreadable
             | CoverageStatus::Refused
-            | CoverageStatus::Unknown
             | CoverageStatus::NoParserYet
             | CoverageStatus::Failed
     ) {

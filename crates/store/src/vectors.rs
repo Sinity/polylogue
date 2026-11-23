@@ -538,11 +538,17 @@ impl Vectors {
             if loaded.dims == 0 {
                 loaded.dims = dims;
             }
-            if dims != loaded.dims || bytes.len() != dims * 4 {
+            if dims != loaded.dims {
+                return Err(StoreError::Invalid(format!(
+                    "a stored vector under {key} has {dims} values, not {}",
+                    loaded.dims
+                )));
+            }
+            if bytes.len() != dims * 4 {
                 return Err(StoreError::Invalid(format!(
                     "a stored vector under {key} has {} bytes, not {}",
                     bytes.len(),
-                    loaded.dims * 4
+                    dims * 4
                 )));
             }
             let floats = floats(&bytes);

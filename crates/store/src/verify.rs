@@ -1,6 +1,7 @@
 //! The on-demand check of stored bytes (`polylogue status --verify`). It reads every
 //! committed blob and checks its encoded bytes against the committed digest
-//! and its decoded bytes against its name, checks every extent against the
+//! and, for a plain blob, its decoded bytes against its name (a sealed
+//! blob is checked by digest alone: the check holds no key), checks every extent against the
 //! blob it cites and every revision against its chain's extents, compares
 //! the kept counters with the rows they count, and runs SQLite's own check
 //! on each database. It changes nothing: what it finds is reported, and
@@ -337,7 +338,7 @@ fn databases(pool: &ReadPool, found: &mut Verification) -> Result<()> {
 
 /// Reads every blob in the catalog, in hash order, checking its stored
 /// descriptor against the catalog's sizes, its encoded bytes against the
-/// committed digest and its decoded bytes against its name.
+/// committed digest and, for a plain blob, its decoded bytes against its name.
 fn blob_bytes(
     pool: &ReadPool,
     root: &Path,

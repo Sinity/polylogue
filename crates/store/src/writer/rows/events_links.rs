@@ -142,14 +142,14 @@ impl RowWriter<'_, '_> {
             .keys
             .get(resolve::Kind::Link, &resolve::link_key(link)?)?
             .pk;
+        let (parent, child_id) = (link.parent.to_string(), link.child.to_string());
         let child = self
             .keys
-            .get(resolve::Kind::Session, link.child.to_string().as_bytes())?
+            .get(resolve::Kind::Session, child_id.as_bytes())?
             .pk;
         let kind = link.kind.as_str();
         let how = link.how.map(|how| how.as_str());
         // A copy's session is named by the session its name is an alias of.
-        let (parent, child_id) = (link.parent.to_string(), link.child.to_string());
         let ids = &self.keys.identities;
         let (parent, child_id) = (ids.shown_session(&parent), ids.shown_session(&child_id));
         let at = link

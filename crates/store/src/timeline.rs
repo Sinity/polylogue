@@ -31,7 +31,7 @@ fn sources(
     selection: &Selection<'_>,
     session: Option<i64>,
     combined_index: bool,
-) -> (Vec<String>, Vec<SqlValue>) {
+) -> (Vec<(&'static str, String)>, Vec<SqlValue>) {
     if let Some(responses) = selection.responses {
         let (condition, values) = responses.condition();
         let mut params = values
@@ -64,17 +64,37 @@ fn sources(
             ""
         };
         return (
-            vec![format!(
-                "SELECT m.at, 'message' AS kind, m.id, s.id AS session, m.role AS label, 'Recorded message time' AS time_source, m.cost_nusd FROM message m{index} CROSS JOIN session s ON s.pk=m.session_pk WHERE {condition}"
+            vec![(
+                "message",
+                format!(
+                    "SELECT m.at, 'message' AS kind, m.id, s.id AS session, m.role AS label, 'Recorded message time' AS time_source, m.cost_nusd FROM message m{index} CROSS JOIN session s ON s.pk=m.session_pk WHERE {condition}"
+                ),
             )],
             params,
         );
     }
     (vec![
-        "SELECT m.at, 'message' AS kind, m.id, s.id AS session, m.role AS label, 'Recorded message time' AS time_source FROM message m CROSS JOIN session s ON s.pk=m.session_pk WHERE 1".into(),
-        "SELECT e.at, 'event' AS kind, e.id, s.id AS session, e.kind AS label, 'Recorded event time' AS time_source FROM event e LEFT JOIN session s ON s.pk=e.session_pk WHERE 1".into(),
-        "SELECT n.created_at AS at, 'assertion' AS kind, n.id, NULL AS session, n.kind AS label, 'Assertion declared writer clock' AS time_source FROM source_assertion n WHERE 1".into(),
+        ("message", "SELECT m.at, 'message' AS kind, m.id, s.id AS session, m.role AS label, 'Recorded message time' AS time_source FROM message m CROSS JOIN session s ON s.pk=m.session_pk WHERE 1".into()),
+        ("event", "SELECT e.at, 'event' AS kind, e.id, s.id AS session, e.kind AS label, 'Recorded event time' AS time_source FROM event e LEFT JOIN session s ON s.pk=e.session_pk WHERE 1".into()),
+        ("assertion", "SELECT n.created_at AS at, 'assertion' AS kind, n.id, NULL AS session, n.kind AS label, 'Assertion declared writer clock' AS time_source FROM source_assertion n WHERE 1".into()),
     ], vec![])
+}
+
+/// The one response-rows source of a measure selection, with its parameters.
+fn response_source(selection: &crate::measure::Selection) -> (String, Vec<SqlValue>) {
+    let (mut sources, params) = sources(
+        &Selection {
+            date: None,
+            across_years: false,
+            undated: selection.undated,
+            responses: Some(selection),
+            model: None,
+            unknown_model: false,
+        },
+        None,
+        false,
+    );
+    (sources.remove(0).1, params)
 }
 
 /// The condition for a time that is unknown or outside the timestamp range.
@@ -94,15 +114,13 @@ fn years(reader: &Reader<'_>, day: &DaySetting, through: jiff::civil::Date) -> R
         ("source_assertion", "created_at"),
     ] {
         let mut since = jiff::Timestamp::MIN.as_millisecond();
+        let until = crate::calendar::range(day, through)?.1;
         loop {
             let rows = reader.query(
                 &format!(
                     "SELECT min({field}) AS at FROM {table} WHERE {field} >= ?1 AND {field} < ?2"
                 ),
-                &[
-                    SqlValue::Int(since),
-                    SqlValue::Int(crate::calendar::range(day, through)?.1),
-                ],
+                &[SqlValue::Int(since), SqlValue::Int(until)],
             )?;
             let Some(at) = rows.first().and_then(|row| row["at"].as_i64()) else {
                 break;
@@ -192,7 +210,7 @@ fn page_sources(reader: &Reader<'_>, selection: &Selection<'_>) -> Result<Vec<So
                 let (sources, params) = sources(&selection, key, combined_index && key.is_some());
                 Source {
                     kind: "message",
-                    sql: sources.into_iter().next().unwrap(),
+                    sql: sources.into_iter().next().unwrap().1,
                     params,
                 }
             })
@@ -202,10 +220,9 @@ fn page_sources(reader: &Reader<'_>, selection: &Selection<'_>) -> Result<Vec<So
     let (sources, params) = sources(selection, None, false);
     Ok(sources
         .into_iter()
-        .enumerate()
-        .map(|(index, sql)| Source {
-            // Each label is the `kind` its source's rows carry: the cursor compares them.
-            kind: ["message", "event", "assertion"][index],
+        .map(|(kind, sql)| Source {
+            // The label is the `kind` the source's rows carry: the cursor compares them.
+            kind,
             sql,
             params: params.clone(),
         })
@@ -428,19 +445,7 @@ pub fn costs_by_day(
     selected: &crate::measure::Selection,
 ) -> Result<Vec<Value>> {
     let day = &clock.day;
-    let (sources, mut params) = sources(
-        &Selection {
-            date: None,
-            across_years: false,
-            undated: false,
-            responses: Some(selected),
-            model: None,
-            unknown_model: false,
-        },
-        None,
-        false,
-    );
-    let source = &sources[0];
+    let (source, mut params) = response_source(selected);
     let (since, until) = crate::calendar::month(day, month)?;
     params.push(SqlValue::Int(since));
     let first = params.len();
@@ -467,19 +472,7 @@ pub fn undated_responses(
         undated: true,
         ..selection.clone()
     };
-    let (sources, params) = sources(
-        &Selection {
-            date: None,
-            across_years: false,
-            undated: true,
-            responses: Some(&selection),
-            model: None,
-            unknown_model: false,
-        },
-        None,
-        false,
-    );
-    let source = &sources[0];
+    let (source, params) = response_source(&selection);
     let rows = reader.query(
         &format!("SELECT count(*) AS records FROM ({source})"),
         &params,
