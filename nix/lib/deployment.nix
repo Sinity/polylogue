@@ -18,8 +18,22 @@ let
       };
     }
   );
+  defaultArchive =
+    cfg:
+    if cfg.defaultArchive != null then
+      cfg.defaultArchive
+    else if builtins.length (builtins.attrNames cfg.archives) == 1 then
+      builtins.head (builtins.attrNames cfg.archives)
+    else
+      null;
+  aliasNames = [
+    "polylogue"
+    "plg"
+    "plog"
+  ];
 in
 {
+  inherit defaultArchive;
   options = {
     enable = lib.mkEnableOption "Polylogue archives";
     package = mkOption {
@@ -59,25 +73,11 @@ in
       description = "Relative I/O weight. No memory limit is imposed.";
     };
   };
-  defaultArchive =
-    cfg:
-    if cfg.defaultArchive != null then
-      cfg.defaultArchive
-    else if builtins.length (builtins.attrNames cfg.archives) == 1 then
-      builtins.head (builtins.attrNames cfg.archives)
-    else
-      null;
   assertions =
     cfg:
     let
       names = map (archive: archive.command) (builtins.attrValues cfg.archives);
-      selected =
-        if cfg.defaultArchive != null then
-          cfg.defaultArchive
-        else if builtins.length (builtins.attrNames cfg.archives) == 1 then
-          builtins.head (builtins.attrNames cfg.archives)
-        else
-          null;
+      selected = defaultArchive cfg;
     in
     [
       {
@@ -91,14 +91,7 @@ in
       {
         assertion =
           builtins.length names == builtins.length (lib.unique names)
-          && !builtins.any (
-            name:
-            builtins.elem name [
-              "polylogue"
-              "plg"
-              "plog"
-            ]
-          ) names;
+          && !builtins.any (name: builtins.elem name aliasNames) names;
         message = "Polylogue archive commands must be unique and distinct from polylogue, plg and plog.";
       }
     ];
@@ -127,15 +120,8 @@ in
     }:
     pkgs.runCommand "polylogue-default-commands" { } ''
       mkdir -p "$out/bin"
-      ${lib.concatMapStringsSep "\n"
-        (name: ''
-          ln -s ${lib.escapeShellArg "${wrappers.${selected}}/bin/${cfg.archives.${selected}.command}"} "$out/bin/${name}"
-        '')
-        [
-          "polylogue"
-          "plg"
-          "plog"
-        ]
-      }
+      ${lib.concatMapStringsSep "\n" (name: ''
+        ln -s ${lib.escapeShellArg "${wrappers.${selected}}/bin/${cfg.archives.${selected}.command}"} "$out/bin/${name}"
+      '') aliasNames}
     '';
 }

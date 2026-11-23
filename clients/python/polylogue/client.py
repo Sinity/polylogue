@@ -34,8 +34,15 @@ class Refused(RuntimeError):
         self.answer = Answer(answer)
         self.returncode = returncode
         error = _failure(answer)
-        self.kind = error.get("kind", "client")
+        self.kind = error["kind"]
         super().__init__(error.get("message", str(answer)))
+
+
+def _refusal(answer, returncode):
+    """The error to raise for a failure answer, checked against its exit status."""
+    if returncode == 0:
+        return RuntimeError("Polylogue returned an error with a successful exit status")
+    return Refused(answer, returncode)
 
 
 class Client:
@@ -71,9 +78,7 @@ class Client:
             ) from error
         outcome = answer.get("outcome") if isinstance(answer, dict) else None
         if _failure(answer) is not None:
-            if result.returncode == 0:
-                raise RuntimeError("Polylogue returned an error with a successful exit status")
-            raise Refused(answer, result.returncode)
+            raise _refusal(answer, result.returncode)
         if outcome not in _EXIT_STATUS:
             raise RuntimeError("Polylogue returned an invalid shared answer")
         if result.returncode != _EXIT_STATUS[outcome]:
@@ -81,7 +86,7 @@ class Client:
         return Answer(answer)
 
     def stream(self, *arguments):
-        """Yield typed finite line events through its final answer.
+        """Yield the finite line events, as plain dicts, through the final answer.
 
         Each read completes independently. The final answer ends the line;
         failures retain their earlier step reports and undo lines.
@@ -95,7 +100,7 @@ class Client:
                     event = json.loads(line)
                     if "event" not in event:
                         if _failure(event):
-                            raise Refused(event, process.wait())
+                            raise _refusal(event, process.wait())
                         raise RuntimeError("Polylogue returned no line event")
                     if final is not None:
                         raise RuntimeError("Polylogue emitted an event after its final answer")
@@ -107,9 +112,7 @@ class Client:
                     yield _copy(event)
                 code = process.wait()
                 if failed is not None:
-                    if code == 0:
-                        raise RuntimeError("Polylogue returned a failed step with a successful exit status")
-                    raise Refused(failed, code)
+                    raise _refusal(failed, code)
                 if final is None:
                     raise RuntimeError("Polylogue's line stopped before its final answer")
                 if final.get("outcome") not in _EXIT_STATUS:
@@ -170,7 +173,7 @@ class Client:
             raise RuntimeError("Polylogue returned an invalid shared answer")
         return Answer(answer)
 
-    def changes(self, after=None):
+    def feed(self, after=None):
         """Yield a finite feed. Save only the position on its completion line.
 
         The CLI validates framing and counts before forwarding completion.
@@ -184,7 +187,7 @@ class Client:
                 for line in process.stdout:
                     answer = json.loads(line)
                     if answer.get("outcome") == "error":
-                        raise Refused(answer, process.wait())
+                        raise _refusal(answer, process.wait())
                     yield Answer(answer)
                 if process.wait():
                     raise RuntimeError(f"Polylogue's change feed failed (exit {process.returncode})")

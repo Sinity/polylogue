@@ -16,6 +16,13 @@ from polylogue.client import Client, Refused
 ARCHIVE, EXECUTABLE = sys.argv[1:3]
 del sys.argv[1:3]
 
+PYTHON_SESSION = "session:claude-code:python"
+PYTHON_TEXT = "a synthetic Python client session"
+
+
+def text_items(items):
+    return [item["kind"]["text"] for item in items if item["kind"]["kind"] == "text"]
+
 
 def read_page(answer):
     return answer["value"]["reply"]["steps"][0]["outcome"]["reply"]["reply"]
@@ -76,16 +83,16 @@ class ClientTests(unittest.TestCase):
                 worker = threading.Thread(target=forward, daemon=True)
                 worker.start()
                 client = Client(directory, executable=EXECUTABLE)
+                refusal = None
                 try:
                     answer = client.follow_read(request).json()
                 except Refused as error:
-                    worker.join()
-                    self.assertEqual(observed["request"], request)
-                    self.assertEqual(error.answer.json(), observed["answer"])
-                    raise
+                    refusal, answer = error, error.answer.json()
                 worker.join()
                 self.assertEqual(observed["request"], request)
                 self.assertEqual(answer, observed["answer"])
+                if refusal is not None:
+                    raise refusal
                 return answer
 
     def test_declared_archive_alias_is_preserved_for_calls_and_feeds(self):
@@ -107,17 +114,14 @@ class ClientTests(unittest.TestCase):
             first = Path(directory) / "first.json"
             second = Path(directory) / "second.json"
             events = list(self.direct.stream(
-                "--request-id", "python-ordered", "--", "session:claude-code:python",
+                "--request-id", "python-ordered", "--", PYTHON_SESSION,
                 "note", "Python first line note",
                 "read", "--to", str(first), "--format", "json",
                 "tag", "python-later",
                 "read", "--to", str(second), "--format", "json"))
             for path in [first, second]:
                 document = json.loads(path.read_bytes())
-                self.assertEqual(
-                    [item["kind"]["text"] for item in document["items"]
-                     if item["kind"]["kind"] == "text"],
-                    ["a synthetic Python client session"])
+                self.assertEqual(text_items(document["items"]), [PYTHON_TEXT])
 
         self.assertEqual([event["event"] for event in events].count("complete"),2)
         self.assertEqual(events[-1]["event"],"answer")
@@ -131,18 +135,11 @@ class ClientTests(unittest.TestCase):
         query = self.checked(lambda: self.client.query("sessions"))
         self.assertEqual(query["outcome"], "ok")
         self.assertTrue(query["value"]["reply"]["rows"])
-        read = self.checked(lambda: self.client.read("session:claude-code:python"))
+        read = self.checked(lambda: self.client.read(PYTHON_SESSION))
         self.assertIn(read["outcome"], {"ok", "degraded"})
         self.assertTrue(read_page(read)["document"]["items"])
         self.assertIn("read_at", read_page(read)["snapshot"])
-        self.assertEqual(
-            [
-                item["kind"]["text"]
-                for item in read_page(read)["document"]["items"]
-                if item["kind"]["kind"] == "text"
-            ],
-            ["a synthetic Python client session"],
-        )
+        self.assertEqual(text_items(read_page(read)["document"]["items"]), [PYTHON_TEXT])
 
     def test_generated_read_calls_continue_without_losing_their_envelope(self):
         target = "session:claude-code:python-pages"
@@ -199,8 +196,7 @@ class ClientTests(unittest.TestCase):
         self.assertGreater(count, 0)
         self.assertFalse(partial)
         self.assertEqual(complete, whole)
-        self.assertEqual([item["kind"]["text"] for item in complete if item["kind"]["kind"] == "text"],
-                         ["Python λ🙂 continuation. " * 300])
+        self.assertEqual(text_items(complete), ["Python λ🙂 continuation. " * 300])
 
     def test_read_follow_ups_preserve_nulls_and_previous_pages(self):
         first = read_page(self.direct.call("session:claude-code:python-pages", "read", "--budget", "600", "--deadline", "none").json())
@@ -249,6 +245,25 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(raised.exception.kind, "not_found")
         self.assertEqual(raised.exception.answer.json(), json.loads(self.capture.read_bytes()))
 
+    def test_error_answer_with_a_successful_exit_status_is_a_protocol_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fake = Path(directory) / "polylogue"
+            fake.write_text(
+                "#!/bin/sh\n"
+                """echo '{"outcome":"error","error":{"kind":"bad_request","message":"no"}}'\n"""
+            )
+            fake.chmod(0o700)
+            client = Client(directory, executable=fake)
+            with self.assertRaises(RuntimeError) as raised:
+                client.status()
+            self.assertNotIsInstance(raised.exception, Refused)
+            with self.assertRaises(RuntimeError) as raised:
+                list(client.stream("status"))
+            self.assertNotIsInstance(raised.exception, Refused)
+            with self.assertRaises(RuntimeError) as raised:
+                list(client.feed())
+            self.assertNotIsInstance(raised.exception, Refused)
+
     def test_empty_answers_keep_their_payload_and_exit_contract(self):
         answer = self.checked(lambda: self.client.query('sessions where repo:"python-missing"'))
         self.assertEqual(answer["outcome"], "empty")
@@ -263,6 +278,8 @@ class ClientTests(unittest.TestCase):
             answer.data["rows"][0]["x"] = "changed"
         with self.assertRaises(FrozenInstanceError):
             answer.data = None
+        self.assertEqual(hash(answer), hash(Answer(answer.json())))
+        self.assertEqual({answer: 1}[Answer(answer.json())], 1)
         copy = answer.json()
         self.assertIsNone(copy["unknown"])
         self.assertEqual(copy["large"], 2**62)
@@ -282,17 +299,17 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(current["authored"]["reference"], "assertion:python-write@python-write")
 
     def test_change_feed_can_continue_from_its_completion(self):
-        first = [line.json() for line in self.direct.changes()]
+        first = [line.json() for line in self.direct.feed()]
         self.assertEqual(first[0]["type"], "begin")
         self.assertEqual(first[-1]["type"], "complete")
         self.assertTrue(first[-1]["replacement"])
-        following = [line.json() for line in self.direct.changes(first[-1]["position"])]
+        following = [line.json() for line in self.direct.feed(first[-1]["position"])]
         self.assertEqual(following[0]["position"], first[-1]["position"])
         self.assertEqual(following[-1]["type"], "complete")
         self.assertFalse(following[-1]["replacement"])
         generation = first[-1]["position"].split(":")[0]
         with self.assertRaises(Refused) as raised:
-            list(self.direct.changes(f"{generation}:9223372036854775807:9223372036854775807"))
+            list(self.direct.feed(f"{generation}:9223372036854775807:9223372036854775807"))
         self.assertEqual(raised.exception.kind, "bad_request")
 
 

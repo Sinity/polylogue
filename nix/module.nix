@@ -1,3 +1,4 @@
+# NixOS module: one system service and one command wrapper per archive.
 { packageFor }:
 {
   config,
@@ -16,13 +17,19 @@ let
       package = cfg.package;
       inherit archive;
       home = cfg.home;
-      config = cfg.configHome;
-      data = cfg.dataHome;
-      state = cfg.stateHome;
-      cache = cfg.cacheHome;
-      runtime = "/run/${archive.command}";
+      configHome = cfg.configHome;
+      dataHome = cfg.dataHome;
+      stateHome = cfg.stateHome;
+      cacheHome = cfg.cacheHome;
+      runtimeDir = "/run/${archive.command}";
     }
   ) cfg.archives;
+  # %U in a system unit is the manager's UID (0), not User=, so the service
+  # account's session bus path is resolved when the script runs as that user.
+  notifyFailure = pkgs.writeShellScript "polylogue-notify-failed" ''
+    export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(${pkgs.coreutils}/bin/id -u)/bus"
+    exec ${lib.getExe pkgs.libnotify} --urgency=critical 'Polylogue stopped' "Service $1 failed; inspect its journal."
+  '';
   directoryOption =
     suffix:
     lib.mkOption {
@@ -83,8 +90,7 @@ in
           serviceConfig = {
             Type = "oneshot";
             User = cfg.user;
-            Environment = "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus";
-            ExecStart = "${lib.getExe pkgs.libnotify} --urgency=critical 'Polylogue stopped' 'Service %i failed; inspect its journal.'";
+            ExecStart = "${notifyFailure} %i";
           };
         };
       };

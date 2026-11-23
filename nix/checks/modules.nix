@@ -76,10 +76,10 @@ let
     }).config;
   systemArchive =
     (system { services.polylogue.archives.first.path = lib.mkForce "/home/alice/moved"; }).config;
-  homeUnit = value: value.systemd.user.services.polylogue-first;
-  systemUnit = value: value.systemd.units."polylogue-first.service".text;
+  homeUnit = evaluated: evaluated.systemd.user.services.polylogue-first;
+  systemUnit = evaluated: evaluated.systemd.units."polylogue-first.service".text;
   services = homeBase.systemd.user.services;
-  value = {
+  unitSummary = {
     home = homeUnit homeBase;
     system = systemUnit systemBase;
     archiveServices = builtins.attrNames services;
@@ -126,5 +126,5 @@ assert lib.assertMsg (
 ) "Systemd must preserve literal spaces, dollars and percent signs in the wrapper path.";
 # This artifact inspects unit text; it does not execute the paths it names.
 pkgs.writeText "polylogue-module-evaluation.json" (
-  builtins.unsafeDiscardStringContext (builtins.toJSON value)
+  builtins.unsafeDiscardStringContext (builtins.toJSON unitSummary)
 )

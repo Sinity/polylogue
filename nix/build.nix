@@ -24,11 +24,12 @@ let
     buildInputs = [ pkgs.zstd ];
     strictDeps = true;
   };
+  cleanSource = craneLib.cleanCargoSource source;
   # Build identity belongs to the application, not the dependency cache.
   cargoArtifacts = craneLib.buildDepsOnly (
     common
     // {
-      src = craneLib.cleanCargoSource source;
+      src = cleanSource;
       cargoExtraArgs = "--locked --workspace --all-features";
     }
   );
@@ -39,7 +40,7 @@ let
   packageArtifacts = craneLib.buildDepsOnly (
     common
     // {
-      src = craneLib.cleanCargoSource source;
+      src = cleanSource;
       cargoExtraArgs = packageArgs;
       # The package consumes codegen artifacts, not cargo-check metadata.
       buildPhaseCargoCommand = "cargoWithProfile build ${packageArgs}";
@@ -84,7 +85,6 @@ let
       '';
   checks = {
     settings = import ./checks/settings.nix { inherit pkgs; };
-    # Keep the existing package check name.
     inherit polylogue;
     fmt = craneLib.cargoFmt {
       inherit (common) src pname version;
@@ -129,7 +129,7 @@ let
       }
     );
 
-    extension = extension;
+    inherit extension;
     nix-fmt =
       pkgs.runCommand "polylogue-nix-format"
         {

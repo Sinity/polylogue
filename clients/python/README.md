@@ -44,7 +44,7 @@ Relative paths are made absolute when `Client` is constructed; declared path
 aliases are preserved, including short aliases used for Unix sockets.
 
 ```python
-for line in client.changes(previous_position):
+for line in client.feed(previous_position):
     record = line.data
     if record["type"] == "begin" and record["replacement"]:
         clear_local_view()
@@ -62,8 +62,8 @@ requires closing the iterator (for example with `contextlib.closing`).
 Contract tests run through the repository's `check` operation: a real daemon
 and CLI over a temporary archive are compared with the Python client.
 
-`client.stream(*arguments)` yields the CLI's finite line events as objects with
-`event` and `data` fields. Each requested read has its own `begin`, `record` and
+`client.stream(*arguments)` yields the CLI's finite line events as plain dicts with
+`event` and `data` keys. Each requested read has its own `begin`, `record` and
 `complete`; a file or directory delivery also emits a `written` receipt after its validated completion. `steps` carries typed step reports and undo lines once, and `answer`
 ends the whole line. A failed step raises `Refused` after the preceding events
 have been delivered. Its `answer` retains the complete failed-step report.
