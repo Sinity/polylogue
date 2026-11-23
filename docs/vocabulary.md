@@ -71,7 +71,8 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **location**: a declared path pattern under a root.
 - **collected**, **ignored**, **unrecognized**: the three classes every file at
   a known location falls into; ignored files carry a recorded reason.
-- **coverage**: per root, how many files are in each class.
+- **coverage**: per root, how many files are in each class (a pass has its
+  own **pass coverage**, below).
 - **arrival**: how an origin's files reach Polylogue: a live location, a spool
   or `import`.
 - **provider**: the company or site whose model answered.
@@ -135,7 +136,7 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **format drift**: new, changed or vanished fields in a provider's format.
 - **record**: `archive.db` with the bytes it cites: what was captured and
   authored, which cannot be recomputed. The index is a function of it.
-- **reading**: what a parser, at its reading version, makes of one chain. It
+- **chain reading**: what a parser, at its reading version, makes of one chain. It
   is owned by its chain; the **shown rows** of a session are composed from
   the readings that state it.
 - **covered chain**: a chain a newer chain of the same input is known to
@@ -311,7 +312,8 @@ generated page of the thing they belong to, or on the area page that owns them.
   `defer`); a **comparison** records which of two or more rows is better on
   one dimension.
 - **rubric** and **pass**: the declared schema of a bulk annotation run, and
-  the run itself, with its coverage and abstentions; a **rubric value** is one
+  the run itself, with its pass coverage (which kept rows have a value or
+  abstention) and abstentions; a **rubric value** is one
   rubric field's value for one row.
 - **ranking**: an order of rows computed from comparisons
   (`| measure ranking`); **agreement**: how a pass's values match the
