@@ -35,12 +35,12 @@ fn a_long_word_cannot_make_the_snippet_long() {
     // The long word beside the match is dropped from the cut.
     let (t, marks) = cut(&format!("{blob} needle after"), &["needle"]);
     assert_eq!(marked(&t, marks[0]), "needle");
-    assert!(t.chars().count() <= MAX_CHARS + 2);
+    assert!(t.chars().count() <= 402);
     // The matching word itself is cut, and its mark stays inside the text.
     let (t, marks) = cut(&format!("before {blob}needle"), &["aaaaaaaaaaaaaaaaa*"]);
-    assert_eq!(t.chars().count(), MAX_CHARS + 2);
+    assert_eq!(t.chars().count(), 402);
     assert!(t.starts_with('…') && t.ends_with('…'));
-    assert_eq!(marks, vec![(1, MAX_CHARS + 1)]);
+    assert_eq!(marks, vec![(1, 401)]);
 }
 
 #[test]

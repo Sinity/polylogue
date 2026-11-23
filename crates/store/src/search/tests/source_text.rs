@@ -84,8 +84,11 @@ fn chosen_hit_batches_preserve_source_text_and_ignore_unselected_corruption() {
     let snippets = reader.snippets(&queries, &scopes).unwrap();
     assert_eq!(snippets.len(), 3);
     let first = snippets[0].as_ref().unwrap();
-    assert!(first.text.contains("needleprivate"));
-    assert!(!first.marks.is_empty());
+    assert_eq!(
+        first.text,
+        "…eleven twelve thirteen fourteen needleprivate -----END PRIVATE KEY----- visible"
+    );
+    assert_eq!(first.marks, vec![(33, 46)]);
     assert_eq!(first.session, "claude-code:snippets");
     assert_eq!(first.message, "claude-code:snippets/hit");
     assert!(
@@ -106,7 +109,7 @@ fn chosen_hit_batches_preserve_source_text_and_ignore_unselected_corruption() {
     crate::text_rows::replace_text(&write, header_text, "ordinary header");
     let fresh = pool.reader().unwrap();
     let changed = fresh.snippets(&queries, &scopes).unwrap();
-    assert!(changed[0].as_ref().unwrap().text.contains("needleprivate"));
+    assert_eq!(changed, snippets);
     drop(fresh);
     assert_eq!(reader.snippets(&queries, &scopes).unwrap(), snippets);
     write

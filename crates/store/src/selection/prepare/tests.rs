@@ -157,7 +157,7 @@ fn accepting_preparation_uses_original_rows() {
             .unwrap()
             .question_id()
     );
-    assert!(
+    assert_eq!(
         prepare_query_plan_on(
             original,
             &tx,
@@ -167,7 +167,9 @@ fn accepting_preparation_uses_original_rows() {
             None,
             None
         )
-        .is_err()
+        .unwrap_err()
+        .code(),
+        polylogue_model::Code::InvalidQuery
     );
     let new_plan =
         polylogue_query::plan::prepare("sessions where repo:new", &Bindings::default(), |_| Ok(()))

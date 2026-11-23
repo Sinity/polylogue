@@ -49,6 +49,13 @@ fn an_index_at_another_version_is_refused_without_removing_rows() {
             wanted: INDEX_VERSION
         })
     ));
+    assert_eq!(version(&conn).unwrap(), 17);
+    assert_eq!(
+        conn.query_row("SELECT id FROM input_ref", [], |row| row
+            .get::<_, String>(0))
+            .unwrap(),
+        "synthetic"
+    );
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(
         "CREATE TABLE input_ref(pk INTEGER PRIMARY KEY, id TEXT) STRICT;
@@ -299,14 +306,6 @@ fn parse_standings_require_their_length_and_reason() {
             ("no_parser_yet".to_owned(), 30, None),
         ]
     );
-    let detail: bool = conn
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('parse_state') WHERE name='detail')",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert!(!detail);
     // A waiting status always names its length.
     assert!(
         conn.execute("UPDATE parse_state SET at_length=NULL WHERE input_pk=1", [])

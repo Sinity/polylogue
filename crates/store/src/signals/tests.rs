@@ -125,6 +125,14 @@ fn checkpoint_and_receipts_are_stored_once_across_restart() {
     admit(&mut conn, &q, 2);
     drop(conn);
     let conn = Connection::open(&path).unwrap();
+    assert_eq!(
+        checkpoint(&conn, Source::Cache, "host")
+            .unwrap()
+            .unwrap()
+            .identity()
+            .unwrap(),
+        next.checkpoint.identity().unwrap()
+    );
     let reopened = prepare_pending(&conn, &request("next", next.clone()), &[]).unwrap();
     assert_eq!(reopened, q);
     let mut conflict = next;
@@ -132,8 +140,16 @@ fn checkpoint_and_receipts_are_stored_once_across_restart() {
     assert!(prepare_pending(&conn, &request("next", conflict), &[]).is_err());
     let events = events(&conn, Source::Cache, &id).unwrap();
     assert_eq!(events[0].position, 1);
-    assert!(
-        matches!(&events[0].event,Event::Outlet{receipt} if receipt.outcome==DeliveryOutcome::Unknown)
+    assert_eq!(
+        events[0].event,
+        Event::Outlet {
+            receipt: DeliveryReceipt {
+                delivery_id: id.clone(),
+                at: 101,
+                outlet: "value".into(),
+                outcome: DeliveryOutcome::Unknown,
+            },
+        }
     );
 }
 
@@ -176,7 +192,20 @@ fn historical_snapshots_keep_receipts_but_run_no_effects() {
     );
     assert_eq!(
         events(&target, Source::Cache, &id).unwrap(),
-        q.effect.signal_events
+        vec![EventRecord {
+            position: 1,
+            request: "next".into(),
+            ordinal: 0,
+            at: Timestamp::from_unix_ms(100).unwrap(),
+            event: Event::Outlet {
+                receipt: DeliveryReceipt {
+                    delivery_id: id.clone(),
+                    at: 101,
+                    outlet: "value".into(),
+                    outcome: DeliveryOutcome::Unknown,
+                },
+            },
+        }]
     );
     let tx = target.transaction().unwrap();
     apply(&tx, &p, 4).unwrap();

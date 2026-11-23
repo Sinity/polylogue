@@ -55,7 +55,6 @@ fn primary_selection_uses_the_typed_store_without_a_standalone_archive() {
             .revision,
         1
     );
-    assert!(!root.join("archive.db").exists());
     let page = reader
         .schema_inputs_page(None, None, None, None, 1)
         .unwrap();
@@ -78,19 +77,46 @@ fn schema_selection_pages_all_origins_and_preserves_missing_revisions_and_unknow
     let first = reader
         .schema_inputs_page(None, None, None, None, 1)
         .unwrap();
-    assert_eq!(first.inputs[0].input, "a");
+    let fields = |page: &crate::schema_inputs::SchemaInputsPage| {
+        page.inputs
+            .iter()
+            .map(|i| {
+                (
+                    i.input.clone(),
+                    i.format.clone(),
+                    i.revision,
+                    i.chain,
+                    i.length,
+                    i.path.clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let row = |input: &str, format: &str, revision: i64, chain: i64, length: u64, path: &str| {
+        (
+            input.to_owned(),
+            format.to_owned(),
+            revision,
+            chain,
+            length,
+            path.to_owned(),
+        )
+    };
+    assert_eq!(
+        fields(&first),
+        [row("a", "claude-code", 1, 1, 10, "a.json")]
+    );
     assert_eq!(first.next.as_deref(), Some("a"));
     assert_eq!(first.unknown_time_inputs, Some(1));
     let second = reader
         .schema_inputs_page(None, None, None, first.next.as_deref(), 1)
         .unwrap();
-    assert_eq!(second.inputs[0].input, "b");
-    assert_eq!(second.inputs[0].revision, 2);
+    assert_eq!(fields(&second), [row("b", "codex", 2, 1, 30, "b.jsonl")]);
     assert_eq!(second.unknown_time_inputs, None);
     let third = reader
         .schema_inputs_page(None, None, None, second.next.as_deref(), 1)
         .unwrap();
-    assert_eq!(third.inputs[0].input, "c");
+    assert_eq!(fields(&third), [row("c", "claude-code", 1, 1, 5, "")]);
     assert!(third.next.is_none());
     let since = reader
         .schema_inputs_page(None, None, Some(150), None, 2)

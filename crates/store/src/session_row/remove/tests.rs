@@ -55,15 +55,15 @@ fn many_tool_calls_remove_search_entries_and_keep_another_session() {
     )
     .unwrap();
     assert_eq!(
-        tx.query_row("SELECT count(*) FROM tool_call", [], |r| r.get::<_, i64>(0))
-            .unwrap(),
-        1
-    );
-    assert_eq!(
-        tx.query_row("SELECT count(*) FROM tool_call_trigram", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        1
+        tx.query_row("SELECT pk, session_pk, command FROM tool_call", [], |r| Ok(
+            (
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?
+            )
+        ))
+        .unwrap(),
+        (4097, 2, "echo syntheticcommand4097".to_owned())
     );
     // The external-content index has no triggers: only the removal's own
     // 'delete' entries take the removed session's commands and paths out.

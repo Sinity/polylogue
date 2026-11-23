@@ -4,10 +4,11 @@ use crate::{
 };
 use polylogue_model::SessionId;
 
-/// A link row whose stored kind this build does not know makes the export
-/// fail as a store failure, not as something wrong with the request.
+/// A link row whose stored kind this build does not know makes reading the
+/// session's links fail as a store failure, not as something wrong with the
+/// request.
 #[test]
-fn export_over_a_corrupt_stored_link_kind_is_a_store_failure() {
+fn links_over_a_corrupt_stored_link_kind_is_a_store_failure() {
     let root = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(root.path()).unwrap();
     for id in ["test:parent", "test:child"] {

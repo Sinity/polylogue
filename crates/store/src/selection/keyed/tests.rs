@@ -149,34 +149,23 @@ fn reverse_selection_mirrors_nulls_ties_and_selection_stages() {
                     },
                 )
                 .unwrap();
-            let expected: Vec<String> = expected[..end]
+            let before: Vec<String> = expected[..end]
                 .iter()
                 .rev()
                 .map(|kind| (*kind).to_owned())
                 .collect();
-            assert_eq!(reverse, expected, "{query}, before row {end}");
+            assert_eq!(reverse, before, "{query}, before row {end}");
+            let after: Vec<String> = expected[end..]
+                .iter()
+                .map(|kind| (*kind).to_owned())
+                .collect();
             assert_eq!(
-                kinds_from(&reader, &selection, Some(key))
-                    .first()
-                    .map(String::as_str),
-                Some(expected_first(query, end)),
+                kinds_from(&reader, &selection, Some(key)),
+                after,
                 "{query}, from row {end}"
             );
         }
     }
-}
-
-fn expected_first(query: &str, row: usize) -> &'static str {
-    let order: &[&'static str] = match query {
-        "events | sort by at desc, id asc" => {
-            &["late-a", "late-b", "early", "unknown-a", "unknown-b"]
-        }
-        "events | sort by at asc, id desc" => {
-            &["early", "late-b", "late-a", "unknown-b", "unknown-a"]
-        }
-        _ => &["late-b", "early", "unknown-a"],
-    };
-    order[row]
 }
 
 #[test]

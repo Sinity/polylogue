@@ -81,7 +81,7 @@ fn page_steps_flat_as_observations_grow() {
 }
 
 #[test]
-fn similar_steps_scale_with_selected_rows() {
+fn similar_steps_do_not_grow_with_archive_size() {
     // Session 3 alone works in d3/w3 below 1261 sessions.
     for (text, selected) in [
         (
