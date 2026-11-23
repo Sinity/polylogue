@@ -10,7 +10,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 use crate::fields::ExpectedType as T;
 mod fields;
@@ -913,6 +913,7 @@ fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
             }
             _ => {}
         }
+        collect_inline(m, &mut sink.out.blobs);
         for a in body.array("attachments").into_iter().flatten() {
             blocks.push(Block::File(Attachment {
                 name: a

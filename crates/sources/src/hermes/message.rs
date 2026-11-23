@@ -62,7 +62,10 @@ pub(super) fn seed(row: &Json) -> Option<String> {
     for field in ["id", "session_id", "active", "compacted", "observed"] {
         value.remove(field);
     }
-    Some(format!("~{}", identity::hash(&Json::Object(value))))
+    Some(format!(
+        "~{}",
+        crate::content_ids::untagged_hash(&Json::Object(value))
+    ))
 }
 
 pub(super) fn system(id: MessageId, session: SessionId, text: String) -> Message {

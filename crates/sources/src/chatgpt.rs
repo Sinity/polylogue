@@ -12,7 +12,7 @@
 //! tool (`recipient` other than `all`) is the call; the `role: tool`
 //! messages after it are its results. Later results of one call hang off
 //! the earlier result, so a result's call is found by skipping tool
-//! ancestors (the Python rule). Images and files the export stores
+//! ancestors. Images and files the export stores
 //! separately are referred to by their asset pointer and file ID.
 
 use crate::document::first_byte;
@@ -1014,7 +1014,7 @@ fn metadata_attachments(meta: &Json, direction: AttachmentDirection) -> Vec<Bloc
 /// to.
 fn action(tool: &str) -> ToolAction {
     match tool {
-        "python" | "container.exec" => ToolAction::Code,
+        "python" => ToolAction::Code,
         t if t.ends_with(".exec") => ToolAction::Code,
         "file_search" | "myfiles_browser" => ToolAction::Search,
         "canmore.create_textdoc" => ToolAction::FileWrite,

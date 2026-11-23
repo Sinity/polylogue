@@ -284,14 +284,95 @@ fn python_download_cursor_waits_for_archive_acceptance() {
 
 #[test]
 fn corrupt_or_newer_revision_state_is_preserved_and_refused() {
+    let (base, _) = serve(vec![]);
     let dir = tempfile::tempdir().unwrap();
-    let c = collector("http://127.0.0.1:1", dir.path());
+    let c = collector(&base, dir.path());
     std::fs::create_dir_all(&c.spool).unwrap();
     for state in [b"broken".as_slice(), br#"{"version":2,"accepted":{}}"#] {
         std::fs::write(c.spool.join(STATE), state).unwrap();
-        assert!(c.sync().is_err());
+        assert!(matches!(
+            c.sync(),
+            Err(DriveError::Io(e)) if e.kind() == std::io::ErrorKind::InvalidData
+        ));
         assert_eq!(std::fs::read(c.spool.join(STATE)).unwrap(), state);
     }
+}
+
+/// A server that answers the token refresh, the folder lookup and the
+/// listing (the request asking for `nextPageToken`) with fixed bodies.
+fn serve_fixed(folder: &'static str, listing: &'static str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let target = line.split_whitespace().nth(1).unwrap_or("").to_owned();
+            let mut len = 0usize;
+            loop {
+                let mut h = String::new();
+                reader.read_line(&mut h).unwrap();
+                if h == "\r\n" || h.is_empty() {
+                    break;
+                }
+                if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0; len];
+            std::io::Read::read_exact(&mut reader, &mut body).unwrap();
+            let reply = if target.starts_with("/token") {
+                r#"{"access_token":"t","expires_in":3600}"#
+            } else if target.contains("nextPageToken") {
+                listing
+            } else {
+                folder
+            };
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                reply.len()
+            );
+        }
+    });
+    base
+}
+
+#[test]
+fn a_listing_reply_without_files_keeps_the_saved_listing() {
+    let base = serve_fixed(r#"{"files":[{"id":"folder1"}]}"#, "{}");
+    let dir = tempfile::tempdir().unwrap();
+    let c = collector(&base, dir.path());
+    std::fs::create_dir_all(&c.spool).unwrap();
+    let saved = br#"{"files":[{"id":"1AbC"}]}"#;
+    std::fs::write(c.spool.join("files.json"), saved).unwrap();
+    assert!(matches!(c.sync(), Err(DriveError::Http(..))));
+    assert_eq!(std::fs::read(c.spool.join("files.json")).unwrap(), saved);
+}
+
+#[test]
+fn a_missing_folder_is_reported() {
+    let base = serve_fixed(r#"{"files":[]}"#, r#"{"files":[]}"#);
+    let dir = tempfile::tempdir().unwrap();
+    let c = collector(&base, dir.path());
+    assert!(matches!(c.sync(), Err(DriveError::NoFolder)));
+}
+
+#[test]
+fn a_prompt_id_cannot_leave_the_spool_or_name_the_listing() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = collector("http://127.0.0.1:1", dir.path());
+    for id in ["", "../escape", "a/b", "a\\b", ".", "..", "files"] {
+        assert!(c.prompt_path(id).is_err(), "{id:?}");
+        assert!(
+            c.keep_revision(id, Some(revision("r1")), b"x").is_err(),
+            "{id:?}"
+        );
+    }
+    assert!(!dir.path().join("escape.json").exists());
+    assert!(!c.spool.join("files.json").exists());
 }
 
 /// Accepts every pending revision and syncs again, until no revision is

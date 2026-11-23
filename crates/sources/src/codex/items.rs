@@ -129,17 +129,14 @@ pub fn reasoning_block(item: &Json) -> Block {
             parts.extend(items.iter().filter_map(|c| c.str("text")));
         }
     }
-    let encrypted = item
+    let signature = item
         .str("encrypted_content")
         .filter(|s| !s.is_empty())
-        .is_some();
+        .map(str::to_owned);
     Block::Thinking {
         text: (!parts.is_empty()).then(|| parts.join("\n\n")),
-        signature: item
-            .str("encrypted_content")
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned),
-        redacted: parts.is_empty() && encrypted,
+        redacted: parts.is_empty() && signature.is_some(),
+        signature,
     }
 }
 
@@ -287,6 +284,11 @@ fn exit(code: i64) -> ToolOutcome {
 /// The value after `marker` on a header line that starts with it. The
 /// header is the lines before `Output:`; a marker inside the command's own
 /// output is not the harness speaking.
+/// The line that ends the harness header and starts the command's output.
+fn is_output_marker(line: &str) -> bool {
+    line.trim_end() == "Output:"
+}
+
 fn number_after<'a>(header: &[&'a str], marker: &str) -> Option<&'a str> {
     let rest = header
         .iter()
@@ -303,7 +305,7 @@ pub fn output_outcome(tool: &str, output: &str) -> (ToolOutcome, Option<Running>
     let head: Vec<&str> = output
         .lines()
         .take(8)
-        .take_while(|l| l.trim_end() != "Output:")
+        .take_while(|l| !is_output_marker(l))
         .collect();
     if let Some(code) = number_after(&head, "Process exited with code")
         .or_else(|| number_after(&head, "Exit code:"))
@@ -367,7 +369,7 @@ pub fn output_outcome(tool: &str, output: &str) -> (ToolOutcome, Option<Running>
 pub fn reported_duration(output: &str) -> Option<u64> {
     output
         .lines()
-        .take_while(|line| line.trim_end() != "Output:")
+        .take_while(|line| !is_output_marker(line))
         .find_map(|line| {
             line.trim()
                 .strip_prefix("Wall time: ")
@@ -470,7 +472,7 @@ fn duration_ms(v: &Json) -> Option<u64> {
     }
     let secs = v.u64("secs")?;
     let nanos = v.u64("nanos").unwrap_or(0);
-    Some(secs * 1000 + nanos / 1_000_000)
+    secs.checked_mul(1000)?.checked_add(nanos / 1_000_000)
 }
 
 /// The tool call and result a thread item records, for a command the
@@ -591,14 +593,16 @@ fn result_block(
     output: Option<String>,
     attachments: Vec<Attachment>,
 ) -> Block {
-    let outcome = completed(item).map_or(
+    let done = completed(item);
+    let reported_duration_ms = done.as_ref().and_then(|c| c.duration_ms);
+    let outcome = done.map_or(
         ToolOutcome::Unknown {
             reason: UnknownReason::StatusFieldUnreadable,
         },
         |c| c.outcome,
     );
     Block::ToolResult {
-        reported_duration_ms: completed(item).and_then(|c| c.duration_ms),
+        reported_duration_ms,
         call_id: Some(id.to_owned()),
         outcome,
         output,

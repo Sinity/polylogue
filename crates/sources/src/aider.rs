@@ -57,7 +57,7 @@ fn push_element(
 
 impl ExportParser for History {
     fn bind_context(&mut self, context: polylogue_model::parser_context::Handle) {
-        self.ids.bind_context(context, "aider".into());
+        self.ids.bind_context(context, ORIGIN.into());
     }
     fn scan(
         &mut self,

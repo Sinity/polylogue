@@ -172,25 +172,26 @@ fn classify_error(error: serde_json::Error) -> ScanError {
     }
 }
 
-fn map_value<
-    'de,
-    A: serde::de::MapAccess<'de>,
-    F: FnMut(Range<u64>, &RawValue) -> Result<(), String>,
->(
-    map: &mut A,
+/// Records a failed callback so `scan_error` reports it instead of Serde's
+/// generic message.
+fn callback_failed<E: serde::de::Error>(scan_state: &Rc<RefCell<ScanState>>, error: String) -> E {
+    scan_state.borrow_mut().failure = Some(ScanError::Callback(error));
+    E::custom("export callback failed")
+}
+
+/// Checks that Serde's value is the bytes observed at `start`, counts the
+/// element and hands it to the callback.
+fn emit_element<E: serde::de::Error>(
     scan_state: &Rc<RefCell<ScanState>>,
-    item: &mut F,
-) -> Result<(), A::Error> {
-    use serde::de::Error;
-    let start = scan_state.borrow().position;
-    scan_state.borrow_mut().copied = Some((start, Vec::new()));
-    let raw = map.next_value::<Box<RawValue>>()?;
-    let (start, copied) = scan_state.borrow_mut().copied.take().expect("copy started");
+    start: u64,
+    copied: Vec<u8>,
+    raw: &RawValue,
+    mismatch: &'static str,
+    item: impl FnOnce(Range<u64>, &RawValue) -> Result<(), String>,
+) -> Result<(), E> {
     if !copied.starts_with(raw.get().as_bytes()) {
         scan_state.borrow_mut().failure = Some(ScanError::Span);
-        return Err(A::Error::custom(
-            "Serde map value differs from observed source bytes",
-        ));
+        return Err(E::custom(mismatch));
     }
     {
         let mut scan_state = scan_state.borrow_mut();
@@ -201,10 +202,31 @@ fn map_value<
             .max(copied.len() + raw.get().len());
     }
     drop(copied);
-    item(start..start + raw.get().len() as u64, &raw).map_err(|error| {
-        scan_state.borrow_mut().failure = Some(ScanError::Callback(error));
-        A::Error::custom("export callback failed")
-    })
+    item(start..start + raw.get().len() as u64, raw)
+        .map_err(|error| callback_failed(scan_state, error))
+}
+
+fn map_value<
+    'de,
+    A: serde::de::MapAccess<'de>,
+    F: FnMut(Range<u64>, &RawValue) -> Result<(), String>,
+>(
+    map: &mut A,
+    scan_state: &Rc<RefCell<ScanState>>,
+    item: &mut F,
+) -> Result<(), A::Error> {
+    let start = scan_state.borrow().position;
+    scan_state.borrow_mut().copied = Some((start, Vec::new()));
+    let raw = map.next_value::<Box<RawValue>>()?;
+    let (start, copied) = scan_state.borrow_mut().copied.take().expect("copy started");
+    emit_element(
+        scan_state,
+        start,
+        copied,
+        &raw,
+        "Serde map value differs from observed source bytes",
+        item,
+    )
 }
 
 struct ArraySeed<'a, F> {
@@ -258,25 +280,14 @@ impl<'de, F: FnMut(Range<u64>, &RawValue) -> Result<(), String>> DeserializeSeed
             .copied
             .take()
             .expect("copy started");
-        if !copied.starts_with(raw.get().as_bytes()) {
-            self.scan_state.borrow_mut().failure = Some(ScanError::Span);
-            return Err(D::Error::custom(
-                "Serde element bytes differ from observed source bytes",
-            ));
-        }
-        {
-            let mut scan_state = self.scan_state.borrow_mut();
-            scan_state.stats.elements += 1;
-            scan_state.stats.peak_element_bytes = scan_state
-                .stats
-                .peak_element_bytes
-                .max(copied.len() + raw.get().len());
-        }
-        drop(copied);
-        (self.item)(start..start + raw.get().len() as u64, &raw).map_err(|error| {
-            self.scan_state.borrow_mut().failure = Some(ScanError::Callback(error));
-            D::Error::custom("export callback failed")
-        })
+        emit_element(
+            self.scan_state,
+            start,
+            copied,
+            &raw,
+            "Serde element bytes differ from observed source bytes",
+            self.item,
+        )
     }
 }
 

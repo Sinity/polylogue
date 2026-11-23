@@ -1040,8 +1040,11 @@ impl Rollout {
                     );
                 };
                 let session = parser_state.copied_session.clone().unwrap_or(session);
-                let report_id =
-                    usage::identity(&(session, at.map(crate::time::SourceTime::timestamp), p));
+                let report_id = crate::content_ids::untagged_hash(&(
+                    session,
+                    at.map(crate::time::SourceTime::timestamp),
+                    p,
+                ));
                 if let Some(info) = p.get("info").filter(|info| !info.is_null())
                     && let Some(reading) = parser_state.usage.read(
                         info,
@@ -1059,7 +1062,7 @@ impl Rollout {
                     );
                 }
                 if let Some(reading) = p.get("rate_limits").and_then(quota) {
-                    let identity = usage::identity(&reading);
+                    let identity = crate::content_ids::untagged_hash(&reading);
                     if parser_state.limits.as_ref() != Some(&identity) {
                         parser_state.limits = Some(identity.clone());
                         let reading = polylogue_model::QuotaReport {
@@ -1299,7 +1302,7 @@ impl Parser for Rollout {
                 // original session as usage of the child.
                 parser_state
                     .usage
-                    .read(info, usage::identity(p), None, None);
+                    .read(info, crate::content_ids::untagged_hash(p), None, None);
             }
             return self.event_by_time(parser_state, p, "copied_token_count", rec.at, out);
         }

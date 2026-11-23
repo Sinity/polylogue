@@ -1,5 +1,5 @@
+use polylogue_model::Json;
 use polylogue_model::JsonExt;
-use polylogue_model::{BlobHash, Json};
 use std::path::{Component, Path, PathBuf};
 
 /// The Hermes profile a `state.db` belongs to, by name: `default` for the
@@ -35,12 +35,6 @@ pub(super) fn profile(source: Option<&Json>) -> Result<Option<String>, &'static 
         _ => "default".to_owned(),
     };
     Ok(Some(name))
-}
-
-pub(super) fn hash(value: &Json) -> String {
-    // Message IDs are built from it, so its bytes carry no tag.
-    BlobHash::of(&canonical_json::canonical_json(value).expect("a JSON value has a canonical form"))
-        .to_string()
 }
 
 // Escape the category and occurrence delimiters without changing the source bytes.

@@ -1,22 +1,18 @@
-//! Borrowed JSON fields keep each value's byte range.
+//! A sidecar object as borrowed raw JSON values by field name, refusing a repeated field.
 use serde::de::{DeserializeSeed, Error as _, MapAccess, Visitor};
 use serde_json::value::RawValue;
 use std::collections::BTreeMap;
 
-pub(super) struct Field<'a> {
-    pub raw: &'a RawValue,
-}
-
-pub(super) fn object(bytes: &[u8]) -> Result<BTreeMap<String, Field<'_>>, String> {
+pub(super) fn object(bytes: &[u8]) -> Result<BTreeMap<String, &RawValue>, String> {
     struct Fields;
     impl<'de> DeserializeSeed<'de> for Fields {
-        type Value = BTreeMap<String, Field<'de>>;
+        type Value = BTreeMap<String, &'de RawValue>;
         fn deserialize<D: serde::Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
             de.deserialize_map(self)
         }
     }
     impl<'de> Visitor<'de> for Fields {
-        type Value = BTreeMap<String, Field<'de>>;
+        type Value = BTreeMap<String, &'de RawValue>;
         fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.write_str("a JSON object with unique fields")
         }
@@ -24,7 +20,7 @@ pub(super) fn object(bytes: &[u8]) -> Result<BTreeMap<String, Field<'_>>, String
             let mut fields = BTreeMap::new();
             while let Some(key) = map.next_key::<String>()? {
                 let raw = map.next_value::<&'de RawValue>()?;
-                if fields.insert(key, Field { raw }).is_some() {
+                if fields.insert(key, raw).is_some() {
                     return Err(A::Error::custom("duplicate sidecar field"));
                 }
             }
@@ -37,6 +33,6 @@ pub(super) fn object(bytes: &[u8]) -> Result<BTreeMap<String, Field<'_>>, String
     Ok(fields)
 }
 
-pub(super) fn text(fields: &BTreeMap<String, Field<'_>>, name: &str) -> Option<String> {
-    serde_json::from_str(fields.get(name)?.raw.get()).ok()
+pub(super) fn text(fields: &BTreeMap<String, &RawValue>, name: &str) -> Option<String> {
+    serde_json::from_str(fields.get(name)?.get()).ok()
 }

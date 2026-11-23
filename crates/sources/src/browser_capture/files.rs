@@ -6,18 +6,37 @@ use crate::parse::run_document;
 use serde_json::json;
 
 pub fn files(bytes: &[u8]) -> Result<Json, String> {
-    let capture: Json = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+    // The capture tree is dropped before the parser builds its own, so a
+    // capture with inlined files is never held twice.
+    let (provider, conversation, temporary) = {
+        let capture: Json = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        let text = |pointer: &str| {
+            capture
+                .pointer(pointer)
+                .and_then(Json::as_str)
+                .map(str::to_owned)
+        };
+        let flag = |pointer: &str| {
+            capture
+                .pointer(pointer)
+                .and_then(Json::as_bool)
+                .unwrap_or(false)
+        };
+        (
+            text("/session/provider"),
+            text("/session/provider_session_id"),
+            flag("/raw_provider_payload/is_temporary")
+                || flag("/raw_provider_payload/conversation/temporary"),
+        )
+    };
     let step = run_document(&Capture, bytes).map_err(|e| e.to_string())?;
     if step.output.sessions.len() != 1 {
         return Err("the capture holds no single conversation".into());
     }
     let session = &step.output.sessions[0];
-    let provider = capture.pointer("/session/provider").and_then(Json::as_str);
-    let conversation = capture
-        .pointer("/session/provider_session_id")
-        .and_then(Json::as_str);
     let expected = provider
-        .zip(conversation)
+        .as_deref()
+        .zip(conversation.as_deref())
         .and_then(|(provider, id)| session_for(provider, id));
     if expected.as_ref() != Some(&session.id) {
         return Err(
@@ -49,14 +68,6 @@ pub fn files(bytes: &[u8]) -> Result<Json, String> {
             }
         }
     }
-    let temporary = capture
-        .pointer("/raw_provider_payload/is_temporary")
-        .and_then(Json::as_bool)
-        .unwrap_or(false)
-        || capture
-            .pointer("/raw_provider_payload/conversation/temporary")
-            .and_then(Json::as_bool)
-            .unwrap_or(false);
     Ok(json!({
         "conversation": {
             "provider": provider,

@@ -174,3 +174,13 @@ fn history_lines_with_a_session_become_events() {
     assert_eq!(step.output.events[0].kind, "prompt_history");
     assert!(step.output.events[0].at.is_some());
 }
+
+#[test]
+fn history_lines_that_are_not_prompts_with_readable_sessions_are_unreadable() {
+    let bytes = b"null\n{\"display\":\"a\",\"sessionId\":42}\n{\"display\":\"b\"}\n";
+    let step = run(&History, &mut (), bytes, 0).unwrap();
+    assert_eq!(step.counts.records, 3);
+    assert_eq!(step.counts.unreadable.values().sum::<u64>(), 2);
+    assert_eq!(step.counts.skipped.values().sum::<u64>(), 1);
+    assert!(step.output.events.is_empty());
+}

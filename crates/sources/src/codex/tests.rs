@@ -974,3 +974,19 @@ fn unknown_retained_and_realtime_payloads_name_what_could_not_be_read() {
     );
     assert_eq!(step.counts.records, 5);
 }
+
+#[test]
+fn a_rollout_is_named_by_its_header_in_either_shape() {
+    let bare = format!(r#"{{"id":"{THREAD}","timestamp":"2025-08-11T16:59:28.000Z"}}"#);
+    assert_eq!(
+        rollout_id(bare.as_bytes()).unwrap().as_deref(),
+        Some(THREAD)
+    );
+    let meta = format!(r#"{{"type":"session_meta","payload":{{"id":"{THREAD}"}}}}"#);
+    assert_eq!(
+        rollout_id(meta.as_bytes()).unwrap().as_deref(),
+        Some(THREAD)
+    );
+    let item = r#"{"type":"message","id":"m1","role":"user"}"#;
+    assert_eq!(rollout_id(item.as_bytes()).unwrap(), None);
+}

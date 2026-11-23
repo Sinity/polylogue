@@ -5,11 +5,11 @@
 //! What becomes rows: thread names, kinds and settings (`threads`), spawn
 //! edges (`thread_spawn_edges`), goals (`thread_goals`) and memories
 //! (`stage1_outputs`). The thread-history tables are derived from the
-//! rollouts, which are parsed; they stay in the stored export.
+//! rollouts, which are parsed; they stay in the stored row dump.
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 use super::session_id;
 use crate::lines::Record;
@@ -34,7 +34,7 @@ pub const LOCATIONS: &[&str] = &[
     "queue_*.sqlite",
 ];
 
-/// The database a file is, or the database its export is of.
+/// The database a file is, or the database its row dump is of.
 fn database(path: &Path) -> Option<&str> {
     let name = path.file_name()?.to_str()?;
     let db = name.strip_suffix(".jsonl").unwrap_or(name);
@@ -45,7 +45,7 @@ fn database(path: &Path) -> Option<&str> {
         .then_some(db)
 }
 
-/// Recognizes an export file; the database itself is never parsed.
+/// Recognizes a row dump file; the database itself is never parsed.
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
     path.extension().is_some_and(|e| e == "jsonl")
         && database(path).is_some()
@@ -201,11 +201,11 @@ impl Parser for Database {
             return RecordOutcome::Used;
         }
         let Some(table) = v.str("t").filter(|s| !s.is_empty()) else {
-            return RecordOutcome::unreadable("export line without a table");
+            return RecordOutcome::unreadable("row dump line without a table");
         };
         if v.get("gone").is_some() {
             return RecordOutcome::skipped(
-                "row deleted in the tool; the export keeps its last value",
+                "row deleted in the tool; the row dump keeps its last value",
             );
         }
         let row = v.get("r").unwrap_or(&Json::Null);
@@ -317,11 +317,11 @@ impl Parser for Database {
             | "thread_turns"
             | "thread_realtime_items"
             | "thread_history_projection_state" => RecordOutcome::skipped(
-                "derived from the rollout, which is parsed; kept in the stored export",
+                "derived from the rollout, which is parsed; kept in the stored row dump",
             ),
             _ => {
                 records.unknown_table(table, table, row);
-                RecordOutcome::skipped("kept in the stored export; not indexed")
+                RecordOutcome::skipped("kept in the stored row dump; not indexed")
             }
         }
     }

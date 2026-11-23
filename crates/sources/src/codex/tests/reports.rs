@@ -339,14 +339,17 @@ fn regressive_counter_reports_cannot_recharge_an_old_delta_or_prove_a_new_counte
 fn observation_identity_ignores_json_object_key_order_but_preserves_values_and_array_order() {
     let a: Json = serde_json::from_str(r#"{"z":{"second":2,"first":1},"a":[1,2]}"#).unwrap();
     let b: Json = serde_json::from_str(r#"{"a":[1,2],"z":{"first":1,"second":2}}"#).unwrap();
-    assert_eq!(usage::identity(&a), usage::identity(&b));
-    assert_ne!(
-        usage::identity(&a),
-        usage::identity(&json!({"a":[2,1],"z":{"first":1,"second":2}}))
+    assert_eq!(
+        crate::content_ids::untagged_hash(&a),
+        crate::content_ids::untagged_hash(&b)
     );
     assert_ne!(
-        usage::identity(&a),
-        usage::identity(&json!({"a":[1,2],"z":{"first":0,"second":2}}))
+        crate::content_ids::untagged_hash(&a),
+        crate::content_ids::untagged_hash(&json!({"a":[2,1],"z":{"first":1,"second":2}}))
+    );
+    assert_ne!(
+        crate::content_ids::untagged_hash(&a),
+        crate::content_ids::untagged_hash(&json!({"a":[1,2],"z":{"first":0,"second":2}}))
     );
 }
 

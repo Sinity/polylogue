@@ -40,6 +40,22 @@ fn exit_code_comes_from_the_last_line_that_states_one() {
 }
 
 #[test]
+fn exit_code_zero_under_an_error_flag_is_an_error() {
+    let flagged = json!({"type":"tool_result","is_error":true,"content":"done"});
+    assert_eq!(
+        result(json!({"toolUseResult":{"exitCode":0}}), flagged),
+        ToolOutcome::Error {
+            reason: Some(ErrorReason::ExitCode(0))
+        }
+    );
+    let clean = json!({"type":"tool_result","content":"done"});
+    assert_eq!(
+        result(json!({"toolUseResult":{"exitCode":0}}), clean),
+        ToolOutcome::Ok
+    );
+}
+
+#[test]
 fn background_launch_and_unreadable_status_are_unknown() {
     let item = json!({"type":"tool_result","backgroundTaskId":"b1","content":"started"});
     assert_eq!(

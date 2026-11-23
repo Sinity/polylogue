@@ -1,7 +1,8 @@
 //! Helpers shared by the parsers of whole documents (exports, captures):
 //! a running position for the rows they emit, and small JSON readers.
 
-/// Version of the rows this module produces.
+/// Reading version of these shared helpers. Every origin's reading version
+/// includes it, so raise it when what any helper returns changes.
 pub const VERSION: u32 = 1;
 
 use crate::Records;
@@ -9,9 +10,9 @@ use crate::parse::Output;
 use polylogue_model::{Json, JsonExt, MessageId, NativeId, Origin, SessionId};
 
 /// What a document or conversation parser writes into. `next` supplies
-/// message positions in reading order. The code that splits an input into
-/// records replaces these temporary positions with the record's byte range
-/// and sends the reading order to the writer as the record position.
+/// placeholder message positions; the code that splits an input into records
+/// replaces each message's offset and end with the record's byte range. The
+/// reading order of messages is their order in the step, not these positions.
 pub struct Sink<'a> {
     pub out: &'a mut Output,
     pub records: &'a mut Records,

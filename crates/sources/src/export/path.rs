@@ -43,14 +43,14 @@ impl<'de, F: FnMut(Range<u64>, &RawValue) -> Result<(), String>> DeserializeSeed
 impl<'de, F: FnMut(Range<u64>, &RawValue) -> Result<(), String>> Visitor<'de> for Node<'_, F> {
     type Value = ();
     fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("an export container")
+        f.write_str("an object or array on the streamed path")
     }
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
         let mut selected = false;
         while let Some(key) = map.next_key::<String>()? {
             if self.path.first() == Some(&key.as_str()) {
                 if selected {
-                    return Err(A::Error::custom("duplicate streamed container field"));
+                    return Err(A::Error::custom("duplicate streamed-array field"));
                 }
                 selected = true;
                 map.next_value_seed(Node {

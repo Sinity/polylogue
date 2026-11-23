@@ -197,3 +197,10 @@ fn transcript_discovery_requires_the_documented_layout() {
         "brain/native/.system_generated/logs/other.jsonl"
     )));
 }
+
+#[test]
+fn listing_a_directory_is_a_search_and_viewing_a_file_is_a_read() {
+    assert_eq!(action("list_dir"), ToolAction::Search);
+    assert_eq!(action("list_directory"), ToolAction::Search);
+    assert_eq!(action("view_file"), ToolAction::FileRead);
+}

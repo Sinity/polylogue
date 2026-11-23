@@ -2,7 +2,7 @@
 //! persists items before completion and can retry without writing a boundary.
 use super::*;
 use polylogue_model::JsonExt;
-use polylogue_model::{BlobHash, UsageReport};
+use polylogue_model::UsageReport;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct Counters {
@@ -64,11 +64,6 @@ pub(super) struct Observer {
     continuous: bool,
 }
 
-pub(super) fn identity(value: &impl Serialize) -> String {
-    // Reading IDs are cited as event identities, so their bytes carry no tag.
-    BlobHash::of(&canonical_json::canonical_json(value).expect("serializable reading")).to_string()
-}
-
 impl Observer {
     pub(super) fn start(&mut self, offset: u64, copied: bool) {
         if offset == 0 && !copied {
@@ -101,7 +96,7 @@ impl Observer {
             // numeric reports remain available without charging a replay.
             self.continuous = false;
         }
-        let report = identity(info);
+        let report = crate::content_ids::untagged_hash(info);
         if self.report.replace(report.clone()).as_ref() == Some(&report) {
             return None;
         }

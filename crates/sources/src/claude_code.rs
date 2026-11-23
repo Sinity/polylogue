@@ -16,7 +16,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 9;
+pub const VERSION: u32 = 10;
 
 mod blocks;
 mod fields;
