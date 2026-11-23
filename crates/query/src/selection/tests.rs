@@ -148,6 +148,15 @@ fn similar_is_the_semantic_leg() {
 }
 
 #[test]
+fn quoted_prose_that_starts_like_a_reference_ranks_as_text() {
+    let ranked = selection("sessions where similar:\"codex: rate limit exceeded\"");
+    assert_eq!(
+        ranked.semantic.as_ref().map(|s| s.text.as_str()),
+        Some("codex: rate limit exceeded")
+    );
+}
+
+#[test]
 fn similar_by_a_reference_is_not_built() {
     assert_eq!(
         error("sessions where similar:claude-code:abc").kind(),
