@@ -30,6 +30,7 @@ fn first_build_uses_the_selected_root_lock() {
         "seconds": 1,
         "messages_written": 1,
         "unreadable_root_count": 0,
+        "stages": {"read": 0.5},
     });
     fs::write(&binary, format!("#!{shell}\nprintf '%s\\n' '{result}'\n")).unwrap();
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
@@ -120,7 +121,7 @@ fn sample_cli_child() {
 
 #[test]
 fn first_build_refuses_ingestion_errors_or_empty_work() {
-    let good = json!({"errors":0,"input_mb":8.0,"seconds":1.0,"messages_written":10,"unreadable_root_count":0});
+    let good = json!({"errors":0,"input_mb":8.0,"seconds":1.0,"messages_written":10,"unreadable_root_count":0,"stages":{"read":0.5,"write":1.5}});
     assert_eq!(
         first_build_result(&format!("progress\n{good}\n"), true).unwrap(),
         good
@@ -131,6 +132,9 @@ fn first_build_refuses_ingestion_errors_or_empty_work() {
         ("messages_written", json!(0)),
         ("input_mb", json!(0)),
         ("seconds", json!(0)),
+        ("stages", json!(null)),
+        ("stages", json!({"read": null})),
+        ("stages", json!({"read": "fast"})),
     ] {
         let mut bad = good.clone();
         bad[field] = value;
@@ -248,4 +252,53 @@ fn a_database_sample_includes_committed_wal_rows_only() {
         fs::read(home.join(&chosen[0].rel)).unwrap(),
         fs::read(&copied[0].path).unwrap()
     );
+}
+
+fn input(stratum: &str, size: u64) -> SampleFile {
+    SampleFile {
+        rel: PathBuf::from(stratum),
+        path: PathBuf::from(stratum),
+        stratum: stratum.to_owned(),
+        size,
+        grows: false,
+    }
+}
+
+#[test]
+fn the_largest_target_needs_a_file_of_every_family() {
+    let all = [
+        input("claude/main@2026", 5),
+        input("claude/main@2025", 9),
+        input("codex/database", 3),
+    ];
+    let chosen = largest(&all).unwrap();
+    assert_eq!(
+        chosen
+            .iter()
+            .map(|c| (c.stratum.as_str(), c.size))
+            .collect::<Vec<_>>(),
+        [("claude/main@2025", 9), ("codex/database", 3)]
+    );
+    assert!(
+        largest(&all[..2])
+            .err()
+            .is_some_and(|e| e.contains("codex/database"))
+    );
+}
+
+#[test]
+fn a_sample_size_too_large_for_bytes_is_refused() {
+    use clap::Parser;
+    let args = ["xtask", "bench", "sample", "--mb", "18446744073709551615"];
+    let crate::Cli::Bench(options) = crate::Cli::try_parse_from(args).unwrap() else {
+        panic!("benchmark expected");
+    };
+    assert_eq!(execute(options), ExitCode::FAILURE);
+}
+
+#[test]
+fn a_storage_other_than_disk_or_memory_is_refused_by_the_parser() {
+    use clap::Parser;
+    let args = ["xtask", "bench", "run", "--storage", "tape"];
+    assert!(crate::Cli::try_parse_from(args).is_err());
 }

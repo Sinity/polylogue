@@ -51,6 +51,23 @@ fn a_full_run_is_compared_stage_by_stage() {
 }
 
 #[test]
+fn a_comparison_keeps_a_stage_only_the_full_run_recorded() {
+    let points = [
+        point(1000.0, 100.0, &[("rows", 50.0)]),
+        point(2000.0, 200.0, &[("rows", 100.0)]),
+    ];
+    let estimate = fit(&points, 4000.0).unwrap();
+    let report = comparison(
+        &estimate,
+        &json!({"seconds": 500.0, "input_mb": 4000.0, "stages": {"rows": 160.0, "derive": 30.0}}),
+    )
+    .unwrap();
+    assert_eq!(report["stages"]["derive"]["actual"], 30.0);
+    assert!(report["stages"]["derive"]["estimated"].is_null());
+    assert!(report["stages"]["derive"]["relative_error"].is_null());
+}
+
+#[test]
 fn a_pair_reports_each_change_from_the_first_build() {
     let diff = difference(
         &json!({"seconds": 100.0, "stages": {"rows": 40.0}}),

@@ -14,7 +14,8 @@
 //! corpus stage by stage, and `bench validate` compares that prediction with
 //! a full run's result, stage by stage. `bench pair` runs two builds at once
 //! over one sample, so both see the same load. `bench tails` times the last
-//! pages of the largest sessions, and any named, of a sample run's archive.
+//! pages of the largest sessions, and of any named sessions, in a sample
+//! run's archive.
 //!
 //! `--target largest` does the same over the largest Claude Code session and
 //! the largest Codex database, which a sample of a few GB cannot hold; it
@@ -78,12 +79,21 @@ impl Target {
     }
 
     /// The name runs are recorded under.
-    fn bench(self) -> &'static str {
+    fn recorded_name(self) -> &'static str {
         match self {
             Target::Sample => "first_build",
             Target::Largest => "first_build-largest",
         }
     }
+}
+
+/// Where a run keeps its archive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Storage {
+    /// Under the benchmark root.
+    Disk,
+    /// In /dev/shm, measuring the pipeline alone.
+    Memory,
 }
 
 /// A drawn sample: its target and the name its manifest, copy and runs go
@@ -163,8 +173,8 @@ pub enum BenchCommand {
         build: Option<String>,
         /// `disk` keeps the archive under the benchmark root; `memory`
         /// puts it in /dev/shm and measures the pipeline alone.
-        #[arg(long, default_value = "disk")]
-        storage: String,
+        #[arg(long, value_enum, default_value = "disk")]
+        storage: Storage,
         /// Also append the rest of each session file and measure the
         /// incremental pass.
         #[arg(long)]
@@ -245,7 +255,10 @@ pub fn execute(options: Bench) -> ExitCode {
             mb,
             seed,
             cut,
-        } => sample(&Drawn::new(&root, target, name), mb * 1_000_000, seed, cut),
+        } => mb
+            .checked_mul(1_000_000)
+            .ok_or_else(|| format!("--mb {mb} is too large"))
+            .and_then(|bytes| sample(&Drawn::new(&root, target, name), bytes, seed, cut)),
         BenchCommand::Run {
             target,
             name,
@@ -257,7 +270,7 @@ pub fn execute(options: Bench) -> ExitCode {
             &Drawn::new(&root, target, name),
             binary,
             build,
-            &storage,
+            storage,
             incremental,
         ),
         BenchCommand::Pair { name, a, b } => pair(&Drawn::new(&root, Target::Sample, name), &a, &b),
@@ -409,23 +422,32 @@ pub fn input_files() -> Vec<SampleFile> {
 /// The largest file of each of these stratum families.
 const LARGEST: &[&str] = &["claude/main", "codex/database"];
 
-fn largest(all: &[SampleFile]) -> Vec<SampleFile> {
+/// The largest file of every family; a family with no file is an error, so
+/// a run recorded as `largest` measures all of them.
+fn largest(all: &[SampleFile]) -> Result<Vec<SampleFile>, String> {
     LARGEST
         .iter()
-        .filter_map(|family| {
+        .map(|family| {
             all.iter()
                 .filter(|c| c.stratum.starts_with(family))
                 .max_by_key(|c| c.size)
                 .cloned()
+                .ok_or_else(|| format!("no {family} input file found"))
         })
         .collect()
 }
 
 fn sample(drawn: &Drawn, bytes: u64, seed: u64, cut: f64) -> Result<(), String> {
     let all = input_files();
+    if all.is_empty() {
+        return Err(
+            "no input files found; check CLAUDE_CONFIG_DIR and CODEX_HOME (or the default directories)"
+                .into(),
+        );
+    }
     let chosen = match drawn.target {
         Target::Sample => bench::select(&all, bytes, seed),
-        Target::Largest => largest(&all),
+        Target::Largest => largest(&all)?,
     };
     // Hash copies, so a session that keeps growing cannot invalidate the
     // sample between drawing it and starting the measured build.
@@ -606,6 +628,15 @@ fn first_build_result(stdout: &str, messages_required: bool) -> Result<Value, St
             return Err(format!("first_build has no positive {field} measurement"));
         }
     }
+    let stages = result["stages"]
+        .as_object()
+        .ok_or("first_build omitted its per-stage seconds")?;
+    if let Some((stage, _)) = stages
+        .iter()
+        .find(|(_, seconds)| !seconds.as_f64().is_some_and(f64::is_finite))
+    {
+        return Err(format!("first_build has no seconds for stage {stage}"));
+    }
     let messages = result["messages_written"]
         .as_u64()
         .ok_or("first_build omitted its message write count")?;
@@ -668,6 +699,11 @@ fn materialized(drawn: &Drawn) -> Result<(Manifest, PathBuf), String> {
     Ok((manifest, home))
 }
 
+/// The checkout the runs are recorded against.
+fn checkout() -> Result<PathBuf, String> {
+    env::current_dir().map_err(|e| format!("the current directory: {e}"))
+}
+
 /// The checkout's commit, the default name of its build.
 fn head() -> Result<String, String> {
     let out = Command::new("git")
@@ -699,27 +735,33 @@ fn run(
     drawn: &Drawn,
     binary: Option<PathBuf>,
     build: Option<String>,
-    storage: &str,
+    storage: Storage,
     incremental: bool,
 ) -> Result<(), String> {
     let (manifest, sample_home) = materialized(drawn)?;
     let out = match storage {
-        "disk" => drawn.dir().join("out"),
-        "memory" => PathBuf::from("/dev/shm/polylogue-bench-out"),
-        other => return Err(format!("storage is disk or memory, not {other}")),
+        Storage::Disk => drawn.dir().join("out"),
+        Storage::Memory => PathBuf::from("/dev/shm/polylogue-bench-out"),
     };
-    // An archive in memory takes about its input's size again; filling
-    // /dev/shm would push the desktop into swap.
-    if storage == "memory"
-        && available(Path::new("/dev/shm")).is_some_and(|free| free < manifest.bytes() * 3)
-    {
-        return Err(format!(
-            "/dev/shm has less than three times the input ({:.0} MB) free; use --storage disk",
-            manifest.bytes() as f64 / 1e6
-        ));
-    }
+    // The previous archive goes first: it is replaced by this run, so it
+    // must not count against the free space.
     if out.exists() {
         fs::remove_dir_all(&out).map_err(|e| e.to_string())?;
+    }
+    // An archive in memory takes about its input's size again; filling
+    // /dev/shm would push the desktop into swap, so unknown free space
+    // refuses too.
+    if storage == Storage::Memory {
+        let needed = manifest.bytes().saturating_mul(3);
+        match available(Path::new("/dev/shm")) {
+            Some(free) if free >= needed => {}
+            _ => {
+                return Err(format!(
+                    "/dev/shm does not report at least three times the input ({:.0} MB) free; use --storage disk",
+                    manifest.bytes() as f64 / 1e6
+                ));
+            }
+        }
     }
     let binary = match binary {
         Some(binary) => binary,
@@ -740,12 +782,12 @@ fn run(
     let load = load.finish()?;
     let metrics = run_metrics(drawn, &manifest, &build, &result);
     let store = Store::open().map_err(|e| e.to_string())?;
-    let checkout = env::current_dir().unwrap_or_default();
+    let checkout = checkout()?;
     let id = bench::record(
         &store,
         &checkout,
         "polylogue",
-        drawn.target.bench(),
+        drawn.target.recorded_name(),
         &manifest.id(),
         &out,
         &load,
@@ -783,7 +825,7 @@ fn run(
             &store,
             &checkout,
             "polylogue",
-            &format!("{}-incremental", drawn.target.bench()),
+            &format!("{}-incremental", drawn.target.recorded_name()),
             &manifest.id(),
             &out,
             &load,
@@ -795,7 +837,7 @@ fn run(
             json!({"run": id, "incremental": metrics, "load": load.to_json()})
         );
     }
-    if storage == "memory" {
+    if storage == Storage::Memory {
         let _ = fs::remove_dir_all(&out);
     }
     Ok(())
@@ -849,7 +891,7 @@ fn pair(drawn: &Drawn, a: &str, b: &str) -> Result<(), String> {
     });
     let load = load.finish()?;
     let store = Store::open().map_err(|e| e.to_string())?;
-    let checkout = env::current_dir().unwrap_or_default();
+    let checkout = checkout()?;
     let mut recorded = Vec::new();
     for (((label, _), out), result) in builds.iter().zip(&outs).zip(results) {
         let result = result?;

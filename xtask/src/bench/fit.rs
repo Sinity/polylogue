@@ -203,11 +203,22 @@ pub(super) fn comparison(estimate: &Value, actual: &Value) -> Result<Value, Stri
         })
     };
     let actual_stages = stages_of(actual);
+    // A stage only the full run recorded (or only the estimate) still gets
+    // a row, with the other side unknown.
+    let fitted = estimate["stages"].as_object();
+    let names: std::collections::BTreeSet<&String> = fitted
+        .into_iter()
+        .flat_map(|stages| stages.keys())
+        .chain(actual_stages.keys())
+        .collect();
     let mut stages = serde_json::Map::new();
-    for (name, fitted) in estimate["stages"].as_object().into_iter().flatten() {
+    for name in names {
+        let estimated = fitted
+            .and_then(|stages| stages.get(name))
+            .and_then(|stage| stage["seconds"].as_f64());
         stages.insert(
             name.clone(),
-            row(fitted["seconds"].as_f64(), actual_stages.get(name).copied()),
+            row(estimated, actual_stages.get(name).copied()),
         );
     }
     Ok(json!({
