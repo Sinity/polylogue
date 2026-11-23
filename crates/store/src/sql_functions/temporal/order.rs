@@ -171,7 +171,10 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
         let Some(at) = distance_point(ctx)? else {
             return Ok(None);
         };
-        Ok(periods(ctx)?.map(|(a, b)| format!("{:039}", (b.start - a.nanos_at(at)).unsigned_abs())))
+        Ok(
+            periods(ctx)?
+                .map(|(a, b)| format!("{:039}", (b.start - a.nanos_at(at)).unsigned_abs())),
+        )
     })?;
     conn.create_scalar_function("pl_time_distance", 5, flags, |ctx| {
         let Some(at) = distance_point(ctx)? else {
