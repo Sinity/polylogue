@@ -94,6 +94,21 @@ fn typed_page_shares_the_frame_and_shows_freshness() {
     assert!(output.contains("Read view"));
 }
 #[test]
+fn unavailable_sinex_note_carries_its_own_state() {
+    let request = RunnableRequest::new(
+        "read",
+        json!({"target":"session:test:session","view":"transcript"}),
+        "synthetic",
+    );
+    let mut unavailable = page();
+    unavailable.snapshot.freshness.sinex =
+        IndexFreshness::primary(Some(4), Some(7), Some(1.), Some(false), None);
+    let output = read(&unavailable, &read_table(), &request).unwrap();
+    assert!(output.contains("Sinex is unavailable"));
+    assert!(!output.contains("data-state=\"behind\""));
+    assert!(output.matches("data-state=\"unavailable\"").count() >= 2);
+}
+#[test]
 fn continuation_encodes_the_complete_ready_call_without_decoding_its_cursor() {
     let call = RunnableRequest {
         cursor: Some("sealed +λ&?".into()),

@@ -58,11 +58,11 @@ pub fn read(
 }
 fn navigation(page: &ReadPage, table: &OperationDeclarations) -> Result<Markup, Failure> {
     Ok(html! { nav class="paging" aria-label="Content pages" {
-        @if let Some(call)=&page.document.footer.previous { (follow(call,"Previous",false,table)?) }
-        @if let Some(call)=&page.document.footer.next { (follow(call,"Next",true,table)?) }
+        @if let Some(call)=&page.document.footer.previous { (paging_link(call,"Previous",false,table)?) }
+        @if let Some(call)=&page.document.footer.next { (paging_link(call,"Next",true,table)?) }
     } })
 }
-fn follow(
+fn paging_link(
     call: &ReadyCall,
     label: &str,
     next: bool,
@@ -160,8 +160,15 @@ fn freshness_notice(
     freshness: &polylogue_model::freshness::ReadFreshness,
     command: &str,
 ) -> Markup {
+    let sinex = freshness.sinex_note();
     html! { @for note in freshness.notes() {
-        (web_shell::values::view_state("behind", note, command))
+        // Local notes describe an index still catching up; the Sinex note
+        // carries its own state.
+        @let state = match sinex {
+            Some((state, text)) if text == note => state.as_str(),
+            _ => "behind",
+        };
+        (web_shell::values::view_state(state, note, command))
     } }
 }
 

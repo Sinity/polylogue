@@ -202,6 +202,26 @@ impl ReadFreshness {
     pub fn up_to_date(&self) -> bool {
         self.local.caught_up() && !self.sinex.degraded()
     }
+    /// The note for a degraded Sinex position, with the state it describes.
+    pub fn sinex_note(&self) -> Option<(FreshnessState, &'static str)> {
+        if !self.sinex.degraded() {
+            return None;
+        }
+        Some(match &self.sinex {
+            IndexFreshness::Primary {
+                state: FreshnessState::Behind,
+                ..
+            } => (
+                FreshnessState::Behind,
+                "the index is behind the observed Sinex position",
+            ),
+            IndexFreshness::Primary {
+                state: FreshnessState::Unavailable,
+                ..
+            } => (FreshnessState::Unavailable, "Sinex is unavailable"),
+            _ => (FreshnessState::Unknown, "the Sinex position is unknown"),
+        })
+    }
     pub fn notes(&self) -> Vec<&'static str> {
         let mut notes = std::collections::BTreeSet::new();
         for dimension in [
@@ -242,18 +262,8 @@ impl ReadFreshness {
                 }
             }
         }
-        if self.sinex.degraded() {
-            notes.insert(match &self.sinex {
-                IndexFreshness::Primary {
-                    state: FreshnessState::Behind,
-                    ..
-                } => "the index is behind the observed Sinex position",
-                IndexFreshness::Primary {
-                    state: FreshnessState::Unavailable,
-                    ..
-                } => "Sinex is unavailable",
-                _ => "the Sinex position is unknown",
-            });
+        if let Some((_, note)) = self.sinex_note() {
+            notes.insert(note);
         }
         notes.into_iter().collect()
     }
