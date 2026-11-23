@@ -53,9 +53,12 @@ fn a_failed_write_step_loses_nothing() {
                         .any(|origin| origin.is_row_dump(&file))
                     {
                         assert!(!stored.is_empty());
-                        for record in stored.split(|b| *b == b'\n').filter(|r| !r.is_empty()) {
-                            serde_json::from_slice::<serde_json::Value>(record).unwrap();
-                        }
+                        assert_eq!(
+                            stored,
+                            source.stored_bytes(&file).unwrap(),
+                            "{point}/{skip}: {}",
+                            file.display()
+                        );
                         continue;
                     }
                     assert_eq!(

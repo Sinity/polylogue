@@ -61,6 +61,10 @@ fn detects_a_changed_tail() {
     assert!(!tail_intact(&p, 12, b"WORLD\n").unwrap());
     assert_eq!(read_range(&p, 6, 11).unwrap(), b"world");
     assert_eq!(tail_of(b"abc"), b"abc");
+    // Longer than the tail: only the last 4096 bytes are kept.
+    let long: Vec<u8> = (0..4096 + 5).map(|i| (i % 251) as u8).collect();
+    assert_eq!(tail_of(&long), long[5..].to_vec());
+    assert_eq!(tail_of(&long).len(), 4096);
 }
 
 #[test]
@@ -483,10 +487,26 @@ fn source_range_binds_opened_file_and_rejects_swaps() {
     let facts = polylogue_store::FileFacts::of(&metadata);
     let (bytes, observed) = read_source_range(&path, 0, facts.size, Some(facts)).unwrap();
     assert_eq!(bytes, b"original body");
-    assert_eq!(
-        observed,
-        crate::source_read::file_snapshot(&metadata).unwrap()
-    );
+    {
+        use polylogue_store::primary::{FileSnapshot, FileTime};
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            observed,
+            FileSnapshot {
+                device: metadata.dev(),
+                inode: metadata.ino(),
+                size: 13,
+                modified: FileTime {
+                    seconds: metadata.mtime(),
+                    nanos: metadata.mtime_nsec() as u32,
+                },
+                changed: FileTime {
+                    seconds: metadata.ctime(),
+                    nanos: metadata.ctime_nsec() as u32,
+                },
+            }
+        );
+    }
     let replacement = dir.path().join("replacement");
     std::fs::write(&replacement, b"different body").unwrap();
     std::fs::rename(replacement, &path).unwrap();

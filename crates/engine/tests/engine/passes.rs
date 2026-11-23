@@ -219,9 +219,9 @@ fn large_files_go_in_chunks_and_a_record_longer_than_a_chunk_still_parses() {
     let (mut e, _lock) = w.engine(300);
     let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-    let got = w.texts("s1");
-    assert_eq!(got.len(), 41);
-    assert_eq!(got[40].len(), 2000);
+    let mut expected: Vec<String> = (0..40).map(|i| format!("message {i}")).collect();
+    expected.push("x".repeat(2000));
+    assert_eq!(w.texts("s1"), expected);
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.revision"), 1);
     assert_eq!(
         w.count("SELECT SUM(length) AS n FROM a.extent"),
@@ -352,7 +352,8 @@ fn a_stored_input_is_parsed_from_its_stored_bytes_in_chunks() {
     // A chunk far smaller than the file: the stored bytes are read by range.
     let (mut e, _lock) = w.engine(300);
     e.run_pass().unwrap();
-    assert_eq!(w.texts("s2").len(), 20);
+    let expected: Vec<String> = (0..20).map(|i| format!("m{i}")).collect();
+    assert_eq!(w.texts("s2"), expected);
 }
 
 #[test]
@@ -636,7 +637,7 @@ fn a_rollout_with_an_unread_record_and_an_unknown_item_is_read_to_its_end() {
 }
 
 #[test]
-fn every_origin_s_shell_and_file_calls_reach_failing_commands_and_files() {
+fn gemini_and_codex_shell_and_file_calls_reach_failing_commands_and_files() {
     let w = ClaudeHome::new();
     let chats = w.home.join(".gemini/tmp/proj/chats");
     fs::create_dir_all(&chats).unwrap();
@@ -714,9 +715,12 @@ fn every_origin_s_shell_and_file_calls_reach_failing_commands_and_files() {
             .unwrap_or_else(|| panic!("no {tool} call in {calls:?}"))
             .clone()
     };
-    for tool in ["run_shell_command", "shell_command"] {
+    for (tool, command) in [
+        ("run_shell_command", "cargo build"),
+        ("shell_command", "cargo test"),
+    ] {
         assert_eq!(row(tool)["action"], "shell", "{tool}");
-        assert!(row(tool)["command_norm"].is_string(), "{tool}: {calls:?}");
+        assert_eq!(row(tool)["command_norm"], command, "{tool}: {calls:?}");
     }
     // The files unit counts calls whose action is a file action.
     assert_eq!(row("read_file")["action"], "file_read");
@@ -769,6 +773,10 @@ fn rebuilding_multiple_inputs_without_provider_files_preserves_order_and_title()
         assert!(rebuilt.errors.is_empty(), "{:?}", rebuilt.errors);
         assert!(rebuilt.bytes_read > 0);
     }
+    assert_eq!(
+        before.0,
+        ["First question", "Shared question", "Last question"]
+    );
     assert_eq!(view(), before);
 }
 

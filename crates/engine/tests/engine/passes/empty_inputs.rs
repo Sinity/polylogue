@@ -30,7 +30,9 @@ fn an_older_inputs_parse_prefix_does_not_commit_a_late_append_early() {
         w.count("SELECT length AS n FROM a.revision WHERE number=2"),
         (first.len() + later.len()) as i64
     );
-    assert_eq!(w.texts("late").len(), 11);
+    let mut expected = vec!["original message"; 10];
+    expected.push("late appended message");
+    assert_eq!(w.texts("late"), expected);
 }
 
 #[test]

@@ -67,9 +67,10 @@ fn a_changed_remote_rewrites_the_lookup_file() {
 #[test]
 fn the_checkout_this_crate_is_built_from_reads_as_a_repository() {
     let here = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let Some(repo) = repository_of(here) else {
+    if !here.ancestors().any(|dir| dir.join(".git").exists()) {
         return; // a build outside a checkout (the Nix package)
-    };
+    }
+    let repo = repository_of(here).expect("the crate is built from a checkout");
     let l = read(&repo, &mut Cache::default());
     // A shallow clone (cloud sessions, CI) does not hold the root commit, and
     // the lookup reports none rather than the shallow boundary.
@@ -312,15 +313,17 @@ fn unchanged_head_and_config_reuse_the_lookup_and_included_config_changes_refres
     )
     .unwrap();
     let mut cache = Cache::default();
+    let first = read(&repo, &mut cache);
     assert_eq!(
-        read(&repo, &mut cache).remote.as_deref(),
+        first.remote.as_deref(),
         Some("https://example.invalid/first")
     );
     let mut queries = Vec::new();
-    read_with(&repo, &mut cache, |args| {
+    let reused = read_with(&repo, &mut cache, |args| {
         queries.push(args.join(" "));
         super::git(&repo, args)
     });
+    assert_eq!(reused, first);
     assert!(
         !queries
             .iter()
