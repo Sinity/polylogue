@@ -148,8 +148,47 @@ fn previous_coordinates_invert_the_existing_session_family_order() {
             at(Link, 0)
         ]
     );
-    assert!(previous_record(&reader, &reference, false, &at(Message, 2)).is_err());
-    assert!(previous_record(&reader, &reference, false, &at(ReadRecordKind::Blob, 0)).is_err());
+    // Each locator names the record the fixture put there: messages in
+    // stored offset order (not id order), events in offset order.
+    let mut named = Vec::new();
+    crate::records::reference(
+        &reader,
+        &reference,
+        false,
+        None,
+        &mut |record, _, position| {
+            if let SelectedRecord::Original(record) = record {
+                match *record {
+                    polylogue_model::bundle::Record::Message(message) => {
+                        named.push((position, message.reference));
+                    }
+                    polylogue_model::bundle::Record::Event(event) => {
+                        named.push((position, format!("notice {}", event.event.data["notice"])));
+                    }
+                    _ => {}
+                }
+            }
+            Ok(true)
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        named,
+        [
+            (at(Message, 0), "message:test:second".to_string()),
+            (at(Message, 1), "message:test:first".to_string()),
+            (at(Event, 0), "notice 1".to_string()),
+            (at(Event, 1), "notice 2".to_string()),
+        ]
+    );
+    for stale in [at(Message, 2), at(ReadRecordKind::Blob, 0)] {
+        assert_eq!(
+            previous_record(&reader, &reference, false, &stale)
+                .unwrap_err()
+                .code(),
+            "stale_cursor"
+        );
+    }
 }
 #[test]
 fn singleton_and_empty_session_edges_have_no_shifted_fallback() {
@@ -194,14 +233,16 @@ fn singleton_and_empty_session_edges_have_no_shifted_fallback() {
         last_record(&reader, &read_target("session:test:absent").unwrap(), false).unwrap(),
         None
     );
-    assert!(
+    assert_eq!(
         previous_record(
             &reader,
             &read_target("session:test:absent").unwrap(),
             false,
             &at(Session, 0)
         )
-        .is_err()
+        .unwrap_err()
+        .code(),
+        "stale_cursor"
     );
     let direct = read_target("message:test:present").unwrap();
     assert_eq!(
@@ -212,7 +253,12 @@ fn singleton_and_empty_session_edges_have_no_shifted_fallback() {
         previous_record(&reader, &direct, false, &at(Message, 0)).unwrap(),
         None
     );
-    assert!(previous_record(&reader, &direct, false, &at(Message, 1)).is_err());
+    assert_eq!(
+        previous_record(&reader, &direct, false, &at(Message, 1))
+            .unwrap_err()
+            .code(),
+        "stale_cursor"
+    );
 }
 
 #[test]
@@ -251,7 +297,12 @@ fn lineage_issue_coordinates_resume_and_reverse_at_both_family_boundaries() {
         previous_record(&reader, &reference, true, &at(LinkIssue, 0)).unwrap(),
         Some(at(Session, 0))
     );
-    assert!(previous_record(&reader, &reference, false, &at(LinkIssue, 0)).is_err());
+    assert_eq!(
+        previous_record(&reader, &reference, false, &at(LinkIssue, 0))
+            .unwrap_err()
+            .code(),
+        "stale_cursor"
+    );
     let mut observed = Vec::new();
     crate::records::reference(&reader, &reference, true, Some(&at(LinkIssue, 0)), &mut |record, _, position| {
         let SelectedRecord::LinkIssue { session, issue } = record else { panic!("issue coordinate resolved another family") };

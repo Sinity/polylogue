@@ -48,7 +48,14 @@ fn changed_attachment_slot_is_unavailable() {
     if let ItemKind::Attachment { attachment, .. } = &mut changed.kind {
         attachment.source_id = Some("file-Unrelated".into());
     }
-    for (item, index) in [(original, 1), (changed, 0)] {
+    for (item, index, reason) in [
+        (original, 1, "selected block has no such attachment"),
+        (
+            changed,
+            0,
+            "request attachment descriptor differs from the selected source was already used for different content",
+        ),
+    ] {
         let prepared = prepare(&reader, item, index, &|_, _, _, _| {
             panic!("an unrelated slot must not receive an open action")
         })
@@ -62,7 +69,12 @@ fn changed_attachment_slot_is_unavailable() {
         else {
             unreachable!()
         };
-        assert!(matches!(availability, ValueState::Unavailable { .. }));
+        assert_eq!(
+            availability,
+            ValueState::Unavailable {
+                reason: reason.into()
+            }
+        );
         assert_eq!(verified_hash, None);
         assert_eq!(open, None);
     }
