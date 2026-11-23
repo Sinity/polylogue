@@ -218,15 +218,14 @@ fn shared_units_stages_and_nested_queries_use_product_names() {
 fn repairs_are_stable() {
     let error = parse("\"unclosed phrase").unwrap_err();
     assert_eq!(error.suggestion(), Some("\"unclosed phrase\""));
-    for text in [
-        "messages where",
-        "kind:* where exists tool_calls(outcome:error)",
+    for (text, code) in [
+        ("messages where", polylogue_model::Code::InvalidQuery),
+        (
+            "kind:* where exists tool_calls(outcome:error)",
+            polylogue_model::Code::UnknownField,
+        ),
     ] {
-        assert_eq!(
-            parse(text).unwrap_err().kind(),
-            polylogue_model::Code::InvalidQuery,
-            "{text}"
-        );
+        assert_eq!(parse(text).unwrap_err().kind(), code, "{text}");
     }
     // A quoted `where` is a search word, not the keyword.
     let ConditionKind::And { conditions } = &cond("kind:* \"where\"") else {

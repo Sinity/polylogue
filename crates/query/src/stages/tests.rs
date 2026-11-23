@@ -92,8 +92,7 @@ fn selection_holds_the_stages_after_its_filters() {
 
 #[test]
 fn a_measure_ends_the_query() {
-    let text = "sessions | measure cost | limit 1";
-    let plan = plan(text);
+    let plan = plan("sessions | measure cost | limit 1");
     let transforms = &plan.expanded_query().query().transforms;
     let error = stages(transforms, 0).unwrap_err();
     let QueryError::Invalid { message, position } = error else {
@@ -101,7 +100,7 @@ fn a_measure_ends_the_query() {
     };
     assert_eq!(message, "`| measure WHAT` is the last stage");
     // The refusal points at the stage after the measure.
-    assert_eq!(position, text.find("limit").unwrap());
+    assert_eq!(position, transforms[1].span.start);
     assert_eq!(
         shapes("sessions | limit 3 | measure cost"),
         vec![(0..1, StageKind::Rows), (1..2, StageKind::Rows)]
