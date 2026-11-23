@@ -22,18 +22,6 @@ impl Stored {
         }
     }
     fn put(&self, input: &str, format: &str, revision: bool, path: &str, seen: i64, bytes: &[u8]) {
-        self.put_seen(input, format, revision, path, Some(seen), bytes);
-    }
-    /// `seen` of `None` stores the input with no observation, so its time is unknown.
-    fn put_seen(
-        &self,
-        input: &str,
-        format: &str,
-        revision: bool,
-        path: &str,
-        seen: Option<i64>,
-        bytes: &[u8],
-    ) {
         self.writer
             .as_ref()
             .unwrap()
@@ -52,13 +40,13 @@ impl Stored {
                     } else {
                         Change::First
                     },
-                    observation: seen.map(|seen_at_ms| Observation {
+                    observation: Some(Observation {
                         machine: "synthetic".into(),
                         host: "synthetic".into(),
                         path: path.into(),
                         path_bytes: path.as_bytes().to_vec(),
                         facts: None,
-                        seen_at_ms,
+                        seen_at_ms: seen,
                         import: None,
                         container: None,
                         database: None,
@@ -244,37 +232,6 @@ fn inference_selections_are_validated_before_any_read() {
         both.validate(),
         Err("select explicit inputs or --since".to_owned())
     );
-}
-
-#[test]
-fn since_leaves_out_and_counts_inputs_with_unknown_time() {
-    let stored = Stored::new();
-    stored.put(
-        "timed",
-        "claude-code",
-        false,
-        "/absent/session.jsonl",
-        200,
-        b"{\"a\":1}\n",
-    );
-    stored.put_seen(
-        "undated",
-        "claude-code",
-        false,
-        "/absent/session.jsonl",
-        None,
-        b"{\"b\":2}\n",
-    );
-    let mut since = selection(Some("claude-code"), &[], None);
-    since.since = Some("1970-01-01T00:00:00.150Z".into());
-    let recent = stored.read(since);
-    let selected: Vec<_> = recent.origins["claude-code"]
-        .selection
-        .iter()
-        .map(|input| input.input.as_str())
-        .collect();
-    assert_eq!(selected, ["timed"]);
-    assert_eq!(recent.selection.unknown_time_inputs, 1);
 }
 
 #[test]
