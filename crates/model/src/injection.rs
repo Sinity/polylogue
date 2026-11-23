@@ -2,9 +2,9 @@
 use crate::{BlobHash, MessageId};
 use serde::{Deserialize, Serialize};
 
-/// A parser claim about a particular native field, before receiving admission
-/// supplies and validates the owning input and chain. Imported claims confer no
-/// native authority.
+/// A parser's claim about one native field. Admission later supplies and
+/// validates the input and chain that own it (see `NativeHookField`). Imported
+/// claims confer no native authority.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HookFieldClaim {

@@ -93,6 +93,11 @@ fn only_a_moved_rewrite_version_stales() {
     assert!(cursor.rewritten(&PageCursor::version(&versions)));
     versions[0].rewrite_version = 3;
     assert!(!cursor.rewritten(&PageCursor::version(&versions)));
+    versions[0].attachments = Some(crate::BlobHash::of(b"attachment matching"));
+    assert!(cursor.rewritten(&PageCursor::version(&versions)));
+    let matched = PageCursor::version(&versions);
+    versions[0].attachments = Some(crate::BlobHash::of(b"other matching"));
+    assert_ne!(matched, PageCursor::version(&versions));
     versions.push(SessionVersion {
         session: crate::SessionId::parse("test:parent").unwrap(),
         rewrite_version: 1,

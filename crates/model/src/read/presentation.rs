@@ -237,21 +237,6 @@ fn overlap(a: &Patch, b: &Patch) -> bool {
         || (a.start < b.end.unwrap() && b.start < a.end.unwrap())
         || a.start == b.start
 }
-impl TryFrom<BTreeMap<Reference, VariantText>> for PresentationMap {
-    type Error = ReadError;
-    fn try_from(map: BTreeMap<Reference, VariantText>) -> Result<Self, Self::Error> {
-        let mut checked = Self::default();
-        for (key, value) in map {
-            checked.insert(key, value)?;
-        }
-        Ok(checked)
-    }
-}
-impl From<PresentationMap> for BTreeMap<Reference, VariantText> {
-    fn from(value: PresentationMap) -> Self {
-        value.0
-    }
-}
 impl<'de> Deserialize<'de> for PresentationMap {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct Checked;

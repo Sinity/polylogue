@@ -71,9 +71,19 @@ fn conflicting_replacements_and_duplicate_json_keys_are_rejected() {
     assert!(map.insert(first.clone(), value.clone()).is_err());
     let key = serde_json::to_string(&first).unwrap();
     let value = serde_json::to_string(&value).unwrap();
-    assert!(
+    assert_eq!(
+        serde_json::from_str::<PresentationMap>(&format!("{{{key}:{value}}}"))
+            .unwrap()
+            .0
+            .len(),
+        1
+    );
+    let duplicate =
         serde_json::from_str::<PresentationMap>(&format!("{{{key}:{value},{key}:{value}}}"))
-            .is_err()
+            .unwrap_err();
+    assert!(
+        duplicate.to_string().contains("multiple renditions"),
+        "{duplicate}"
     );
     let other = Reference::parse("message:test:session:message").unwrap();
     assert!(

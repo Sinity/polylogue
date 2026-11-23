@@ -64,7 +64,7 @@ const BLOCK_KINDS: [ClassKind; 8] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ClassAuthor {
-    /// The model or a person writing anything but a prompt.
+    /// The model or a person writing anything but a prompt, and every event.
     Other = 0,
     Harness = 1,
     /// A person's prompt: what opens a turn.
@@ -161,12 +161,15 @@ impl EntryClass {
             ClassKind::Event => (EntryKind::Event, None, None),
         };
         let event = entry_kind == EntryKind::Event;
-        let (written_by, prompt_kind) = match self.author() {
-            _ if event => (WrittenBy::Harness, None),
-            ClassAuthor::Harness => (WrittenBy::Harness, Some(PromptKind::Harness)),
-            ClassAuthor::Prompt => (WrittenBy::Human, Some(PromptKind::Prose)),
-            ClassAuthor::Other => (WrittenBy::Model, None),
-            ClassAuthor::Tool => (WrittenBy::Tool, Some(PromptKind::Harness)),
+        let (written_by, prompt_kind) = if event {
+            (WrittenBy::Harness, None)
+        } else {
+            match self.author() {
+                ClassAuthor::Harness => (WrittenBy::Harness, Some(PromptKind::Harness)),
+                ClassAuthor::Prompt => (WrittenBy::Human, Some(PromptKind::Prose)),
+                ClassAuthor::Other => (WrittenBy::Model, None),
+                ClassAuthor::Tool => (WrittenBy::Tool, Some(PromptKind::Harness)),
+            }
         };
         let mut entry = super::event_entry("class", "class", None, 0, Vec::new());
         entry.kind = entry_kind;

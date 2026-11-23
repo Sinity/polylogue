@@ -18,7 +18,8 @@ pub struct AttachmentNamespace {
     pub import_id: String,
 }
 impl AttachmentNamespace {
-    fn valid(&self) -> bool {
+    /// A namespace needs a non-empty input, a positive chain and a non-empty import id.
+    fn has_all_coordinates(&self) -> bool {
         !self.input.is_empty() && self.chain > 0 && !self.import_id.is_empty()
     }
 }
@@ -80,12 +81,12 @@ impl AttachmentBinding {
     pub fn validate(&self) -> Result<(), crate::bundle::BundleError> {
         use crate::bundle::BundleError;
         if self.source_id.is_empty()
-            || !self.namespace.valid()
-            || !self.exported_from.valid()
+            || !self.namespace.has_all_coordinates()
+            || !self.exported_from.has_all_coordinates()
             || self
                 .prior_exports
                 .iter()
-                .any(|namespace| !namespace.valid())
+                .any(|namespace| !namespace.has_all_coordinates())
         {
             return Err(BundleError::InvalidAttachmentBinding);
         }
@@ -97,7 +98,7 @@ impl AttachmentBinding {
                     || source
                         .namespace
                         .as_ref()
-                        .is_some_and(|namespace| !namespace.valid())
+                        .is_some_and(|namespace| !namespace.has_all_coordinates())
                 {
                     return Err(BundleError::InvalidAttachmentBinding);
                 }
@@ -153,7 +154,11 @@ pub(crate) fn validate_record(
             .map_err(|_| BundleError::InvalidAttachmentBinding)?;
         let index = usize::try_from(binding.attachment)
             .map_err(|_| BundleError::InvalidAttachmentBinding)?;
-        let attachment = record.message.blocks[position]
+        let attachment = record
+            .message
+            .blocks
+            .get(position)
+            .ok_or(BundleError::InvalidAttachmentBinding)?
             .attachments()
             .get(index)
             .ok_or(BundleError::InvalidAttachmentBinding)?;

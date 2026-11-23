@@ -19,7 +19,7 @@ Command, verb and unit names and saved query names are not searched as plain wor
 - Compaction summaries are messages ([sessions.md](sessions.md#compaction-boundaries)) and are searched like prose.
 - `command ~ "…"` and `path ~ "…"` are substring matches through a trigram index on tool calls (three characters or more; shorter values scan within the other conditions); `input ~ "…"` narrows calls already selected.
 - `text ~ "…"` is a substring match on prose, through a trigram index over prose texts, for fragments a word tokenizer destroys (`7/10`, `v2.3.1`, `C++`, `--no-verify`). It filters; it does not rank.
-- **Tokenization** folds case and diacritics, and folds letters with a stroke through one shared function (`ł→l`, `ø→o`, `đ→d`, `ħ→h`, `ı→i`, `ß→ss`). Anything that is not a letter or digit splits words.
+- **Tokenization** folds case and diacritics, and folds letters with a stroke through one shared function (`ł→l`, `ø→o`, `đ→d`, `ħ→h`, `ı→i`, `ß→ss`). Anything that is not a letter, a digit or a private-use character splits words.
 
 ## Hits and ranking
 

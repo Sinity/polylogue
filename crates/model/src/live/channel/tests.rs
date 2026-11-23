@@ -98,8 +98,11 @@ fn new_sessions_start_on_the_declared_control_protocol() {
     let refused = host_protocol("chatgpt").unwrap_err();
     assert_eq!(refused.reason, "unsupported");
     assert!(refused.detail.contains("chatgpt"));
-    assert!(!HostProtocol::CodexAppServer.stdio());
-    assert!(HostProtocol::Acp.stdio() && HostProtocol::ClaudeStreamJson.stdio());
+    assert!(!HostProtocol::CodexAppServer.needs_host_process());
+    assert!(
+        HostProtocol::Acp.needs_host_process()
+            && HostProtocol::ClaudeStreamJson.needs_host_process()
+    );
 }
 
 /// The docs' channel table is the table generated from the declarations.
