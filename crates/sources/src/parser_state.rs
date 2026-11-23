@@ -164,3 +164,6 @@ impl<T: Serialize> Set<T> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

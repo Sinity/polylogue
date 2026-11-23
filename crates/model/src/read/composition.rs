@@ -143,7 +143,7 @@ pub fn context_at<'a>(
                 .is_some_and(Vec::is_empty)
         {
             reasons.push(
-                "replacement context is kept in the boundary event but is not fully reconstructed"
+                "replacement history is kept in the compaction boundary event but is not fully reconstructed"
                     .into(),
             );
         }

@@ -21,17 +21,17 @@ pub(super) fn array(
     names: &BTreeSet<String>,
 ) -> Result<Observer, serde_json::Error> {
     let mut parser = Parser { reader, parents: 0 };
-    if parser.space()? != Some(b'[') {
+    if parser.next_non_whitespace()? != Some(b'[') {
         return Err(invalid());
     }
     parser.byte()?;
     let mut whole = Observer::new(names.clone());
-    if parser.space()? != Some(b']') {
+    if parser.next_non_whitespace()? != Some(b']') {
         loop {
             let tree = parser.value(names)?;
             whole.root.merge(tree, names);
             whole.records += 1;
-            match parser.space()? {
+            match parser.next_non_whitespace()? {
                 Some(b',') => {
                     parser.byte()?;
                 }
@@ -78,7 +78,7 @@ pub(super) fn row_dump(
         match key.as_str() {
             "t" => record.table = Some(parser.string(true)?),
             "r" => {
-                if parser.space()? != Some(b'{') {
+                if parser.next_non_whitespace()? != Some(b'{') {
                     return Err(invalid());
                 }
                 record.row = Some(parser.value_with_columns(names, true)?);
@@ -148,19 +148,19 @@ impl<R: BufRead> Parser<R> {
         &mut self,
         mut member: impl FnMut(&mut Self, String) -> Result<(), serde_json::Error>,
     ) -> Result<(), serde_json::Error> {
-        self.space()?;
+        self.next_non_whitespace()?;
         self.expect(b'{')?;
-        if self.space()? != Some(b'}') {
+        if self.next_non_whitespace()? != Some(b'}') {
             loop {
                 let key = self.string(true)?;
-                self.space()?;
+                self.next_non_whitespace()?;
                 self.expect(b':')?;
-                self.space()?;
+                self.next_non_whitespace()?;
                 member(self, key)?;
-                match self.space()? {
+                match self.next_non_whitespace()? {
                     Some(b',') => {
                         self.byte()?;
-                        self.space()?;
+                        self.next_non_whitespace()?;
                     }
                     Some(b'}') => break,
                     _ => return Err(invalid()),
@@ -226,7 +226,7 @@ impl<R: BufRead> Parser<R> {
                 "columns" => {
                     parser.expect(b'[')?;
                     let mut values = Vec::new();
-                    if parser.space()? != Some(b']') {
+                    if parser.next_non_whitespace()? != Some(b']') {
                         loop {
                             let mut fields = serde_json::Map::new();
                             parser.object(|parser, key| {
@@ -249,10 +249,10 @@ impl<R: BufRead> Parser<R> {
                                 Ok(())
                             })?;
                             values.push(serde_json::from_value::<Column>(fields.into())?);
-                            match parser.space()? {
+                            match parser.next_non_whitespace()? {
                                 Some(b',') => {
                                     parser.byte()?;
-                                    parser.space()?;
+                                    parser.next_non_whitespace()?;
                                 }
                                 Some(b']') => break,
                                 _ => return Err(invalid()),
@@ -309,13 +309,13 @@ impl<R: BufRead> Parser<R> {
 
     /// Fails when anything but whitespace follows the value just read.
     fn end(&mut self) -> Result<(), serde_json::Error> {
-        if self.space()?.is_some() {
+        if self.next_non_whitespace()?.is_some() {
             return Err(invalid());
         }
         Ok(())
     }
 
-    fn space(&mut self) -> Result<Option<u8>, serde_json::Error> {
+    fn next_non_whitespace(&mut self) -> Result<Option<u8>, serde_json::Error> {
         self.skip_while(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))?;
         self.peek()
     }
@@ -344,7 +344,7 @@ impl<R: BufRead> Parser<R> {
         let mut next = Some(root);
         loop {
             if let Some(node) = next.take() {
-                let byte = self.space()?.ok_or_else(invalid)?;
+                let byte = self.next_non_whitespace()?.ok_or_else(invalid)?;
                 let kind = match byte {
                     b'{' | b'[' => {
                         self.byte()?;
@@ -382,7 +382,7 @@ impl<R: BufRead> Parser<R> {
                 break;
             };
             let close = if frame.array { b']' } else { b'}' };
-            let byte = self.space()?.ok_or_else(invalid)?;
+            let byte = self.next_non_whitespace()?.ok_or_else(invalid)?;
             if byte == close {
                 self.byte()?;
                 frames.pop();
@@ -390,7 +390,7 @@ impl<R: BufRead> Parser<R> {
             }
             if !frame.first {
                 self.expect(b',')?;
-                if self.space()? == Some(close) {
+                if self.next_non_whitespace()? == Some(close) {
                     return Err(invalid());
                 }
             }
@@ -401,7 +401,7 @@ impl<R: BufRead> Parser<R> {
                 index
             } else {
                 let name = self.string(true)?;
-                self.space()?;
+                self.next_non_whitespace()?;
                 self.expect(b':')?;
                 tree.member(
                     frame.node,

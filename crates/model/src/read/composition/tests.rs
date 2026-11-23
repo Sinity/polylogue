@@ -114,7 +114,9 @@ fn replacement_history_in_the_boundary_makes_the_context_incomplete() {
     assert!(!context.complete);
     assert_eq!(
         context.reason.as_deref(),
-        Some("replacement context is kept in the boundary event but is not fully reconstructed")
+        Some(
+            "replacement history is kept in the compaction boundary event but is not fully reconstructed"
+        )
     );
 }
 

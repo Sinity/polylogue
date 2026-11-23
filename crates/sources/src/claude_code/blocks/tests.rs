@@ -81,7 +81,9 @@ fn tool_use_result_applies_only_to_a_sole_result() {
         {"type":"tool_result","tool_use_id":"b"}
     ]);
     let mut blobs = Vec::new();
-    for b in blocks(&record, &content, &mut blobs) {
+    let result = blocks(&record, &content, &mut blobs);
+    assert_eq!(result.len(), 2);
+    for b in result {
         let Block::ToolResult { outcome, data, .. } = b else {
             panic!()
         };

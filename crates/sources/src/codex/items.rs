@@ -58,8 +58,8 @@ fn content_block(item: &Json, blobs: &mut Vec<ExtractedBlob>) -> Block {
     }
 }
 
-/// An image item: a `data:` URL becomes a blob; any other URL is kept as a
-/// reference.
+/// An image item: a base64 `data:` URL becomes a blob; any other URL, including
+/// a `data:` URL that is not valid base64, is kept whole as a reference.
 fn image(
     item: &Json,
     direction: AttachmentDirection,

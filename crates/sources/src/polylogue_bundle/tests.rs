@@ -162,3 +162,12 @@ fn imported_copy_members_keep_original_order_and_do_not_claim_other_parent_messa
         ("original-child-input", 4, "original-reading")
     );
 }
+
+#[test]
+fn a_bundle_must_start_with_its_manifest() {
+    const REFUSAL: &str = "a Polylogue bundle starts with its manifest";
+    let first_message =
+        serde_json::to_vec(&Record::Message(Box::new(message_record("m1", 1)))).unwrap();
+    assert_eq!(manifest(first_message.as_slice()).unwrap_err(), REFUSAL);
+    assert_eq!(manifest(&b""[..]).unwrap_err(), REFUSAL);
+}

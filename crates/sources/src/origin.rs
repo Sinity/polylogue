@@ -112,6 +112,8 @@ macro_rules! modules {
     ] };
 }
 
+/// One origin's whole declaration: where its files live, how they are
+/// recognized, parsed, resumed and collected.
 pub struct OriginSpec {
     pub modules: &'static [ParserModule],
     pub name: &'static str,
@@ -285,11 +287,11 @@ impl OriginSpec {
     }
 }
 
-fn never(_: &Path, _: &[u8]) -> bool {
+fn recognizes_nothing(_: &Path, _: &[u8]) -> bool {
     false
 }
 
-fn none(_: &Path) -> Option<Parse> {
+fn opens_nothing(_: &Path) -> Option<Parse> {
     None
 }
 
@@ -653,7 +655,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         capture: Capture::Bytes,
         database: None,
         recognize: |_, _| true,
-        open: none,
+        open: opens_nothing,
         resume: None,
         bare_uuid_ids: false,
         quota: None,
@@ -677,7 +679,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         capture: Capture::RowDump,
         database: Some(Database { is_input: |_| true }),
         recognize: |_, _| true,
-        open: none,
+        open: opens_nothing,
         resume: None,
         bare_uuid_ids: false,
         quota: None,
@@ -698,7 +700,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         capture: Capture::Bytes,
         database: None,
         recognize: |_, _| true,
-        open: none,
+        open: opens_nothing,
         resume: None,
         bare_uuid_ids: false,
         quota: None,
@@ -719,7 +721,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         capture: Capture::RowDump,
         database: Some(Database { is_input: |_| true }),
         recognize: |_, _| true,
-        open: none,
+        open: opens_nothing,
         resume: None,
         bare_uuid_ids: false,
         quota: None,
@@ -740,7 +742,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         capture: Capture::Bytes,
         database: None,
         recognize: |_, _| true,
-        open: none,
+        open: opens_nothing,
         resume: None,
         bare_uuid_ids: false,
         quota: None,
@@ -761,7 +763,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         capture: Capture::Bytes,
         database: None,
         recognize: |_, _| true,
-        open: none,
+        open: opens_nothing,
         resume: None,
         bare_uuid_ids: false,
         quota: None,
@@ -823,8 +825,8 @@ pub static ORIGINS: &[OriginSpec] = &[
         locations: &[],
         capture: Capture::Bytes,
         database: None,
-        recognize: never,
-        open: none,
+        recognize: recognizes_nothing,
+        open: opens_nothing,
         resume: None,
         bare_uuid_ids: false,
         quota: None,

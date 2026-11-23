@@ -51,6 +51,28 @@ fn kept_attributes_copy_wire_values_not_unknown_siblings() {
 }
 
 #[test]
+fn kept_pointer_paths_decode_escaped_names() {
+    static FIELDS: Fields = Fields::new("record", &[("/a~1b/~3", Rule::Kept("odd names"))]);
+    let source = json!({"a/b":{"[]":1},"other":2});
+    assert_eq!(
+        attributes(&source, &FIELDS),
+        serde_json::from_value::<serde_json::Map<String, Json>>(json!({"/a~1b/~3":1})).unwrap()
+    );
+}
+
+#[test]
+fn header_empties_listed_containers_and_keeps_everything_else() {
+    assert_eq!(
+        header(
+            &json!({"a":{"x":1},"rows":[{"t":1}],"n":2,"scalar":3,"other":{"y":1}}),
+            &["a", "rows", "scalar"]
+        ),
+        json!({"a":{},"rows":[],"n":2,"scalar":3,"other":{"y":1}})
+    );
+    assert_eq!(header(&json!([1]), &["a"]), json!([1]));
+}
+
+#[test]
 fn empty_containers_and_null_are_values_at_their_own_paths() {
     static FIELDS: Fields = Fields::new("record", &[("read", Rule::Read(T::String))]);
     assert_eq!(

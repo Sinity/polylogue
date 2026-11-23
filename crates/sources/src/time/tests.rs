@@ -14,7 +14,14 @@ fn source_time_encodings_keep_declared_precision() {
         (epoch_millis(&json!(1767323045000i64)), Precision::Instant),
     ] {
         let time = value.unwrap();
-        assert_eq!(time.accuracy(), TimeEvidence::intrinsic(precision));
+        assert_eq!(
+            time.accuracy(),
+            TimeEvidence {
+                quality: TimeQuality::Intrinsic,
+                precision: Some(precision),
+                until: None
+            }
+        );
         assert_eq!(time.timestamp().unix_ms() / 1000, 1767323045);
     }
 }

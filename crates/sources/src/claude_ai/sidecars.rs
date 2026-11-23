@@ -193,12 +193,13 @@ impl Sidecars {
         sink: &mut dyn ItemSink,
     ) -> Result<(), String> {
         let (range, raw) = record;
-        let (purpose, suffix, missing_child, kind, title, at, keys) = match field {
+        let (purpose, suffix, missing_child, kind, source_kind, title, at, keys) = match field {
             "conversations_memory" => (
                 DocumentPurpose::Memory,
                 "memory".into(),
                 false,
                 "memory_text",
+                "account_memory",
                 None,
                 None,
                 Json::Null,
@@ -214,6 +215,7 @@ impl Sidecars {
                     suffix,
                     native.is_none(),
                     "memory_text",
+                    "project_memory",
                     None,
                     None,
                     Json::Null,
@@ -224,6 +226,7 @@ impl Sidecars {
                 "instructions".into(),
                 false,
                 "instruction_text",
+                "project_instructions",
                 None,
                 None,
                 Json::Null,
@@ -262,6 +265,7 @@ impl Sidecars {
                     suffix,
                     missing,
                     "project_document",
+                    "project_document",
                     fields::text(&fields, "filename"),
                     at,
                     field_names(fields.keys()),
@@ -274,17 +278,7 @@ impl Sidecars {
             purpose,
             title,
             at,
-            match kind {
-                "project_document" => "project_document",
-                "instruction_text" => "project_instructions",
-                _ => {
-                    if field == "project_memories" {
-                        "project_memory"
-                    } else {
-                        "account_memory"
-                    }
-                }
-            },
+            source_kind,
         )?;
         if purpose == DocumentPurpose::Context {
             doc.metadata["text_kind"] = Json::String("extracted_text".into());

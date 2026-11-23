@@ -23,7 +23,7 @@ pub fn for_item(ty: &str) -> &'static Fields {
 }
 
 static MESSAGE: Fields = Fields::new(
-    "unlisted_message",
+    "message",
     &[
         ("type", Read(T::String)),
         ("id", Read(T::String)),
@@ -83,7 +83,7 @@ static MESSAGE: Fields = Fields::new(
 );
 
 static REASONING: Fields = Fields::new(
-    "unlisted_reasoning",
+    "reasoning",
     &[
         ("type", Read(T::String)),
         ("id", Read(T::String)),
@@ -107,7 +107,7 @@ static REASONING: Fields = Fields::new(
 );
 
 static CALL: Fields = Fields::new(
-    "unlisted_call",
+    "call",
     &[
         ("type", Read(T::String)),
         ("id", Read(T::String)),
@@ -143,7 +143,7 @@ static CALL: Fields = Fields::new(
 );
 
 static OUTPUT: Fields = Fields::new(
-    "unlisted_output",
+    "output",
     &[
         ("type", Read(T::String)),
         ("timestamp", Read(T::StringOrNumber)),
@@ -177,7 +177,7 @@ static OUTPUT: Fields = Fields::new(
 );
 
 static WEB_SEARCH: Fields = Fields::new(
-    "unlisted_web_search",
+    "web_search",
     &[
         ("type", Read(T::String)),
         ("id", Read(T::String)),
@@ -195,7 +195,7 @@ static WEB_SEARCH: Fields = Fields::new(
 );
 
 static AGENT_MESSAGE: Fields = Fields::new(
-    "unlisted_agent_message",
+    "agent_message",
     &[
         ("type", Read(T::String)),
         ("id", Read(T::String)),
@@ -303,14 +303,14 @@ pub static USER_MESSAGE: Fields = Fields::new(
     ],
 );
 
-/// Replacement context as Codex wrote it stays whole beside normalized message identities.
+/// The compaction boundary keeps the replacement history as Codex wrote it, beside normalized message identities.
 pub static COMPACTED: Fields = Fields::new(
     "compacted",
     &[
         ("message", Read(T::String)),
         (
             "replacement_history",
-            Kept("replacement context kept in the boundary"),
+            Kept("replacement history kept in the compaction boundary"),
         ),
     ],
 );
