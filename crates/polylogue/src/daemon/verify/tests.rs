@@ -30,7 +30,7 @@ fn verify_through_the_daemon_checks_the_archive_and_writes_a_new_manifest() {
         .unwrap();
     assert!(policy.read_only && !policy.default_deadline);
     assert_eq!(policy.class, crate::daemon::executor::Class::Background);
-    assert_eq!(crate::client::connection_budget(&request, None), None);
+    assert_eq!(crate::client::connection_deadline(&request, None), None);
     let socket = daemon.daemon.archive.socket();
     let answer = crate::client::call(&socket, &request).unwrap();
     let Some(value) = answer.value().cloned() else {

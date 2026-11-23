@@ -7,7 +7,7 @@ use std::{future::Future, sync::Arc, time::Duration};
 mod matching;
 mod screen;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-pub use matching::{FuzzyRows, fuzzy_page};
+pub use matching::{CANDIDATE_PAGE, FuzzyRows, fuzzy_page};
 use screen::Screen;
 use std::sync::mpsc;
 
@@ -88,8 +88,6 @@ pub struct Options {
     /// The words Enter will run, or empty to print references.
     pub enter: String,
     pub multiple: bool,
-    pub json: bool,
-    pub format: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -386,7 +384,9 @@ impl State {
             && let Some(rows) = &self.ambiguous
         {
             let rows = rows.clone();
-            return Work::start(runtime, async move { fuzzy_page(rows, &request, 64) });
+            return Work::start(runtime, async move {
+                fuzzy_page(rows, &request, CANDIDATE_PAGE)
+            });
         }
         Work::start(runtime, async move { source.page(request).await })
     }
@@ -421,7 +421,7 @@ fn run<S: Source>(source: Arc<S>, options: Options, screen: &mut Screen) -> Resu
     let mut state = State::new(options.selection.clone());
     // No terminal mode is changed until the cardinality is known.
     let mut page = if let Some(rows) = &state.ambiguous {
-        fuzzy_page(rows.clone(), &state.request(), 64)?
+        fuzzy_page(rows.clone(), &state.request(), CANDIDATE_PAGE)?
     } else {
         runtime.block_on(source.page(state.request()))?
     };
@@ -442,8 +442,7 @@ fn run<S: Source>(source: Arc<S>, options: Options, screen: &mut Screen) -> Resu
     if state.page.rows.len() == 1 && state.page.next.is_none() {
         return finish(&*source, &options, state.chosen());
     }
-    let machine = options.json || matches!(options.format.as_deref(), Some("json" | "jsonl"));
-    if !screen.is_terminal() || machine {
+    if !screen.is_terminal() {
         let candidates = state
             .page
             .rows
@@ -465,7 +464,7 @@ fn run<S: Source>(source: Arc<S>, options: Options, screen: &mut Screen) -> Resu
             .collect();
         let mut failure = Failure::new(
             polylogue_model::Code::Ambiguous,
-            "choose a reference from the candidates; the picker needs terminal input and output without a machine format",
+            "choose a reference from the candidates; the picker needs terminal input and output",
         );
         failure.error = failure.error.with_candidates(candidates);
         return Err(failure);

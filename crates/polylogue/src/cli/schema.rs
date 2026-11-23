@@ -46,7 +46,8 @@ pub fn diff(
                 .into_iter()
                 .flatten()
             {
-                schema::compare(schema, schema)?;
+                // Refuse a malformed artifact on each side, including an origin the other side lacks.
+                schema::validate(schema)?;
             }
             let report = match (before.origins.get(name), after.origins.get(name)) {
                 (Some(left), Some(right)) => {

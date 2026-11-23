@@ -16,7 +16,7 @@ pub struct Daemon {
     /// Stop once the loop has no work, printing what it did
     #[serde(default)]
     pub until_idle: bool,
-    /// Read no provider locations, spools or tool databases: parse and derive only what the archive stores, and import what is given
+    /// Read no root locations, spools, tool databases or collectors: parse and derive only what the archive stores, and import what is given
     #[serde(default)]
     pub no_sources: bool,
 }

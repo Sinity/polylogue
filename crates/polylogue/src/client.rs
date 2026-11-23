@@ -27,11 +27,14 @@ pub(crate) async fn wait_for_socket(
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let archive = Archive::at(parent);
+    let last_error = std::sync::Mutex::new(None);
     let wait = async {
         loop {
             match tokio::net::UnixStream::connect(path).await {
                 Ok(_) => return Ok(()),
-                Err(error) if crate::cli::is_down(&error) && archive.lock_held() => {}
+                Err(error) if crate::cli::is_down(&error) && archive.lock_held() => {
+                    *last_error.lock().expect("error slot") = Some(error.kind());
+                }
                 Err(error) => return Err(error),
             }
             loop {
@@ -56,9 +59,13 @@ pub(crate) async fn wait_for_socket(
         Some(until) => tokio::time::timeout_at(until.into(), wait)
             .await
             .map_err(|_| {
+                let cause = (*last_error.lock().expect("error slot"))
+                    .map_or_else(String::new, |kind| {
+                        format!(" (last connection error: {kind})")
+                    });
                 io::Error::new(
                     io::ErrorKind::TimedOut,
-                    "the daemon did not start before the deadline",
+                    format!("the daemon did not start before the deadline{cause}"),
                 )
             })?,
         None => wait.await,
@@ -66,17 +73,18 @@ pub(crate) async fn wait_for_socket(
 }
 
 fn runtime() -> io::Result<&'static tokio::runtime::Runtime> {
-    static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
+    static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, (io::ErrorKind, String)>> =
+        OnceLock::new();
     RUNTIME
         .get_or_init(|| {
             tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(1)
                 .enable_all()
                 .build()
-                .map_err(|error| error.to_string())
+                .map_err(|error| (error.kind(), error.to_string()))
         })
         .as_ref()
-        .map_err(|error| io::Error::other(error.clone()))
+        .map_err(|(kind, message)| io::Error::new(*kind, message.clone()))
 }
 
 static THIS_PROCESS: OnceLock<command_surface::CallerEvidence> = OnceLock::new();
@@ -119,7 +127,7 @@ pub fn call(
     socket: &Path,
     request: &command_surface::RunnableRequest,
 ) -> io::Result<Answer<Value>> {
-    let budget = connection_budget(request, None);
+    let budget = connection_deadline(request, None);
     let outgoing = crate::protocol::wire::Outgoing {
         request,
         caller: this_process(),
@@ -146,7 +154,7 @@ pub fn call(
 /// How long a client waits for the answer: the request's read deadline
 /// with the protocol's grace for a read-only request, none for one that
 /// writes, within the parent's bound.
-pub(crate) fn connection_budget(
+pub(crate) fn connection_deadline(
     request: &command_surface::RunnableRequest,
     parent_deadline_ms: Option<i64>,
 ) -> Option<Duration> {
@@ -258,7 +266,7 @@ pub(crate) async fn call_ready_as_bounded(
     caller: command_surface::CallerEvidence,
     parent_deadline_ms: Option<i64>,
 ) -> io::Result<Answer<Value>> {
-    let budget = connection_budget(request, parent_deadline_ms);
+    let budget = connection_deadline(request, parent_deadline_ms);
     let ready_deadline = budget.map(crate::daemon::execution::deadline);
     let outgoing = crate::protocol::wire::Outgoing {
         request,

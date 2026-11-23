@@ -1,4 +1,4 @@
-//! Client delivery of the same finite reading. Files and directories publish
+//! Client output of the same finite reading. Files and directories publish
 //! only after a validated completion; staged failures keep their diagnosis.
 pub(crate) mod bundle;
 
@@ -15,34 +15,30 @@ use std::{
 };
 
 #[derive(Debug)]
-enum DeliveryError {
+enum OutputError {
     Text(String),
     Answer(Box<command_surface::Answer<serde_json::Value>>),
 }
-impl From<String> for DeliveryError {
+impl From<String> for OutputError {
     fn from(value: String) -> Self {
         Self::Text(value)
     }
 }
-impl From<&str> for DeliveryError {
+impl From<&str> for OutputError {
     fn from(value: &str) -> Self {
         Self::Text(value.into())
     }
 }
 
-fn delivery_failure(
-    error: DeliveryError,
-    startup: &crate::config::Startup,
-    json: bool,
-) -> ExitCode {
+fn output_failure(error: OutputError, startup: &crate::config::Startup, json: bool) -> ExitCode {
     match error {
-        DeliveryError::Text(error) => fail(
+        OutputError::Text(error) => fail(
             startup.output,
             json,
             polylogue_model::Code::ReadOutput,
             &error,
         ),
-        DeliveryError::Answer(answer) => match &answer.outcome {
+        OutputError::Answer(answer) => match &answer.outcome {
             command_surface::Outcome::Error(error) => {
                 super::fail_with(startup.output, json, error, &[])
             }
@@ -50,7 +46,10 @@ fn delivery_failure(
         },
     }
 }
-fn page_of(value: &serde_json::Value) -> Result<ReadPage, DeliveryError> {
+fn page_of(answer: &command_surface::Answer<serde_json::Value>) -> Result<ReadPage, OutputError> {
+    let Some(value) = answer.value() else {
+        return Err(OutputError::Answer(Box::new(answer.clone())));
+    };
     let line: crate::protocol::line::LineAnswer =
         serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
     match line {
@@ -64,14 +63,16 @@ fn page_of(value: &serde_json::Value) -> Result<ReadPage, DeliveryError> {
                 } => Some(*page),
                 _ => None,
             })
-            .ok_or_else(|| DeliveryError::Text("the line returned no reading".into())),
+            .ok_or_else(|| OutputError::Text("the line returned no reading".into())),
         _ => Err("the line returned no reading".into()),
     }
 }
+/// Writes one page of a line; `last_step` is whether it is the line's final step,
+/// which sends terminal output through the pager.
 pub(crate) fn line_page(
     startup: &crate::config::Startup,
     page: &ReadPage,
-    last: bool,
+    last_step: bool,
     destination: Option<&super::line::Destination>,
     format: Option<&str>,
 ) -> Result<(), command_surface::Failure> {
@@ -108,11 +109,11 @@ pub(crate) fn line_page(
         Some(Destination::File(_) | Destination::Dir(_)) => {
             return Err(crate::protocol::failure(
                 polylogue_model::Code::BadRequest,
-                "file delivery requires a streamed reading",
+                "file destination requires a streamed reading",
             ));
         }
         Some(Destination::Pager) => through_pager(&archive, startup, answer, format),
-        None if last && startup.output.stdout_terminal => {
+        None if last_step && startup.output.stdout_terminal => {
             through_pager(&archive, startup, answer, format)
         }
         _ => one_page(startup, answer, format),
@@ -121,8 +122,8 @@ pub(crate) fn line_page(
         crate::protocol::failure(
             polylogue_model::Code::ReadOutput,
             match error {
-                DeliveryError::Text(text) => text,
-                DeliveryError::Answer(answer) => serde_json::to_string(&answer).unwrap_or_default(),
+                OutputError::Text(text) => text,
+                OutputError::Answer(answer) => serde_json::to_string(&answer).unwrap_or_default(),
             },
         )
     })
@@ -181,17 +182,17 @@ pub(crate) fn line_stream(
         }
     }
     let archive = Archive::at(&startup.config.archive);
-    let result = consume(startup, parsed, state, |callback| {
+    let result = write_read_stream(startup, parsed, state, |callback| {
         crate::client::stream::run_call(
             &archive,
             &call,
-            crate::client::connection_budget(&call, None),
+            crate::client::connection_deadline(&call, None),
             callback,
         )
     });
     match result {
         Ok(code) => ExitCode::from(code),
-        Err(error) => delivery_failure(error, startup, parsed.line.json),
+        Err(error) => output_failure(error, startup, parsed.line.json),
     }
 }
 
@@ -200,11 +201,8 @@ fn encode_page(
     startup: &crate::config::Startup,
     answer: &command_surface::Answer<serde_json::Value>,
     format: polylogue_render::Format,
-) -> Result<(Vec<u8>, Option<ReadyCall>), DeliveryError> {
-    let Some(value) = answer.value() else {
-        return Err(DeliveryError::Answer(Box::new(answer.clone())));
-    };
-    let page = page_of(value)?;
+) -> Result<(Vec<u8>, Option<ReadyCall>), OutputError> {
+    let page = page_of(answer)?;
     let mut encoded = Vec::new();
     polylogue_render::encode_document(
         &page.document,
@@ -243,7 +241,7 @@ fn one_page(
     startup: &crate::config::Startup,
     answer: command_surface::Answer<serde_json::Value>,
     format: polylogue_render::Format,
-) -> Result<u8, DeliveryError> {
+) -> Result<u8, OutputError> {
     let (encoded, next) = encode_page(startup, &answer, format)?;
     io::stdout()
         .lock()
@@ -271,13 +269,7 @@ fn through_pager(
     startup: &crate::config::Startup,
     mut answer: command_surface::Answer<serde_json::Value>,
     format: polylogue_render::Format,
-) -> Result<u8, DeliveryError> {
-    let page_of = |answer: &command_surface::Answer<serde_json::Value>| {
-        let Some(value) = answer.value() else {
-            return Err(DeliveryError::Answer(Box::new(answer.clone())));
-        };
-        page_of(value)
-    };
+) -> Result<u8, OutputError> {
     let first = page_of(&answer)?;
     let mut pager = std::process::Command::new("sh")
         .arg("-c")
@@ -294,7 +286,7 @@ fn through_pager(
         },
     };
     let mut code = answer.exit_code();
-    let shown = (|| -> Result<(), DeliveryError> {
+    let shown = (|| -> Result<(), OutputError> {
         // A pager closed before the end has shown what its reader wanted.
         let closed = |error: &io::Error| error.kind() == io::ErrorKind::BrokenPipe;
         page_notes(startup, &answer);
@@ -397,14 +389,14 @@ enum Sink {
     },
 }
 
-fn consume(
+fn write_read_stream(
     startup: &crate::config::Startup,
     parsed: &super::line::ParsedLine,
     state: &mut super::run_line::OutputState,
     run: impl FnOnce(
         &mut dyn FnMut(command_surface::SseEvent) -> io::Result<bool>,
     ) -> Result<(), crate::client::stream::Error>,
-) -> Result<u8, DeliveryError> {
+) -> Result<u8, OutputError> {
     use super::line::Destination;
     let json = parsed.line.json;
     let mut destination = None;
@@ -573,7 +565,7 @@ fn consume(
                             record.validate().map_err(|error| {
                                 io::Error::new(io::ErrorKind::InvalidData, error.to_string())
                             })?;
-                            count(received, record)?;
+                            count_record(received, record)?;
                         }
                         items
                             .push(
@@ -732,9 +724,9 @@ fn consume(
                 {
                     notes.push(note);
                 }
-                DeliveryError::Answer(answer)
+                OutputError::Answer(answer)
             }
-            other => DeliveryError::Text(kept.unwrap_or_else(|| other.to_string())),
+            other => OutputError::Text(kept.unwrap_or_else(|| other.to_string())),
         });
     }
     if !completed {
@@ -807,7 +799,7 @@ fn encode(
     encoder.finish(&complete.footer)
 }
 
-fn count(counts: &mut Counts, record: &polylogue_model::bundle::Record) -> io::Result<()> {
+fn count_record(counts: &mut Counts, record: &polylogue_model::bundle::Record) -> io::Result<()> {
     use polylogue_model::bundle::Record;
     let value = match record {
         Record::Session(_) => &mut counts.sessions,

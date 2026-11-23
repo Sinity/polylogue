@@ -59,7 +59,8 @@ pub struct Diff {
     pub tables: Vec<TableChange>,
 }
 
-fn validate(schema: &Schema) -> Result<(), String> {
+/// Refuses a schema artifact that is malformed or of another rule version.
+pub fn validate(schema: &Schema) -> Result<(), String> {
     if schema.rule_version != RULE_VERSION {
         return Err("unsupported schema rule version".into());
     }

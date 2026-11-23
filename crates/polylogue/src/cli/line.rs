@@ -48,6 +48,8 @@ pub(crate) struct ParsedStep {
     pub to: Option<Destination>,
     pub words: Range<usize>,
     pub stdin: Option<String>,
+    /// A read that follows live events, which only the last step may do.
+    pub follow: bool,
 }
 #[derive(Debug, Default)]
 pub(crate) struct LineOptions {
@@ -440,8 +442,10 @@ pub(crate) fn parse(
         let step = split.step;
         let typed: crate::protocol::line::Step = serde_json::from_value(step.clone())
             .map_err(|error| Refusal::new(Code::BadRequest, error.to_string()))?;
+        let follow = matches!(&typed, crate::protocol::line::Step::Read(read) if read.follow);
         parsed.steps.push(ParsedStep {
             verb: typed.verb(),
+            follow,
             step,
             to,
             words: start..index,
@@ -471,7 +475,7 @@ pub(crate) fn parse(
         return Err(refusal);
     }
     for (index, step) in parsed.steps.iter().enumerate() {
-        if step.step["follow"] == true && index + 1 != parsed.steps.len() {
+        if step.follow && index + 1 != parsed.steps.len() {
             return Err(Refusal::new(
                 Code::BadRequest,
                 "read --follow must be the last step",

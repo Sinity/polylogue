@@ -5,7 +5,7 @@ fn status() -> command_surface::RunnableRequest {
 }
 
 #[test]
-fn a_missing_daemon_is_daemon_required() {
+fn a_missing_daemon_is_down_to_the_client() {
     let dir = tempfile::tempdir().unwrap();
     let err = crate::client::call(&dir.path().join("daemon.sock"), &status()).unwrap_err();
     assert!(is_down(&err));
@@ -77,7 +77,7 @@ fn clients_wait_with_deadlines_only_for_reads_and_explicit_stream_limits() {
         (build, None),
     ] {
         assert_eq!(
-            crate::client::connection_budget(&request, None),
+            crate::client::connection_deadline(&request, None),
             expected,
             "{}",
             request.operation
@@ -94,9 +94,12 @@ fn only_read_only_requests_end_the_client_wait_at_their_read_deadline() {
         serde_json::json!({"selection":"messages","steps":[{"verb":"note","text":"a lesson","as":"lesson"}]}),
         "write-1".into(),
     );
-    assert_eq!(crate::client::connection_budget(&writing, None), None);
+    assert_eq!(crate::client::connection_deadline(&writing, None), None);
     let status = crate::client::request("status", serde_json::json!({}), "status-1".into());
-    assert!(crate::client::connection_budget(&status, None).is_some());
+    assert_eq!(
+        crate::client::connection_deadline(&status, None),
+        Some(std::time::Duration::from_millis(80 + 50))
+    );
 }
 
 #[test]
@@ -123,7 +126,7 @@ fn shell_completion_escapes_daemon_help_and_omits_control_values() {
     assert_eq!(found[0].get_value(), "tag:ordinary");
     assert_eq!(
         found[0].get_help().unwrap().to_string(),
-        polylogue_render::terminal::escape(data[0]["help"].as_str().unwrap())
+        r"\x1b]8;;https://example.test\x1b\link\x1b]8;;\x1b\\x7f\u{202e}"
     );
 }
 
