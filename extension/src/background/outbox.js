@@ -15,7 +15,7 @@ function done(request) {
 }
 
 export class Outbox {
-  constructor(indexedDB = globalThis.indexedDB) {
+  constructor(indexedDB) {
     this.indexedDB = indexedDB;
     this.opening = null;
   }

@@ -5,7 +5,8 @@
 
 import { PROVIDERS } from "./tabs.js";
 
-// Where each provider shows one conversation: `/<path>/<id>`.
+// The path segment before a conversation's ID, as the content scripts read it
+// (a ChatGPT project conversation is `/g/<project>/c/<id>`).
 const PATHS = { chatgpt: "c", "claude-ai": "chat", grok: "c", gemini: "app" };
 
 export function notePayload(note, sender) {
@@ -16,8 +17,12 @@ export function notePayload(note, sender) {
   const url = new URL(pageUrl);
   const parts = url.pathname.split("/").filter(Boolean);
   const site = PROVIDERS[source.provider];
-  if (!site || url.protocol !== "https:" || !site.hosts.includes(url.host) || parts.length !== 2
-      || parts[0] !== PATHS[source.provider] || parts[1] !== source.conversation_id) {
+  const marker = parts.indexOf(PATHS[source.provider]);
+  const shown = marker >= 0 ? parts[marker + 1] : null;
+  // Gemini also names the conversation in a query parameter.
+  const named = shown ?? (source.provider === "gemini" ? url.searchParams.get("conversation") : null);
+  if (!site || url.protocol !== "https:" || !site.hosts.includes(url.host)
+      || !source.conversation_id || named !== source.conversation_id) {
     throw new Error("the_page_is_not_that_conversation");
   }
   if (typeof source.message_id !== "string" || !source.message_id) throw new Error("the_selection_names_no_message");

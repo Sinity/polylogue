@@ -64,3 +64,18 @@ it("refuses an unrelated tab borrowing an active provider permit", async () => {
     await expect(scheduler.authorize("chatgpt", 1)).resolves.toBeUndefined();
   }, { owner: 1 });
 });
+
+it("waits longer after each retryable failure without Retry-After, and starts over after a success", async () => {
+  let now = 0;
+  const scheduler = new ProviderScheduler({ now: () => now, sleep: async (ms) => { now += ms; }, random: () => 0 });
+  // Each request first waits out the cooldown the one before it left.
+  const waits = [];
+  for (const status of [503, 503, 200, 503, 200]) {
+    const before = now;
+    await scheduler.run("chatgpt", async () => ({ status }));
+    waits.push(now - before);
+  }
+  expect(waits[1]).toBeGreaterThan(0);
+  expect(waits[2]).toBeGreaterThan(waits[1]);
+  expect(waits[4]).toBe(waits[1]);
+});

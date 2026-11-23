@@ -144,9 +144,11 @@ export class Capturer {
 
   /**
    * Captures the conversation `id` (or the tab's own) from `tabId`.
-   * Answers `{outcome, provider, conversation}`: `stored`, `waiting` (in
-   * the outbox until the host takes it) or `unchanged`. Files the archive
-   * lacks download afterwards (see `downloads`).
+   * Answers `{outcome, provider, conversation, confirmedTurn}`: `stored`,
+   * `waiting` (in the outbox until the host takes it) or `unchanged`;
+   * `confirmedTurn` is the turn ID a ChatGPT snapshot confirms for
+   * `confirm`, else null. Files the archive lacks download afterwards (see
+   * `downloads`).
    */
   async capture(tabId, provider, options = {}) {
     const key = options.id ? `${provider}:${options.id}` : this.tabConversations.get(tabId);
@@ -185,10 +187,10 @@ export class Capturer {
           && normalize((message.content?.parts || []).filter((part) => typeof part === "string").join("\n")) === normalize(confirm.text));
       if (message && snapshot.conversation_id === conversation) confirmedTurn = message.id;
     }
-    const now = await fingerprint(raw, info.session);
+    const contentFingerprint = await fingerprint(raw, info.session);
     const seenKey = `seen ${key}`;
     const known = await this.seen.get({ [seenKey]: null });
-    let unchanged = !force && known[seenKey] === now;
+    let unchanged = !force && known[seenKey] === contentFingerprint;
     if (unchanged) {
       const held = (await this.host.conversations(provider, [conversation])).conversations[0];
       if (!["archived", "spooled"].includes(held?.state)) {
@@ -229,7 +231,7 @@ export class Capturer {
     let outcome = "unchanged";
     if (!unchanged || (raw && missing.length === 0)) {
       outcome = (await this.keep(base, files)) ? "stored" : "waiting";
-      await this.seen.set({ [seenKey]: now });
+      await this.seen.set({ [seenKey]: contentFingerprint });
     }
     if (missing.length || this.downloading.has(key)) this.download(tabId, key, base, files, missing);
     return { outcome, provider, conversation, confirmedTurn };

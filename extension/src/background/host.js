@@ -102,7 +102,14 @@ export class Host {
   async json(method, path, body = null) {
     const sent = body === null || body instanceof Blob ? body : JSON.stringify(body);
     const answer = await exchange(this.runtime, method, path, sent);
-    const value = await answer.body.text().then((text) => (text ? JSON.parse(text) : null)).catch(() => null);
+    const text = await answer.body.text();
+    let value = null;
+    try {
+      value = text ? JSON.parse(text) : null;
+    } catch {
+      // A refusal may carry no JSON; an acknowledgement that does not parse is not one.
+      if (answer.status < 400) throw new HostError("host_answer_unreadable");
+    }
     if (answer.status >= 400) {
       throw new HostError(value?.error || `host_http_${answer.status}`, answer.status, value?.message || value?.error);
     }

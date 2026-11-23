@@ -6,9 +6,6 @@
 export function failureOutcome(value, retryAfterSeconds = null) {
   const detail = String(value?.message || value || "chat_action_failed");
   const text = detail.toLowerCase();
-  if (value?.outcome === "rate_limited") {
-    return { outcome: "rate_limited", retry_after_seconds: retryAfterSeconds, detail };
-  }
   if (/temporarily limited access.*protect your data|provider soft warning/.test(text)) {
     return { outcome: "provider_warning", retry_after_seconds: retryAfterSeconds, detail };
   }
@@ -21,10 +18,10 @@ export function failureOutcome(value, retryAfterSeconds = null) {
   if (/challenge|captcha|cloudflare|unauthorized|forbidden|http_?401|http_?403|sign.?in/.test(text)) {
     return { outcome: "auth_challenge", retry_after_seconds: null, detail };
   }
-  if (/unsupported|target mismatch|work selected|chat selected|model mismatch|effort|project mismatch|capability_mismatch|active_composer_tool/.test(text)) {
+  if (/unsupported|target mismatch|chat_surface|model[ _](?:mismatch|menu|submenu|selection)|effort|project mismatch|capability_mismatch|active_composer_tool/.test(text)) {
     return { outcome: "capability_mismatch", retry_after_seconds: null, detail };
   }
-  if (/protocol|selector|composer|file input|upload|provider response|turn receipt/.test(text)) {
+  if (/protocol|selector|composer|file input|upload|provider response|turn[ _]receipt/.test(text)) {
     return { outcome: "provider_drift", retry_after_seconds: null, detail };
   }
   return { outcome: "network_error", retry_after_seconds: retryAfterSeconds, detail };
@@ -232,17 +229,16 @@ export async function chatActionInPage(action, runId) {
     await waitFor(() => document.querySelector("#prompt-textarea"), 30_000, "composer");
     const initialMode = await waitFor(() => {
       const mode = modeButtons();
-      if (!mode.chat && !mode.work) return { noToggle: true };
-      return mode.chat && mode.work ? mode : null;
+      // Accounts without Work have no toggle at all; one without the other is a page still rendering.
+      return Boolean(mode.chat) === Boolean(mode.work) ? mode : null;
     }, 10_000, "surface_controls");
-    if (!initialMode.noToggle && (!initialMode.chatSelected || initialMode.workSelected)) {
+    if (initialMode.chat && (!initialMode.chatSelected || initialMode.workSelected)) {
       pointerClick(initialMode.chat);
     }
-    const mode = await waitFor(() => {
+    await waitFor(() => {
       const observed = selectedMode();
-      return observed.chat && !observed.work ? observed : null;
+      return observed.chat && !observed.work;
     }, 5_000, "chat_surface_selection");
-    if (!mode.chat || mode.work) throw new Error(`chat selected mismatch:chat=${mode.chat}:work=${mode.work}`);
 
     if (hasComposerPill()) {
       const pill = await waitFor(composerPill, 10_000, "effort_pill");
@@ -261,6 +257,8 @@ export async function chatActionInPage(action, runId) {
       }
       pointerClick(pill);
     } else if (flatSwitcherButton()) {
+      // The flat switcher has no effort menu, so a requested effort cannot be applied.
+      if (expectedEffort) throw new Error("unsupported effort: this account has no effort menu");
       pointerClick(flatSwitcherButton());
       const modelItem = await waitFor(
         () => [...document.querySelectorAll('[role="menuitemradio"]')]
@@ -401,7 +399,8 @@ export async function chatActionInPage(action, runId) {
       observed_surface: "Chat",
       observed_model: expectedModel,
       observed_effort: expectedEffort,
-      observed_project_ref: receipt.conversation?.gizmo_id || expectedProject,
+      // Only a conversation the provider API returned says what project it is in.
+      observed_project_ref: receipt.conversation ? receipt.conversation.gizmo_id || null : null,
       provider_evidence: {
         receipt_source: receipt.source,
         conversation_read_status: receipt.readStatus,

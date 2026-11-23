@@ -10,7 +10,7 @@ Live capture is the core of the extension and works in about real time.
 
 | Site | Route |
 |---|---|
-| chatgpt.com, chat.openai.com (Codex task pages on chatgpt.com → origin `codex-cloud`) | the conversation API JSON, plus file downloads |
+| chatgpt.com (Codex task pages on chatgpt.com → origin `codex-cloud`) | the conversation API JSON, plus file downloads |
 | claude.ai (Claude Design → origin `claude-design`) | the conversation API JSON with the full tree and all tool renderings |
 | grok.com, x.com/i/grok | the conversation API JSON and responses |
 | gemini.google.com | the page's own data responses, intercepted; reading the DOM is a fallback whose captures are marked *partial fidelity* and are outranked by any route through the page's data |
@@ -33,7 +33,7 @@ The extension captures the provider's data, not its rendered page; a DOM route e
 - **Waiting for it.** `polylogue import chatgpt --wait 10m` returns when the job finishes or the time passes, with the job's progress; one that ran out of time replies `empty` with the same line as its next line ([interfaces.md](interfaces.md#steps); over MCP, [agents.md](agents.md#waiting)).
 - The extension claims a job through `polylogue internal import claim`, pages through the provider's conversation list in a background tab, captures each conversation the archive lacks or holds in an older form, reports progress through `polylogue internal import report`, and resumes after a restart.
 - **Coverage:** ChatGPT's four partitions (active, starred, archived, archived-starred) with projects and custom GPTs; claude.ai within its organization, with Claude Design projects; Grok.
-- **Pacing:** one request at a time per provider, `Retry-After`, a daily budget and jittered backoff; a 403 pauses the job and raises a notice for the operator. The default background budget is 10,000 background provider HTTP requests, including authentication, conversation, download-link, attachment and retry requests per provider per UTC day. Exhaustion yields the saved job position for a later claim; it never discards inputs or limits live capture. The scheduler accepts a budget explicitly; its default applies when none is supplied. Each HTTP fetch obtains a permit and saves its charge before it starts.
+- **Pacing:** one request at a time per provider, `Retry-After`, a daily budget and jittered backoff; a 401 or 403 ends the job as failed with a reason asking the operator to sign in to the provider in that browser and start the import again. The default background budget is 10,000 background provider HTTP requests, including authentication, conversation, download-link, attachment and retry requests per provider per UTC day. Exhaustion yields the saved job position for a later claim; it never discards inputs or limits live capture. The scheduler accepts a budget explicitly; its default applies when none is supplied. Each HTTP fetch obtains a permit and saves its charge before it starts.
 - A `--since` cutoff ends only the current newest-first partition. ChatGPT advances to the next of its four partitions before completing the job. Progress checks include unchanged conversations, so cancellation is observed within a page.
 - An import requested by an agent carries the requester's computed author. Over MCP it is the `import` operation of `polylogue_act` with `provider` ([agents.md#mcp-server](agents.md#mcp-server)).
 

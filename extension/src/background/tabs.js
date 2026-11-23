@@ -5,11 +5,13 @@
 import { decode } from "./base64.js";
 
 export const PROVIDERS = {
-  chatgpt: { hosts: ["chatgpt.com", "chat.openai.com"], home: "https://chatgpt.com/" },
+  chatgpt: { hosts: ["chatgpt.com"], home: "https://chatgpt.com/" },
   "claude-ai": { hosts: ["claude.ai"], home: "https://claude.ai/recents" },
   grok: { hosts: ["grok.com"], home: "https://grok.com/" },
   gemini: { hosts: ["gemini.google.com"], home: "https://gemini.google.com/app" },
 };
+
+const hostPatterns = (hosts) => hosts.map((host) => `https://${host}/*`);
 
 export function providerOf(url) {
   let host;
@@ -108,7 +110,7 @@ export async function loaded(chrome, tabId) {
  */
 export async function workTab(chrome, provider) {
   const site = PROVIDERS[provider];
-  const tabs = await chrome.tabs.query({ url: site.hosts.map((host) => `https://${host}/*`) });
+  const tabs = await chrome.tabs.query({ url: hostPatterns(site.hosts) });
   const open = tabs.find((tab) => tab.status === "complete") || tabs[0];
   if (open) return { tab: await loaded(chrome, open.id), opened: false };
   const tab = await chrome.tabs.create({ url: site.home, active: false });
@@ -117,6 +119,6 @@ export async function workTab(chrome, provider) {
 
 /** Every open tab of a supported provider. */
 export async function chatTabs(chrome) {
-  const urls = Object.values(PROVIDERS).flatMap((site) => site.hosts.map((host) => `https://${host}/*`));
+  const urls = Object.values(PROVIDERS).flatMap((site) => hostPatterns(site.hosts));
   return chrome.tabs.query({ url: urls });
 }

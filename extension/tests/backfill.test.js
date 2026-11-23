@@ -140,8 +140,20 @@ it("observes cancellation within an unchanged page", async () => {
     listing: () => ({ status: 200, info: { conversations, done: true, next: null } }),
   });
   await backfill.step();
-  expect(reports.at(-1).counts.unchanged).toBe(10);
+  expect(reports).toHaveLength(2);
   expect(reports.some((report) => report.kind === "finished")).toBe(false);
+});
+
+it("counts a page's conversations only when the page is done, so a resumed page is not counted twice", async () => {
+  const job = { id: "j1", provider: "chatgpt", claimed_by: "ext-1", position: null, listed: 0, captured: 0, unchanged: 0, failed: 0 };
+  const conversations = Array.from({ length: 25 }, (_, i) => ({ id: String(i) }));
+  const { backfill, reports } = setup({ job, held: Object.fromEntries(conversations.map((c) => [c.id, { state: "spooled" }])),
+    listing: () => ({ status: 200, info: { conversations, done: true, next: null } }),
+  });
+  await backfill.step();
+  const empty = { listed: 0, captured: 0, unchanged: 0, failed: 0 };
+  expect(reports.filter((report) => report.kind === "progress").map((report) => report.counts)).toEqual([empty, empty, empty]);
+  expect(reports.at(-1)).toMatchObject({ kind: "finished", counts: { listed: 25, captured: 0, unchanged: 25, failed: 0 } });
 });
 
 
