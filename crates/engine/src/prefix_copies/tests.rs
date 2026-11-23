@@ -1,7 +1,7 @@
 use super::copy_point;
 
 #[test]
-fn an_identical_chain_waits_for_its_source_to_be_read() {
+fn an_identical_chain_has_no_copy_point() {
     assert_eq!(copy_point(100, 100, 100, false), None);
     assert_eq!(copy_point(100, 100, 100, true), None);
 }

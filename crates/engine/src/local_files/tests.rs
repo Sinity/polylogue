@@ -75,7 +75,17 @@ fn every_reference_after_four_thousand_is_still_reported() {
     let bytes = reader
         .stored_range(input, progress.chain, 0, progress.length, &e.blobs)
         .unwrap();
-    assert_eq!(bytes.iter().filter(|b| **b == b'\n').count(), 4097);
+    // Without a recorded cwd every reference is unresolved, in order.
+    let records: Vec<Json> = bytes
+        .split(|b| *b == b'\n')
+        .filter(|l| !l.is_empty())
+        .map(|l| serde_json::from_slice(l).unwrap())
+        .collect();
+    assert_eq!(records.len(), 4097);
+    for (i, record) in records.iter().enumerate() {
+        assert_eq!(record["reference"], format!("missing-{i}.png"));
+        assert_eq!(record["status"], "unresolved");
+    }
 }
 
 #[test]
@@ -253,11 +263,9 @@ fn fifo_local_reference_child() {
         .unwrap();
     let observation: Json = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(observation["status"], "unreadable");
-    assert!(
-        observation["reason"]
-            .as_str()
-            .unwrap()
-            .contains("not a regular file")
+    assert_eq!(
+        observation["reason"],
+        "local reference is not a regular file"
     );
     println!("\n{FIFO_CHILD_VERIFIED}");
 }

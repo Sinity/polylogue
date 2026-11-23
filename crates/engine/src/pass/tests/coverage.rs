@@ -52,7 +52,10 @@ fn status_keeps_the_last_completed_full_walk_across_incremental_events() {
             .unwrap(),
         first
     );
-    assert!(reader.status().unwrap().capture_coverage.contains(&first));
+    assert_eq!(
+        reader.status().unwrap().capture_coverage,
+        vec![first.clone()]
+    );
     drop(reader);
     let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
@@ -137,8 +140,9 @@ fn a_refused_coverage_report_does_not_stop_reading() {
     let pass = engine.run_pass();
     fault::clear();
     let pass = pass.unwrap();
+    assert_eq!(pass.errors.len(), 1, "{pass:?}");
     assert!(
-        pass.errors.iter().any(|e| e.contains("write.coverage")),
+        pass.errors[0].contains("injected fault at write.coverage (test-machine)"),
         "{pass:?}"
     );
     assert_eq!(home.texts("kept"), ["kept words"]);

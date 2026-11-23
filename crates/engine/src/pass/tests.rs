@@ -81,12 +81,14 @@ fn confirmed_capture_resumes_without_rereading_provider_bytes() {
         if codex {
             engine.inputs.remove(&path);
         }
-        assert!(
-            engine
-                .inputs
-                .get(&path)
-                .is_none_or(|state| state.chain.is_none())
-        );
+        if !codex {
+            assert!(
+                engine
+                    .inputs
+                    .get(&path)
+                    .is_none_or(|state| state.chain.is_none())
+            );
+        }
         // A removed spool cursor is unavailable, while the captured input is
         // now confirmed. Mismatched identity, coordinates and file facts
         // must still report the missing continuation check.

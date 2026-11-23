@@ -119,7 +119,8 @@ fn missing_parser_state_reads_the_chain_again_from_its_start() {
             .writer
             .store_group(vec![batch], std::sync::Arc::clone(&engine.blobs))
             .unwrap();
-        assert!(result.into_iter().all(|r| r.is_ok()));
+        assert_eq!(result.len(), 1);
+        assert!(result[0].is_ok());
     }
     let mut suffix = String::new();
     for index in 0..20 {
@@ -249,9 +250,10 @@ fn declared_registry_keeps_absent_raw_only_origins_valid_and_real_row_dump_versi
         ));
     }
     for name in ["llm", "tool-database"] {
-        let origin = polylogue_sources::origin::by_name(name).unwrap();
+        // The shared modules and the row-dump format, in declared order.
+        let expected = "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::row_dump::VERSION=2";
         assert!(
-            matches!(contracts.iter().find(|contract| contract.origin()==name), Some(ReadingContract::Expected { version, .. }) if !version.is_empty() && version==&origin.reading_version())
+            matches!(contracts.iter().find(|contract| contract.origin()==name), Some(ReadingContract::Expected { version, .. }) if version == expected)
         );
     }
     assert!(matches!(

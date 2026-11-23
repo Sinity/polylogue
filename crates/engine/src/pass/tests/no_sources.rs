@@ -287,6 +287,7 @@ fn a_turn_failing_as_the_one_before_ends_an_idle_run() {
     home.append("stored.jsonl", &claude_user("one", "stored", "stored body"));
     let (mut engine, _lock) = open_engine(&home);
     engine.config.reads_sources = true;
+    engine.config.live_every = std::time::Duration::from_millis(1);
     fault::clear();
     fault::arm(
         "read.watched_inputs",
