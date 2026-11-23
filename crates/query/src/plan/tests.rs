@@ -105,7 +105,10 @@ fn object_validation_refuses_forged_or_missing_dependencies() {
             name: "invented".into(),
             ..Default::default()
         });
-    assert!(validate_object(&changed).is_err());
+    assert_eq!(
+        refusal(&changed),
+        "saved output schema differs from its saved definition"
+    );
     let mut changed = prepare("sessions", &Bindings::default(), |_| Ok(()))
         .unwrap()
         .query_object()
@@ -315,10 +318,13 @@ fn saved_forks_do_not_poison_unit_queries() {
         polylogue_model::Reference::parse_stored("assertion:root-b@left").unwrap(),
         polylogue_model::Reference::parse_stored("assertion:root-b@right").unwrap(),
     ];
-    let error = prepare("query:alias", &snapshot, |_| Ok(()))
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("root-b@left") && error.contains("root-b@right"));
+    let error = prepare("query:alias", &snapshot, |_| Ok(())).unwrap_err();
+    assert_eq!(error.kind(), polylogue_model::Code::Ambiguous);
+    let QueryError::Ambiguous { candidates, .. } = error else {
+        panic!("expected an ambiguous refusal, got {error:?}");
+    };
+    assert_eq!(candidates.len(), 2);
+    assert!(candidates[0].contains("root-b@left") && candidates[1].contains("root-b@right"));
 }
 
 #[test]
