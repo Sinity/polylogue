@@ -42,7 +42,7 @@ pub fn open(_: &Path) -> Option<Parse> {
 #[derive(Default)]
 pub struct Export {
     metadata: Option<Json>,
-    occurrences: HashMap<String, usize>,
+    conversation_occurrences: HashMap<String, usize>,
 }
 
 static EXPORT_FIELDS: Fields = Fields::new("export", &[("conversations", Rule::Read(T::Array))]);
@@ -86,7 +86,7 @@ impl ExportParser for Export {
         reader: &mut dyn crate::export::Input,
         item: &mut dyn ItemSink,
     ) -> Result<ScanStats, ScanError> {
-        self.occurrences.clear();
+        self.conversation_occurrences.clear();
         self.metadata = None;
         let (metadata, stats) =
             crate::export::scan_nested_unique(reader, &["conversations"], |range, raw| {
@@ -160,7 +160,10 @@ impl Export {
             Ok(Some(id)) => id.to_owned(),
             Ok(None) => {
                 let hash = identity::conversation(conversation, responses, value);
-                let n = self.occurrences.entry(hash.clone()).or_default();
+                let n = self
+                    .conversation_occurrences
+                    .entry(hash.clone())
+                    .or_default();
                 let id = format!("~{hash}-{n}");
                 if *n > 0 {
                     warnings.push(
@@ -192,13 +195,13 @@ impl Export {
         {
             session.offer_title(title, TitleSource::Generated);
         }
-        let (at, accuracy) = crate::time::parts(time(conversation, &mut warnings));
+        let (at, time_evidence) = crate::time::parts(time(conversation, &mut warnings));
         session
-            .set_time(at, accuracy)
+            .set_time(at, time_evidence)
             .expect("decoded source time is valid");
         sink.out.sessions.push(session);
         sink.records.record("conversation", &RecordOutcome::Used);
-        let mut occurrences = HashMap::<String, usize>::new();
+        let mut response_occurrences = HashMap::<String, usize>::new();
         for entry in responses {
             let fields = if let Some(response) = entry.get("response") {
                 sink.records.fields(
@@ -254,7 +257,7 @@ impl Export {
                 Ok(Some(id)) => (id.to_owned(), polylogue_model::IdKind::Native),
                 Ok(None) => {
                     let hash = identity::response(entry);
-                    let n = occurrences.entry(hash.clone()).or_default();
+                    let n = response_occurrences.entry(hash.clone()).or_default();
                     let id = format!("{native}:~{}-{n}", &hash[..12]);
                     if *n > 0 {
                         warnings.push("equal responses without an ID keep distinct occurrence IDs; which file record is which is ambiguous".into());

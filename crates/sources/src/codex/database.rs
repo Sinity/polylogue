@@ -5,7 +5,8 @@
 //! What becomes rows: thread names, kinds and settings (`threads`), spawn
 //! edges (`thread_spawn_edges`), goals (`thread_goals`) and memories
 //! (`stage1_outputs`). The thread-history tables are derived from the
-//! rollouts, which are parsed; they stay in the stored row dump.
+//! rollouts, which are parsed; they stay in the stored row dump, as do the
+//! rows of the `queue_*` databases.
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.

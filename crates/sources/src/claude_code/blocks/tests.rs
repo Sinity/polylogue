@@ -217,6 +217,17 @@ fn file_tool_bodies_keep_new_text_and_original_arguments() {
             json!({"file_path":"/synthetic.txt","content":"not written"}),
             None,
         ),
+        (
+            "MultiEdit",
+            json!({"edits":[{"new_string":"a"},{"old_string":"x"},{"new_string":"b"}]}),
+            Some("a\n\nb"),
+        ),
+        ("MultiEdit", json!({"edits":[{"old_string":"x"}]}), None),
+        (
+            "NotebookEdit",
+            json!({"notebook_path":"/synthetic.ipynb","new_source":"print(1)"}),
+            Some("print(1)"),
+        ),
     ] {
         let item = json!({"type":"tool_use","name":tool,"input":input});
         let result = block(&Json::Null, &item, false, &mut Vec::new());
@@ -230,5 +241,26 @@ fn file_tool_bodies_keep_new_text_and_original_arguments() {
         };
         assert_eq!(found, input);
         assert_eq!(written_text.as_deref(), expected);
+    }
+}
+
+#[test]
+fn tool_names_map_to_their_actions() {
+    for (tool, expected) in [
+        ("Bash", ToolAction::Shell),
+        ("Read", ToolAction::FileRead),
+        ("Write", ToolAction::FileWrite),
+        ("MultiEdit", ToolAction::FileEdit),
+        ("NotebookEdit", ToolAction::FileEdit),
+        ("Glob", ToolAction::Search),
+        ("LS", ToolAction::Search),
+        ("ToolSearch", ToolAction::Search),
+        ("WebFetch", ToolAction::Web),
+        ("Task", ToolAction::Subagent),
+        ("Agent", ToolAction::Subagent),
+        ("mcp__server__tool", ToolAction::Mcp),
+        ("SomethingElse", ToolAction::Other),
+    ] {
+        assert_eq!(action(tool), expected, "{tool}");
     }
 }

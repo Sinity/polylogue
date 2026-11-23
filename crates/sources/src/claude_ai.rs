@@ -10,7 +10,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 use crate::fields::ExpectedType as T;
 mod fields;
@@ -393,6 +393,16 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
                 sink.records.record(&kind, &RecordOutcome::Used);
             }
             Err(d) => sink.records.record(&kind, &d),
+        }
+    }
+    // A message without a time stays right after the message before it
+    // (docs/sessions.md, Order), so it takes that message's time as its key.
+    let mut last = None;
+    for row in &mut rows {
+        if row.0.is_some() {
+            last = row.0;
+        } else {
+            row.0 = last;
         }
     }
     rows.sort_by_key(|r| (r.0, r.1, r.2, r.3));

@@ -163,6 +163,23 @@ fn messages_sort_by_time_and_untimed_ones_keep_their_place() {
 }
 
 #[test]
+fn messages_with_rfc3339_times_sort_by_those_times() {
+    let mut late = msg("late", "user", 0.0, text(&["late"]));
+    late["create_time"] = Json::String("2024-03-01T10:00:05Z".into());
+    let mut early = msg("early", "user", 0.0, text(&["early"]));
+    early["create_time"] = Json::String("2024-03-01T10:00:01Z".into());
+    let c = conv(
+        "c4",
+        "n-late",
+        vec![
+            node("n-late", Some("n-early"), late),
+            node("n-early", None, early),
+        ],
+    );
+    assert_eq!(ids(&export(&[c])), ["early", "late"]);
+}
+
+#[test]
 fn empty_objects_and_broken_items_are_accounted_for() {
     let mut no_role = msg("x", "user", 1.0, text(&["x"]));
     no_role["author"] = json!({});

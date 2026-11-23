@@ -25,7 +25,9 @@ pub(crate) fn untagged_hash(value: &impl Serialize) -> String {
     .to_string()
 }
 
-/// Occurrences are keyed context values, shared across ranges and restored checkpoints.
+/// How many earlier messages of each session had the same role and content, so
+/// repeated messages get distinct IDs. The counts live in the parse context and
+/// carry across resumed parses, so serializing this writes nothing.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ContentIds {
     #[serde(flatten)]

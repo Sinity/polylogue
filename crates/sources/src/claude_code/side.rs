@@ -155,7 +155,13 @@ struct SideFile {
 }
 
 /// One event on `session` citing the whole file.
-fn whole(session: &str, kind: &str, data: Json, len: usize, out: &mut Output) -> RecordOutcome {
+fn file_event(
+    session: &str,
+    kind: &str,
+    data: Json,
+    len: usize,
+    out: &mut Output,
+) -> RecordOutcome {
     let Some(session) = session_id(session) else {
         return RecordOutcome::unreadable("session ID in the path is empty");
     };
@@ -195,7 +201,7 @@ impl DocumentParser for SideFile {
                             .as_deref()
                             .map(|a| format!("agent-{a}"))
                             .unwrap_or_else(|| session.clone());
-                        whole(&todo_session, "todo_list", v, len, out)
+                        file_event(&todo_session, "todo_list", v, len, out)
                     }
                     Err(d) => d,
                 },
@@ -203,7 +209,7 @@ impl DocumentParser for SideFile {
             Side::Task { session } => (
                 "task",
                 match json(bytes) {
-                    Ok(v) => whole(session, "task", v, len, out),
+                    Ok(v) => file_event(session, "task", v, len, out),
                     Err(d) => d,
                 },
             ),
@@ -215,7 +221,7 @@ impl DocumentParser for SideFile {
                 match json(bytes) {
                     Ok(v) => {
                         spawn_link(stem, session.as_deref(), &v, out);
-                        whole(stem, "subagent_meta", v, len, out)
+                        file_event(stem, "subagent_meta", v, len, out)
                     }
                     Err(d) => d,
                 },
@@ -234,7 +240,7 @@ impl DocumentParser for SideFile {
                 });
                 (
                     "file_snapshot",
-                    whole(session, "file_snapshot", data, len, out),
+                    file_event(session, "file_snapshot", data, len, out),
                 )
             }
             Side::ToolResult { session, name } => {
@@ -244,7 +250,7 @@ impl DocumentParser for SideFile {
                 let data = serde_json::json!({ "file": name, "ref": reference, "size": len });
                 (
                     "tool_result_file",
-                    whole(session, "tool_result_file", data, len, out),
+                    file_event(session, "tool_result_file", data, len, out),
                 )
             }
             Side::Plan => (
@@ -318,7 +324,7 @@ fn job_state(bytes: &[u8], len: usize, out: &mut Output) -> RecordOutcome {
             evidence: "resumeSessionId".to_owned(),
         });
     }
-    whole(sid, "background_job", v, len, out)
+    file_event(sid, "background_job", v, len, out)
 }
 
 /// The spawn link a subagent's meta file states: the call that started it,

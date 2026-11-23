@@ -169,15 +169,20 @@ pub fn call_input(item: &Json) -> Json {
         .unwrap_or(Json::Null)
 }
 
+/// The built-in patch tool, by either spelling of its name.
+fn is_patch_tool(tool: &str) -> bool {
+    matches!(tool, "apply_patch" | "functions.apply_patch")
+}
+
 /// The built-in patch body, distinct from arbitrary tool arguments.
 pub fn written_text(tool: &str, input: &Json) -> Option<String> {
-    match tool {
-        "apply_patch" | "functions.apply_patch" => input
-            .as_str()
-            .or_else(|| input.str("input"))
-            .map(str::to_owned),
-        _ => None,
+    if !is_patch_tool(tool) {
+        return None;
     }
+    input
+        .as_str()
+        .or_else(|| input.str("input"))
+        .map(str::to_owned)
 }
 
 /// What a Codex tool does, by its name. Code mode's `exec` runs a script
@@ -186,7 +191,8 @@ pub fn action(tool: &str) -> ToolAction {
     match tool {
         "shell" | "local_shell" | "exec_command" | "shell_command" => ToolAction::Shell,
         "exec" => ToolAction::Code,
-        "apply_patch" | "file_change" => ToolAction::FileEdit,
+        t if is_patch_tool(t) => ToolAction::FileEdit,
+        "file_change" => ToolAction::FileEdit,
         "view_image" => ToolAction::FileRead,
         "tool_search" => ToolAction::Search,
         "web_search" => ToolAction::Web,
@@ -227,7 +233,7 @@ fn shell_line(words: &[&str]) -> String {
 
 /// The file a call edits, for patch tools.
 pub fn call_path(tool: &str, input: &Json) -> Option<String> {
-    if tool != "apply_patch" {
+    if !is_patch_tool(tool) {
         return input.str("path").map(str::to_owned);
     }
     let patch = input.as_str().or_else(|| input.str("input"))?;
@@ -258,8 +264,8 @@ impl Running {
     }
 }
 
-/// Tools whose output reports how a command ended. For other tools an
-/// output with no failure marker is a success.
+/// Tools (and the patch tool) whose output reports how a command ended. For
+/// other tools an output with no failure marker is a success.
 const COMMAND_TOOLS: &[&str] = &[
     "exec_command",
     "shell",
@@ -268,7 +274,6 @@ const COMMAND_TOOLS: &[&str] = &[
     "exec",
     "write_stdin",
     "wait",
-    "apply_patch",
 ];
 
 fn exit(code: i64) -> ToolOutcome {
@@ -353,7 +358,7 @@ pub fn output_outcome(tool: &str, output: &str) -> (ToolOutcome, Option<Running>
     if is_failure_line(first) {
         return (ToolOutcome::Error { reason: None }, None);
     }
-    if COMMAND_TOOLS.contains(&tool) {
+    if COMMAND_TOOLS.contains(&tool) || is_patch_tool(tool) {
         (
             ToolOutcome::Unknown {
                 reason: UnknownReason::StatusFieldUnreadable,
