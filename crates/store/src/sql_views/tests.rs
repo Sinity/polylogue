@@ -205,3 +205,34 @@ fn a_withdrawn_assertion_shows_as_withdrawn_in_its_view() {
     assert_eq!(rows[1]["withdrawn"], 1);
     assert_eq!(rows[1]["conflict"], 0);
 }
+
+/// A stub is a hook-named session with no transcript yet; the view lists
+/// sessions only.
+#[test]
+fn the_sessions_view_leaves_out_stubs() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
+    f.session(SessionFacts {
+        id: "test:real",
+        ..SessionFacts::default()
+    })
+    .unwrap();
+    let stub = f
+        .session(SessionFacts {
+            id: "test:stub",
+            ..SessionFacts::default()
+        })
+        .unwrap();
+    crate::archive::open_write(&f.archive.index_db(), crate::archive::cache::SETUP)
+        .unwrap()
+        .execute("UPDATE session SET stub=1 WHERE pk=?1", [stub])
+        .unwrap();
+    let pool = f.reads().unwrap();
+    let sessions = pool
+        .reader()
+        .unwrap()
+        .query("SELECT id FROM v1_sessions", &[])
+        .unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0]["id"], "test:real");
+}

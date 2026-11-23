@@ -457,7 +457,7 @@ fn read_rows(
         }
     };
     stopped()?;
-    let _busy = crate::timing::enter(crate::timing::Stage::Database);
+    let _busy = crate::timing::start_stage(crate::timing::Stage::Database);
     let sql_err = |e| DatabaseError::Sqlite(db.to_owned(), e);
     let source = Connection::open_with_flags(
         db,

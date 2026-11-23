@@ -30,7 +30,7 @@ impl From<Time> for Period {
     }
 }
 impl Period {
-    fn point(self, at: TimePoint) -> i128 {
+    fn nanos_at(self, at: TimePoint) -> i128 {
         if at == TimePoint::End {
             self.end
         } else {
@@ -46,7 +46,7 @@ impl Period {
     }
 }
 
-fn point(text: &str) -> Result<TimePoint, Failure> {
+fn time_point(text: &str) -> Result<TimePoint, Failure> {
     match text {
         "when" => Ok(TimePoint::When),
         "start" => Ok(TimePoint::Start),
@@ -54,14 +54,14 @@ fn point(text: &str) -> Result<TimePoint, Failure> {
         "match.when" => Ok(TimePoint::MatchWhen),
         "match.start" => Ok(TimePoint::MatchStart),
         "match.end" => Ok(TimePoint::MatchEnd),
-        _ => Err("unknown order time point".into()),
+        _ => Err("unknown time point".into()),
     }
 }
 /// The point a distance is measured to; the match selectors have no state
 /// span to measure against and give NULL.
 fn distance_point(ctx: &Context<'_>) -> rusqlite::Result<Option<TimePoint>> {
     let at: String = ctx.get(4)?;
-    let at = point(&at).map_err(Error::UserFunctionError)?;
+    let at = time_point(&at).map_err(Error::UserFunctionError)?;
     Ok((!matches!(at, TimePoint::MatchStart | TimePoint::MatchEnd)).then_some(at))
 }
 
@@ -85,7 +85,7 @@ fn relates(
     within: Option<u128>,
     at: TimePoint,
 ) -> bool {
-    let point = a.point(at);
+    let nanos = a.nanos_at(at);
     if let Some(window) = within {
         let greatest = if a.coarse || b.coarse {
             [
@@ -99,7 +99,7 @@ fn relates(
             .max()
             .unwrap_or(0)
         } else {
-            (b.start - point).unsigned_abs()
+            (b.start - nanos).unsigned_abs()
         };
         if greatest > window || window < ((a.end - a.start) as u128).max((b.end - b.start) as u128)
         {
@@ -112,21 +112,21 @@ fn relates(
             if a.coarse {
                 a.end <= b.start
             } else {
-                point < b.start
+                nanos < b.start
             }
         }
         OrderRelation::After => {
             if b.coarse {
-                (if a.coarse { a.start } else { point }) >= b.end
+                (if a.coarse { a.start } else { nanos }) >= b.end
             } else {
-                (if a.coarse { a.start } else { point }) > b.start
+                (if a.coarse { a.start } else { nanos }) > b.start
             }
         }
         OrderRelation::During => {
             if a.coarse {
                 b.coarse && a.start >= b.start && a.end <= b.end
             } else {
-                point >= b.start && point < b.end
+                nanos >= b.start && nanos < b.end
             }
         }
         OrderRelation::Containing => {
@@ -156,7 +156,7 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
             })
             .transpose()?;
         let at: String = ctx.get(6)?;
-        let at = point(&at).map_err(Error::UserFunctionError)?;
+        let at = time_point(&at).map_err(Error::UserFunctionError)?;
         // These sources keep occurrence times, but declare no state span.
         // Its uncertainty bounds must never stand in for state endpoints.
         if matches!(at, TimePoint::MatchStart | TimePoint::MatchEnd)
@@ -171,13 +171,16 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
         let Some(at) = distance_point(ctx)? else {
             return Ok(None);
         };
-        Ok(periods(ctx)?.map(|(a, b)| format!("{:039}", (b.start - a.point(at)).unsigned_abs())))
+        Ok(
+            periods(ctx)?
+                .map(|(a, b)| format!("{:039}", (b.start - a.nanos_at(at)).unsigned_abs())),
+        )
     })?;
     conn.create_scalar_function("pl_time_distance", 5, flags, |ctx| {
         let Some(at) = distance_point(ctx)? else {
             return Ok(None);
         };
-        Ok(periods(ctx)?.map(|(a, b)| (b.start - a.point(at)) as f64 / 1_000_000_000.0))
+        Ok(periods(ctx)?.map(|(a, b)| (b.start - a.nanos_at(at)) as f64 / 1_000_000_000.0))
     })?;
     Ok(())
 }

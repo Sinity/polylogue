@@ -196,7 +196,7 @@ pub(crate) fn prepare_delivery(
         UserWrite::Deliver(delivery) | UserWrite::DeliveredAdvice(delivery) => delivery,
         _ => return None,
     };
-    // Delivery rows and their receipts have always stored Unix milliseconds;
+    // Delivery rows and their receipts store Unix milliseconds;
     // the original request keeps its full timestamp and retry identity.
     let at = polylogue_model::Timestamp::from_unix_ms(r.at.unix_ms())
         .expect("a stored millisecond timestamp remains representable");

@@ -194,6 +194,34 @@ fn historical_snapshots_keep_receipts_but_run_no_effects() {
 }
 
 #[test]
+fn imported_effect_with_receipts_beyond_the_request_is_refused() {
+    let mut origin = cache();
+    let first = initial();
+    let id = first.outbox[0].metadata.delivery.id().to_owned();
+    let p = prepare_pending(&origin, &request("first", first.clone()), &[]).unwrap();
+    admit(&mut origin, &p, 1);
+    let mut next = first;
+    next.prior = Some(next.checkpoint.identity().unwrap());
+    next.outbox.clear();
+    next.events = vec![Event::Outlet {
+        receipt: DeliveryReceipt {
+            delivery_id: id,
+            at: 101,
+            outlet: "value".into(),
+            outcome: DeliveryOutcome::Unknown,
+        },
+    }];
+    let q = prepare_pending(&origin, &request("next", next), &[]).unwrap();
+    assert!(super::validate(&q).is_ok());
+    let mut extra = q.clone();
+    let mut second = extra.effect.signal_events[0].clone();
+    second.ordinal += 1;
+    second.position += 1;
+    extra.effect.signal_events.push(second);
+    assert!(super::validate(&extra).is_err());
+}
+
+#[test]
 fn signal_source_schema_is_shared_by_archive_and_cache() {
     let mut conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(crate::schema::ARCHIVE).unwrap();

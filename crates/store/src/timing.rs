@@ -80,7 +80,7 @@ impl Stage {
     }
 
     fn index(self) -> usize {
-        STAGES.iter().position(|s| *s == self).unwrap_or(0)
+        self as usize
     }
 }
 
@@ -96,7 +96,7 @@ pub fn time<T>(stage: Stage, f: impl FnOnce() -> T) -> T {
     out
 }
 
-/// Seconds per stage since the process started (or the last [`reset`]).
+/// Seconds per stage since the process started.
 pub fn stage_seconds() -> Vec<(Stage, f64)> {
     STAGES
         .iter()
@@ -104,22 +104,13 @@ pub fn stage_seconds() -> Vec<(Stage, f64)> {
         .collect()
 }
 
-#[cfg(any(test, feature = "fixture"))]
-pub fn reset() {
-    if let Ok(mut times) = WORKER_TIMES.lock() {
-        times.clear();
-    }
-    for n in &NANOS {
-        n.store(0, Ordering::Relaxed);
-    }
+/// Times a stage from its creation until it is dropped, so the time includes
+/// the final operation and early returns.
+pub struct StageTimer(Stage, Instant);
+pub fn start_stage(stage: Stage) -> StageTimer {
+    StageTimer(stage, Instant::now())
 }
-
-/// A stage whose time includes its final operation, including early returns.
-pub struct Running(Stage, Instant);
-pub fn enter(stage: Stage) -> Running {
-    Running(stage, Instant::now())
-}
-impl Drop for Running {
+impl Drop for StageTimer {
     fn drop(&mut self) {
         add(self.0, self.1.elapsed());
     }
@@ -159,6 +150,7 @@ pub struct WorkerTime {
 }
 static WORKER_TIMES: std::sync::Mutex<Vec<WorkerTime>> = std::sync::Mutex::new(Vec::new());
 static CLOCK: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+/// Seconds since the first call: the origin of [`WorkerTime::started`].
 pub fn clock_seconds() -> f64 {
     CLOCK.get_or_init(Instant::now).elapsed().as_secs_f64()
 }
@@ -235,3 +227,6 @@ pub fn sqlite_memory_peak() -> Option<u64> {
     };
     (status == rusqlite::ffi::SQLITE_OK).then_some(peak as u64)
 }
+
+#[cfg(test)]
+mod tests;

@@ -48,11 +48,6 @@ pub(crate) fn remove(i: &Transaction<'_>, pk: i64, id: &str, counter: i64) -> Re
                 [pk],
             )?;
         }
-    }
-    for (table, cols) in &tables {
-        if table == "session" || table == "message" || table == "tool_call" {
-            continue;
-        }
         if cols.contains("message_pk") && !cols.contains("session_pk") {
             i.execute(
                 &format!(

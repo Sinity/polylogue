@@ -65,7 +65,7 @@ pub mod scope_index;
 pub mod search;
 pub mod selection;
 pub mod session_alias;
-pub mod session_export;
+pub mod session_bundle;
 mod session_row;
 pub mod session_sql;
 mod session_values;

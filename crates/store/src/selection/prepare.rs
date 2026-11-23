@@ -41,7 +41,7 @@ impl ProvisionalQueries {
             }),
         }
     }
-    /// Prepared query body only. It is not stored by this.
+    /// The prepared body held by this preflight; reading it persists nothing.
     pub(crate) fn object(
         &self,
         id: QuestionId,
@@ -120,16 +120,45 @@ pub(crate) fn prepare_query_plan_on(
     )?)
 }
 
-/// The ids written as `result:<id>` in `text`, read from its characters.
-fn spelled_kept_results(text: &str) -> impl Iterator<Item = &str> {
-    text.match_indices("result:").filter_map(|(at, prefix)| {
-        let rest = &text[at + prefix.len()..];
-        let end = rest
-            .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_')))
-            .unwrap_or(rest.len());
-        let id = &rest[..end];
-        (!id.is_empty()).then_some(id)
-    })
+/// The ids written as `result:<id>` in `text`, read from its characters:
+/// quoted as the formatter writes them (with `\"`, `\\`, `\n`, `\r` and `\t`
+/// escapes), or bare.
+fn spelled_kept_results(text: &str) -> Vec<String> {
+    text.match_indices("result:")
+        .filter_map(|(at, prefix)| {
+            let rest = &text[at + prefix.len()..];
+            let id = match rest.strip_prefix('"') {
+                Some(quoted) => unquote(quoted)?,
+                None => {
+                    let end = rest
+                        .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_')))
+                        .unwrap_or(rest.len());
+                    rest[..end].to_owned()
+                }
+            };
+            (!id.is_empty()).then_some(id)
+        })
+        .collect()
+}
+
+/// The text of a quoted string whose opening quote is already consumed; None
+/// when it is never closed.
+fn unquote(text: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(out),
+            '\\' => out.push(match chars.next()? {
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                other => other,
+            }),
+            c => out.push(c),
+        }
+    }
+    None
 }
 
 /// The definitions a query names, and only those: its saved names with
@@ -157,8 +186,10 @@ pub(crate) fn named_definitions(
     let parsed = match polylogue_query::parse::with_catalog(text, &bindings.catalog()) {
         Ok(parsed) => parsed,
         Err(_) => {
-            (bindings.kept, bindings.kept_names) =
-                named_kept_bindings(authored, spelled_kept_results(text))?;
+            (bindings.kept, bindings.kept_names) = named_kept_bindings(
+                authored,
+                spelled_kept_results(text).iter().map(String::as_str),
+            )?;
             match polylogue_query::parse::with_catalog(text, &bindings.catalog()) {
                 Ok(parsed) => parsed,
                 Err(_) => return Ok(bindings),
@@ -256,7 +287,7 @@ pub(crate) fn named_definitions(
             match polylogue_query::parse::with_catalog(syntax, &bindings.catalog()) {
                 Ok(saved) => kept.extend(polylogue_query::plan::referenced_kept_results(&saved)),
                 // Text whose syntax needs a kept result's columns names them.
-                Err(_) => kept.extend(spelled_kept_results(syntax).map(str::to_owned)),
+                Err(_) => kept.extend(spelled_kept_results(syntax)),
             }
         }
     }

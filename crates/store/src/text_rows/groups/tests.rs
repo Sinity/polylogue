@@ -198,3 +198,18 @@ fn reads_switching_between_groups_return_each_groups_text() {
     assert!(slice(body, start, 64).is_err());
     assert!(slice(b"not zstd", 0, 1).is_err());
 }
+
+#[test]
+fn a_text_outside_its_group_is_an_error_naming_the_column_it_was_read_from() {
+    let prepared = PreparedTexts::pack(["alpha"]).unwrap();
+    let body = prepared.get(&hash("alpha")).unwrap().group.body.clone();
+    let conn = index();
+    let error = conn
+        .query_row("SELECT 1, 2, ?1, 0, 9999", [body], |r| Ok(joined(r, 2)))
+        .unwrap()
+        .unwrap_err();
+    assert!(
+        matches!(error, StoreError::StoredValue { column: 2, .. }),
+        "{error}"
+    );
+}

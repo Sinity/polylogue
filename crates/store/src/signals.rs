@@ -107,8 +107,17 @@ pub(crate) fn write(
     }
     for (ordinal, event) in commit.events.iter().enumerate() {
         let id = event.delivery_id();
-        let base = metadata(conn, source, id)?
-            .ok_or_else(|| StoreError::NotFound(format!("signal delivery {id}")))?;
+        let Some(base) = metadata(conn, source, id)? else {
+            let stored: Option<i64> = conn.scalar_optional(
+                &source.sql("SELECT 1 FROM @source.delivery WHERE id=?1"),
+                [id],
+            )?;
+            return Err(if stored.is_some() {
+                StoreError::Invalid(format!("delivery {id} is not a signal delivery"))
+            } else {
+                StoreError::NotFound(format!("signal delivery {id}"))
+            });
+        };
         if let polylogue_model::signal::Event::HostDecision { delivery } = event
             && (delivery.fired.trigger != base.delivery.fired.trigger
                 || delivery.id() != base.delivery.id())
@@ -117,11 +126,15 @@ pub(crate) fn write(
                 "host signal decision changed occurrence identity".into(),
             ));
         }
-        let position = events(conn, source, id)?.last().map_or(Ok(1), |e| {
-            e.position
-                .checked_add(1)
-                .or_invalid("signal receipt position overflow")
-        })?;
+        let last: i64 = conn.scalar(
+            &source.sql(
+                "SELECT COALESCE(MAX(position),0) FROM @source.signal_event WHERE delivery=?1",
+            ),
+            [id],
+        )?;
+        let position = crate::to_u64(last, "stored signal position is negative")?
+            .checked_add(1)
+            .or_invalid("signal receipt position overflow")?;
         insert_event(
             conn,
             &EventRecord {
@@ -288,6 +301,17 @@ pub(crate) fn validate(prepared: &polylogue_model::authored::PreparedRequest) ->
                         "signal receipt differs from recorded request".into(),
                     ));
                 }
+            }
+            if effect
+                .signal_events
+                .iter()
+                .filter(|e| e.request == prepared.request.id)
+                .count()
+                != commit.events.len()
+            {
+                return Err(StoreError::Invalid(
+                    "signal receipts beyond the recorded request".into(),
+                ));
             }
             for pending in &commit.outbox {
                 if !effect.deliveries.iter().any(|d| {

@@ -523,12 +523,9 @@ pub fn cost(
         .map(|date| polylogue_store::calendar::range(day, date))
         .transpose()?;
     let month = date(month.or(text), &clock)?.first_of_month();
-    let month_bounds = polylogue_store::calendar::month(day, month)?;
-    if month_bounds.1 <= month_bounds.0 {
-        return Err(Failure::bad_request(
-            "calendar month has no representable interval",
-        ));
-    }
+    // A month with no representable interval is refused here, not as a
+    // degraded cost calendar later.
+    polylogue_store::calendar::month(day, month)?;
     let program = polylogue_store::query::lower(&plan, &query_options)?;
     let mut times = program.resolved_times.clone();
     if let Some(date) = chosen {

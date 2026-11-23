@@ -118,7 +118,9 @@ impl Source {
         Ok(if conn.scalar::<bool>("SELECT EXISTS(SELECT 1 FROM main.sqlite_schema WHERE type='table' AND name='source_input')",[])? { Self::Cache } else { Self::Standalone })
     }
     /// The commit position by which every stored extent covering the requested
-    /// prefix was committed.
+    /// prefix was committed. A zero-length prefix covers no extent, so it is
+    /// committed when the chain's earliest revision was; None when the chain has
+    /// no revision, or when its extents do not cover the prefix.
     pub(crate) fn committed_through(
         conn: &Connection,
         input: &str,

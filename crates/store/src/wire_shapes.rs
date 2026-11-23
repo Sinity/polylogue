@@ -229,8 +229,6 @@ struct Reading {
     export_cursor: Option<ExportCursor>,
     #[serde(default)]
     refused_export: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    export_refusals: Option<ExportRefusals>,
     /// The latest occurrence at which this reading, since its last reset,
     /// covered its whole source: a path counted now and first seen at or
     /// before it was present in a complete reading.
@@ -240,12 +238,6 @@ struct Reading {
     /// uncounted and last seen at or before it was present in a complete reading.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     completed_before_reset: Option<Occurrence>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
-struct ExportRefusals {
-    count: u64,
-    first: Occurrence,
-    last: Occurrence,
 }
 /// The number of an occurrence among its reading's occurrences, numbered from 1 in
 /// the order they were first cited.
@@ -470,21 +462,6 @@ fn apply_inner(
         return Ok(());
     }
     let export_refusal = export_delivery && export::is_refusal(step);
-    let mut export_refusals = previous
-        .as_ref()
-        .and_then(|old| old.export_refusals.clone());
-    if export_refusal {
-        if let Some(ref mut history) = export_refusals {
-            history.count = add(history.count, 1)?;
-            history.last = occurrence.clone();
-        } else {
-            export_refusals = Some(ExportRefusals {
-                count: 1,
-                first: occurrence.clone(),
-                last: occurrence.clone(),
-            });
-        }
-    }
     let mut reading = Reading {
         input: source.input.to_owned(),
         parsed_upto: step.parsed_upto,
@@ -516,7 +493,6 @@ fn apply_inner(
         last_end: step.parsed_upto,
         last_hash: hash,
         refused_export: export_refusal,
-        export_refusals,
         completed: previous
             .as_ref()
             .filter(|_| !reset)

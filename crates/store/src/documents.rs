@@ -187,7 +187,13 @@ fn insert_blocks(
             })
             .transpose()?;
         if let Some(id) = text {
-            crate::text_rows::activate(tx, source.texts, id, 1, source.upkeep.at_build_end())?;
+            crate::text_rows::join_search_index(
+                tx,
+                source.texts,
+                id,
+                1,
+                source.upkeep.at_build_end(),
+            )?;
         }
         let blob = match block {
             Block::Image(a) | Block::File(a) => a.blob.map(|h| h.0.to_vec()),
