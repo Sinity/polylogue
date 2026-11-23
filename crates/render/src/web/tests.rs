@@ -138,7 +138,7 @@ fn continuation_links_use_service_calls_instead_of_template_cursor_state() {
         },
     });
     let output = navigation(&page, &read_table()).unwrap().into_string();
-    assert!(output.contains("data-next"));
+    assert!(output.contains(r#"rel="next""#));
     assert!(output.contains("cursor=sealed"));
     assert!(!output.contains("with_parents"));
 }

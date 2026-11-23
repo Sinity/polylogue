@@ -492,7 +492,7 @@ impl<'a> Encoder<'a> {
     fn card(&mut self, card: &Card) -> io::Result<()> {
         match card {
             Card::SavedQuery { item } => {
-                for line in saved_query_item_lines(item) {
+                for line in saved_query_item_lines(item, &self.zone) {
                     self.line(&line)?;
                 }
                 if let SavedQueryItem::Dependent { resave, .. } = item.as_ref() {
@@ -1015,7 +1015,10 @@ fn saved_query_header_line(kind: &HeaderKind) -> Option<String> {
     ))
 }
 
-pub(crate) fn saved_query_item_lines(item: &SavedQueryItem) -> Vec<String> {
+pub(crate) fn saved_query_item_lines(
+    item: &SavedQueryItem,
+    zone: &jiff::tz::TimeZone,
+) -> Vec<String> {
     match item {
         SavedQueryItem::Revision(revision) => vec![
             format!(
@@ -1024,15 +1027,18 @@ pub(crate) fn saved_query_item_lines(item: &SavedQueryItem) -> Vec<String> {
                 revision.reference,
                 revision.hash,
                 revision.author,
-                revision
-                    .saved_at
-                    .map_or_else(|| "time unknown".into(), |at| at.to_string())
+                revision.saved_at.map_or_else(
+                    || "time unknown".into(),
+                    |at| polylogue_model::local_minute(at, zone)
+                )
             ),
             revision.text.clone(),
         ],
         SavedQueryItem::Kept(kept) => vec![format!(
             "Kept: {} · {} rows · {}",
-            kept.result, kept.rows, kept.at
+            kept.result,
+            kept.rows,
+            polylogue_model::local_minute(kept.at, zone)
         )],
         SavedQueryItem::Watch { reference } => vec![reference.as_ref().map_or_else(
             || "Watch: none".into(),

@@ -46,3 +46,15 @@ fn plain_reports_escape_controls_in_names_without_changing_json() {
     render(&data, Format::Json, &mut bytes).unwrap();
     assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), data);
 }
+
+#[test]
+fn plain_reports_name_the_table_of_a_tool_database_change() {
+    let sample = json!({"origin":"synthetic","sample":true,"records":1,"unreadable_inputs":0,"unreadable_records":0});
+    let field = |table: &str| json!({"table":table,"path":"/value","kind":"types","before":{"types":{"string":1},"required":true},"after":{"types":{"null":1},"required":true}});
+    let data = json!({"rule_version":2,"comparable":true,"before":sample,"after":sample,"reasons":[],"changes":[field("notes"),field("tags\nx")]});
+    let mut bytes = Vec::new();
+    render(&data, Format::Terminal, &mut bytes).unwrap();
+    let text = String::from_utf8(bytes).unwrap();
+    assert!(text.contains("table notes: types /value:"), "{text}");
+    assert!(text.contains(r"table tags\nx: types /value:"), "{text}");
+}

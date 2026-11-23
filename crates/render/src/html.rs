@@ -130,7 +130,7 @@ fn card(
     commands: Option<&OperationDeclarations>,
 ) -> Result<Markup, Failure> {
     Ok(html! { section class="read-card" { @match card {
-        Card::SavedQuery { item } => { @for line in crate::encode::saved_query_item_lines(item) { p { (line) } } @if let SavedQueryItem::Dependent { resave, .. } = item.as_ref() { @for call in resave { (ready(call, commands)?) } } },
+        Card::SavedQuery { item } => { @for line in crate::encode::saved_query_item_lines(item, zone) { p { (line) } } @if let SavedQueryItem::Dependent { resave, .. } = item.as_ref() { @for call in resave { (ready(call, commands)?) } } },
         Card::Trace(card) => { @for line in crate::encode::trace_lines(card) {p {(line)} } },
         Card::Run { question,read_at,author,count,exact,outcome } => { @for line in crate::encode::run_lines(question.as_ref(), read_at, author, *count, *exact, outcome.as_ref()) { p { (line) } } },
         Card::Fields { title,figures } => { h3 { (title) } dl { @for figure in figures { dt { (&figure.name) } dd { (value(&figure.value)) @if let Some(unit)=&figure.unit { " " (unit) } } } } },
