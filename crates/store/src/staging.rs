@@ -85,12 +85,13 @@ impl crate::Archive {
         let mut size = 0u64;
         let mut chunks = Vec::new();
         let mut files: Vec<PreparedBytes> = Vec::new();
+        let mut prepared = std::collections::HashSet::new();
         for chunk in chunker.chunks(reader) {
             let chunk = chunk?;
             whole.update(&chunk);
             size += chunk.len() as u64;
             let hash = BlobHash::of(&chunk);
-            if !files.iter().any(|file| file.hash() == hash) {
+            if prepared.insert(hash) {
                 files.push(self.prepare_bytes(chunk.as_slice())?);
             }
             chunks.push(crate::Chunk {

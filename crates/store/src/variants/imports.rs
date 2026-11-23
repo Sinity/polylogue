@@ -105,4 +105,3 @@ pub(super) fn copy(from: &Connection, to: &Connection) -> Result<()> {
     }
     Ok(())
 }
-impl Reader<'_> {}

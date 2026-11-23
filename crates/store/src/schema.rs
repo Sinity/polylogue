@@ -101,14 +101,14 @@ pub(crate) const INDEX_SCHEMA: &[&str] = &[
     crate::parser_context::SCHEMA,
     OPEN_INDEXES,
 ];
-/// The vectors and failures tables of `embeddings.db`, as the first build at
+/// The `embedded` (vectors) and `embed_failure` tables of `embeddings.db`, as the first build at
 /// the baseline created them.
 const EMBEDDINGS_BASE: &str = include_str!("schema/embeddings.sql");
 /// Each table `embeddings.db` gained after its first build, in the order they
 /// were added. A released addition is never edited, since a file is matched
 /// against the base and each prefix of this list to find what it lacks; a
 /// schema change appends one. Only new tables, indexes and triggers can be
-/// added: the vectors table is never rewritten, so a change to an existing
+/// added: the `embedded` table is never rewritten, so a change to an existing
 /// table is not an addition and needs its own plan.
 const EMBEDDINGS_ADDITIONS: &[&str] = &[
     include_str!("schema/embedding_revision.sql"),
@@ -132,7 +132,7 @@ pub const fn index_version(primary: bool) -> u32 {
 }
 
 /// The SQLite `application_id` of an `archive.db` or `index.db` written at or
-/// after the baseline ("PLG1"). A non-empty file without it was written by an
+/// after the baseline ("PLG1"). A versioned file without it was written by an
 /// earlier Polylogue and is an older format, read only by the importer.
 pub const FORMAT_ID: i32 = 0x504c_4731;
 
@@ -148,7 +148,7 @@ fn check_format(conn: &Connection, database: &'static str) -> Result<()> {
     if found != 0 && format_id(conn)? != FORMAT_ID {
         return Err(StoreError::OlderFormat { database });
     }
-    if found == 0 && !shape(conn)?.is_empty() {
+    if found == 0 && !schema_rows(conn)?.is_empty() {
         return Err(StoreError::OtherFormat { database, found });
     }
     Ok(())
@@ -166,8 +166,8 @@ fn set_version(conn: &Connection, v: u32) -> Result<()> {
 
 /// Executes complete SQLite statements, leaving only the declared build
 /// indexes out. SQLite splits triggers and quoted SQL without another parser.
-fn execute_index_sql(conn: &Connection, sql: &str, build: bool) -> Result<()> {
-    if !build {
+fn execute_index_sql(conn: &Connection, sql: &str, deferring: bool) -> Result<()> {
+    if !deferring {
         conn.execute_batch(sql)?;
         return Ok(());
     }
@@ -227,17 +227,17 @@ fn base_index(conn: &Connection) -> Result<()> {
     base_index_in(conn, false)
 }
 
-fn base_index_in(conn: &Connection, build: bool) -> Result<()> {
-    execute_index_sql(conn, INDEX, build)?;
+fn base_index_in(conn: &Connection, deferring: bool) -> Result<()> {
+    execute_index_sql(conn, INDEX, deferring)?;
     conn.execute_batch(crate::coverage::SCHEMA)?;
     conn.execute_batch(crate::variants::SCHEMA)?;
     conn.execute_batch(crate::parser_context::SCHEMA)?;
     Ok(())
 }
 
-fn create_index_in(conn: &Connection, primary: bool, build: bool) -> Result<()> {
-    base_index_in(conn, build)?;
-    execute_index_sql(conn, OPEN_INDEXES, build)?;
+fn create_index_in(conn: &Connection, primary: bool, deferring: bool) -> Result<()> {
+    base_index_in(conn, deferring)?;
+    execute_index_sql(conn, OPEN_INDEXES, deferring)?;
     if primary {
         add_primary(conn)?;
         conn.execute(
@@ -311,7 +311,7 @@ fn ensure_index_in(conn: &Connection, primary: bool, deferring: bool) -> Result<
 pub(crate) fn index_identity(conn: &Connection) -> Result<String> {
     let mut hash = blake3::Hasher::new();
     hash.update(format!("version {} format {}\n", version(conn)?, format_id(conn)?).as_bytes());
-    for (kind, name, sql) in shape(conn)? {
+    for (kind, name, sql) in schema_rows(conn)? {
         if kind != "index" {
             for part in [kind, name, sql] {
                 hash.update(part.as_bytes());
@@ -403,14 +403,14 @@ pub(crate) fn ensure_embeddings(conn: &Connection) -> Result<()> {
         }
         set_version(&tx, current)?;
     } else {
-        let stored = shape(&tx)?;
+        let stored = schema_rows(&tx)?;
         let earlier = embeddings_schemas()?;
-        let Some(added) = earlier.iter().position(|schema| *schema == stored) else {
+        let Some(applied) = earlier.iter().position(|schema| *schema == stored) else {
             return Err(StoreError::EmbeddingsSchemaDiffers {
                 difference: nearest_difference(&stored, &earlier),
             });
         };
-        for addition in &EMBEDDINGS_ADDITIONS[added..] {
+        for addition in &EMBEDDINGS_ADDITIONS[applied..] {
             tx.execute_batch(addition)?;
         }
     }
@@ -423,10 +423,10 @@ pub(crate) fn ensure_embeddings(conn: &Connection) -> Result<()> {
 fn embeddings_schemas() -> Result<Vec<Vec<(String, String, String)>>> {
     let expected = Connection::open_in_memory()?;
     expected.execute_batch(EMBEDDINGS_BASE)?;
-    let mut schemas = vec![shape(&expected)?];
+    let mut schemas = vec![schema_rows(&expected)?];
     for addition in EMBEDDINGS_ADDITIONS {
         expected.execute_batch(addition)?;
-        schemas.push(shape(&expected)?);
+        schemas.push(schema_rows(&expected)?);
     }
     Ok(schemas)
 }
@@ -471,7 +471,7 @@ pub(crate) fn same_schema(conn: &Connection, sql: &[&str]) -> Result<bool> {
     for part in sql {
         expected.execute_batch(part)?;
     }
-    Ok(shape(conn)? == shape(&expected)?)
+    Ok(schema_rows(conn)? == schema_rows(&expected)?)
 }
 
 /// Indexes created at open do not change the parsed table format.
@@ -481,15 +481,15 @@ fn same_index_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
     if primary {
         add_primary(&expected)?;
     }
-    let base = shape(&expected)?;
+    let base = schema_rows(&expected)?;
     expected.execute_batch(OPEN_INDEXES)?;
-    let expected = shape(&expected)?;
+    let expected = schema_rows(&expected)?;
     let open_indexes: HashSet<_> = expected
         .iter()
         .filter(|item| item.0 == "index" && !base.contains(item))
         .map(|item| item.1.clone())
         .collect();
-    let found = shape(conn)?;
+    let found = schema_rows(conn)?;
     Ok(found.iter().all(|item| expected.contains(item))
         && expected.iter().all(|item| {
             (item.0 == "index" && open_indexes.contains(&item.1)) || found.contains(item)
@@ -504,8 +504,8 @@ fn same_build_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
     if primary {
         add_primary(&expected)?;
     }
-    let found = shape(conn)?;
-    let mut wanted = shape(&expected)?;
+    let found = schema_rows(conn)?;
+    let mut wanted = schema_rows(&expected)?;
     wanted.retain(|(kind, name, _)| {
         kind != "index"
             || !BUILT_AT_END.contains(&name.as_str())
@@ -514,7 +514,7 @@ fn same_build_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
     Ok(found == wanted)
 }
 
-fn shape(conn: &Connection) -> Result<Vec<(String, String, String)>> {
+fn schema_rows(conn: &Connection) -> Result<Vec<(String, String, String)>> {
     Ok(conn
         .prepare(
             "SELECT type, name, sql FROM main.sqlite_master

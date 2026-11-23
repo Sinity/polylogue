@@ -74,7 +74,7 @@ fn revisions(conn: &Connection) -> Vec<(String, i64)> {
 fn an_embeddings_db_from_each_earlier_build_gains_the_added_tables_and_keeps_its_vectors() {
     let fresh = Connection::open_in_memory().unwrap();
     ensure_embeddings(&fresh).unwrap();
-    let current = shape(&fresh).unwrap();
+    let current = schema_rows(&fresh).unwrap();
     // The revision table was added after the first build, which backfills one
     // revision per model; a file that already had it keeps its counts.
     for (schema, before_revisions) in [
@@ -95,7 +95,7 @@ fn an_embeddings_db_from_each_earlier_build_gains_the_added_tables_and_keeps_its
         for _ in 0..2 {
             let conn = crate::archive::open_write(&path, 8).unwrap();
             ensure_embeddings(&conn).unwrap();
-            assert_eq!(shape(&conn).unwrap(), current);
+            assert_eq!(schema_rows(&conn).unwrap(), current);
             assert_eq!(version(&conn).unwrap(), 1);
             assert_eq!(rows(&conn), before);
             let expected = before_revisions.clone().unwrap_or_else(|| {

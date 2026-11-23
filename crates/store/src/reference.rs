@@ -183,7 +183,7 @@ impl<'a> ReferenceText<'a> {
                             reference: reference.to_string(),
                             candidates: heads
                                 .iter()
-                                .map(|v| format!("alternate:{}@{}", v.root, v.id))
+                                .map(|v| crate::variants::reference_string(&v.root, &v.id))
                                 .collect(),
                         });
                     }

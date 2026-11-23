@@ -1,5 +1,5 @@
-//! The write lock: an OS file lock on the register (`archive.db`, or
-//! `sinex.db` in primary mode). A reader holds it shared while one statement
+//! The write lock: an OS file lock on the register (`archive.db`). Primary
+//! mode has no register file here and takes no lock. A reader holds it shared while one statement
 //! starts its read, first on `index.db`, then on the register. A register
 //! commit between those two starts is the only way the reader could see a
 //! pair of states that never existed together; an index commit there is

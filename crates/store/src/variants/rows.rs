@@ -104,9 +104,8 @@ pub(super) fn insert(conn: &Connection, v: &Variant, counter: i64) -> Result<()>
         return if existing == expected {
             Ok(())
         } else {
-            Err(StoreError::Conflict(format!(
-                "alternate:{}@{}",
-                v.root, v.id
+            Err(StoreError::Conflict(super::reference_string(
+                &v.root, &v.id,
             )))
         };
     }

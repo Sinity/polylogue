@@ -7,13 +7,13 @@ use polylogue_model::JsonExt;
 #[derive(
     Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
-pub struct Comparison {
+pub struct RowComparison {
     rows: Vec<(String, String, Option<Vec<u8>>)>,
     schema: Option<Value>,
     pub from: u64,
     pub length: u64,
 }
-impl Comparison {
+impl RowComparison {
     pub fn records(bytes: &[u8]) -> crate::Result<Self> {
         let mut out = Self::default();
         for line in bytes.split(|b| *b == b'\n').filter(|line| !line.is_empty()) {

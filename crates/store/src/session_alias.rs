@@ -75,9 +75,11 @@ impl Identities {
             .collect::<rusqlite::Result<BTreeMap<String, String>>>()?;
         let mut identities = Self {
             stored,
-            moved_copies: Vec::new(),
-            released: Vec::new(),
+            ..Self::default()
         };
+        // Copies two sessions of these batches record: they name neither, so
+        // a later session recording one must not join it.
+        let mut contested = std::collections::BTreeSet::new();
         for session in recorded {
             let id = session.id.to_string();
             for alias in &session.aliases {
@@ -90,13 +92,14 @@ impl Identities {
                     }
                     continue;
                 }
-                if identities.released.iter().any(|r| r.copy == copy) {
+                if identities.released.iter().any(|r| r.copy == copy) || contested.contains(&copy) {
                     continue;
                 }
                 if let Some(n) = identities.moved_copies.iter().position(|a| a.copy == copy) {
                     // Two sessions of these batches record it: it names neither.
                     if identities.moved_copies[n].session != id {
                         identities.moved_copies.remove(n);
+                        contested.insert(copy);
                     }
                     continue;
                 }
@@ -129,6 +132,10 @@ impl Identities {
         Ok(identities)
     }
 
+    fn renames_nothing(&self) -> bool {
+        self.stored.is_empty() && self.moved_copies.is_empty()
+    }
+
     pub(crate) fn moved_copies(&self) -> &[CopyMove] {
         &self.moved_copies
     }
@@ -141,7 +148,7 @@ impl Identities {
     /// names after itself (`<message>:code1`) takes its message's ID in the
     /// session, as the message does.
     pub(crate) fn shown_call<'a>(&self, origin: &str, call: &'a str) -> Cow<'a, str> {
-        if self.stored.is_empty() && self.moved_copies.is_empty() {
+        if self.renames_nothing() {
             return Cow::Borrowed(call);
         }
         let id = format!("{origin}:{call}");
@@ -203,7 +210,7 @@ impl Identities {
         data: &[u8],
         id: &'a str,
     ) -> crate::Result<Cow<'a, str>> {
-        if self.stored.is_empty() && self.moved_copies.is_empty() {
+        if self.renames_nothing() {
             return Ok(Cow::Borrowed(id));
         }
         let Some(mut renamed) = in_session(
@@ -224,7 +231,7 @@ impl Identities {
     }
 
     fn lookup<'s>(&self, id: &str, target: impl Fn(&str) -> Option<&'s str>) -> Option<String> {
-        if self.stored.is_empty() && self.moved_copies.is_empty() {
+        if self.renames_nothing() {
             return None;
         }
         let copy = message_session(id)?;
@@ -260,6 +267,22 @@ pub(crate) fn in_session(
     Ok(Some(renamed))
 }
 
+/// `event` moved from session `from` to session `to`, with the message it
+/// follows renamed to match, when either changes.
+fn moved_to(event: &Event, from: &str, to: &str) -> crate::Result<Option<Event>> {
+    in_session(
+        event,
+        |name| {
+            if name == from {
+                to.to_owned()
+            } else {
+                name.to_owned()
+            }
+        },
+        |message| renamed(message, from, to).unwrap_or_else(|| message.to_owned()),
+    )
+}
+
 /// What releasing `copy` from `joined` moves: the copy's chains (the session
 /// statements in `joined` that name the copy), and the messages and
 /// content-named events those chains read, with their IDs in the copy.
@@ -272,6 +295,7 @@ fn release(index: &Connection, copy: &str, joined: &str, by: &str) -> crate::Res
         .query_map(params![joined, copy], |row| <(_, _)>::try_from(row))?
         .collect::<rusqlite::Result<Vec<(i64, i64)>>>()?;
     let mut messages = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
     let mut events = Vec::new();
     for &(input, chain) in &chains {
         let ids = index
@@ -284,7 +308,7 @@ fn release(index: &Connection, copy: &str, joined: &str, by: &str) -> crate::Res
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for id in ids {
             if let Some(own) = renamed(&id, joined, copy)
-                && !messages.iter().any(|(old, _)| *old == id)
+                && seen.insert(id.clone())
             {
                 messages.push((id, own));
             }
@@ -302,33 +326,11 @@ fn release(index: &Connection, copy: &str, joined: &str, by: &str) -> crate::Res
             event.data = crate::encoding::unpack_json(&data)?;
             // A reading stored before the copy joined states the copy's
             // session; one stored after, the joined session.
-            let event = in_session(
-                &event,
-                |name| {
-                    if name == copy {
-                        joined.to_owned()
-                    } else {
-                        name.to_owned()
-                    }
-                },
-                |message| renamed(message, copy, joined).unwrap_or_else(|| message.to_owned()),
-            )?
-            .unwrap_or(event);
+            let event = moved_to(&event, copy, joined)?.unwrap_or(event);
             if crate::encoding::event_content_id(&event)? != id {
                 continue;
             }
-            let own = in_session(
-                &event,
-                |name| {
-                    if name == joined {
-                        copy.to_owned()
-                    } else {
-                        name.to_owned()
-                    }
-                },
-                |message| renamed(message, joined, copy).unwrap_or_else(|| message.to_owned()),
-            )?;
-            if let Some(own) = own {
+            if let Some(own) = moved_to(&event, joined, copy)? {
                 events.push((id, crate::encoding::event_content_id(&own)?));
             }
         }
@@ -362,19 +364,8 @@ fn copy_events(
         if crate::encoding::event_content_id(&event)? != id {
             continue;
         }
-        let renamed = in_session(
-            &event,
-            |name| {
-                if name == copy {
-                    session.to_owned()
-                } else {
-                    name.to_owned()
-                }
-            },
-            |message| renamed(message, copy, session).unwrap_or_else(|| message.to_owned()),
-        )?;
-        if let Some(renamed) = renamed {
-            events.push((id, crate::encoding::event_content_id(&renamed)?));
+        if let Some(moved) = moved_to(&event, copy, session)? {
+            events.push((id, crate::encoding::event_content_id(&moved)?));
         }
     }
     Ok(events)

@@ -115,3 +115,27 @@ fn receiver_exit_drops_replies_and_refuses_new_writes() {
     assert!(matches!(queue.reserve(None), Err(StoreError::WriterGone)));
     assert!(queue.pop().is_none());
 }
+
+#[test]
+fn a_dropped_reservation_returns_its_slot() {
+    let queue = Arc::new(UserQueue::default());
+    let reservations = (0..USER_QUEUE)
+        .map(|_| queue.reserve(None).unwrap())
+        .collect::<Vec<_>>();
+    drop(reservations);
+    let limit = ReadLimit::new(Duration::from_secs(30), Cancellation::default());
+    let again = (0..USER_QUEUE)
+        .map(|_| queue.reserve(Some(&limit)).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(again.len(), USER_QUEUE);
+}
+
+#[test]
+fn a_closed_queue_refuses_pushes_and_held_reservations() {
+    let queue = Arc::new(UserQueue::default());
+    let held = queue.reserve(None).unwrap();
+    queue.disconnect();
+    assert!(matches!(queue.try_push(message()), Err(None)));
+    assert!(matches!(held.push(message()), Err(StoreError::WriterGone)));
+    assert!(queue.pop().is_none());
+}

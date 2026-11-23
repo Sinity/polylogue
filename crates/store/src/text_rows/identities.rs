@@ -115,8 +115,7 @@ impl TextIds {
                     self.mark(id, bits);
                 }
                 if self.in_transaction.get() {
-                    self.mark(id, 0);
-                    self.marked.borrow_mut().get_mut(&id).unwrap().written = true;
+                    self.mark_written(id);
                 }
                 self.next.set(self.next.get().max(after));
                 self.known.borrow_mut().set(*hash, id)?;
@@ -187,6 +186,14 @@ impl TextIds {
             marked.clear();
         }
         marked.entry(id).or_default().indexed |= bit;
+    }
+
+    /// Records that this transaction wrote the text's payload.
+    fn mark_written(&self, id: i64) {
+        self.mark(id, 0);
+        if let Some(mark) = self.marked.borrow_mut().get_mut(&id) {
+            mark.written = true;
+        }
     }
 
     pub(super) fn unmark(&self, id: i64, bit: i64) {

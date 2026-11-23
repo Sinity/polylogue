@@ -680,7 +680,7 @@ impl<'a> Compiler<'a> {
             exact
         } else {
             format!(
-                "(({broad} OR NOT pl_time_is_point({}, '{}')) AND {exact})",
+                "(({broad} OR NOT pl_time_is_instant({}, '{}')) AND {exact})",
                 stored.bytes,
                 stored.storage.as_str()
             )

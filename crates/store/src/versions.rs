@@ -131,6 +131,10 @@ impl RegisteredMessage<'_> {
     }
 }
 
+/// Writes one version's body, its text references and its blob references
+/// for `kind`, and returns the keys the writer needs. With `replace` an
+/// existing version's body is overwritten (and its text references rebuilt);
+/// without it an existing version is left as it is and nothing more is written.
 fn store_value(
     conn: &Connection,
     kind: VersionKind,
@@ -233,8 +237,7 @@ fn store_value(
         "INSERT OR IGNORE INTO {name}_version_blob({column},blob_hash) VALUES(?1,?2)"
     ))?;
     for block in blocks {
-        let attachments = block.attachments();
-        for attachment in attachments {
+        for attachment in block.attachments() {
             if let Some(hash) = attachment.blob {
                 blob.execute(params![key, hash.0.as_slice()])?;
             }
@@ -327,7 +330,12 @@ pub(crate) fn message_layout(block_selection: &MessageProjection) -> Result<Vec<
 pub(crate) fn read_document(conn: &Connection, hash: &[u8]) -> Result<polylogue_model::Document> {
     let body: Vec<u8> = conn
         .prepare_cached("SELECT body FROM document_version WHERE version_hash=?1")?
-        .query_row([hash], |row| row.get(0))?;
+        .query_row([hash], |row| row.get(0))
+        .optional()?
+        .ok_or_else(|| {
+            let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+            crate::StoreError::NotFound(format!("document version {hex}"))
+        })?;
     read_body(conn, "document", &hash, &body)
 }
 
@@ -351,7 +359,12 @@ fn read_body<T: DeserializeOwned>(
     while let Some(row) = rows.next()? {
         let idx: i64 = row.get(0)?;
         let text = crate::text_rows::joined(row, 1)?;
-        let block = &mut value["blocks"][idx as usize];
+        let block = value
+            .get_mut("blocks")
+            .and_then(|blocks| blocks.get_mut(idx as usize))
+            .ok_or_else(|| {
+                crate::StoreError::stored(0, "a stored text names a block the body lacks")
+            })?;
         let field = if block.get("output").is_some() {
             "output"
         } else if block.get("written_text").is_some() {
@@ -578,11 +591,7 @@ pub(crate) fn remove_unreferenced(
         } else {
             ""
         };
-        let candidate_key = if candidates == "unreferenced_value" {
-            "value_pk"
-        } else {
-            "version_hash"
-        };
+        let candidate_key = target_key(candidates);
         conn.prepare_cached(&format!(
             "DELETE FROM {table} AS t WHERE {stored_key} IN (SELECT {candidate_key} FROM temp.{candidates} WHERE kind=?1)
              AND NOT EXISTS(SELECT 1 FROM {name}_source s WHERE s.{key}=t.{stored_key}){context}"

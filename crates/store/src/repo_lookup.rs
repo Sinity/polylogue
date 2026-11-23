@@ -10,10 +10,10 @@ use rusqlite::{OptionalExtension, Transaction, params};
 impl crate::Reader<'_> {
     /// Recorded repository identities at these exact worktree roots.
     pub fn repository_roots_at_paths(&self, paths: &[String]) -> Result<Vec<String>> {
-        let mut query = self.conn()?.prepare_cached(
+        let mut statement = self.conn()?.prepare_cached(
             "SELECT root_commits FROM repo_lookup WHERE path IN (SELECT value FROM json_each(?1)) ORDER BY path",
         )?;
-        let mut rows = query.query([serde_json::to_string(paths)?])?;
+        let mut rows = statement.query([serde_json::to_string(paths)?])?;
         let mut roots = std::collections::BTreeSet::new();
         while let Some(row) = rows.next()? {
             let encoded: String = row.get(0)?;
@@ -32,14 +32,17 @@ impl crate::Reader<'_> {
 /// session at or under its directory due for its repository.
 pub(crate) fn upsert_lookup(
     tx: &Transaction<'_>,
-    l: &RepoLookup,
+    lookup: &RepoLookup,
     input_pk: i64,
     chain: i64,
 ) -> Result<()> {
-    let roots = serde_json::to_string(&l.root_commits)?;
+    // Stored sorted, so the derivation's first root is the identity the reader names.
+    let mut sorted = lookup.root_commits.clone();
+    sorted.sort();
+    let roots = serde_json::to_string(&sorted)?;
     let previous: Option<(Option<String>, String)> = tx
         .prepare_cached("SELECT remote, root_commits FROM repo_lookup WHERE path = ?1")?
-        .query_row([&l.path], |r| <(_, _)>::try_from(r))
+        .query_row([&lookup.path], |r| <(_, _)>::try_from(r))
         .optional()?;
     tx.prepare_cached(
         "INSERT INTO repo_lookup(path, remote, root_commits, input_pk, chain) VALUES (?1, ?2, ?3, ?4, ?5)
@@ -47,8 +50,8 @@ pub(crate) fn upsert_lookup(
              root_commits = excluded.root_commits, input_pk = excluded.input_pk,
              chain = excluded.chain",
     )?
-    .execute(params![l.path, l.remote, roots, input_pk, chain])?;
-    if previous != Some((l.remote.clone(), roots)) {
+    .execute(params![lookup.path, lookup.remote, roots, input_pk, chain])?;
+    if previous != Some((lookup.remote.clone(), roots)) {
         // `cwd` under the directory sorts between `<path>/` and `<path>0`
         // ('0' follows '/'), so the session index serves the range.
         tx.prepare_cached(
@@ -57,7 +60,7 @@ pub(crate) fn upsert_lookup(
              WHERE cwd = ?1 OR (cwd >= ?1 || '/' AND cwd < ?1 || '0')
              ON CONFLICT(session_pk) DO UPDATE SET repo_lookup = 1, marked = marked + 1",
         )?
-        .execute([&l.path])?;
+        .execute([&lookup.path])?;
     }
     Ok(())
 }

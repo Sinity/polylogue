@@ -483,3 +483,13 @@ fn a_missing_version_payload_is_an_error_rather_than_an_absent_message() {
         matches!(read_message(&conn,&hash),Err(crate::StoreError::Invalid(reason)) if reason=="stored message version has no payload")
     );
 }
+
+#[test]
+fn reading_an_absent_document_version_names_its_hash() {
+    let conn = database(0);
+    let error = read_document(&conn, &[0xab; 32]).unwrap_err();
+    assert!(
+        matches!(&error, crate::StoreError::NotFound(what) if *what == format!("document version {}", "ab".repeat(32))),
+        "{error}"
+    );
+}

@@ -34,7 +34,7 @@ pub(super) fn visit_indexed_texts(
         crate::cancellation::check_current()?;
         let length = row.get(4)?;
         let size = usize::try_from(length)
-            .map_err(|_| StoreError::stored(0, "a stored text has an invalid length"))?;
+            .map_err(|_| StoreError::stored(4, "a stored text has an invalid length"))?;
         if batch.len() == BATCH_TEXTS || size > batch_bytes - bytes {
             visit_batch(&mut group, &mut batch, &mut visit)?;
             bytes = 0;

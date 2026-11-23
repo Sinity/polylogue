@@ -740,7 +740,7 @@ fn private_index_readers_recover_journals_without_accepting_writes() {
                 })
                 .unwrap()
                 .unwrap();
-            assert_eq!(report.rows, 1);
+            assert_eq!(report.changed, 1);
             assert!(String::from_utf8(output).unwrap().contains("sentinel"));
             assert_eq!(fs::read(&provider).unwrap(), original_provider);
         } else {

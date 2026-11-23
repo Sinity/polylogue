@@ -137,7 +137,7 @@ fn changed_deleted_and_dropped_rows_keep_their_records_without_an_export_file() 
         "CREATE TABLE threads(id TEXT PRIMARY KEY,title TEXT,data BLOB,n REAL); CREATE TABLE notes(body TEXT); INSERT INTO threads VALUES('a','first',x'00ff',1.5),('b','second',NULL,NULL); INSERT INTO notes VALUES('kept');",
     );
     let mut reader = DatabaseReader::default();
-    assert_eq!(t.capture(&mut reader).unwrap().unwrap().rows, 3);
+    assert_eq!(t.capture(&mut reader).unwrap().unwrap().changed, 3);
     let rows = t.lines();
     assert_eq!(rows[0]["source"]["machine"], "test-machine");
     assert!(
@@ -148,7 +148,7 @@ fn changed_deleted_and_dropped_rows_keep_their_records_without_an_export_file() 
     t.sql("UPDATE threads SET title='renamed' WHERE id='a'; DELETE FROM threads WHERE id='b'; DROP TABLE notes;");
     assert!(t.capture(&mut reader).unwrap().is_none());
     let done = t.capture(&mut reader).unwrap().unwrap();
-    assert_eq!((done.rows, done.gone), (1, 2));
+    assert_eq!((done.changed, done.gone), (1, 2));
     assert_eq!(t.lines().iter().filter(|r| r["gone"] == true).count(), 2);
     assert!(!t.archive.root.join("exports").exists());
     assert!(!t.dir.path().join("source.sqlite.jsonl").exists());
@@ -230,7 +230,7 @@ fn restart_after_change_reads_only_changed_rows() {
     // A changed database is compared row by row; only the new row is read
     // into the archive.
     let done = t.capture(&mut DatabaseReader::default()).unwrap().unwrap();
-    assert_eq!((done.rows, done.visited), (1, 2));
+    assert_eq!((done.changed, done.visited), (1, 2));
     assert!(t.length - length < 200);
 }
 
@@ -252,18 +252,18 @@ fn restart_reads_no_unchanged_rows() {
     tool.execute_batch("INSERT INTO items VALUES(9,'brief'); DELETE FROM items WHERE id=9;")
         .unwrap();
     let done = t.capture(&mut DatabaseReader::default()).unwrap().unwrap();
-    assert_eq!((done.rows, done.visited), (0, 1));
+    assert_eq!((done.changed, done.visited), (0, 1));
     assert_eq!(t.capture(&mut DatabaseReader::default()).unwrap(), None);
     // A new row only in the log is read after a restart.
     tool.execute_batch("INSERT INTO items VALUES(2,'second');")
         .unwrap();
     let done = t.capture(&mut DatabaseReader::default()).unwrap().unwrap();
-    assert_eq!((done.rows, done.visited), (1, 2));
+    assert_eq!((done.changed, done.visited), (1, 2));
     // Another machine's observation of the same path is not this machine's
     // read.
     t.observation.machine = "other-machine".into();
     let done = t.capture(&mut DatabaseReader::default()).unwrap().unwrap();
-    assert_eq!((done.rows, done.visited), (0, 2));
+    assert_eq!((done.changed, done.visited), (0, 2));
 }
 
 #[test]
@@ -276,11 +276,11 @@ fn a_changed_source_finds_updates_deletions_and_reused_keys() {
     t.sql("UPDATE items SET body='changed' WHERE id=1; DELETE FROM items WHERE id=2; INSERT INTO items VALUES(3,'third');");
     assert!(t.capture(&mut reader).unwrap().is_none());
     let done = t.capture(&mut reader).unwrap().unwrap();
-    assert_eq!((done.rows, done.gone, done.visited), (2, 1, 2));
+    assert_eq!((done.changed, done.gone, done.visited), (2, 1, 2));
     t.sql("DELETE FROM items WHERE id=1; INSERT INTO items VALUES(1,'reused');");
     assert!(t.capture(&mut reader).unwrap().is_none());
     let done = t.capture(&mut reader).unwrap().unwrap();
-    assert_eq!((done.rows, done.gone), (1, 0));
+    assert_eq!((done.changed, done.gone), (1, 0));
     assert!(t.lines().iter().any(|row| row["r"]["body"] == "reused"));
 }
 
@@ -294,13 +294,13 @@ fn replacement_schema_change_and_missing_source_compare_every_row() {
     Connection::open(&replacement).unwrap().execute_batch("CREATE TABLE items(id INTEGER PRIMARY KEY,body TEXT); INSERT INTO items VALUES(1,'replacement');").unwrap();
     fs::rename(replacement, &t.db).unwrap();
     let done = t.capture(&mut DatabaseReader::default()).unwrap().unwrap();
-    assert_eq!((done.rows, done.gone), (1, 1));
+    assert_eq!((done.changed, done.gone), (1, 1));
     t.sql("ALTER TABLE items ADD COLUMN tail INTEGER DEFAULT 42;");
     assert_eq!(
         t.capture(&mut DatabaseReader::default())
             .unwrap()
             .unwrap()
-            .rows,
+            .changed,
         1
     );
     assert!(t.lines().iter().any(|r| r["r"]["tail"] == 42));
@@ -320,7 +320,7 @@ fn an_empty_table_accepts_the_smallest_integer_key() {
         .execute("INSERT INTO items VALUES(?1,'first')", [i64::MIN])
         .unwrap();
     assert!(t.capture(&mut reader).unwrap().is_none());
-    assert_eq!(t.capture(&mut reader).unwrap().unwrap().rows, 1);
+    assert_eq!(t.capture(&mut reader).unwrap().unwrap().changed, 1);
     assert!(t.lines().iter().any(|r| r["k"] == json!([i64::MIN])));
 }
 
@@ -348,7 +348,7 @@ fn parsing_earlier_bytes_preserves_newer_comparison_rows_and_schema() {
             r.get(0)
         })
         .unwrap();
-    let mut update = Comparison::records(&old).unwrap();
+    let mut update = RowComparison::records(&old).unwrap();
     update.length = earlier;
     update.write(&conn, pk).unwrap();
     assert_eq!(
@@ -386,7 +386,7 @@ fn a_column_order_change_does_not_repeat_unchanged_named_values() {
     Connection::open(&replacement).unwrap().execute_batch("CREATE TABLE items(body TEXT,id INTEGER PRIMARY KEY); INSERT INTO items VALUES('same',1);").unwrap();
     fs::rename(replacement, &t.db).unwrap();
     let done = t.capture(&mut DatabaseReader::default()).unwrap().unwrap();
-    assert_eq!((done.rows, done.gone), (0, 0));
+    assert_eq!((done.changed, done.gone), (0, 0));
     assert_eq!(t.lines().iter().filter(|r| r.get("r").is_some()).count(), 1);
 }
 
@@ -403,7 +403,7 @@ fn a_returned_database_compares_updates_and_deletions() {
     Connection::open(&away).unwrap().execute_batch("UPDATE items SET body='changed while absent' WHERE id=1; DELETE FROM items WHERE id=2;").unwrap();
     fs::rename(away, &t.db).unwrap();
     let done = t.capture(&mut reader).unwrap().unwrap();
-    assert_eq!((done.rows, done.gone), (1, 1));
+    assert_eq!((done.changed, done.gone), (1, 1));
 }
 
 #[test]
@@ -423,7 +423,7 @@ fn a_stopped_read_needs_no_archive_and_can_be_retried() {
     );
     assert!(matches!(result, Err(DatabaseError::Stopped)));
     stop.store(false, std::sync::atomic::Ordering::Relaxed);
-    assert_eq!(t.capture(&mut reader).unwrap().unwrap().rows, 1);
+    assert_eq!(t.capture(&mut reader).unwrap().unwrap().changed, 1);
 }
 
 #[test]
@@ -453,7 +453,7 @@ fn an_invalid_comparison_position_does_not_change_row_hashes() {
         .unwrap();
     conn.execute("UPDATE tool_database SET length=-1", [])
         .unwrap();
-    let mut update = Comparison::records(
+    let mut update = RowComparison::records(
         br#"{"t":"items","k":[1],"r":{"id":1,"body":"changed"}}
 "#,
     )
