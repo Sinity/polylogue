@@ -21,7 +21,7 @@ fn native_member_ids_are_anchored_and_do_not_use_original_basenames() {
 }
 
 #[test]
-fn naming_and_library_sidecars_preserve_metadata_without_opening_files() {
+fn naming_and_library_sidecars_map_their_fields() {
     let mut entries = Vec::new();
     metadata(
         "conversation_asset_file_names.json",
@@ -37,6 +37,9 @@ fn naming_and_library_sidecars_preserve_metadata_without_opening_files() {
     assert_eq!(entries[1].name.as_deref(), Some(""));
     entries.clear();
     metadata("library_files.json", br#"[{"file_id":"file_0123","file_name":"plot.png","mime_type":"image/png","file_size_bytes":0,"unknown_field":{"kept":"in raw input"}}]"#.as_slice(), |entry| { entries.push(entry); Ok(()) }).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].source_id, "file_0123");
+    assert_eq!(entries[0].name.as_deref(), Some("plot.png"));
     assert_eq!(entries[0].size, Some(0));
     assert_eq!(entries[0].media_type.as_deref(), Some("image/png"));
 }

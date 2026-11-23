@@ -47,11 +47,22 @@ fn a_chatgpt_capture_reads_the_provider_json_under_the_export_ids() {
         other => panic!("{other:?}"),
     }
     assert_eq!(step.output.blobs.len(), 1);
-    assert!(
-        step.output
-            .events
-            .iter()
-            .any(|e| e.kind == "browser_capture")
+    let event = step
+        .output
+        .events
+        .iter()
+        .find(|e| e.kind == "browser_capture")
+        .unwrap();
+    assert_eq!(event.session.as_ref().unwrap().to_string(), "chatgpt:c1");
+    assert_eq!(
+        event.data,
+        json!({
+            "schema_version": 1,
+            "provenance": {"source_url": "https://example.invalid/c/1",
+                           "captured_at": "2026-02-01T00:00:00Z", "capture_mode": "auto"},
+            "provider_meta": {},
+            "attachments": [{"id": "file-Pic", "not_fetched": null}]
+        })
     );
     assert_eq!(step.counts.used["capture"], 1);
 }
@@ -158,6 +169,18 @@ fn gemini_partial_page_capture_keeps_earlier_ids() {
         turn("model", "two, fini", 8),
     ]);
     assert_eq!(partial[0], whole[2]);
+    assert_eq!(
+        partial[1].1,
+        format!(
+            "gemini-app:{}",
+            crate::content_ids::tests::expected(
+                "g1",
+                "assistant",
+                r#"["assistant","two, fini"]"#,
+                0
+            )
+        )
+    );
     assert_ne!(partial[1].1, whole[3].1);
     assert!(whole.iter().all(|(_, id)| id != &partial[1].1));
 }
@@ -193,12 +216,13 @@ fn a_grok_capture_keeps_the_providers_ids_parents_and_files() {
     let assistant = &step.output.messages[1].message;
     assert_eq!(assistant.parent.as_ref().unwrap().to_string(), "grok:r1");
     assert_eq!(assistant.model.as_deref(), Some("grok-3"));
-    assert!(
-        assistant
-            .blocks
-            .iter()
-            .any(|b| matches!(b, Block::Other { type_name, .. } if type_name == "grok_step"))
-    );
+    assert_eq!(assistant.blocks.len(), 2);
+    assert!(matches!(
+        &assistant.blocks[1],
+        Block::Other { type_name, data }
+            if type_name == "grok_step"
+                && *data == json!({"type": "grok_step", "step": {"text": ["step"]}})
+    ));
     assert_eq!(step.output.blobs[0].bytes, b"hello");
     let read = files(&bytes).unwrap();
     assert_eq!(read["conversation"]["messages"], 2);
@@ -238,7 +262,10 @@ fn a_capture_whose_provider_conversation_has_another_identity_is_refused() {
         chatgpt_payload(),
         json!({"provider":"chatgpt", "provider_session_id":"another"}),
     );
-    assert!(files(&bytes).unwrap_err().contains("identity"));
+    assert_eq!(
+        files(&bytes).unwrap_err(),
+        "the provider's conversation has another identity than the capture names"
+    );
 }
 
 #[test]

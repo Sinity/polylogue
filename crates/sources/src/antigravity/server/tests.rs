@@ -152,14 +152,27 @@ fn isolates_failed_and_partial_conversions() {
     let errors = collect(&paths, &spool, &[server]);
     task.join().unwrap();
     assert_eq!(errors.len(), 2);
-    assert!(errors.iter().all(|e| e.contains("not converted")));
+    assert!(
+        errors[0].starts_with(&format!(
+            "Antigravity conversation file {} not converted: ",
+            paths[0].display()
+        )),
+        "{errors:?}"
+    );
+    assert_eq!(
+        errors[1],
+        format!(
+            "Antigravity conversation file {} not converted: empty or partial conversation export",
+            paths[1].display()
+        )
+    );
     assert!(destination(&paths[2], &spool).exists());
     assert!(!destination(&paths[0], &spool).exists());
     assert!(!destination(&paths[1], &spool).exists());
 }
 
 #[test]
-fn unavailable_server_is_a_session_event_written_once_until_it_changes() {
+fn unavailable_server_is_a_session_event_written_once_and_conversion_replaces_it() {
     let temp = tempfile::tempdir().unwrap();
     let spool = temp.path().join("spool");
     let path = temp.path().join("one.pb");
@@ -234,12 +247,17 @@ fn duplicate_conversation_ids_are_reported_without_conversion() {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, b"opaque").unwrap();
     }
-    let errors = collect(&paths, &temp.path().join("spool"), &[]);
-    assert_eq!(errors.len(), 2);
-    assert!(
-        errors
-            .iter()
-            .all(|e| e.contains("duplicate conversation identity"))
+    // The server has stopped listening: converting a duplicate would add an
+    // unavailable-server error.
+    let (client, task) = server(vec![]);
+    task.join().unwrap();
+    let errors = collect(&paths, &temp.path().join("spool"), &[client]);
+    assert_eq!(
+        errors,
+        paths.map(|path| format!(
+            "Antigravity conversation file {} not converted: duplicate conversation identity",
+            path.display()
+        ))
     );
 }
 
@@ -299,7 +317,14 @@ fn conversion_uses_size_and_nanosecond_mtime_without_reading_source_bytes() {
         }
     ));
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    // Other bytes with the same size and modification time are the same file
+    // state: conversion never reads the bytes.
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    fs::write(&path, b"OPAQUE").unwrap();
     let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    file.set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    assert!(converted(&path, &spool, FileState::read(&path).unwrap()));
     file.set_times(
         std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH + Duration::from_secs(123)),
     )
@@ -428,13 +453,17 @@ fn an_unresponsive_server_times_out_once_for_the_whole_conversion_pass() {
     // way without the test waiting a minute.
     let client = Server::with_timeout(42, port, "synthetic-token".into(), Duration::from_secs(2));
     let spool = temp.path().join("spool");
-    let started = std::time::Instant::now();
+    // A regression that loses the client timeout ends here by closing the
+    // stalled connection, so the assertions below fail instead of hanging.
+    let watchdog = stop.clone();
+    thread::spawn(move || {
+        thread::sleep(Duration::from_secs(20));
+        let _ = watchdog.send(());
+    });
     let errors = collect(&paths, &spool, &[client]);
-    let elapsed = started.elapsed();
-    stop.send(()).unwrap();
+    let _ = stop.send(());
     task.join().unwrap();
     assert_eq!(errors.len(), 1, "{errors:?}");
-    eprintln!("conversion timeout: {elapsed:?}");
     assert!(
         errors[0].to_ascii_lowercase().contains("timeout"),
         "{errors:?}"

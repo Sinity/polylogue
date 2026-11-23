@@ -73,7 +73,8 @@ fn tools_or_absent_items_do_not_drop_usage_or_poison_the_next_delta() {
         r.iter()
             .all(|r| r.measured_completion == Some(true) && r.response.is_none())
     );
-    assert_eq!(r.iter().filter_map(|r| r.usage.input).sum::<u64>(), 30);
+    assert_eq!(r[0].usage.input, Some(10));
+    assert_eq!(r[1].usage.input, Some(20));
 }
 
 #[test]
@@ -189,7 +190,7 @@ fn child_tools_are_harness_observations_without_model() {
 }
 
 #[test]
-fn observation_state_survives_every_eof_restart_without_holding_item_bodies() {
+fn observation_state_survives_every_eof_restart() {
     let trace = jsonl(&[
         meta(json!({})),
         item(2, "r1", "reasoning"),
@@ -325,9 +326,9 @@ fn regressive_counter_reports_cannot_recharge_an_old_delta_or_prove_a_new_counte
     assert_eq!(
         r.iter()
             .filter(|r| r.measured_completion == Some(true))
-            .filter_map(|r| r.usage.input)
-            .sum::<u64>(),
-        30
+            .map(|r| r.usage.input)
+            .collect::<Vec<_>>(),
+        [Some(10), Some(20)]
     );
     assert_eq!(r.last().unwrap().usage.input, Some(20));
     assert_eq!(r.last().unwrap().measured_completion, None);

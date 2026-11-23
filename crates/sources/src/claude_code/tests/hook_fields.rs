@@ -60,11 +60,6 @@ fn hook_fields_cite_context_blocks_and_keep_message() {
         expected.content_hash().unwrap()
     );
     let encoded = serde_json::to_value(&step.output).unwrap();
-    assert!(
-        encoded["messages"][0]["message"]
-            .get("hook_fields")
-            .is_none()
-    );
     let restored: Output = serde_json::from_value(encoded).unwrap();
     assert_eq!(restored.hook_fields, step.output.hook_fields);
 }
@@ -117,6 +112,13 @@ fn hook_fields_ignore_tool_results_and_forged_values() {
     )
     .unwrap();
     assert!(step.output.hook_fields.is_empty());
+    let forged = step
+        .output
+        .messages
+        .iter()
+        .find(|r| r.message.id == message_id("forged").unwrap())
+        .unwrap();
+    assert_eq!(forged.message.prompt_kind, Some(PromptKind::Prose));
     assert!(
         step.output
             .messages

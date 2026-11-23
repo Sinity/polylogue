@@ -148,6 +148,26 @@ fn plans_and_memory_are_kept_with_a_reason() {
     let step = run_document(&SideFile { side: Side::Plan }, b"# plan").unwrap();
     assert!(step.output.events.is_empty());
     assert_eq!(step.counts.records, 1);
+    assert_eq!(
+        step.counts.skipped.iter().collect::<Vec<_>>(),
+        [(
+            &"plan: a plan names no session; sessions name their plan by slug (plan event)"
+                .to_owned(),
+            &1
+        )]
+    );
+    assert!(step.counts.unreadable.is_empty());
+    let step = run_document(&SideFile { side: Side::Memory }, b"# memory").unwrap();
+    assert!(step.output.events.is_empty());
+    assert_eq!(step.counts.records, 1);
+    assert_eq!(
+        step.counts.skipped.iter().collect::<Vec<_>>(),
+        [(
+            &"memory: project memory belongs to the project directory, not a session".to_owned(),
+            &1
+        )]
+    );
+    assert!(step.counts.unreadable.is_empty());
 }
 
 #[test]
@@ -163,6 +183,11 @@ fn malformed_json_is_refused_not_dropped() {
     .unwrap();
     assert_eq!(step.counts.records, 1);
     assert!(step.output.events.is_empty());
+    assert!(step.counts.skipped.is_empty());
+    assert_eq!(step.counts.unreadable.len(), 1);
+    let (reason, count) = step.counts.unreadable.iter().next().unwrap();
+    assert!(reason.starts_with("task: malformed JSON: "), "{reason}");
+    assert_eq!(*count, 1);
 }
 
 #[test]
