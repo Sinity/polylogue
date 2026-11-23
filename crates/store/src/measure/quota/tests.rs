@@ -74,7 +74,8 @@ fn windows_start_at_reported_resets() {
 fn blocks_start_on_the_hour_and_last_five_hours() {
     let times = vec![T0 + 30 * MINUTE, T0 + 4 * HOUR, T0 + 6 * HOUR];
     let b = blocks(&times, &[], 5 * HOUR);
-    let h = T0 - T0.rem_euclid(HOUR);
+    // T0 floored to the hour, worked out by hand.
+    let h = 1_789_999_200_000;
     assert_eq!(
         b,
         vec![
@@ -101,4 +102,8 @@ fn burn_needs_two_reports_five_minutes_apart() {
     assert_eq!(percent_burn(&[&a, &b]), Some(20.0));
     let c = o(T0 + MINUTE, 11.0);
     assert_eq!(percent_burn(&[&a, &c]), None);
+    let just_short = o(T0 + 5 * MINUTE - 1, 12.0);
+    assert_eq!(percent_burn(&[&a, &just_short]), None);
+    let exactly = o(T0 + 5 * MINUTE, 12.0);
+    assert!(percent_burn(&[&a, &exactly]).is_some());
 }

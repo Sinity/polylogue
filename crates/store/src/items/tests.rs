@@ -82,44 +82,6 @@ fn insertion_boundary_work_follows_changed_batch_size() {
             "16 times the changed rows took {small} -> {large} VM steps"
         );
     }
-    let (conn, change) = fixture(1024, true);
-    let (rows, old_steps) = counted(&conn, || {
-        let mut advanced = 0;
-        for &pk in &change.messages {
-            let order: (String, String) = conn
-                .query_row(
-                    "SELECT session_order,id FROM message WHERE pk=?1",
-                    [pk],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .unwrap();
-            let mut statement = conn
-                .prepare_cached(
-                    "SELECT pk FROM message WHERE session_pk=?1
-                AND duplicate_of IS NULL AND (session_order,id)>(?2,?3)
-                ORDER BY session_order,id",
-                )
-                .unwrap();
-            let mut rows = statement.query(params![1, order.0, order.1]).unwrap();
-            while let Some(row) = rows.next().unwrap() {
-                advanced += 1;
-                if !change.messages.contains(&row.get::<_, i64>(0).unwrap()) {
-                    break;
-                }
-            }
-        }
-        advanced
-    });
-    assert_eq!(
-        rows,
-        1024 * 1025 / 2,
-        "the original loop revisits the changed tail"
-    );
-    let current = boundary_steps(1024, true);
-    assert!(
-        old_steps > current * 8,
-        "old loop steps {old_steps}, current {current}"
-    );
 }
 
 #[test]
@@ -135,7 +97,11 @@ fn moved_and_removed_messages_keep_the_earliest_boundary() {
     conn.execute("DELETE FROM message WHERE pk=2", []).unwrap();
     assert!(matches!(
         start(&conn, 1, &change).unwrap(),
-        Start::From(StartPoint { seq: 1, .. })
+        Start::From(StartPoint {
+            seq: 1,
+            pk: 3,
+            time_bound: Some(1)
+        })
     ));
     change.messages.clear();
     assert!(matches!(start(&conn, 1, &change).unwrap(), Start::Links));

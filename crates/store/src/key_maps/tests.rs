@@ -104,19 +104,19 @@ fn texts_and_messages_are_found_by_their_keys() {
 #[test]
 fn loading_committed_rows_restores_every_key_map() {
     let conn = index();
-    insert_event(&conn, "event");
+    let event_pk = insert_event(&conn, "event");
     let hash = *blake3::hash(b"kept text").as_bytes();
     crate::text_rows::insert_alone(&conn, None, &hash, &hash, "kept text", 0);
     conn.execute("INSERT INTO message(id,session_pk,session_order,role,written_by,input_pk) VALUES ('claude-code:message',1,'0','user','human',1)", []).unwrap();
+    let message_pk = conn.last_insert_rowid();
     let keys = KeyMaps::load(&conn).unwrap();
     let texts =
         crate::text_rows::TextIds::new(&conn, true, MemoryBudget::default().keys() / 3).unwrap();
-    assert!(
-        keys.message(&conn, "claude-code:message")
-            .unwrap()
-            .is_some()
+    assert_eq!(
+        keys.message(&conn, "claude-code:message").unwrap(),
+        Some(message_pk)
     );
-    assert!(keys.event(&conn, "event").unwrap().is_some());
+    assert_eq!(keys.event(&conn, "event").unwrap(), Some(event_pk));
     assert!(texts.text(&conn, &hash).unwrap().is_some());
 }
 

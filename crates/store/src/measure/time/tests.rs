@@ -361,6 +361,11 @@ fn last_recorded_item_and_stop_reason_do_not_claim_task_outcomes() {
         let message = m("last", Some(0), author, kind, stop);
         let (span, _) = calculate(&[message], &[], CLUSTER_GAP_MS);
         assert_eq!(span.ends_with, expected);
+        assert_eq!(
+            span.last_stop_reason.as_deref(),
+            stop.then_some("end_turn"),
+            "{expected}"
+        );
     }
     let mut command = m("command", Some(0), "human", "text", false);
     command.prompt = Some("command".into());

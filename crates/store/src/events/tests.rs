@@ -6,10 +6,22 @@ use polylogue_model::Code;
 
 #[test]
 fn unreadable_event_coordinates_are_stored_value_failures() {
-    for (change, column) in [
-        ("UPDATE event SET source_end=-1", 5),
-        ("UPDATE event_source SET source_start=-1,source_end=1", 3),
-        ("UPDATE event_source SET committed=-1", 6),
+    for (change, column, reason) in [
+        (
+            "UPDATE event SET source_end=-1",
+            5,
+            Some("negative event source coordinate"),
+        ),
+        (
+            "UPDATE event_source SET source_start=-1,source_end=1",
+            3,
+            None,
+        ),
+        (
+            "UPDATE event_source SET committed=-1",
+            6,
+            Some("invalid event commit position"),
+        ),
     ] {
         let root = tempfile::tempdir().unwrap();
         let mut fixture = Fixture::new(root.path()).unwrap();
@@ -32,10 +44,18 @@ fn unreadable_event_coordinates_are_stored_value_failures() {
             .unwrap();
         conn.execute(change, []).unwrap();
         let error = pool.reader().unwrap().event_record("e1").unwrap_err();
-        assert!(
-            matches!(error, StoreError::StoredValue { column: found, .. } if found == column),
-            "{error:?}"
-        );
+        match &error {
+            StoreError::StoredValue {
+                column: found,
+                reason: found_reason,
+            } => {
+                assert_eq!(*found, column);
+                if let Some(reason) = reason {
+                    assert_eq!(found_reason, reason);
+                }
+            }
+            other => panic!("expected a stored value failure, got {other:?}"),
+        }
         assert_eq!(error.code(), Code::Store);
     }
 }

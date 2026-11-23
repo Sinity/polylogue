@@ -191,10 +191,15 @@ fn cost_comparison_keeps_integer_nano_usd_and_unknown_totals() {
     let reader = pool.reader().unwrap();
     let c = compare(&reader, &Selection::default(), "cost_nusd").unwrap();
     assert_eq!(c.unknown["cost_nusd"], 1);
-    assert!(
+    let cost = |id: &str| {
         c.sessions
             .iter()
-            .any(|s| s.values["cost_nusd"] == 9_007_199_254_740_993_i64)
-    );
-    assert!(c.sessions.iter().any(|s| s.values["cost_nusd"] == 0));
+            .find(|s| s.session == id)
+            .unwrap_or_else(|| panic!("{id} is compared"))
+            .values["cost_nusd"]
+            .clone()
+    };
+    assert_eq!(cost("claude-code:known"), 9_007_199_254_740_993_i64);
+    assert_eq!(cost("claude-code:zero"), 0);
+    assert!(cost("chatgpt:unknown").is_null());
 }

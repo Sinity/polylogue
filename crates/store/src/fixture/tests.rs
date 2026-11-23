@@ -184,8 +184,12 @@ fn unparseable_message_attrs_fail_the_read() {
         .messages(&session, false)
         .unwrap_err();
     assert!(
-        error.to_string().contains("unparseable attributes"),
-        "{error}"
+        matches!(
+            &error,
+            StoreError::StoredValue { column: 0, reason }
+                if reason == "message claude-code:decode-message has unparseable attributes"
+        ),
+        "{error:?}"
     );
 }
 
@@ -205,7 +209,11 @@ fn non_object_message_attrs_fail_the_read() {
         .messages(&session, false)
         .unwrap_err();
     assert!(
-        error.to_string().contains("unparseable attributes"),
-        "{error}"
+        matches!(
+            &error,
+            StoreError::StoredValue { column: 0, reason }
+                if reason == "message claude-code:decode-message has unparseable attributes"
+        ),
+        "{error:?}"
     );
 }

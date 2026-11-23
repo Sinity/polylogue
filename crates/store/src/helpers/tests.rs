@@ -57,5 +57,10 @@ fn metadata_reads_missing_and_replaced_values() {
     meta_set(&conn, "version", "2").unwrap();
     assert_eq!(meta_get(&conn, "version").unwrap().as_deref(), Some("2"));
     // Without the table the read fails; it is not a missing key.
-    assert!(meta_get(&Connection::open_in_memory().unwrap(), "version").is_err());
+    match meta_get(&Connection::open_in_memory().unwrap(), "version") {
+        Err(StoreError::Sqlite(error)) => {
+            assert!(error.to_string().contains("no such table: meta"), "{error}");
+        }
+        other => panic!("expected a SQLite failure, got {other:?}"),
+    }
 }

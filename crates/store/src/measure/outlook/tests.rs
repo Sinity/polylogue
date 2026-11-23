@@ -120,7 +120,8 @@ fn projections_preserve_history_zero_elapsed_and_recent_spike() {
             .projected,
         Some(2100)
     );
-    assert!(validate_method("eom-naive").is_err());
+    assert!(validate_method("linear").is_ok());
+    assert!(validate_method("trailing-7d-mean").is_ok());
 }
 
 #[test]
@@ -323,12 +324,14 @@ fn a_plan_change_splits_the_cycle_and_prices_only_its_own_span() {
     assert_eq!(x.segments[0].responses["api_nusd"].used, Some(1));
     assert_eq!(x.segments[1].responses["api_nusd"].used, Some(2));
     assert_eq!(x.segments[0].responses["api_nusd"].projected, Some(1));
+    // The 31-day cycle from the first of the month splits after day 10.
     assert_eq!(
-        x.segments
-            .iter()
-            .map(|s| s.subscription_price_share_nusd.unwrap())
-            .sum::<i64>(),
-        31_000_000_000
+        x.segments[0].subscription_price_share_nusd,
+        Some(10_000_000_000)
+    );
+    assert_eq!(
+        x.segments[1].subscription_price_share_nusd,
+        Some(21_000_000_000)
     );
     let earlier = outlook(&r, &Selection::default(), START + 5 * DAY, "example").unwrap();
     assert_eq!(earlier.segments.len(), 1);
@@ -419,6 +422,7 @@ fn recorded_reports_remain_a_separate_population_with_confirmation_counts() {
 
 #[test]
 fn plan_validation_refuses_ambiguous_and_mismatched_units() {
+    assert!(validate_plan(&plan("max-20x", None)).is_ok());
     let mut p = plan("max", None);
     assert!(validate_plan(&p).is_err());
     p.name = "max-20x".into();
