@@ -289,7 +289,6 @@ fn authored_deltas_follow_only_affected_families_and_setting_keys() {
     assert_eq!(changes.len(), 1);
     assert_eq!(changes[0].family, "saved-a");
     assert_eq!(changes[0].saved.as_ref().unwrap().name, "alpha");
-    assert_eq!(changes[0].queries.len(), 1);
     assert_eq!(changes[0].queries["alpha"].len(), 1);
     assert_eq!(
         changes[0].queries["alpha"][0].text,

@@ -874,12 +874,16 @@ fn noop_derive_leaves_session_changed() {
     // session keeps the counter of the write that stored its rows.
     w.write_underived("b", prose("b", 1, 2_000, "another prompt"));
     let stored_at: i64 = state(&w).1[0]["value"].as_str().unwrap().parse().unwrap();
+    let stored = w.rows("SELECT changed FROM session WHERE id = 'claude-code:b'")[0]["changed"]
+        .as_i64()
+        .unwrap();
+    assert!(stored <= stored_at);
     assert!(w.writer.derive().unwrap() > 0);
     let (sessions, counter) = state(&w);
     let counter: i64 = counter[0]["value"].as_str().unwrap().parse().unwrap();
     assert!(counter > stored_at, "the derive wrote after the rows");
     assert_eq!(sessions[0], before.0[0]);
-    assert_eq!(sessions[1]["changed"].as_i64().unwrap(), stored_at);
+    assert_eq!(sessions[1]["changed"].as_i64().unwrap(), stored);
 }
 
 #[test]
