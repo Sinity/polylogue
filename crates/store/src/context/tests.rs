@@ -129,3 +129,23 @@ fn latest_request_keeps_unknown_authorship_and_skips_injection_commands_and_old_
         "current observed user text\nPreserve these spaces.  "
     );
 }
+
+#[test]
+fn open_items_are_worded_once_in_flag_order() {
+    let open = OpenItems {
+        unanswered_prompt: true,
+        open_tool_call: true,
+        todo: Some("write docs".into()),
+        waiting_on: Some("permission".into()),
+    };
+    assert_eq!(
+        open.phrases(),
+        [
+            "the last prompt has no answer",
+            "a tool call never finished",
+            "todo in progress: write docs",
+            "waiting on permission"
+        ]
+    );
+    assert!(OpenItems::default().phrases().is_empty());
+}

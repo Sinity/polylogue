@@ -102,10 +102,10 @@ pub fn output(
     run(values, json, startup.output, || Ok(value.clone()))
 }
 
-/// Where `--output` sends the result; standard output without it.
+/// Where `--to` sends the result; standard output without it.
 fn destination(values: &command_surface::ParsedCommand) -> Result<Option<String>, String> {
     use crate::cli::calling_process;
-    calling_process::options::<calling_process::SchemaOutput>(values).map(|options| options.output)
+    calling_process::options::<calling_process::SchemaOutput>(values).map(|options| options.to)
 }
 
 fn run(

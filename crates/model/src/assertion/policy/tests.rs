@@ -38,7 +38,7 @@ fn a_new_saved_query_name_is_one_query_name_can_say() {
         "a0",
         "a-",
     ] {
-        assert!(sayable_query_name(name), "{name}");
+        assert!(valid_saved_name(name), "{name}");
     }
     for name in [
         "",
@@ -56,7 +56,7 @@ fn a_new_saved_query_name_is_one_query_name_can_say() {
         "a|b",
         "\"quoted\"",
     ] {
-        assert!(!sayable_query_name(name), "{name:?}");
+        assert!(!valid_saved_name(name), "{name:?}");
     }
 }
 

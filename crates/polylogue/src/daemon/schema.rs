@@ -70,7 +70,8 @@ pub struct SelectionSummary {
     pub explicit_inputs: bool,
     pub revision: Option<i64>,
     pub since_ms: Option<i64>,
-    pub unknown_time_inputs: u64,
+    /// Counted only for a selection by origin; `None` when the inputs were named.
+    pub unknown_time_inputs: Option<u64>,
     pub missing_revisions: Vec<String>,
     pub selected_inputs: u64,
     pub selected_bytes: u64,
@@ -216,7 +217,7 @@ fn observe(pool: &ReadPool, gate: &IdleGate, selection: Infer) -> Result<Inferen
         explicit_inputs: !selection.inputs.is_empty(),
         revision: selection.revision,
         since_ms: selection.since_ms().map_err(StoreError::Invalid)?,
-        unknown_time_inputs: 0,
+        unknown_time_inputs: None,
         missing_revisions: Vec::new(),
         selected_inputs: 0,
         selected_bytes: 0,
@@ -252,7 +253,7 @@ fn observe(pool: &ReadPool, gate: &IdleGate, selection: Infer) -> Result<Inferen
                 INPUTS_PER_PAGE,
             )?;
             if let Some(unknown) = page.unknown_time_inputs {
-                summary.unknown_time_inputs = unknown;
+                summary.unknown_time_inputs = Some(unknown);
             }
             summary.missing_revisions.extend(page.missing_revisions);
             for stored in page.inputs {

@@ -62,7 +62,7 @@ fn withdrawal_target(reference: &Reference) -> bool {
 
 /// New saved names start with a lowercase letter and contain lowercase
 /// letters, digits and hyphens. Product vocabulary is checked by the verb.
-pub fn sayable_query_name(name: &str) -> bool {
+pub fn valid_saved_name(name: &str) -> bool {
     name.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
         && name
             .bytes()

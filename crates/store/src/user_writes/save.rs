@@ -117,7 +117,7 @@ pub(super) fn apply(
     let mut saved_position = None;
     let mut watch_position = None;
     if let Some(name) = &save.name {
-        if !polylogue_model::assertion::policy::sayable_query_name(name) {
+        if !polylogue_model::assertion::policy::valid_saved_name(name) {
             return Err(StoreError::invalid(format!(
                 "{name:?} is not a saved query name"
             )));

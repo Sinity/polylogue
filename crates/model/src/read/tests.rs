@@ -128,6 +128,10 @@ fn context_view_needs_prepared_membership() {
 fn unknown_view_names_are_refused_and_options_name_the_supported_views() {
     assert!(View::parse("unknown").is_none());
     assert_eq!(View::ALL.len(), View::NAMES.len());
+    assert_eq!(
+        "unknown".parse::<View>().unwrap_err().to_string(),
+        "unknown view \"unknown\"; views: transcript, dialogue, summary, context, links, changes, live, raw, trace"
+    );
     let invalid = ReadOptions {
         view: View::Dialogue,
         thinking: Some(Expansion::Full),

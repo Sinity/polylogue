@@ -223,7 +223,7 @@ pub(crate) fn answer_result(
 pub(crate) enum Hosted {
     /// A Codex thread on the shared app-server.
     Codex(HostedCodex),
-    /// A session a `polylogue host` process holds (Claude Code
+    /// A session a `polylogue internal host` process holds (Claude Code
     /// stream-json, ACP).
     Stdio(crate::hosting::HostedStdio),
 }

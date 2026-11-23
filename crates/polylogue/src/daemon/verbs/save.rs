@@ -119,7 +119,7 @@ fn check(step: &SaveStep, selection: &Selection) -> Result<(), Failure> {
         return Err(super::not_built_use("save", "page:NAME"));
     }
     if let Some(name) = &step.name
-        && !polylogue_model::assertion::policy::sayable_query_name(name)
+        && !polylogue_model::assertion::policy::valid_saved_name(name)
     {
         return Err(Failure::bad_value(format!(
             "{name:?} is not a saved query name: use lowercase letters, digits and hyphens, starting with a letter"
