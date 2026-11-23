@@ -304,7 +304,7 @@ fn empty_active_path_differs_from_missing_flags() {
         (Some(1), "active:true", 1),
         (Some(0), "active:true", 0),
         (None, "active:unknown", 2),
-        (Some(0), "active:true", 0),
+        (Some(0), "active:unknown", 0),
     ] {
         let db = rusqlite::Connection::open(&state_db).unwrap();
         db.execute("UPDATE messages SET active=?1 WHERE id=2", [flag])

@@ -222,6 +222,15 @@ fn read_on_terminal_shows_whole_session_through_pager() {
     for marker in ["second marker beta", "third marker gamma"] {
         assert_eq!(shown.matches(marker).count(), 1, "{marker} in {shown}");
     }
+    let order: Vec<_> = [
+        "opening question",
+        "second marker beta",
+        "third marker gamma",
+    ]
+    .iter()
+    .map(|marker| shown.find(marker).unwrap())
+    .collect();
+    assert!(order.is_sorted(), "messages out of order: {shown}");
     assert!(!String::from_utf8_lossy(&output.stderr).contains("continue:"));
     assert_eq!(
         super::seen::count(&env),

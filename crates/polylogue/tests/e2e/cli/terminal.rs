@@ -163,6 +163,7 @@ fn archived_controls_are_data_in_pipes_and_terminals() {
         let output = cli(&env, &args);
         assert!(output.status.success(), "{output:?}");
         let text = std::str::from_utf8(&output.stdout).unwrap();
+        assert!(!text.is_empty(), "{args:?} printed nothing");
         safe(text);
         if args == ["status"] {
             assert!(text.contains("\\u007f"), "{text:?}");

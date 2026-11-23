@@ -17,6 +17,7 @@ fn codex_counts_usage_and_keeps_recorded_text() {
     let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let _daemon = start_daemon(&env);
     wait_status(&env, |status| status["store"]["sessions"] == 1);
+    let started = Instant::now();
     let answer = loop {
         let out = cli(&env, &["--json", "measure", "usage"]);
         assert!(out.status.success(), "{out:?}");
@@ -24,6 +25,10 @@ fn codex_counts_usage_and_keeps_recorded_text() {
         if answer["data"]["recorded_usage"]["measured_completion_observations"] == 2 {
             break answer;
         }
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "usage never reached 2 observations: {answer}"
+        );
         std::thread::sleep(Duration::from_millis(20));
     };
     let data = &answer["data"];
@@ -53,6 +58,10 @@ fn codex_counts_usage_and_keeps_recorded_text() {
             .map(|d| d[1].as_f64().unwrap())
             .sum::<f64>(),
         35.0
+    );
+    assert_eq!(
+        daily["baseline_7d"].as_array().unwrap().len(),
+        daily["days"].as_array().unwrap().len()
     );
     assert!(
         daily["baseline_7d"]
@@ -88,7 +97,10 @@ fn codex_counts_usage_and_keeps_recorded_text() {
         .iter()
         .find(|message| message["id"] == "codex:c1")
         .unwrap();
-    assert!(selected.to_string().contains("synthetic-private-tail"));
+    assert_eq!(
+        selected["blocks"][0]["text"],
+        "synthetic-private-tail -----END PRIVATE KEY----- publicneedle"
+    );
     let pool = polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&archive)).unwrap();
     let reader = pool.reader().unwrap();
     let raw = reader
