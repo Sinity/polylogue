@@ -1557,3 +1557,28 @@ fn resolved_result_name_is_disclosed_with_its_immutable_id() {
     }
     assert_eq!(rows, [serde_json::json!({"id":"test:fixed"})]);
 }
+
+#[test]
+fn running_keeps_a_silent_session_whose_root_is_alive() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    let pk = session(&mut f, "test:silent");
+    f.live_facts(
+        pk,
+        &polylogue_model::live::LiveFacts {
+            root: Some(polylogue_model::live::ProcessIdentity {
+                boot: "boot".into(),
+                pid: 1,
+                start: 1,
+            }),
+            last_at: Some(1_000),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    // A live root does not age out: three days of silence is still running.
+    let now = 1_000 + 3 * 86_400_000;
+    let running = f.reads().unwrap().reader().unwrap().running(now).unwrap();
+    let ids: Vec<&str> = running.iter().map(|r| r.session.as_str()).collect();
+    assert_eq!(ids, ["test:silent"]);
+}

@@ -234,18 +234,21 @@ impl Statements {
     }
 }
 
-/// Rows after the bound key values `?{first+1}`...: equal on every earlier
+/// Rows after the bound key values `?{params+1}`...: equal on every earlier
 /// key and after on this one, for some key. Reversing the order reverses
 /// NULL placement together with each value comparison.
-fn after_condition(order: &[OrderKey], first: usize, reverse: bool) -> String {
+fn after_condition(order: &[OrderKey], params: usize, reverse: bool) -> String {
     let mut any = vec![];
     for (i, key) in order.iter().enumerate() {
         let mut all: Vec<String> = order[..i]
             .iter()
             .enumerate()
-            .map(|(j, k)| format!("\"{}\" IS ?{}", k.column, first + j + 1))
+            .map(|(j, k)| format!("\"{}\" IS ?{}", k.column, params + j + 1))
             .collect();
-        let (column, value) = (format!("\"{}\"", key.column), format!("?{}", first + i + 1));
+        let (column, value) = (
+            format!("\"{}\"", key.column),
+            format!("?{}", params + i + 1),
+        );
         all.push(if key.descending ^ reverse {
             format!("({column} < {value} OR ({column} IS NULL AND {value} IS NOT NULL))")
         } else {

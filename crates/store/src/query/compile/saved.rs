@@ -231,23 +231,19 @@ impl Compiler<'_> {
                 time_text_columns.insert(column.name.clone());
             }
         }
-        let row_kind = if !matched && kept.native_identity && shape == Shape::Rows {
-            if let Some(unit) = named_unit {
-                let mut identity = vec![];
-                let count = units::spec(unit).identity.len();
-                for index in 0..count {
-                    let slot = format!("_kept_identity{index}");
-                    select.push(format!("pl_kept_identity(k.rows_json -> ('$.identities[' || j.key || ']'), {index}, {count}) AS {slot}"));
-                    identity.push(slot);
-                }
-                RowKind::UnitRows {
-                    unit,
-                    columns: identity,
-                }
-            } else {
-                RowKind::Distinct {
-                    columns: vec!["_kept_source".into(), "_pk".into()],
-                }
+        let native_unit =
+            named_unit.filter(|_| !matched && kept.native_identity && shape == Shape::Rows);
+        let row_kind = if let Some(unit) = native_unit {
+            let mut identity = vec![];
+            let count = units::spec(unit).identity.len();
+            for index in 0..count {
+                let slot = format!("_kept_identity{index}");
+                select.push(format!("pl_kept_identity(k.rows_json -> ('$.identities[' || j.key || ']'), {index}, {count}) AS {slot}"));
+                identity.push(slot);
+            }
+            RowKind::UnitRows {
+                unit,
+                columns: identity,
             }
         } else {
             RowKind::Distinct {

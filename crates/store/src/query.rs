@@ -25,6 +25,3 @@ pub use compile::{
     Shape, SnippetTerms, Statements, WhyClause, compile, lower,
 };
 pub use polylogue_query::{Options, QueryError, catalog, parse};
-pub fn quoted(value: &str) -> String {
-    polylogue_query::quoted(value)
-}

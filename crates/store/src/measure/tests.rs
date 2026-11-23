@@ -355,6 +355,37 @@ fn quota_reads_reported_windows_and_projects_exhaustion() {
 }
 
 #[test]
+fn quota_projects_exhaustion_before_the_reset() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    let codex = session(&mut f, "codex:s");
+    let reset = T0 + 3 * 3_600_000;
+    let half_hour = 30 * 60_000;
+    for (i, pct) in [80.0, 90.0].into_iter().enumerate() {
+        let at = T0 + i as i64 * half_hour;
+        let pk = model_message(
+            &mut f,
+            codex,
+            &format!("codex:c{i}"),
+            "gpt-5",
+            at,
+            &tokens(10, 0, None, 10),
+        );
+        let q = reading("codex", 300, false, Some(pct), reset, None);
+        f.usage(pk, &tokens(10, 0, None, 10), Some(q)).unwrap();
+        f.derive().unwrap();
+    }
+    let pool = f.reads().unwrap();
+    let r = pool.reader().unwrap();
+    let o = quota::quota(&r, T0 + half_hour + 1, KNOWN).unwrap();
+    let cw = &o.tools.iter().find(|t| t.tool == "codex").unwrap().windows[0];
+    // 10 points in half an hour is 20%/h; the last 10% lasts another half hour.
+    assert_eq!(cw.burn_percent_per_hour, Some(20.0));
+    assert_eq!(cw.exhausted_at, Some(T0 + 2 * half_hour));
+    assert!(!cw.lasts_to_reset);
+}
+
+#[test]
 fn process_keeps_transcript_order_and_outcomes_apart() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();

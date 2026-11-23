@@ -1,5 +1,5 @@
 //! Stored blocks decoded with their text: one block, or a session's text,
-//! thinking and tool-result blocks in reading order.
+//! thinking and tool-result blocks in session order.
 use crate::Result;
 use crate::encoding::{restore_text, unpack_block};
 use polylogue_model::Block;
@@ -7,7 +7,7 @@ use rusqlite::Connection;
 use std::ops::ControlFlow;
 
 /// Visits the text, thinking and tool-result blocks of `session`'s messages
-/// in reading order, duplicate messages left out, until `visit` breaks.
+/// in session order, duplicate messages left out, until `visit` breaks.
 pub(crate) fn visit_text(
     connection: &Connection,
     session: i64,

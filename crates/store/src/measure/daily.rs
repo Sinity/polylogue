@@ -51,8 +51,7 @@ pub fn changepoints(xs: &[f64], min_len: usize) -> Vec<usize> {
     if n < 2 * min_len {
         return vec![];
     }
-    let mean = xs.iter().sum::<f64>() / n as f64;
-    let var = xs.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n as f64;
+    let var = cost(xs) / n as f64;
     let penalty = 2.0 * var.max(f64::MIN_POSITIVE) * (n as f64).ln();
     let mut out = vec![];
     let mut stack = vec![(0usize, n)];
