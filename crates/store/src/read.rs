@@ -1292,12 +1292,11 @@ impl Reader<'_> {
                     .and_then(serde_json::Value::as_number)
                     .cloned(),
                 duration_ms: duration,
-                attrs: attrs
-                    .as_ref()
-                    .and_then(|value| value.get("attrs"))
-                    .and_then(serde_json::Value::as_object)
-                    .cloned()
-                    .unwrap_or_default(),
+                attrs: match attrs.as_ref().and_then(|value| value.get("attrs")) {
+                    None => Default::default(),
+                    Some(serde_json::Value::Object(map)) => map.clone(),
+                    Some(_) => return Err(invalid("unparseable attributes")),
+                },
                 production: attrs
                     .as_ref()
                     .and_then(|a| a.get("production"))

@@ -180,7 +180,8 @@ fn stored_pages_keep_total_count_and_format_only_declared_values() {
         let expected = match row["id"].as_str().unwrap() {
             "test:a" => "1970-01-01T00:00:01Z",
             "test:b" => "1970-01-01T00:00:02Z",
-            _ => "1970-01-01T00:00:03Z",
+            "test:c" => "1970-01-01T00:00:03Z",
+            other => panic!("unexpected id {other}"),
         };
         assert_eq!(row["at"], expected);
         if !page.more {
@@ -196,6 +197,19 @@ fn stored_pages_keep_total_count_and_format_only_declared_values() {
         3
     );
 }
+/// A stored instant the model cannot represent is a stored-data error, not an
+/// unknown time.
+#[test]
+fn a_stored_instant_out_of_range_is_an_error() {
+    let zone = jiff::tz::TimeZone::get("Etc/UTC").unwrap();
+    let mut valid = serde_json::json!(1_000);
+    shape_value(ColKind::Time, &zone, &mut valid).unwrap();
+    assert_eq!(valid, "1970-01-01T00:00:01Z");
+    let mut broken = serde_json::json!(i64::MAX);
+    let error = shape_value(ColKind::Time, &zone, &mut broken).unwrap_err();
+    assert!(error.to_string().contains("invalid stored time"), "{error}");
+}
+
 #[test]
 fn zero_transfer_size_is_a_typed_refusal() {
     let dir = tempfile::tempdir().unwrap();
@@ -342,6 +356,37 @@ fn delivery_filters_read_string_refs_and_structured_omissions_without_reparsing_
             assert_eq!(page.rows[0]["id"], "advice-with-refs", "{query}");
         }
     }
+}
+
+/// The count cache keeps its newest 64 answers at one read position and
+/// every count still comes from its own question.
+#[test]
+fn the_count_cache_holds_at_most_64_answers() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(dir.path()).unwrap();
+    fixture
+        .session(SessionFacts {
+            id: "test:a",
+            ..Default::default()
+        })
+        .unwrap();
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let mut options = options();
+    options.fields = vec!["id".into()];
+    for number in 0..70 {
+        let program = crate::query::compile(
+            &format!("sessions where id:\"test:none{number}\""),
+            &options,
+        )
+        .unwrap();
+        assert_eq!(
+            reader.query_count(&program).unwrap().map(|counts| counts.0),
+            Some(0),
+            "{number}"
+        );
+    }
+    assert_eq!(reader.count_cache().lock().unwrap().entries.len(), 64);
 }
 
 #[cfg(feature = "faults")]

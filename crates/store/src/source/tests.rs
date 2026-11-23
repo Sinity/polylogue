@@ -168,6 +168,16 @@ fn later_chunks_keep_their_commit_when_a_revision_grows() {
             Source::committed_through(&conn, "input", 1, 8).unwrap(),
             Some(9)
         );
+        conn.execute(
+            &source.sql("UPDATE @source.extent SET length=-1 WHERE offset=0"),
+            [],
+        )
+        .unwrap();
+        let error = Source::committed_through(&conn, "input", 1, 8).unwrap_err();
+        assert!(
+            error.to_string().contains("negative source extent"),
+            "{error}"
+        );
         conn.execute(&source.sql("DELETE FROM @source.extent WHERE offset=0"), [])
             .unwrap();
         assert_eq!(

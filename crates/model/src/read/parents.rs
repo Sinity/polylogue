@@ -17,9 +17,12 @@ pub enum ParentIssue {
         parent: SessionId,
         message: MessageId,
     },
-    #[error("parent ID {parent:?} of {child} is invalid")]
+    #[error("parent ID {parent} of {child} is invalid")]
     InvalidParent { child: SessionId, parent: String },
-    #[error("fork from {parent} to {child} has no available branch point ({branch_point:?})")]
+    #[error(
+        "fork from {parent} to {child} has no available branch point ({})",
+        .branch_point.as_deref().unwrap_or("none recorded")
+    )]
     MissingBranchPoint {
         child: SessionId,
         parent: SessionId,

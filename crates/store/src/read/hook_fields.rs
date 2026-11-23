@@ -1,4 +1,4 @@
-//! Stored hook fields as their sources state them, independent of message identity.
+//! Injection fields a message version's sources declared, as they state them.
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{
     BlobHash, MessageId,

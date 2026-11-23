@@ -251,7 +251,11 @@ fn every_stored_value_can_be_queried() {
     ];
     for (query, names) in closed {
         for name in *names {
-            c(&format!("{query}{name}"));
+            let program = c(&format!("{query}{name}"));
+            assert!(
+                program.params.contains(&Param::Text((*name).into())),
+                "{query}{name} does not bind its value"
+            );
         }
         let (unit, field) = query.trim_end_matches(':').split_once(" where ").unwrap();
         let unit = crate::query::ast::Unit::from_name(unit).unwrap();

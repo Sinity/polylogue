@@ -102,11 +102,10 @@ impl Reader<'_> {
         };
         // The marks the derive step works from, and the versions it last
         // derived at; read in constant time.
-        let derive_behind = !crate::derive::caught_up(conn)?;
-        let derivation = if derive_behind {
-            CompletenessDimension::Incomplete(vec![CompletenessReason::DerivationBehind])
-        } else {
+        let derivation = if crate::derive::caught_up(conn)? {
             CompletenessDimension::Complete
+        } else {
+            CompletenessDimension::Incomplete(vec![CompletenessReason::DerivationBehind])
         };
         let mut search_missing = Vec::new();
         if self.pool.reads_build() {

@@ -207,7 +207,8 @@ fn insert_entry(conn: &Connection, id: i64, bit: i64, folded: &str) -> Result<()
 }
 
 /// Historical versions keep their text row, but only current blocks contribute
-/// documents to full-text ranking or embedding.
+/// documents to full-text ranking, and only current message blocks to
+/// embedding.
 pub(crate) fn unindex_unused(
     conn: &Connection,
     texts: &TextIds,

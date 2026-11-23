@@ -139,7 +139,13 @@ impl Source {
             let offset: i64 = row.get(0)?;
             let length: i64 = row.get(1)?;
             let position: i64 = row.get(2)?;
-            if offset != covered || length < 0 || position < 0 {
+            if length < 0 {
+                return Err(StoreError::stored(1, "negative source extent length"));
+            }
+            if position < 0 {
+                return Err(StoreError::stored(2, "negative source commit position"));
+            }
+            if offset != covered {
                 return Ok(None);
             }
             covered = offset

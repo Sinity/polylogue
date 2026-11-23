@@ -12,7 +12,7 @@ use query_language::identity::{QuestionId, question_id_from_normal_form};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::BTreeMap;
 
-fn hash(
+fn question_id(
     normal_form: &serde_json::Value,
     parameters: &BTreeMap<String, String>,
 ) -> Result<QuestionId> {
@@ -27,14 +27,14 @@ pub(crate) fn validate_object(object: &QueryObject) -> Result<()> {
 }
 
 pub(crate) fn validate_integrity(object: &QueryObject) -> Result<()> {
-    if hash(&object.normal_form, &object.parameters)? != object.id {
+    if question_id(&object.normal_form, &object.parameters)? != object.id {
         return Err(crate::StoreError::invalid(
             "query hash does not identify its normal form",
         ));
     }
     let mut definitions = BTreeMap::new();
     for definition in &object.definitions {
-        if hash(&definition.normal_form, &definition.parameters)? != definition.question {
+        if question_id(&definition.normal_form, &definition.parameters)? != definition.question {
             return Err(crate::StoreError::invalid(
                 "query definition hash does not identify its normal form",
             ));
