@@ -859,7 +859,10 @@ fn a_stored_vector_of_another_length_is_named_by_its_values() {
             [key],
         )
         .unwrap();
-    let error = vectors.load(key).unwrap_err().to_string();
+    let Err(error) = vectors.load(key) else {
+        panic!("a vector of another length loaded");
+    };
+    let error = error.to_string();
     assert!(error.contains("has 3 values, not 2"), "{error}");
 }
 
