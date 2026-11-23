@@ -300,7 +300,9 @@ fn mismatched_source_reads_cannot_borrow_an_empty_body() {
                 result.is_err(),
                 "mismatched {invalid} source read was accepted"
             );
-        } else if result.is_ok() {
+        } else {
+            // The writer accepts these; the reader refuses the mismatch.
+            result.unwrap();
             engine.refresh_import_assets(&mut Pass::default()).unwrap();
             let reader = engine.reads.reader().unwrap();
             let member = observed(&reader, MEMBER);
@@ -356,6 +358,12 @@ fn saved_empty_selection_refuses_a_real_nonempty_source_rewrite() {
         reader.input_progress(&asset.input).unwrap().unwrap().chain,
         asset.chain
     );
-    assert!(reader.attachment_hash(&asset).is_err());
-    assert!(reader.attachment_range(&asset, 0..0).is_err());
+    assert!(matches!(
+        reader.attachment_hash(&asset),
+        Err(polylogue_store::StoreError::Conflict(_))
+    ));
+    assert!(matches!(
+        reader.attachment_range(&asset, 0..0),
+        Err(polylogue_store::StoreError::Conflict(_))
+    ));
 }

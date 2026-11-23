@@ -124,8 +124,14 @@ fn segmented_asset_ranges_and_hashes_match_and_old_selections_refuse_rewrites() 
     stored.pop().expect("one captured rewrite").unwrap();
     assert!(writer.flush().unwrap().errors.is_empty());
     let reader = pool.reader().unwrap();
-    assert!(reader.attachment_hash(&asset).is_err());
-    assert!(reader.attachment_range(&asset, 0..asset.size).is_err());
+    assert!(matches!(
+        reader.attachment_hash(&asset),
+        Err(StoreError::Conflict(_))
+    ));
+    assert!(matches!(
+        reader.attachment_range(&asset, 0..asset.size),
+        Err(StoreError::Conflict(_))
+    ));
 }
 
 // These fixtures exercise source metadata discovery, not byte commits or availability.
