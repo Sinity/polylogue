@@ -270,7 +270,7 @@ fn expand_extensions(
     })
 }
 
-pub(crate) fn column_kind(kind: ColKind) -> FieldKind {
+pub fn column_kind(kind: ColKind) -> FieldKind {
     match kind {
         ColKind::Text => FieldKind::Text,
         ColKind::Ids => FieldKind::List(Box::new(FieldKind::Reference)),

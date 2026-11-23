@@ -300,6 +300,6 @@ impl Compiler<'_> {
     }
 }
 
-/// The definition a saved query's name resolves to: the current revision
-/// of the one note family with that name.
+/// The saved query named by `name`. Errors when the name is unknown or its
+/// definitions conflict.
 pub use polylogue_query::compile::saved_definition;

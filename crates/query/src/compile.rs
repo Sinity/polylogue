@@ -200,6 +200,7 @@ fn value_text(value: &Value) -> Result<String, QueryError> {
     }
 }
 pub use saved::{Parameters, saved_definition};
+pub use source::column_kind;
 pub fn definition_parameters(
     text: &str,
     catalog: &query_language::catalog::Catalog,

@@ -369,7 +369,7 @@ impl Reader<'_> {
         }
         let mut candidates = statement.raw_query();
         let mut rows = Vec::new();
-        let mut batch_size = limit.clamp(1, 256) as usize;
+        let mut batch_size = limit.clamp(1, CANDIDATE_BATCH as i64) as usize;
         loop {
             let mut batch = Vec::new();
             let mut exhausted = false;
@@ -395,9 +395,9 @@ impl Reader<'_> {
                 break;
             }
             batch_size = if found {
-                (limit - rows.len() as i64).clamp(1, 256) as usize
+                (limit - rows.len() as i64).clamp(1, CANDIDATE_BATCH as i64) as usize
             } else {
-                (batch_size * 2).min(256)
+                (batch_size * 2).min(CANDIDATE_BATCH)
             };
         }
         Ok(rows)
@@ -876,6 +876,9 @@ pub fn why(
         defaults.chain(clauses).collect()
     })
 }
+
+/// Most candidate keys one recency batch reads.
+const CANDIDATE_BATCH: usize = 256;
 
 /// Rows read per statement while a key-first answer streams.
 const HYDRATE_BATCH: usize = 256;

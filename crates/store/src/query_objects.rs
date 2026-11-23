@@ -245,20 +245,33 @@ pub(crate) fn known_run(conn: &Connection, run: &QueryRun) -> Result<bool> {
 }
 
 pub(crate) fn known_run_outcome(conn: &Connection, outcome: &QueryRunOutcome) -> Result<bool> {
-    let source = Source::of(conn)?;
-    let stored:Option<(Vec<u8>,String,String)>=conn.query_row(
-        &source.sql("SELECT completion,binding_hash,run_hash FROM @source.query_run WHERE id=?1 AND completion IS NOT NULL"),
-        [outcome.run.as_str()],|row| <(_, _, _)>::try_from(row),
-    ).optional()?;
-    let Some((bytes, action, intent)) = stored else {
+    let Some(existing) = stored_run_outcome(conn, Source::of(conn)?, &outcome.run)? else {
         return Ok(false);
     };
-    let existing: QueryRunOutcome = crate::encoding::unpack_json(&bytes)?;
-    check_outcome_integrity(&existing, &action, &intent)?;
     if existing != *outcome {
         return Err(StoreError::Conflict(format!("run outcome:{}", outcome.run)));
     }
     Ok(true)
+}
+
+/// The outcome stored for a run in `source`, checked against its recorded
+/// action and invocation hashes.
+fn stored_run_outcome(
+    conn: &Connection,
+    source: Source,
+    id: &polylogue_model::RunId,
+) -> Result<Option<QueryRunOutcome>> {
+    let stored:Option<(Vec<u8>,String,String)>=conn.query_row(
+        &source.sql("SELECT completion,binding_hash,run_hash FROM @source.query_run WHERE id=?1 AND completion IS NOT NULL"),
+        [id.as_str()],|row| <(_, _, _)>::try_from(row),
+    ).optional()?;
+    stored
+        .map(|(body, action, intent)| -> Result<QueryRunOutcome> {
+            let value: QueryRunOutcome = crate::encoding::unpack_json(&body)?;
+            check_outcome_integrity(&value, &action, &intent)?;
+            Ok(value)
+        })
+        .transpose()
 }
 
 fn check_outcome_integrity(value: &QueryRunOutcome, action: &str, intent: &str) -> Result<()> {
@@ -600,17 +613,7 @@ impl Reader<'_> {
         id: &polylogue_model::RunId,
         pending: Option<&dyn crate::primary::Sinex>,
     ) -> Result<Option<QueryRunOutcome>> {
-        let stored:Option<(Vec<u8>,String,String)>=self.conn()?.query_row(
-            "SELECT completion,binding_hash,run_hash FROM source_query_run WHERE id=?1 AND completion IS NOT NULL",
-            [id.as_str()],|row| <(_, _, _)>::try_from(row),
-        ).optional()?;
-        let mut found = stored
-            .map(|(body, action, intent)| -> Result<QueryRunOutcome> {
-                let value: QueryRunOutcome = crate::encoding::unpack_json(&body)?;
-                check_outcome_integrity(&value, &action, &intent)?;
-                Ok(value)
-            })
-            .transpose()?;
+        let mut found = stored_run_outcome(self.conn()?, Source::Cache, id)?;
         if let Some(pending) = pending {
             // Plain reads hand over a completed run group. Saved-object
             // executions acknowledge Begin first and finish in a later group.

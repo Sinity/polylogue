@@ -351,10 +351,10 @@ impl<'a> Compiler<'a> {
         // last n of those.
         let kept = match (first, last) {
             (None, None) => "1".to_owned(),
-            (Some(first), None) => format!("_place <= {first}"),
-            (None, Some(last)) => format!("_place > _of - {last}"),
+            (Some(first), None) => format!("_ordinal <= {first}"),
+            (None, Some(last)) => format!("_ordinal > _sibling_count - {last}"),
             (Some(first), Some(last)) => {
-                format!("_place <= {first} AND _place > min(_of, {first}) - {last}")
+                format!("_ordinal <= {first} AND _ordinal > min(_sibling_count, {first}) - {last}")
             }
         };
         let order = self.default_order(&sc).join(", ");
@@ -381,9 +381,9 @@ impl<'a> Compiler<'a> {
         // read through its key.
         let sql = format!(
             "{ctes}SELECT _parent, {shown} FROM (SELECT _parents.value AS _parent, {select}, \
-             row_number() OVER (PARTITION BY _parents.value ORDER BY {order}) AS _place, \
-             count(*) OVER (PARTITION BY _parents.value) AS _of \
-             FROM json_each(?{n}) _parents CROSS JOIN {} WHERE {}) WHERE {kept} ORDER BY _parent, _place",
+             row_number() OVER (PARTITION BY _parents.value ORDER BY {order}) AS _ordinal, \
+             count(*) OVER (PARTITION BY _parents.value) AS _sibling_count \
+             FROM json_each(?{n}) _parents CROSS JOIN {} WHERE {}) WHERE {kept} ORDER BY _parent, _ordinal",
             base_from(unit, &sc.a),
             and_all(&w),
         );
