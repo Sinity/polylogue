@@ -28,7 +28,7 @@ use crate::query::fields::STRUCTURAL_KINDS;
 pub(crate) use usage::{RESPONSE_ROWS, cost_of, own_responses_sum, unpriced_in};
 
 pub use usage::{
-    ModelUsage, Money, RecordedUsage, SessionUsage, TokenCount, TokensByKind, Totals, UsageReport,
+    ModelUsage, Money, RecordedUsage, SessionUsage, TokenCount, TokensByKind, Totals, UsageMeasure,
 };
 
 use crate::ConnExt as _;
@@ -136,7 +136,7 @@ impl Selection {
 
 /// Tokens by kind and cost over the selection, at the own grain: each model
 /// response once, however many sessions show it.
-pub fn usage(reader: &Reader<'_>, selection: &Selection) -> Result<UsageReport> {
+pub fn usage(reader: &Reader<'_>, selection: &Selection) -> Result<UsageMeasure> {
     usage::report(reader, selection)
 }
 

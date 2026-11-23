@@ -87,10 +87,7 @@ impl<'a> Reader<'a> {
             reader: self,
             own,
             with_parents: has_parents.then_some(keys),
-            parents: Parents {
-                complete: issues.is_empty(),
-                issues,
-            },
+            parents: Parents { issues },
             structured: true,
             visibility: None,
         })

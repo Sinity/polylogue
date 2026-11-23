@@ -211,12 +211,6 @@ impl ReadSpanBinding {
             Self::Fragments { origin, .. } => origin,
         }
     }
-    pub fn version(&self) -> &TextSourceVersion {
-        match self {
-            Self::Native { span } => &span.version,
-            Self::Fragments { version, .. } => version,
-        }
-    }
     pub fn validate(&self) -> Result<(), TextFragmentError> {
         match self {
             Self::Native { span } => span.validate(),

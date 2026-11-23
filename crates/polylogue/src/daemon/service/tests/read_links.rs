@@ -385,7 +385,7 @@ fn cyclic_and_conflicting_families_tile_both_directions_without_a_guessed_root()
             .find_map(|item| match &item.kind {
                 ItemKind::Card { card } => match card.as_ref() {
                     Card::LinkNode {
-                        seed: true,
+                        asked: true,
                         lineage,
                         ..
                     } => lineage.as_deref(),

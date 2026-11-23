@@ -1,5 +1,7 @@
+//! The options of a reading: its view, what it shows and hides, the budgets
+//! of a page, and the place a context or history reading is taken at.
 use super::ReadError;
-use crate::{Block, BlockKind, Message, PromptKind, Role};
+use crate::{BlockKind, Message, PromptKind, Role};
 use serde::{Deserialize, Serialize};
 
 /// A context message, local archive position or annotation time. The wire form remains
@@ -114,9 +116,6 @@ impl View {
             Self::Summary | Self::Links | Self::Live | Self::Trace => false,
         }
     }
-    pub fn keeps(self, message: &Message, block: &Block) -> bool {
-        self.keeps_message(message) && self.block_kinds().contains(&block.kind())
-    }
 }
 impl std::fmt::Display for View {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -218,14 +217,14 @@ impl Default for ReadOptions {
             tools: None,
             thinking: None,
             harness: None,
-            output_lines: 100,
+            output_lines: output_lines(),
             inherited: false,
             branches: false,
             turns: false,
-            assertions: true,
+            assertions: enabled(),
             for_others: false,
             variants: vec![],
-            spawns: SpawnFold::Card,
+            spawns: spawn_cards(),
             physical: false,
             context_meter: false,
             at: None,
@@ -373,7 +372,8 @@ impl ReadOptions {
                     self.spawns = match (level, number) {
                         ("card", _) => SpawnFold::Card,
                         (_, Some(depth)) => SpawnFold::Inline {
-                            depth: Some(u32::try_from(depth).map_err(|_| unknown(word))?),
+                            // A depth past u32::MAX reaches every level a session tree has.
+                            depth: Some(u32::try_from(depth).unwrap_or(u32::MAX)),
                         },
                         _ => SpawnFold::Inline { depth: None },
                     }
@@ -405,14 +405,18 @@ impl ReadOptions {
     pub fn show_hide_words(&self) -> (Vec<String>, Vec<String>) {
         let mut show = Vec::new();
         let mut hide = Vec::new();
+        let tools = ShowKind::Tools.name();
         match self.tools {
-            Some(Expansion::Full) if self.output_lines == 0 => show.push("tools:full".into()),
-            Some(Expansion::Full) => show.push(format!("tools:{}", self.output_lines)),
-            Some(Expansion::Collapsed) => show.push("tools:line".into()),
-            Some(Expansion::None) => hide.push("tools".into()),
+            Some(Expansion::Full) if self.output_lines == 0 => show.push(format!("{tools}:full")),
+            Some(Expansion::Full) => show.push(format!("{tools}:{}", self.output_lines)),
+            Some(Expansion::Collapsed) => show.push(format!("{tools}:line")),
+            Some(Expansion::None) => hide.push(tools.into()),
             None => {}
         }
-        for (name, level) in [("thinking", self.thinking), ("harness", self.harness)] {
+        for (name, level) in [
+            (ShowKind::Thinking.name(), self.thinking),
+            (ShowKind::Harness.name(), self.harness),
+        ] {
             match level {
                 Some(Expansion::Full) => show.push(format!("{name}:full")),
                 Some(Expansion::Collapsed) => show.push(format!("{name}:line")),
@@ -421,11 +425,11 @@ impl ReadOptions {
             }
         }
         for (name, value, default) in [
-            ("inherited", self.inherited, false),
-            ("branches", self.branches, false),
-            (ShowKind::Annotations.name(), self.assertions, true),
-            ("turns", self.turns, false),
-            ("context", self.context_meter, false),
+            (ShowKind::Inherited.name(), self.inherited, false),
+            (ShowKind::Branches.name(), self.branches, false),
+            (ShowKind::Annotations.name(), self.assertions, enabled()),
+            (ShowKind::Turns.name(), self.turns, false),
+            (ShowKind::Context.name(), self.context_meter, false),
         ] {
             if value != default {
                 if value {
@@ -435,11 +439,15 @@ impl ReadOptions {
                 }
             }
         }
+        let spawns = ShowKind::Spawns.name();
         match self.spawns {
             SpawnFold::Card => {}
-            SpawnFold::Hidden => hide.push("spawns".into()),
-            SpawnFold::Inline { depth: None } => show.push("spawns:full".into()),
-            SpawnFold::Inline { depth: Some(depth) } => show.push(format!("spawns:{depth}")),
+            SpawnFold::Hidden => hide.push(spawns.into()),
+            SpawnFold::Inline { depth: None } => show.push(format!("{spawns}:full")),
+            // Depth zero places no inline reading: the same as cards, and the
+            // table accepts only positive depths.
+            SpawnFold::Inline { depth: Some(0) } => show.push(format!("{spawns}:card")),
+            SpawnFold::Inline { depth: Some(depth) } => show.push(format!("{spawns}:{depth}")),
         }
         (show, hide)
     }
@@ -511,7 +519,7 @@ impl ReadOptions {
             ),
             (self.turns && !prose, "turns", "transcript, context"),
             (
-                self.output_lines != 100 && !prose,
+                self.output_lines != output_lines() && !prose,
                 "output_lines",
                 "transcript, context",
             ),
@@ -537,6 +545,15 @@ impl ReadOptions {
                 matches!(self.spawns, SpawnFold::Inline { .. }) && self.view == View::Context,
                 "spawns",
                 "transcript, dialogue, changes, raw",
+            ),
+            (
+                self.context_meter
+                    && matches!(
+                        self.view,
+                        View::Summary | View::Links | View::Live | View::Trace
+                    ),
+                "context_meter",
+                "transcript, dialogue, context, changes, raw",
             ),
             (
                 self.diff.is_some() && self.view != View::Context,

@@ -580,10 +580,10 @@ impl<'a> Encoder<'a> {
                 inherited_messages,
                 own_cost,
                 tree_cost,
-                seed,
+                asked,
                 open,
             } => {
-                self.line(&format!("{} {reference} · {} · parents {} · {} own + {} inherited · cost {} own / {} tree",if *seed {"▶"}else{"↳"},value_text(title),parents.join(", "),value_text(own_messages),value_text(inherited_messages),value_text(own_cost),value_text(tree_cost)))?;
+                self.line(&format!("{} {reference} · {} · parents {} · {} own + {} inherited · cost {} own / {} tree",if *asked {"▶"}else{"↳"},value_text(title),parents.join(", "),value_text(own_messages),value_text(inherited_messages),value_text(own_cost),value_text(tree_cost)))?;
                 if let Some(lineage) = lineage {
                     self.line(&lineage_text(lineage))?;
                 }

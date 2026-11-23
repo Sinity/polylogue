@@ -637,7 +637,7 @@ fn fork_with_parents_shows_inherited_count() {
     let reader = pool.reader().unwrap();
     let child = sid("agent-fork");
     let selection = reader.select_messages(&child, true).unwrap();
-    assert!(selection.parents().complete, "{:?}", selection.parents());
+    assert!(selection.parents().complete(), "{:?}", selection.parents());
     // The parent's prompt up to the branch point comes before the fork's
     // own message.
     let keys = reader.message_keys_with_parents(&child).unwrap();

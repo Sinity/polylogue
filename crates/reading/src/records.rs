@@ -214,7 +214,7 @@ fn session(
             session_record(reader, id)?.into(),
             LayoutFacts {
                 lineage_complete: if inherited {
-                    polylogue_model::read::ValueState::known(selected.parents().complete)
+                    polylogue_model::read::ValueState::known(selected.parents().complete())
                 } else {
                     polylogue_model::read::ValueState::NotApplicable
                 },

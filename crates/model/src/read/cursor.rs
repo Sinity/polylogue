@@ -136,7 +136,7 @@ pub struct PageCursor {
     /// Digest of the reading options, the format and the enabled variants.
     /// A continuation with other options is refused; the page budget may
     /// change for one page.
-    pub options: String,
+    pub digest: String,
     /// The variants the reading renders, resolved on its first page, so a
     /// continuation renders the same ones whatever the setting says now.
     pub variants: Vec<String>,
@@ -356,11 +356,11 @@ impl PageCursor {
     }
 
     /// Refuse a cursor issued for another target or other options.
-    pub fn check(&self, target: &str, options: &str) -> Result<(), CursorError> {
+    pub fn check(&self, target: &str, digest: &str) -> Result<(), CursorError> {
         if self.target != target {
             return Err(CursorError::OtherReading("the target differs"));
         }
-        if self.options != options {
+        if self.digest != digest {
             return Err(CursorError::OtherReading("the reading options differ"));
         }
         Ok(())

@@ -449,6 +449,12 @@ fn spawn_levels_and_help_come_from_the_show_table() {
         ("spawns:full", SpawnFold::Inline { depth: None }),
         ("spawns:card", SpawnFold::Card),
         ("spawns:2", SpawnFold::Inline { depth: Some(2) }),
+        (
+            "spawns:4294967296",
+            SpawnFold::Inline {
+                depth: Some(u32::MAX),
+            },
+        ),
     ] {
         let mut options = ReadOptions::default();
         options.apply_show_hide(&[word.into()], &[]).unwrap();
@@ -489,6 +495,46 @@ fn spawn_levels_and_help_come_from_the_show_table() {
         inline_context.validate(),
         Err(ReadError::UnsupportedOption { .. })
     ));
+}
+
+#[test]
+fn inline_spawns_to_depth_zero_read_back_as_cards() {
+    let options = ReadOptions {
+        spawns: SpawnFold::Inline { depth: Some(0) },
+        ..ReadOptions::default()
+    };
+    let (show, hide) = options.show_hide_words();
+    assert_eq!(show, ["spawns:card"]);
+    assert!(hide.is_empty());
+    let mut again = ReadOptions::default();
+    again.apply_show_hide(&show, &hide).unwrap();
+    assert_eq!(again.spawns, SpawnFold::Card);
+}
+
+#[test]
+fn the_context_meter_is_refused_where_no_message_header_is_read() {
+    for view in [View::Summary, View::Links, View::Live, View::Trace] {
+        let options = ReadOptions {
+            view,
+            context_meter: true,
+            ..ReadOptions::default()
+        };
+        assert!(
+            matches!(
+                options.validate(),
+                Err(ReadError::UnsupportedOption { ref option, .. }) if option == "context_meter"
+            ),
+            "{view}"
+        );
+    }
+    for view in [View::Transcript, View::Dialogue, View::Context] {
+        let options = ReadOptions {
+            view,
+            context_meter: true,
+            ..ReadOptions::default()
+        };
+        assert!(options.validate().is_ok(), "{view}");
+    }
 }
 
 #[test]

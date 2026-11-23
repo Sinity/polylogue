@@ -132,7 +132,7 @@ fn a_1030_session_chain_has_no_depth_or_call_stack_cutoff() {
     let r = pool.reader().unwrap();
     let id = SessionId::parse("claude-code:s1029").unwrap();
     let selected = r.select_messages(&id, true).unwrap();
-    assert!(selected.parents().complete);
+    assert!(selected.parents().complete());
     assert_eq!(
         texts(&selected),
         (0..1030)
@@ -156,7 +156,7 @@ fn branch_point_in_inherited_prefix_excludes_its_tail() {
     let selected = r
         .select_messages(&SessionId::parse("claude-code:c").unwrap(), true)
         .unwrap();
-    assert!(selected.parents().complete);
+    assert!(selected.parents().complete());
     assert_eq!(texts(&selected), ["grandparent first", "child tail"]);
 }
 
@@ -172,7 +172,7 @@ fn unknown_branch_points_never_substitute_the_full_parent() {
         let r = pool.reader().unwrap();
         let id = SessionId::parse("claude-code:b").unwrap();
         let selected = r.select_messages(&id, true).unwrap();
-        assert!(!selected.parents().complete);
+        assert!(!selected.parents().complete());
         assert!(
             matches!(&selected.parents().issues[..], [ParentIssue::MissingBranchPoint { branch_point: got, .. }] if got.as_deref() == branch_point)
         );
@@ -252,7 +252,7 @@ fn a_shared_ancestor_is_deduplicated_without_becoming_a_session_cycle() {
     let selected = r
         .select_messages(&SessionId::parse("claude-code:child").unwrap(), true)
         .unwrap();
-    assert!(selected.parents().complete);
+    assert!(selected.parents().complete());
     assert_eq!(texts(&selected), ["p", "a", "b", "child"]);
     assert_eq!(
         r.query(
@@ -369,7 +369,7 @@ fn incompatible_recorded_forks_report_both_references_without_choosing_a_prefix(
     let selected = reader
         .select_messages(&SessionId::parse("claude-code:child").unwrap(), true)
         .unwrap();
-    assert!(!selected.parents().complete);
+    assert!(!selected.parents().complete());
     assert!(
         matches!(&selected.parents().issues[..], [ParentIssue::ConflictingParents { child, first, first_branch_point, second, second_branch_point }]
         if child.to_string() == "claude-code:child" && first.to_string() == "claude-code:a" && first_branch_point == "claude-code:a-0" && second.to_string() == "claude-code:b" && second_branch_point == "claude-code:b-0")

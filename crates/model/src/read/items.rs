@@ -469,7 +469,8 @@ pub enum Card {
         inherited_messages: ValueState<u64>,
         own_cost: ValueState<serde_json::Value>,
         tree_cost: ValueState<serde_json::Value>,
-        seed: bool,
+        /// This is the session the links view was asked about.
+        asked: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         open: Option<Box<ReadyCall>>,
     },

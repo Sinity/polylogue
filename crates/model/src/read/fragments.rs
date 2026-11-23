@@ -29,34 +29,43 @@ pub struct FragmentBodyOrigin {
 }
 impl FragmentOrigin {
     pub fn validate(&self, start: u64, end: u64) -> Result<(), ReadError> {
-        let invalid =
-            || ReadError::invalid("fragment origin does not match the selected source recipe");
+        let invalid = |why: &str| {
+            ReadError::invalid(format!(
+                "fragment origin does not match the selected source recipe: {why}"
+            ))
+        };
         if start > end {
-            return Err(invalid());
+            return Err(invalid("the selected range is reversed"));
         }
         let Some(first) = self.bodies.first() else {
             return if start == 0 && end == 0 {
                 Ok(())
             } else {
-                Err(invalid())
+                Err(invalid("no body covers the selected range"))
             };
         };
         let last = self.bodies.last().expect("nonempty bodies");
-        if first.start > start || last.end < end {
-            return Err(invalid());
+        if first.start > start {
+            return Err(invalid("the first body starts after the selected range"));
+        }
+        if last.end < end {
+            return Err(invalid("the last body ends before the selected range"));
         }
         let mut prior_end: Option<u64> = None;
         for body in &self.bodies {
-            if body.start > body.end
-                || !matches!(
-                    body.kind,
-                    BlockKind::Text | BlockKind::Thinking | BlockKind::ToolResult
-                )
-                || prior_end.is_some_and(|prior| {
-                    prior.checked_add(crate::TEXT_BODY_SEPARATOR.len() as u64) != Some(body.start)
-                })
-            {
-                return Err(invalid());
+            if body.start > body.end {
+                return Err(invalid("a body range is reversed"));
+            }
+            if !matches!(
+                body.kind,
+                BlockKind::Text | BlockKind::Thinking | BlockKind::ToolResult
+            ) {
+                return Err(invalid("a body is not a text kind"));
+            }
+            if prior_end.is_some_and(|prior| {
+                prior.checked_add(crate::TEXT_BODY_SEPARATOR.len() as u64) != Some(body.start)
+            }) {
+                return Err(invalid("bodies are not separated by exactly one separator"));
             }
             prior_end = Some(body.end);
         }
@@ -162,3 +171,6 @@ pub(crate) fn project_fragment(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

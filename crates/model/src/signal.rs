@@ -97,9 +97,7 @@ pub struct Commit {
 
 impl Checkpoint {
     pub fn identity(&self) -> Result<BlobHash, serde_json::Error> {
-        Ok(BlobHash(
-            *blake3::hash(&serde_json::to_vec(self)?).as_bytes(),
-        ))
+        Ok(BlobHash::of(&serde_json::to_vec(self)?))
     }
 }
 

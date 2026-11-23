@@ -1,4 +1,4 @@
-//! The links view: every session linked to the seed, as a tree from the
+//! The links view: every session linked to the session asked about, as a tree from the
 //! proven root or the known parents of its recorded ancestry, paged from a depth-first walk.
 //! A cycle entry is a display position; each node keeps its typed root issue.
 //!
@@ -354,7 +354,7 @@ fn items(reader: &Reader<'_>, seed: &SessionId, step: &Step) -> Result<Vec<ReadI
                 inherited_messages: ValueState::Unknown { reason: None },
                 own_cost: ValueState::Unknown { reason: None },
                 tree_cost: ValueState::Unknown { reason: None },
-                seed: *session == seed.to_string(),
+                asked: *session == seed.to_string(),
                 open: None,
             }),
         },
@@ -477,7 +477,7 @@ pub(super) fn page(
         let next = PageCursor {
             session_read: None,
             target: target.clone(),
-            options: digest.clone(),
+            digest: digest.clone(),
             variants: request.options.variants.clone(),
             versions: graph_version,
             position: PagePosition::Links {

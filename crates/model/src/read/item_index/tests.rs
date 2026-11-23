@@ -350,3 +350,95 @@ fn entry_classes_show_exactly_what_visible_entries_shows() {
         assert_eq!(EntryClass::from_bits(class.bits()), Some(*class));
     }
 }
+
+#[test]
+fn stored_class_bits_outside_the_declared_kinds_are_rejected() {
+    assert_eq!(
+        EntryClass::from_bits(11),
+        Some(EntryClass::new(
+            ClassKind::Event,
+            ClassAuthor::Other,
+            false,
+            0
+        ))
+    );
+    for bits in [12, 15, 0x8000, 0x800B] {
+        assert_eq!(EntryClass::from_bits(bits), None, "{bits:#x}");
+    }
+}
+
+fn entry_of_one_block(author: Role, prompt_kind: Option<PromptKind>, block: Block) -> IndexEntry {
+    let message = message(1, author, prompt_kind, vec![block]);
+    message_entries(&message, &[0], MessagePlace::default()).remove(1)
+}
+
+#[test]
+fn a_hidden_harness_shows_none_of_its_messages_and_a_collapsed_one_a_line() {
+    // A long text, so the collapsed line is cut at its fixed 24 tokens.
+    let long = vec!["word"; 400].join(" ");
+    let messages = vec![
+        message(0, Role::User, Some(PromptKind::Prose), vec![text("ask")]),
+        message(1, Role::User, Some(PromptKind::Harness), vec![text(&long)]),
+    ];
+    let entries = entries_of(&messages);
+    let shown = |harness| {
+        let options = ReadOptions {
+            harness: Some(harness),
+            ..ReadOptions::default()
+        };
+        visible_entries(
+            &[Segment {
+                entries: &entries,
+                inherited: false,
+            }],
+            &ShowProfile::of(&options),
+        )
+    };
+    let none = shown(Expansion::None);
+    assert_eq!(
+        none.shown.iter().map(|s| s.entry).collect::<Vec<_>>(),
+        [0, 1]
+    );
+    let collapsed = shown(Expansion::Collapsed);
+    assert_eq!(
+        collapsed.shown.iter().map(|s| s.entry).collect::<Vec<_>>(),
+        [0, 1, 2, 3]
+    );
+    assert_eq!(collapsed.shown[3].cost, 24);
+    let full = shown(Expansion::Full);
+    assert_eq!(full.shown[3].cost, entries[3].tokens_full);
+    assert!(full.shown[3].cost > 24);
+}
+
+#[test]
+fn a_shown_tool_result_costs_its_head_and_tail_lines() {
+    // 40 lines of 7 characters: 319 bytes, so 80 tokens (a quarter of the
+    // bytes outweighs 1.3 tokens a word).
+    let output = vec!["xxxxxxx"; 40].join("\n");
+    let block = Block::ToolResult {
+        reported_duration_ms: None,
+        call_id: Some("c1".into()),
+        outcome: crate::ToolOutcome::Ok,
+        output: Some(output),
+        data: None,
+        attachments: vec![],
+    };
+    let entry = entry_of_one_block(Role::Assistant, None, block);
+    assert_eq!((entry.tokens_full, entry.output_lines), (80, 40));
+    let cost = |tools, output_lines| {
+        ShowProfile::of(&ReadOptions {
+            tools: Some(tools),
+            output_lines,
+            ..ReadOptions::default()
+        })
+        .cost(&entry)
+    };
+    // The first and last 5 lines are 10 of 40: a quarter of 80 tokens, and
+    // the line that says the middle was cut.
+    assert_eq!(cost(Expansion::Full, 5), Some(24));
+    // The first and last 20 lines are all of it, and 0 keeps all of it.
+    assert_eq!(cost(Expansion::Full, 20), Some(80));
+    assert_eq!(cost(Expansion::Full, 0), Some(80));
+    assert_eq!(cost(Expansion::Collapsed, 5), Some(0));
+    assert_eq!(cost(Expansion::None, 5), None);
+}

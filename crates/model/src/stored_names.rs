@@ -9,7 +9,6 @@
 /// A fieldless enum stored and queried by name, so a store can decode a
 /// column into it and refuse a name the enum does not have.
 pub trait StoredName: Copy + 'static {
-    const NAMES: &'static [&'static str];
     fn as_str(self) -> &'static str;
     fn from_name(name: &str) -> Option<Self>;
 }
@@ -24,7 +23,6 @@ macro_rules! stored_names {
     };
     (@impl $ty:ident, $name_fn:ident, $parse_fn:ident, $all_type:ty, $all:expr; { $($variant:ident => $name:literal),+ }) => {
         impl $crate::StoredName for $ty {
-            const NAMES: &'static [&'static str] = $ty::NAMES;
             fn as_str(self) -> &'static str {
                 $ty::$name_fn(self)
             }
