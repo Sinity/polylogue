@@ -108,7 +108,7 @@ Sharing ends at the local file; carrying an excerpt into a web chat is a `send` 
 
 ### Document, message and note pages
 
-- `/d/DOCUMENT`: title, purpose, authorship, text, the stored inputs it was read from; the `transcript` and `dialogue` views; paging; the inspector with its **Backlinks** panel.
+- `/d/DOCUMENT`: title, purpose, authorship, text, the stored inputs it was read from; the `transcript` and `raw` views (`dialogue` does not fit a document, [reading.md](reading.md)); paging; the inspector with its **Backlinks** panel.
 - `/m/MESSAGE` redirects to the reader at that message.
 - `/n/NOTE`: the revision (kind, author, `via`, target links, body, relations, check state for claims); **revision history** with diffs (`annotations where root:X withdrawn:*`); a **conflict** view when two revisions are current ([annotations.md](annotations.md#current-revisions)), resolved by writing one revision with `edit`; withdrawn state; the **Backlinks** panel (the pages that place or include the note, the notes and pages that link to it, citations of it; `links where target:annotation:X`, [page-text.md](page-text.md#backlinks)); **+ page**, which places the note on the active page as an inclusion; judgments on this revision with their authors; actions **Edit** (`edit`), **Withdraw** (`withdraw`), **Judge** (`judge accept|reject|defer`). Edited and withdrawn revisions stay readable.
 

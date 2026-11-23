@@ -22,7 +22,7 @@ fn built_with(tail: &[&str]) -> Vec<String> {
 #[test]
 fn package_filters_keep_the_workspace_feature_graph() {
     assert_eq!(arguments(&[], None).unwrap(), built_with(&["--tests"]));
-    for flag in [
+    for args in [
         &["-p", "polylogue-store"][..],
         &["-ppolylogue-store"],
         &["-p=polylogue-store"],
@@ -30,9 +30,9 @@ fn package_filters_keep_the_workspace_feature_graph() {
         &["--package", "polylogue-store"],
     ] {
         assert_eq!(
-            arguments(flag, None).unwrap(),
+            arguments(args, None).unwrap(),
             built_with(&["-E", "((package(=polylogue-store)))", "--tests"]),
-            "{flag:?}"
+            "{args:?}"
         );
     }
     assert_eq!(
@@ -158,7 +158,7 @@ fn selections_share_features_and_targets_in_the_runner() {
         (
             "polylogue-sinex",
             "[features]\nfixture=[]\n[dependencies]\npolylogue-store={path='../polylogue-store'}\npolylogue-engine={path='../polylogue-engine'}\n",
-            "#[test] fn primary_mode_selected() { assert!(cfg!(feature=\"fixture\")); }\n",
+            "#[test] fn fixture_feature_selected() { assert!(cfg!(feature=\"fixture\")); }\n",
         ),
         (
             "polylogue",
@@ -197,15 +197,15 @@ fn selections_share_features_and_targets_in_the_runner() {
         .unwrap()
         .write_all(b"\n[[example]]\nname='checked'\ntest=true\n")
         .unwrap();
-    let lock = devkit::cargo_command()
+    let lockfile = devkit::cargo_command()
         .args(["generate-lockfile", "--offline"])
         .current_dir(root)
         .output()
         .unwrap();
     assert!(
-        lock.status.success(),
+        lockfile.status.success(),
         "{}",
-        String::from_utf8_lossy(&lock.stderr)
+        String::from_utf8_lossy(&lockfile.stderr)
     );
     let execute = |args: &[&str], required: Option<&str>| {
         let mut run = Run::unrecorded("selection-fixture", "test", &[]);
@@ -218,7 +218,7 @@ fn selections_share_features_and_targets_in_the_runner() {
         let result = run.nextest("test", &options);
         (run, result)
     };
-    let ran = |run: &Run| {
+    let unfiltered = |run: &Run| {
         let mut results: Vec<_> = run
             .tests
             .iter()
@@ -248,19 +248,19 @@ fn selections_share_features_and_targets_in_the_runner() {
         ("application_runs_in_primary_mode", "passed"),
         ("engine_test", "passed"),
         ("helper_test", "passed"),
-        ("primary_mode_selected", "passed"),
+        ("fixture_feature_selected", "passed"),
     ]));
     all.sort();
-    assert_eq!(ran(&run), all);
+    assert_eq!(unfiltered(&run), all);
 
     let (run, result) = execute(&["-p", "polylogue-store"], None);
     result.unwrap();
-    assert_eq!(ran(&run), expected(&store));
+    assert_eq!(unfiltered(&run), expected(&store));
 
     let (run, result) = execute(&["-p", "polylogue"], None);
     result.unwrap();
     assert_eq!(
-        ran(&run),
+        unfiltered(&run),
         expected(&[("application_runs_in_primary_mode", "passed")])
     );
 
@@ -269,7 +269,7 @@ fn selections_share_features_and_targets_in_the_runner() {
     let mut selected = expected(&store);
     selected.extend(expected(&[("engine_test", "passed")]));
     selected.sort();
-    assert_eq!(ran(&run), selected);
+    assert_eq!(unfiltered(&run), selected);
 
     let (run, result) = execute(&["-p", "polylogue-store", "--example", "unselected"], None);
     assert!(result.is_err());
@@ -281,8 +281,12 @@ fn selections_share_features_and_targets_in_the_runner() {
 
     let (run, result) = execute(&["--exclude", "polylogue-engine"], None);
     result.unwrap();
-    assert!(!ran(&run).iter().any(|(name, _)| name == "engine_test"));
-    assert_eq!(ran(&run).len(), all.len() - 1);
+    assert!(
+        !unfiltered(&run)
+            .iter()
+            .any(|(name, _)| name == "engine_test")
+    );
+    assert_eq!(unfiltered(&run).len(), all.len() - 1);
 
     fs::write(root.join(".gitignore"), "/build/\n/target/\n").unwrap();
     git(root, &["init", "-q"]);
@@ -306,7 +310,7 @@ fn selections_share_features_and_targets_in_the_runner() {
     );
     result.unwrap();
     assert_eq!(
-        ran(&run),
+        unfiltered(&run),
         expected(&[("selected_ignored", "ignored"), ("selected_read", "passed")])
     );
 
@@ -326,13 +330,13 @@ fn selections_share_features_and_targets_in_the_runner() {
     let (run, result) = execute(&["-p", "polylogue", "--bin", "polylogue"], None);
     result.unwrap();
     assert_eq!(
-        ran(&run),
+        unfiltered(&run),
         expected(&[("named_application_target", "passed")])
     );
     let (run, result) = execute(&["-p", "polylogue-store", "--lib"], None);
     result.unwrap();
     assert_eq!(
-        ran(&run),
+        unfiltered(&run),
         expected(&[
             ("selected_ignored", "ignored"),
             ("selected_read", "passed"),

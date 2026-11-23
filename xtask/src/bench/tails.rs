@@ -1,5 +1,5 @@
 //! The last pages of real sessions: a sample run's archive served by the
-//! daemon, read through the CLI as a model reads it. Each session is walked
+//! daemon, read through the CLI in pages. Each session is walked
 //! to its end in large pages to find the cursors of its last two small
 //! pages; the daemon restarts, then those pages are timed on the first
 //! request (cold) and three times more (warm).
@@ -9,7 +9,7 @@ use std::io::{BufRead, BufReader};
 use std::process::{Child, Stdio};
 use std::time::Instant;
 
-/// Tokens in a timed page, as a model reads.
+/// Tokens in a timed page: eight times the 4,000-token page a model reads.
 const PAGE: &str = "32768";
 /// Tokens per page while walking to the end.
 const WALK: &str = "4000000";
@@ -49,12 +49,16 @@ impl Reader {
                 .map_err(|e| e.to_string())?,
         );
         let mut line = String::new();
-        BufReader::new(daemon.0.stderr.as_mut().ok_or("no daemon stderr")?)
-            .read_line(&mut line)
-            .map_err(|e| e.to_string())?;
+        let mut stderr = BufReader::new(daemon.0.stderr.take().ok_or("no daemon stderr")?);
+        stderr.read_line(&mut line).map_err(|e| e.to_string())?;
         if !line.contains("serving") {
             return Err(format!("the daemon did not start: {line}"));
         }
+        // Keep draining the pipe: a daemon that logs into a full pipe would
+        // block and stall the timed requests.
+        std::thread::spawn(move || {
+            let _ = std::io::copy(&mut stderr, &mut std::io::sink());
+        });
         Ok(daemon)
     }
 
@@ -144,7 +148,7 @@ fn next_cursor(page: &Value) -> Result<Option<String>, String> {
         return Ok(None);
     }
     footer
-        .pointer("/next/request/arguments/steps/0/cursor")
+        .pointer("/next/cursor")
         .and_then(Value::as_str)
         .map(|cursor| Some(cursor.to_owned()))
         .ok_or_else(|| format!("read continuation has no cursor: {footer}"))
@@ -262,7 +266,7 @@ pub(super) fn run(
         "sessions": measured,
     });
     let store = Store::open().map_err(|e| e.to_string())?;
-    let checkout = env::current_dir().unwrap_or_default();
+    let checkout = checkout()?;
     let id = bench::record(
         &store,
         &checkout,
