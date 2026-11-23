@@ -144,7 +144,7 @@ fn unknown_view_names_are_refused_and_options_name_the_supported_views() {
     assert!(View::parse("unknown").is_none());
     assert_eq!(
         "unknown".parse::<View>().unwrap_err().to_string(),
-        "unknown view \"unknown\"; views: transcript, dialogue, summary, context, links, changes, live, raw, trace"
+        "unknown view \"unknown\"; views: transcript, dialogue, overview, context, tree, changes, live, raw, trace"
     );
     let invalid = ReadOptions {
         view: View::Dialogue,
@@ -444,10 +444,13 @@ fn show_hide_words_round_trip_through_one_table() {
     assert_eq!(options.tools, Some(Expansion::Full));
     assert_eq!(options.thinking, Some(Expansion::Full));
     assert!(options.inherited && options.turns && options.context_meter);
-    assert!(!options.assertions && options.spawns == SpawnFold::Hidden);
+    assert!(!options.annotations && options.spawns == SpawnFold::Hidden);
     let (show, hide) = options.show_hide_words();
     assert_eq!(hide, ["annotations", "spawns"]);
-    assert_eq!(serde_json::to_value(&options).unwrap()["assertions"], false);
+    assert_eq!(
+        serde_json::to_value(&options).unwrap()["annotations"],
+        false
+    );
     let mut again = ReadOptions::default();
     again.apply_show_hide(&show, &hide).unwrap();
     assert_eq!(again, options);
@@ -526,7 +529,7 @@ fn inline_spawns_to_depth_zero_read_back_as_cards() {
 
 #[test]
 fn the_context_meter_is_refused_where_no_message_header_is_read() {
-    for view in [View::Summary, View::Links, View::Live, View::Trace] {
+    for view in [View::Overview, View::Tree, View::Live, View::Trace] {
         let options = ReadOptions {
             view,
             context_meter: true,
@@ -579,7 +582,7 @@ fn follow_up_holds_one_request_per_direction() {
     use command_surface::{Deadline, Format, Request, TokenBudget};
     let request = Request {
         operation: "read".into(),
-        arguments: serde_json::json!({"target":"session:test:one","view":"transcript","variants":["en","de"]}),
+        arguments: serde_json::json!({"target":"session:test:one","view":"transcript","alternates":["en","de"]}),
         request_id: "next-child".into(),
         deadline: Deadline::None,
         budget_tokens: TokenBudget::Unlimited,
@@ -604,7 +607,7 @@ fn follow_up_holds_one_request_per_direction() {
     let value: serde_json::Value = serde_json::from_str(&encoded).unwrap();
     assert_eq!(
         value["next"],
-        serde_json::json!({"operation":"read","arguments":{"target":"session:test:one","view":"transcript","variants":["en","de"]},"request_id":"next-child","deadline":null,"budget_tokens":null,"cursor":"opaque-next-cursor","fresh":true,"format":"json"})
+        serde_json::json!({"operation":"read","arguments":{"target":"session:test:one","view":"transcript","alternates":["en","de"]},"request_id":"next-child","deadline":null,"budget_tokens":null,"cursor":"opaque-next-cursor","fresh":true,"format":"json"})
     );
     assert_eq!(value["previous"]["request_id"], "previous-child");
     assert_eq!(value["previous"]["cursor"], "opaque-previous-cursor");

@@ -208,7 +208,7 @@ fn every_relationship_is_reachable_and_search_pages_keep_the_query() {
         Some(path.replace("&amp;", "&"))
     }
     rt().block_on(async {
-        let items = read_items(&r, "session:claude-code:s1", &[("view", "links")]).await;
+        let items = read_items(&r, "session:claude-code:s1", &[("view", "tree")]).await;
         let mut seen = std::collections::HashSet::new();
         for item in items {
             if let polylogue_model::read::ItemKind::Card { card } = item.kind
@@ -252,15 +252,15 @@ fn every_relationship_is_reachable_and_search_pages_keep_the_query() {
 #[test]
 fn exact_reference_routes_do_not_substitute_prefixes_or_current_note_revisions() {
     use polylogue_model::Reference;
-    use polylogue_model::assertion::{
-        AssertionKind, AssertionPatch, Change, LinkRole, NewAssertion, NewAssertionLink,
+    use polylogue_model::annotation::{
+        AnnotationKind, AnnotationPatch, Change, LinkRole, NewAnnotation, NewAnnotationLink,
     };
     let r = reader();
-    let note = NewAssertion {
-        kind: AssertionKind::Note,
+    let note = NewAnnotation {
+        kind: AnnotationKind::Note,
         key: None,
         value: Some(serde_json::json!("older exact note <text>")),
-        links: vec![NewAssertionLink {
+        links: vec![NewAnnotationLink {
             role: LinkRole::About,
             reference: Reference::Session(
                 polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
@@ -280,7 +280,7 @@ fn exact_reference_routes_do_not_substitute_prefixes_or_current_note_revisions()
         &invocation,
         "exact-note".into(),
         polylogue_model::user::UserWrite::Assert {
-            assertions: vec![note],
+            annotations: vec![note],
         },
     ))
     .id;
@@ -288,18 +288,18 @@ fn exact_reference_routes_do_not_substitute_prefixes_or_current_note_revisions()
         &r.web.daemon,
         &invocation,
         "exact-note-new".into(),
-        polylogue_model::user::UserWrite::ReviseAssertions {
+        polylogue_model::user::UserWrite::ReviseAnnotations {
             bases: vec![polylogue_model::RevisionReference::exact(
                 old.clone(),
                 old.clone(),
             )],
-            patch: AssertionPatch {
+            patch: AnnotationPatch {
                 value: Change::Set(serde_json::json!("newer exact note")),
                 ..Default::default()
             },
         },
     ));
-    let exact = Reference::Assertion(polylogue_model::RevisionReference::exact(
+    let exact = Reference::Annotation(polylogue_model::RevisionReference::exact(
         old.clone(),
         old.clone(),
     ))

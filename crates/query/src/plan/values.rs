@@ -182,7 +182,7 @@ fn comparison_value(
                 && let Some(field) = crate::fields::lookup(unit, field)
                 && field.declaration().reference_argument
             {
-                return reference_value(value, position, field);
+                reference_value(value, field);
             }
             return Ok(());
         }
@@ -218,15 +218,11 @@ fn comparison_value(
     })
 }
 
-/// Reference fields keep their storage identity while the query uses human names.
-fn reference_value(
-    value: &mut Value,
-    position: usize,
-    field: crate::fields::FieldId,
-) -> Result<(), QueryError> {
+/// A reference value is compared in its canonical spelling.
+fn reference_value(value: &mut Value, field: crate::fields::FieldId) {
     match value {
         Value::Scalar { text, .. } => match polylogue_model::Reference::parse(text) {
-            Ok(polylogue_model::Reference::Assertion(revision))
+            Ok(polylogue_model::Reference::Annotation(revision))
                 if field == crate::fields::FieldId::AnnotationsRoot =>
             {
                 *text = revision.root;
@@ -234,21 +230,14 @@ fn reference_value(
             // Root IDs remain opaque. Only an annotation reference names the
             // family through its public reference instead of its raw root ID.
             _ if field == crate::fields::FieldId::AnnotationsRoot => {}
-            Ok(reference) => *text = reference.stored_form(),
-            Err(error @ polylogue_model::ReferenceError::StoredSpelling { .. }) => {
-                return Err(QueryError::Invalid {
-                    message: error.to_string(),
-                    position,
-                });
-            }
+            Ok(reference) => *text = reference.to_string(),
             _ => {}
         },
         Value::Set { values } => {
             for value in values {
-                reference_value(value, position, field)?;
+                reference_value(value, field);
             }
         }
         _ => {}
     }
-    Ok(())
 }

@@ -54,7 +54,7 @@ fn check_change(
 ) -> Result<(), Failure> {
     let kind = change["kind"].as_str();
     let allowed = match component {
-        Component::Archive => matches!(kind, Some("assertion")),
+        Component::Archive => matches!(kind, Some("annotation")),
         Component::Index => matches!(kind, Some("session" | "removed")),
     };
     let bound = match component {
@@ -114,7 +114,7 @@ pub(crate) fn prepare_with(
     // Archive local order is meaningful only within archive.db. Index-side
     // references follow as a separate component, never a combined chronology.
     let components = [
-        (Component::Archive, "kind:assertion"),
+        (Component::Archive, "kind:annotation"),
         (
             Component::Index,
             if replacement {

@@ -35,7 +35,7 @@ pub enum AuthoredRead {
 }
 
 enum Target {
-    Assertion {
+    Annotation {
         id: String,
         root: String,
         selected: Reference,
@@ -48,7 +48,7 @@ enum Target {
         id: String,
         selected: Reference,
     },
-    Variant {
+    Alternate {
         id: String,
         part: Option<u64>,
         selected: Reference,
@@ -57,10 +57,10 @@ enum Target {
 impl Target {
     fn selected(&self) -> &Reference {
         match self {
-            Self::Assertion { selected, .. }
+            Self::Annotation { selected, .. }
             | Self::Result { selected, .. }
             | Self::Delivery { selected, .. }
-            | Self::Variant { selected, .. } => selected,
+            | Self::Alternate { selected, .. } => selected,
         }
     }
     fn matches(&self, prepared: &PreparedRequest) -> bool {
@@ -68,8 +68,8 @@ impl Target {
     }
     fn matches_effect(&self, effect: &polylogue_model::authored::AuthoredEffect) -> bool {
         match self {
-            Self::Assertion { id, root, .. } => effect
-                .assertions
+            Self::Annotation { id, root, .. } => effect
+                .annotations
                 .iter()
                 .any(|value| value.id == *id && value.root == *root),
             Self::Result { id, .. } => effect.kept_results.iter().any(|value| value.id == *id),
@@ -77,27 +77,31 @@ impl Target {
                 .deliveries
                 .iter()
                 .any(|value| value.delivery.id == *id),
-            Self::Variant { id, part, .. } => match part {
-                None => effect.variants.variants.iter().any(|value| value.id == *id),
-                Some(part) => effect
-                    .variants
-                    .variant_parts
+            Self::Alternate { id, part, .. } => match part {
+                None => effect
+                    .alternates
+                    .alternates
                     .iter()
-                    .any(|value| value.variant == *id && value.n == *part),
+                    .any(|value| value.id == *id),
+                Some(part) => effect
+                    .alternates
+                    .alternate_parts
+                    .iter()
+                    .any(|value| value.alternate == *id && value.n == *part),
             },
         }
     }
     fn candidate_key(&self) -> (&'static str, &str, String) {
         match self {
-            Self::Assertion { id, root, .. } => ("assertion", id, root.clone()),
+            Self::Annotation { id, root, .. } => ("annotation", id, root.clone()),
             Self::Result { id, .. } => ("result", id, String::new()),
             Self::Delivery { id, .. } => ("delivery", id, String::new()),
-            Self::Variant { id, part: None, .. } => ("variant", id, String::new()),
-            Self::Variant {
+            Self::Alternate { id, part: None, .. } => ("alternate", id, String::new()),
+            Self::Alternate {
                 id,
                 part: Some(part),
                 ..
-            } => ("variant_part", id, part.to_string()),
+            } => ("alternate_part", id, part.to_string()),
         }
     }
 }
@@ -109,10 +113,10 @@ impl Reader<'_> {
         if !matches!(
             reference,
             Reference::Request(_)
-                | Reference::Assertion(_)
+                | Reference::Annotation(_)
                 | Reference::Result { .. }
                 | Reference::Delivery(_)
-                | Reference::Variant { .. }
+                | Reference::Alternate { .. }
         ) {
             return Err(StoreError::ReferenceUnavailable {
                 reference: reference.to_string(),
@@ -223,19 +227,19 @@ impl Reader<'_> {
     ) -> Result<std::result::Result<Option<Target>, AuthoredReadIssue>> {
         let conn = self.conn()?;
         Ok(Ok(match reference {
-            Reference::Assertion(revision) => {
+            Reference::Annotation(revision) => {
                 let Some(id) = &revision.revision else {
                     return Ok(Err(AuthoredReadIssue::UnresolvedRevision));
                 };
                 if !conn
-                    .prepare_cached("SELECT 1 FROM source_assertion WHERE id=?1 AND root=?2")?
+                    .prepare_cached("SELECT 1 FROM source_annotation WHERE id=?1 AND root=?2")?
                     .exists(rusqlite::params![id, revision.root])?
                 {
                     return Ok(Ok(None));
                 }
                 let pinned = RevisionReference::exact(revision.root.clone(), id.clone());
-                let selected = Reference::Assertion(pinned);
-                Some(Target::Assertion {
+                let selected = Reference::Annotation(pinned);
+                Some(Target::Annotation {
                     id: id.clone(),
                     root: revision.root.clone(),
                     selected,
@@ -266,18 +270,18 @@ impl Reader<'_> {
                     selected: reference.clone(),
                 })
             }
-            Reference::Variant { revision, part } => {
+            Reference::Alternate { revision, part } => {
                 let Some(id) = &revision.revision else {
                     return Ok(Err(AuthoredReadIssue::UnresolvedRevision));
                 };
-                let Some(variant) = self
-                    .variant(id)?
-                    .filter(|variant| variant.root == revision.root)
+                let Some(alternate) = self
+                    .alternate(id)?
+                    .filter(|alternate| alternate.root == revision.root)
                 else {
                     return Ok(Ok(None));
                 };
-                Some(Target::Variant {
-                    id: variant.id,
+                Some(Target::Alternate {
+                    id: alternate.id,
                     part: *part,
                     selected: reference.clone(),
                 })
@@ -330,8 +334,8 @@ fn index_effect(
         insert.execute(rusqlite::params![kind, id, member, request])?;
         Ok(())
     };
-    for fact in &effect.assertions {
-        add("assertion", &fact.id, &fact.root)?;
+    for fact in &effect.annotations {
+        add("annotation", &fact.id, &fact.root)?;
     }
     for result in &effect.kept_results {
         add("result", &result.id, "")?;
@@ -339,11 +343,11 @@ fn index_effect(
     for delivery in &effect.deliveries {
         add("delivery", &delivery.delivery.id, "")?;
     }
-    for variant in &effect.variants.variants {
-        add("variant", &variant.id, "")?;
+    for alternate in &effect.alternates.alternates {
+        add("alternate", &alternate.id, "")?;
     }
-    for part in &effect.variants.variant_parts {
-        add("variant_part", &part.variant, &part.n.to_string())?;
+    for part in &effect.alternates.alternate_parts {
+        add("alternate_part", &part.alternate, &part.n.to_string())?;
     }
     Ok(())
 }

@@ -87,7 +87,7 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
     );
     assert_eq!(
         reader
-            .assertion(&polylogue_model::RevisionReference::exact(
+            .annotation(&polylogue_model::RevisionReference::exact(
                 "kept".into(),
                 "kept".into()
             ))
@@ -229,7 +229,7 @@ fn typed_setting_answer_and_snapshot_share_defaults_scope_and_authored_value() {
     );
     assert_eq!(
         setting.authored.unwrap().reference,
-        polylogue_model::Reference::parse_stored("assertion:setting-on@setting-on").unwrap()
+        polylogue_model::Reference::parse("annotation:setting-on@setting-on").unwrap()
     );
     let snapshot = reader.settings_snapshot("synthetic-machine").unwrap();
     assert!(snapshot.browser_actions().unwrap());
@@ -281,15 +281,15 @@ fn host_settings_default_to_the_accepting_machine_and_do_not_leak_to_other_hosts
 }
 
 #[test]
-fn assertion_retry_ignores_object_key_order_and_preserves_array_and_value_identity() {
+fn annotation_retry_ignores_object_key_order_and_preserves_array_and_value_identity() {
     let w = crate::fixture::writer::WriterArchive::new();
-    let statement = |value| polylogue_model::assertion::NewAssertion {
-        kind: polylogue_model::assertion::AssertionKind::Decision,
+    let statement = |value| polylogue_model::annotation::NewAnnotation {
+        kind: polylogue_model::annotation::AnnotationKind::Decision,
         key: None,
         value: Some(value),
         valid_until: None,
-        links: vec![polylogue_model::assertion::NewAssertionLink {
-            role: polylogue_model::assertion::LinkRole::About,
+        links: vec![polylogue_model::annotation::NewAnnotationLink {
+            role: polylogue_model::annotation::LinkRole::About,
             reference: polylogue_model::Reference::parse("repo:synthetic").unwrap(),
         }],
     };
@@ -300,13 +300,13 @@ fn assertion_retry_ignores_object_key_order_and_preserves_array_and_value_identi
     let request = crate::fixture::authored::operator_request(
         "object-order".into(),
         UserWrite::Assert {
-            assertions: vec![statement(original.clone())],
+            annotations: vec![statement(original.clone())],
         },
     );
     assert!(!w.writer.user(request.clone()).unwrap().repeat);
     let mut retry = request.clone();
     retry.write = UserWrite::Assert {
-        assertions: vec![statement(reordered)],
+        annotations: vec![statement(reordered)],
     };
     assert!(w.writer.user(retry).unwrap().repeat);
     for value in [
@@ -315,7 +315,7 @@ fn assertion_retry_ignores_object_key_order_and_preserves_array_and_value_identi
     ] {
         let mut changed = request.clone();
         changed.write = UserWrite::Assert {
-            assertions: vec![statement(value)],
+            annotations: vec![statement(value)],
         };
         assert!(matches!(
             w.writer.user(changed),
@@ -326,7 +326,7 @@ fn assertion_retry_ignores_object_key_order_and_preserves_array_and_value_identi
     let fact = reads
         .reader()
         .unwrap()
-        .assertion(&polylogue_model::RevisionReference::exact(
+        .annotation(&polylogue_model::RevisionReference::exact(
             "object-order".into(),
             "object-order".into(),
         ))
@@ -380,7 +380,7 @@ fn save_selection_rolls_back_every_effect_when_the_kept_insert_fails() {
         error.to_string().contains("synthetic kept insert failure"),
         "{error:?}"
     );
-    for table in ["assertion", "kept_result", "client_request"] {
+    for table in ["annotation", "kept_result", "client_request"] {
         let count: i64 = conn
             .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
             .unwrap();
@@ -402,7 +402,7 @@ fn save_selection_rolls_back_every_effect_when_the_kept_insert_fails() {
     );
     assert_eq!(first.outcome.id, "atomic-save");
     let ids: Vec<String> = conn
-        .prepare("SELECT id FROM assertion ORDER BY id")
+        .prepare("SELECT id FROM annotation ORDER BY id")
         .unwrap()
         .query_map([], |r| r.get(0))
         .unwrap()
@@ -421,19 +421,19 @@ fn save_selection_rolls_back_every_effect_when_the_kept_insert_fails() {
 
 #[test]
 fn authored_text_links_live_in_the_effect_without_rewriting_the_request() {
-    use polylogue_model::assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink};
+    use polylogue_model::annotation::{AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink};
     use polylogue_model::{Reference, RevisionReference};
     let archive = crate::fixture::writer::WriterArchive::new();
     let text = "Read [the source](https://example.test/source).";
     let request = crate::fixture::authored::operator_request(
         "live-text-note".into(),
         UserWrite::Assert {
-            assertions: vec![NewAssertion {
-                kind: AssertionKind::Note,
+            annotations: vec![NewAnnotation {
+                kind: AnnotationKind::Note,
                 key: None,
                 value: Some(serde_json::json!(text)),
                 valid_until: None,
-                links: vec![NewAssertionLink {
+                links: vec![NewAnnotationLink {
                     role: LinkRole::About,
                     reference: Reference::parse("session:codex:fixture").unwrap(),
                 }],
@@ -448,7 +448,7 @@ fn authored_text_links_live_in_the_effect_without_rewriting_the_request() {
     assert_eq!(reader.change_position().unwrap(), before_repeat);
     assert_eq!(reader.user_request(&request.id).unwrap().unwrap(), request);
     let stored = reader
-        .assertion(&RevisionReference {
+        .annotation(&RevisionReference {
             root: first.id.clone(),
             revision: Some(first.id),
         })
@@ -476,24 +476,24 @@ fn authored_text_links_live_in_the_effect_without_rewriting_the_request() {
         .unwrap();
     assert_eq!(prepared.len(), 1);
     assert_eq!(prepared[0].request, request);
-    assert_eq!(prepared[0].effect.assertions, vec![stored]);
+    assert_eq!(prepared[0].effect.annotations, vec![stored]);
 }
 
 #[test]
 fn tag_receipt_reports_original_skipped_targets_on_retry() {
     use polylogue_model::{
         Reference,
-        assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink},
+        annotation::{AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink},
     };
     let world = crate::fixture::writer::WriterArchive::new();
     let first = Reference::parse("session:codex:first").unwrap();
     let second = Reference::parse("session:codex:second").unwrap();
-    let mut tag = NewAssertion {
-        kind: AssertionKind::Tag,
+    let mut tag = NewAnnotation {
+        kind: AnnotationKind::Tag,
         key: Some("status".into()),
         value: Some(serde_json::json!({"value":"ready"})),
         valid_until: None,
-        links: vec![NewAssertionLink {
+        links: vec![NewAnnotationLink {
             role: LinkRole::About,
             reference: first.clone(),
         }],
@@ -503,7 +503,7 @@ fn tag_receipt_reports_original_skipped_targets_on_retry() {
         .user(crate::fixture::authored::operator_request(
             "seed-tag".into(),
             UserWrite::Assert {
-                assertions: vec![tag.clone()],
+                annotations: vec![tag.clone()],
             },
         ))
         .unwrap();
@@ -512,7 +512,7 @@ fn tag_receipt_reports_original_skipped_targets_on_retry() {
         "bulk-tags".into(),
         UserWrite::AssertQuery {
             query: "sessions".into(),
-            assertion: tag,
+            annotation: tag,
             resolved: vec![first.clone(), second.clone()],
         },
     );
@@ -523,8 +523,8 @@ fn tag_receipt_reports_original_skipped_targets_on_retry() {
         .writer
         .user(crate::fixture::authored::operator_request(
             "withdraw-seed".into(),
-            UserWrite::WithdrawAssertions {
-                targets: vec![Reference::Assertion(
+            UserWrite::WithdrawAnnotations {
+                targets: vec![Reference::Annotation(
                     polylogue_model::RevisionReference::exact(seed.id.clone(), seed.id),
                 )],
                 reason: None,
@@ -536,10 +536,10 @@ fn tag_receipt_reports_original_skipped_targets_on_retry() {
     assert_eq!(repeated.written, accepted.written);
     assert_eq!(repeated.already, vec![first]);
     let mut changed = request;
-    let UserWrite::AssertQuery { assertion, .. } = &mut changed.write else {
+    let UserWrite::AssertQuery { annotation, .. } = &mut changed.write else {
         unreachable!()
     };
-    assertion.value = Some(serde_json::json!({"value":"different"}));
+    annotation.value = Some(serde_json::json!({"value":"different"}));
     assert!(matches!(
         world.writer.user_receipt(changed),
         Err(StoreError::Conflict(_))

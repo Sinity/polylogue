@@ -46,7 +46,6 @@ fn complete_snapshot(
         return Ok(grammar(text, position));
     };
     let mut catalog = reader.catalog()?;
-    polylogue_query::catalog::surface_references(&mut catalog);
     let mut loaded = Vec::new();
     loop {
         let before = catalog.source_outputs.len();

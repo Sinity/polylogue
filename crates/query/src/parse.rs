@@ -14,32 +14,6 @@ pub fn with_catalog(
     catalog: &query_language::catalog::Catalog,
 ) -> Result<Query, QueryError> {
     let parsed = query_language::parse::parse(text, catalog);
-    let parsed = match parsed {
-        Err(error)
-            if error.kind == query_language::ErrorKind::UnknownField
-                && text
-                    .get(error.position..error.position + error.length)
-                    .is_some_and(|kind| {
-                        polylogue_model::AUTHORED_REFERENCE_SPELLINGS
-                            .iter()
-                            .any(|(stored, surface)| kind == *stored || kind == *surface)
-                    }) =>
-        {
-            // Surface names do not change the catalog captured in stored bindings.
-            // Trying the canonical catalog first also preserves declared fields.
-            let mut surface = catalog.clone();
-            crate::catalog::surface_references(&mut surface);
-            surface.references.extend(
-                polylogue_model::AUTHORED_REFERENCE_SPELLINGS
-                    .into_iter()
-                    .map(|(stored, _)| {
-                        query_language::catalog::ReferenceForm::prefix(format!("{stored}:"))
-                    }),
-            );
-            query_language::parse::parse(text, &surface)
-        }
-        result => result,
-    };
     let mut query = parsed.map_err(|mut error| {
         if error.kind == query_language::ErrorKind::UnknownField
             && text
@@ -65,18 +39,6 @@ pub fn with_catalog(
             error.hint = Some("use similar: for semantic ranking".into());
         }
         QueryError::language(error, text)
-    })?;
-    crate::plan::walk(&mut query, &mut |_| Ok(()), &mut |condition| {
-        if let ConditionKind::Reference { reference } = &condition.kind
-            && let Err(error @ polylogue_model::ReferenceError::StoredSpelling { .. }) =
-                polylogue_model::Reference::parse(reference)
-        {
-            return Err(QueryError::Invalid {
-                message: error.to_string(),
-                position: condition.span.start,
-            });
-        }
-        Ok(())
     })?;
     read_lone_revision_as_annotations(&mut query);
     Ok(query)
@@ -111,7 +73,7 @@ fn sinex_local_error(
     .err()
 }
 
-/// A query that is only an exact assertion revision (`annotation:R@X`) reads
+/// A query that is only an exact annotation revision (`annotation:R@X`) reads
 /// the annotations unit: the revision is one row whatever the default unit.
 /// Every other lone reference stays a condition on the default unit.
 fn read_lone_revision_as_annotations(query: &mut Query) {
@@ -132,7 +94,7 @@ fn read_lone_revision_as_annotations(query: &mut Query) {
     let ConditionKind::Reference { reference: text } = &condition.kind else {
         return;
     };
-    if let Ok(polylogue_model::Reference::Assertion(revision)) =
+    if let Ok(polylogue_model::Reference::Annotation(revision)) =
         polylogue_model::Reference::parse(text)
         && revision.revision.is_some()
     {

@@ -23,7 +23,7 @@
 
 pub(crate) mod open_calls;
 
-use crate::briefing::{Ask, StartSource};
+use crate::brief::{Ask, StartSource};
 use crate::config::Startup;
 use command_surface::Answer;
 use polylogue_model::DeliveryOutcome;
@@ -632,8 +632,8 @@ fn takeovers(
         .saturating_sub(1)
         .saturating_mul(2)
         .div_ceil(4);
-    let available = crate::briefing::DEFAULT_BUDGET
-        .saturating_sub(u32::try_from(separators).unwrap_or(u32::MAX));
+    let available =
+        crate::brief::DEFAULT_BUDGET.saturating_sub(u32::try_from(separators).unwrap_or(u32::MAX));
     let budget = available.checked_div(u32::try_from(sessions.len()).ok()?)?;
     for id in sessions {
         if let Some((d, t)) = context(
@@ -796,7 +796,7 @@ pub fn run(harness: Harness, event: &str, startup: &Startup) -> ExitCode {
         observed: &observed,
         startup,
     };
-    // Pings and notices waiting in the mailbox: one `stat`, and a claim
+    // Messages and notices waiting in the mailbox: one `stat`, and a claim
     // only when the flag is up. Never before a tool runs.
     let mail = session
         .as_ref()
@@ -840,7 +840,7 @@ pub fn accepts_mail(harness: Harness, event: &str) -> bool {
         .is_some_and(|declared| declared.mail_events.contains(&event))
 }
 
-/// Takes the session's pending pings and notices from the daemon: their
+/// Takes the session's pending messages and notices from the daemon: their
 /// delivery IDs and their texts joined.
 fn claim(startup: &Startup, session: &SessionId, until: Instant) -> Option<(Vec<String>, String)> {
     let remaining = until.checked_duration_since(Instant::now())?;

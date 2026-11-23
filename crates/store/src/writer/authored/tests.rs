@@ -5,7 +5,9 @@ use crate::primary::{
 };
 use polylogue_model::authored::{ExecutionEligibility, PendingAuthored};
 use polylogue_model::user::{NewChatAction, UserRequest, UserWrite};
-use polylogue_model::{Author, BlobHash, NewVariant, NewVariantPart, VariantKind, VariantRelation};
+use polylogue_model::{
+    AlternateKind, AlternateRelation, Author, BlobHash, NewAlternate, NewAlternatePart,
+};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 fn prepared(write: UserWrite) -> PreparedRequest {
@@ -35,20 +37,20 @@ fn prepared_at(write: UserWrite, at: Timestamp) -> PreparedRequest {
         .unwrap();
     record.unwrap()
 }
-fn rendition() -> PreparedRequest {
-    prepared(UserWrite::Variant {
-        variant: NewVariant {
+fn alternate() -> PreparedRequest {
+    prepared(UserWrite::Alternate {
+        alternate: NewAlternate {
             base: None,
             source: "message:codex:source".into(),
             source_hash: BlobHash([1; 32]),
-            kind: VariantKind::Translation,
+            kind: AlternateKind::Translation,
             from_lang: Some("en".into()),
             to_lang: Some("pl".into()),
             method: None,
-            parts: vec![NewVariantPart {
+            parts: vec![NewAlternatePart {
                 of: "block:codex:source#0".into(),
                 of_hash: BlobHash([2; 32]),
-                relation: VariantRelation::Translates,
+                relation: AlternateRelation::Translates,
                 body: "pierwszy obraz".into(),
             }],
         },
@@ -56,7 +58,7 @@ fn rendition() -> PreparedRequest {
 }
 #[test]
 fn writer_restore_changes_the_snapshot_once() {
-    let original = rendition();
+    let original = alternate();
     let destination = crate::fixture::writer::WriterArchive::new();
     let pool = crate::ReadPool::open(&destination.archive).unwrap();
     destination
@@ -94,15 +96,15 @@ fn writer_restore_changes_the_snapshot_once() {
     let mut results = Vec::new();
     pool.reader()
         .unwrap()
-        .visit_variant_search("pierwszy", Some("pl"), |found| {
+        .visit_alternate_search("pierwszy", Some("pl"), |found| {
             results.push(found);
             Ok(())
         })
         .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].part.body, "pierwszy obraz");
-    assert_eq!(results[0].variant.author, Author::Agent(None));
-    assert_eq!(results[0].variant.machine, "source-machine");
+    assert_eq!(results[0].alternate.author, Author::Agent(None));
+    assert_eq!(results[0].alternate.machine, "source-machine");
 }
 
 #[derive(Default)]
@@ -330,7 +332,7 @@ impl crate::primary::Sinex for Producer {
 }
 #[test]
 fn pending_scope_reset_blocks_authored_work_from_old_cache() {
-    let original = rendition();
+    let original = alternate();
     let directory = tempfile::tempdir().unwrap();
     let producer = Arc::new(Producer {
         path: directory.path().join("private-product.json"),
@@ -749,7 +751,7 @@ fn assert_refused_start(archive: &Archive) {
 /// again in this process.
 #[test]
 fn a_failed_sync_refuses_an_authored_retry_and_every_later_writer() {
-    let original = rendition();
+    let original = alternate();
     let directory = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
@@ -875,22 +877,22 @@ fn literal_deliveries_keep_the_same_recorded_result() {
 #[test]
 fn literal_deliveries_preserve_variant_reads_without_rebuilding_other_work() {
     let destination = crate::fixture::writer::WriterArchive::new();
-    let original = rendition();
+    let original = alternate();
     destination
         .writer
         .restore_authored(original.clone())
         .unwrap();
     let pool = crate::ReadPool::open(&destination.archive).unwrap();
     let read = || {
-        let mut variants = Vec::new();
+        let mut alternates = Vec::new();
         pool.reader()
             .unwrap()
-            .visit_variant_search("pierwszy", Some("pl"), |found| {
-                variants.push(found);
+            .visit_alternate_search("pierwszy", Some("pl"), |found| {
+                alternates.push(found);
                 Ok(())
             })
             .unwrap();
-        variants
+        alternates
     };
     let before = serde_json::to_value(read()).unwrap();
     assert_eq!(before.as_array().unwrap().len(), 1);
@@ -904,8 +906,8 @@ fn literal_deliveries_preserve_variant_reads_without_rebuilding_other_work() {
     crate::source::views(&conn).unwrap();
     // Variant derivation can lag after an interrupted prior write. Recording an
     // unrelated delivery does not take over that pending derive work.
-    conn.execute("DELETE FROM variant_indexed", []).unwrap();
-    conn.execute_batch("CREATE TABLE test_variant_writes(n INTEGER NOT NULL); INSERT INTO test_variant_writes VALUES(0); CREATE TRIGGER test_variant_write AFTER DELETE ON variant_text BEGIN UPDATE test_variant_writes SET n=n+1; END;").unwrap();
+    conn.execute("DELETE FROM alternate_indexed", []).unwrap();
+    conn.execute_batch("CREATE TABLE test_variant_writes(n INTEGER NOT NULL); INSERT INTO test_variant_writes VALUES(0); CREATE TRIGGER test_variant_write AFTER DELETE ON alternate_text BEGIN UPDATE test_variant_writes SET n=n+1; END;").unwrap();
     for advice in [false, true] {
         let body = polylogue_model::user::Delivery {
             recipient_kind: "operator".into(),
@@ -913,7 +915,7 @@ fn literal_deliveries_preserve_variant_reads_without_rebuilding_other_work() {
             sender: "hook".into(),
             event: "advice".into(),
             cwd: None,
-            text: "A delivery unrelated to variant history".into(),
+            text: "A delivery unrelated to alternate history".into(),
             refs: vec![],
             left_out: vec![],
         };
@@ -934,7 +936,7 @@ fn literal_deliveries_preserve_variant_reads_without_rebuilding_other_work() {
             0
         );
         assert_eq!(
-            conn.query_row("SELECT count(*) FROM variant_indexed", [], |r| r
+            conn.query_row("SELECT count(*) FROM alternate_indexed", [], |r| r
                 .get::<_, i64>(0))
                 .unwrap(),
             0
@@ -951,7 +953,7 @@ fn literal_deliveries_preserve_variant_reads_without_rebuilding_other_work() {
         }),
     )
     .unwrap();
-    crate::variants::project(&conn).unwrap();
+    crate::alternates::project(&conn).unwrap();
     conn.progress_handler(0, None::<fn() -> bool>).unwrap();
     assert!(steps.load(Ordering::Relaxed) > 0);
     assert!(
@@ -962,7 +964,7 @@ fn literal_deliveries_preserve_variant_reads_without_rebuilding_other_work() {
     );
     assert_eq!(serde_json::to_value(read()).unwrap(), before);
     println!(
-        "variant derivation positive control: {} VM steps",
+        "alternate derivation positive control: {} VM steps",
         steps.load(Ordering::Relaxed)
     );
 }

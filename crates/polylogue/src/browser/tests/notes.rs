@@ -1,7 +1,7 @@
 use super::*;
 use crate::daemon::{server, service};
 
-/// Every current note assertion.
+/// Every current note annotation.
 fn notes(host: &BrowserHost) -> Vec<Value> {
     let Some(Ok(data)) = host
         .ask(

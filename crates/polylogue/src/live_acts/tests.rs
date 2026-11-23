@@ -1,6 +1,6 @@
 use super::*;
 
-/// The headless resume runs the harness's own resume with the ping as its
+/// The headless resume runs the harness's own resume with the message as its
 /// prompt; a harness without one has none.
 #[test]
 fn headless_resume_uses_each_harness_own_command() {

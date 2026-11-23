@@ -661,7 +661,7 @@ impl State {
         }
         for (family, values) in &update.tags {
             writer.put_values(
-                &polylogue_model::Reference::Assertion(polylogue_model::RevisionReference {
+                &polylogue_model::Reference::Annotation(polylogue_model::RevisionReference {
                     root: family.clone(),
                     revision: None,
                 })

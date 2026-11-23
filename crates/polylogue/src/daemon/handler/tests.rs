@@ -586,7 +586,7 @@ fn named_context_budget_and_identity_survive_the_socket() {
 fn brief_arguments_carry_the_start_source() {
     let arguments: crate::protocol::steps::BriefStep =
         serde_json::from_value(json!({"cwd":"/x","source":"resume"})).unwrap();
-    assert_eq!(arguments.source, crate::briefing::StartSource::Resume);
+    assert_eq!(arguments.source, crate::brief::StartSource::Resume);
 }
 
 #[test]
@@ -669,7 +669,7 @@ fn setting_write_returns_its_result_and_value() {
     assert_eq!(current.history.len(), 1);
     assert_eq!(
         current.history[0].value,
-        polylogue_model::settings::Value::Variants(vec![])
+        polylogue_model::settings::Value::Alternates(vec![])
     );
     assert_eq!(
         current.current.authored.as_ref().unwrap().reference,

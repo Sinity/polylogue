@@ -375,7 +375,7 @@ impl Walk<'_, '_, '_, '_> {
                     selection.cursor_context().clock.now.as_millisecond(),
                 )?);
             }
-            if options.assertions
+            if options.annotations
                 && let records::SelectedRecord::Original(original) = &record
             {
                 layout_facts::annotate(

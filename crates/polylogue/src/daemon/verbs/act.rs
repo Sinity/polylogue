@@ -65,8 +65,8 @@ impl Verb for Send {
                 ..call.call.copy()
             };
             let done = delegated(
-                acts::Ping::run(
-                    act::Ping {
+                acts::SendMessage::run(
+                    act::SendMessage {
                         target,
                         text: step.text.clone(),
                         live: several,
@@ -134,7 +134,7 @@ impl Verb for Send {
                         format!("skipped: {}", state.as_str())
                     }
                     Some((state, facts, _)) => match channel(
-                        Act::Ping { live: several },
+                        Act::Send { live: several },
                         state,
                         &crate::live_acts::probe(&d.acts, &session, &facts),
                     ) {

@@ -172,13 +172,13 @@ pub fn visit_record(
         }
     }
     match options.view {
-        View::Summary => {
+        View::Overview => {
             if let Record::Session(row) = record {
                 visit(ReadItem {
                     source,
                     kind: ItemKind::Card {
                         card: Box::new(Card::Session {
-                            assertions: facts.assertions.clone(),
+                            annotations: facts.annotations.clone(),
                             session: Box::new(row.session.clone()),
                             lineage_complete: facts.lineage_complete.clone(),
                             open: None,
@@ -198,7 +198,7 @@ pub fn visit_record(
             }
             return Ok(());
         }
-        View::Links => {
+        View::Tree => {
             if let Record::Link(row) = record {
                 let relation = row.link.kind.as_str();
                 visit(ReadItem {
@@ -265,19 +265,19 @@ pub fn visit_record(
                             .result
                             .as_ref()
                             .filter(|result| presentation_text_visible(&result.block, options))
-                            .and_then(|result| facts.variants.mark_for(&result.source, options))
+                            .and_then(|result| facts.alternates.mark_for(&result.source, options))
                             .cloned();
                     }
                     if !presentation_text_visible(block, options) {
                         return None;
                     }
-                    facts.variants.mark_for(&source, options).cloned()
+                    facts.alternates.mark_for(&source, options).cloned()
                 })
                 .or_else(|| {
                     if by == WrittenBy::Harness && options.harness() != Expansion::Full {
                         return None;
                     }
-                    facts.variants.mark_for(&source, options).cloned()
+                    facts.alternates.mark_for(&source, options).cloned()
                 });
             if !visit(ReadItem {
                 source: source.clone(),
@@ -293,12 +293,12 @@ pub fn visit_record(
                             .clone()
                             .map(ValueState::known)
                             .unwrap_or(ValueState::NotRecorded),
-                        assertions: if options.assertions {
-                            facts.assertions.clone()
+                        annotations: if options.annotations {
+                            facts.annotations.clone()
                         } else {
                             vec![]
                         },
-                        variant: mark,
+                        alternate: mark,
                         inherited: facts.inherited,
                         branch: facts.branch.clone(),
                         context: None,
@@ -424,7 +424,7 @@ pub fn visit_record(
                 return Ok(());
             }
         }
-        Record::Assertion(row) if options.assertions => {
+        Record::Annotation(row) if options.annotations => {
             if !visit(ReadItem {
                 source,
                 kind: ItemKind::Other {
@@ -435,7 +435,7 @@ pub fn visit_record(
                 return Ok(());
             }
         }
-        Record::Authored(row) if options.assertions => {
+        Record::Authored(row) if options.annotations => {
             if !visit(ReadItem {
                 source,
                 kind: ItemKind::Other {
@@ -451,7 +451,7 @@ pub fn visit_record(
                 source: source.clone(),
                 kind: ItemKind::Card {
                     card: Box::new(Card::Session {
-                        assertions: facts.assertions.clone(),
+                        annotations: facts.annotations.clone(),
                         session: Box::new(row.session.clone()),
                         lineage_complete: facts.lineage_complete.clone(),
                         open: None,
@@ -494,7 +494,7 @@ fn block_items(
     }
     if !facts.tool_pairs.contains_key(&ordinal)
         && presentation_text_visible(block, options)
-        && !variant_indicator(&source, options, facts, visit)
+        && !alternate_indicator(&source, options, facts, visit)
     {
         return Ok(false);
     }
@@ -543,7 +543,7 @@ fn block_items(
                     .transpose()?;
                 if options.tools() == Expansion::Full
                     && let Some(result) = &pair.result
-                    && !variant_indicator(&result.source, options, facts, visit)
+                    && !alternate_indicator(&result.source, options, facts, visit)
                 {
                     return Ok(false);
                 }
@@ -944,7 +944,7 @@ fn presentation_block<'a>(
         } => text,
         _ => return Ok(Cow::Borrowed(block)),
     };
-    match facts.variants.apply(source, text, options)? {
+    match facts.alternates.apply(source, text, options)? {
         Cow::Borrowed(_) => Ok(Cow::Borrowed(block)),
         Cow::Owned(text) => {
             let mut presented = block.clone();
@@ -963,46 +963,50 @@ fn presentation_block<'a>(
         }
     }
 }
-fn variant_indicator(
+fn alternate_indicator(
     source: &Source,
     options: &ReadOptions,
     facts: &LayoutFacts,
     visit: &mut impl FnMut(ReadItem) -> bool,
 ) -> bool {
     let mut shown = std::collections::BTreeSet::new();
-    for (original, variant) in facts.variants.for_source(source) {
-        if !shown.insert(original) || !variant.is_active(options) {
+    for (original, alternate) in facts.alternates.for_source(source) {
+        if !shown.insert(original) || !alternate.is_active(options) {
             continue;
         }
         if !visit(ReadItem {
             source: source.clone(),
             kind: ItemKind::Indicator {
-                indicator: IndicatorKind::Variant,
+                indicator: IndicatorKind::Alternate,
                 text: format!(
-                    "[variant {} · {} · {}{}{}]",
-                    variant.mark.key,
-                    variant
+                    "[alternate {} · {} · {}{}{}]",
+                    alternate.mark.key,
+                    alternate
                         .relations
                         .iter()
                         .map(|relation| relation.as_str())
                         .collect::<Vec<_>>()
                         .join(", "),
-                    variant.mark.reference,
-                    if variant
+                    alternate.mark.reference,
+                    if alternate
                         .relations
-                        .contains(&polylogue_model::VariantRelation::Omits)
-                        && variant
+                        .contains(&polylogue_model::AlternateRelation::Omits)
+                        && alternate
                             .relations
                             .iter()
-                            .any(|relation| *relation != polylogue_model::VariantRelation::Omits)
+                            .any(|relation| *relation != polylogue_model::AlternateRelation::Omits)
                     {
                         " · partly omitted"
                     } else {
                         ""
                     },
-                    if variant.mark.stale { " · stale" } else { "" }
+                    if alternate.mark.stale {
+                        " · stale"
+                    } else {
+                        ""
+                    }
                 ),
-                expand: variant.mark.show_original.clone().map(Box::new),
+                expand: alternate.mark.show_original.clone().map(Box::new),
             },
         }) {
             return false;
@@ -1027,11 +1031,11 @@ fn root_text(
     {
         return Ok(true);
     }
-    let text = facts.variants.apply(source, "", options)?;
+    let text = facts.alternates.apply(source, "", options)?;
     if matches!(text, std::borrow::Cow::Borrowed(_)) {
         return Ok(true);
     }
-    if !variant_indicator(source, options, facts, visit) {
+    if !alternate_indicator(source, options, facts, visit) {
         return Ok(false);
     }
     Ok(visit(ReadItem {

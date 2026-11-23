@@ -11,10 +11,9 @@
 mod helpers;
 pub use helpers::{ConnExt, OptionExt, ResultExt, meta_get, meta_set, to_i64, to_u64};
 
+pub mod annotations;
 pub mod archive;
-pub mod assertions;
 pub mod assets;
-pub mod backfill_jobs;
 pub mod blobs;
 pub mod calendar;
 pub mod cancellation;
@@ -35,6 +34,7 @@ pub mod fault;
 #[cfg(any(test, feature = "fixture"))]
 pub mod fixture;
 mod fragment;
+pub mod import_jobs;
 pub mod input_rows;
 pub mod items;
 mod kept;
@@ -59,6 +59,7 @@ pub use identical_chains::{
     ChainLayout, ChainLayouts, PrefixCopies, PrefixCopy, ReadingCopy, SharedPrefixes,
     StoredParseState,
 };
+pub mod alternates;
 pub mod schema;
 pub mod schema_inputs;
 pub mod scope_index;
@@ -81,7 +82,6 @@ pub mod timing;
 pub mod tool_databases;
 pub mod user_state;
 pub mod user_writes;
-pub mod variants;
 pub mod vectors;
 pub mod verify;
 mod versions;
@@ -208,8 +208,8 @@ pub enum StoreError {
     NotFound(String),
     #[error("chat action refused: {0}")]
     ChatAction(&'static str),
-    #[error("backfill job refused: {0}")]
-    Backfill(&'static str),
+    #[error("import job refused: {0}")]
+    ImportJob(&'static str),
     /// Sinex could not be reached, or refused what was sent (primary mode).
     #[error("capture {identity} is saved and waiting for Sinex confirmation")]
     PrimaryPending { identity: String },
@@ -327,7 +327,7 @@ impl StoreError {
                     polylogue_model::Code::Conflict
                 }
 
-                polylogue_model::bundle::BundleError::Assertion(_)
+                polylogue_model::bundle::BundleError::Annotation(_)
                 | polylogue_model::bundle::BundleError::TextFragment(_)
                 | polylogue_model::bundle::BundleError::WrongFormat(_)
                 | polylogue_model::bundle::BundleError::UnsupportedVersion { .. }
@@ -376,7 +376,7 @@ impl StoreError {
             | Self::StorageFailed(_)
             | Self::ReadPoolNested
             | Self::ChatAction(_)
-            | Self::Backfill(_)
+            | Self::ImportJob(_)
             | Self::UnresolvedBasisConflict { .. }
             | Self::Sinex(_)
             | Self::RowsRefused { .. }

@@ -279,11 +279,11 @@ pub(crate) fn seen_by(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, 
         }
         Unit::Events => format!("{} < {end}", fields::event_first_seen(a)),
         Unit::Annotations => {
-            if !c.assertion_cutoffs.contains(&end) {
-                c.assertion_cutoffs.push(end);
+            if !c.annotation_cutoffs.contains(&end) {
+                c.annotation_cutoffs.push(end);
             }
             format!(
-                "EXISTS(SELECT 1 FROM temp.assertion_history ah WHERE ah.cutoff={end} AND ah.id={r}.id AND ah.root={r}.root AND ah.current=1)",
+                "EXISTS(SELECT 1 FROM temp.annotation_history ah WHERE ah.cutoff={end} AND ah.id={r}.id AND ah.root={r}.root AND ah.current=1)",
                 r = x.row()
             )
         }
@@ -321,7 +321,7 @@ pub(crate) fn changes_after(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<St
     };
     c.change_generations.push(position.generation);
     Ok(format!(
-        "(({r}.kind = 'assertion' AND {r}.seq > {archive}) OR ({r}.kind = 'removed' AND {r}.seq > {index}) \
+        "(({r}.kind = 'annotation' AND {r}.seq > {archive}) OR ({r}.kind = 'removed' AND {r}.seq > {index}) \
          OR ({r}.kind = 'session' AND ({r}.changed > {index} OR {r}.live_changed > {index} OR {r}.derived_changed > {index})))",
         r = x.row(),
         index = position.index,
@@ -551,12 +551,12 @@ pub(crate) fn tag(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Quer
     for v in x.values() {
         let p = c.text_param(&v.to_lowercase());
         parts.push(format!(
-            "EXISTS (SELECT 1 FROM source_assertion tn JOIN source_link tt ON tt.record = tn.id AND tt.role = 'about' \
+            "EXISTS (SELECT 1 FROM source_annotation tn JOIN source_annotation_link tt ON tt.record = tn.id AND tt.role = 'about' \
              WHERE tn.kind = 'tag' AND tt.ref = 'session:' || {s}.id AND {} \
              AND ((tn.key IS NULL AND lower(json_extract(tn.value,'$.value')) = {p}) \
                OR lower(tn.key) || ':' || lower(json_extract(tn.value,'$.value')) = {p} \
                OR (json_extract(tn.value,'$.value') IS NULL AND lower(tn.key) = {p})))",
-            fields::live_assertion("tn")
+            fields::live_annotation("tn")
         ));
     }
     any_of(x, parts)
@@ -787,19 +787,19 @@ pub(crate) fn recipient(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String
 }
 
 /// A note about the reference; a bare session ID is a `session:` reference.
-pub(crate) fn assertion_about(
+pub(crate) fn annotation_about(
     c: &mut Compiler<'_>,
     x: &Call<'_, '_>,
 ) -> Result<String, QueryError> {
     let input = x.value()?;
     let reference =
-        polylogue_model::Reference::parse_stored(&input).map_err(|error| QueryError::Invalid {
+        polylogue_model::Reference::parse(&input).map_err(|error| QueryError::Invalid {
             message: error.to_string(),
             position: x.span.start,
         })?;
-    let p = c.text_param(&reference.stored_form());
+    let p = c.text_param(&reference.to_string());
     Ok(format!(
-        "EXISTS(SELECT 1 FROM source_link nt WHERE nt.record={r}.id AND nt.role='about' AND nt.ref={p})",
+        "EXISTS(SELECT 1 FROM source_annotation_link nt WHERE nt.record={r}.id AND nt.role='about' AND nt.ref={p})",
         r = x.row()
     ))
 }
@@ -849,10 +849,10 @@ pub(crate) fn event_text(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<Strin
 pub(crate) fn links_to(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
     let mut clauses = Vec::new();
     for value in x.values() {
-        let reference = polylogue_model::Reference::parse_stored(&value)
+        let reference = polylogue_model::Reference::parse(&value)
             .map_err(|error| x.bad(value.clone(), error.to_string()))?;
-        let p = c.text_param(&reference.stored_form());
-        clauses.push(format!("EXISTS(SELECT 1 FROM source_link l WHERE l.record={}.id AND l.role<>'about' AND (l.ref={p} OR (l.ref>{p}||'@' AND l.ref<{p}||'A')))",x.row()));
+        let p = c.text_param(&reference.to_string());
+        clauses.push(format!("EXISTS(SELECT 1 FROM source_annotation_link l WHERE l.record={}.id AND l.role<>'about' AND (l.ref={p} OR (l.ref>{p}||'@' AND l.ref<{p}||'A')))",x.row()));
     }
     any_of(x, clauses)
 }
@@ -908,7 +908,7 @@ fn since_seen(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryErr
     let author = c.text_param(&author);
     let target = match x.unit {
         Unit::Sessions => format!("'session:'||{}.id", x.s()),
-        Unit::Annotations => format!("'assertion:'||{}.root", x.row()),
+        Unit::Annotations => format!("'annotation:'||{}.root", x.row()),
         _ => {
             return Err(x.bad(
                 "seen".into(),
@@ -932,7 +932,7 @@ fn since_seen(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryErr
         _ => unreachable!(),
     };
     Ok(format!(
-        "NOT EXISTS(SELECT 1 FROM source_assertion mark JOIN source_revision_state ms ON ms.id=mark.id AND ms.current=1 AND ms.withdrawn=0 WHERE mark.kind='seen' AND mark.author={author} AND mark.key={target} AND {unchanged})"
+        "NOT EXISTS(SELECT 1 FROM source_annotation mark JOIN source_revision_state ms ON ms.id=mark.id AND ms.current=1 AND ms.withdrawn=0 WHERE mark.kind='seen' AND mark.author={author} AND mark.key={target} AND {unchanged})"
     ))
 }
 
@@ -940,7 +940,7 @@ pub(crate) fn alternate_lang(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<S
     let mut clauses = Vec::new();
     for lang in x.values() {
         let p = c.text_param(&lang);
-        clauses.push(format!("EXISTS(SELECT 1 FROM source_variant_part vp JOIN source_variant v ON v.id=vp.variant WHERE v.to_lang={p} AND {} AND {})",crate::variants::current_sql("v"),fields::message_variant_match("v","vp",&x.scope.a.m)));
+        clauses.push(format!("EXISTS(SELECT 1 FROM source_alternate_part vp JOIN source_alternate v ON v.id=vp.alternate WHERE v.to_lang={p} AND {} AND {})",crate::alternates::current_sql("v"),fields::message_alternate_match("v","vp",&x.scope.a.m)));
     }
     any_of(x, clauses)
 }

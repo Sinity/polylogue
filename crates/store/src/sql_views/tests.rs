@@ -25,7 +25,7 @@ fn each_view_keeps_its_columns() {
         ),
         ("v1_links", "parent child kind how"),
         (
-            "v1_assertions",
+            "v1_annotations",
             "id root kind key value author via machine created_at valid_until about current withdrawn conflict",
         ),
     ] {
@@ -35,7 +35,7 @@ fn each_view_keeps_its_columns() {
 }
 
 #[test]
-fn the_views_read_sessions_messages_and_assertions() {
+fn the_views_read_sessions_messages_and_annotations() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
     let s = f
@@ -72,17 +72,17 @@ fn the_views_read_sessions_messages_and_assertions() {
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0]["session"], "test:s1");
     assert_eq!(messages[0]["text"], "fix the parser");
-    let assertions = reader
+    let annotations = reader
         .query(
-            "SELECT key, value, about, current, withdrawn FROM v1_assertions",
+            "SELECT key, value, about, current, withdrawn FROM v1_annotations",
             &[],
         )
         .unwrap();
-    assert_eq!(assertions[0]["about"], "session:test:s1");
-    assert_eq!(assertions[0]["key"], "research");
-    assert!(assertions[0]["value"].is_null());
+    assert_eq!(annotations[0]["about"], "session:test:s1");
+    assert_eq!(annotations[0]["key"], "research");
+    assert!(annotations[0]["value"].is_null());
     assert_eq!(
-        (&assertions[0]["current"], &assertions[0]["withdrawn"]),
+        (&annotations[0]["current"], &annotations[0]["withdrawn"]),
         (&1.into(), &0.into())
     );
 }
@@ -175,7 +175,7 @@ fn the_views_keep_unknown_values_null_and_read_calls_and_links() {
 }
 
 #[test]
-fn a_withdrawn_assertion_shows_as_withdrawn_in_its_view() {
+fn a_withdrawn_annotation_shows_as_withdrawn_in_its_view() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
     f.session(SessionFacts {
@@ -189,8 +189,8 @@ fn a_withdrawn_assertion_shows_as_withdrawn_in_its_view() {
     let dropped = f
         .note("tag", Some("drop"), None, "session:test:s1")
         .unwrap();
-    f.user(UserWrite::WithdrawAssertions {
-        targets: vec![Reference::parse_stored(&format!("assertion:{dropped}@{dropped}")).unwrap()],
+    f.user(UserWrite::WithdrawAnnotations {
+        targets: vec![Reference::parse(&format!("annotation:{dropped}@{dropped}")).unwrap()],
         reason: None,
     })
     .unwrap();
@@ -198,7 +198,7 @@ fn a_withdrawn_assertion_shows_as_withdrawn_in_its_view() {
     let reader = pool.reader().unwrap();
     let rows = reader
         .query(
-            "SELECT id, withdrawn, conflict FROM v1_assertions WHERE key IN ('keep','drop') ORDER BY key DESC",
+            "SELECT id, withdrawn, conflict FROM v1_annotations WHERE key IN ('keep','drop') ORDER BY key DESC",
             &[],
         )
         .unwrap();

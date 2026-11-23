@@ -539,7 +539,7 @@ fn offline_setting_and_chat_writes_keep_own_results() {
 fn an_offline_tag_retry_keeps_its_pending_intent_when_another_tag_is_confirmed() {
     use polylogue_model::{
         Reference,
-        assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink},
+        annotation::{AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink},
         user::UserWrite,
     };
     let home = ClaudeHome::new();
@@ -621,12 +621,12 @@ fn an_offline_tag_retry_keeps_its_pending_intent_when_another_tag_is_confirmed()
         .user(polylogue_store::fixture::authored::operator_request(
             "separate-confirmed-tag".into(),
             UserWrite::Assert {
-                assertions: vec![NewAssertion {
-                    kind: AssertionKind::Tag,
+                annotations: vec![NewAnnotation {
+                    kind: AnnotationKind::Tag,
                     key: Some("status".into()),
                     value: Some(serde_json::json!({"value":"ready"})),
                     valid_until: None,
-                    links: vec![NewAssertionLink {
+                    links: vec![NewAnnotationLink {
                         role: LinkRole::About,
                         reference: Reference::parse("session:codex:tag-target").unwrap(),
                     }],

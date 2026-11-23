@@ -20,7 +20,7 @@ use polylogue_model::user::{UserOutcome, UserRequest, UserWrite};
 pub struct UserReceipt {
     pub outcome: UserOutcome,
     pub save: Option<polylogue_model::user::SaveReport>,
-    /// Exact assertion revisions created by the accepted write, including on retry.
+    /// Exact annotation revisions created by the accepted write, including on retry.
     pub written: Vec<polylogue_model::Reference>,
     /// Resolved tag targets absent from the original accepted write's effects.
     pub already: Vec<polylogue_model::Reference>,
@@ -53,18 +53,18 @@ impl UserReceipt {
         effect: &polylogue_model::authored::AuthoredEffect,
     ) -> Vec<polylogue_model::Reference> {
         let UserWrite::AssertQuery {
-            assertion,
+            annotation,
             resolved,
             ..
         } = &request.write
         else {
             return Vec::new();
         };
-        if assertion.kind != polylogue_model::assertion::AssertionKind::Tag {
+        if annotation.kind != polylogue_model::annotation::AnnotationKind::Tag {
             return Vec::new();
         }
         let written: std::collections::BTreeSet<_> = effect
-            .assertions
+            .annotations
             .iter()
             .flat_map(|fact| fact.about())
             .collect();
@@ -78,10 +78,10 @@ impl UserReceipt {
         effect: &polylogue_model::authored::AuthoredEffect,
     ) -> Vec<polylogue_model::Reference> {
         effect
-            .assertions
+            .annotations
             .iter()
             .map(|fact| {
-                polylogue_model::Reference::Assertion(polylogue_model::RevisionReference::exact(
+                polylogue_model::Reference::Annotation(polylogue_model::RevisionReference::exact(
                     fact.root.clone(),
                     fact.id.clone(),
                 ))
@@ -248,7 +248,7 @@ pub(crate) fn apply_using(
         return UserReceipt::recorded(&known, outcome);
     }
     let advancing_seen = if let UserWrite::MarkSeen { marks } = &r.write {
-        let marks = crate::assertions::seen::advancing(
+        let marks = crate::annotations::seen::advancing(
             tx,
             original,
             &r.authorship.author.to_string(),
@@ -309,8 +309,8 @@ pub(crate) fn apply_using(
         | polylogue_model::Reference::Document(_)
         | polylogue_model::Reference::MessageRange { .. }
         | polylogue_model::Reference::Span { .. }
-        | polylogue_model::Reference::Assertion(_)
-        | polylogue_model::Reference::Variant { .. } => Ok(
+        | polylogue_model::Reference::Annotation(_)
+        | polylogue_model::Reference::Alternate { .. } => Ok(
             match crate::reference::link_hash(original, tx, reference)? {
                 crate::reference::LinkHash::Text(hash) => Some(hash),
                 crate::reference::LinkHash::Missing | crate::reference::LinkHash::NotApplicable => {
@@ -323,9 +323,9 @@ pub(crate) fn apply_using(
     let quote = |reference: &polylogue_model::Reference| {
         crate::reference::link_quote(original, tx, reference)
     };
-    let mut saved = crate::assertions::SavedPreparation::new(original, tx, r, preparation);
-    let mut resolve_saved = |input: crate::assertions::SavedInput<'_>| saved.resolve(input);
-    let context = crate::assertions::WriteContext {
+    let mut saved = crate::annotations::SavedPreparation::new(original, tx, r, preparation);
+    let mut resolve_saved = |input: crate::annotations::SavedInput<'_>| saved.resolve(input);
+    let context = crate::annotations::WriteContext {
         request: r,
         counter: seq,
         hash: &hash,
@@ -340,12 +340,12 @@ pub(crate) fn apply_using(
                 .expect("seen marks prepared")
                 .iter()
                 .map(|mark| {
-                    Ok(polylogue_model::assertion::NewAssertion {
-                        kind: polylogue_model::assertion::AssertionKind::Seen,
+                    Ok(polylogue_model::annotation::NewAnnotation {
+                        kind: polylogue_model::annotation::AnnotationKind::Seen,
                         key: Some(mark.target.clone()),
                         value: Some(serde_json::to_value(
-                            polylogue_model::assertion::values::Seen {
-                                position: polylogue_model::assertion::values::SeenPosition {
+                            polylogue_model::annotation::values::Seen {
+                                position: polylogue_model::annotation::values::SeenPosition {
                                     item: mark.item.clone(),
                                     at: mark.at.to_string(),
                                 },
@@ -356,7 +356,7 @@ pub(crate) fn apply_using(
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
-            crate::assertions::write_preparing(tx, &statements, context, &mut resolve_saved)
+            crate::annotations::write_preparing(tx, &statements, context, &mut resolve_saved)
         }
 
         UserWrite::Save(selected) => {
@@ -372,31 +372,31 @@ pub(crate) fn apply_using(
             repeat: false,
             pending: false,
         }),
-        UserWrite::Assert { assertions } => {
-            crate::assertions::write_preparing(tx, assertions, context, &mut resolve_saved)
+        UserWrite::Assert { annotations } => {
+            crate::annotations::write_preparing(tx, annotations, context, &mut resolve_saved)
         }
         UserWrite::AssertQuery {
-            assertion,
+            annotation,
             resolved,
             ..
         } => {
-            use polylogue_model::assertion::{LinkRole, NewAssertionLink};
-            if assertion
+            use polylogue_model::annotation::{LinkRole, NewAnnotationLink};
+            if annotation
                 .links
                 .iter()
                 .any(|link| link.role == LinkRole::About)
             {
                 return Err(StoreError::Invalid(
-                    "a query assertion cannot supply its own about links".into(),
+                    "a query annotation cannot supply its own about links".into(),
                 ));
             }
             // One deliberate write of a single-valued mark revises it; a bulk
             // write over several rows never does. Systematic labelling goes
             // through a rubric field, whose slot includes its author.
-            if assertion.kind.spec().single_valued_mark() && resolved.len() > 1 {
+            if annotation.kind.spec().single_valued_mark() && resolved.len() > 1 {
                 return Err(StoreError::Invalid(format!(
                     "single_valued_bulk: `{}` holds one value per target and is not written over {} rows; label rows with a rubric field (annotation) instead",
-                    assertion.kind.as_str(),
+                    annotation.kind.as_str(),
                     resolved.len()
                 )));
             }
@@ -405,11 +405,11 @@ pub(crate) fn apply_using(
             for reference in resolved {
                 if !targets.insert(reference) {
                     return Err(StoreError::Invalid(
-                        "a query assertion contains duplicate resolved targets".into(),
+                        "a query annotation contains duplicate resolved targets".into(),
                     ));
                 }
-                let mut statement = assertion.clone();
-                statement.links.push(NewAssertionLink {
+                let mut statement = annotation.clone();
+                statement.links.push(NewAnnotationLink {
                     role: LinkRole::About,
                     reference: reference.clone(),
                 });
@@ -422,19 +422,19 @@ pub(crate) fn apply_using(
                     pending: false,
                 })
             } else {
-                crate::assertions::write_preparing(tx, &statements, context, &mut resolve_saved)
+                crate::annotations::write_preparing(tx, &statements, context, &mut resolve_saved)
             }
         }
-        UserWrite::ReviseAssertions { bases, patch } => {
-            crate::assertions::revise_preparing(tx, bases, patch, context, &mut resolve_saved)
+        UserWrite::ReviseAnnotations { bases, patch } => {
+            crate::annotations::revise_preparing(tx, bases, patch, context, &mut resolve_saved)
         }
-        UserWrite::WithdrawAssertions { targets, reason } => {
-            use polylogue_model::assertion::{
-                AssertionKind, LinkRole, NewAssertion, NewAssertionLink,
+        UserWrite::WithdrawAnnotations { targets, reason } => {
+            use polylogue_model::annotation::{
+                AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink,
             };
             let targets = save::withdrawal_targets(tx, targets)?;
-            let statement = NewAssertion {
-                kind: AssertionKind::Withdrawal,
+            let statement = NewAnnotation {
+                kind: AnnotationKind::Withdrawal,
                 key: None,
                 value: reason
                     .as_ref()
@@ -442,16 +442,16 @@ pub(crate) fn apply_using(
                 valid_until: None,
                 links: targets
                     .iter()
-                    .map(|reference| NewAssertionLink {
+                    .map(|reference| NewAnnotationLink {
                         role: LinkRole::Withdraws,
                         reference: reference.clone(),
                     })
                     .collect(),
             };
-            crate::assertions::write_preparing(tx, &[statement], context, &mut resolve_saved)
+            crate::annotations::write_preparing(tx, &[statement], context, &mut resolve_saved)
         }
         UserWrite::SignalCommit(commit) => crate::signals::write(tx, r, commit, seq),
-        UserWrite::Variant { variant } => crate::variants::write(tx, r, variant, seq),
+        UserWrite::Alternate { alternate } => crate::alternates::write(tx, r, alternate, seq),
         UserWrite::Deliver(_) | UserWrite::DeliveredAdvice(_) => {
             unreachable!("literal deliveries are applied before resolving other writes")
         }
@@ -531,29 +531,29 @@ pub(crate) fn apply_using(
                 repeat: false,
             })
         }
-        UserWrite::BackfillStart(new) => {
-            let id = crate::backfill_jobs::start(tx, new, at, seq, &r.id)?;
+        UserWrite::ImportJobStart(new) => {
+            let id = crate::import_jobs::start(tx, new, at, seq, &r.id)?;
             Ok(UserOutcome {
                 pending: false,
                 repeat: id != new.id,
                 id,
             })
         }
-        UserWrite::BackfillClaim { by } => Ok(UserOutcome {
+        UserWrite::ImportJobClaim { by } => Ok(UserOutcome {
             pending: false,
-            id: crate::backfill_jobs::claim(tx, by, at, seq, &r.id)?,
+            id: crate::import_jobs::claim(tx, by, at, seq, &r.id)?,
             repeat: false,
         }),
-        UserWrite::BackfillReport { job, by, report } => {
-            crate::backfill_jobs::report(tx, job, by, report, at, seq, &r.id)?;
+        UserWrite::ImportJobReport { job, by, report } => {
+            crate::import_jobs::report(tx, job, by, report, at, seq, &r.id)?;
             Ok(UserOutcome {
                 pending: false,
                 id: job.clone(),
                 repeat: false,
             })
         }
-        UserWrite::BackfillCancel { job } => {
-            crate::backfill_jobs::cancel(tx, job, at, seq, &r.id)?;
+        UserWrite::ImportJobCancel { job } => {
+            crate::import_jobs::cancel(tx, job, at, seq, &r.id)?;
             Ok(UserOutcome {
                 pending: false,
                 id: job.clone(),
@@ -567,11 +567,11 @@ pub(crate) fn apply_using(
         } => {
             let value = polylogue_model::settings::parse(key, value, mode)
                 .map_err(crate::StoreError::invalid)?;
-            let statement = polylogue_model::assertion::NewAssertion {
-                kind: polylogue_model::assertion::AssertionKind::Setting,
+            let statement = polylogue_model::annotation::NewAnnotation {
+                kind: polylogue_model::annotation::AnnotationKind::Setting,
                 key: Some(key.clone()),
                 value: Some(serde_json::to_value(
-                    polylogue_model::assertion::values::Setting {
+                    polylogue_model::annotation::values::Setting {
                         machine: machine.clone(),
                         value,
                     },
@@ -579,7 +579,7 @@ pub(crate) fn apply_using(
                 valid_until: None,
                 links: Vec::new(),
             };
-            crate::assertions::write_preparing(tx, &[statement], context, &mut resolve_saved)
+            crate::annotations::write_preparing(tx, &[statement], context, &mut resolve_saved)
         }
     }?;
     let effect = if matches!(r.write, UserWrite::ResolveLine { .. })

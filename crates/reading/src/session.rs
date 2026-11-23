@@ -768,7 +768,7 @@ fn card(
     } else {
         match reader.session(child)? {
             Some(session) => Card::Session {
-                assertions: Vec::new(),
+                annotations: Vec::new(),
                 session: Box::new(session),
                 lineage_complete: ValueState::NotApplicable,
                 open: Some(Box::new(open)),
@@ -1033,7 +1033,7 @@ pub(super) fn stream(
         &request.target,
         &session,
         0,
-        if options.assertions {
+        if options.annotations {
             layout_facts::annotations(
                 reader,
                 &Reference::Session(session.id.clone()),
@@ -1269,7 +1269,7 @@ fn trim_owner(
             !logical || current == owner
         })
         .collect();
-    let (key, whole_message) = match Reference::parse_stored(after).map_err(Error::bad_request)? {
+    let (key, whole_message) = match Reference::parse(after).map_err(Error::bad_request)? {
         Reference::Message(message) => (EntryKey::header(&message), true),
         Reference::Block { message, n } => (
             EntryKey::Message {
@@ -1425,7 +1425,7 @@ pub(super) fn page(
         target,
         &read_session,
         inherited_messages,
-        if options.assertions {
+        if options.annotations {
             layout_facts::annotations(
                 reader,
                 &polylogue_model::Reference::Session(read_session.id.clone()),
@@ -1623,7 +1623,7 @@ pub(super) fn page(
             session_read: session_read(request).cloned(),
             target: continuation.target.clone(),
             digest: digest.clone(),
-            variants: request.options.variants.clone(),
+            alternates: request.options.alternates.clone(),
             versions,
             position: PagePosition::Entry {
                 key: entry.entry.key.clone(),
@@ -1711,7 +1711,7 @@ pub(super) fn page(
                 session_read: session_read(request).cloned(),
                 target: continuation.target.clone(),
                 digest: digest.clone(),
-                variants: request.options.variants.clone(),
+                alternates: request.options.alternates.clone(),
                 versions,
                 position: PagePosition::Entry {
                     key: entry_key,
@@ -1805,7 +1805,7 @@ fn lead_items(
     target: &str,
     session: &polylogue_model::Session,
     inherited: u64,
-    assertions: Vec<Annotation>,
+    annotations: Vec<AnnotationMark>,
 ) -> Vec<ReadItem> {
     // The read session's card opens the reading, with whether its lineage
     // composed without a problem.
@@ -1813,7 +1813,7 @@ fn lead_items(
         source: Source::record(format!("session:{}", session.id)),
         kind: ItemKind::Card {
             card: Box::new(Card::Session {
-                assertions,
+                annotations,
                 session: Box::new(session.clone()),
                 // Whether the parents composed, when the reading shows them,
                 // as the stream's session record says.
@@ -2489,7 +2489,7 @@ fn project_layout(
             .retain(|item| row.block_ordinals.binary_search(&item.block).is_ok());
     }
     let mut facts = facts;
-    if options.assertions {
+    if options.annotations {
         layout_facts::annotate(reader, &record, &mut facts, at, options.annotation_at())?;
     }
     if options.view == View::Context {

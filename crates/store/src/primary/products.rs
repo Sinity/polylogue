@@ -243,8 +243,8 @@ pub enum Product {
     RestoredRequest {
         prepared: PreparedRequest,
     },
-    RestoredAssertion {
-        fact: polylogue_model::assertion::AssertionFact,
+    RestoredAnnotation {
+        fact: polylogue_model::annotation::AnnotationFact,
         import: Option<polylogue_model::authored::ImportAttribution>,
     },
     Coverage(polylogue_model::capture::Coverage),
@@ -274,7 +274,7 @@ impl Product {
             | Self::QueryRunOutcome { .. }
             | Self::Request(_)
             | Self::RestoredRequest { .. }
-            | Self::RestoredAssertion { .. }
+            | Self::RestoredAnnotation { .. }
             | Self::Coverage(_) => None,
         }
     }

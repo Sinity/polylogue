@@ -72,9 +72,9 @@ pub enum View {
     #[default]
     Transcript,
     Dialogue,
-    Summary,
+    Overview,
     Context,
-    Links,
+    Tree,
     Changes,
     Live,
     Raw,
@@ -83,9 +83,9 @@ pub enum View {
 stored_names!(View, name, parse {
     Transcript => "transcript",
     Dialogue => "dialogue",
-    Summary => "summary",
+    Overview => "overview",
     Context => "context",
-    Links => "links",
+    Tree => "tree",
     Changes => "changes",
     Live => "live",
     Raw => "raw",
@@ -101,7 +101,7 @@ impl View {
             }
             Self::Dialogue => &[Text],
             Self::Changes => &[ToolCall, ToolResult],
-            Self::Summary | Self::Links | Self::Live | Self::Trace => &[],
+            Self::Overview | Self::Tree | Self::Live | Self::Trace => &[],
         }
     }
     pub fn keeps_message(self, message: &Message) -> bool {
@@ -111,7 +111,7 @@ impl View {
         match self {
             Self::Dialogue => !crate::is_harness_message(role, prompt_kind),
             Self::Transcript | Self::Context | Self::Changes | Self::Raw => true,
-            Self::Summary | Self::Links | Self::Live | Self::Trace => false,
+            Self::Overview | Self::Tree | Self::Live | Self::Trace => false,
         }
     }
 }
@@ -165,11 +165,11 @@ pub struct ReadOptions {
     #[serde(default)]
     pub turns: bool,
     #[serde(default = "enabled")]
-    pub assertions: bool,
+    pub annotations: bool,
     #[serde(default)]
     pub for_others: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub variants: Vec<String>,
+    pub alternates: Vec<String>,
     /// Spawned sessions at their calls: hidden, a card, or inline.
     #[serde(default = "spawn_cards")]
     pub spawns: SpawnFold,
@@ -219,9 +219,9 @@ impl Default for ReadOptions {
             inherited: false,
             branches: false,
             turns: false,
-            assertions: enabled(),
+            annotations: enabled(),
             for_others: false,
-            variants: vec![],
+            alternates: vec![],
             spawns: spawn_cards(),
             physical: false,
             context_meter: false,
@@ -233,7 +233,7 @@ impl Default for ReadOptions {
     }
 }
 
-/// One row per show kind: the variant, its word and its levels, fullest
+/// One row per show kind: the alternate, its word and its levels, fullest
 /// last. The table gives the enum, its words and the `--show` help text, so
 /// the CLI, MCP and the web's show and hide keys cannot drift from it.
 macro_rules! show_hide_table {
@@ -376,7 +376,7 @@ impl ReadOptions {
                         _ => SpawnFold::Inline { depth: None },
                     }
                 }
-                ShowKind::Annotations => self.assertions = true,
+                ShowKind::Annotations => self.annotations = true,
                 ShowKind::Turns => self.turns = true,
                 ShowKind::Context => self.context_meter = true,
             }
@@ -390,7 +390,7 @@ impl ReadOptions {
                 ShowKind::Inherited => self.inherited = false,
                 ShowKind::Branches => self.branches = false,
                 ShowKind::Spawns => self.spawns = SpawnFold::Hidden,
-                ShowKind::Annotations => self.assertions = false,
+                ShowKind::Annotations => self.annotations = false,
                 ShowKind::Turns => self.turns = false,
                 ShowKind::Context => self.context_meter = false,
             }
@@ -425,7 +425,7 @@ impl ReadOptions {
         for (name, value, default) in [
             (ShowKind::Inherited.name(), self.inherited, false),
             (ShowKind::Branches.name(), self.branches, false),
-            (ShowKind::Annotations.name(), self.assertions, enabled()),
+            (ShowKind::Annotations.name(), self.annotations, enabled()),
             (ShowKind::Turns.name(), self.turns, false),
             (ShowKind::Context.name(), self.context_meter, false),
         ] {
@@ -525,7 +525,7 @@ impl ReadOptions {
                 self.inherited
                     && matches!(
                         self.view,
-                        View::Summary | View::Links | View::Live | View::Raw | View::Trace
+                        View::Overview | View::Tree | View::Live | View::Raw | View::Trace
                     ),
                 "inherited",
                 "transcript, dialogue, context, changes",
@@ -534,7 +534,7 @@ impl ReadOptions {
                 self.branches
                     && matches!(
                         self.view,
-                        View::Summary | View::Links | View::Live | View::Trace
+                        View::Overview | View::Tree | View::Live | View::Trace
                     ),
                 "branches",
                 "transcript, dialogue, context, changes, raw",
@@ -548,7 +548,7 @@ impl ReadOptions {
                 self.context_meter
                     && matches!(
                         self.view,
-                        View::Summary | View::Links | View::Live | View::Trace
+                        View::Overview | View::Tree | View::Live | View::Trace
                     ),
                 "context_meter",
                 "transcript, dialogue, context, changes, raw",

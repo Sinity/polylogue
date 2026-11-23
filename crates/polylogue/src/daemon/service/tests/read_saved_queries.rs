@@ -231,13 +231,13 @@ fn saved_query_read_lists_dependents_with_executable_resave_lines() {
     // Withdrawing one exact revision reveals its predecessor.
     let previous_dependent = read(&d.daemon, "query:focus");
     assert_eq!(resaves(&previous_dependent).len(), 1);
-    let polylogue_model::Reference::Assertion(mut family) =
+    let polylogue_model::Reference::Annotation(mut family) =
         polylogue_model::Reference::parse(&refreshed.revisions[0].reference).unwrap()
     else {
         panic!("saved definition is an annotation")
     };
     family.revision = None;
-    crate::test_answers::step(Call::new("rows", json!({"selection":polylogue_model::Reference::Assertion(family).to_string(),"steps":[{"verb":"withdraw"}]})).answer(&d.daemon));
+    crate::test_answers::step(Call::new("rows", json!({"selection":polylogue_model::Reference::Annotation(family).to_string(),"steps":[{"verb":"withdraw"}]})).answer(&d.daemon));
     let without_dependent = read(&d.daemon, "query:focus");
     assert!(resaves(&without_dependent).is_empty());
     assert!(!history(&without_dependent).dependents.is_empty());

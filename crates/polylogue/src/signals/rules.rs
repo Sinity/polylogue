@@ -1,6 +1,6 @@
-//! Validates signal assertions into rule definitions for the evaluator; a
+//! Validates signal annotations into rule definitions for the evaluator; a
 //! definition is validated content, not an active revision.
-use polylogue_model::assertion::{Assertion, AssertionKind, values};
+use polylogue_model::annotation::{Annotation, AnnotationKind, values};
 
 /// Validated content is distinct from an active evaluator revision. Neither a
 /// stated historical author nor a local index counter grants activation.
@@ -11,21 +11,22 @@ pub(super) struct Definition {
 }
 
 pub(super) fn definition(
-    assertion: &Assertion,
+    annotation: &Annotation,
     configuration: &shared_signals::Configuration,
 ) -> Result<Definition, String> {
-    if assertion.fact.kind != AssertionKind::Signal {
-        return Err("assertion is not a signal".into());
+    if annotation.fact.kind != AnnotationKind::Signal {
+        return Err("annotation is not a signal".into());
     }
-    let values::Value::Signal(value) = assertion.fact.validate().map_err(|e| e.to_string())? else {
-        return Err("signal assertion has another value shape".into());
+    let values::Value::Signal(value) = annotation.fact.validate().map_err(|e| e.to_string())?
+    else {
+        return Err("signal annotation has another value shape".into());
     };
     value
         .fields
         .validate(configuration)
         .map_err(|e| e.to_string())?;
     Ok(Definition {
-        family: assertion.fact.root.clone(),
+        family: annotation.fact.root.clone(),
         rule: value.fields,
     })
 }

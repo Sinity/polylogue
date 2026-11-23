@@ -223,7 +223,7 @@ fn regular_local_files_keep_binary_bytes_empty_files_and_descriptor_facts() {
     }
 }
 
-const FIFO_CHILD_VERIFIED: &str = "POLYLOGUE_FIFO_CAPTURE_ASSERTIONS_COMPLETE";
+const FIFO_CHILD_VERIFIED: &str = "POLYLOGUE_FIFO_CAPTURE_ANNOTATIONS_COMPLETE";
 
 #[test]
 fn fifo_local_reference_child() {

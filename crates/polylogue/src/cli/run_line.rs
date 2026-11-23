@@ -855,7 +855,7 @@ impl picker::Source for Source {
     async fn preview(&self, request: picker::PreviewRequest) -> picker::Result<String> {
         let mut call = crate::client::request(
             "rows",
-            json!({"selection": request.reference, "steps": [{"verb":"read", "view":"summary", "budget":u64::from(request.width) * 4}]}),
+            json!({"selection": request.reference, "steps": [{"verb":"read", "view":"overview", "budget":u64::from(request.width) * 4}]}),
             polylogue_store::user_writes::new_request_id(),
         );
         call.deadline = command_surface::Deadline::Milliseconds(

@@ -417,7 +417,7 @@ pub fn start(
     // Hosted sessions outlive a daemon restart: their hosts, or Codex's
     // app-server, kept them running; connect to each again.
     daemon.acts.reattach();
-    // Pings and notices left pending raise their running sessions' mailbox
+    // Messages and notices left pending raise their running sessions' mailbox
     // flags; those to sessions no longer running are closed.
     acts::finish_ended(&daemon, daemon.config.requests.now().unix_ms(), true);
     let operations = Arc::new(crate::commands::table(Arc::clone(&daemon)));

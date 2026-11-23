@@ -2,7 +2,7 @@ use super::*;
 use crate::test_daemon::{self, TestDaemon};
 use polylogue_model::{
     Author, RevisionReference,
-    assertion::{AssertionKind, NewAssertion, NewAssertionLink},
+    annotation::{AnnotationKind, NewAnnotation, NewAnnotationLink},
     authorship::{Authorship, Channel},
 };
 use serde_json::{Value, json};
@@ -41,17 +41,17 @@ fn operation(w: &TestDaemon) -> Arc<polylogue_reading::operation::Context> {
 pub(crate) fn statement(
     w: &TestDaemon,
     id: &str,
-    kind: AssertionKind,
+    kind: AnnotationKind,
     file: &str,
     scope: Option<&str>,
     judged: bool,
 ) -> RevisionReference {
-    let mut links = vec![NewAssertionLink {
+    let mut links = vec![NewAnnotationLink {
         role: LinkRole::About,
         reference: Reference::parse(file).unwrap(),
     }];
     if let Some(scope) = scope {
-        links.push(NewAssertionLink {
+        links.push(NewAnnotationLink {
             role: LinkRole::Scope,
             reference: Reference::parse(scope).unwrap(),
         });
@@ -60,7 +60,7 @@ pub(crate) fn statement(
         w,
         id,
         polylogue_model::user::UserWrite::Assert {
-            assertions: vec![NewAssertion {
+            annotations: vec![NewAnnotation {
                 kind,
                 key: Some(id.into()),
                 value: Some(json!("ARCHIVED_BODY_NOT_INLINED")),
@@ -71,12 +71,12 @@ pub(crate) fn statement(
         Author::Agent(None),
     );
     let reader = w.daemon.reads.reader().unwrap();
-    let reference = query::assertions::ids(
+    let reference = query::annotations::ids(
         &reader,
         &format!(
             "kind:{} key:{}",
             kind.as_str(),
-            query::assertions::quoted(id)
+            query::annotations::quoted(id)
         ),
         &operation(w),
     )
@@ -94,14 +94,14 @@ fn judge(w: &TestDaemon, reference: &RevisionReference, id: &str) {
         w,
         id,
         polylogue_model::user::UserWrite::Assert {
-            assertions: vec![NewAssertion {
-                kind: AssertionKind::Judgment,
+            annotations: vec![NewAnnotation {
+                kind: AnnotationKind::Judgment,
                 key: Some("accepted".into()),
                 value: None,
                 valid_until: None,
-                links: vec![NewAssertionLink {
+                links: vec![NewAnnotationLink {
                     role: LinkRole::About,
-                    reference: Reference::Assertion(reference.clone()),
+                    reference: Reference::Annotation(reference.clone()),
                 }],
             }],
         },
@@ -139,7 +139,7 @@ fn advisory_selection_requires_a_current_operator_judgment_and_scoped_file() {
     let reference = statement(
         &w,
         "file-decision",
-        AssertionKind::Decision,
+        AnnotationKind::Decision,
         "file:src/parser.rs@fixture-commit",
         Some("cwd:/synthetic/repo"),
         false,
@@ -152,7 +152,7 @@ fn advisory_selection_requires_a_current_operator_judgment_and_scoped_file() {
     assert!(
         prepared
             .refs
-            .contains(&Reference::Assertion(reference.clone()).stored_form())
+            .contains(&Reference::Annotation(reference.clone()).to_string())
     );
     assert!(!prepared.text.contains("ARCHIVED_BODY_NOT_INLINED"));
     assert!(
@@ -167,8 +167,8 @@ fn advisory_selection_requires_a_current_operator_judgment_and_scoped_file() {
     operator(
         &w,
         "withdraw-file-decision",
-        polylogue_model::user::UserWrite::WithdrawAssertions {
-            targets: vec![Reference::Assertion(reference)],
+        polylogue_model::user::UserWrite::WithdrawAnnotations {
+            targets: vec![Reference::Annotation(reference)],
             reason: None,
         },
     );
@@ -181,7 +181,7 @@ fn unscoped_relative_files_are_not_inferred_global_and_absolute_files_match_exac
     statement(
         &w,
         "unscoped",
-        AssertionKind::Correction,
+        AnnotationKind::Correction,
         "file:src/parser.rs@fixture-commit",
         None,
         true,
@@ -190,7 +190,7 @@ fn unscoped_relative_files_are_not_inferred_global_and_absolute_files_match_exac
     statement(
         &w,
         "absolute",
-        AssertionKind::Correction,
+        AnnotationKind::Correction,
         "file:/synthetic/repo/src/parser.rs@fixture-commit",
         None,
         true,
@@ -214,7 +214,7 @@ fn an_expired_request_prepares_nothing_where_a_live_one_prepares_the_judged_file
     let judged = statement(
         &w,
         "expiry-file",
-        AssertionKind::Decision,
+        AnnotationKind::Decision,
         "file:src/parser.rs@fixture-commit",
         Some("cwd:/synthetic/repo"),
         true,
@@ -232,7 +232,7 @@ fn an_expired_request_prepares_nothing_where_a_live_one_prepares_the_judged_file
     assert_eq!(
         value["prepared"]["refs"],
         serde_json::json!([
-            Reference::Assertion(judged).stored_form(),
+            Reference::Annotation(judged).to_string(),
             "file:src/parser.rs@fixture-commit"
         ])
     );
@@ -265,12 +265,12 @@ fn pending_pair_is_suppressed_without_assuming_history_application() {
     let reference = statement(
         &w,
         "pending-file",
-        AssertionKind::Decision,
+        AnnotationKind::Decision,
         "file:src/parser.rs@fixture-commit",
         Some("cwd:/synthetic/repo"),
         true,
     );
-    let reference = Reference::Assertion(reference).stored_form();
+    let reference = Reference::Annotation(reference).to_string();
     let reader = w.daemon.reads.reader().unwrap();
     assert!(reader.delivery("unapplied-advice").unwrap().is_none());
     let pending = vec![vec![reference, "file:src/parser.rs@fixture-commit".into()]];
@@ -303,28 +303,28 @@ fn cooldown_is_per_session_and_expires_at_ten_minutes() {
 }
 
 #[test]
-fn a_new_file_assertion_revision_requires_its_own_judgment_and_is_a_distinct_pair() {
+fn a_new_file_annotation_revision_requires_its_own_judgment_and_is_a_distinct_pair() {
     let (w, now) = fixture();
     let old = statement(
         &w,
         "revision-file",
-        AssertionKind::Decision,
+        AnnotationKind::Decision,
         "file:src/parser.rs@fixture-commit",
         Some("cwd:/synthetic/repo"),
         true,
     );
     let pending = vec![vec![
-        Reference::Assertion(old.clone()).stored_form(),
+        Reference::Annotation(old.clone()).to_string(),
         "file:src/parser.rs@fixture-commit".into(),
     ]];
     now.fetch_add(1, Ordering::SeqCst);
     authored(
         &w,
         "revise-file",
-        polylogue_model::user::UserWrite::ReviseAssertions {
+        polylogue_model::user::UserWrite::ReviseAnnotations {
             bases: vec![old.clone()],
-            patch: polylogue_model::assertion::AssertionPatch {
-                value: polylogue_model::assertion::Change::Set(json!("new authored decision")),
+            patch: polylogue_model::annotation::AnnotationPatch {
+                value: polylogue_model::annotation::Change::Set(json!("new authored decision")),
                 ..Default::default()
             },
         },
@@ -335,7 +335,7 @@ fn a_new_file_assertion_revision_requires_its_own_judgment_and_is_a_distinct_pai
         "accepting the previous revision does not judge the next one"
     );
     let reader = w.daemon.reads.reader().unwrap();
-    let revised = query::assertions::ids(
+    let revised = query::annotations::ids(
         &reader,
         "kind:decision key:revision-file current:true",
         &operation(&w),
@@ -362,7 +362,7 @@ fn a_new_file_assertion_revision_requires_its_own_judgment_and_is_a_distinct_pai
     assert!(
         prepared
             .refs
-            .contains(&Reference::Assertion(revised).stored_form())
+            .contains(&Reference::Annotation(revised).to_string())
     );
     assert_eq!(prepared.text.lines().count(), 1);
 }

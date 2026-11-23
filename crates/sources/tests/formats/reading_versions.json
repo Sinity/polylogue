@@ -80,7 +80,7 @@
     "7b6c40723ad956c9a495b4d80ab64635380654b922fa917304a4579ea379e250"
   ],
   "hook-spool": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::hook_spool::VERSION=3",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::hook_spool::VERSION=4",
     "f4115e2f3cda1a916bd063fc32fdf5c58478d709469274c6b4c787ef82cd9196"
   ],
   "openai-chat": [
@@ -96,8 +96,8 @@
     "f290b2dc965bf30d63452dd1d965600c2481bb85136c5aad59019921f6075c95"
   ],
   "polylogue-bundle": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::export::VERSION=2,crate::polylogue_bundle::VERSION=5,polylogue_model::bundle::VERSION=3",
-    "2d8ae752d9d757f1e57a9cae94c8c29f80007f661e4a37e735f1469734870e9b"
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::export::VERSION=2,crate::polylogue_bundle::VERSION=6,polylogue_model::bundle::VERSION=4",
+    "1474f320977fac084fbc39624f73cbed449179a11fe68d49b7af9129fca8c2a3"
   ],
   "polylogue-repo-lookup": [
     "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::repo_lookup::VERSION=3",

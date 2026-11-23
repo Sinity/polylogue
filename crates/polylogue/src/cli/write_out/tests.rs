@@ -19,7 +19,7 @@ fn begin() -> serde_json::Value {
                     "reachable":true, "lag_positions":0, "state":"current"
                 }
             },
-            "enabled_variants":[], "author":"operator"
+            "enabled_alternates":[], "author":"operator"
         },
         "header": {
             "target":"query:synthetic", "view":"transcript",

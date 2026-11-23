@@ -19,7 +19,7 @@ fn catalog_refuses_unknown_blank_and_primary_owned_values() {
     ));
 }
 #[test]
-fn all_declared_defaults_validate_and_variants_keep_order() {
+fn all_declared_defaults_validate_and_alternates_keep_order() {
     for spec in CATALOG.iter().filter(|spec| !spec.key.ends_with('*')) {
         if let Some(value) = spec.default {
             parse(spec.key, value, SettingMode::Standalone).unwrap();
@@ -32,7 +32,7 @@ fn all_declared_defaults_validate_and_variants_keep_order() {
             SettingMode::Standalone
         )
         .unwrap(),
-        Value::Variants(vec!["translation:pl".into(), "simplification".into()])
+        Value::Alternates(vec!["translation:pl".into(), "simplification".into()])
     );
     assert!(parse("reading.alternates", "[\"\"]", SettingMode::Standalone).is_err());
 }
@@ -112,10 +112,10 @@ fn scope_resolution_uses_accepting_host_and_rejects_archive_overrides() {
 
 #[test]
 fn setting_conflict_picks_no_default_and_spares_other_keys() {
-    let reference = |text: &str| crate::Reference::parse_stored(text).unwrap();
+    let reference = |text: &str| crate::Reference::parse(text).unwrap();
     let conflict = vec![
-        reference("assertion:setting@left"),
-        reference("assertion:setting@right"),
+        reference("annotation:setting@left"),
+        reference("annotation:setting@right"),
     ];
     let snapshot = Snapshot::new([
         Current {
@@ -130,11 +130,11 @@ fn setting_conflict_picks_no_default_and_spares_other_keys() {
         },
         Current {
             key: "reading.alternates".into(),
-            kind: Kind::Variants,
-            default: Some(Value::Variants(vec![])),
+            kind: Kind::Alternates,
+            default: Some(Value::Alternates(vec![])),
             scope: Scope::Archive,
             supplier: "polylogue".into(),
-            value: Some(Value::Variants(vec!["translation:pl".into()])),
+            value: Some(Value::Alternates(vec!["translation:pl".into()])),
             authored: None,
             conflicts: vec![],
         },

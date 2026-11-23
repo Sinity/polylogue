@@ -54,7 +54,7 @@ impl Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-pub(crate) const SOURCE_VERSION: u32 = 13;
+pub(crate) const SOURCE_VERSION: u32 = 14;
 
 /// This adapter declaration is installed by the operator, never self-registered
 /// from a producer's requested permissions.

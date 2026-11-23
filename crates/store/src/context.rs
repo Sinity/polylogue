@@ -371,13 +371,13 @@ impl Reader<'_> {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Pings and notices to `session` with no outcome yet, oldest first,
+    /// Messages and notices to `session` with no outcome yet, oldest first,
     /// with their text: what its next context-accepting hook event takes.
     pub fn pending_hook_deliveries(&self, session: &str) -> Result<Vec<(String, String)>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare_cached(
             "SELECT d.id, d.body FROM source_delivery d
-              WHERE d.recipient_id = ?1 AND d.event IN ('ping', 'notice')
+              WHERE d.recipient_id = ?1 AND d.event IN ('message', 'notice')
                 AND NOT EXISTS (SELECT 1 FROM source_delivery_event e WHERE e.delivery = d.id)
               ORDER BY d.at, d.id",
         )?;
@@ -409,12 +409,12 @@ impl Reader<'_> {
             .collect::<rusqlite::Result<_>>()?)
     }
 
-    /// The sessions with pings or notices that have no outcome yet.
+    /// The sessions with messages or notices that have no outcome yet.
     pub fn sessions_with_pending_hook_deliveries(&self) -> Result<Vec<String>> {
         let conn = self.conn()?;
         let mut stmt = conn.prepare_cached(
             "SELECT DISTINCT d.recipient_id FROM source_delivery d
-              WHERE d.recipient_id IS NOT NULL AND d.event IN ('ping', 'notice')
+              WHERE d.recipient_id IS NOT NULL AND d.event IN ('message', 'notice')
                 AND NOT EXISTS (SELECT 1 FROM source_delivery_event e WHERE e.delivery = d.id)
               ORDER BY d.recipient_id",
         )?;
@@ -456,7 +456,9 @@ impl Reader<'_> {
             .collect();
         let stored_keys = self
             .conn()?
-            .prepare("SELECT DISTINCT key FROM source_assertion WHERE kind='setting' ORDER BY key")?
+            .prepare(
+                "SELECT DISTINCT key FROM source_annotation WHERE kind='setting' ORDER BY key",
+            )?
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for key in stored_keys {

@@ -76,7 +76,7 @@ fn archived_controls_are_data_in_pipes_and_terminals() {
         counts: bundle::Counts {
             sessions: 1,
             messages: 1,
-            assertions: 1,
+            annotations: 1,
             ..Default::default()
         },
         flags: bundle::Flags {
@@ -84,7 +84,7 @@ fn archived_controls_are_data_in_pipes_and_terminals() {
             with_blobs: false,
             read: Default::default(),
         },
-        enabled_variants: vec![],
+        enabled_alternates: vec![],
         author: polylogue_model::Author::Operator,
         notes: vec![],
         incomplete: vec![],
@@ -93,12 +93,12 @@ fn archived_controls_are_data_in_pipes_and_terminals() {
     };
     let records = [
         Record::Manifest(Box::new(manifest)),
-        Record::Assertion(Box::new(polylogue_model::assertion::AssertionRecord {
-            reference: "assertion:hostile-watch@hostile-watch".into(),
-            assertion: polylogue_model::assertion::AssertionFact {
+        Record::Annotation(Box::new(polylogue_model::annotation::AnnotationRecord {
+            reference: "annotation:hostile-watch@hostile-watch".into(),
+            annotation: polylogue_model::annotation::AnnotationFact {
                 id: "hostile-watch".into(),
                 root: "hostile-watch".into(),
-                kind: polylogue_model::assertion::AssertionKind::Signal,
+                kind: polylogue_model::annotation::AnnotationKind::Signal,
                 key: Some(HOSTILE.into()),
                 value: Some(
                     json!({"name":HOSTILE,"query":"sessions where kind:*","fires":"on_new","deliver":"notice","interrupt":false}),

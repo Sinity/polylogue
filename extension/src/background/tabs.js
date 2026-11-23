@@ -1,6 +1,6 @@
 // Chat pages: which provider a tab shows, asking its page script for a
 // conversation, a list page or a file, and finding or opening a tab to
-// work in for backfill.
+// work in for provider imports.
 
 import { decode } from "./base64.js";
 

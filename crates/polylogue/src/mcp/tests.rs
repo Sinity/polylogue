@@ -935,7 +935,7 @@ fn set_mcp_keeps_typed_write_repeat_and_read_results() {
     assert_eq!(current.history.len(), 1);
     assert_eq!(
         current.history[0].value,
-        polylogue_model::settings::Value::Variants(vec![])
+        polylogue_model::settings::Value::Alternates(vec![])
     );
     assert_eq!(
         current.current.authored.as_ref().unwrap().reference,

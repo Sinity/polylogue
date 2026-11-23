@@ -15,7 +15,9 @@ fn rebuilding_cache_preserves_prior_source_pending_authored_intent() {
         let request = PreparedRequest {
             request: polylogue_store::fixture::authored::operator_request(
                 "pending-through-primary-cache-rebuild".into(),
-                UserWrite::Assert { assertions: vec![] },
+                UserWrite::Assert {
+                    annotations: vec![],
+                },
             ),
             outcome: UserOutcome {
                 id: "pending-through-primary-cache-rebuild".into(),

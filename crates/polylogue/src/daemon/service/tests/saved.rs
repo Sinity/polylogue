@@ -207,7 +207,7 @@ fn accepting_caller_is_preserved_on_retry_and_another_actor_cannot_reuse_the_id(
     assert_eq!(original.authorship, caller);
     assert_eq!(
         reads
-            .assertion(&polylogue_model::RevisionReference::exact(
+            .annotation(&polylogue_model::RevisionReference::exact(
                 saved.id.clone(),
                 saved.id
             ))

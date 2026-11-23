@@ -11,7 +11,7 @@ pub use fragments::{
 };
 
 pub const FORMAT: &str = "polylogue-bundle";
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 /// One reader's immutable context. Streaming batches share this snapshot;
 /// delivery computes record counts without collecting the complete selection.
@@ -23,7 +23,7 @@ pub struct ReadSnapshot {
     pub ran_at: Timestamp,
     pub read_at: ChangePosition,
     pub freshness: crate::freshness::ReadFreshness,
-    pub enabled_variants: Vec<String>,
+    pub enabled_alternates: Vec<String>,
     pub author: Author,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
@@ -45,7 +45,7 @@ pub struct Manifest {
     pub freshness: crate::freshness::ReadFreshness,
     pub counts: Counts,
     pub flags: Flags,
-    pub enabled_variants: Vec<String>,
+    pub enabled_alternates: Vec<String>,
     pub author: Author,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
@@ -70,9 +70,9 @@ pub struct Counts {
     pub authored: u64,
     #[serde(default)]
     pub runs: u64,
-    pub assertions: u64,
-    pub variants: u64,
-    pub variant_parts: u64,
+    pub annotations: u64,
+    pub alternates: u64,
+    pub alternate_parts: u64,
     pub text_fragments: u64,
     pub blobs: u64,
 }
@@ -203,22 +203,22 @@ pub struct BlobRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct VariantRecord {
+pub struct AlternateRecord {
     #[serde(rename = "ref")]
     pub reference: String,
     pub commit: u64,
-    pub variant: crate::Variant,
+    pub alternate: crate::Alternate,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub imports: Vec<crate::authored::ImportAttribution>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct VariantPartRecord {
+pub struct AlternatePartRecord {
     #[serde(rename = "ref")]
     pub reference: String,
     pub commit: u64,
-    pub part: crate::VariantPart,
+    pub part: crate::AlternatePart,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub imports: Vec<crate::authored::ImportAttribution>,
 }
@@ -249,9 +249,9 @@ pub enum Record {
     Link(LinkRecord),
     Document(DocumentRecord),
     Authored(Box<AuthoredRecord>),
-    Assertion(Box<crate::assertion::AssertionRecord>),
-    Variant(VariantRecord),
-    VariantPart(VariantPartRecord),
+    Annotation(Box<crate::annotation::AnnotationRecord>),
+    Alternate(AlternateRecord),
+    AlternatePart(AlternatePartRecord),
     TextFragment(Box<TextFragmentRecord>),
     Blob(BlobRecord),
 }
@@ -266,9 +266,9 @@ impl Record {
             Self::Link(r) => &r.reference,
             Self::Document(r) => &r.reference,
             Self::Authored(r) => &r.reference,
-            Self::Assertion(r) => &r.reference,
-            Self::Variant(r) => &r.reference,
-            Self::VariantPart(r) => &r.reference,
+            Self::Annotation(r) => &r.reference,
+            Self::Alternate(r) => &r.reference,
+            Self::AlternatePart(r) => &r.reference,
             Self::TextFragment(r) => &r.reference,
             Self::Blob(r) => &r.reference,
         })
@@ -276,15 +276,15 @@ impl Record {
 
     pub fn commit(&self) -> Option<u64> {
         Some(match self {
-            Self::Manifest(_) | Self::Blob(_) | Self::Assertion(_) => return None,
+            Self::Manifest(_) | Self::Blob(_) | Self::Annotation(_) => return None,
             Self::Session(r) => r.commit,
             Self::Message(r) => r.commit,
             Self::Event(r) => r.commit,
             Self::Link(r) => r.commit,
             Self::Document(r) => r.commit,
             Self::Authored(r) => r.commit,
-            Self::Variant(r) => r.commit,
-            Self::VariantPart(r) => r.commit,
+            Self::Alternate(r) => r.commit,
+            Self::AlternatePart(r) => r.commit,
             Self::TextFragment(r) => r.commit,
         })
     }
@@ -303,25 +303,25 @@ impl Record {
                 }
                 Ok(())
             }
-            Self::Assertion(r) => {
-                if r.reference != r.assertion.reference().stored_form() {
+            Self::Annotation(r) => {
+                if r.reference != r.annotation.reference().to_string() {
                     return Err(BundleError::ReferenceMismatch);
                 }
-                r.assertion
+                r.annotation
                     .validate()
-                    .map_err(|error| BundleError::Assertion(error.to_string()))?;
+                    .map_err(|error| BundleError::Annotation(error.to_string()))?;
                 Ok(())
             }
-            Self::Variant(r) => {
-                if r.reference != format!("variant:{}@{}", r.variant.root, r.variant.id) {
+            Self::Alternate(r) => {
+                if r.reference != format!("alternate:{}@{}", r.alternate.root, r.alternate.id) {
                     return Err(BundleError::ReferenceMismatch);
                 }
                 Ok(())
             }
-            Self::VariantPart(r) => {
+            Self::AlternatePart(r) => {
                 // Matching root/revision and part ordinals is a staged package
                 // relation: a part need not follow its header in the stream.
-                if r.part.variant.is_empty() || r.reference.is_empty() {
+                if r.part.alternate.is_empty() || r.reference.is_empty() {
                     return Err(BundleError::ReferenceMismatch);
                 }
                 Ok(())
@@ -379,8 +379,8 @@ pub struct InputEventRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum BundleError {
-    #[error("invalid assertion: {0}")]
-    Assertion(String),
+    #[error("invalid annotation: {0}")]
+    Annotation(String),
     #[error(transparent)]
     TextFragment(#[from] TextFragmentError),
     #[error("not a current Polylogue bundle (format {0:?})")]
@@ -485,7 +485,7 @@ impl Manifest {
             ran_at: snapshot.ran_at,
             read_at: snapshot.read_at,
             freshness: snapshot.freshness,
-            enabled_variants: snapshot.enabled_variants,
+            enabled_alternates: snapshot.enabled_alternates,
             author: snapshot.author,
             notes: snapshot.notes,
             incomplete: snapshot.incomplete,

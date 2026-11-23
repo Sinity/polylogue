@@ -168,7 +168,7 @@ fn missing_or_corrupt_empty_frames_are_refused() {
                     .is_err(),
             ]
         };
-        // Restore this synthetic filesystem fault before assertions or teardown.
+        // Restore this synthetic filesystem fault before annotations or teardown.
         if missing {
             std::fs::rename(&held, &path).unwrap();
         } else {

@@ -76,7 +76,7 @@ fn sources(
     (vec![
         ("message", "SELECT m.at, 'message' AS kind, m.id, s.id AS session, m.role AS label, 'Recorded message time' AS time_source FROM message m CROSS JOIN session s ON s.pk=m.session_pk WHERE 1".into()),
         ("event", "SELECT e.at, 'event' AS kind, e.id, s.id AS session, e.kind AS label, 'Recorded event time' AS time_source FROM event e LEFT JOIN session s ON s.pk=e.session_pk WHERE 1".into()),
-        ("assertion", "SELECT n.created_at AS at, 'assertion' AS kind, n.id, NULL AS session, n.kind AS label, 'Assertion declared writer clock' AS time_source FROM source_assertion n WHERE 1".into()),
+        ("annotation", "SELECT n.created_at AS at, 'annotation' AS kind, n.id, NULL AS session, n.kind AS label, 'Annotation declared writer clock' AS time_source FROM source_annotation n WHERE 1".into()),
     ], vec![])
 }
 
@@ -111,7 +111,7 @@ fn years(reader: &Reader<'_>, day: &DaySetting, through: jiff::civil::Date) -> R
     for (table, field) in [
         ("message", "at"),
         ("event", "at"),
-        ("source_assertion", "created_at"),
+        ("source_annotation", "created_at"),
     ] {
         let mut since = jiff::Timestamp::MIN.as_millisecond();
         let until = crate::calendar::range(day, through)?.1;
@@ -430,7 +430,7 @@ pub fn calendar(reader: &Reader<'_>, clock: &Clock, date: jiff::civil::Date) -> 
         "SELECT pl_day(at) AS date,count(*) AS records FROM (
         SELECT at FROM message WHERE at >= ?1 AND at < ?2
         UNION ALL SELECT at FROM event WHERE at >= ?1 AND at < ?2
-        UNION ALL SELECT created_at AS at FROM source_assertion WHERE created_at >= ?1 AND created_at < ?2
+        UNION ALL SELECT created_at AS at FROM source_annotation WHERE created_at >= ?1 AND created_at < ?2
     ) GROUP BY date ORDER BY date",
         &[SqlValue::Int(since), SqlValue::Int(until)],
     ))

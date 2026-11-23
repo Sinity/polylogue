@@ -26,9 +26,9 @@ function storingHost(files = []) {
       downloading: stored.length > 0 && JSON.parse(stored.at(-1)).session.attachments.some((a) => a.not_fetched === "downloading"),
     }] } }),
     "GET /v1/status": () => ({ json: { daemon: "running", chat_actions: false } }),
-    "GET /v1/backfill": () => ({ json: { jobs: [] } }),
+    "GET /v1/import_job": () => ({ json: { jobs: [] } }),
     "GET /v1/chat-actions": () => ({ json: { actions: [] } }),
-    "POST /v1/backfill/claim": () => ({ json: { job: null } }),
+    "POST /v1/import_job/claim": () => ({ json: { job: null } }),
   };
   return { stored, routes };
 }
@@ -599,18 +599,18 @@ describe("the background worker's own messages", () => {
     expect((await extension.pageState(tab)).panel).toBe(true);
   });
 
-  it("shows the running backfill jobs, the last three ended ones and the actions awaiting approval", async () => {
+  it("shows the running import jobs, the last three ended ones and the actions awaiting approval", async () => {
     const jobs = [
       { id: "e1", status: "finished" }, { id: "r1", status: "running" }, { id: "e2", status: "finished" },
       { id: "e3", status: "cancelled" }, { id: "e4", status: "finished" },
     ];
     const actions = [{ id: "a1", status: "awaiting_approval" }, { id: "a2", status: "submitted" }];
     const { extension } = worker({
-      "GET /v1/backfill": () => ({ json: { jobs } }),
+      "GET /v1/import_job": () => ({ json: { jobs } }),
       "GET /v1/chat-actions": () => ({ json: { actions } }),
     });
     const shown = await extension.popup(null);
-    expect(shown.backfill.map((job) => job.id)).toEqual(["r1", "e2", "e3", "e4"]);
+    expect(shown.importJob.map((job) => job.id)).toEqual(["r1", "e2", "e3", "e4"]);
     expect(shown.approvals.map((action) => action.id)).toEqual(["a1"]);
     expect(shown.version).toBe("9.9.9");
   });

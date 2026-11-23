@@ -29,9 +29,9 @@ fn request_uses_the_supplied_clock_and_machine() {
 #[test]
 fn write_intent_refuses_caller_supplied_identity() {
     for write in [
-        serde_json::json!({"write":"withdraw_assertions", "targets":[], "reason":null, "author":"operator"}),
+        serde_json::json!({"write":"withdraw_annotations", "targets":[], "reason":null, "author":"operator"}),
         serde_json::json!({"write":"set_setting", "key":"browser.actions", "value":"on", "machine":null, "author":"operator"}),
-        serde_json::json!({"write":"assert", "assertions":[], "author":"operator"}),
+        serde_json::json!({"write":"assert", "annotations":[], "author":"operator"}),
         serde_json::json!({"write":"mark_seen", "marks":[], "author":"operator"}),
     ] {
         let error = serde_json::from_value::<UserWrite>(write.clone())
@@ -46,8 +46,8 @@ fn write_intent_refuses_caller_supplied_identity() {
 }
 
 #[test]
-fn revision_bases_are_pinned_assertion_references() {
-    let write = UserWrite::ReviseAssertions {
+fn revision_bases_are_pinned_annotation_references() {
+    let write = UserWrite::ReviseAnnotations {
         bases: vec![crate::RevisionReference::exact(
             "family".into(),
             "revision".into(),
@@ -57,14 +57,14 @@ fn revision_bases_are_pinned_assertion_references() {
     let encoded = serde_json::to_value(&write).unwrap();
     assert_eq!(
         encoded["bases"],
-        serde_json::json!(["assertion:family@revision"])
+        serde_json::json!(["annotation:family@revision"])
     );
     assert_eq!(
         serde_json::from_value::<UserWrite>(encoded.clone()).unwrap(),
         write
     );
     for invalid in [
-        serde_json::json!(["assertion:family"]),
+        serde_json::json!(["annotation:family"]),
         serde_json::json!(["message:codex:message"]),
         serde_json::json!([{"root":"family","revision":"revision"}]),
     ] {

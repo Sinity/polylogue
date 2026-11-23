@@ -1,7 +1,7 @@
-//! Chat actions and backfill jobs the browser extension runs, and what the
+//! Chat actions and import jobs the browser extension runs, and what the
 //! extension asks the archive about the conversations it sees.
 use crate::browser::actions::{ActionSummary, ChatFile, Update};
-use crate::browser::backfill::JobSummary;
+use crate::browser::import_job::JobSummary;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -95,7 +95,7 @@ pub struct ChatAttachment {
 /// that has not ended is answered instead of a second one.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct BackfillStart {
+pub struct ImportJobStart {
     /// The web chat: chatgpt, claude-ai or grok
     #[schemars(extend("argument_form" = "positional"))]
     pub provider: String,
@@ -105,34 +105,34 @@ pub struct BackfillStart {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct BackfillList {}
+pub struct ImportJobList {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct BackfillCancel {
+pub struct ImportJobCancel {
     /// The job
     #[schemars(extend("argument_form" = "positional"))]
     pub id: String,
 }
 
-/// The extension instance `by` takes the backfill job it holds or the
+/// The extension instance `by` takes the import job it holds or the
 /// oldest waiting one.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct BackfillClaim {
+pub struct ImportJobClaim {
     /// The extension instance taking the job
     pub by: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct BackfillReport {
+pub struct ImportJobReport {
     /// The job
     pub id: String,
     /// The extension instance holding the job's claim
     pub by: String,
     /// Its progress or outcome
-    pub report: polylogue_model::user::BackfillReport,
+    pub report: polylogue_model::user::ImportJobReport,
 }
 
 /// Asks what the archive holds of some of a web chat's conversations (the
@@ -204,14 +204,14 @@ pub enum ChatAnswer {
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct BackfillCurrent {
+pub struct ImportJobCurrent {
     pub job: Option<Box<JobSummary>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
-pub enum BackfillAnswer {
-    Current(BackfillCurrent),
+pub enum ImportJobAnswer {
+    Current(ImportJobCurrent),
     Outcome(polylogue_model::user::UserOutcome),
 }
 
@@ -222,10 +222,10 @@ pub struct ChatActionList {
     pub actions: Vec<ActionSummary>,
 }
 
-/// `backfill list`: every backfill job and how far it got.
+/// `backfill list`: every import job and how far it got.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct BackfillJobList {
+pub struct ImportJobs {
     pub jobs: Vec<JobSummary>,
 }
 

@@ -284,7 +284,7 @@ fn context_deadline(name: &str) {
         }
         let request_slots = daemon.daemon.reads.checked_out_by(limit.owner);
         let pool_slots = daemon.daemon.reads.checked_out();
-        // Release fixture holds before assertions so a failing regression also joins.
+        // Release fixture holds before annotations so a failing regression also joins.
         lock.unlock().unwrap();
         let _ = client.shutdown(Shutdown::Both);
         let _ = service.join().unwrap();

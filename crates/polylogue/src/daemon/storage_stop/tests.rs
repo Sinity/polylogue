@@ -76,8 +76,8 @@ fn a_failed_register_sync_stops_the_daemon_and_names_the_log() {
         ))
         .unwrap();
     let write = UserWrite::Assert {
-        assertions: vec![polylogue_model::assertion::NewAssertion {
-            kind: polylogue_model::assertion::AssertionKind::Signal,
+        annotations: vec![polylogue_model::annotation::NewAnnotation {
+            kind: polylogue_model::annotation::AnnotationKind::Signal,
             key: Some("storage-test".into()),
             value: Some(serde_json::json!({"name": "storage-test", "query": "sessions"})),
             valid_until: None,

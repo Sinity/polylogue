@@ -662,7 +662,7 @@ fn row_units_and_their_defaults() {
             ("claude-ai".into(), 1)
         ]
     );
-    // 31: assertions.
+    // 31: annotations.
     let v = q(&w, "annotations where kind:decision");
     assert_eq!(v["rows"][0]["value"], "decided: chrono, not time");
 }

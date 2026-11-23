@@ -27,7 +27,7 @@ fn manifest() -> Manifest {
             with_blobs: false,
             read: crate::read::ReadOptions::default(),
         },
-        enabled_variants: vec![],
+        enabled_alternates: vec![],
         author: Author::Operator,
         inventory: None,
         notes: vec![],
@@ -40,7 +40,7 @@ fn manifest() -> Manifest {
 fn bundle_header_refuses_earlier_and_newer_formats() {
     let mut value = manifest();
     assert!(value.validate().is_ok());
-    for version in [0, 1, 2, 4, u32::MAX] {
+    for version in [0, 1, 2, 3, 5, u32::MAX] {
         value.version = version;
         assert_eq!(
             value.validate(),
@@ -385,15 +385,15 @@ fn hook_injection_keeps_message_and_imports_as_declared() {
 fn declared_blob_records_require_blob_transfer() {
     let mut value: Manifest = serde_json::from_str(
         r#"{
-        "format":"polylogue-bundle","version":3,
+        "format":"polylogue-bundle","version":4,
         "query":"query:0000000000000000000000000000000000000000000000000000000000000000",
         "query_text":"synthetic","ran_at":"2026-01-01T00:00:00Z",
         "read_at":{"generation":"synthetic","index":0,"archive":0},
         "counts":{"sessions":0,"messages":0,"documents":0,"events":0,"links":0,
-                  "authored":0,"assertions":0,"text_fragments":0,"variants":0,"variant_parts":0,"blobs":1},
+                  "authored":0,"annotations":0,"text_fragments":0,"alternates":0,"alternate_parts":0,"blobs":1},
         "flags":{"format":"jsonl","with_blobs":false,
-                 "read":{"view":"transcript","inherited":false,"assertions":false}},
-        "enabled_variants":[],"author":"script:fixture","freshness":{"local":{"parsing":{"state":"complete"},"derivation":{"state":"complete"},"search":{"state":"complete"},"confirmed_stream":{"state":"not_applicable"},"kept_chains":0,"raw_only_chains":0},"sinex":{"mode":"standalone"}}
+                 "read":{"view":"transcript","inherited":false,"annotations":false}},
+        "enabled_alternates":[],"author":"script:fixture","freshness":{"local":{"parsing":{"state":"complete"},"derivation":{"state":"complete"},"search":{"state":"complete"},"confirmed_stream":{"state":"not_applicable"},"kept_chains":0,"raw_only_chains":0},"sinex":{"mode":"standalone"}}
     }"#,
     )
     .unwrap();
@@ -407,14 +407,14 @@ fn declared_blob_records_require_blob_transfer() {
 }
 
 #[test]
-fn assertion_record_carries_no_invented_request() {
-    use crate::assertion::{
-        AssertionFact, AssertionKind, AssertionLink, AssertionRecord, LinkRole,
+fn annotation_record_carries_no_invented_request() {
+    use crate::annotation::{
+        AnnotationFact, AnnotationKind, AnnotationLink, AnnotationRecord, LinkRole,
     };
-    let fact = AssertionFact {
+    let fact = AnnotationFact {
         id: "imported-revision".into(),
         root: "imported-root".into(),
-        kind: AssertionKind::Note,
+        kind: AnnotationKind::Note,
         key: None,
         value: Some(
             serde_json::json!({"text":"original text","predecessor":{"id":"old-17","extra":["preserved",2]}}),
@@ -424,16 +424,16 @@ fn assertion_record_carries_no_invented_request() {
         machine: "importing-host".into(),
         created_at: Some(crate::Timestamp::from_unix_ms(1).unwrap()),
         valid_until: None,
-        links: vec![AssertionLink {
+        links: vec![AnnotationLink {
             role: LinkRole::About,
             reference: crate::Reference::parse("session:codex:subject").unwrap(),
             seen_hash: None,
             quote: None,
         }],
     };
-    let record = Record::Assertion(Box::new(AssertionRecord {
-        reference: "assertion:imported-root@imported-revision".into(),
-        assertion: fact.clone(),
+    let record = Record::Annotation(Box::new(AnnotationRecord {
+        reference: "annotation:imported-root@imported-revision".into(),
+        annotation: fact.clone(),
     }));
     record.validate().unwrap();
     assert_eq!(record.commit(), None);
@@ -442,13 +442,13 @@ fn assertion_record_carries_no_invented_request() {
     assert!(encoded["data"].get("commit").is_none());
     let decoded: Record = serde_json::from_value(encoded).unwrap();
     assert_eq!(record, decoded);
-    let Record::Assertion(mut invalid) = decoded else {
+    let Record::Annotation(mut invalid) = decoded else {
         unreachable!()
     };
-    assert_eq!(invalid.assertion, fact);
-    invalid.reference = "assertion:another@imported-revision".into();
+    assert_eq!(invalid.annotation, fact);
+    invalid.reference = "annotation:another@imported-revision".into();
     assert_eq!(
-        Record::Assertion(invalid).validate(),
+        Record::Annotation(invalid).validate(),
         Err(BundleError::ReferenceMismatch)
     );
 }

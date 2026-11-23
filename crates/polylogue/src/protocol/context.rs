@@ -1,5 +1,5 @@
 //! The named context operations share one answer.
-use crate::briefing::{Prepared, StartSource};
+use crate::brief::{Prepared, StartSource};
 use polylogue_model::SessionId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

@@ -1,6 +1,6 @@
 use super::*;
 #[test]
-fn restored_assertion_keys_keep_each_import_source() {
+fn restored_annotation_keys_keep_each_import_source() {
     let fact = serde_json::from_value(json!({
         "id":"synthetic","root":"synthetic","kind":"note","key":null,
         "value":"Synthetic text", "author":"unattributed","via":"import","machine":"host",
@@ -14,16 +14,16 @@ fn restored_assertion_keys_keep_each_import_source() {
         actor: polylogue_model::Author::Unattributed,
         at: polylogue_model::Timestamp::from_unix_ms(at).unwrap(),
     };
-    let first = Product::RestoredAssertion {
+    let first = Product::RestoredAnnotation {
         fact,
         import: Some(ingress("one", 1)),
     };
     let mut second = first.clone();
-    if let Product::RestoredAssertion { import, .. } = &mut second {
+    if let Product::RestoredAnnotation { import, .. } = &mut second {
         *import = Some(ingress("two", 2));
     }
     assert_ne!(key(&first, 0).unwrap(), key(&second, 0).unwrap());
-    if let Product::RestoredAssertion { import, .. } = &mut second {
+    if let Product::RestoredAnnotation { import, .. } = &mut second {
         *import = Some(ingress("one", 3));
     }
     assert_eq!(key(&first, 0).unwrap(), key(&second, 0).unwrap());
@@ -130,7 +130,9 @@ fn the_save_transition_versions_changed_authored_kinds_and_keeps_the_old_manifes
             read_at: r#"{"now":1}"#.into(),
             rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
         });
-    let authored = prepared(UserWrite::Assert { assertions: vec![] });
+    let authored = prepared(UserWrite::Assert {
+        annotations: vec![],
+    });
     for (product, old_product, name, old_name) in [
         (
             Product::Request(journal.clone()),
@@ -217,20 +219,20 @@ fn the_save_transition_versions_changed_authored_kinds_and_keeps_the_old_manifes
 
 #[test]
 fn live_markdown_links_validate_and_decode_through_the_authored_kind() {
-    use polylogue_model::assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink};
+    use polylogue_model::annotation::{AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink};
     let archive = polylogue_store::fixture::writer::WriterArchive::new();
     let request = polylogue_store::fixture::authored::operator_request(
         "markdown-note".into(),
         UserWrite::Assert {
-            assertions: vec![NewAssertion {
-                kind: AssertionKind::Note,
+            annotations: vec![NewAnnotation {
+                kind: AnnotationKind::Note,
                 key: None,
                 value: Some(json!(
                     "[one](message:codex:one) ![two](message:codex:two \"card\")\n\
                 Source[^s].\n\n[^s]: [three](message:codex:three)"
                 )),
                 valid_until: None,
-                links: vec![NewAssertionLink {
+                links: vec![NewAnnotationLink {
                     role: LinkRole::About,
                     reference: polylogue_model::Reference::parse("session:codex:fixture").unwrap(),
                 }],
@@ -248,7 +250,7 @@ fn live_markdown_links_validate_and_decode_through_the_authored_kind() {
         })
         .unwrap();
     assert_eq!(prepared.len(), 1);
-    let roles: Vec<_> = prepared[0].effect.assertions[0]
+    let roles: Vec<_> = prepared[0].effect.annotations[0]
         .links
         .iter()
         .map(|link| link.role)

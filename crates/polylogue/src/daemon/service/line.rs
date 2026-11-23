@@ -202,7 +202,7 @@ fn named(text: &str) -> Option<Reference> {
                     | Reference::File { .. }
                     | Reference::Page(_)
                     | Reference::Role(_)
-                    | Reference::Variant { .. }
+                    | Reference::Alternate { .. }
                     | Reference::ToolCall(..)
             )
     })

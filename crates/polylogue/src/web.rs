@@ -184,7 +184,7 @@ pub fn router(web: Arc<Web>) -> Router {
         .route("/s/{id}", get(reader::session))
         .route("/d/{id}", get(reader::document))
         .route("/m/{id}", get(reader::message))
-        .route("/a/{reference}", get(reader::assertion))
+        .route("/a/{reference}", get(reader::annotation))
         .route("/auth", get(auth_page).post(auth_exchange))
         .route("/assets/auth.js", get(auth_js))
         .route("/assets/{*path}", get(asset))

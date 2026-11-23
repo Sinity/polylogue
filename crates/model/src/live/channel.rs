@@ -23,7 +23,7 @@ mod tests;
 pub enum Act {
     /// An addressed message; `live` refuses rather than resuming a session
     /// that is not running.
-    Ping { live: bool },
+    Send { live: bool },
     /// A signal rule's notice. A notice never starts or resumes a session.
     Notice,
     /// Approve, deny or choose for a pending request, or ahead of one.
@@ -177,7 +177,7 @@ pub fn channel(act: Act, state: LiveState, probe: &Probe) -> Result<Channel, Ref
         }
     };
     match act {
-        Act::Ping { live } => {
+        Act::Send { live } => {
             if state.running() {
                 running_channel("a message")
             } else if live {
@@ -323,11 +323,11 @@ pub fn channel_table() -> String {
                 harness.name,
                 mode,
                 cell(channel(
-                    Act::Ping { live: false },
+                    Act::Send { live: false },
                     LiveState::Working,
                     &probe
                 )),
-                cell(channel(Act::Ping { live: false }, LiveState::Ended, &probe)),
+                cell(channel(Act::Send { live: false }, LiveState::Ended, &probe)),
                 cell(channel(Act::Notice, LiveState::Working, &probe)),
                 cell(channel(Act::Answer, LiveState::Waiting, &probe)),
                 cell(channel(Act::Interrupt, LiveState::Working, &probe)),

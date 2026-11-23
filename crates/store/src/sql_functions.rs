@@ -92,11 +92,11 @@ pub fn register(conn: &Connection) -> rusqlite::Result<()> {
             }
         })
     })?;
-    conn.create_scalar_function("pl_assertion_ref", 2, FLAGS, |ctx| {
+    conn.create_scalar_function("pl_annotation_ref", 2, FLAGS, |ctx| {
         let root: String = ctx.get(0)?;
         let id: String = ctx.get(1)?;
         Ok(
-            polylogue_model::Reference::Assertion(polylogue_model::RevisionReference::exact(
+            polylogue_model::Reference::Annotation(polylogue_model::RevisionReference::exact(
                 root, id,
             ))
             .to_string(),

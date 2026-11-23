@@ -1,4 +1,4 @@
-//! Acts on live sessions: pings, answers, interrupts, new hosted sessions,
+//! Acts on live sessions: messages, answers, interrupts, new hosted sessions,
 //! and the requests a session's hooks make.
 use polylogue_model::{DeliveryOutcome, SessionId};
 use schemars::JsonSchema;
@@ -9,7 +9,7 @@ use std::path::PathBuf;
 /// (`@[sessions …]`) selects when it is sent.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct Ping {
+pub struct SendMessage {
     /// A session reference, @[role:NAME] for the role's running instance (or a new one), or @[QUERY] for every session the query selects now
     #[schemars(extend("argument_form" = "positional"))]
     pub target: String,
@@ -19,7 +19,7 @@ pub struct Ping {
     /// Refuse rather than resume a session that is not running
     #[serde(default)]
     pub live: bool,
-    /// A reference the ping is about
+    /// A reference the message is about
     pub about: Option<String>,
 }
 
@@ -108,7 +108,7 @@ pub struct HandOff {
     pub print: bool,
 }
 
-/// A hook takes the pings and notices pending for its session.
+/// A hook takes the messages and notices pending for its session.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Claim {

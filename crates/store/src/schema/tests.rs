@@ -16,7 +16,7 @@ fn every_schema_applies_to_an_empty_database() {
 
 #[test]
 fn every_database_starts_at_its_current_version() {
-    assert_eq!(ARCHIVE_VERSION, 5);
+    assert_eq!(ARCHIVE_VERSION, 6);
     assert_eq!(INDEX_VERSION, 7);
     assert_eq!(PRIMARY_INDEX_VERSION, 10);
     for (create, expected) in [
@@ -105,7 +105,7 @@ fn a_newer_database_or_one_with_unknown_tables_is_refused() {
     // build that declared the same version with other tables.
     for change in [
         "DROP TABLE revision",
-        "ALTER TABLE assertion ADD COLUMN synthetic TEXT",
+        "ALTER TABLE annotation ADD COLUMN synthetic TEXT",
     ] {
         let conn = Connection::open_in_memory().unwrap();
         ensure_archive(&conn).unwrap();

@@ -37,7 +37,7 @@ fn send_as(
         .answer(&d.daemon)
 }
 
-fn assertion(targets: Vec<Reference>, body: &str) -> serde_json::Value {
+fn annotation(targets: Vec<Reference>, body: &str) -> serde_json::Value {
     serde_json::json!({"references":targets.iter().map(ToString::to_string).collect::<Vec<_>>(),
         "steps":[{"verb":"note","as":"lesson","text":body}]})
 }
@@ -59,7 +59,7 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
         &d,
         crate::test_daemon::Call::new(
             "rows",
-            assertion(vec![session.clone()], "use the fast path"),
+            annotation(vec![session.clone()], "use the fast path"),
         )
         .id("r1"),
         Author::Agent(None),
@@ -69,7 +69,7 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
         &d,
         crate::test_daemon::Call::new(
             "rows",
-            assertion(vec![session.clone()], "keep the operator lesson"),
+            annotation(vec![session.clone()], "keep the operator lesson"),
         )
         .id("r2"),
     );
@@ -92,7 +92,7 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
         crate::test_answers::empty(query(&d, "annotations where agent:true judged:unknown"))["count"],
         0
     );
-    // The brief carries the operator's assertions and the agent assertions
+    // The brief carries the operator's annotations and the agent annotations
     // the operator accepted.
     let operation = d
         .daemon
@@ -102,8 +102,8 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
         })
         .unwrap();
     let reader = d.daemon.reads.reader().unwrap();
-    let brief = crate::briefing::prepare(
-        crate::briefing::BriefContext {
+    let brief = crate::brief::prepare(
+        crate::brief::BriefContext {
             reader: &reader,
             delivery_id: "d1",
             context: &operation,
@@ -113,10 +113,10 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
         &d.daemon.scope,
         None,
         &[],
-        &crate::briefing::Ask::SessionStart {
+        &crate::brief::Ask::SessionStart {
             cwd: "/nonexistent/dir".into(),
             session: Some(polylogue_model::SessionId::parse("claude-code:s1").unwrap()),
-            source: crate::briefing::StartSource::Startup,
+            source: crate::brief::StartSource::Startup,
         },
         Default::default(),
     )
@@ -199,7 +199,7 @@ fn recorded_history_keeps_note_and_judgment_authors() {
     let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
     let agent = ok_as(
         &d,
-        crate::test_daemon::Call::new("rows", assertion(vec![session], "use the fast path"))
+        crate::test_daemon::Call::new("rows", annotation(vec![session], "use the fast path"))
             .id("r1"),
         Author::Agent(None),
     );
@@ -234,7 +234,7 @@ fn a_rejudged_revision_reads_its_latest_operator_judgment_everywhere() {
     let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
     let agent = ok_as(
         &d,
-        crate::test_daemon::Call::new("rows", assertion(vec![session], "prefer the short path"))
+        crate::test_daemon::Call::new("rows", annotation(vec![session], "prefer the short path"))
             .id("lesson"),
         Author::Agent(None),
     );
@@ -270,19 +270,19 @@ fn a_rejudged_revision_reads_its_latest_operator_judgment_everywhere() {
 }
 
 #[test]
-fn changes_select_assertions_by_their_kind() {
+fn changes_select_annotations_by_their_kind() {
     let d = test_daemon::start("first prompt");
     let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
     ok(
         &d,
-        crate::test_daemon::Call::new("rows", assertion(vec![session], "a lesson")).id("lesson"),
+        crate::test_daemon::Call::new("rows", annotation(vec![session], "a lesson")).id("lesson"),
     );
-    let lessons = crate::test_answers::ok(query(&d, "feed where assertion_kind:lesson"));
+    let lessons = crate::test_answers::ok(query(&d, "feed where annotation_kind:lesson"));
     assert_eq!(lessons["count"], 1, "{lessons}");
-    assert_eq!(lessons["rows"][0]["kind"], "assertion", "{lessons}");
-    assert_eq!(lessons["rows"][0]["assertion_kind"], "lesson", "{lessons}");
+    assert_eq!(lessons["rows"][0]["kind"], "annotation", "{lessons}");
+    assert_eq!(lessons["rows"][0]["annotation_kind"], "lesson", "{lessons}");
     assert_eq!(
-        crate::test_answers::empty(query(&d, "feed where assertion_kind:tag"))["count"],
+        crate::test_answers::empty(query(&d, "feed where annotation_kind:tag"))["count"],
         0
     );
 }
@@ -293,7 +293,7 @@ fn a_structured_value_matches_by_its_text() {
     let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
     ok(
         &d,
-        crate::test_daemon::Call::new("rows", assertion(vec![session], "use the fast path"))
+        crate::test_daemon::Call::new("rows", annotation(vec![session], "use the fast path"))
             .id("lesson"),
     );
     assert_eq!(
@@ -321,7 +321,7 @@ fn second_judgment_by_same_author_revises_the_first_regardless_of_clock() {
     let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
     let agent = ok_as(
         &d,
-        crate::test_daemon::Call::new("rows", assertion(vec![session], "prefer the short path"))
+        crate::test_daemon::Call::new("rows", annotation(vec![session], "prefer the short path"))
             .id("lesson"),
         Author::Agent(None),
     );
@@ -369,7 +369,7 @@ fn revising_a_withdrawal_is_refused() {
     let session = Reference::Session(polylogue_model::SessionId::parse("claude-code:s1").unwrap());
     ok(
         &d,
-        crate::test_daemon::Call::new("rows", assertion(vec![session], "keep the old path"))
+        crate::test_daemon::Call::new("rows", annotation(vec![session], "keep the old path"))
             .id("note"),
     );
     assert_eq!(

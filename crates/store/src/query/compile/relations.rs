@@ -347,8 +347,8 @@ impl<'a> Compiler<'a> {
             &mut self.change_generations,
         );
         join(
-            &mut relation.program.assertion_cutoffs,
-            &mut self.assertion_cutoffs,
+            &mut relation.program.annotation_cutoffs,
+            &mut self.annotation_cutoffs,
         );
         relation
             .program
@@ -1283,8 +1283,8 @@ impl Compiler<'_> {
             &mut relation.program.change_generations,
         );
         join(
-            &mut result.assertion_cutoffs,
-            &mut relation.program.assertion_cutoffs,
+            &mut result.annotation_cutoffs,
+            &mut relation.program.annotation_cutoffs,
         );
         result
             .resolved_times
@@ -1523,8 +1523,8 @@ impl Compiler<'_> {
             &mut relation.program.change_generations,
         );
         join(
-            &mut program.assertion_cutoffs,
-            &mut relation.program.assertion_cutoffs,
+            &mut program.annotation_cutoffs,
+            &mut relation.program.annotation_cutoffs,
         );
         program
             .resolved_times

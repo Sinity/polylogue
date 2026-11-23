@@ -383,7 +383,7 @@ impl ShowProfile {
             View::Dialogue => {
                 !harness && entry.written_by != WrittenBy::Tool && entry.kind != EntryKind::Event
             }
-            View::Summary | View::Links | View::Live | View::Trace => false,
+            View::Overview | View::Tree | View::Live | View::Trace => false,
         };
         if !kept || (entry.kind == EntryKind::Event && self.view == View::Changes) {
             return false;

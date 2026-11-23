@@ -572,11 +572,9 @@ another line does are in [set-aside.md](set-aside.md#words-another-line-does).
 | `follow` | `read --follow` |
 | `takeover` (as a command) | `polylogue SESSION brief` |
 | `recall` (as a command) | `polylogue 'WORDS' brief` |
-| `assert`, `assert-query`, assertion | `note TEXT --as KIND`, `tag NAME`; the unit `annotations`, `annotation:<id>` |
 | `revise` | `edit` |
 | `keep` | `save` with no name; on a page, the checkpoint `page:NAME save` |
 | `watch` (as a verb) | `save NAME --watch` |
-| `ping` | `send` |
 | `continue` (as a verb) | `resume` |
 | `hand-off` | `resume --in HARNESS` |
 | `chat send`, `chat approve`, `chat decline`, `chat list` | `send`, `start --in chatgpt`, `answer allow`, `answer deny`; the unit `chat_actions` |
@@ -600,16 +598,12 @@ another line does are in [set-aside.md](set-aside.md#words-another-line-does).
 | `pin` | `save page:pinned` |
 | `analyze` (experiments) | `\| measure experiment` |
 | `applies` (as a verb) | the field `applies:REF` on methods |
-| variant | alternate: `note --as translation:LANG`, `read --alternate`, the unit `alternates` |
 | stage (in a query) | transform |
 | fold | `--show` and `--hide` |
-| `summary`, `links` (views) | the views `overview` and `tree` (`links` is the unit of link rows) |
 | `links` (the unit of links between sessions) | `session_links`; `links` is the unit of link rows |
 | answer (for a query run) | run: `run:<id>`, the unit `runs` |
-| `answers` (link role) | `--replies-to` |
-| `annotation` (rubric kind) | `rubric_value` |
 | `ranking:[…]`, `insufficient_evidence` (as typed comparison verdicts; the stored value keeps the underscore) | `judge 'B>A>C'`, `judge insufficient-evidence` |
-| `--limit`, `--out`, `--output`, `--for-session`, `--print`, `--exec`, `--harness`, `--for-others`, `--variant`, `--answers`, `--page-tokens`, `--output-lines`, `--since seen` | `--page-size`, `--to`, `--for`, `--dry-run`, `--in`, `--neutral-names`, `--alternate`, `--replies-to`, `--budget`, `--show tools:N`, `--from seen` |
+| `--limit`, `--out`, `--output`, `--for-session`, `--print`, `--exec`, `--harness`, `--for-others`, `--page-tokens`, `--output-lines`, `--since seen` | `--page-size`, `--to`, `--for`, `--dry-run`, `--in`, `--neutral-names`, `--budget`, `--show tools:N`, `--from seen` |
 | `last` (reference) | `latest` |
 | `--format` on `import` | `--origin` |
 | `--since` on the change feed | `--after` |

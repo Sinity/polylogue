@@ -31,10 +31,10 @@ fn stored(conn: &Connection, restoration: &Restoration) -> Result<bool> {
 }
 
 impl Inner {
-    pub(super) fn project_variant_text(&mut self) -> Result<()> {
+    pub(super) fn project_alternate_text(&mut self) -> Result<()> {
         let before = self.index.total_changes();
         let tx = self.index.transaction()?;
-        crate::variants::project(&tx)?;
+        crate::alternates::project(&tx)?;
         let changed = tx.total_changes() != before;
         if changed {
             bump_counter(&tx)?;
@@ -68,7 +68,7 @@ impl Inner {
             return Ok(outcome);
         }
         if stored(&self.archive, &restoration)? {
-            self.project_variant_text()?;
+            self.project_alternate_text()?;
             let mut outcome = restoration.prepared.outcome;
             outcome.repeat = true;
             return Ok(outcome);
@@ -79,7 +79,7 @@ impl Inner {
         crate::write_lock::commit(tx)?;
         self.commits
             .committed(crate::completion::Committed::AUTHORED);
-        self.project_variant_text()?;
+        self.project_alternate_text()?;
         Ok(outcome)
     }
 }

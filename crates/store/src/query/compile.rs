@@ -125,7 +125,7 @@ pub struct Program {
     pub id_checks: Vec<IdCheck>,
     /// Required change-feed generations, validated before any result stages.
     pub change_generations: Vec<String>,
-    pub assertion_cutoffs: Vec<i64>,
+    pub annotation_cutoffs: Vec<i64>,
     pub attach: Vec<Attach>,
     pub notes: Vec<String>,
     /// Parts that could not run; the outcome is then `incomplete`.
@@ -375,7 +375,7 @@ pub(crate) struct Compiler<'a> {
     snippet_terms: Vec<SnippetTerms>,
     id_checks: Vec<IdCheck>,
     change_generations: Vec<String>,
-    assertion_cutoffs: Vec<i64>,
+    annotation_cutoffs: Vec<i64>,
     /// Fields shown beside each row because a condition or sort named them.
     shown: Vec<RowColumn>,
     aliases: usize,
@@ -445,7 +445,7 @@ impl<'a> Compiler<'a> {
             resolved_times: Default::default(),
             id_checks: vec![],
             change_generations: vec![],
-            assertion_cutoffs: vec![],
+            annotation_cutoffs: vec![],
             shown: vec![],
             aliases: 0,
             saved_stack: vec![],

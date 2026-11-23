@@ -11,7 +11,7 @@ const source = (path) => readFileSync(join(SRC, path), "utf8");
 const state = (changes = {}) => ({
   status: { host: "ok", daemon: "running", chat_actions: true },
   page: { provider: "chatgpt", conversation: "c1", host: "ok", state: "archived", messages: 1, daemon: "running" },
-  waiting: 0, approvals: [], backfill: [], problems: [],
+  waiting: 0, approvals: [], importJob: [], problems: [],
   settings: { automatic: true, panel: true }, version: "1.2.3",
   ...changes,
 });

@@ -38,7 +38,7 @@ token or pairing step.
   or busy), captures are still stored, and what the archive holds is shown
   as unknown.
 
-## Backfill
+## Provider imports
 
 `polylogue backfill start chatgpt` (or `claude-ai`, `grok`; `--since DATE`
 limits it) asks the extension to capture a provider's older conversations.

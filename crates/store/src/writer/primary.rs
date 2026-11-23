@@ -18,7 +18,7 @@ fn confirmed_kinds(events: &[crate::primary::Confirmed]) -> crate::completion::C
                 | Product::QueryRunOutcome { .. } => Committed::QUERY_RECORDS,
                 Product::Request(_)
                 | Product::RestoredRequest { .. }
-                | Product::RestoredAssertion { .. } => Committed::AUTHORED,
+                | Product::RestoredAnnotation { .. } => Committed::AUTHORED,
                 _ => Committed::CONTENT,
             },
             _ => Committed::EVERY,
@@ -189,7 +189,7 @@ impl Inner {
             request.write,
             polylogue_model::user::UserWrite::MarkSeen { .. }
         ) && prepared.outcome.repeat
-            && prepared.effect.assertions.is_empty()
+            && prepared.effect.annotations.is_empty()
         {
             return crate::user_writes::UserReceipt::recorded(&prepared, prepared.outcome.clone());
         }
@@ -293,7 +293,7 @@ pub(super) fn product_writes(
                 Product::RestoredRequest { prepared } => {
                     (None, Some(prepared.request.machine.clone()))
                 }
-                Product::RestoredAssertion { fact, .. } => (None, Some(fact.machine.clone())),
+                Product::RestoredAnnotation { fact, .. } => (None, Some(fact.machine.clone())),
                 _ => unreachable!(),
             }
         };

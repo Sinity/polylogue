@@ -1,4 +1,4 @@
-//! References as conditions: `block:` and `assertion:` name one thing.
+//! References as conditions: `block:` and `annotation:` name one thing.
 
 use super::*;
 
@@ -122,7 +122,7 @@ fn a_block_reference_names_its_block_message_and_session() {
 }
 
 #[test]
-fn an_assertion_reference_names_the_current_revision_or_one_revision() {
+fn an_annotation_reference_names_the_current_revision_or_one_revision() {
     let w = morrow();
     let first = q(&w, "annotations where kind:decision");
     let id = first["rows"][0]["id"].as_str().unwrap().to_owned();

@@ -1,7 +1,7 @@
 //! Immutable authored effects prepared against one confirmed view. Resolution
 //! belongs to the store; transport, replay and bundles carry these same values.
 use crate::user::{
-    BackfillEvent, BackfillJob, ChatAction, ChatEvent, Delivery, UserOutcome, UserRequest,
+    ChatAction, ChatEvent, Delivery, ImportJob, ImportJobEvent, UserOutcome, UserRequest,
 };
 use crate::{Author, DeliveryOutcome, Timestamp};
 use serde::{Deserialize, Serialize};
@@ -73,15 +73,15 @@ pub enum PendingAuthored {
     Restore {
         prepared: PreparedRequest,
     },
-    RestoreAssertion {
-        fact: crate::assertion::AssertionFact,
+    RestoreAnnotation {
+        fact: crate::annotation::AnnotationFact,
     },
 }
 impl PendingAuthored {
     pub fn prepared(&self) -> Option<&PreparedRequest> {
         match self {
             Self::Live { prepared } | Self::Restore { prepared, .. } => Some(prepared),
-            Self::RestoreAssertion { .. } => None,
+            Self::RestoreAnnotation { .. } => None,
         }
     }
 }
@@ -91,16 +91,16 @@ impl PendingAuthored {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AuthoredEffect {
-    pub assertions: Vec<crate::assertion::AssertionFact>,
+    pub annotations: Vec<crate::annotation::AnnotationFact>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signal_checkpoints: Vec<crate::signal::Checkpoint>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signal_events: Vec<crate::signal::EventRecord>,
-    pub variants: crate::VariantEffect,
+    pub alternates: crate::AlternateEffect,
     pub kept_results: Vec<KeptResult>,
     pub deliveries: Vec<DeliveryChange>,
     pub chats: Vec<ChatChange>,
-    pub backfills: Vec<BackfillChange>,
+    pub import_jobs: Vec<ImportJobChange>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct KeptResult {
@@ -140,7 +140,7 @@ pub struct ChatChange {
     pub added_events: Vec<ChatEvent>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct BackfillChange {
-    pub job: BackfillJob,
-    pub added_events: Vec<BackfillEvent>,
+pub struct ImportJobChange {
+    pub job: ImportJob,
+    pub added_events: Vec<ImportJobEvent>,
 }

@@ -21,7 +21,7 @@ pub(super) fn context_selected(
 
 /// Project a record already selected by the store. Source identity, original
 /// block positions, provider metadata and time accuracy are never reconstructed
-/// from rendered text. Variant substitutions belong only to layout.
+/// from rendered text. Alternate substitutions belong only to layout.
 pub fn project_record(
     mut record: Record,
     options: &ReadOptions,
@@ -87,7 +87,7 @@ pub fn project_record(
         Record::Event(_) => {
             if matches!(
                 options.view,
-                View::Dialogue | View::Summary | View::Links | View::Live
+                View::Dialogue | View::Overview | View::Tree | View::Live
             ) {
                 return Ok(None);
             }
@@ -110,7 +110,7 @@ pub fn project_record(
             }
             if matches!(
                 options.view,
-                View::Summary | View::Links | View::Changes | View::Live
+                View::Overview | View::Tree | View::Changes | View::Live
             ) {
                 return Ok(None);
             }
@@ -118,16 +118,16 @@ pub fn project_record(
         Record::TextFragment(row) => {
             super::fragments::project_fragment(row, options, facts)?;
         }
-        Record::Authored(_) | Record::Assertion(_) => {
-            if !options.assertions {
+        Record::Authored(_) | Record::Annotation(_) => {
+            if !options.annotations {
                 return Ok(None);
             }
         }
         Record::Manifest(_)
         | Record::Session(_)
         | Record::Link(_)
-        | Record::Variant(_)
-        | Record::VariantPart(_)
+        | Record::Alternate(_)
+        | Record::AlternatePart(_)
         | Record::Blob(_) => {}
     }
     Ok(Some(record))

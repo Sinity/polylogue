@@ -1,7 +1,7 @@
 //! Store/service-prepared facts. Rendering does not resolve parents, fetch
 //! blobs, read grants or choose archive rows.
 use super::{
-    Annotation, Card, DelegationCard, EditView, IndicatorKind, PresentationMap, RawRecord,
+    AnnotationMark, Card, DelegationCard, EditView, IndicatorKind, PresentationMap, RawRecord,
     ReadError, ReadyCall, Source, SourceBlock, ValueState,
 };
 use serde::{Deserialize, Serialize};
@@ -121,7 +121,7 @@ pub enum AuthoredCoverage {
 }
 
 /// Evidence is per record/page, never an entire session required to produce
-/// the next item. Variants change layout, not the canonical source record.
+/// the next item. Alternates change layout, not the canonical source record.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LayoutFacts {
@@ -147,9 +147,9 @@ pub struct LayoutFacts {
     #[serde(default)]
     pub output_calls: BTreeMap<u64, ReadyCall>,
     #[serde(default)]
-    pub assertions: Vec<Annotation>,
+    pub annotations: Vec<AnnotationMark>,
     #[serde(default)]
-    pub variants: PresentationMap,
+    pub alternates: PresentationMap,
     #[serde(default)]
     pub cards: Vec<Card>,
     #[serde(default)]

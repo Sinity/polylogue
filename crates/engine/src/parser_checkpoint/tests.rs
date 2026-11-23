@@ -434,13 +434,13 @@ fn an_append_continues_an_earlier_response_and_resolves_its_alias() {
                 via: polylogue_model::authorship::Channel::Cli,
             },
             write: polylogue_model::user::UserWrite::Assert {
-                assertions: vec![polylogue_model::assertion::NewAssertion {
-                    kind: polylogue_model::assertion::AssertionKind::Note,
+                annotations: vec![polylogue_model::annotation::NewAnnotation {
+                    kind: polylogue_model::annotation::AnnotationKind::Note,
                     key: None,
                     value: Some(serde_json::json!("native-record note")),
                     valid_until: None,
-                    links: vec![polylogue_model::assertion::NewAssertionLink {
-                        role: polylogue_model::assertion::LinkRole::About,
+                    links: vec![polylogue_model::annotation::NewAnnotationLink {
+                        role: polylogue_model::annotation::LinkRole::About,
                         reference: message_reference.clone(),
                     }],
                 }],

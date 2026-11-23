@@ -93,7 +93,7 @@ impl PreparedFragments {
             let total = fragment.coverage.total_bytes.map(u64::to_be_bytes);
             conn.execute(
                 "INSERT OR IGNORE INTO text_fragment(hash,container,version,start,end,total,record) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-                params![value.hash.0.as_slice(),fragment.container.stored_form(),value.version,start.as_slice(),end.as_slice(),total.as_ref().map(|n|n.as_slice()),value.body],
+                params![value.hash.0.as_slice(),fragment.container.to_string(),value.version,start.as_slice(),end.as_slice(),total.as_ref().map(|n|n.as_slice()),value.body],
             )?;
             conn.execute(
                 "INSERT INTO text_fragment_source(hash,input_pk,chain,start,end,committed) VALUES (?1,?2,?3,?4,?5,?6)

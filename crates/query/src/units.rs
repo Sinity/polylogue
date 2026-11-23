@@ -37,7 +37,7 @@ impl Unit {
     /// sealed questions retain the names present when their identity was made.
     pub fn from_bound_name(name: &str) -> Option<Unit> {
         Self::from_name(name).or_else(|| match name.to_ascii_lowercase().as_str() {
-            "assertions" => Some(Self::Annotations),
+            "annotations" => Some(Self::Annotations),
             "links" => Some(Self::SessionLinks),
             "changes" => Some(Self::Feed),
             _ => None,
@@ -832,7 +832,7 @@ pub static UNITS: &[UnitSpec] = &[
                 kind: Number,
             },
             ColumnSpec {
-                name: "assertion_kind",
+                name: "annotation_kind",
                 kind: Text,
             },
         ],

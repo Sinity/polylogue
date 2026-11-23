@@ -221,7 +221,7 @@ fn pasted_and_search_briefs_use_rows() {
                 "kind":"steps", "reply":{"resolved":null, "steps":[{
                     "verb":"brief", "request_id":format!("{}-1", request["request_id"].as_str().unwrap()),
                     "outcome":{"status":"done", "reply":{"kind":"brief", "reply":{
-                        "delivery":"brief-1", "prepared":{"event":"takeover", "empty":false, "text":"prepared context", "refs":[], "left_out":[]}
+                        "delivery":"brief-1", "prepared":{"event":"session_brief", "empty":false, "text":"prepared context", "refs":[], "left_out":[]}
                     }}}
                 }]}
             }));
@@ -650,7 +650,7 @@ fn newer_events_are_registered_only_for_a_confirmed_version() {
     assert_eq!(removed, json!({}));
 }
 
-/// Pings and notices are claimed only after a tool result or at a prompt,
+/// Messages and notices are claimed only after a tool result or at a prompt,
 /// never before a tool runs.
 #[test]
 fn the_mailbox_is_claimed_only_between_steps() {

@@ -1,7 +1,7 @@
 //! The mailbox flag: an empty file `mailbox/<origin>/<session>` in the
 //! archive's runtime directory, present while a delivery waits for the
 //! session's next context-accepting hook event. A hook checks the one path
-//! with a `stat` and asks the daemon only when it exists, so pings and
+//! with a `stat` and asks the daemon only when it exists, so messages and
 //! notices cost nothing to sessions with none pending. A native ID is any
 //! text its source wrote, so the file name is its percent-encoded form: an ID
 //! holding `/` or `..` still names one file inside its origin directory.

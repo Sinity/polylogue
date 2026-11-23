@@ -3,7 +3,7 @@ use super::*;
 fn cursor() -> PageCursor {
     PageCursor {
         session_read: None,
-        variants: vec![],
+        alternates: vec![],
         target: "session:test:one".into(),
         digest: options_digest(&("transcript", 4000)),
         versions: PageCursor::version(&[SessionVersion {
@@ -160,11 +160,11 @@ fn a_session_lower_bound_round_trips_and_an_ordinary_cursor_stores_none() {
     assert_eq!(
         names,
         [
+            "alternates",
             "digest",
             "direction",
             "position",
             "target",
-            "variants",
             "versions"
         ]
     );

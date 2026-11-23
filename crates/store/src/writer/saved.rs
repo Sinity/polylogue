@@ -2,7 +2,7 @@
 //! private preflight orders the proposals but never sends their records.
 use super::*;
 use polylogue_model::{
-    assertion::AssertionKind,
+    annotation::AnnotationKind,
     settings::SettingMode,
     user::{UserRequest, UserWrite},
 };
@@ -15,12 +15,14 @@ impl Inner {
         scope: Option<&crate::ReadScopeToken>,
     ) -> Result<Option<crate::ReadScopeToken>> {
         let needed = match &request.write {
-            UserWrite::ReviseAssertions { .. } => true,
+            UserWrite::ReviseAnnotations { .. } => true,
             UserWrite::Save(save) => save.name.is_some(),
-            UserWrite::Assert { assertions } => assertions
+            UserWrite::Assert { annotations } => annotations
                 .iter()
-                .any(|statement| statement.kind == AssertionKind::SavedQuery),
-            UserWrite::AssertQuery { assertion, .. } => assertion.kind == AssertionKind::SavedQuery,
+                .any(|statement| statement.kind == AnnotationKind::SavedQuery),
+            UserWrite::AssertQuery { annotation, .. } => {
+                annotation.kind == AnnotationKind::SavedQuery
+            }
             _ => false,
         };
         if !needed {

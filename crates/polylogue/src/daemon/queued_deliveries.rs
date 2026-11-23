@@ -6,7 +6,7 @@
 //! committed, it is its recipient's latest brief here, so a resume or
 //! compaction brief that follows right away reports only what changed since.
 
-use crate::briefing::LastBrief;
+use crate::brief::LastBrief;
 use polylogue_model::LockExt as _;
 use polylogue_model::user::UserRequest;
 use polylogue_store::writer::Queued;
@@ -230,7 +230,7 @@ fn submit(
     let brief = matches!(
         &request.write,
         polylogue_model::user::UserWrite::Deliver(delivery)
-            if crate::briefing::BRIEF_EVENTS.contains(&delivery.event.as_str())
+            if crate::brief::BRIEF_EVENTS.contains(&delivery.event.as_str())
     );
     let recipient = recipient.filter(|_| brief).map(|(recipient, brief)| {
         state.latest.insert(

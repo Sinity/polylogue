@@ -111,7 +111,7 @@ fn continuation_encodes_the_complete_ready_call_without_decoding_its_cursor() {
         cursor: Some("sealed +λ&?".into()),
         ..RunnableRequest::new(
             "read",
-            json!({"target":"session:test:session","variant":["en","de"],"flag":false}),
+            json!({"target":"session:test:session","alternate":["en","de"],"flag":false}),
             "synthetic",
         )
     };
@@ -267,7 +267,7 @@ fn view_switches_use_model_option_acceptance_and_preserve_request_metadata() {
     assert_eq!(fields["operation"], "read");
     let deadline: Value = serde_json::from_str(&fields["deadline"]).unwrap();
     assert_eq!(deadline, json!(1234));
-    let fields = url_parameters(&view_url(&read_table(), &request, View::Summary).unwrap());
+    let fields = url_parameters(&view_url(&read_table(), &request, View::Overview).unwrap());
     let args: Value = serde_json::from_str(&fields["arguments"]).unwrap();
     assert!(args.get("inherited").is_none());
     assert!(args.get("branches").is_none());

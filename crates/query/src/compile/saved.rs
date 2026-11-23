@@ -20,7 +20,7 @@ pub fn saved_definition<'o>(
             candidates: several
                 .iter()
                 .map(|saved| {
-                    polylogue_model::Reference::Assertion(
+                    polylogue_model::Reference::Annotation(
                         polylogue_model::RevisionReference::exact(
                             saved.root.clone(),
                             saved.revision.clone(),

@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_model::assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink};
+use polylogue_model::annotation::{AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink};
 use polylogue_model::{Reference, RevisionReference};
 
 fn original_bytes(row: &serde_json::Value, field: &str) -> Vec<u8> {
@@ -82,9 +82,9 @@ fn old_prepared_notes_restore_without_new_text_interpretation() {
         .unwrap();
     assert_eq!(restored, originals);
     for original in &originals {
-        for fact in &original.effect.assertions {
+        for fact in &original.effect.annotations {
             let stored = reader
-                .assertion(&RevisionReference {
+                .annotation(&RevisionReference {
                     root: fact.root.clone(),
                     revision: Some(fact.id.clone()),
                 })
@@ -103,16 +103,16 @@ fn old_prepared_notes_restore_without_new_text_interpretation() {
 
     let live = crate::fixture::writer::WriterArchive::new();
     for original in originals {
-        let text = original.effect.assertions[0].value.clone().unwrap();
+        let text = original.effect.annotations[0].value.clone().unwrap();
         let request = crate::fixture::authored::operator_request(
             format!("current-{}", original.request.id),
             UserWrite::Assert {
-                assertions: vec![NewAssertion {
-                    kind: AssertionKind::Note,
+                annotations: vec![NewAnnotation {
+                    kind: AnnotationKind::Note,
                     key: None,
                     value: Some(text.clone()),
                     valid_until: None,
-                    links: vec![NewAssertionLink {
+                    links: vec![NewAnnotationLink {
                         role: LinkRole::About,
                         reference: Reference::parse("session:codex:fixture").unwrap(),
                     }],
@@ -126,7 +126,7 @@ fn old_prepared_notes_restore_without_new_text_interpretation() {
             let fact = pool
                 .reader()
                 .unwrap()
-                .assertion(&RevisionReference {
+                .annotation(&RevisionReference {
                     root: outcome.id.clone(),
                     revision: Some(outcome.id),
                 })

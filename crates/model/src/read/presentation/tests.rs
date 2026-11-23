@@ -1,14 +1,14 @@
 use super::*;
-fn variant(original: &str, alignment: Vec<TextAlignment>) -> VariantText {
-    VariantText {
-        mark: VariantMark {
-            reference: "variant:synthetic@revision".into(),
+fn alternate(original: &str, alignment: Vec<TextAlignment>) -> AlternateText {
+    AlternateText {
+        mark: AlternateMark {
+            reference: "alternate:synthetic@revision".into(),
             key: "en".into(),
             original: original.into(),
             stale: false,
             show_original: None,
         },
-        relations: vec![VariantRelation::Translates],
+        relations: vec![AlternateRelation::Translates],
         text: "replacement".into(),
         alignment,
     }
@@ -25,7 +25,7 @@ fn document_body_ranges_apply_together() {
     let mut map = PresentationMap::default();
     map.insert(
         key.clone(),
-        variant(
+        alternate(
             &key.to_string(),
             vec![
                 TextAlignment {
@@ -66,7 +66,7 @@ fn document_body_ranges_apply_together() {
 fn conflicting_replacements_and_duplicate_json_keys_are_rejected() {
     let first = Reference::parse("block:test:session:message#0").unwrap();
     let mut map = PresentationMap::default();
-    let value = variant(&first.to_string(), vec![]);
+    let value = alternate(&first.to_string(), vec![]);
     map.insert(first.clone(), value.clone()).unwrap();
     assert!(map.insert(first.clone(), value.clone()).is_err());
     let key = serde_json::to_string(&first).unwrap();
@@ -82,14 +82,14 @@ fn conflicting_replacements_and_duplicate_json_keys_are_rejected() {
         serde_json::from_str::<PresentationMap>(&format!("{{{key}:{value},{key}:{value}}}"))
             .unwrap_err();
     assert!(
-        duplicate.to_string().contains("multiple renditions"),
+        duplicate.to_string().contains("multiple alternates"),
         "{duplicate}"
     );
     let other = Reference::parse("message:test:session:message").unwrap();
     assert!(
         map.insert(
             other.clone(),
-            variant(
+            alternate(
                 &other.to_string(),
                 vec![TextAlignment {
                     source: Source {
@@ -110,7 +110,7 @@ fn utf8_boundaries_are_checked_before_any_replacement() {
     let mut map = PresentationMap::default();
     map.insert(
         key.clone(),
-        variant(
+        alternate(
             &key.to_string(),
             vec![TextAlignment {
                 source: source(0),
@@ -128,10 +128,10 @@ fn utf8_boundaries_are_checked_before_any_replacement() {
 }
 
 #[test]
-fn omits_remove_a_rendition_only_when_all_omit() {
+fn omits_remove_an_alternate_only_when_all_omit() {
     let key = Reference::parse("block:test:session:message#0").unwrap();
-    let mut mixed = variant(&key.to_string(), vec![]);
-    mixed.relations = vec![VariantRelation::Omits, VariantRelation::Expands];
+    let mut mixed = alternate(&key.to_string(), vec![]);
+    mixed.relations = vec![AlternateRelation::Omits, AlternateRelation::Expands];
     let mut map = PresentationMap::default();
     map.insert(key.clone(), mixed.clone()).unwrap();
     assert_eq!(
@@ -143,7 +143,7 @@ fn omits_remove_a_rendition_only_when_all_omit() {
         .unwrap(),
         "replacement"
     );
-    mixed.relations = vec![VariantRelation::Omits];
+    mixed.relations = vec![AlternateRelation::Omits];
     let mut map = PresentationMap::default();
     map.insert(key.clone(), mixed).unwrap();
     assert_eq!(
@@ -157,11 +157,11 @@ fn omits_remove_a_rendition_only_when_all_omit() {
     );
 }
 #[test]
-fn many_body_renditions_use_only_their_derived_body_index() {
+fn many_body_alternates_use_only_their_derived_body_index() {
     let mut map = PresentationMap::default();
     for n in 0..10_000 {
         let key = Reference::parse(&format!("block:test:session:message#{n}")).unwrap();
-        map.insert(key.clone(), variant(&key.to_string(), vec![]))
+        map.insert(key.clone(), alternate(&key.to_string(), vec![]))
             .unwrap();
     }
     assert_eq!(map.1.len(), 10_000);

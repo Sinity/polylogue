@@ -576,7 +576,7 @@ fn acp_eof_reports_unsent_queued_deliveries_once() {
     );
 }
 
-/// ACP round trips: a ping prompts an idle agent, an interrupt cancels the
+/// ACP round trips: a message prompts an idle agent, an interrupt cancels the
 /// running prompt, and a denial selects the reject option.
 #[test]
 fn acp_prompts_cancels_and_answers_through_the_protocol() {
@@ -616,7 +616,7 @@ fn acp_prompts_cancels_and_answers_through_the_protocol() {
     hosting.quit(&client);
 }
 
-/// Claude Code stream-json round trips: a ping is a user message, the
+/// Claude Code stream-json round trips: a message is a user message, the
 /// tool permission the agent asks is answered with its input, a denial
 /// carries its reason, and an interrupt is a control request; the host
 /// writes busy, blocked and idle for the session it was started with.

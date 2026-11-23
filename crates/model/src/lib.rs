@@ -10,7 +10,7 @@ pub use helpers::{JsonExt, LockExt, hex, spawn_named, unpoisoned};
 pub mod failure;
 pub use failure::Code;
 
-pub mod assertion;
+pub mod annotation;
 pub mod atomic_write;
 pub mod attachment_binding;
 pub mod authored;
@@ -44,21 +44,22 @@ mod quota;
 mod reference;
 pub mod saved_queries;
 pub use reference::{
-    AUTHORED_REFERENCE_SPELLINGS, Reference, ReferenceError, RevisionReference, SINEX_LOCAL_KINDS,
-    SpanBounds, SpanError, SpanUnit, TEXT_BODY_SEPARATOR, TextBodyError, TextBodyOffsets,
-    TextSpanPiece, assertion_revisions, span_bodies, text_body,
+    Reference, ReferenceError, RevisionReference, SINEX_LOCAL_KINDS, SpanBounds, SpanError,
+    SpanUnit, TEXT_BODY_SEPARATOR, TextBodyError, TextBodyOffsets, TextSpanPiece,
+    annotation_revisions, span_bodies, text_body,
 };
 pub mod read;
 mod route;
 pub use route::{Completion, FieldGroup, Route};
+mod alternate;
 mod session;
 pub mod settings;
 mod time;
 mod usage;
 pub mod user;
-mod variant;
-pub use variant::{
-    NewVariant, NewVariantPart, Variant, VariantEffect, VariantKind, VariantPart, VariantRelation,
+pub use alternate::{
+    Alternate, AlternateEffect, AlternateKind, AlternatePart, AlternateRelation, NewAlternate,
+    NewAlternatePart,
 };
 
 pub use batch::{

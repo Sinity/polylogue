@@ -225,7 +225,7 @@ fn rollback_lines_from_the_next_build_are_read() {
             "hook_pre_tool_use",
             "hook_after_tool",
             "hook_pre_llm_call",
-            "hook_hook_context_emitted",
+            "hook_context_emitted",
         ]
     );
     assert_eq!(

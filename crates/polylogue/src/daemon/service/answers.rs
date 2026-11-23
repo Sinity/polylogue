@@ -2,7 +2,7 @@
 use super::Daemon;
 #[cfg(feature = "sinex")]
 use super::ModeState;
-use crate::briefing::{self, Ask};
+use crate::brief::{self, Ask};
 use crate::daemon::Failure;
 use command_surface::Answer;
 use polylogue_model::user::{Delivery, UserWrite};
@@ -217,13 +217,13 @@ pub(crate) fn context(
         };
         let near: Option<&crate::daemon::query::NearFn<'_>> = provider.is_some().then_some(&near);
         let ranking_identity = crate::embeddings::ranking_key(&reader, provider.as_ref());
-        // Assertions written after this are the next brief's delta.
+        // Annotations written after this are the next brief's delta.
         let written_up_to = reader
             .change_position()
             .map_err(|e| Box::new(store_error(&e)))?
             .archive;
-        let prepared = briefing::prepare(
-            crate::briefing::BriefContext {
+        let prepared = brief::prepare(
+            crate::brief::BriefContext {
                 reader: &reader,
                 delivery_id: &request_id,
                 context: operation,
@@ -311,7 +311,7 @@ pub(crate) fn context(
         // Queued without the caller's lifetime: the text has been handed
         // over, so its record is written even when the caller has gone.
         let request = operation.request(request_id.clone(), write);
-        let since = briefing::LastBrief {
+        let since = brief::LastBrief {
             at: request.at,
             seq: written_up_to,
         };
@@ -599,7 +599,7 @@ pub(crate) fn query_targets_in(
             let selection = reader.prepare_query_selection(query, &options)?;
             if selection.program().shape != polylogue_query::Shape::Rows {
                 return Err(Failure::bad_request(
-                    "assertions require identifiable rows, not a grouped or aggregate population",
+                    "annotations require identifiable rows, not a grouped or aggregate population",
                 ));
             }
             let object = selection.query_object()?;
@@ -647,7 +647,7 @@ pub(crate) fn query_targets_in(
                 || (|| {
                     if !selection.program().incomplete.is_empty() {
                         return Err(Failure::not_yet_available(
-                            "the query population is incomplete; no assertion was written",
+                            "the query population is incomplete; no annotation was written",
                         ));
                     }
                     let mut row_count = 0_u64;

@@ -87,15 +87,15 @@ fn tag_value_maps_to_key_and_value() {
             .unwrap()
             .unwrap();
         let UserWrite::AssertQuery {
-            assertion,
+            annotation,
             resolved,
             ..
         } = request.write
         else {
-            panic!("expected query assertion")
+            panic!("expected query annotation")
         };
-        assert_eq!(assertion.key.as_deref(), Some(key));
-        assert_eq!(assertion.value, value);
+        assert_eq!(annotation.key.as_deref(), Some(key));
+        assert_eq!(annotation.value, value);
         assert_eq!(resolved, vec![Reference::parse(&targets[0]).unwrap()]);
     }
     for (id, name) in [("tag-empty-key", ":value"), ("tag-blank-key", "   ")] {
@@ -184,7 +184,7 @@ fn tag_skips_rows_already_tagged_and_reports_the_accepted_population() {
         .unwrap()
         .unwrap();
     let UserWrite::AssertQuery { resolved, .. } = request.write else {
-        panic!("expected query assertion")
+        panic!("expected query annotation")
     };
     assert_eq!(
         resolved,

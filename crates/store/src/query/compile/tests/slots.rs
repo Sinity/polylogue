@@ -3,7 +3,7 @@
 //! one write or revision naming every head resolves them.
 use super::*;
 use crate::fixture::{Fixture, SessionFacts};
-use polylogue_model::assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink};
+use polylogue_model::annotation::{AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink};
 use polylogue_model::user::UserWrite;
 
 fn count(fixture: &Fixture, text: &str) -> usize {
@@ -42,12 +42,12 @@ fn two_titles_written_apart_show_conflict_until_one_write_names_every_head() {
     // The next title written from a command revises every head of both.
     fixture
         .user(UserWrite::Assert {
-            assertions: vec![NewAssertion {
-                kind: AssertionKind::Title,
+            annotations: vec![NewAnnotation {
+                kind: AnnotationKind::Title,
                 key: None,
                 value: Some(serde_json::json!("Settled")),
                 valid_until: None,
-                links: vec![NewAssertionLink {
+                links: vec![NewAnnotationLink {
                     role: LinkRole::About,
                     reference: polylogue_model::Reference::parse("session:claude-code:titled")
                         .unwrap(),

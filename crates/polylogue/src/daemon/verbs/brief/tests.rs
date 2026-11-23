@@ -19,12 +19,14 @@ fn brief_routes_by_selection_form() {
     );
     let session = brief(Some("session:claude-code:s1"));
     assert_eq!(
-        session["reply"]["steps"][0]["outcome"]["reply"]["reply"]["prepared"]["event"], "takeover",
+        session["reply"]["steps"][0]["outcome"]["reply"]["reply"]["prepared"]["event"],
+        "session_brief",
         "{session}"
     );
     let words = brief(Some("clock"));
     assert_eq!(
-        words["reply"]["steps"][0]["outcome"]["reply"]["reply"]["prepared"]["event"], "recall",
+        words["reply"]["steps"][0]["outcome"]["reply"]["reply"]["prepared"]["event"],
+        "search_brief",
         "{words}"
     );
     let rows = brief(Some("sessions"));

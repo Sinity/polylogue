@@ -808,9 +808,9 @@ fn count_record(counts: &mut Counts, record: &polylogue_model::bundle::Record) -
         Record::Event(_) => &mut counts.events,
         Record::Link(_) => &mut counts.links,
         Record::Authored(_) => &mut counts.authored,
-        Record::Assertion(_) => &mut counts.assertions,
-        Record::Variant(_) => &mut counts.variants,
-        Record::VariantPart(_) => &mut counts.variant_parts,
+        Record::Annotation(_) => &mut counts.annotations,
+        Record::Alternate(_) => &mut counts.alternates,
+        Record::AlternatePart(_) => &mut counts.alternate_parts,
         Record::TextFragment(_) => &mut counts.text_fragments,
         Record::Blob(_) => &mut counts.blobs,
         Record::Manifest(_) => {

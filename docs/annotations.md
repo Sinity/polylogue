@@ -10,12 +10,10 @@ An annotation is an authored statement that a **key** has a **value** for what i
 
 Captured content (sessions, messages, blocks, tool calls, bytes) is what annotations point at, never an annotation. Derived values (costs, detected language) are not annotations; neither are settings' defaults, kept results, deliveries or alternates. "Note" names only the free-text kind. The query unit is `annotations`.
 
-**Stored names.** The tables keep the names below (`assertion`, `link`, `revision_state`, `assertion_slot`, `variant`, `variant_part`), the stable SQL views keep `v1_assertions` and `v1_variants`, the `replies_to` link role is stored as `answers`, and the `rubric_value` kind is stored as `annotation`, because programs read the stored names through [`dev sql`](query.md#read-only-sql). Every word the surface shows (units, references, kinds, options, help) is the one on this page.
-
 The tables live in `archive.db`:
 
 ```sql
-CREATE TABLE assertion (
+CREATE TABLE annotation (
   id          TEXT PRIMARY KEY,  -- request ID (UUIDv7) or a derived ID (markup); '<request>.<n>' for the n-th row of one request
   root        TEXT NOT NULL,     -- the first revision of this annotation; equals id for a first revision
   kind        TEXT NOT NULL,     -- closed list, see Kinds
@@ -29,15 +27,15 @@ CREATE TABLE assertion (
   commit_seq  INTEGER NOT NULL   -- this archive's write counter: change feed and send order only
 ) STRICT;
 
-CREATE TABLE link (
-  record      TEXT NOT NULL REFERENCES assertion(id),
+CREATE TABLE annotation_link (
+  record      TEXT NOT NULL REFERENCES annotation(id),
   role        TEXT NOT NULL,     -- see Links
   ref         TEXT NOT NULL,     -- a reference in its stored form
   seen_hash   BLOB,              -- BLAKE3 of the referenced text when written; filled on arrival for a waiting target
   quote       TEXT,              -- JSON, links to a span and citations: the exact text with up to 32 characters before and after, and the container's reading version when written
   PRIMARY KEY (record, role, ref)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX link_ref ON link(ref, role, record);
+CREATE INDEX annotation_link_ref ON annotation_link(ref, role, record);
 
 CREATE TABLE revision_state (    -- an index kept by the writing transaction, never a source of truth
   id          TEXT PRIMARY KEY,
@@ -46,17 +44,17 @@ CREATE TABLE revision_state (    -- an index kept by the writing transaction, ne
   withdrawn   INTEGER NOT NULL
 ) STRICT, WITHOUT ROWID;
 
-CREATE TABLE assertion_slot (    -- the uniqueness slots each revision occupies, by digest
+CREATE TABLE annotation_slot (    -- the uniqueness slots each revision occupies, by digest
   slot        BLOB NOT NULL,
-  id          TEXT NOT NULL REFERENCES assertion(id),
+  id          TEXT NOT NULL REFERENCES annotation(id),
   PRIMARY KEY (slot, id)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX assertion_kind_key ON assertion(kind, key);
-CREATE INDEX assertion_root     ON assertion(root);
+CREATE INDEX annotation_kind_key ON annotation(kind, key);
+CREATE INDEX annotation_root     ON annotation(root);
 ```
 
 - **One link table.** What it is about, evidence, scope, origin and every relation are the same kind of row: this annotation points at that reference, in this role.
-- **Nothing derived is stored except two indexes.** `revision_state` holds which revisions are current and withdrawn, and `assertion_slot` which uniqueness slots each revision holds. The write that adds a record recomputes them for exactly the roots it can affect, in the same transaction, so they always equal the rule over the links. Conflicts, judgment state, target state and work-item state are computed when read.
+- **Nothing derived is stored except two indexes.** `revision_state` holds which revisions are current and withdrawn, and `annotation_slot` which uniqueness slots each revision holds. The write that adds a record recomputes them for exactly the roots it can affect, in the same transaction, so they always equal the rule over the links. Conflicts, judgment state, target state and work-item state are computed when read.
 - **Nothing expires by itself.** `valid_until` changes how an annotation is shown; it deletes nothing. Polylogue has no deletion ([architecture.md](architecture.md#deletion)); withdrawal is itself an authored statement.
 - **Original authored time is optional.** Other writes use the accepting request's captured time; imports keep the recorded time, or `null` when none was recorded. An undated annotation is current by the same link and slot rules as a dated one. Time-filtered and as-of reads exclude undated annotations, whose standing at that instant cannot be established; unbounded reads include them and show an unknown time. An import's observed time describes arrival, not authorship.
 

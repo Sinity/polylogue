@@ -1,9 +1,9 @@
 //! Typed product field declarations. SQL expressions are owned by Store.
 use crate::{ColKind, ast::Unit};
 use polylogue_model::{
-    BlockKind, CallOutcome, DELIVERY_STATES, DeliveryEvent, DeliverySender, DocumentAuthorship,
-    DocumentPurpose, LINK_HOW_NAMES, LINK_KIND_NAMES, PromptKind, Role, SessionKind, VariantKind,
-    WrittenBy,
+    AlternateKind, BlockKind, CallOutcome, DELIVERY_STATES, DeliveryEvent, DeliverySender,
+    DocumentAuthorship, DocumentPurpose, LINK_HOW_NAMES, LINK_KIND_NAMES, PromptKind, Role,
+    SessionKind, WrittenBy,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -274,7 +274,7 @@ fields! {
     AlternatesRoot = f(Alternates,"root",Prefix,""),
     AlternatesBase = f(Alternates,"base",Prefix,""),
     AlternatesSource = f(Alternates,"source",Match,"").reference_argument(),
-    AlternatesKind = v(Alternates, "kind", VariantKind::NAMES, "the kind of rendition"),
+    AlternatesKind = v(Alternates, "kind", AlternateKind::NAMES, "the kind of alternate"),
     AlternatesFromLang = f(Alternates,"from_lang",Match,""),
     AlternatesToLang = f(Alternates,"to_lang",Match,""),
     AlternatesLang = f(Alternates,"lang",Match,""),
@@ -1284,7 +1284,7 @@ fields! {
     FeedKind = v(
         Feed,
         "kind",
-        &["session", "removed", "assertion"],
+        &["session", "removed", "annotation"],
         "what changed",
     ),
     FeedRef = f(Feed, "ref", Prefix, "the session or annotation ID").reference_argument(),
@@ -1294,7 +1294,7 @@ fields! {
         Number,
         "the write counter of the change: index.db's for sessions, archive.db's for annotations",
     ),
-    FeedAssertionKind = f(Feed, "assertion_kind", Match, "an annotation's kind"),
+    FeedAnnotationKind = f(Feed, "annotation_kind", Match, "an annotation's kind"),
     FeedAfter = sp(
         Feed,
         "after",

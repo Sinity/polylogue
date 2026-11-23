@@ -718,9 +718,9 @@ fn increment(counts: &mut Counts, record: &Record) {
         Record::Event(_) => counts.events += 1,
         Record::Link(_) => counts.links += 1,
         Record::Authored(_) => counts.authored += 1,
-        Record::Assertion(_) => counts.assertions += 1,
-        Record::Variant(_) => counts.variants += 1,
-        Record::VariantPart(_) => counts.variant_parts += 1,
+        Record::Annotation(_) => counts.annotations += 1,
+        Record::Alternate(_) => counts.alternates += 1,
+        Record::AlternatePart(_) => counts.alternate_parts += 1,
         Record::TextFragment(_) => counts.text_fragments += 1,
         Record::Blob(_) => counts.blobs += 1,
     }

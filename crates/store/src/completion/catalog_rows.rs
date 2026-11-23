@@ -244,13 +244,13 @@ impl Reader<'_> {
     ) -> Result<()> {
         let conn = self.conn()?;
         let roots: BTreeSet<String> = match after {
-            Some(after) => crate::assertions::changed_roots(conn, after)?,
-            None => conn.prepare("SELECT DISTINCT root FROM source_assertion WHERE kind IN ('saved_query','tag') ORDER BY root")?
+            Some(after) => crate::annotations::changed_roots(conn, after)?,
+            None => conn.prepare("SELECT DISTINCT root FROM source_annotation WHERE kind IN ('saved_query','tag') ORDER BY root")?
                 .query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?,
         };
         for root in roots {
             self.check()?;
-            let relevant = conn.scalar::<bool>("SELECT EXISTS(SELECT 1 FROM source_assertion WHERE root=?1 AND kind IN ('saved_query','tag'))", [&root])?;
+            let relevant = conn.scalar::<bool>("SELECT EXISTS(SELECT 1 FROM source_annotation WHERE root=?1 AND kind IN ('saved_query','tag'))", [&root])?;
             if relevant {
                 visit(self.completion_definition(&root)?)?;
             }
@@ -263,7 +263,7 @@ impl Reader<'_> {
     pub fn completion_definition(&self, family: &str) -> Result<DefinitionChange> {
         use polylogue_model::{
             Reference, RevisionReference,
-            assertion::{AssertionKind, values},
+            annotation::{AnnotationKind, values},
         };
         let saved = self
             .selection_saved_queries_for_family(family)
@@ -275,23 +275,23 @@ impl Reader<'_> {
             saved: None,
             tag: None,
         };
-        let Some(state) = self.assertion_family_state(&RevisionReference {
+        let Some(state) = self.annotation_family_state(&RevisionReference {
             root: family.into(),
             revision: None,
         })?
         else {
             return Ok(change);
         };
-        let [Reference::Assertion(head)] = state.heads.as_slice() else {
+        let [Reference::Annotation(head)] = state.heads.as_slice() else {
             return Ok(change);
         };
-        let Some(row) = self.assertion(head)? else {
+        let Some(row) = self.annotation(head)? else {
             return Ok(change);
         };
         let Some(name) = row.fact.key.as_ref() else {
             return Ok(change);
         };
-        if let Some((name, definition)) = crate::assertions::saved_definition(&row.fact, &[])? {
+        if let Some((name, definition)) = crate::annotations::saved_definition(&row.fact, &[])? {
             change.saved = Some(SavedEntry {
                 revision: definition
                     .reference
@@ -302,7 +302,7 @@ impl Reader<'_> {
             });
             return Ok(change);
         }
-        if let (AssertionKind::Tag, values::Value::Tag(value)) = (
+        if let (AnnotationKind::Tag, values::Value::Tag(value)) = (
             row.fact.kind,
             row.fact.validate().map_err(crate::StoreError::invalid)?,
         ) {
@@ -371,20 +371,20 @@ impl Reader<'_> {
         }
         Ok(())
     }
-    /// Newly committed assertions name only the setting families they affect.
+    /// Newly committed annotations name only the setting families they affect.
     /// The startup/category-replacement call takes the complete current snapshot.
     pub fn completion_setting_keys(&self, after: Option<i64>) -> Result<Vec<String>> {
         let conn = self.conn()?;
         let mut keys = BTreeSet::new();
         if let Some(after) = after {
-            for root in crate::assertions::changed_roots(conn, after)? {
-                keys.extend(conn.prepare("SELECT DISTINCT key FROM source_assertion WHERE root=?1 AND kind='setting' ORDER BY key")?
+            for root in crate::annotations::changed_roots(conn, after)? {
+                keys.extend(conn.prepare("SELECT DISTINCT key FROM source_annotation WHERE root=?1 AND kind='setting' ORDER BY key")?
                     .query_map([root], |row| row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?);
             }
         } else {
             keys.extend(
                 conn.prepare(
-                    "SELECT DISTINCT key FROM source_assertion WHERE kind='setting' ORDER BY key",
+                    "SELECT DISTINCT key FROM source_annotation WHERE kind='setting' ORDER BY key",
                 )?
                 .query_map([], |row| row.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?,

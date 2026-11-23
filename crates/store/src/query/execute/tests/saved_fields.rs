@@ -2,7 +2,7 @@ use super::*;
 use crate::query::ast::Unit;
 use polylogue_model::{
     Json, Reference,
-    assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink},
+    annotation::{AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink},
     user::UserWrite,
 };
 
@@ -29,17 +29,17 @@ fn rows(f: &Fixture, text: &str, fields: &[&str]) -> Vec<Value> {
     }
     rows
 }
-fn statement(kind: AssertionKind, value: &str, links: &[(LinkRole, String)]) -> NewAssertion {
-    NewAssertion {
+fn statement(kind: AnnotationKind, value: &str, links: &[(LinkRole, String)]) -> NewAnnotation {
+    NewAnnotation {
         kind,
         key: None,
         value: Some(Json::String(value.into())),
         valid_until: None,
         links: links
             .iter()
-            .map(|(role, r)| NewAssertionLink {
+            .map(|(role, r)| NewAnnotationLink {
                 role: *role,
-                reference: Reference::parse_stored(r).unwrap(),
+                reference: Reference::parse(r).unwrap(),
             })
             .collect(),
     }
@@ -60,14 +60,14 @@ fn request_field_matches_every_row_of_one_write() {
     session(&mut f, "test:work");
     let request = f
         .user(UserWrite::Assert {
-            assertions: vec![
+            annotations: vec![
                 statement(
-                    AssertionKind::Note,
+                    AnnotationKind::Note,
                     "first",
                     &[(LinkRole::About, "session:test:work".into())],
                 ),
                 statement(
-                    AssertionKind::Note,
+                    AnnotationKind::Note,
                     "second",
                     &[(LinkRole::About, "session:test:work".into())],
                 ),
@@ -105,12 +105,12 @@ fn links_to_matches_supports_links_and_ignores_about_links() {
         .unwrap();
     let linked = f
         .user(UserWrite::Assert {
-            assertions: vec![statement(
-                AssertionKind::Note,
+            annotations: vec![statement(
+                AnnotationKind::Note,
                 "support",
                 &[
                     (LinkRole::About, "session:test:work".into()),
-                    (LinkRole::Supports, format!("assertion:{target}@{target}")),
+                    (LinkRole::Supports, format!("annotation:{target}@{target}")),
                 ],
             )],
         })
@@ -136,8 +136,8 @@ fn answered_and_open_follow_links() {
     session(&mut f, "test:work");
     let question = f
         .user(UserWrite::Assert {
-            assertions: vec![statement(
-                AssertionKind::Question,
+            annotations: vec![statement(
+                AnnotationKind::Question,
                 "why?",
                 &[(LinkRole::About, "session:test:work".into())],
             )],
@@ -156,14 +156,14 @@ fn answered_and_open_follow_links() {
         question
     );
     f.user(UserWrite::Assert {
-        assertions: vec![statement(
-            AssertionKind::Note,
+        annotations: vec![statement(
+            AnnotationKind::Note,
             "because",
             &[
-                (LinkRole::About, format!("assertion:{question}@{question}")),
+                (LinkRole::About, format!("annotation:{question}@{question}")),
                 (
-                    LinkRole::Answers,
-                    format!("assertion:{question}@{question}"),
+                    LinkRole::RepliesTo,
+                    format!("annotation:{question}@{question}"),
                 ),
             ],
         )],
@@ -176,13 +176,16 @@ fn answered_and_open_follow_links() {
     );
     let blocker = f
         .user(UserWrite::Assert {
-            assertions: vec![statement(
-                AssertionKind::Problem,
+            annotations: vec![statement(
+                AnnotationKind::Problem,
                 "blocked",
                 &[
                     (LinkRole::About, "session:test:work".into()),
-                    (LinkRole::About, format!("assertion:{question}@{question}")),
-                    (LinkRole::Blocks, format!("assertion:{question}@{question}")),
+                    (LinkRole::About, format!("annotation:{question}@{question}")),
+                    (
+                        LinkRole::Blocks,
+                        format!("annotation:{question}@{question}"),
+                    ),
                 ],
             )],
         })
@@ -195,8 +198,8 @@ fn answered_and_open_follow_links() {
         )[0]["id"],
         question
     );
-    f.user(UserWrite::WithdrawAssertions {
-        targets: vec![Reference::parse_stored(&format!("assertion:{blocker}@{blocker}")).unwrap()],
+    f.user(UserWrite::WithdrawAnnotations {
+        targets: vec![Reference::parse(&format!("annotation:{blocker}@{blocker}")).unwrap()],
         reason: None,
     })
     .unwrap();
@@ -467,7 +470,9 @@ fn alternate_true_admits_alternate_text() {
         authored::operator_request,
         writer::{WriterArchive, message},
     };
-    use polylogue_model::{Block, NewVariant, NewVariantPart, Role, VariantKind, VariantRelation};
+    use polylogue_model::{
+        AlternateKind, AlternateRelation, Block, NewAlternate, NewAlternatePart, Role,
+    };
     let mut archive = WriterArchive::new();
     archive.write(
         "work",
@@ -486,11 +491,11 @@ fn alternate_true_admits_alternate_text() {
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let reader = pool.reader().unwrap();
     let source_hash = reader
-        .reference_hash(&Reference::parse_stored(source).unwrap())
+        .reference_hash(&Reference::parse(source).unwrap())
         .unwrap()
         .unwrap();
     let of_hash = reader
-        .reference_hash(&Reference::parse_stored(part).unwrap())
+        .reference_hash(&Reference::parse(part).unwrap())
         .unwrap()
         .unwrap();
     drop(reader);
@@ -499,19 +504,19 @@ fn alternate_true_admits_alternate_text() {
         .writer
         .user(operator_request(
             "translated".into(),
-            UserWrite::Variant {
-                variant: NewVariant {
+            UserWrite::Alternate {
+                alternate: NewAlternate {
                     base: None,
                     source: source.into(),
                     source_hash,
-                    kind: VariantKind::Translation,
+                    kind: AlternateKind::Translation,
                     from_lang: Some("en".into()),
                     to_lang: Some("pl".into()),
                     method: None,
-                    parts: vec![NewVariantPart {
+                    parts: vec![NewAlternatePart {
                         of: part.into(),
                         of_hash,
-                        relation: VariantRelation::Translates,
+                        relation: AlternateRelation::Translates,
                         body: "unikalny".into(),
                     }],
                 },
@@ -545,7 +550,7 @@ fn alternate_true_admits_alternate_text() {
         let pool = crate::ReadPool::open(&archive.archive).unwrap();
         let reader = pool.reader().unwrap();
         let chosen = reader
-            .selected_variant(source, source_hash, &["translation:pl".into()], false)
+            .selected_alternate(source, source_hash, &["translation:pl".into()], false)
             .unwrap();
         assert_eq!(chosen.as_ref().map(|v| v.id.as_str()), expected);
         let expected_rows = expected
@@ -559,19 +564,19 @@ fn alternate_true_admits_alternate_text() {
             .writer
             .user(operator_request(
                 id.into(),
-                UserWrite::Variant {
-                    variant: NewVariant {
+                UserWrite::Alternate {
+                    alternate: NewAlternate {
                         base: Some(base.into()),
                         source: source.into(),
                         source_hash,
-                        kind: VariantKind::Translation,
+                        kind: AlternateKind::Translation,
                         from_lang: Some("en".into()),
                         to_lang: Some("pl".into()),
                         method: None,
-                        parts: vec![NewVariantPart {
+                        parts: vec![NewAlternatePart {
                             of: part.into(),
                             of_hash,
-                            relation: VariantRelation::Translates,
+                            relation: AlternateRelation::Translates,
                             body: body.into(),
                         }],
                     },
@@ -584,8 +589,8 @@ fn alternate_true_admits_alternate_text() {
             .writer
             .user(operator_request(
                 id.into(),
-                UserWrite::WithdrawAssertions {
-                    targets: vec![Reference::parse_stored(target).unwrap()],
+                UserWrite::WithdrawAnnotations {
+                    targets: vec![Reference::parse(target).unwrap()],
                     reason: None,
                 },
             ))
@@ -599,18 +604,18 @@ fn alternate_true_admits_alternate_text() {
     assert_eq!(read("messages where lang:pl trzeci").len(), 1);
     assert_eq!(read("alternates where current:false to_lang:pl").len(), 2);
     // A withdrawn intermediate revision remains transparent to its successor.
-    withdraw("withdraw-middle", "variant:translated@translated-next");
+    withdraw("withdraw-middle", "alternate:translated@translated-next");
     assert_head(Some("translated-last"));
     assert!(read("messages where alternate:true unikalny").is_empty());
     assert_eq!(read("alternates where withdrawn:true to_lang:pl").len(), 1);
-    withdraw("withdraw-last", "variant:translated@translated-last");
+    withdraw("withdraw-last", "alternate:translated@translated-last");
     assert_head(Some("translated"));
     assert_eq!(read("messages where lang:pl unikalny").len(), 1);
-    withdraw("withdraw-root", "variant:translated");
+    withdraw("withdraw-root", "alternate:translated");
     assert_head(None);
     assert!(read("messages where alternate:true unikalny").is_empty());
     assert!(read("messages where lang:pl unikalny").is_empty());
-    withdraw("restore-root", "assertion:withdraw-root@withdraw-root");
+    withdraw("restore-root", "annotation:withdraw-root@withdraw-root");
     assert_head(Some("translated"));
     assert_eq!(read("messages where alternate:true unikalny").len(), 1);
 }
@@ -752,18 +757,18 @@ fn recorded_unit_objects_execute_with_original_hash_and_body() {
                 assert_eq!(got[0]["parent"], "test:parent");
                 assert_eq!(got[0]["child"], "test:child");
             }
-            query_language::ast::Source::Unit { ref unit, .. } if unit == "assertions" => {
+            query_language::ast::Source::Unit { ref unit, .. } if unit == "annotations" => {
                 assert_eq!(got.len(), 1);
                 assert_eq!(got[0]["value"], "retained interpretation");
             }
             query_language::ast::Source::Unit { ref unit, .. }
                 if unit == "changes" && object.query.transforms.is_empty() =>
             {
-                assert!(got.iter().any(|r| r["assertion_kind"] == "note"));
+                assert!(got.iter().any(|r| r["annotation_kind"] == "note"));
             }
             query_language::ast::Source::Unit { ref unit, .. } if unit == "changes" => {
                 assert_eq!(got.len(), 1);
-                assert_eq!(got[0]["assertion_kind"], "note");
+                assert_eq!(got[0]["annotation_kind"], "note");
                 assert_eq!(got[0]["count"], 1);
             }
             _ => panic!("fixture is not an original renamed unit"),
@@ -848,8 +853,8 @@ fn goal_stays_open_until_a_current_reply_is_accepted() {
     session(&mut f, "test:work");
     let goal = f
         .user(UserWrite::Assert {
-            assertions: vec![statement(
-                AssertionKind::Goal,
+            annotations: vec![statement(
+                AnnotationKind::Goal,
                 "finish",
                 &[(LinkRole::About, "session:test:work".into())],
             )],
@@ -857,12 +862,12 @@ fn goal_stays_open_until_a_current_reply_is_accepted() {
         .unwrap();
     let reply = f
         .user(UserWrite::Assert {
-            assertions: vec![statement(
-                AssertionKind::Note,
+            annotations: vec![statement(
+                AnnotationKind::Note,
                 "done",
                 &[
-                    (LinkRole::About, format!("assertion:{goal}@{goal}")),
-                    (LinkRole::Answers, format!("assertion:{goal}@{goal}")),
+                    (LinkRole::About, format!("annotation:{goal}@{goal}")),
+                    (LinkRole::RepliesTo, format!("annotation:{goal}@{goal}")),
                 ],
             )],
         })
@@ -872,14 +877,14 @@ fn goal_stays_open_until_a_current_reply_is_accepted() {
         goal
     );
     f.user(UserWrite::Assert {
-        assertions: vec![NewAssertion {
-            kind: AssertionKind::Judgment,
+        annotations: vec![NewAnnotation {
+            kind: AnnotationKind::Judgment,
             key: Some("accepted".into()),
             value: None,
             valid_until: None,
-            links: vec![NewAssertionLink {
+            links: vec![NewAnnotationLink {
                 role: LinkRole::About,
-                reference: Reference::parse_stored(&format!("assertion:{reply}@{reply}")).unwrap(),
+                reference: Reference::parse(&format!("annotation:{reply}@{reply}")).unwrap(),
             }],
         }],
     })
@@ -949,7 +954,7 @@ fn since_seen_tracks_the_computed_author_and_new_source_or_authored_work() {
     };
     use polylogue_model::{
         Role,
-        assertion::{AssertionPatch, Change},
+        annotation::{AnnotationPatch, Change},
         user::SeenMark,
     };
     let mut archive = WriterArchive::new();
@@ -960,8 +965,8 @@ fn since_seen_tracks_the_computed_author_and_new_source_or_authored_work() {
         .user(operator_request(
             "note-for-reader".into(),
             UserWrite::Assert {
-                assertions: vec![statement(
-                    AssertionKind::Note,
+                annotations: vec![statement(
+                    AnnotationKind::Note,
                     "original",
                     &[(LinkRole::About, "session:claude-code:reader".into())],
                 )],
@@ -1004,7 +1009,7 @@ fn since_seen_tracks_the_computed_author_and_new_source_or_authored_work() {
                         at: at.clone(),
                     },
                     SeenMark {
-                        target: format!("assertion:{note}"),
+                        target: format!("annotation:{note}"),
                         item: None,
                         at,
                     },
@@ -1023,7 +1028,7 @@ fn since_seen_tracks_the_computed_author_and_new_source_or_authored_work() {
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let feed_reader = pool.reader().unwrap();
     let feed = feed_reader.query_rows(&feed_program).unwrap();
-    assert!(feed.iter().all(|row| row["assertion_kind"] != "seen"));
+    assert!(feed.iter().all(|row| row["annotation_kind"] != "seen"));
     drop(feed_reader);
     drop(pool);
     assert_eq!(count(&archive, "other-reader", sessions), 1);
@@ -1041,12 +1046,12 @@ fn since_seen_tracks_the_computed_author_and_new_source_or_authored_work() {
         .writer
         .user(operator_request(
             "revise-reader-note".into(),
-            UserWrite::ReviseAssertions {
+            UserWrite::ReviseAnnotations {
                 bases: vec![polylogue_model::RevisionReference::exact(
                     note.clone(),
                     note,
                 )],
-                patch: AssertionPatch {
+                patch: AnnotationPatch {
                     value: Change::Set(Json::String("new authored content".into())),
                     ..Default::default()
                 },
@@ -1333,8 +1338,8 @@ fn original_kept_bodies_retain_their_recorded_units_and_reference_columns() {
         }
         assert_eq!(values, body["rows"].as_array().unwrap().clone(), "{id}");
         let schema = prepared.plan().output_schema().unwrap();
-        if body["unit"] == "assertions" {
-            assert_eq!(schema.unit.as_deref(), Some("assertions"));
+        if body["unit"] == "annotations" {
+            assert_eq!(schema.unit.as_deref(), Some("annotations"));
             assert!(
                 matches!(
                     &program.row_kind,
@@ -1352,10 +1357,10 @@ fn original_kept_bodies_retain_their_recorded_units_and_reference_columns() {
                 .unwrap();
             assert_eq!(
                 reference.reference,
-                Some(polylogue_query::ColumnReference::Assertion)
+                Some(polylogue_query::ColumnReference::Annotation)
             );
-            assert_eq!(body["columns"][1]["reference"], "assertion");
-            assert_eq!(values[0]["reference"], "assertion:f4-note-1@f4-note-1");
+            assert_eq!(body["columns"][1]["reference"], "annotation");
+            assert_eq!(values[0]["reference"], "annotation:f4-note-1@f4-note-1");
         } else if body["unit"] == "links" {
             assert_eq!(schema.unit.as_deref(), Some("links"));
             assert!(
@@ -1378,7 +1383,7 @@ fn original_kept_bodies_retain_their_recorded_units_and_reference_columns() {
                 schema.unit.is_none(),
                 "a retained grouped result has no native row domain"
             );
-            assert_eq!(values[0]["assertion_kind"], "note");
+            assert_eq!(values[0]["annotation_kind"], "note");
             assert_eq!(values[0]["count"], 1);
         }
     }

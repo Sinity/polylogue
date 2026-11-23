@@ -4,7 +4,7 @@
 //! the daemon exits with code 6 when it is not running.
 
 mod advisory;
-mod briefing;
+mod brief;
 mod browser;
 mod cli;
 pub use cli::picker;

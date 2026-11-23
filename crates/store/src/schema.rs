@@ -17,9 +17,9 @@ pub const ARCHIVE: &str = concat!(
     "\n",
     include_str!("schema/client_requests.sql"),
     "\n",
-    include_str!("schema/assertions.sql"),
+    include_str!("schema/annotations.sql"),
     "\n",
-    include_str!("schema/variants.sql"),
+    include_str!("schema/alternates.sql"),
     "\n",
     include_str!("schema/query_objects.sql"),
     "\n",
@@ -96,7 +96,7 @@ pub(crate) const BUILT_AT_END: &[&str] = &[
 pub(crate) const INDEX_SCHEMA: &[&str] = &[
     INDEX,
     crate::coverage::SCHEMA,
-    crate::variants::SCHEMA,
+    crate::alternates::SCHEMA,
     OPEN_INDEXES,
 ];
 /// The `embedded` (vectors) and `embed_failure` tables of `embeddings.db`, as the first build at
@@ -114,7 +114,7 @@ const EMBEDDINGS_ADDITIONS: &[&str] = &[
 ];
 
 /// The register format version.
-pub const ARCHIVE_VERSION: u32 = 5;
+pub const ARCHIVE_VERSION: u32 = 6;
 
 /// The index schema and row encoding version. Reading versions are independent.
 pub const INDEX_VERSION: u32 = 7;
@@ -228,7 +228,7 @@ fn base_index(conn: &Connection) -> Result<()> {
 fn base_index_in(conn: &Connection, deferring: bool) -> Result<()> {
     execute_index_sql(conn, INDEX, deferring)?;
     conn.execute_batch(crate::coverage::SCHEMA)?;
-    conn.execute_batch(crate::variants::SCHEMA)?;
+    conn.execute_batch(crate::alternates::SCHEMA)?;
     Ok(())
 }
 

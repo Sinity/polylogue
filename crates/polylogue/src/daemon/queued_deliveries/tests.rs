@@ -117,7 +117,7 @@ fn captured_advice_remains_pending_until_current_history_confirms_application() 
         PendingAdvice {
             recipient: "codex:recipient".into(),
             refs: vec![
-                "assertion:root@revision".into(),
+                "annotation:root@revision".into(),
                 "file:src/parser.rs@commit".into(),
             ],
             committed: Some(committed),
@@ -170,7 +170,7 @@ fn advice_whose_hand_over_fails_is_not_left_pending() {
             event: polylogue_model::DeliveryEvent::Advice.as_str().into(),
             cwd: None,
             text: "synthetic advice".into(),
-            refs: vec!["assertion:root@revision".into()],
+            refs: vec!["annotation:root@revision".into()],
             left_out: vec![],
         }),
     );

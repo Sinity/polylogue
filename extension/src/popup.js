@@ -81,9 +81,9 @@
     }));
   }
 
-  function showBackfill(jobs) {
-    $("backfill-section").hidden = jobs.length === 0;
-    $("backfill").replaceChildren(...jobs.map((job) => item(
+  function showImportJobs(jobs) {
+    $("import_job-section").hidden = jobs.length === 0;
+    $("import_job").replaceChildren(...jobs.map((job) => item(
       `${words.providerName(job.provider)}: ${job.status}`,
       `${job.listed} listed, ${job.captured} captured, ${job.unchanged} already in the archive, ${job.failed} failed`
         + (job.detail ? `. ${job.detail}` : ""),
@@ -106,7 +106,7 @@
     showPolylogue(state);
     showPage(state.page);
     showApprovals(state.approvals);
-    showBackfill(state.backfill);
+    showImportJobs(state.importJob);
     showProblems(state.problems);
     $("automatic").checked = state.settings.automatic;
     $("panel").checked = state.settings.panel;

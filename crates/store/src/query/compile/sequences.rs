@@ -438,7 +438,7 @@ fn row_reference(scope: &RowContext) -> Result<String, QueryError> {
         Unit::ToolCalls => format!("'block:' || {}.id || '#' || {}.idx", a.m, a.cb),
         Unit::Documents => format!("'document:' || {}.id", a.row),
         Unit::Events => format!("'event:' || {}.id", a.row),
-        Unit::Annotations => format!("'assertion:' || {}.id", a.row),
+        Unit::Annotations => format!("'annotation:' || {}.id", a.row),
         Unit::Deliveries => format!("'delivery:' || {}.id", a.row),
         _ => return Err(not_built("match references at this row grain")),
     })

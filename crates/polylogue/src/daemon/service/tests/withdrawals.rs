@@ -146,27 +146,27 @@ fn withdraw_saved_query_by_name_pins_the_family_and_undo_restores_its_watch() {
     assert!(!outcome.repeat && !outcome.pending);
     assert_eq!(undo.len(), 1);
     let original = request(&d, "withdraw-focus-1");
-    let root = Reference::Assertion(RevisionReference {
+    let root = Reference::Annotation(RevisionReference {
         root: first.saved.unwrap().id,
         revision: None,
     });
     assert!(
-        matches!(&original.request.write, UserWrite::WithdrawAssertions { targets, reason }
+        matches!(&original.request.write, UserWrite::WithdrawAnnotations { targets, reason }
         if targets == &vec![root.clone()] && reason.as_deref() == Some("finished"))
     );
     assert_eq!(
-        original.effect.assertions.len(),
+        original.effect.annotations.len(),
         1,
         "definition and watch share one withdrawal"
     );
-    let watch_root = Reference::Assertion(RevisionReference {
+    let watch_root = Reference::Annotation(RevisionReference {
         root: first.watch.unwrap().id,
         revision: None,
     });
-    let targets = original.effect.assertions[0]
+    let targets = original.effect.annotations[0]
         .links
         .iter()
-        .filter(|link| link.role == polylogue_model::assertion::LinkRole::Withdraws)
+        .filter(|link| link.role == polylogue_model::annotation::LinkRole::Withdraws)
         .map(|link| link.reference.clone())
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(targets, [root.clone(), watch_root].into_iter().collect());
@@ -243,7 +243,7 @@ fn withdrawal_retry_does_not_retarget_a_recreated_saved_name() {
             .unwrap()
             .saved_query_target("focus")
             .unwrap(),
-        Some(Reference::Assertion(RevisionReference {
+        Some(Reference::Annotation(RevisionReference {
             root: replacement.id,
             revision: None
         }))
@@ -277,12 +277,12 @@ fn a_saved_query_expression_withdraws_results_instead_of_the_definition() {
             .answer(&d.daemon),
         );
         let original = request(&d, "withdraw-results-1");
-        let note = Reference::Assertion(RevisionReference::exact(
+        let note = Reference::Annotation(RevisionReference::exact(
             "result-note-1".into(),
             "result-note-1".into(),
         ));
         assert!(
-            matches!(&original.request.write, UserWrite::WithdrawAssertions { targets, .. } if targets == &vec![note])
+            matches!(&original.request.write, UserWrite::WithdrawAnnotations { targets, .. } if targets == &vec![note])
         );
         assert_eq!(count(&d, "annotations where kind:note"), 0);
         assert_eq!(
@@ -292,7 +292,7 @@ fn a_saved_query_expression_withdraws_results_instead_of_the_definition() {
                 .unwrap()
                 .saved_query_target("selected-notes")
                 .unwrap(),
-            Some(Reference::Assertion(RevisionReference {
+            Some(Reference::Annotation(RevisionReference {
                 root: saved.id,
                 revision: None
             }))
@@ -399,8 +399,8 @@ fn the_withdrawal_correction_quotes_opaque_addresses_and_keeps_other_notes() {
     assert_eq!(count(&d, "annotations where kind:note"), 1);
     let remaining = request(&d, &format!("{}-1", next.request_id));
     assert!(
-        matches!(&remaining.request.write, UserWrite::WithdrawAssertions { targets, .. }
-        if targets == &vec![Reference::Assertion(RevisionReference::exact("opaque-note-1".into(), "opaque-note-1".into()))])
+        matches!(&remaining.request.write, UserWrite::WithdrawAnnotations { targets, .. }
+        if targets == &vec![Reference::Annotation(RevisionReference::exact("opaque-note-1".into(), "opaque-note-1".into()))])
     );
 }
 
@@ -441,7 +441,7 @@ fn shipped_or_absent_saved_names_refuse_without_a_write() {
 
 #[test]
 fn withdrawing_an_existing_literal_saved_key_does_not_run_its_results() {
-    use polylogue_model::assertion::{AssertionPatch, Change};
+    use polylogue_model::annotation::{AnnotationPatch, Change};
     for name in ["legacy_focus", "Legacy Focus"] {
         let d = test_daemon::start("synthetic query target");
         note(&d, "result-note");
@@ -464,9 +464,9 @@ fn withdrawing_an_existing_literal_saved_key_does_not_run_its_results() {
             &d.daemon,
             &invocation,
             "rename-existing-definition".into(),
-            UserWrite::ReviseAssertions {
+            UserWrite::ReviseAnnotations {
                 bases: vec![RevisionReference::exact(saved.id.clone(), saved.id.clone())],
-                patch: AssertionPatch {
+                patch: AnnotationPatch {
                     key: Change::Set(name.into()),
                     ..Default::default()
                 },
@@ -483,8 +483,8 @@ fn withdrawing_an_existing_literal_saved_key_does_not_run_its_results() {
         );
         let original = request(&d, "withdraw-existing-1");
         assert!(
-            matches!(&original.request.write, UserWrite::WithdrawAssertions { targets, .. }
-            if targets == &vec![Reference::Assertion(RevisionReference { root:saved.id.clone(), revision:None })])
+            matches!(&original.request.write, UserWrite::WithdrawAnnotations { targets, .. }
+            if targets == &vec![Reference::Annotation(RevisionReference { root:saved.id.clone(), revision:None })])
         );
         assert!(
             d.daemon

@@ -1,31 +1,31 @@
 //! An export imported into a fresh archive gives the same sessions and IDs,
 //! and the same user state: notes with their revisions, withdrawals and
-//! judgments, settings, kept results, deliveries, chat actions, backfill
+//! judgments, settings, kept results, deliveries, chat actions, import_job
 //! jobs, restored as recorded historical effects through the bundle.
 use super::*;
-use polylogue_model::assertion::{
-    AssertionKind, AssertionPatch, Change, LinkRole, NewAssertion, NewAssertionLink,
+use polylogue_model::annotation::{
+    AnnotationKind, AnnotationPatch, Change, LinkRole, NewAnnotation, NewAnnotationLink,
 };
 use polylogue_model::bundle::{
     AuthoredRecord, Counts, Flags, Format, LinkRecord, Manifest, MessageRecord, ReadSnapshot,
     Record, SessionRecord,
 };
 use polylogue_model::user::NewChatAction;
-use polylogue_model::user::{BackfillCounts, BackfillReport, NewBackfillJob};
 use polylogue_model::user::{Delivery, UserRequest, UserWrite};
+use polylogue_model::user::{ImportJobCounts, ImportJobReport, NewImportJob};
 use polylogue_model::{Author, DeliveryOutcome, Reference, Timestamp};
 use std::io::Write;
 
 /// The user-state tables, row by row, without the write counter, which
 /// counts this archive's own transactions. Whether an action may run here is
-/// checked separately: imported chat and backfill histories are historical.
+/// checked separately: imported chat and import job histories are historical.
 const USER_STATE: &[(&str, &str)] = &[
     ("client_request", "id, content_hash, created_at, request"),
     (
-        "assertion",
+        "annotation",
         "id,root,kind,key,value,author,via,machine,created_at,valid_until",
     ),
-    ("link", "record,role,ref,seen_hash,quote"),
+    ("annotation_link", "record,role,ref,seen_hash,quote"),
     ("revision_state", "*"),
     ("kept_result", "*"),
     (
@@ -42,9 +42,9 @@ const USER_STATE: &[(&str, &str)] = &[
         "chat_action_event",
         "action, n, at, kind, phase, detail, by, receipt_json",
     ),
-    ("backfill_job", "id, provider, since, created_at"),
+    ("import_job", "id, provider, since, created_at"),
     (
-        "backfill_job_event",
+        "import_job_event",
         "job, n, at, kind, by, position, listed, captured, unchanged, failed, detail",
     ),
 ];
@@ -80,31 +80,31 @@ fn request(n: u32, write: UserWrite, author: Author) -> UserRequest {
     }
 }
 
-fn note(kind: AssertionKind, target: &str, revises: Option<String>) -> UserWrite {
+fn note(kind: AnnotationKind, target: &str, revises: Option<String>) -> UserWrite {
     let value = serde_json::json!(format!("synthetic {}", kind.as_str()));
     if let Some(base) = revises {
-        return UserWrite::ReviseAssertions {
+        return UserWrite::ReviseAnnotations {
             bases: vec![polylogue_model::RevisionReference::exact(
                 base.clone(),
                 base,
             )],
-            patch: AssertionPatch {
+            patch: AnnotationPatch {
                 value: Change::Set(value),
                 ..Default::default()
             },
         };
     }
     UserWrite::Assert {
-        assertions: vec![NewAssertion {
+        annotations: vec![NewAnnotation {
             kind,
-            key: if kind == AssertionKind::Judgment {
+            key: if kind == AnnotationKind::Judgment {
                 Some("accepted".into())
             } else {
                 None
             },
             value: Some(value),
             valid_until: None,
-            links: vec![NewAssertionLink {
+            links: vec![NewAnnotationLink {
                 role: LinkRole::About,
                 reference: Reference::parse(target).unwrap(),
             }],
@@ -212,7 +212,7 @@ fn export_file(w: &ClaudeHome, sessions: &[&str]) -> std::path::PathBuf {
                 local: polylogue_model::freshness::ReadCompleteness::empty(),
                 sinex: polylogue_model::freshness::IndexFreshness::Standalone,
             },
-            enabled_variants: Vec::new(),
+            enabled_alternates: Vec::new(),
             author: Author::Operator,
             notes: Vec::new(),
             incomplete: Vec::new(),
@@ -270,32 +270,32 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
     let write_note =
         |kind, author, target: &str, revises| write_as(note(kind, target, revises), author);
     let first = write_note(
-        AssertionKind::Note,
+        AnnotationKind::Note,
         Author::Operator,
         "session:claude-code:s1",
         None,
     );
     write_note(
-        AssertionKind::Note,
+        AnnotationKind::Note,
         Author::Operator,
         "session:claude-code:s1",
         Some(first),
     );
     let finding = write_note(
-        AssertionKind::Finding,
+        AnnotationKind::Finding,
         agent.clone(),
         "session:claude-code:s1",
         None,
     );
     write_note(
-        AssertionKind::Judgment,
+        AnnotationKind::Judgment,
         Author::Operator,
         &format!("annotation:{finding}@{finding}"),
         None,
     );
-    let withdrawn = write_note(AssertionKind::Lesson, agent, "repo:synthetic", None);
-    write(UserWrite::WithdrawAssertions {
-        targets: vec![Reference::Assertion(polylogue_model::RevisionReference {
+    let withdrawn = write_note(AnnotationKind::Lesson, agent, "repo:synthetic", None);
+    write(UserWrite::WithdrawAnnotations {
+        targets: vec![Reference::Annotation(polylogue_model::RevisionReference {
             root: withdrawn,
             revision: None,
         })],
@@ -303,7 +303,7 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
     });
     // Authored notes keep their explicit session targets.
     write_note(
-        AssertionKind::Note,
+        AnnotationKind::Note,
         Author::Operator,
         "session:claude-code:s2",
         None,
@@ -358,21 +358,21 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
         detail: None,
         receipt: None,
     });
-    write(UserWrite::BackfillStart(NewBackfillJob {
+    write(UserWrite::ImportJobStart(NewImportJob {
         id: "0199d8a0-0000-7000-8000-00000000b001".into(),
         provider: "chatgpt".into(),
         since: None,
     }));
-    let job = write(UserWrite::BackfillClaim {
+    let job = write(UserWrite::ImportJobClaim {
         by: "extension-1".into(),
     });
-    write(UserWrite::BackfillReport {
+    write(UserWrite::ImportJobReport {
         job,
         by: "extension-1".into(),
-        report: BackfillReport {
+        report: ImportJobReport {
             kind: "finished".into(),
             position: None,
-            counts: BackfillCounts {
+            counts: ImportJobCounts {
                 listed: 2,
                 captured: 1,
                 unchanged: 1,
@@ -382,7 +382,7 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
         },
     });
     write_note(
-        AssertionKind::Note,
+        AnnotationKind::Note,
         Author::Operator,
         "session:claude-code:s1",
         None,
@@ -406,7 +406,7 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
         1
     );
     assert_eq!(
-        fresh.count("SELECT count(*) AS n FROM a.backfill_job WHERE execution='historical'"),
+        fresh.count("SELECT count(*) AS n FROM a.import_job WHERE execution='historical'"),
         1
     );
 

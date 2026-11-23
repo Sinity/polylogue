@@ -10,7 +10,7 @@ pub struct Committed {
     /// Inputs and what is parsed or derived from them: sessions, messages,
     /// events, documents, coverage, vectors.
     pub content: bool,
-    /// Authored records: assertions (notes, tags, rules, saved queries,
+    /// Authored records: annotations (notes, tags, rules, saved queries,
     /// settings) and the other user writes.
     pub authored: bool,
     /// Queries, their runs and run outcomes, which reads record.

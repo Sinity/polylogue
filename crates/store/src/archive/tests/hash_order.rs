@@ -19,13 +19,13 @@ fn a_deliberate_index_rebuild_keeps_authored_rows_and_vectors() {
     let archive_conn = open_archive_writer(&archive).unwrap();
     let stored = BlobHash::of(b"synthetic stored embedded text");
     let removed = BlobHash::of(b"synthetic removed text");
-    use polylogue_model::assertion::{AssertionFact, AssertionKind, AssertionLink, LinkRole};
-    crate::assertions::apply(
+    use polylogue_model::annotation::{AnnotationFact, AnnotationKind, AnnotationLink, LinkRole};
+    crate::annotations::apply(
         &archive_conn,
-        &[AssertionFact {
+        &[AnnotationFact {
             id: "authored".into(),
             root: "authored".into(),
-            kind: AssertionKind::Note,
+            kind: AnnotationKind::Note,
             key: None,
             value: Some(serde_json::json!("exact authored value")),
             author: polylogue_model::Author::Operator,
@@ -33,7 +33,7 @@ fn a_deliberate_index_rebuild_keeps_authored_rows_and_vectors() {
             machine: "synthetic".into(),
             created_at: Some(polylogue_model::Timestamp::from_unix_ms(1).unwrap()),
             valid_until: None,
-            links: vec![AssertionLink {
+            links: vec![AnnotationLink {
                 role: LinkRole::About,
                 reference: Reference::parse("message:claude-code:stable").unwrap(),
                 seen_hash: None,
@@ -55,8 +55,8 @@ fn a_deliberate_index_rebuild_keeps_authored_rows_and_vectors() {
         .unwrap();
     drop(index);
     let queries = [
-        "SELECT * FROM assertion ORDER BY id",
-        "SELECT * FROM link ORDER BY record,role,ref",
+        "SELECT * FROM annotation ORDER BY id",
+        "SELECT * FROM annotation_link ORDER BY record,role,ref",
         "SELECT * FROM revision_state ORDER BY id",
     ];
     let before: Vec<_> = queries.iter().map(|sql| rows(&archive_conn, sql)).collect();
@@ -98,18 +98,18 @@ fn a_deliberate_index_rebuild_keeps_authored_rows_and_vectors() {
     );
     let pool = crate::ReadPool::open(&archive).unwrap();
     let reader = pool.reader().unwrap();
-    let assertion = reader
-        .assertion(&polylogue_model::RevisionReference::exact(
+    let annotation = reader
+        .annotation(&polylogue_model::RevisionReference::exact(
             "authored".into(),
             "authored".into(),
         ))
         .unwrap()
         .unwrap();
-    assert_eq!(assertion.fact.links.len(), 1);
-    assert_eq!(assertion.fact.links[0].role, LinkRole::About);
+    assert_eq!(annotation.fact.links.len(), 1);
+    assert_eq!(annotation.fact.links[0].role, LinkRole::About);
     assert_eq!(
-        assertion.fact.links[0].reference,
+        annotation.fact.links[0].reference,
         Reference::Message(polylogue_model::MessageId::parse("claude-code:stable").unwrap())
     );
-    assert_eq!(assertion.fact.text(), Some("exact authored value"));
+    assert_eq!(annotation.fact.text(), Some("exact authored value"));
 }

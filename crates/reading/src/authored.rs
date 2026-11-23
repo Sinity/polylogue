@@ -31,8 +31,8 @@ pub(super) fn reference(
         Some(AuthoredRead::Incomplete { issue }) => match (issue, reference) {
             (
                 AuthoredReadIssue::MissingAssociation | AuthoredReadIssue::UnresolvedRevision,
-                Reference::Assertion(revision),
-            ) => direct_assertion(reader, revision, visit),
+                Reference::Annotation(revision),
+            ) => direct_annotation(reader, revision, visit),
             (issue, _) => Err(Error::not_yet_available(issue)),
         },
         None => Err(Error::not_found(format!(
@@ -41,17 +41,17 @@ pub(super) fn reference(
     }
 }
 
-fn direct_assertion(
+fn direct_annotation(
     reader: &Reader<'_>,
     revision: &RevisionReference,
     visit: &mut Visit<'_>,
 ) -> Result<bool, Error> {
     let row = reader
-        .assertion(revision)?
+        .annotation(revision)?
         .ok_or_else(|| Error::not_found(format!("no annotation:{revision}")))?;
-    let record = Record::Assertion(Box::new(polylogue_model::assertion::AssertionRecord {
-        reference: row.fact.reference().stored_form(),
-        assertion: row.fact,
+    let record = Record::Annotation(Box::new(polylogue_model::annotation::AnnotationRecord {
+        reference: row.fact.reference().to_string(),
+        annotation: row.fact,
     }));
     visit(record, LayoutFacts::default())
 }

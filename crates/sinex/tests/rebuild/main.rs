@@ -6,7 +6,7 @@
 //! `SINEXD` names the matching built daemon, including its admin schema command.
 use polylogue_engine::Engine;
 use polylogue_model::Reference;
-use polylogue_model::assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink};
+use polylogue_model::annotation::{AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink};
 use polylogue_model::user::UserWrite;
 use polylogue_sinex::{Authentication, Config, Mode, Sinex};
 use polylogue_store::{Archive, ReadPool};
@@ -306,7 +306,7 @@ fn read_answers(
         .collect::<polylogue_store::Result<_>>()?;
     let notes = reader
         .query(
-            "SELECT n.id,n.kind,n.value,t.ref FROM source_assertion n JOIN source_link t ON t.record=n.id ORDER BY n.id,t.role,t.ref",
+            "SELECT n.id,n.kind,n.value,t.ref FROM source_annotation n JOIN source_annotation_link t ON t.record=n.id ORDER BY n.id,t.role,t.ref",
             &[],
         )?;
     Ok((sessions, notes))
@@ -1126,11 +1126,11 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
             .user(polylogue_store::fixture::authored::operator_request(
                 "0199d8a0-0000-7000-8000-00000000a001".into(),
                 UserWrite::Assert {
-                    assertions: vec![NewAssertion {
-                        kind: AssertionKind::Note,
+                    annotations: vec![NewAnnotation {
+                        kind: AnnotationKind::Note,
                         key: None,
                         value: Some(serde_json::json!("Synthetic note kept in Sinex")),
-                        links: vec![NewAssertionLink {
+                        links: vec![NewAnnotationLink {
                             role: LinkRole::About,
                             reference: Reference::Session(polylogue_testkit::session(1)),
                         }],
@@ -1182,7 +1182,7 @@ fn the_morrow_example_rebuilt_from_sinex_gives_the_same_answers() {
     assert_eq!(
         sinex_rows(
             &running.socket,
-            "events where event_type = polylogue.assertion"
+            "events where event_type = polylogue.annotation"
         ),
         1
     );

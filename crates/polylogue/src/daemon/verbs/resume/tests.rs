@@ -34,8 +34,8 @@ fn resume_in_hands_off() {
     let reader = d.daemon.reads.reader().unwrap();
     let context = d.daemon.resolve_operation_context(invocation).unwrap();
     let source = polylogue_model::SessionId::parse("claude-code:s1").unwrap();
-    let prepared = crate::briefing::prepare(
-        crate::briefing::BriefContext {
+    let prepared = crate::brief::prepare(
+        crate::brief::BriefContext {
             reader: &reader,
             delivery_id: "resume-dry-1",
             context: &context,
@@ -45,7 +45,7 @@ fn resume_in_hands_off() {
         &d.daemon.scope,
         None,
         &[],
-        &crate::briefing::Ask::Takeover {
+        &crate::brief::Ask::Takeover {
             session: source,
             for_session: None,
         },

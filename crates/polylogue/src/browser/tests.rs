@@ -186,7 +186,7 @@ fn without_the_daemon_a_capture_is_stored_and_the_index_is_unknown() {
         exchange(&host, "GET", "/v1/status", b"").json()["daemon"],
         "no_answer"
     );
-    let jobs = exchange(&host, "GET", "/v1/backfill", b"");
+    let jobs = exchange(&host, "GET", "/v1/import_job", b"");
     assert_eq!(jobs.status, 503);
     assert_eq!(jobs.json()["error"], "daemon_required");
 }
@@ -370,19 +370,19 @@ fn the_extension_claims_and_reports_actions_the_operator_queued() {
     assert_eq!(listed["actions"].as_array().unwrap().len(), 3);
 }
 
-fn backfill_report(host: &Arc<BrowserHost>, id: &str, by: &str, body: Value) -> Answer {
+fn import_job_report(host: &Arc<BrowserHost>, id: &str, by: &str, body: Value) -> Answer {
     let mut body = body;
     body["by"] = json!(by);
     exchange(
         host,
         "POST",
-        &format!("/v1/backfill/{id}/report"),
+        &format!("/v1/import_job/{id}/report"),
         body.to_string().as_bytes(),
     )
 }
 
 #[test]
-fn a_backfill_job_runs_through_the_daemon_and_survives_an_extension_restart() {
+fn a_import_job_runs_through_the_daemon_and_survives_an_extension_restart() {
     let w = test_daemon::start("x");
     let host = host(&w);
     let start = |provider: &str| {
@@ -401,7 +401,7 @@ fn a_backfill_job_runs_through_the_daemon_and_survives_an_extension_restart() {
         let answer = exchange(
             &host,
             "POST",
-            "/v1/backfill/claim",
+            "/v1/import_job/claim",
             json!({"by": by}).to_string().as_bytes(),
         );
         assert_eq!(answer.status, 200, "claim by {by}");
@@ -417,10 +417,10 @@ fn a_backfill_job_runs_through_the_daemon_and_survives_an_extension_restart() {
     let progress = json!({"kind": "progress", "position": "0:28",
         "counts": {"listed": 28, "captured": 1, "unchanged": 27, "failed": 0}});
     assert_eq!(
-        backfill_report(&host, &id, "ext-1", progress.clone()).status,
+        import_job_report(&host, &id, "ext-1", progress.clone()).status,
         200
     );
-    assert_eq!(backfill_report(&host, &id, "ext-2", progress).status, 409);
+    assert_eq!(import_job_report(&host, &id, "ext-2", progress).status, 409);
 
     // A restarted extension instance claims its job again and continues
     // from the reported position.
@@ -433,9 +433,9 @@ fn a_backfill_job_runs_through_the_daemon_and_survives_an_extension_restart() {
 
     let finished = json!({"kind": "finished", "position": "3:0",
         "counts": {"listed": 40, "captured": 2, "unchanged": 38, "failed": 0}});
-    let done = backfill_report(&host, &id, "ext-1", finished);
+    let done = import_job_report(&host, &id, "ext-1", finished);
     assert_eq!(done.json()["job"]["status"], "finished");
-    let listed = exchange(&host, "GET", "/v1/backfill", b"").json();
+    let listed = exchange(&host, "GET", "/v1/import_job", b"").json();
     assert_eq!(listed["jobs"][0]["status"], "finished");
     assert_eq!(listed["jobs"][0]["listed"], 40);
     // The conversation it captured is archived like any other capture.

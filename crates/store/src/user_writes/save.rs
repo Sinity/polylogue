@@ -1,29 +1,29 @@
 //! One accepted Save: immutable rows and any changed saved query and watch.
 use super::*;
-use crate::assertions::{SavedInput, SavedResolver, WriteContext, single_named_current};
+use crate::annotations::{SavedInput, SavedResolver, WriteContext, single_named_current};
 use polylogue_model::user::{KeptPart, SaveReport, SavedPart, WatchPart};
 use polylogue_model::{
     Reference, RevisionReference,
-    assertion::{Assertion, AssertionKind, LinkRole, NewAssertion, NewAssertionLink, values},
+    annotation::{Annotation, AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink, values},
 };
 use rusqlite::Connection;
 
 fn statement(
-    kind: AssertionKind,
+    kind: AnnotationKind,
     name: &str,
     value: serde_json::Value,
-    previous: Option<&Assertion>,
-) -> NewAssertion {
-    NewAssertion {
+    previous: Option<&Annotation>,
+) -> NewAnnotation {
+    NewAnnotation {
         kind,
         key: Some(name.into()),
         value: Some(value),
         valid_until: None,
         links: previous
             .into_iter()
-            .map(|row| NewAssertionLink {
+            .map(|row| NewAnnotationLink {
                 role: LinkRole::Revises,
-                reference: Reference::Assertion(RevisionReference::exact(
+                reference: Reference::Annotation(RevisionReference::exact(
                     row.fact.root.clone(),
                     row.fact.id.clone(),
                 )),
@@ -43,17 +43,17 @@ pub(super) fn withdrawal_targets(
         .cloned()
         .collect::<std::collections::BTreeSet<_>>();
     for target in targets {
-        let Reference::Assertion(wanted) = target else {
+        let Reference::Annotation(wanted) = target else {
             continue;
         };
-        for head in crate::assertions::heads(
+        for head in crate::annotations::heads(
             conn,
-            &Reference::Assertion(RevisionReference {
+            &Reference::Annotation(RevisionReference {
                 root: wanted.root.clone(),
                 revision: None,
             }),
         )? {
-            let Reference::Assertion(exact) = head else {
+            let Reference::Annotation(exact) = head else {
                 continue;
             };
             if wanted.revision.is_some() && wanted.revision != exact.revision {
@@ -62,17 +62,17 @@ pub(super) fn withdrawal_targets(
             let Some(id) = &exact.revision else {
                 continue;
             };
-            let Some(saved) = crate::assertions::get(conn, id)? else {
+            let Some(saved) = crate::annotations::get(conn, id)? else {
                 continue;
             };
-            if saved.fact.kind != AssertionKind::SavedQuery {
+            if saved.fact.kind != AnnotationKind::SavedQuery {
                 continue;
             }
             let Some(name) = saved.fact.key else {
                 continue;
             };
-            for watch in crate::assertions::named_current(conn, AssertionKind::Signal, &name)? {
-                let reference = Reference::Assertion(RevisionReference {
+            for watch in crate::annotations::named_current(conn, AnnotationKind::Signal, &name)? {
+                let reference = Reference::Annotation(RevisionReference {
                     root: watch.fact.root,
                     revision: wanted.revision.as_ref().map(|_| watch.fact.id),
                 });
@@ -117,12 +117,12 @@ pub(super) fn apply(
     let mut saved_position = None;
     let mut watch_position = None;
     if let Some(name) = &save.name {
-        if !polylogue_model::assertion::policy::valid_saved_name(name) {
+        if !polylogue_model::annotation::policy::valid_saved_name(name) {
             return Err(StoreError::invalid(format!(
                 "{name:?} is not a saved query name"
             )));
         }
-        let previous = single_named_current(conn, AssertionKind::SavedQuery, name)?;
+        let previous = single_named_current(conn, AnnotationKind::SavedQuery, name)?;
         let previous_value = previous
             .as_ref()
             .map(|row| {
@@ -155,7 +155,7 @@ pub(super) fn apply(
         let old_revision = previous
             .as_ref()
             .map(|row| {
-                crate::assertions::saved_revision_number(
+                crate::annotations::saved_revision_number(
                     conn,
                     &RevisionReference::exact(row.fact.root.clone(), row.fact.id.clone()),
                 )
@@ -172,7 +172,7 @@ pub(super) fn apply(
         if changed {
             saved_position = Some(statements.len());
             statements.push(statement(
-                AssertionKind::SavedQuery,
+                AnnotationKind::SavedQuery,
                 name,
                 serde_json::to_value(value)?,
                 previous.as_ref(),
@@ -187,7 +187,7 @@ pub(super) fn apply(
             revision,
             new_revision: false,
         });
-        let previous_watch = single_named_current(conn, AssertionKind::Signal, name)?;
+        let previous_watch = single_named_current(conn, AnnotationKind::Signal, name)?;
         if save.watch.is_some() || (changed && previous_watch.is_some()) {
             let mut rule = previous_watch
                 .as_ref()
@@ -216,7 +216,7 @@ pub(super) fn apply(
             {
                 watch_position = Some(statements.len());
                 statements.push(statement(
-                    AssertionKind::Signal,
+                    AnnotationKind::Signal,
                     name,
                     rule,
                     previous_watch.as_ref(),
@@ -238,7 +238,7 @@ pub(super) fn apply(
         }
     }
     if !statements.is_empty() {
-        let parts = crate::assertions::write_parts_preparing(conn, &statements, context, resolve)?;
+        let parts = crate::annotations::write_parts_preparing(conn, &statements, context, resolve)?;
         if parts.len() != statements.len() {
             return Err(StoreError::invalid(
                 "Save did not accept every requested part",

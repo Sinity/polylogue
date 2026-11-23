@@ -89,8 +89,8 @@ pub fn resumable(
     limit: u64,
     context: &std::sync::Arc<polylogue_reading::operation::Context>,
 ) -> Result<Vec<ResumableSession>, crate::daemon::Failure> {
-    use crate::daemon::query::assertions;
-    use polylogue_model::{Reference, assertion::AssertionKind};
+    use crate::daemon::query::annotations;
+    use polylogue_model::{Reference, annotation::AnnotationKind};
     let text = "query:unfinished | where kind:main | fields id, kind, title, started, last_active as last_activity, messages, cwd";
     let ask = crate::daemon::query::Ask {
         text,
@@ -128,11 +128,11 @@ pub fn resumable(
         let open = reader.open_items(&id)?.unwrap_or_default();
         let conditions = format!(
             "{} (kind:{} OR kind:{}) author:operator",
-            assertions::about(&[Reference::Session(s.id.clone())]),
-            AssertionKind::Handoff.as_str(),
-            AssertionKind::Problem.as_str(),
+            annotations::about(&[Reference::Session(s.id.clone())]),
+            AnnotationKind::Handoff.as_str(),
+            AnnotationKind::Problem.as_str(),
         );
-        let follow_ups: Vec<String> = assertions::list(reader, &conditions, context)?
+        let follow_ups: Vec<String> = annotations::list(reader, &conditions, context)?
             .into_iter()
             .map(|n| {
                 format!(

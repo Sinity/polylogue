@@ -302,7 +302,7 @@ fn delivery_filters_read_string_refs_and_structured_omissions_without_reparsing_
         (
             "advice-with-refs",
             vec![
-                "assertion:subject@revision".into(),
+                "annotation:subject@revision".into(),
                 "file:src/parser.rs@commit".into(),
                 r#"a literal \"quote\" and slash\"#.into(),
             ],

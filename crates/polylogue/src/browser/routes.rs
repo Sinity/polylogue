@@ -12,7 +12,7 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Json, Response as HttpResponse};
 use axum::routing::{get, post};
 use polylogue_model::JsonExt as _;
-use polylogue_model::user::BackfillReport;
+use polylogue_model::user::ImportJobReport;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -32,9 +32,9 @@ pub fn router(host: Arc<BrowserHost>) -> Router {
             "/v1/chat-actions/{id}/attachments/{attachment}",
             get(chat_attachment),
         )
-        .route("/v1/backfill", get(backfill_jobs))
-        .route("/v1/backfill/claim", post(backfill_claim))
-        .route("/v1/backfill/{id}/report", post(backfill_report))
+        .route("/v1/import_job", get(import_jobs))
+        .route("/v1/import_job/claim", post(import_job_claim))
+        .route("/v1/import_job/{id}/report", post(import_job_report))
         // A capture or a note is as large as the conversation it holds.
         .layer(axum::extract::DefaultBodyLimit::disable())
         .with_state(host)
@@ -395,7 +395,7 @@ async fn chat_attachment(
     ([(header::CONTENT_TYPE, media_type)], bytes).into_response()
 }
 
-async fn backfill_jobs(State(host): State<Arc<BrowserHost>>) -> HttpResponse {
+async fn import_jobs(State(host): State<Arc<BrowserHost>>) -> HttpResponse {
     answer(host, "backfill list", json!({})).await
 }
 
@@ -406,7 +406,7 @@ struct Claimant {
 
 /// Hands the extension instance the job it holds or the oldest waiting
 /// one (`job`, null when none).
-async fn backfill_claim(
+async fn import_job_claim(
     State(host): State<Arc<BrowserHost>>,
     Json(c): Json<Claimant>,
 ) -> HttpResponse {
@@ -417,10 +417,10 @@ async fn backfill_claim(
 struct Report {
     by: String,
     #[serde(flatten)]
-    report: BackfillReport,
+    report: ImportJobReport,
 }
 
-async fn backfill_report(
+async fn import_job_report(
     State(host): State<Arc<BrowserHost>>,
     UrlPath(id): UrlPath<String>,
     Json(r): Json<Report>,

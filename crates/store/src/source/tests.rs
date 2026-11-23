@@ -346,7 +346,7 @@ fn source_reference_namespace_keeps_archive_metadata_distinct_from_index_metadat
 
 #[test]
 fn narrow_schema_uses_the_sqlite_namespace_rewriter() {
-    let schema = from_archive(crate::assertions::SCHEMA).unwrap();
+    let schema = from_archive(crate::annotations::SCHEMA).unwrap();
     let conn = Connection::open_in_memory().unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
     conn.execute_batch(&schema.ddl).unwrap();
@@ -359,25 +359,26 @@ fn narrow_schema_uses_the_sqlite_namespace_rewriter() {
         .unwrap(),
         5
     );
-    conn.execute("INSERT INTO source_assertion(id,root,kind,author,via,machine,created_at,commit_seq) VALUES('fact','fact','note','operator','cli','host',1,1)",[]).unwrap();
+    conn.execute("INSERT INTO source_annotation(id,root,kind,author,via,machine,created_at,commit_seq) VALUES('fact','fact','note','operator','cli','host',1,1)",[]).unwrap();
     conn.execute(
-        "INSERT INTO source_link(record,role,ref) VALUES('fact','about','session:codex:s')",
+        "INSERT INTO source_annotation_link(record,role,ref) VALUES('fact','about','session:codex:s')",
         [],
     )
     .unwrap();
     assert!(
         conn.execute(
-            "INSERT INTO source_link(record,role,ref) VALUES('absent','about','session:codex:s')",
+            "INSERT INTO source_annotation_link(record,role,ref) VALUES('absent','about','session:codex:s')",
             []
         )
         .is_err()
     );
-    conn.execute("INSERT INTO source_assertion_import(assertion,input,chain,machine,actor,at,commit_seq) VALUES('fact','input',1,'host','operator','2026-01-01T00:00:00Z',1)", []).unwrap();
-    assert!(conn.execute("INSERT INTO source_assertion_import(assertion,input,chain,machine,actor,at,commit_seq) VALUES('absent','input',1,'host','operator','2026-01-01T00:00:00Z',1)", []).is_err());
+    conn.execute("INSERT INTO source_annotation_import(annotation,input,chain,machine,actor,at,commit_seq) VALUES('fact','input',1,'host','operator','2026-01-01T00:00:00Z',1)", []).unwrap();
+    assert!(conn.execute("INSERT INTO source_annotation_import(annotation,input,chain,machine,actor,at,commit_seq) VALUES('absent','input',1,'host','operator','2026-01-01T00:00:00Z',1)", []).is_err());
     assert_eq!(
-        conn.query_row("SELECT record FROM source_link", [], |row| row
-            .get::<_, String>(0))
-            .unwrap(),
+        conn.query_row("SELECT record FROM source_annotation_link", [], |row| {
+            row.get::<_, String>(0)
+        })
+        .unwrap(),
         "fact"
     );
 }

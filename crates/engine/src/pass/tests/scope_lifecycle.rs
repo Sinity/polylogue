@@ -630,7 +630,7 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
             reply,
         });
         // Observe the existing queue to release the in-hand parser only after
-        // the loop has returned work that no worker read. No elapsed assertion
+        // the loop has returned work that no worker read. No elapsed annotation
         // or delay decides whether the import is fair.
         let until = Instant::now() + Duration::from_secs(5);
         while queued() != 0 && Instant::now() < until {

@@ -571,7 +571,8 @@ impl Sinex {
                         parser: if writes.iter().any(|write| {
                             matches!(
                                 write.product,
-                                Product::RestoredRequest { .. } | Product::RestoredAssertion { .. }
+                                Product::RestoredRequest { .. }
+                                    | Product::RestoredAnnotation { .. }
                             )
                         }) {
                             "polylogue-request-restore".into()

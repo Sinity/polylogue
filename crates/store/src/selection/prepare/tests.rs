@@ -2,14 +2,14 @@ use super::*;
 use crate::fixture::{Fixture, SessionFacts};
 use polylogue_model::{
     Author, BlobHash,
-    assertion::{AssertionFact, AssertionKind, values},
+    annotation::{AnnotationFact, AnnotationKind, values},
 };
 
-fn definition(id: &str, name: &str, text: &str, hash: QuestionId) -> AssertionFact {
-    AssertionFact {
+fn definition(id: &str, name: &str, text: &str, hash: QuestionId) -> AnnotationFact {
+    AnnotationFact {
         id: id.into(),
         root: id.into(),
-        kind: AssertionKind::SavedQuery,
+        kind: AnnotationKind::SavedQuery,
         key: Some(name.into()),
         value: Some(
             serde_json::to_value(values::SavedQuery {
@@ -66,7 +66,7 @@ fn accepting_preparation_uses_original_rows() {
     let mut scratch = Connection::open_in_memory().unwrap();
     let schema = crate::source::from_archive(crate::schema::ARCHIVE).unwrap();
     scratch.execute_batch(&schema.ddl).unwrap();
-    crate::assertions::apply(
+    crate::annotations::apply(
         &scratch,
         &[definition(
             "pending",
@@ -174,7 +174,7 @@ fn accepting_preparation_uses_original_rows() {
     let new_plan =
         polylogue_query::plan::prepare("sessions where repo:new", &Bindings::default(), |_| Ok(()))
             .unwrap();
-    crate::assertions::apply(
+    crate::annotations::apply(
         &tx,
         &[definition(
             "new-pending",
@@ -321,7 +321,7 @@ fn hash_prefix_resolves() {
 
 #[test]
 fn numeric_saved_revision_binds_the_original_recorded_question_and_body() {
-    use polylogue_model::assertion::{AssertionLink, LinkRole};
+    use polylogue_model::annotation::{AnnotationLink, LinkRole};
     let directory = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(directory.path()).unwrap();
     let conn = crate::archive::open_archive_writer(&fixture.archive).unwrap();
@@ -345,15 +345,15 @@ fn numeric_saved_revision_binds_the_original_recorded_question_and_body() {
     let mut later_fact = definition("later", "focus", "sessions where repo:later", later.id);
     later_fact.root = "first".into();
     later_fact.created_at = None;
-    later_fact.links.push(AssertionLink {
+    later_fact.links.push(AnnotationLink {
         role: LinkRole::Revises,
-        reference: Reference::Assertion(RevisionReference::exact("first".into(), "first".into())),
+        reference: Reference::Annotation(RevisionReference::exact("first".into(), "first".into())),
         seen_hash: None,
         quote: None,
     });
     // Arrival order is not revision order.
-    crate::assertions::apply(&conn, &[later_fact], 3).unwrap();
-    crate::assertions::apply(&conn, &[first_fact], 10).unwrap();
+    crate::annotations::apply(&conn, &[later_fact], 3).unwrap();
+    crate::annotations::apply(&conn, &[first_fact], 10).unwrap();
     drop(conn);
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();

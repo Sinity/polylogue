@@ -213,10 +213,10 @@ pub const SESSION_HAS: [Has; 8] = [
         name: "note",
         sql: |s| {
             format!(
-                "EXISTS (SELECT 1 FROM source_assertion hn JOIN source_link ht ON ht.record = hn.id AND ht.role = 'about' \
+                "EXISTS (SELECT 1 FROM source_annotation hn JOIN source_annotation_link ht ON ht.record = hn.id AND ht.role = 'about' \
                  WHERE (ht.ref = 'session:' || {s}.id OR ht.ref IN (SELECT 'message:' || xm.id FROM message xm WHERE xm.session_pk = {s}.pk)) \
                  AND {})",
-                live_assertion("hn")
+                live_annotation("hn")
             )
         },
     },
@@ -224,10 +224,10 @@ pub const SESSION_HAS: [Has; 8] = [
         name: "conflict",
         sql: |s| {
             format!(
-                "EXISTS (SELECT 1 FROM source_assertion hn JOIN source_link ht ON ht.record = hn.id AND ht.role = 'about' \
+                "EXISTS (SELECT 1 FROM source_annotation hn JOIN source_annotation_link ht ON ht.record = hn.id AND ht.role = 'about' \
                  WHERE ht.ref = 'session:' || {s}.id AND {} AND {})",
-                current_assertion("hn"),
-                crate::assertions::sql::in_conflict("hn")
+                current_annotation("hn"),
+                crate::annotations::sql::in_conflict("hn")
             )
         },
     },
@@ -319,8 +319,8 @@ pub fn rule(id: FieldId) -> Rule {
         AlternatesVia => Rule::NONE.sql("{r}.via"),
         AlternatesMethod => Rule::NONE.sql("{r}.method"),
         AlternatesCreatedAt => Rule::NONE.sql("CAST(unixepoch({r}.created_at,'subsec')*1000 AS INTEGER)"),
-        AlternatesCurrent => Rule::NONE.sql_fn(|a| crate::variants::current_sql(&a.row)),
-        AlternatesWithdrawn => Rule::NONE.sql_fn(|a| crate::variants::withdrawn_sql(&a.row)),
+        AlternatesCurrent => Rule::NONE.sql_fn(|a| crate::alternates::current_sql(&a.row)),
+        AlternatesWithdrawn => Rule::NONE.sql_fn(|a| crate::alternates::withdrawn_sql(&a.row)),
         AlternatesSince => Rule::NONE.custom(custom::since),
         AlternatesUntil => Rule::NONE.custom(custom::until),
         QueriesQuery => Rule::NONE.sql("'query:'||{r}.hash"),
@@ -329,7 +329,7 @@ pub fn rule(id: FieldId) -> Rule {
         QueriesText => Rule::NONE.sql("{r}.text"),
         QueriesSavedAt => Rule::NONE.sql("{r}.saved_at"),
         QueriesKept => Rule::NONE.sql("(SELECT 'result:'||k.id FROM source_kept_result k WHERE k.name={r}.name ORDER BY k.id DESC LIMIT 1)"),
-        QueriesWatched => Rule::NONE.sql("EXISTS(SELECT 1 FROM source_assertion w JOIN source_revision_state ws ON ws.id=w.id AND ws.current=1 AND ws.withdrawn=0 WHERE w.kind='signal' AND w.key={r}.name)"),
+        QueriesWatched => Rule::NONE.sql("EXISTS(SELECT 1 FROM source_annotation w JOIN source_revision_state ws ON ws.id=w.id AND ws.current=1 AND ws.withdrawn=0 WHERE w.kind='signal' AND w.key={r}.name)"),
         QueriesSince => Rule::NONE.custom(custom::since),
         QueriesUntil => Rule::NONE.custom(custom::until),
         RunsId => Rule::NONE.sql("'run:'||{r}.id"),
@@ -558,7 +558,7 @@ pub fn rule(id: FieldId) -> Rule {
         SessionLinksEvidence => Rule::NONE.sql("{r}.evidence"),
         SessionLinksBranchPoint => Rule::NONE.sql("{r}.branch_point"),
         AnnotationsId => Rule::NONE.sql("{r}.id"),
-        AnnotationsReference => Rule::NONE.sql("pl_assertion_ref({r}.root,{r}.id)"),
+        AnnotationsReference => Rule::NONE.sql("pl_annotation_ref({r}.root,{r}.id)"),
         AnnotationsKind => Rule::NONE.sql("{r}.kind"),
         AnnotationsKey => Rule::NONE.sql("{r}.key"),
         AnnotationsValue => Rule::NONE.sql("{r}.value"),
@@ -566,12 +566,12 @@ pub fn rule(id: FieldId) -> Rule {
         AnnotationsAgent => Rule::NONE.sql("({r}.author = 'agent' OR {r}.author LIKE 'agent:%')"),
         AnnotationsVia => Rule::NONE.sql("{r}.via"),
         AnnotationsJudged => Rule::NONE.sql_fn(notes_judged),
-        AnnotationsAbout => Rule::NONE.custom(custom::assertion_about).sql("(SELECT group_concat(ref, ' ') FROM (SELECT nt.ref FROM source_link nt WHERE nt.record = {r}.id AND nt.role = 'about' ORDER BY nt.ref))"),
+        AnnotationsAbout => Rule::NONE.custom(custom::annotation_about).sql("(SELECT group_concat(ref, ' ') FROM (SELECT nt.ref FROM source_annotation_link nt WHERE nt.record = {r}.id AND nt.role = 'about' ORDER BY nt.ref))"),
         AnnotationsWriteCounter => Rule::NONE.sql("{r}.commit_seq"),
         AnnotationsCreatedAt => Rule::NONE.sql("{r}.created_at"),
         AnnotationsRoot => Rule::NONE.sql("{r}.root"),
         AnnotationsCurrent => Rule::NONE.sql_fn(notes_current),
-        AnnotationsConflict => Rule::NONE.sql_fn(|a| crate::assertions::sql::in_conflict(&a.row)),
+        AnnotationsConflict => Rule::NONE.sql_fn(|a| crate::annotations::sql::in_conflict(&a.row)),
         AnnotationsWithdrawn => Rule::NONE.sql_fn(notes_withdrawn),
         AnnotationsSince => Rule::NONE.custom(custom::since),
         AnnotationsSeenBy => Rule::NONE.custom(custom::seen_by),
@@ -609,7 +609,7 @@ pub fn rule(id: FieldId) -> Rule {
         FeedKind => Rule::NONE.sql("{r}.kind"),
         FeedRef => Rule::NONE.sql("{r}.ref"),
         FeedSeq => Rule::NONE.sql("{r}.seq"),
-        FeedAssertionKind => Rule::NONE.sql("{r}.assertion_kind"),
+        FeedAnnotationKind => Rule::NONE.sql("{r}.annotation_kind"),
         FeedAfter => Rule::NONE.custom(custom::changes_after),
         FeedSessions => Rule::NONE.custom(custom::selection),
         FeedMessages => Rule::NONE.custom(custom::selection),
@@ -733,9 +733,9 @@ fn sessions_title(a: &Aliases) -> String {
 
 fn sessions_outcome(a: &Aliases) -> String {
     format!(
-        "(SELECT CASE WHEN count(*)=0 THEN 'none' WHEN count(*)=1 THEN min(lower(CASE json_type(n.value) WHEN 'text' THEN json_extract(n.value,'$') ELSE json_extract(n.value,'$.text') END)) ELSE NULL END FROM source_assertion n JOIN source_link nt ON nt.record=n.id AND nt.role='about' WHERE n.kind='outcome' AND nt.ref='session:' || {s}.id AND {live})",
+        "(SELECT CASE WHEN count(*)=0 THEN 'none' WHEN count(*)=1 THEN min(lower(CASE json_type(n.value) WHEN 'text' THEN json_extract(n.value,'$') ELSE json_extract(n.value,'$.text') END)) ELSE NULL END FROM source_annotation n JOIN source_annotation_link nt ON nt.record=n.id AND nt.role='about' WHERE n.kind='outcome' AND nt.ref='session:' || {s}.id AND {live})",
         s = a.s,
-        live = live_assertion("n"),
+        live = live_annotation("n"),
     )
 }
 
@@ -772,11 +772,11 @@ fn deliveries_detail(a: &Aliases) -> String {
 
 fn turns_corrected(a: &Aliases) -> String {
     format!(
-        "EXISTS (SELECT 1 FROM source_assertion nc JOIN source_link nct ON nct.record = nc.id AND nct.role = 'about' \
+        "EXISTS (SELECT 1 FROM source_annotation nc JOIN source_annotation_link nct ON nct.record = nc.id AND nct.role = 'about' \
          WHERE nc.kind = 'correction' AND nct.ref = 'message:' || {r}.answer \
          AND {} AND NOT {})",
-        current_assertion("nc"),
-        withdrawn_assertion("nc"),
+        current_annotation("nc"),
+        withdrawn_annotation("nc"),
         r = a.row
     )
 }
@@ -870,7 +870,7 @@ pub(crate) fn sessions_peers(a: &Aliases, now: i64) -> String {
 }
 
 fn notes_current(a: &Aliases) -> String {
-    format!("({})", current_assertion(&a.row))
+    format!("({})", current_annotation(&a.row))
 }
 
 /// The operator's judgment of this exact revision: the key of the current
@@ -878,17 +878,17 @@ fn notes_current(a: &Aliases) -> String {
 /// family holds it; several current values that differ are `conflict`.
 fn notes_judged(a: &Aliases) -> String {
     format!(
-        "(SELECT CASE WHEN count(DISTINCT j.key) > 1 THEN 'conflict' ELSE min(j.key) END FROM source_assertion j JOIN source_link jt ON jt.record=j.id AND jt.role='about' WHERE jt.ref='assertion:' || {r}.root || '@' || {r}.id AND j.kind='judgment' AND j.author='operator' AND {live})",
+        "(SELECT CASE WHEN count(DISTINCT j.key) > 1 THEN 'conflict' ELSE min(j.key) END FROM source_annotation j JOIN source_annotation_link jt ON jt.record=j.id AND jt.role='about' WHERE jt.ref='annotation:' || {r}.root || '@' || {r}.id AND j.kind='judgment' AND j.author='operator' AND {live})",
         r = a.row,
-        live = live_assertion("j"),
+        live = live_annotation("j"),
     )
 }
 
 fn notes_withdrawn(a: &Aliases) -> String {
-    format!("({})", withdrawn_assertion(&a.row))
+    format!("({})", withdrawn_annotation(&a.row))
 }
 
-pub use crate::assertions::sql::{current_assertion, live_assertion, withdrawn_assertion};
+pub use crate::annotations::sql::{current_annotation, live_annotation, withdrawn_annotation};
 
 /// When Polylogue first had message `m`'s bytes: the earliest observation,
 /// over every chain whose records hold a version of it, of a revision of
@@ -947,9 +947,9 @@ pub fn event_first_seen(a: &Aliases) -> String {
 /// A current `hidden` note targets the session.
 pub fn hidden(s: &str) -> String {
     format!(
-        "EXISTS (SELECT 1 FROM source_assertion hn JOIN source_link ht ON ht.record = hn.id AND ht.role = 'about' \
+        "EXISTS (SELECT 1 FROM source_annotation hn JOIN source_annotation_link ht ON ht.record = hn.id AND ht.role = 'about' \
          WHERE hn.kind = 'hidden' AND ht.ref = 'session:' || {s}.id AND {})",
-        live_assertion("hn")
+        live_annotation("hn")
     )
 }
 
@@ -973,15 +973,15 @@ pub fn logical_root(s: &str) -> String {
 #[cfg(test)]
 mod tests;
 
-pub(crate) fn message_variant_match(variant: &str, part: &str, message: &str) -> String {
+pub(crate) fn message_alternate_match(alternate: &str, part: &str, message: &str) -> String {
     format!(
-        "({variant}.source='message:'||{message}.id OR ({variant}.source>'message:'||{message}.id||'#' AND {variant}.source<'message:'||{message}.id||'$') OR {part}.of='message:'||{message}.id OR ({part}.of>'block:'||{message}.id||'#' AND {part}.of<'block:'||{message}.id||'$'))"
+        "({alternate}.source='message:'||{message}.id OR ({alternate}.source>'message:'||{message}.id||'#' AND {alternate}.source<'message:'||{message}.id||'$') OR {part}.of='message:'||{message}.id OR ({part}.of>'block:'||{message}.id||'#' AND {part}.of<'block:'||{message}.id||'$'))"
     )
 }
 fn message_alternate(a: &Aliases) -> String {
     format!(
-        "EXISTS(SELECT 1 FROM source_variant_part vp JOIN source_variant v ON v.id=vp.variant WHERE {} AND {})",
-        crate::variants::current_sql("v"),
-        message_variant_match("v", "vp", &a.m)
+        "EXISTS(SELECT 1 FROM source_alternate_part vp JOIN source_alternate v ON v.id=vp.alternate WHERE {} AND {})",
+        crate::alternates::current_sql("v"),
+        message_alternate_match("v", "vp", &a.m)
     )
 }

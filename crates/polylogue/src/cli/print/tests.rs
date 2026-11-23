@@ -1,6 +1,6 @@
 use super::*;
 use crate::browser::actions::{ActionSummary, ChatRequest};
-use crate::browser::backfill::JobSummary;
+use crate::browser::import_job::JobSummary;
 use crate::resume::{Command, Plan, ResumableSession};
 use polylogue_model::SessionId;
 use serde_json::json;
@@ -41,7 +41,7 @@ fn session() -> SessionId {
 fn terminal_printers_escape_archived_text() {
     let context_answer = protocol::context::Answer {
         delivery: None,
-        prepared: crate::briefing::Prepared {
+        prepared: crate::brief::Prepared {
             event: "synthetic".into(),
             text: HOSTILE.into(),
             refs: vec![],
@@ -88,7 +88,7 @@ fn terminal_printers_escape_archived_text() {
         id: HOSTILE.into(),
         provider: HOSTILE.into(),
         since: None,
-        status: polylogue_model::user::BackfillStatus::Running,
+        status: polylogue_model::user::ImportJobStatus::Running,
         listed: 1,
         captured: 0,
         unchanged: 0,
@@ -100,14 +100,14 @@ fn terminal_printers_escape_archived_text() {
         claimed_by: None,
         claim_expires_at: None,
     };
-    escaped(&backfill_jobs(
-        &protocol::browser::BackfillJobList {
+    escaped(&import_jobs(
+        &protocol::browser::ImportJobs {
             jobs: vec![job.clone()],
         },
         TextStyle::Plain,
     ));
-    escaped(&backfill_answer(
-        &protocol::browser::BackfillAnswer::Current(protocol::browser::BackfillCurrent {
+    escaped(&import_job_answer(
+        &protocol::browser::ImportJobAnswer::Current(protocol::browser::ImportJobCurrent {
             job: Some(Box::new(job)),
         }),
         TextStyle::Plain,

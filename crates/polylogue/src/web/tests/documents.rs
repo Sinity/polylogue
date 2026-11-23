@@ -1,6 +1,6 @@
 use super::*;
 use polylogue_model::Reference;
-use polylogue_model::assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink};
+use polylogue_model::annotation::{AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink};
 use serde_json::json;
 
 fn assert_document_import(response: command_surface::Answer<serde_json::Value>) {
@@ -111,11 +111,11 @@ fn links_follow_references_in_unit_and_grouped_rows() {
         &invocation,
         "claude-code:s1".into(),
         polylogue_model::user::UserWrite::Assert {
-            assertions: vec![NewAssertion {
-                kind: AssertionKind::Tag,
+            annotations: vec![NewAnnotation {
+                kind: AnnotationKind::Tag,
                 key: Some("claude-code:s1".into()),
                 value: Some(json!({"value":"claude-code:s1"})),
-                links: vec![NewAssertionLink {
+                links: vec![NewAnnotationLink {
                     role: LinkRole::About,
                     reference: Reference::parse("session:claude-code:s1").unwrap(),
                 }],

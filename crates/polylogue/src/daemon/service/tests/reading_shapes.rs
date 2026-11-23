@@ -292,7 +292,7 @@ fn the_links_view_is_a_tree_from_the_root_with_the_seed_marked() {
         &d,
         "session:claude-code:cont",
         ReadOptions {
-            view: View::Links,
+            view: View::Tree,
             ..ReadOptions::default()
         },
     );

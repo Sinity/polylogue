@@ -9,12 +9,12 @@
 //! conversation in a chat web page) are off by default: the archive setting
 //! `browser.actions` must be `on`. Setting it to anything else stops every
 //! claim. Only the operator queues them, through the CLI, MCP or the reader.
-//! Backfill jobs (the extension capturing a web chat's older conversations)
+//! Import jobs (the extension capturing a web chat's older conversations)
 //! are started the same way and run while the extension is open.
 
 pub mod actions;
-pub mod backfill;
 mod captures;
+pub mod import_job;
 pub mod native;
 pub(crate) mod notes;
 pub mod routes;

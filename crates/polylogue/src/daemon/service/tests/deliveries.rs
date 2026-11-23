@@ -3,7 +3,7 @@
 //! the writer, so a context answer never waits for a writer turn.
 
 use super::*;
-use crate::briefing::StartSource;
+use crate::brief::StartSource;
 
 /// Returns once the writer has applied every request queued before this
 /// call: it answers a synchronous write only after the queued ones.
@@ -454,7 +454,7 @@ fn takeover_delivery_does_not_move_the_changes_since_point() {
     after_queued_writes(&d);
     lesson(&d, "the otter release needs a signed tag");
     // A pasted takeover reaches the session later and is delivered.
-    let takeover = other_delivery(&d, polylogue_model::DeliveryEvent::Takeover);
+    let takeover = other_delivery(&d, polylogue_model::DeliveryEvent::SessionBrief);
     delivered(&d, &takeover);
     after_queued_writes(&d);
     let resume = brief(

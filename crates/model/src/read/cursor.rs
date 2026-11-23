@@ -133,13 +133,13 @@ pub struct PageCursor {
     pub session_read: Option<SessionRead>,
     /// The reference or query text as the caller gave it.
     pub target: String,
-    /// Digest of the reading options, the format and the enabled variants.
+    /// Digest of the reading options, the format and the enabled alternates.
     /// A continuation with other options is refused; the page budget may
     /// change for one page.
     pub digest: String,
-    /// The variants the reading renders, resolved on its first page, so a
+    /// The alternates the reading renders, resolved on its first page, so a
     /// continuation renders the same ones whatever the setting says now.
-    pub variants: Vec<String>,
+    pub alternates: Vec<String>,
     pub versions: BlobHash,
     pub position: PagePosition,
     pub direction: ReadDirection,
@@ -202,8 +202,8 @@ pub enum ReadRecordKind {
     Document,
     Authored,
     Run,
-    Variant,
-    VariantPart,
+    Alternate,
+    AlternatePart,
     Blob,
     TextFragment,
     Presentation,

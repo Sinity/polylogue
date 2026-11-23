@@ -160,7 +160,7 @@ fn read_stream() -> (Vec<u8>, polylogue_model::read::ReadDocument) {
                 local: polylogue_model::freshness::ReadCompleteness::empty(),
                 sinex: polylogue_model::freshness::IndexFreshness::Standalone,
             },
-            enabled_variants: vec![],
+            enabled_alternates: vec![],
             author: polylogue_model::Author::Operator,
             notes: vec![],
             incomplete: vec![],

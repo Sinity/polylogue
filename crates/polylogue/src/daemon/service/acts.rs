@@ -1,4 +1,4 @@
-//! Live-session acts: pings (one session, a role's running instance, or
+//! Live-session acts: messages (one session, a role's running instance, or
 //! every session a query selects when sent), signal notices to sessions,
 //! the mailbox claim a hook makes, answers to permission requests,
 //! interrupts, and new hosted sessions (`start`, role instances,
@@ -36,7 +36,7 @@ macro_rules! act {
     };
 }
 
-act!(Ping, protocol::Ping, |a, call| ping(
+act!(SendMessage, protocol::SendMessage, |a, call| send_message(
     call.daemon,
     call.invocation,
     call.request_id,
@@ -46,7 +46,7 @@ act!(Ping, protocol::Ping, |a, call| ping(
     a.about
 ));
 act!(
-    /// A hook takes the pings and notices pending for its session.
+    /// A hook takes the messages and notices pending for its session.
     Claim,
     protocol::Claim,
     |a, call| claim(call.daemon, &a.session)
@@ -170,7 +170,7 @@ enum Recipients {
     /// then (a broadcast fixed when sent: sessions that start matching later
     /// receive nothing).
     Sessions(Vec<SessionId>),
-    /// A role with no running instance: a ping starts one; a notice does
+    /// A role with no running instance: a message starts one; a notice does
     /// not.
     NewInstance(Role),
 }
@@ -180,32 +180,32 @@ enum Recipients {
 pub(crate) struct Role {
     pub name: String,
     /// The exact revision, which the sessions it starts record.
-    pub assertion: String,
+    pub annotation: String,
     pub instructions: String,
     pub harness: String,
 }
 
 /// The current revision of the role `name`.
 pub(crate) fn role(d: &Daemon, invocation: &Invocation, name: &str) -> Result<Role, Failure> {
-    use polylogue_model::assertion::values;
+    use polylogue_model::annotation::values;
     let operation = d.resolve_operation_context(invocation.clone())?;
     let reader = d.reads.reader()?;
     let conditions = format!(
         "kind:role key:{}",
-        crate::daemon::query::assertions::quoted(name)
+        crate::daemon::query::annotations::quoted(name)
     );
-    let found = crate::daemon::query::assertions::list(&reader, &conditions, &operation)?;
-    let Some(assertion) = found.into_iter().next() else {
+    let found = crate::daemon::query::annotations::list(&reader, &conditions, &operation)?;
+    let Some(annotation) = found.into_iter().next() else {
         return Err(Failure::not_found(format!("no role {name}")));
     };
-    let Ok(values::Value::Role(role)) = assertion.fact.validate() else {
+    let Ok(values::Value::Role(role)) = annotation.fact.validate() else {
         return Err(Failure::bad_value(format!(
             "the role {name} has no instructions and harness"
         )));
     };
     Ok(Role {
         name: name.to_owned(),
-        assertion: assertion.fact.id.clone(),
+        annotation: annotation.fact.id.clone(),
         instructions: role.fields.instructions.clone(),
         harness: role.fields.harness.as_str().to_owned(),
     })
@@ -326,7 +326,7 @@ pub(crate) fn refuse_running_resume(d: &Daemon, session: &SessionId) -> Result<(
     }
 }
 
-/// Sends a ping or notice over a hosted connection: `delivered` when
+/// Sends a message or notice over a hosted connection: `delivered` when
 /// written, recorded later when it waits for the running prompt, and
 /// `not_sent` when the connection fails. The delivery stays handed out, so
 /// no hook takes it as well.
@@ -381,22 +381,28 @@ fn record_sent(d: &Daemon, delivery: &str, sent: Result<(), String>) {
     let _ = outcome_event(d, &invocation, delivery, what, detail);
 }
 
-/// The ping pack: the text, what it is about, how to answer, and the
+/// The message pack: the text, what it is about, how to answer, and the
 /// delivery reference.
-fn ping_text(delivery: &str, ping: &str, author: &str, text: &str, about: Option<&str>) -> String {
+fn message_text(
+    delivery: &str,
+    message: &str,
+    author: &str,
+    text: &str,
+    about: Option<&str>,
+) -> String {
     let mut pack =
-        format!("Ping from {author} (delivery:{delivery}, annotation:{ping}):\n{text}\n");
+        format!("Message from {author} (delivery:{delivery}, annotation:{message}):\n{text}\n");
     if let Some(about) = about {
         pack.push_str(&format!("About: {about}\n"));
     }
     pack.push_str(&format!(
-        "Answer with Polylogue's MCP `rows` operation (tool `polylogue_write`): `selection` and `replies_to` both name `annotation:{ping}@{ping}`; use a `note` step with `as: finding` and your answer as `text`. Reach the sender with a `send` step (tool `polylogue_act`)."
+        "Answer with Polylogue's MCP `rows` operation (tool `polylogue_write`): `selection` and `replies_to` both name `annotation:{message}@{message}`; use a `note` step with `as: finding` and your answer as `text`. Reach the sender with a `send` step (tool `polylogue_act`)."
     ));
     pack
 }
 
 #[allow(clippy::too_many_arguments)]
-fn ping(
+fn send_message(
     d: &Daemon,
     invocation: &Invocation,
     request_id: &str,
@@ -408,14 +414,14 @@ fn ping(
     if text.trim().is_empty() {
         return Ok(error(
             polylogue_model::Code::BadRequest,
-            "a ping needs text",
+            "a message needs text",
         ));
     }
     let now = now(d);
     let sessions = match recipients(d, invocation, target, now)? {
         Recipients::Sessions(sessions) => sessions,
         Recipients::NewInstance(role) => {
-            return ping_new_instance(d, invocation, request_id, &role, text, about.as_deref());
+            return message_new_instance(d, invocation, request_id, &role, text, about.as_deref());
         }
     };
     if sessions.is_empty() {
@@ -429,8 +435,8 @@ fn ping(
         .map(polylogue_model::Reference::parse)
         .transpose()
         .map_err(Failure::bad_value)?;
-    let assertion = polylogue_model::assertion::NewAssertion {
-        kind: polylogue_model::assertion::AssertionKind::Ping,
+    let annotation = polylogue_model::annotation::NewAnnotation {
+        kind: polylogue_model::annotation::AnnotationKind::Message,
         key: None,
         value: Some(
             json!({"text": text, "subject": subject.as_ref().map(ToString::to_string), "reply_to": null}),
@@ -438,18 +444,18 @@ fn ping(
         valid_until: None,
         links: sessions
             .iter()
-            .map(|s| polylogue_model::assertion::NewAssertionLink {
-                role: polylogue_model::assertion::LinkRole::About,
+            .map(|s| polylogue_model::annotation::NewAnnotationLink {
+                role: polylogue_model::annotation::LinkRole::About,
                 reference: polylogue_model::Reference::Session(s.clone()),
             })
             .collect(),
     };
-    let ping = author(
+    let message = author(
         d,
         invocation,
-        format!("{request_id}-ping"),
+        format!("{request_id}-message"),
         UserWrite::Assert {
-            assertions: vec![assertion],
+            annotations: vec![annotation],
         },
     )?
     .id;
@@ -466,7 +472,7 @@ fn ping(
                 continue;
             }
         };
-        let pack = ping_text(&delivery, &ping, &author_name, text, about.as_deref());
+        let pack = message_text(&delivery, &message, &author_name, text, about.as_deref());
         // Held from before its row exists, so nothing closes or claims it
         // until its channel is decided.
         {
@@ -480,16 +486,16 @@ fn ping(
             UserWrite::Deliver(Delivery {
                 recipient_kind: "session".into(),
                 recipient_id: Some(session.to_string()),
-                sender: DeliverySender::Ping.as_str().into(),
-                event: DeliveryEvent::Ping.as_str().into(),
+                sender: DeliverySender::Send.as_str().into(),
+                event: DeliveryEvent::Message.as_str().into(),
                 cwd,
                 text: pack.clone(),
-                refs: vec![format!("assertion:{ping}")],
+                refs: vec![format!("annotation:{message}")],
                 left_out: Vec::new(),
             }),
         )?;
         let chosen = channel(
-            Act::Ping { live },
+            Act::Send { live },
             view_state,
             &probe(&d.acts, session, &facts),
         );
@@ -527,11 +533,11 @@ fn ping(
         sent.push(row);
     }
     Ok(ok(
-        json!({"ping": ping, "deliveries": sent, "undo": "none: a sent ping cannot be taken back"}),
+        json!({"message": message, "deliveries": sent, "undo": "none: a sent message cannot be taken back"}),
     ))
 }
 
-/// A hook's mailbox claim: every ping and notice pending for the session,
+/// A hook's mailbox claim: every message and notice pending for the session,
 /// oldest first, each handed out once. Claims run one at a time, so
 /// concurrent hooks of one session never take the same delivery. The hook
 /// records each `delivered` once it has written it to the harness; a claim
@@ -553,7 +559,7 @@ fn claim(d: &Daemon, session: &SessionId) -> Result<Answer<Value>, Failure> {
     Ok(ok(json!({ "deliveries": claimed })))
 }
 
-/// Pings and notices still pending for sessions that stopped running
+/// Messages and notices still pending for sessions that stopped running
 /// reach no hook: each is recorded `not_sent:session_<state>` (`ended`,
 /// `stale`, or `missing` when the session has no live state) and the flag
 /// lowered. Run by the live worker after each change, and at start for
@@ -936,8 +942,8 @@ fn resume_session(daemon: &std::sync::Arc<Daemon>, run: ResumeRun) {
             resume_once(&daemon, &run);
             next = daemon.acts.resume_finished(&run.session);
             while let Some(candidate) = next.take() {
-                // A queued ping waits for its session to stop running:
-                // if it runs again (resumed by hand), the ping goes to
+                // A queued message waits for its session to stop running:
+                // if it runs again (resumed by hand), the message goes to
                 // its next hook instead of a second resume.
                 let running = daemon
                     .reads
@@ -964,7 +970,7 @@ fn resume_session(daemon: &std::sync::Arc<Daemon>, run: ResumeRun) {
         }
     });
     if spawned.is_err() {
-        // Nothing runs: the pings go back to the mailbox, where they are
+        // Nothing runs: the messages go back to the mailbox, where they are
         // handled like any other.
         daemon.acts.release(&delivery);
         while let Some(queued) = daemon.acts.resume_finished(&session) {
@@ -973,7 +979,7 @@ fn resume_session(daemon: &std::sync::Arc<Daemon>, run: ResumeRun) {
     }
 }
 
-/// One headless resume: `delivered` when the harness starts with the ping
+/// One headless resume: `delivered` when the harness starts with the message
 /// as its prompt, `failed` with the first line of its error output when it
 /// exits unsuccessfully. It runs in the session's resume directory, and is
 /// `not_sent` (`directory_unknown`, `directory_missing(DIR)`) without one:
@@ -1056,7 +1062,7 @@ struct NewSession<'a> {
     /// The first turn's text, without its delivery line.
     text: String,
     /// What the first turn refers to: the role revision, the hand-off's
-    /// source, the ping.
+    /// source, the message.
     refs: Vec<String>,
 }
 
@@ -1142,7 +1148,7 @@ fn start_session(
 fn role_text(role: &Role, text: &str) -> String {
     format!(
         "You run as the role `{}` (annotation:{}):\n{}\n\n{}",
-        role.name, role.assertion, role.instructions, text
+        role.name, role.annotation, role.instructions, text
     )
 }
 
@@ -1186,7 +1192,7 @@ fn start(
             role_text(role, text),
             vec![
                 role_reference(&role.name),
-                format!("assertion:{}", role.assertion),
+                format!("annotation:{}", role.annotation),
             ],
         ),
         None => (text.to_owned(), Vec::new()),
@@ -1215,11 +1221,16 @@ fn start(
     })))
 }
 
-/// The first turn's ping text for a new role instance, which has no ping
+/// The first turn's message text for a new role instance, which has no message
 /// annotation to answer: the reply goes as a note replying to the
 /// delivery, or as a message to the sender.
-fn new_instance_ping_text(delivery: &str, author: &str, text: &str, about: Option<&str>) -> String {
-    let mut pack = format!("Ping from {author}:\n{text}\n");
+fn new_instance_message_text(
+    delivery: &str,
+    author: &str,
+    text: &str,
+    about: Option<&str>,
+) -> String {
+    let mut pack = format!("Message from {author}:\n{text}\n");
     if let Some(about) = about {
         pack.push_str(&format!("About: {about}\n"));
     }
@@ -1229,9 +1240,9 @@ fn new_instance_ping_text(delivery: &str, author: &str, text: &str, about: Optio
     pack
 }
 
-/// A ping to a role with no running instance starts one, in the directory
-/// its latest instance ran in, with the ping as its first turn.
-fn ping_new_instance(
+/// A message to a role with no running instance starts one, in the directory
+/// its latest instance ran in, with the message as its first turn.
+fn message_new_instance(
     d: &Daemon,
     invocation: &Invocation,
     request_id: &str,
@@ -1249,7 +1260,7 @@ fn ping_new_instance(
         ));
     };
     let author_name = invocation.authorship.author.to_string();
-    let pack = new_instance_ping_text(request_id, &author_name, text, about);
+    let pack = new_instance_message_text(request_id, &author_name, text, about);
     let session = match start_session(
         d,
         invocation,
@@ -1260,7 +1271,7 @@ fn ping_new_instance(
             text: role_text(role, &pack),
             refs: vec![
                 role_reference(&role.name),
-                format!("assertion:{}", role.assertion),
+                format!("annotation:{}", role.annotation),
             ],
         },
     )? {
@@ -1270,7 +1281,7 @@ fn ping_new_instance(
     Ok(ok(json!({
         "deliveries": [{"session": session, "delivery": request_id, "channel": "protocol",
                         "outcome": "delivered", "started": role.name}],
-        "undo": "none: a sent ping cannot be taken back",
+        "undo": "none: a sent message cannot be taken back",
     })))
 }
 
@@ -1320,8 +1331,8 @@ fn hand_off(
             .transpose()
             .map_err(Failure::bad_value)?;
     let operation = d.resolve_operation_context(invocation.clone())?;
-    let prepared = crate::briefing::prepare(
-        crate::briefing::BriefContext {
+    let prepared = crate::brief::prepare(
+        crate::brief::BriefContext {
             reader: &reader,
             delivery_id: h.request_id,
             context: &operation,
@@ -1331,7 +1342,7 @@ fn hand_off(
         &d.scope,
         None,
         &[],
-        &crate::briefing::Ask::Takeover {
+        &crate::brief::Ask::Takeover {
             session: h.source.clone(),
             for_session: None,
         },
@@ -1345,7 +1356,7 @@ fn hand_off(
     text.push_str(":\n");
     text.push_str(&prepared.text);
     let mut refs = vec![format!("session:{}", h.source)];
-    refs.extend(at.as_ref().map(polylogue_model::Reference::stored_form));
+    refs.extend(at.as_ref().map(polylogue_model::Reference::to_string));
     refs.extend(prepared.refs.iter().cloned());
     if h.print {
         let channel = polylogue_model::live::channel::host_protocol(h.to);

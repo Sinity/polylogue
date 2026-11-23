@@ -38,7 +38,7 @@
 //! default), with counts for the omitted middle. A line over 4,000
 //! characters is bounded by kept ends. `output_lines: 0` keeps the complete
 //! value. The source record always keeps the complete result.
-//! Availability, assertions, context omissions, branches and variants keep
+//! Availability, annotations, context omissions, branches and alternates keep
 //! typed value states instead of inventing zero or success.
 //!
 //! Web routes embed `html::document` in the common `web_shell::Frame`.

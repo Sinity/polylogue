@@ -127,7 +127,7 @@ fn explicit_shutdown_accepts_only_a_recorded_expected_return() {
 fn saved_metadata_follows_committed_families_and_late_query_bodies() {
     use polylogue_model::{
         Author, Timestamp,
-        assertion::{AssertionFact, AssertionKind},
+        annotation::{AnnotationFact, AnnotationKind},
         authorship::Channel,
         user::UserWrite,
     };
@@ -136,7 +136,7 @@ fn saved_metadata_follows_committed_families_and_late_query_bodies() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("catalog");
     let mut state = State::new(false, super::super::tests::request_metadata());
-    // This is a genuine historical assertion whose saved body arrives later.
+    // This is a genuine historical annotation whose saved body arrives later.
     let plan = polylogue_query::compile(
         "sessions | group by origin | count",
         &polylogue_query::Options {
@@ -186,8 +186,8 @@ fn saved_metadata_follows_committed_families_and_late_query_bodies() {
     let object = parent.query_object().unwrap();
     assert!(object.edges.iter().any(|edge| matches!(edge,polylogue_model::query_objects::QueryEdge::Saved{query} if *query==child.id)));
 
-    archive.writer.restore_assertion(AssertionFact {
-        id:"historical-definition".into(),root:"historical-definition".into(),kind:AssertionKind::SavedQuery,
+    archive.writer.restore_annotation(AnnotationFact {
+        id:"historical-definition".into(),root:"historical-definition".into(),kind:AnnotationKind::SavedQuery,
         key:Some("historical".into()),value:Some(serde_json::json!({"text":parent.text(),"hash":object.id.to_string(),"denominator":null})),
         author:Author::Operator,via:Channel::Import,machine:"synthetic-machine".into(),created_at: Some(Timestamp::from_unix_ms(1).unwrap()),valid_until:None,links:vec![],
     }, None).unwrap();
@@ -236,8 +236,8 @@ fn saved_metadata_follows_committed_families_and_late_query_bodies() {
             .any(|field| field.name == "count")
     );
     drop(cached);
-    archive.writer.restore_assertion(AssertionFact {
-        id: "colliding-definition".into(), root: "colliding-definition".into(), kind: AssertionKind::SavedQuery,
+    archive.writer.restore_annotation(AnnotationFact {
+        id: "colliding-definition".into(), root: "colliding-definition".into(), kind: AnnotationKind::SavedQuery,
         key: Some("historical".into()), value: Some(serde_json::json!({"text":parent.text(),"hash":object.id.to_string(),"denominator":null})),
         author: Author::Operator, via: Channel::Import, machine: "synthetic-machine".into(), created_at: Some(Timestamp::from_unix_ms(2).unwrap()), valid_until: None, links: vec![],
     }, None).unwrap();
@@ -259,10 +259,9 @@ fn saved_metadata_follows_committed_families_and_late_query_bodies() {
         .writer
         .user(polylogue_store::fixture::authored::operator_request(
             "withdraw-collision".into(),
-            UserWrite::WithdrawAssertions {
+            UserWrite::WithdrawAnnotations {
                 targets: vec![
-                    polylogue_model::Reference::parse_stored("assertion:colliding-definition")
-                        .unwrap(),
+                    polylogue_model::Reference::parse("annotation:colliding-definition").unwrap(),
                 ],
                 reason: None,
             },
@@ -282,10 +281,9 @@ fn saved_metadata_follows_committed_families_and_late_query_bodies() {
         .writer
         .user(polylogue_store::fixture::authored::operator_request(
             "withdraw-historical".into(),
-            UserWrite::WithdrawAssertions {
+            UserWrite::WithdrawAnnotations {
                 targets: vec![
-                    polylogue_model::Reference::parse_stored("assertion:historical-definition")
-                        .unwrap(),
+                    polylogue_model::Reference::parse("annotation:historical-definition").unwrap(),
                 ],
                 reason: None,
             },

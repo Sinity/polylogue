@@ -168,10 +168,8 @@ impl SelectionRules for FirstWordCatalog {
         crate::row_numbers::is_selection(word)
     }
     fn is_reference(&self, word: &str) -> bool {
-        matches!(
-            polylogue_model::Reference::parse(word),
-            Ok(_) | Err(polylogue_model::ReferenceError::StoredSpelling { .. })
-        ) || word.starts_with("https://")
+        polylogue_model::Reference::parse(word).is_ok()
+            || word.starts_with("https://")
             || word.starts_with("http://")
             || polylogue_query::catalog::REFERENCE_WORDS.contains(&word)
             || (word.len() >= 8 && word.chars().all(|c| c.is_ascii_hexdigit() || c == '-'))

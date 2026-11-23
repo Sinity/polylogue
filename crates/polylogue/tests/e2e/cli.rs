@@ -1103,7 +1103,7 @@ fn ordered_read_destinations_receive_their_own_steps() {
     );
 }
 /// Drive the real binary through a PTY, waiting for a seeded candidate before
-/// choosing. A failed assertion still kills and reaps the owned client.
+/// choosing. A failed annotation still kills and reaps the owned client.
 fn choose(env: &crate::Fixture, args: &[&str], keys: &[u8]) -> Output {
     choose_output(env, args, keys, false)
 }

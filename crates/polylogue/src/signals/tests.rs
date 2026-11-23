@@ -30,13 +30,13 @@ fn signal_schema_uses_common_closed_rule_and_delivery_contract() {
     );
 }
 
-fn assertion(author: polylogue_model::Author) -> polylogue_model::assertion::Assertion {
-    use polylogue_model::assertion::{Assertion, AssertionFact, AssertionKind};
-    Assertion {
-        fact: AssertionFact {
+fn annotation(author: polylogue_model::Author) -> polylogue_model::annotation::Annotation {
+    use polylogue_model::annotation::{Annotation, AnnotationFact, AnnotationKind};
+    Annotation {
+        fact: AnnotationFact {
             id: "revision".into(),
             root: "family".into(),
-            kind: AssertionKind::Signal,
+            kind: AnnotationKind::Signal,
             key: Some("waiting".into()),
             value: Some(json!({"name":"waiting","query":"sessions","interrupt":true})),
             author,
@@ -51,7 +51,7 @@ fn assertion(author: polylogue_model::Author) -> polylogue_model::assertion::Ass
 }
 
 #[test]
-fn signal_assertion_claims_never_supply_an_active_author_or_revision_epoch() {
+fn signal_annotation_claims_never_supply_an_active_author_or_revision_epoch() {
     use polylogue_model::{Author, Origin};
     let config = crate::config::SignalDeployment::default().rule_configuration();
     let expected = rules::Definition {
@@ -66,7 +66,7 @@ fn signal_assertion_claims_never_supply_an_active_author_or_revision_epoch() {
         Author::Agent(None),
         Author::AgentOrigin(Origin::new("codex").unwrap()),
     ] {
-        let mut candidate = assertion(author);
+        let mut candidate = annotation(author);
         candidate.commit_seq = 999;
         candidate.fact.id = "another-revision".into();
         assert_eq!(rules::definition(&candidate, &config).unwrap(), expected);
@@ -76,7 +76,7 @@ fn signal_assertion_claims_never_supply_an_active_author_or_revision_epoch() {
 #[test]
 fn signal_definition_uses_typed_fact_and_deployment_validation() {
     let config = crate::config::SignalDeployment::default().rule_configuration();
-    let mut candidate = assertion(polylogue_model::Author::Operator);
+    let mut candidate = annotation(polylogue_model::Author::Operator);
     assert_eq!(
         rules::definition(&candidate, &config).unwrap(),
         rules::Definition {
@@ -94,7 +94,7 @@ fn signal_definition_uses_typed_fact_and_deployment_validation() {
         json!({"name":"waiting","query":"sessions","deliver":"action","command":"unconfigured"}),
     );
     assert!(rules::definition(&candidate, &config).is_err());
-    candidate.fact.kind = polylogue_model::assertion::AssertionKind::Note;
+    candidate.fact.kind = polylogue_model::annotation::AnnotationKind::Note;
     assert!(rules::definition(&candidate, &config).is_err());
 }
 
@@ -297,8 +297,8 @@ fn only_authored_commits_wake_the_rules() {
     }
     observe.until("content", |phase| matches!(phase, Phase::CueIgnored));
     let write = UserWrite::Assert {
-        assertions: vec![polylogue_model::assertion::NewAssertion {
-            kind: polylogue_model::assertion::AssertionKind::Signal,
+        annotations: vec![polylogue_model::annotation::NewAnnotation {
+            kind: polylogue_model::annotation::AnnotationKind::Signal,
             key: Some("authored-wake".into()),
             value: Some(json!({"name":"authored-wake","query":"sessions"})),
             valid_until: None,
@@ -373,8 +373,8 @@ fn completion_commit_wakes_rules_while_operation_clock_is_stopped() {
     let writes = fixture.daemon.writes.as_ref().unwrap();
     let committed = writes.completion_commits();
     let write = UserWrite::Assert {
-        assertions: vec![polylogue_model::assertion::NewAssertion {
-            kind: polylogue_model::assertion::AssertionKind::Signal,
+        annotations: vec![polylogue_model::annotation::NewAnnotation {
+            kind: polylogue_model::annotation::AnnotationKind::Signal,
             key: Some("completion-wake".into()),
             value: Some(json!({"name":"completion-wake","query":"sessions"})),
             valid_until: None,
@@ -391,7 +391,7 @@ fn completion_commit_wakes_rules_while_operation_clock_is_stopped() {
     assert!(!outcome.repeat);
     let reader = fixture.daemon.reads.reader().unwrap();
     let stored = reader
-        .assertion(&polylogue_model::RevisionReference::exact(
+        .annotation(&polylogue_model::RevisionReference::exact(
             outcome.id.clone(),
             outcome.id.clone(),
         ))
@@ -401,7 +401,7 @@ fn completion_commit_wakes_rules_while_operation_clock_is_stopped() {
         stored.fact.value.as_ref().unwrap()["name"],
         "completion-wake"
     );
-    let assertion_id = stored.fact.id;
+    let annotation_id = stored.fact.id;
     drop(reader);
     observations::emit(
         &fixture.daemon,
@@ -427,7 +427,7 @@ fn completion_commit_wakes_rules_while_operation_clock_is_stopped() {
                 observe.seen
             ),
             Phase::ControllerWake { refresh: false } => cue = true,
-            Phase::RulesRead { ids } if ids.iter().any(|id| id == &assertion_id) => read = true,
+            Phase::RulesRead { ids } if ids.iter().any(|id| id == &annotation_id) => read = true,
             Phase::Status(value)
                 if value["rules"].as_array().is_some_and(|rules| {
                     rules.iter().any(|rule| rule["name"] == "completion-wake")
@@ -473,13 +473,13 @@ fn completion_commit_wakes_rules_while_operation_clock_is_stopped() {
     assert_eq!(
         load(&fixture.daemon).unwrap().unwrap().identity().unwrap(),
         baseline,
-        "an unconfirmed assertion adoption changed the stored checkpoint"
+        "an unconfirmed annotation adoption changed the stored checkpoint"
     );
     assert_eq!(fixture.daemon.config.requests.now().unix_ms(), FIXED);
 }
 
 #[test]
-fn unavailable_dependencies_keep_the_assertion_pending() {
+fn unavailable_dependencies_keep_the_annotation_pending() {
     use shared_signals::{ActiveRule, Evaluation, Occurrence, Origin, Row, RuleVersion};
     use std::sync::atomic::{AtomicI64, Ordering};
     let at = Arc::new(AtomicI64::new(1_792_332_000_000));
@@ -559,7 +559,7 @@ fn unavailable_dependencies_keep_the_assertion_pending() {
     );
     let before = checkpoint.identity().unwrap();
     at.fetch_add(2 * shared_signals::HOUR, Ordering::SeqCst);
-    // An empty current-looking assertion read does not show a withdrawal or closure.
+    // An empty current-looking annotation read does not show a withdrawal or closure.
     tick(&fixture.daemon, operation(&fixture.daemon).unwrap()).unwrap();
     assert_eq!(
         load(&fixture.daemon).unwrap().unwrap().identity().unwrap(),
@@ -574,8 +574,8 @@ fn unavailable_dependencies_keep_the_assertion_pending() {
         .user(context.request(
             "asserted:signal".into(),
             UserWrite::Assert {
-                assertions: vec![polylogue_model::assertion::NewAssertion {
-                    kind: polylogue_model::assertion::AssertionKind::Signal,
+                annotations: vec![polylogue_model::annotation::NewAnnotation {
+                    kind: polylogue_model::annotation::AnnotationKind::Signal,
                     key: Some("waiting".into()),
                     value: Some(json!({"name":"waiting","query":"sessions","interrupt":true})),
                     valid_until: None,

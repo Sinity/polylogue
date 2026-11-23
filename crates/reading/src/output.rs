@@ -190,9 +190,9 @@ impl<'a> Stream<'a> {
                 Record::Event(_) => self.counts.events += 1,
                 Record::Link(_) => self.counts.links += 1,
                 Record::Authored(_) => self.counts.authored += 1,
-                Record::Assertion(_) => self.counts.assertions += 1,
-                Record::Variant(_) => self.counts.variants += 1,
-                Record::VariantPart(_) => self.counts.variant_parts += 1,
+                Record::Annotation(_) => self.counts.annotations += 1,
+                Record::Alternate(_) => self.counts.alternates += 1,
+                Record::AlternatePart(_) => self.counts.alternate_parts += 1,
                 Record::TextFragment(_) => self.counts.text_fragments += 1,
                 Record::Blob(_) => self.counts.blobs += 1,
                 Record::Manifest(_) => {

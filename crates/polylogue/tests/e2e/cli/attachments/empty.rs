@@ -58,7 +58,7 @@ fn missing_or_corrupt_empty_frames_never_install_blank_attachment_output() {
                     ],
                 )
             });
-            // Restore the synthetic archive before assertions and daemon teardown.
+            // Restore the synthetic archive before annotations and daemon teardown.
             if missing {
                 std::fs::rename(&held, &segment).unwrap();
             } else {

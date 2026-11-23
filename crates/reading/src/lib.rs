@@ -177,35 +177,35 @@ pub struct AttachmentPlace {
     pub input: Option<String>,
 }
 
-/// The read with the variants it renders resolved once: the request's own
+/// The read with the alternates it renders resolved once: the request's own
 /// (`none` for the originals), else those its cursor's first page rendered,
 /// else the `reading.alternates` setting.
-pub fn with_variants(
+pub fn with_alternates(
     reader: &Reader<'_>,
     services: &impl ReadServices,
     mut request: ReadRequest,
 ) -> Result<ReadRequest, Error> {
     if request.options.view == View::Trace {
-        if !request.options.variants.is_empty() && request.options.variants != ["none"] {
+        if !request.options.alternates.is_empty() && request.options.alternates != ["none"] {
             return Err(Error::bad_request(
                 "trace shows original source evidence; alternates are unsupported",
             ));
         }
-        request.options.variants.clear();
+        request.options.alternates.clear();
         return Ok(request);
     }
-    if request.options.variants == ["none"] {
-        request.options.variants.clear();
+    if request.options.alternates == ["none"] {
+        request.options.alternates.clear();
         return Ok(request);
     }
-    if !request.options.variants.is_empty() {
+    if !request.options.alternates.is_empty() {
         return Ok(request);
     }
-    request.options.variants = match &request.cursor {
+    request.options.alternates = match &request.cursor {
         Some(text) => {
             PageCursor::open(text, &cursor_seal(reader)?)
                 .map_err(cursor_failure)?
-                .variants
+                .alternates
         }
         None => reader
             .settings_snapshot(services.requests().machine())?
@@ -328,7 +328,7 @@ fn prepared<T>(
             ran_at: operation.ran_at,
             read_at: reader.change_position()?,
             freshness: services.freshness(reader)?,
-            enabled_variants: reading.options.variants.clone(),
+            enabled_alternates: reading.options.alternates.clone(),
             author: operation.authorship.author.clone(),
             notes: selection.program().notes.clone(),
             incomplete: selection.program().incomplete.clone(),
@@ -411,8 +411,8 @@ fn selected_source(
             .locate(Some(message))?
             .is_some());
     }
-    let reference = polylogue_model::Reference::parse_stored(&source.reference)
-        .map_err(Error::not_yet_available)?;
+    let reference =
+        polylogue_model::Reference::parse(&source.reference).map_err(Error::not_yet_available)?;
     reader
         .selection_contains(selection, &reference, near)
         .map_err(Error::from)
@@ -716,7 +716,7 @@ pub fn page(
         {
             session::page(reader, services, request, operation, scope)?
         }
-        Some(scope) if reading.options.view == View::Links => (
+        Some(scope) if reading.options.view == View::Tree => (
             links::page(reader, services, request, operation, scope)?,
             vec![],
         ),
@@ -925,7 +925,7 @@ fn rows_page(
             session_read: None,
             target: reading.target.clone(),
             digest: reading.digest.clone(),
-            variants: reading.options.variants.clone(),
+            alternates: reading.options.alternates.clone(),
             versions,
             position: PagePosition::Record {
                 start_row: row,

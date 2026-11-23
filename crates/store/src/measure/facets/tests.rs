@@ -152,16 +152,16 @@ fn withdrawn_and_revised_tags_change_counts_without_derivation() {
         .unwrap();
     use polylogue_model::{
         Reference, RevisionReference, Timestamp,
-        assertion::{AssertionKind, AssertionLink, LinkRole},
+        annotation::{AnnotationKind, AnnotationLink, LinkRole},
     };
     let mut conn = crate::archive::open_write(&f.archive.archive_db(), 64).unwrap();
-    let mut revision = crate::assertions::get(&conn, &note).unwrap().unwrap().fact;
+    let mut revision = crate::annotations::get(&conn, &note).unwrap().unwrap().fact;
     revision.id = "revision".into();
     revision.key = Some("new".into());
     revision.created_at = Timestamp::from_unix_ms(2);
-    revision.links.push(AssertionLink {
+    revision.links.push(AnnotationLink {
         role: LinkRole::Revises,
-        reference: Reference::Assertion(RevisionReference {
+        reference: Reference::Annotation(RevisionReference {
             root: note.clone(),
             revision: Some(note.clone()),
         }),
@@ -169,7 +169,7 @@ fn withdrawn_and_revised_tags_change_counts_without_derivation() {
         quote: None,
     });
     let tx = conn.transaction().unwrap();
-    crate::assertions::apply(&tx, std::slice::from_ref(&revision), 2).unwrap();
+    crate::annotations::apply(&tx, std::slice::from_ref(&revision), 2).unwrap();
     tx.commit().unwrap();
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
@@ -181,13 +181,13 @@ fn withdrawn_and_revised_tags_change_counts_without_derivation() {
     let mut withdrawal = revision;
     withdrawal.id = "withdrawal".into();
     withdrawal.root = "withdrawal".into();
-    withdrawal.kind = AssertionKind::Withdrawal;
+    withdrawal.kind = AnnotationKind::Withdrawal;
     withdrawal.key = None;
     withdrawal.value = None;
     withdrawal.created_at = Timestamp::from_unix_ms(3);
-    withdrawal.links = vec![AssertionLink {
+    withdrawal.links = vec![AnnotationLink {
         role: LinkRole::Withdraws,
-        reference: Reference::Assertion(RevisionReference {
+        reference: Reference::Annotation(RevisionReference {
             root: note,
             revision: None,
         }),
@@ -195,7 +195,7 @@ fn withdrawn_and_revised_tags_change_counts_without_derivation() {
         quote: None,
     }];
     let tx = conn.transaction().unwrap();
-    crate::assertions::apply(&tx, &[withdrawal], 3).unwrap();
+    crate::annotations::apply(&tx, &[withdrawal], 3).unwrap();
     tx.commit().unwrap();
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();

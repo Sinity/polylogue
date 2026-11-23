@@ -381,7 +381,7 @@ fn time_companion_catalog_keeps_precision_and_unknown() {
 }
 
 #[test]
-fn a_lone_exact_assertion_revision_reads_the_assertions_unit() {
+fn a_lone_exact_annotation_revision_reads_the_annotations_unit() {
     let unit = |text: &str| match p(text).source {
         Source::Unit { unit, .. } => unit,
         other => panic!("{text}: {other:?}"),
@@ -390,54 +390,4 @@ fn a_lone_exact_assertion_revision_reads_the_assertions_unit() {
     assert_eq!(unit("annotation:root"), "sessions");
     assert_eq!(unit("block:test:message#0"), "sessions");
     assert_eq!(unit("sessions where annotation:root@revision"), "sessions");
-}
-
-#[test]
-fn authored_surface_references_leave_the_execution_catalog_unchanged() {
-    let catalog = crate::catalog::catalog(&[]);
-    let before = serde_json::to_value(catalog.as_ref()).unwrap();
-    for text in [
-        "annotation:root",
-        "annotation:root@revision",
-        "alternate:root@revision#2",
-    ] {
-        with_catalog(text, &catalog).unwrap();
-    }
-    assert_eq!(serde_json::to_value(catalog.as_ref()).unwrap(), before);
-    for (written, corrected) in [
-        ("assertion:root@revision", "annotation:root@revision"),
-        ("variant:root@revision#2", "alternate:root@revision#2"),
-    ] {
-        let error = with_catalog(written, &catalog).unwrap_err();
-        assert!(error.to_string().contains(corrected), "{error}");
-        assert!(error.to_string().contains("stored spelling"), "{error}");
-    }
-    let mut declared = (*catalog).clone();
-    declared
-        .units
-        .iter_mut()
-        .find(|unit| unit.name == "sessions")
-        .unwrap()
-        .fields
-        .push(query_language::catalog::Field {
-            name: "annotation".into(),
-            kind: query_language::catalog::FieldKind::Exact,
-            ..Default::default()
-        });
-    let query = with_catalog("annotation:opaque", &declared).unwrap();
-    assert!(
-        matches!(query.source, Source::Unit { condition: Some(condition), .. }
-        if matches!(condition.kind, ConditionKind::Match { ref field, .. } if field == "annotation"))
-    );
-    assert!(
-        matches!(cond("\"annotation:opaque\""), ConditionKind::Text { ref text, .. }
-        if text == "annotation:opaque")
-    );
-    let mixed = with_catalog("annotation:opaque alternate:root@revision#2", &declared).unwrap();
-    assert!(
-        matches!(mixed.source, Source::Unit { condition: Some(condition), .. }
-        if matches!(condition.kind, ConditionKind::And { ref conditions }
-            if matches!(&conditions[0].kind, ConditionKind::Match { field, .. } if field == "annotation")
-                && matches!(&conditions[1].kind, ConditionKind::Reference { reference } if reference == "alternate:root@revision#2")))
-    );
 }

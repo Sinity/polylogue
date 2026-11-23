@@ -6,7 +6,7 @@ fn source(id: &str, blocks: Vec<Block>) -> polylogue_model::Message {
     message(id, "s", Role::User, 1, blocks)
 }
 fn r(text: &str) -> Reference {
-    Reference::parse_stored(text).unwrap()
+    Reference::parse(text).unwrap()
 }
 fn text(reader: &Reader<'_>, reference: &str) -> Option<String> {
     let mut text = String::new();
@@ -330,7 +330,7 @@ fn document_spans_share_original_body_offsets_without_loading_structured_results
 fn preparation_hashes_source_text_and_overlay_text() {
     use polylogue_model::{
         Author,
-        assertion::{AssertionFact, AssertionKind, AssertionLink, LinkRole},
+        annotation::{AnnotationFact, AnnotationKind, AnnotationLink, LinkRole},
     };
     let mut archive = WriterArchive::new();
     archive.write(
@@ -347,10 +347,10 @@ fn preparation_hashes_source_text_and_overlay_text() {
     let scratch = rusqlite::Connection::open_in_memory().unwrap();
     scratch.execute_batch(crate::schema::ARCHIVE).unwrap();
 
-    let fact = AssertionFact {
+    let fact = AnnotationFact {
         id: "pending".into(),
         root: "pending".into(),
-        kind: AssertionKind::Note,
+        kind: AnnotationKind::Note,
         key: None,
         value: Some(serde_json::json!("pending authored text")),
         author: Author::Unattributed,
@@ -358,16 +358,16 @@ fn preparation_hashes_source_text_and_overlay_text() {
         machine: "synthetic-host".into(),
         created_at: Some(polylogue_model::Timestamp::from_unix_ms(1).unwrap()),
         valid_until: None,
-        links: vec![AssertionLink {
+        links: vec![AnnotationLink {
             role: LinkRole::About,
             reference: r("message:claude-code:s-m1"),
             seen_hash: None,
             quote: None,
         }],
     };
-    crate::assertions::apply(&scratch, &[fact], 0).unwrap();
+    crate::annotations::apply(&scratch, &[fact], 0).unwrap();
     let source_message = r("message:claude-code:s-m1");
-    let authored = r("assertion:pending@pending");
+    let authored = r("annotation:pending@pending");
     let original = reader.conn().unwrap();
     assert_eq!(
         hash(original, &scratch, &source_message).unwrap(),
@@ -378,7 +378,7 @@ fn preparation_hashes_source_text_and_overlay_text() {
         Some(BlobHash(*blake3::hash(b"pending authored text").as_bytes()))
     );
     assert_eq!(
-        hash(original, &scratch, &r("assertion:pending")).unwrap(),
+        hash(original, &scratch, &r("annotation:pending")).unwrap(),
         hash(original, &scratch, &authored).unwrap()
     );
     assert_eq!(
@@ -394,7 +394,7 @@ fn preparation_hashes_source_text_and_overlay_text() {
         hash(
             original,
             &scratch,
-            &r("span:assertion:pending@pending#b=0-7")
+            &r("span:annotation:pending@pending#b=0-7")
         )
         .unwrap(),
         Some(BlobHash(*blake3::hash(b"pending").as_bytes()))
@@ -402,10 +402,10 @@ fn preparation_hashes_source_text_and_overlay_text() {
 }
 
 #[test]
-fn structured_assertions_remain_readable_with_unavailable_text_and_not_applicable_links() {
+fn structured_annotations_remain_readable_with_unavailable_text_and_not_applicable_links() {
     use polylogue_model::{
         RevisionReference,
-        assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink, values},
+        annotation::{AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink, values},
         user::UserWrite,
     };
     let archive = WriterArchive::new();
@@ -427,18 +427,18 @@ fn structured_assertions_remain_readable_with_unavailable_text_and_not_applicabl
             root: "structured".into(),
             revision: Some("structured".into()),
         };
-        let record = reader.assertion(&pinned).unwrap().unwrap();
+        let record = reader.annotation(&pinned).unwrap().unwrap();
         assert!(
             matches!(record.fact.validate().unwrap(),values::Value::Setting(value) if value.fields.value==polylogue_model::settings::Value::Boolean(true))
         );
-        let reference = Reference::Assertion(pinned);
+        let reference = Reference::Annotation(pinned);
         assert!(matches!(
             reader.reference_hash(&reference),
             Err(StoreError::ReferenceUnavailable { .. })
         ));
         let mut emitted = false;
         assert!(matches!(
-            reader.visit_reference_text(&r("span:assertion:structured@structured#b=0-0"), |_| {
+            reader.visit_reference_text(&r("span:annotation:structured@structured#b=0-0"), |_| {
                 emitted = true;
                 Ok(ControlFlow::Continue(()))
             }),
@@ -451,7 +451,7 @@ fn structured_assertions_remain_readable_with_unavailable_text_and_not_applicabl
             LinkHash::NotApplicable
         );
         assert_eq!(
-            link_hash(conn, conn, &r("assertion:missing@missing")).unwrap(),
+            link_hash(conn, conn, &r("annotation:missing@missing")).unwrap(),
             LinkHash::Missing
         );
     }
@@ -460,14 +460,14 @@ fn structured_assertions_remain_readable_with_unavailable_text_and_not_applicabl
         .user(crate::fixture::authored::operator_request(
             "empty".into(),
             UserWrite::Assert {
-                assertions: vec![NewAssertion {
-                    kind: AssertionKind::Note,
+                annotations: vec![NewAnnotation {
+                    kind: AnnotationKind::Note,
                     key: None,
                     value: Some("".into()),
                     valid_until: None,
-                    links: vec![NewAssertionLink {
+                    links: vec![NewAnnotationLink {
                         role: LinkRole::About,
-                        reference: r("assertion:structured@structured"),
+                        reference: r("annotation:structured@structured"),
                     }],
                 }],
             },
@@ -475,7 +475,7 @@ fn structured_assertions_remain_readable_with_unavailable_text_and_not_applicabl
         .unwrap();
     let reader = pool.reader().unwrap();
     let empty = reader
-        .assertion(&RevisionReference {
+        .annotation(&RevisionReference {
             root: "empty".into(),
             revision: Some("empty".into()),
         })
@@ -483,7 +483,7 @@ fn structured_assertions_remain_readable_with_unavailable_text_and_not_applicabl
         .unwrap();
     assert_eq!(empty.fact.links[0].seen_hash, None);
     assert_eq!(
-        reader.reference_hash(&r("assertion:empty@empty")).unwrap(),
+        reader.reference_hash(&r("annotation:empty@empty")).unwrap(),
         Some(BlobHash::of(b""))
     );
 }

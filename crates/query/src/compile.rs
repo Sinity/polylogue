@@ -26,7 +26,7 @@ pub struct Options {
     /// The computed author whose private reading marks this execution uses.
     pub seen_marks_of: Option<String>,
     /// Saved queries by name: the current revision of each `saved_query`
-    /// assertion family with that name (`query:NAME`). Two families with one
+    /// annotation family with that name (`query:NAME`). Two families with one
     /// name are an ambiguity the query refuses.
     pub saved: std::collections::BTreeMap<String, Vec<SavedQuery>>,
     /// The columns to show instead of the unit's defaults (`--fields`):
@@ -38,15 +38,15 @@ pub struct Options {
     pub provider_catalog: Option<std::sync::Arc<references::Catalog>>,
 }
 
-/// One saved-query assertion and its saved executable body.
+/// One saved-query annotation and its saved executable body.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SavedQuery {
     pub text: String,
-    /// The assertion revision supplying this name.
+    /// The annotation revision supplying this name.
     pub revision: String,
-    /// The assertion family's root identity.
+    /// The annotation family's root identity.
     pub root: String,
-    /// The question identity the current assertion declares.
+    /// The question identity the current annotation declares.
     pub hash: query_language::identity::QuestionId,
     pub denominator: Option<query_language::identity::QuestionId>,
     /// Every current head when the owning family forks, across all names.
@@ -152,7 +152,7 @@ pub enum ColumnReference {
     Session,
     Document,
     Message,
-    Assertion,
+    Annotation,
 }
 
 impl ColumnReference {
@@ -161,7 +161,7 @@ impl ColumnReference {
             Self::Session => "sessions",
             Self::Document => "documents",
             Self::Message => "messages",
-            Self::Assertion => "annotations",
+            Self::Annotation => "annotations",
         }
     }
     pub fn from_unit(unit: &str) -> Option<Self> {
@@ -169,7 +169,7 @@ impl ColumnReference {
             crate::units::Unit::Sessions => Some(Self::Session),
             crate::units::Unit::Documents => Some(Self::Document),
             crate::units::Unit::Messages => Some(Self::Message),
-            crate::units::Unit::Annotations => Some(Self::Assertion),
+            crate::units::Unit::Annotations => Some(Self::Annotation),
             _ => None,
         }
     }
@@ -240,7 +240,7 @@ pub struct Bindings {
     pub kept_names: std::collections::BTreeMap<String, String>,
 }
 impl Bindings {
-    /// Add an accepted query object under a saved assertion's name.
+    /// Add an accepted query object under a saved annotation's name.
     /// Executable text comes from its saved AST, never current dependency names.
     #[cfg(any(test, feature = "fixture"))]
     pub fn add_saved(
