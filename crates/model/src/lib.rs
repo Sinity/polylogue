@@ -50,7 +50,7 @@ pub use reference::{
 };
 pub mod read;
 mod route;
-pub use route::{Completion, FieldGroup, Route};
+pub use route::{MessageCompletion, FieldGroup, Route};
 mod session;
 pub mod settings;
 mod time;

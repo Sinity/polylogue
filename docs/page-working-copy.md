@@ -9,8 +9,8 @@ A page's working copy is the page as one Markdown file: what `read --format mark
 | Selection | The file |
 |---|---|
 | a page | its working copy |
-| one note | its text, with one marker |
-| several notes | one file with a marker before each note's text |
+| one note | its text, with one slot comment |
+| several notes | one file with a slot comment before each note's text |
 | a page name that does not exist | a new working copy whose header lists the templates; saving creates the page |
 
 - `polylogue page:flaky-ci edit` opens the page; `polylogue annotation:01JE4K8P edit` one note; `polylogue 'annotations where kind:lesson repo:here' edit` several.
@@ -18,7 +18,7 @@ A page's working copy is the page as one Markdown file: what `read --format mark
 - **Refused parts reopen.** When any part is refused, the editor opens the file again with the refusal beside each refused element and your text kept below it:
 
   ```markdown
-  <!-- refused: stale, the current revision is r4 by codex:01a20000-0006; your text is kept below -->
+  <!-- refused: conflict, the current revision is r4 by codex:01a20000-0006; your text is kept below -->
   ```
 
   The parts that were not refused are already committed; closing the file unchanged leaves the refused ones unwritten.
@@ -80,14 +80,14 @@ The parser turns phrases into dates…
 ::question: Does the parser cache survive a zone change?
 ````
 
-The last paragraph has no marker: someone just wrote it, and check-in makes it a question and its slot.
+The last paragraph has no slot comment: someone just wrote it, and check-in makes it a question and its slot.
 
 ## Grammar
 
 - **Header.** YAML front matter with `page` (the name; changing it renames the page), `title`, `template` (honoured only when creating), `about`, `layout`, `brief`, `scope`, `params` and `tags`; `base` is written by Polylogue and names the page root, its revision and the position the file was read at. A file without `base` creates a page, named by `page`, else by the file name; naming a page that exists is refused with its `edit` line. Unknown keys are refused, listing the known ones. The title lives in the header, so the body's top-level sections are `##`; a `#` line is refused with that reason.
-- **Markers.** An HTML comment on its own line directly before an element: `<!-- slot ID [rN] [WORD]… -->`. Check-in reads the slot ID (a short prefix unique within the page), the base revision `rN`, `fixed` or `current`, and `N parts` (the element count of a note with several elements); every other word (kind, author, `proposed`, `also on …`) is written for the reader and ignored. Comments are invisible in rendered Markdown.
-- **Text.** A paragraph, list, quotation, table or fenced block is one element, and one element is one slot unless its marker says `N parts`. A paragraph may open with the markup prefix `::kind(args): ` for kinds other than `note`; the arguments are the markup's (`reverse_if=`, `replies_to=`, `evidence=` …, [markup.md](markup.md)).
-- **Links, citations, embeds and inclusions** are the Markdown forms of [page-text.md](page-text.md#the-four-relations). A slot's footnote definitions follow its element, before the next marker; labels are unique within the file and numbered page-wide.
+- **Slot comments.** An HTML comment on its own line directly before an element: `<!-- slot ID [rN] [WORD]… -->`. Check-in reads the slot ID (a short prefix unique within the page), the base revision `rN`, `fixed` or `current`, and `N parts` (the element count of a note with several elements); every other word (kind, author, `proposed`, `also on …`) is written for the reader and ignored. Comments are invisible in rendered Markdown.
+- **Text.** A paragraph, list, quotation, table or fenced block is one element, and one element is one slot unless its slot comment says `N parts`. A paragraph may open with the markup prefix `::kind(args): ` for kinds other than `note`; the arguments are the markup's (`reverse_if=`, `replies_to=`, `evidence=` …, [markup.md](markup.md)).
+- **Links, citations, embeds and inclusions** are the Markdown forms of [page-text.md](page-text.md#the-four-relations). A slot's footnote definitions follow its element, before the next slot comment; labels are unique within the file and numbered page-wide.
 - **Excerpt.** A quotation whose last line is a source line, `— LABEL <REF> [b3:HASH]`. The label and hash are written by Polylogue and ignored on check-in.
 - **Embed or inclusion.** A paragraph holding only `![caption](REF "form")`.
 - **Query.** A fenced block whose info string is `query [FORM] [kept result:ID]`; its content is the question.
@@ -100,17 +100,17 @@ The last paragraph has no marker: someone just wrote it, and check-in makes it a
 
 | In the file | Check-in |
 |---|---|
-| text under a marker changed | a revision on `rN`; if `rN` is no longer current, that element alone is refused `stale`, naming the current revision |
+| text under a slot comment changed | a revision on `rN`; if `rN` is no longer current, that element alone is refused `conflict`, naming the current revision |
 | a `::kind` prefix changed | a revision with the new kind |
-| an element with no marker | a new annotation (kind from its prefix) and a slot, under the heading above, between its neighbours |
+| an element with no slot comment | a new annotation (kind from its prefix) and a slot, under the heading above, between its neighbours |
 | a heading line added, renamed or re-levelled | a heading slot written or revised |
-| a marker in a new place | a slot move: new parent and position from its neighbours |
-| a marker gone | nothing; the reply lists `2 slots missing, not withdrawn`; `--withdraw-missing` withdraws those slots, and what they showed survives |
+| a slot comment in a new place | a slot move: new parent and position from its neighbours |
+| a slot comment gone | nothing; the reply lists `2 slots missing, not withdrawn`; `--withdraw-missing` withdraws those slots, and what they showed survives |
 | `fixed` ↔ `current` changed | a slot revision of its mode |
-| an excerpt's quote trimmed | the excerpt narrows to the trimmed text's span (contiguous, or with `…` gaps in order); text that is not in the source is refused: `captured text is quoted exactly: these words are not in the source` |
+| an excerpt's quote trimmed | the excerpt narrows to the trimmed text's span (contiguous, or with `…` gaps in order); text that is not in the source is refused: `this text is not in codex:01a20000-0005` |
 | a new quotation with a source line | cite by quote ([page-text.md](page-text.md#cite-by-quote)): a new excerpt slot |
 | a footnote's quote edited, or a footnote giving a container and a quote | resolved by quote within that container |
-| a citation marker removed from text | committed; the reply lists `slot 7q2m: removed citation [^1] (codex:01a20000-0005)`, and the paragraph's grounding is computed again |
+| a footnote reference removed from text | committed; the reply lists `slot 7q2m: removed citation [^1] (codex:01a20000-0005)`, and the paragraph's grounding is computed again |
 | an embed's form changed | a slot revision |
 | a query's text changed; `kept result:ID` removed; `kept` added | a new question; back to live; a new kept result now |
 | a value's alt text | ignored: it is the rendered value |
@@ -122,7 +122,7 @@ The reply lists what was written and what was not:
 
 ```text
 page:flaky-ci · 4 revisions, 1 move, 1 new question · 3 citations pinned
-refused 1: slot 4hq1 stale, the current revision is r3 by codex:01a20000-0006
+refused 1: slot 4hq1 conflict, the current revision is r3 by codex:01a20000-0006
 removed citation: slot 7q2m [^1] (codex:01a20000-0005)
 1 paragraph has no citation (shown as citation needed)
 ignored: edits in 1 generated region; edit page:morrow/architecture#parser there
@@ -164,7 +164,7 @@ Leaving one text (edited or not) and checking in writes one revision that revise
 
 - **A static site.** `read --to DIR --format html` of one or more pages writes each page as a self-contained HTML file (inline CSS, no scripts): links between written pages are relative; citations are footnotes carrying the quote, source label, reference and hash; included sections are inlined; popups for written targets are CSS-only disclosures. Links to anything not written stay as their references in text, and cited sessions are not written unless they are selected. `polylogue 'pages where name:morrow/*' read --to site/ --format html`.
 - **A Markdown folder.** `read --to DIR --format markdown` writes each page's working copy with relative links between written pages. The front matter (`title`, `tags`) is what Quartz, Obsidian and other static site tools read, so one Markdown form serves editing and publishing, and pages can be written into an existing Markdown site as a folder of it: `polylogue 'pages where name:morrow/*' read --to site/polylogue/ --format markdown`.
-- **Local files only.** Writing pages out writes files in the named directory and nowhere else; nothing is uploaded or sent. Each file is named after its page (`morrow/architecture` becomes `morrow/architecture.html`) and carries no session ID, user name or machine name in its name. Labels use neutral names, the human shown as `user` ([reading.md](reading.md#neutral-names)). The text is quoted as stored, with nothing masked, as in every reading; publishing the files anywhere is a separate act of whoever holds them.
+- **Local files only.** Writing pages out writes files in the named directory and nowhere else; nothing is uploaded or sent. Each file is named after its page (`morrow/architecture` becomes `morrow/architecture.html`) and carries no session ID, user name or machine name in its name. Labels follow `--neutral-names` ([reading.md](reading.md#neutral-names)): the human is shown as `you`, or as `user` with the flag. The text is quoted as stored, with nothing masked, as in every reading; publishing the files anywhere is a separate act of whoever holds them.
 - Agents and scripts check a page out with `read --to .page/` and back in with `import .page/flaky-ci.md`; a page exported as Markdown can be checked in the same way while its header carries `base`.
 
 ## Laws
@@ -173,7 +173,7 @@ Each law is a property with a test on the Morrow archive through the real daemon
 
 | Law | Property |
 |---|---|
-| checkout-checkin | `read --to`, an edit of one element and `import` write one revision; with that element's base moved it alone is refused `stale`; a moved marker becomes a move, a new paragraph a note slot |
+| checkout-checkin | `read --to`, an edit of one element and `import` write one revision; with that element's base moved it alone is refused `conflict`; a moved slot comment becomes a move, a new paragraph a note slot |
 | working-copy-roundtrip | reading a page to Markdown and checking it in unchanged writes nothing; every form in [The format](#the-format) survives the round trip |
 | excerpt-trim-narrows | trimming an excerpt's quote in the working copy narrows the span; adding a word not in the source is refused |
 | edit-opens-editor | `edit` with no text on a terminal checks in what the editor saved and reopens refused elements with their reasons; off a terminal it is refused with the `read --to` and `import` lines |

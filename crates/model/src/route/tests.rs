@@ -71,20 +71,29 @@ fn every_group_ranks_routes_in_the_documented_order() {
 }
 
 #[test]
-fn completion_has_three_values() {
+fn message_completion_has_three_values() {
     let user = message(Role::User);
-    assert_eq!(Completion::of(&user, Route::Live), Completion::Finished);
+    assert_eq!(MessageCompletion::of(&user, Route::Live), MessageCompletion::Finished);
     let mut answer = message(Role::Assistant);
-    assert_eq!(Completion::of(&answer, Route::Live), Completion::InProgress);
     assert_eq!(
-        Completion::of(&answer, Route::PageText),
-        Completion::Unknown
+        MessageCompletion::of(&answer, Route::Live),
+        MessageCompletion::InProgress
+    );
+    assert_eq!(
+        MessageCompletion::of(&answer, Route::PageText),
+        MessageCompletion::Unknown
     );
     answer.stop_reason = Some("end_turn".into());
-    assert_eq!(Completion::of(&answer, Route::Live), Completion::Finished);
+    assert_eq!(
+        MessageCompletion::of(&answer, Route::Live),
+        MessageCompletion::Finished
+    );
     let mut export = message(Role::Assistant);
     export.id = MessageId::parse("chatgpt:m1").unwrap();
-    assert_eq!(Completion::of(&export, Route::Export), Completion::Unknown);
-    assert!(Completion::Finished < Completion::Unknown);
-    assert!(Completion::Unknown < Completion::InProgress);
+    assert_eq!(
+        MessageCompletion::of(&export, Route::Export),
+        MessageCompletion::Unknown
+    );
+    assert!(MessageCompletion::Finished < MessageCompletion::Unknown);
+    assert!(MessageCompletion::Unknown < MessageCompletion::InProgress);
 }

@@ -82,8 +82,8 @@ pub const SESSION_TIME: Construct = Construct {
     unit: "milliseconds",
     denominator: Some("session_span.wall_ms"),
     unknown: "Missing or reversed transitions are unattributed; a session without a clock has no time rows",
-    parameters: TIME_PARAMETERS,
-    validity: Validity::Parameterized,
+    parameters: &[],
+    validity: Validity::Exact,
     tests: &[
         "span_and_parties_match_a_hand_computed_session",
         "tool_intervals_extend_clusters_and_share_overlap",
@@ -141,7 +141,7 @@ pub const OUTLOOK: Construct = Construct {
     parameters: &[Parameter {
         name: "trailing_observed_days",
         value: 7,
-        unit: "observed UTC days",
+        unit: "observed UTC days (trailing-7d-mean method only)",
     }],
     validity: Validity::Parameterized,
     tests: &[
@@ -150,7 +150,7 @@ pub const OUTLOOK: Construct = Construct {
         "a_plan_change_splits_the_cycle_and_prices_only_its_own_span",
     ],
     figures: &[
-        "Ten synthetic observed days, nine at 0 then 700: projected 2700 with a 7-observed-day trailing mean, 2100 with a 10-observed-day trailing mean, for a 30-day cycle at day 10 (2026-10-28)",
+        "Ten synthetic observed days, nine at 0 then 700: projected 2700 with the trailing-7d-mean method, 2100 with the linear method (used divided by elapsed days, times cycle days), for a 30-day cycle at day 10 (2026-10-28)",
     ],
 };
 
@@ -192,7 +192,7 @@ pub const COMPARE: Construct = Construct {
     ],
     unit: "field values per physical session",
     denominator: Some("the full selected population, before paging"),
-    unknown: "Missing values remain null and are counted by field; pending stored products are excluded from population summaries",
+    unknown: "Missing values remain null and are counted by field; sessions whose stored products are not yet derived are counted as pending and show no value",
     parameters: TIME_PARAMETERS,
     validity: Validity::Exact,
     tests: &[

@@ -74,7 +74,7 @@ fn stored_name_round_trips_for_every_enum() {
     check!(crate::ReferenceReason);
     check!(crate::Route);
     check!(crate::FieldGroup);
-    check!(crate::Completion);
+    check!(crate::MessageCompletion);
 }
 
 #[test]
