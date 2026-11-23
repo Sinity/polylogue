@@ -96,7 +96,7 @@ fn a_middle_links_page_does_not_visit_the_prefix() {
         }
         pages
     };
-    let flat = |pages: &[(Option<RunnableRequest>, ReadPage)]| -> Vec<ReadItem> {
+    let all_items = |pages: &[(Option<RunnableRequest>, ReadPage)]| -> Vec<ReadItem> {
         pages
             .iter()
             .flat_map(|(_, page)| page.document.items.clone())
@@ -104,7 +104,7 @@ fn a_middle_links_page_does_not_visit_the_prefix() {
     };
     let large = tile(1_000_000);
     let total = 1 + CHILDREN + GRANDCHILDREN;
-    let whole = flat(&large);
+    let whole = all_items(&large);
     let order = nodes(&whole);
     assert_eq!(order.len(), total);
     assert_eq!(
@@ -126,7 +126,7 @@ fn a_middle_links_page_does_not_visit_the_prefix() {
     assert!(order[c5 + GRANDCHILDREN + 1].starts_with("session:claude-code:c"));
     let pages = tile(200);
     assert!(pages.len() > 6, "{} pages", pages.len());
-    let tiled = flat(&pages);
+    let tiled = all_items(&pages);
     assert_eq!(tiled, whole);
     let mut before = 0;
     for (_, page) in &pages {

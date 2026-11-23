@@ -173,7 +173,7 @@ impl SelectionRules for FirstWordCatalog {
             Ok(_) | Err(polylogue_model::ReferenceError::StoredSpelling { .. })
         ) || word.starts_with("https://")
             || word.starts_with("http://")
-            || matches!(word, "latest" | "self" | "here")
+            || polylogue_query::catalog::REFERENCE_WORDS.contains(&word)
             || (word.len() >= 8 && word.chars().all(|c| c.is_ascii_hexdigit() || c == '-'))
             || word
                 .strip_prefix('@')

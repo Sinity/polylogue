@@ -25,7 +25,6 @@ fn a_pending_write_is_degraded_with_its_note_and_http_success() {
 fn failures_follow_the_shared_table() {
     for (code, exit, http) in [
         (polylogue_model::Code::InvalidQuery, 2, Some(400)),
-        (polylogue_model::Code::InvalidCursor, 2, Some(400)),
         (polylogue_model::Code::StaleCursor, 2, Some(400)),
         (polylogue_model::Code::NotBuilt, 2, Some(501)),
         (polylogue_model::Code::Refused, 3, Some(403)),

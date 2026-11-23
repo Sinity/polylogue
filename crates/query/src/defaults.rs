@@ -227,7 +227,7 @@ pub fn is_reference(c: &Condition, unit: Unit, origins: &[String]) -> bool {
         ConditionKind::Text {
             text,
             mode: TextMode::Word,
-        } => matches!(text.as_str(), "latest" | "self" | "here") || id_shaped(text),
+        } => crate::catalog::REFERENCE_WORDS.contains(&text.as_str()) || id_shaped(text),
         _ => false,
     }
 }

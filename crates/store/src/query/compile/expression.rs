@@ -353,7 +353,7 @@ impl Compiler<'_> {
             return Ok((self.text_param(text), ColKind::Text));
         }
         if expected == Some(ColKind::Money) {
-            let number = time::money_nusd(text).ok_or_else(bad)?;
+            let number = polylogue_query::money::money_nusd(text).ok_or_else(bad)?;
             return Ok((self.bind(Param::Int(number)), ColKind::Money));
         }
         if expected == Some(ColKind::Time) {
@@ -383,7 +383,7 @@ impl Compiler<'_> {
                 return Ok((self.bind(Param::Int(number)), ColKind::Duration));
             }
             if looks_like_money(text)
-                && let Some(number) = time::money_nusd(text)
+                && let Some(number) = polylogue_query::money::money_nusd(text)
             {
                 return Ok((self.bind(Param::Int(number)), ColKind::Money));
             }

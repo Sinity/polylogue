@@ -89,7 +89,7 @@ fn check(step: &SaveStep, selection: &Selection) -> Result<(), Failure> {
             Some("verb")
         } else if catalog.units.iter().any(|unit| unit.name == *name) {
             Some("unit")
-        } else if ["latest", "self", "here"].contains(&name.as_str()) {
+        } else if polylogue_query::catalog::REFERENCE_WORDS.contains(&name.as_str()) {
             Some("reserved word")
         } else if ["query", "result"].contains(&name.as_str())
             || catalog.references.iter().any(|reference| {

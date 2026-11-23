@@ -6,9 +6,9 @@ pub mod ast;
 pub mod catalog;
 pub mod compile;
 pub mod defaults;
-pub mod explain;
 pub mod fields;
 pub mod filter;
+pub mod money;
 pub mod parse;
 pub mod plan;
 pub mod search;
@@ -74,8 +74,8 @@ pub enum QueryError {
     /// Valid, but the part it needs is not built yet.
     #[error("{what} is not built yet")]
     NotBuilt { what: String },
-    #[error("{what} is unavailable")]
-    Unavailable { what: String },
+    #[error("{reason}")]
+    Unavailable { reason: String },
     #[error("{what} is ambiguous: {}", .candidates.join(", "))]
     Ambiguous {
         what: String,
@@ -142,7 +142,8 @@ impl QueryError {
     }
 
     /// Structured diagnostics preserve the shared language fields at the
-    /// transport boundary instead of hiding them inside an enum wrapper.
+    /// transport boundary instead of hiding them inside an enum wrapper. Other
+    /// errors are described by `kind()` and their message alone.
     pub fn detail(&self) -> Option<serde_json::Value> {
         match self {
             Self::Language { error, diagnostic } => {
@@ -150,7 +151,7 @@ impl QueryError {
                 value["diagnostic"] = serde_json::Value::String(diagnostic.clone());
                 Some(value)
             }
-            _ => serde_json::to_value(self).ok(),
+            _ => None,
         }
     }
 

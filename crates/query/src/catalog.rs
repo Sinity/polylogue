@@ -6,6 +6,9 @@ use std::sync::{Arc, Mutex};
 
 pub const MEASURE: &str = "measure";
 
+/// Words that name a session by position; a saved name cannot be one.
+pub const REFERENCE_WORDS: [&str; 3] = ["self", "here", "latest"];
+
 fn field(value: &fields::Field, name: String) -> Field {
     use fields::Kind;
     let target = fields::reference_target(value.unit, value.name);
@@ -179,11 +182,9 @@ fn build(origins: &[String]) -> Catalog {
             .iter()
             .map(|origin| ReferenceForm::prefix(format!("{origin}:"))),
     );
-    catalog.references.extend(
-        ["self", "here", "latest"]
-            .into_iter()
-            .map(ReferenceForm::word),
-    );
+    catalog
+        .references
+        .extend(REFERENCE_WORDS.into_iter().map(ReferenceForm::word));
     catalog
         .references
         .push(ReferenceForm::Identifier { min_length: 8 });

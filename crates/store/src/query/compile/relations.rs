@@ -185,7 +185,7 @@ type GroupKey = (Column, String, String);
 
 pub(super) fn as_of_unavailable() -> QueryError {
     QueryError::Unavailable {
-        what: "Polylogue does not retain historical query membership at earlier read positions; use seen_by:TIME to select evidence received by then, read with current parsers and prices".into(),
+        reason: "Polylogue does not retain historical query membership at earlier read positions; use seen_by:TIME to select evidence received by then, read with current parsers and prices".into(),
     }
 }
 

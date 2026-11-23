@@ -768,7 +768,7 @@ impl<'a> Compiler<'a> {
         kind: ColKind,
         reference: Option<ColumnReference>,
     ) {
-        let n = flat(name);
+        let n = column_name(name);
         if !self.shown.iter().any(|(x, _, _, _)| *x == n) {
             let e = Self::display_value(expr, kind);
             self.shown.push((n, e, kind, reference));

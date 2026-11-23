@@ -80,7 +80,7 @@ impl SavedQuery {
         match &self.body {
             SavedQueryBody::Available { syntax, .. } => Ok(syntax),
             SavedQueryBody::Unavailable { reason } => Err(QueryError::Unavailable {
-                what: reason.clone(),
+                reason: reason.clone(),
             }),
         }
     }

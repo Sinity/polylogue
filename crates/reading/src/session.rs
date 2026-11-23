@@ -1335,14 +1335,10 @@ pub(super) fn page(
     let ReadRequest {
         target,
         options,
-        format,
-        budget,
         cursor,
         ..
     } = request;
-    let format = Format::parse(format).ok_or_else(|| Error::bad_request("unknown read format"))?;
-    let limits = PageBudget::default().with_tokens(*budget);
-    let digest = options_digest(&(options, format));
+    let (format, limits, digest) = super::page_terms(request)?;
     let key = super::cursor_seal(reader)?;
     let opened = cursor
         .as_deref()

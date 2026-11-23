@@ -216,6 +216,16 @@ pub fn with_variants(
     Ok(request)
 }
 
+/// The format, page limits and options digest a continuation cursor of a
+/// session or links page must match.
+fn page_terms(request: &ReadRequest) -> Result<(Format, PageBudget, String), Error> {
+    let format =
+        Format::parse(&request.format).ok_or_else(|| Error::bad_request("unknown read format"))?;
+    let limits = PageBudget::default().with_tokens(request.budget);
+    let digest = options_digest(&(&request.options, format));
+    Ok((format, limits, digest))
+}
+
 fn cursor_seal(reader: &polylogue_store::Reader<'_>) -> Result<CursorSeal, Error> {
     Ok(CursorSeal {
         key: reader.cursor_key()?,
@@ -231,7 +241,7 @@ fn cursor_failure(error: CursorError) -> Error {
             Error::stale_cursor("the index was rebuilt since this page was issued")
         }
         CursorError::Invalid | CursorError::OtherReading(_) => {
-            Error::InvalidCursor(error.to_string())
+            Error::InvalidQuery(error.to_string())
         }
     }
 }
@@ -802,7 +812,7 @@ fn rows_page(
                     place,
                     history_seed,
                 } => Ok((start_row, place, opened.direction, history_seed)),
-                _ => Err(Error::InvalidCursor(
+                _ => Err(Error::InvalidQuery(
                     "the cursor belongs to a session reading".into(),
                 )),
             }
@@ -823,7 +833,7 @@ fn rows_page(
             .as_ref()
             .is_some_and(|(_, _, _, seed)| seed.is_some())
         {
-            return Err(Error::InvalidCursor(
+            return Err(Error::InvalidQuery(
                 "the cursor belongs to a saved-query history reading".into(),
             ));
         }

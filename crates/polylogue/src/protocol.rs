@@ -300,9 +300,7 @@ pub fn context_failure(problem: polylogue_sinex::ContextFailure) -> Failure {
 pub fn kind(code: polylogue_model::Code) -> FailureKind {
     use polylogue_model::Code;
     match code {
-        Code::Query | Code::Sql | Code::InvalidQuery | Code::InvalidCursor => {
-            FailureKind::InvalidQuery
-        }
+        Code::Query | Code::Sql | Code::InvalidQuery => FailureKind::InvalidQuery,
         Code::UnknownField => FailureKind::UnknownField,
         Code::BadValue => FailureKind::BadValue,
         Code::NotAQuery => FailureKind::NotAQuery,

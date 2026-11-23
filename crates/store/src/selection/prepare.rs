@@ -51,7 +51,7 @@ pub(crate) fn prepare_query_plan_on(
 ) -> Result<Plan, SelectionError> {
     if original.is_autocommit() || authored.is_autocommit() {
         return Err(QueryError::Unavailable {
-            what: "query preparation requires pinned original and authored views".into(),
+            reason: "query preparation requires pinned original and authored views".into(),
         }
         .into());
     }
@@ -78,7 +78,7 @@ pub(crate) fn prepare_query_plan_on(
         )?
         .or_else(|| provisional.and_then(|prepared| prepared.object(question).cloned()))
         .ok_or_else(|| QueryError::Unavailable {
-            what: format!("run:{id} question query:{question}"),
+            reason: format!("run:{id} question query:{question} is unavailable"),
         })?;
         // Only the immutable question is reused. Lowering resolves time, here
         // and private reading marks with this invocation's execution options.
@@ -212,11 +212,11 @@ pub(crate) fn named_definitions(
             })
         })
         .ok_or_else(|| QueryError::Unavailable {
-            what: format!("saved query:{name}"),
+            reason: format!("saved query:{name} is unavailable"),
         })?;
         let mut saved_nodes = stored_bindings(original, authored, pending, provisional, found)?
             .ok_or_else(|| QueryError::Unavailable {
-                what: format!("saved query:{found} stored body"),
+                reason: format!("the stored body of saved query:{found} is unavailable"),
             })?;
         let definition = saved_nodes[&found.to_string()].clone();
         saved_nodes.insert(name, definition);
@@ -230,7 +230,7 @@ pub(crate) fn named_definitions(
         }
         let saved_nodes = stored_bindings(original, authored, pending, provisional, id)?
             .ok_or_else(|| QueryError::Unavailable {
-                what: format!("saved query:{id} stored body"),
+                reason: format!("the stored body of saved query:{id} is unavailable"),
             })?;
         for (id, nodes) in saved_nodes {
             bindings.saved.entry(id).or_insert(nodes);

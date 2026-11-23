@@ -439,7 +439,7 @@ impl Reader<'_> {
                         .and_then(|index| usize::try_from(index).ok())
                         .ok_or_else(|| {
                             E::from(SelectionError::invalid(
-                                polylogue_model::Code::InvalidCursor,
+                                polylogue_model::Code::InvalidQuery,
                                 "fixed population cursor has no row position",
                             ))
                         })?;
@@ -543,7 +543,7 @@ impl Reader<'_> {
         let program = &selection.program;
         if after.is_some_and(|after| after.values.len() != program.order.len()) {
             return Err(E::from(SelectionError::invalid(
-                polylogue_model::Code::InvalidCursor,
+                polylogue_model::Code::InvalidQuery,
                 "selection order position has the wrong arity",
             )));
         }

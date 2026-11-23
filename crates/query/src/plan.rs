@@ -63,7 +63,7 @@ impl Plan {
                     let mut candidates = scope
                         .fields
                         .iter()
-                        .filter(|field| field.name.replace(['.', '-'], "_") == column.name);
+                        .filter(|field| column_name(&field.name) == column.name);
                     let field = candidates.next()?;
                     candidates.next().is_none().then_some(field)
                 })
@@ -75,7 +75,7 @@ impl Plan {
                 });
             }
             let mut field = field.ok_or_else(|| QueryError::Unavailable {
-                what: format!(
+                reason: format!(
                     "producer has no logical declaration for column {:?}",
                     column.name
                 ),
@@ -149,7 +149,7 @@ impl Plan {
     pub fn requires_denominator(&self) -> bool {
         self.expanded.query().transforms.iter().any(|transform| {
             matches!(transform.kind, TransformKind::Aggregate { .. })
-                || matches!(&transform.kind, TransformKind::Extension { name, .. } if name == crate::catalog::MEASURE)
+                || crate::stages::measures(transform)
         })
     }
 }
@@ -237,23 +237,7 @@ fn prepare_inner(
             .map_err(|e| QueryError::language(e, text))?;
         let mut identity = original.query().clone();
         values::check(&mut identity, original.typing())?;
-        let names = std::cell::RefCell::new(Vec::<String>::new());
-        walk(
-            &mut identity,
-            &mut |query| {
-                if let Source::Saved { name, .. } = &query.source {
-                    names.borrow_mut().push(name.clone());
-                }
-                Ok(())
-            },
-            &mut |condition| {
-                if let ConditionKind::Saved { name, .. } = &condition.kind {
-                    names.borrow_mut().push(name.clone());
-                }
-                Ok(())
-            },
-        )?;
-        for name in names.into_inner() {
+        for name in referenced_saved_names(&identity) {
             if identities.contains_key(&name) {
                 continue;
             }

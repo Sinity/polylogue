@@ -3,7 +3,6 @@
 //! Temporal predicates compare stored source times at nanosecond precision.
 //! Millisecond conversions remain for derived point fields and broad candidates.
 use polylogue_query::QueryError;
-pub use polylogue_query::time::money_nusd;
 pub use query_language::time::{Clock, ResolvedTime, Time, duration_ms, resolve};
 
 pub trait Milliseconds {

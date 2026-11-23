@@ -3,6 +3,6 @@ pub use crate::units::Unit;
 pub use query_language::ast::*;
 
 /// A product output column spelling.
-pub fn flat(field: &str) -> String {
+pub fn column_name(field: &str) -> String {
     field.replace(['.', '-'], "_")
 }

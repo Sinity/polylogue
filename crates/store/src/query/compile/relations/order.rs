@@ -359,7 +359,7 @@ impl Compiler<'_> {
         }
         if outer.sources.is_empty() || inner.sources.is_empty() {
             return Err(QueryError::Unavailable {
-                what: "source time accuracy was not kept for this relation".into(),
+                reason: "source time accuracy was not kept for this relation".into(),
             });
         }
         let (left, left_storage) = self.order_time(outer, "r");
@@ -462,7 +462,7 @@ impl Compiler<'_> {
             .find(|source| source.prefix.is_empty())
         else {
             return Err(QueryError::Unavailable {
-                what: "full-scope step positions were not kept for this relation".into(),
+                reason: "full-scope step positions were not kept for this relation".into(),
             });
         };
         if scope.is_some_and(|name| name != "session_tool_calls") {

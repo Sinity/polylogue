@@ -1,7 +1,7 @@
 //! Read authored effects as their unchanged whole immutable request.
 use crate::Error;
 use polylogue_model::{
-    Reference,
+    Reference, RevisionReference,
     bundle::Record,
     read::{AuthoredCoverage, AuthoredSelection, LayoutFacts},
 };
@@ -28,12 +28,13 @@ pub(super) fn reference(
                 ..Default::default()
             },
         ),
-        Some(AuthoredRead::Incomplete {
-            issue: AuthoredReadIssue::MissingAssociation | AuthoredReadIssue::UnresolvedRevision,
-        }) if matches!(reference, Reference::Assertion(_)) => {
-            direct_assertion(reader, reference, visit)
-        }
-        Some(AuthoredRead::Incomplete { issue }) => Err(Error::not_yet_available(issue)),
+        Some(AuthoredRead::Incomplete { issue }) => match (issue, reference) {
+            (
+                AuthoredReadIssue::MissingAssociation | AuthoredReadIssue::UnresolvedRevision,
+                Reference::Assertion(revision),
+            ) => direct_assertion(reader, revision, visit),
+            (issue, _) => Err(Error::not_yet_available(issue)),
+        },
         None => Err(Error::not_found(format!(
             "no authored record for {reference}"
         ))),
@@ -42,15 +43,12 @@ pub(super) fn reference(
 
 fn direct_assertion(
     reader: &Reader<'_>,
-    reference: &Reference,
+    revision: &RevisionReference,
     visit: &mut Visit<'_>,
 ) -> Result<bool, Error> {
-    let Reference::Assertion(revision) = reference else {
-        unreachable!()
-    };
     let row = reader
         .assertion(revision)?
-        .ok_or_else(|| Error::not_found(format!("no assertion {reference}")))?;
+        .ok_or_else(|| Error::not_found(format!("no annotation:{revision}")))?;
     let record = Record::Assertion(Box::new(polylogue_model::assertion::AssertionRecord {
         reference: row.fact.reference().stored_form(),
         assertion: row.fact,
