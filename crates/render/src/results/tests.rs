@@ -118,3 +118,15 @@ fn a_deferred_count_does_not_hide_returned_rows() {
     );
     assert!(!rendered.contains("no rows"), "{rendered}");
 }
+
+#[test]
+fn money_cells_never_round_a_known_amount_to_zero() {
+    let mut a = answer();
+    a["rows"][1]["cost"] = serde_json::from_str("0.00001234").unwrap();
+    for format in [Format::Markdown, Format::Terminal] {
+        let mut out = vec![];
+        render(&a, format, &mut out).unwrap();
+        let t = String::from_utf8(out).unwrap();
+        assert!(t.contains("$0.0000123"), "{t}");
+    }
+}
