@@ -349,8 +349,7 @@ impl Handler for Help {
         }
         let topic = arguments.topic.as_deref().unwrap_or("");
         let subject = match topic {
-            "units" | "fields" => topic,
-            "transforms" => "operators",
+            "units" | "fields" | "transforms" => topic,
             "query" => "syntax",
             _ => {
                 let steps = crate::protocol::steps::declarations();
@@ -721,7 +720,7 @@ pub(crate) fn save_selection(
                 near: Some(near),
                 fields: &[],
             };
-            super::super::query::keep_selected(
+            super::super::query::save_selected(
                 &reader,
                 ask,
                 selection

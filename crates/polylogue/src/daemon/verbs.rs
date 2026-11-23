@@ -63,8 +63,9 @@ pub(crate) struct StepCall<'a> {
 }
 
 impl<'a> StepCall<'a> {
-    /// The step's call with a request ID of its own; the line's cursor and
-    /// budget belong to its listing, so a step starts without them.
+    /// The step's call with a request ID of its own; the line's cursor
+    /// belongs to its listing, so a step starts without it. The line's budget
+    /// carries over unless the step sets its own.
     pub(crate) fn new(line: &Call<'a>, request_id: &'a str) -> Self {
         Self {
             call: Call {

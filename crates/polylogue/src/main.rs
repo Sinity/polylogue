@@ -334,19 +334,9 @@ fn hook_startup_error(error: impl std::fmt::Display) -> ExitCode {
 /// Whether the command line names `internal hook`: its first words that are
 /// neither a global option nor that option's value.
 fn hook_invocation(arguments: &[std::ffi::OsString]) -> bool {
-    const VALUED: [&str; 8] = [
-        "--deadline",
-        "--timeout",
-        "--archive",
-        "--config",
-        "--listen",
-        "--auth-token-file",
-        "--request",
-        "--request-id",
-    ];
     let mut words = arguments.iter().skip(1).filter_map(|word| word.to_str());
     while let Some(word) = words.next() {
-        if VALUED.contains(&word) {
+        if cli::GLOBAL_VALUED_OPTIONS.contains(&word) {
             words.next();
         } else if !word.starts_with('-') {
             return word == "internal" && words.next() == Some("hook");

@@ -98,13 +98,7 @@ impl From<polylogue_store::StoreError> for Failure {
 
 impl From<polylogue_store::selection::SelectionError> for Failure {
     fn from(error: polylogue_store::selection::SelectionError) -> Self {
-        use polylogue_store::selection::SelectionError;
-        match error {
-            SelectionError::Store(error) => Self::from(error),
-            SelectionError::Query(error) => Self::from(error),
-            SelectionError::Language(error) => Self::from(error),
-            SelectionError::Invalid { kind, message } => Self::new(kind, message),
-        }
+        Self::from(error.into_store_error())
     }
 }
 
@@ -151,11 +145,12 @@ impl From<polylogue_reading::Error> for Failure {
             Error::Store(error) => Self::from(error),
             Error::Selection(error) => Self::from(error),
             Error::Operation(error) => Self::from(error),
-            Error::Layout(error) => {
+            error => {
                 let hint = match &error {
-                    polylogue_model::read::ReadError::UnsupportedTarget {
-                        accepted_views, ..
-                    } => Some(format!(
+                    Error::Layout(polylogue_model::read::ReadError::UnsupportedTarget {
+                        accepted_views,
+                        ..
+                    }) => Some(format!(
                         "views that read it: {}",
                         accepted_views
                             .iter()
@@ -163,23 +158,19 @@ impl From<polylogue_reading::Error> for Failure {
                             .collect::<Vec<_>>()
                             .join(", ")
                     )),
-                    polylogue_model::read::ReadError::RequiredExpansion { option, .. } => {
-                        Some(format!("set {option} to full"))
-                    }
+                    Error::Layout(polylogue_model::read::ReadError::RequiredExpansion {
+                        option,
+                        ..
+                    }) => Some(format!("set {option} to full")),
                     _ => None,
                 };
-                let error = Error::Layout(error);
                 let code = polylogue_model::Code::from_name(error.code())
                     .expect("reading error has a product code");
                 let mut failure = Self::new(code, error);
-                failure.error.hint = hint;
+                if hint.is_some() {
+                    failure.error.hint = hint;
+                }
                 failure
-            }
-
-            error => {
-                let code = polylogue_model::Code::from_name(error.code())
-                    .expect("reading error has a product code");
-                Self::new(code, error)
             }
         }
     }

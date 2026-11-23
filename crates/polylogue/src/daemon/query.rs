@@ -49,16 +49,19 @@ pub(crate) fn with_ranking<T>(
     config: &crate::config::Config,
     run: impl FnOnce(bool, Option<String>, &NearFn<'_>) -> T,
 ) -> T {
-    let settings = reader.settings_snapshot(config.requests.machine()).ok();
-    let provider = settings.as_ref().and_then(|settings| {
-        crate::embeddings::Provider::from_settings(settings, &config.embedding_credentials)
-            .ok()
-            .flatten()
-    });
-    let identity = crate::embeddings::ranking_key(reader, provider.as_ref());
+    // A settings error stays the reason a `similar:` query cannot rank.
+    let provider = reader
+        .settings_snapshot(config.requests.machine())
+        .map_err(|error| error.to_string())
+        .and_then(|settings| {
+            crate::embeddings::Provider::from_settings(&settings, &config.embedding_credentials)
+        });
+    let identity =
+        crate::embeddings::ranking_key(reader, provider.as_ref().ok().and_then(Option::as_ref));
     let near = |text: &str| match &provider {
-        Some(provider) => warm.similarity(reader, provider, text),
-        None => Err("embeddings are off".into()),
+        Ok(Some(provider)) => warm.similarity(reader, provider, text),
+        Ok(None) => Err("embeddings are off".into()),
+        Err(error) => Err(error.clone()),
     };
     run(identity.is_some(), identity, &near)
 }
@@ -70,15 +73,19 @@ pub(crate) fn with_ranking<T>(
 /// run prepares it, so a query that is refused, or that ranks by nothing,
 /// asks for nothing. Failures are left to the run, which reports them.
 pub(crate) fn prefetch_ranking(call: &super::handler::Call<'_>, query: &str) {
-    let d = call.daemon;
+    let daemon = call.daemon;
     let wanted = (|| {
         let reader = call.reader().ok()?;
         let context = call.context().ok()?;
-        let settings = reader.settings_snapshot(d.config.requests.machine()).ok()?;
-        let provider =
-            crate::embeddings::Provider::from_settings(&settings, &d.config.embedding_credentials)
-                .ok()
-                .flatten()?;
+        let settings = reader
+            .settings_snapshot(daemon.config.requests.machine())
+            .ok()?;
+        let provider = crate::embeddings::Provider::from_settings(
+            &settings,
+            &daemon.config.embedding_credentials,
+        )
+        .ok()
+        .flatten()?;
         let ranking_identity = crate::embeddings::ranking_key(&reader, Some(&provider));
         let ask = Ask {
             text: query,
@@ -96,7 +103,7 @@ pub(crate) fn prefetch_ranking(call: &super::handler::Call<'_>, query: &str) {
         Some((provider, text))
     })();
     if let Some((provider, text)) = wanted {
-        let _ = d.warm.query_vector(&provider, &text);
+        let _ = daemon.warm.query_vector(&provider, &text);
     }
 }
 
@@ -173,24 +180,24 @@ pub(crate) fn execution_options(
 /// Runs a query in full for keeping: its rows, and, when it has one
 /// top-level exists or seq and no stages, its match rows too. The values
 /// are what was shown; a kept result is read back, never re-run.
-pub(crate) fn keep_selected(
+pub(crate) fn save_selected(
     reader: &Reader<'_>,
     ask: Ask<'_>,
     retained: &polylogue_model::user::LineSelection,
     references: Option<&[polylogue_model::Reference]>,
 ) -> Result<Value, Failure> {
-    keep_with_rows(reader, ask, retained, references, None)
+    save_with_rows(reader, ask, retained, references, None)
 }
 
 /// Already visited relation values feed the same kept-result producer.
-pub(crate) fn keep_captured(
+pub(crate) fn save_captured(
     reader: &Reader<'_>,
     ask: Ask<'_>,
     retained: &polylogue_model::user::LineSelection,
     rows: Vec<Value>,
     identities: Option<Vec<Vec<Value>>>,
 ) -> Result<Value, Failure> {
-    keep_with_rows(
+    save_with_rows(
         reader,
         ask,
         retained,
@@ -204,7 +211,7 @@ struct CapturedRows {
     identities: Option<Vec<Vec<Value>>>,
 }
 
-fn keep_with_rows(
+fn save_with_rows(
     reader: &Reader<'_>,
     ask: Ask<'_>,
     retained: &polylogue_model::user::LineSelection,
@@ -242,7 +249,7 @@ fn keep_with_rows(
     let plan = polylogue_query::plan::replay_binding(&binding.replay)?;
     let program = reader.lower_plan(&plan, &opts)?;
     if program.measure.is_some() {
-        return keep_measure(reader, &ask, &opts, &plan, &program);
+        return save_measure(reader, &ask, &opts, &plan, &program);
     }
     let schema = plan.output_schema_for_columns(&program.columns)?;
     let mut match_schema = None;
@@ -307,15 +314,17 @@ fn keep_with_rows(
             polylogue_query::compile(&format!("{syntax} | matches"), &match_options)
         }
     {
-        let m = polylogue_store::query::lower(&match_plan, &opts)?;
-        match_schema = Some(match_plan.output_schema_for_columns(&m.columns)?);
-        validate(reader, &m)?;
-        let mut matches = with_similarity(reader, &m, ask.near, || Ok(reader.query_rows(&m)?))?;
+        let matches_program = polylogue_store::query::lower(&match_plan, &opts)?;
+        match_schema = Some(match_plan.output_schema_for_columns(&matches_program.columns)?);
+        validate(reader, &matches_program)?;
+        let mut matches = with_similarity(reader, &matches_program, ask.near, || {
+            Ok(reader.query_rows(&matches_program)?)
+        })?;
         for row in &mut matches {
-            present(&m, row)?;
+            present(&matches_program, row)?;
         }
-        match_columns = m.columns.clone();
-        kept["match_columns"] = json!(m.columns);
+        match_columns = matches_program.columns.clone();
+        kept["match_columns"] = json!(matches_program.columns);
         kept["matches"] = json!(matches);
     }
     let output_metadata = polylogue_model::kept::OutputMetadata::captured(schema, match_schema);
@@ -395,7 +404,7 @@ pub(crate) fn capture_selection(
         relation: None,
         matches: None,
     };
-    let value = keep_captured(reader, ask.clone(), &retained, rows, identities)?;
+    let value = save_captured(reader, ask.clone(), &retained, rows, identities)?;
     if derived || references.as_ref().is_none_or(Vec::is_empty) {
         retained.relation = Some(value);
     } else if value.get("matches").is_some() {
@@ -418,7 +427,7 @@ pub(crate) fn accepted_population(
         .as_deref()
         .ok_or_else(|| Failure::internal("the accepted selection has no binding"))?;
     let context = ask.context.clone();
-    let value = keep_selected(reader, ask, retained, selected.resolved.as_deref())?;
+    let value = save_selected(reader, ask, retained, selected.resolved.as_deref())?;
     let rows: Vec<serde_json::Map<String, Value>> =
         serde_json::from_value(value["rows"].clone()).map_err(Failure::internal)?;
     let empty = rows.is_empty();
@@ -465,7 +474,7 @@ pub(crate) fn accepted_population(
 
 /// Keep the actual measurement answer, following the normal authenticated
 /// cursor until its declared paging owner has returned every page.
-fn keep_measure(
+fn save_measure(
     reader: &Reader<'_>,
     ask: &Ask<'_>,
     options: &Options,
@@ -642,7 +651,7 @@ impl CountPage {
 pub struct PreparedQuery<'read, 'pool> {
     reader: &'read Reader<'pool>,
     answer: QueryAnswer,
-    count: Option<Program>,
+    count_program: Option<Program>,
     similarity: Option<std::sync::Arc<polylogue_store::vectors::Similarity>>,
 }
 impl PreparedQuery<'_, '_> {
@@ -668,10 +677,10 @@ impl PreparedQuery<'_, '_> {
         let Self {
             reader,
             answer,
-            count,
+            count_program,
             similarity,
         } = self;
-        let Some(program) = count else {
+        let Some(program) = count_program else {
             return Ok(answer);
         };
         let retry = || {
@@ -699,10 +708,10 @@ impl PreparedQuery<'_, '_> {
         } else {
             None
         };
-        let count = || reader.query_count(&program);
+        let query_count = || reader.query_count(&program);
         let counts = match similarity {
-            Some(similarity) => reader.with_similarity(similarity, count),
-            None => count(),
+            Some(similarity) => reader.with_similarity(similarity, query_count),
+            None => query_count(),
         }?;
         let mut answer = match page {
             Some(page) => page.take(),
@@ -872,14 +881,14 @@ pub fn prepare<'read, 'pool>(
             )
         },
     )?;
-    let count = match &answer.value {
+    let count_program = match &answer.value {
         crate::protocol::query::Answer::Measure(_) => None,
         _ => Some(program),
     };
     Ok(PreparedQuery {
         reader,
         answer,
-        count,
+        count_program,
         similarity,
     })
 }
@@ -898,9 +907,9 @@ fn answer(
     use crate::protocol::query::{Answer, Measure, PagedMeasure, Rows};
     let params = values(&program.params);
     let read_at = read_at(reader)?;
-    if let Some(m) = &program.measure {
+    if let Some(measure) = &program.measure {
         polylogue_store::read::limit::ReadLimit::set_stage("measure");
-        let (definition, _) = super::measure::find_checked(&m.what)?;
+        let (definition, _) = super::measure::find_checked(&measure.what)?;
         if let Some(measure_paging) = definition.paging {
             let (rows, next) = read_page(reader, program, &after, paging)?;
             let session_order: std::collections::BTreeMap<_, _> = rows
@@ -936,9 +945,9 @@ fn answer(
                 super::measure::Paging::Sessions => {
                     let mut data = super::measure::run(
                         reader,
-                        &m.what,
+                        &measure.what,
                         selection.sessions,
-                        (m.since, m.until),
+                        (measure.since, measure.until),
                         program.clock.now.as_millisecond(),
                         day,
                         None,
@@ -968,7 +977,7 @@ fn answer(
                     };
                     data["pending"] = json!(polylogue_store::measure::time::pending(reader, &all)?);
                     if definition.name == "compare" {
-                        let (_, options) = super::measure::find_checked(&m.what)?;
+                        let (_, options) = super::measure::find_checked(&measure.what)?;
                         let (varies, unknown, pending) =
                             polylogue_store::measure::comparison::summary(reader, &all, options)?;
                         data["varies"] = json!(varies);
@@ -979,7 +988,7 @@ fn answer(
                 }
             };
             return Ok(QueryAnswer::measure(Answer::PagedMeasure(PagedMeasure {
-                measure: m.what.clone(),
+                measure: measure.what.clone(),
                 data,
                 read_at,
                 resolved,
@@ -987,7 +996,7 @@ fn answer(
                 next,
             })));
         }
-        let sessions = if m.everything {
+        let sessions = if measure.everything {
             None
         } else {
             Some(reader.query_keys(
@@ -1005,15 +1014,15 @@ fn answer(
         };
         let data = super::measure::run(
             reader,
-            &m.what,
+            &measure.what,
             sessions,
-            (m.since, m.until),
+            (measure.since, measure.until),
             program.clock.now.as_millisecond(),
             day,
             population,
         )?;
         return Ok(QueryAnswer::measure(Answer::Measure(Measure {
-            measure: m.what.clone(),
+            measure: measure.what.clone(),
             data,
             read_at,
             resolved,
@@ -1112,10 +1121,10 @@ fn answer(
 }
 
 fn prepare_measure(program: &mut Program, page_size: Option<u64>) -> Result<(), Failure> {
-    let Some(m) = program.measure.clone() else {
+    let Some(measure) = program.measure.clone() else {
         return Ok(());
     };
-    let (definition, options) = super::measure::find_checked(&m.what)?;
+    let (definition, options) = super::measure::find_checked(&measure.what)?;
     polylogue_store::query::execute::prepare_measure(
         program,
         definition.paging,
@@ -1201,12 +1210,12 @@ pub(crate) fn select_usage(
     near: Option<&NearFn<'_>>,
 ) -> Result<polylogue_store::measure::Selection, Failure> {
     validate(reader, program)?;
-    let m = program
+    let measure = program
         .measure
         .as_ref()
         .ok_or_else(|| Failure::bad_request("cost requires a sessions query"))?;
     let select = || -> Result<Option<Vec<i64>>, Failure> {
-        Ok(if m.everything {
+        Ok(if measure.everything {
             None
         } else {
             Some(reader.query_keys(
@@ -1218,8 +1227,8 @@ pub(crate) fn select_usage(
     let sessions = with_similarity(reader, program, near, select)?;
     Ok(polylogue_store::measure::Selection {
         sessions,
-        since: m.since,
-        until: m.until,
+        since: measure.since,
+        until: measure.until,
         logical: true,
         ..Default::default()
     })

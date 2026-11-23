@@ -11,6 +11,7 @@ pub const SUBJECTS: &[&str] = &[
     "syntax",
     "units",
     "fields",
+    "transforms",
     "operators",
     "capabilities",
     "derived",
@@ -110,6 +111,10 @@ fn entries(subject: &str, unit: Option<Unit>) -> Result<Vec<Value>, String> {
             "unit": f.unit, "name": f.name, "kind": f.kind, "values": f.values, "help": f.help,
             "construct": fields::construct(f),
         })).collect(),
+        "transforms" => polylogue_query::catalog::TRANSFORMS
+            .iter()
+            .map(|t| json!({"name": t.name, "completion": t.completion}))
+            .collect(),
         "operators" => [polylogue_query::ast::Op::Eq, polylogue_query::ast::Op::Ne, polylogue_query::ast::Op::Lt, polylogue_query::ast::Op::Le, polylogue_query::ast::Op::Gt, polylogue_query::ast::Op::Ge, polylogue_query::ast::Op::Contains, polylogue_query::ast::Op::Prefix].into_iter().map(|op| json!({"name": op.symbol(), "operation": op})).collect(),
         "capabilities" => {
             // MCP tools list only their operations' common arguments and

@@ -22,6 +22,18 @@ impl Stored {
         }
     }
     fn put(&self, input: &str, format: &str, revision: bool, path: &str, seen: i64, bytes: &[u8]) {
+        self.put_seen(input, format, revision, path, Some(seen), bytes);
+    }
+    /// `seen` of `None` stores the input with no observation, so its time is unknown.
+    fn put_seen(
+        &self,
+        input: &str,
+        format: &str,
+        revision: bool,
+        path: &str,
+        seen: Option<i64>,
+        bytes: &[u8],
+    ) {
         self.writer
             .as_ref()
             .unwrap()
@@ -40,13 +52,13 @@ impl Stored {
                     } else {
                         Change::First
                     },
-                    observation: Some(Observation {
+                    observation: seen.map(|seen_at_ms| Observation {
                         machine: "synthetic".into(),
                         host: "synthetic".into(),
                         path: path.into(),
                         path_bytes: path.as_bytes().to_vec(),
                         facts: None,
-                        seen_at_ms: seen,
+                        seen_at_ms,
                         import: None,
                         container: None,
                         database: None,
@@ -206,6 +218,81 @@ fn schema_selection_continues_every_page_and_time_bound_is_observation_time() {
     assert_eq!(recent.origins["claude-code"].selection.len(), 1);
     assert_eq!(recent.origins["claude-code"].selection[0].input, "latest");
     assert!(recent.origins["claude-code"].sample);
+}
+
+#[test]
+fn inference_selections_are_validated_before_any_read() {
+    let mut unknown_origin = selection(Some("no-such-origin"), &[], None);
+    assert_eq!(unknown_origin.validate(), Err("unknown origin".to_owned()));
+    unknown_origin.origin = None;
+    assert_eq!(unknown_origin.validate(), Ok(()));
+    assert_eq!(
+        selection(None, &[], Some(0)).validate(),
+        Err("revision must be positive".to_owned())
+    );
+    let mut naive = selection(None, &[], None);
+    naive.since = Some("2026-01-01T00:00:00".into());
+    assert_eq!(
+        naive.validate(),
+        Err("since needs RFC 3339 with a UTC offset".to_owned())
+    );
+    naive.since = Some("2026-01-01T00:00:00Z".into());
+    assert_eq!(naive.validate(), Ok(()));
+    let mut both = selection(None, &["input"], None);
+    both.since = Some("2026-01-01T00:00:00Z".into());
+    assert_eq!(
+        both.validate(),
+        Err("select explicit inputs or --since".to_owned())
+    );
+}
+
+#[test]
+fn since_leaves_out_and_counts_inputs_with_unknown_time() {
+    let stored = Stored::new();
+    stored.put(
+        "timed",
+        "claude-code",
+        false,
+        "/absent/session.jsonl",
+        200,
+        b"{\"a\":1}\n",
+    );
+    stored.put_seen(
+        "undated",
+        "claude-code",
+        false,
+        "/absent/session.jsonl",
+        None,
+        b"{\"b\":2}\n",
+    );
+    let mut since = selection(Some("claude-code"), &[], None);
+    since.since = Some("1970-01-01T00:00:00.150Z".into());
+    let recent = stored.read(since);
+    let selected: Vec<_> = recent.origins["claude-code"]
+        .selection
+        .iter()
+        .map(|input| input.input.as_str())
+        .collect();
+    assert_eq!(selected, ["timed"]);
+    assert_eq!(recent.selection.unknown_time_inputs, 1);
+}
+
+#[test]
+fn explicit_inputs_make_the_report_a_sample() {
+    let stored = Stored::new();
+    stored.put(
+        "first",
+        "claude-code",
+        false,
+        "/absent/session.jsonl",
+        10,
+        b"{\"a\":1}\n",
+    );
+    let explicit = stored.read(selection(Some("claude-code"), &["first"], None));
+    assert!(explicit.selection.missing_revisions.is_empty());
+    assert!(explicit.origins["claude-code"].sample);
+    let everything = stored.read(selection(Some("claude-code"), &[], None));
+    assert!(!everything.origins["claude-code"].sample);
 }
 
 #[test]

@@ -59,6 +59,42 @@ fn rows_listing_preserves_fields_and_pages() {
     assert_eq!(listed["kind"], "listing");
     assert_eq!(listed["reply"]["rows"], json!([{"id":"claude-code:s1"}]));
     assert!(listed["reply"]["next"].is_string());
+    let next = listed["reply"]["next"].as_str().unwrap();
+    let second = Call::new(
+        "rows",
+        json!({"selection":"sessions | sort by id", "fields":["id"], "page_size":1}),
+    )
+    .id("listing-second")
+    .cursor(Some(next))
+    .answer(&d.daemon);
+    let second = crate::test_answers::ok(second);
+    assert_eq!(second["reply"]["rows"], json!([{"id":"claude-code:s2"}]));
+    assert!(second["reply"]["next"].is_null(), "{second}");
+}
+
+#[test]
+fn malformed_line_shapes_are_refused_before_anything_resolves() {
+    let d = two_sessions();
+    for (rows, message) in [
+        (json!({"selection":" "}), "selection must not be empty"),
+        (
+            json!({"selection":"sessions","references":["session:claude-code:s1"]}),
+            "a line takes a selection or references, not both",
+        ),
+        (json!({}), "a listing needs a selection"),
+        (
+            json!({"steps":[{"verb":"read"}]}),
+            "read needs rows: name a selection; on a terminal the command line opens the picker",
+        ),
+        (
+            json!({"steps":[{"verb":"tag","name":"x"}]}),
+            "tag needs rows first: name a selection",
+        ),
+    ] {
+        let refused = refusal(line(&d, "shape", rows.clone()));
+        assert_eq!(refused.code.as_deref(), Some("bad_request"), "{rows}");
+        assert_eq!(refused.message, message, "{rows}");
+    }
 }
 
 #[test]
@@ -167,6 +203,26 @@ fn dry_run_line_writes_nothing() {
         "would write a note about each of session:claude-code:s1"
     );
     assert_eq!(count(&d, "annotations where kind:note"), 0);
+}
+
+#[test]
+fn dry_run_tag_names_the_tag_and_writes_nothing() {
+    let d = test_daemon::start("first prompt");
+    let steps = steps(
+        &d,
+        "dry-tag",
+        json!({
+            "selection": "session:claude-code:s1",
+            "steps": [{"verb": "tag", "name": "later"}],
+            "dry_run": true,
+        }),
+    );
+    assert_eq!(steps[0]["outcome"]["status"], "would_do");
+    assert_eq!(
+        steps[0]["outcome"]["would"],
+        "would tag session:claude-code:s1 later"
+    );
+    assert_eq!(count(&d, "sessions where tag:later"), 0);
 }
 
 #[test]

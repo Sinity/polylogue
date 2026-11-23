@@ -233,3 +233,17 @@ fn capabilities_list_each_operation_with_unlisted_arguments_and_answer() {
         schemars::schema_for!(command_surface::Answer<Value>).to_value()
     );
 }
+
+#[test]
+fn transforms_subject_lists_the_pipe_stages() {
+    let page = answer("transforms", None, None, Some(100), None).unwrap();
+    let completions: Vec<_> = page["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["completion"].as_str().unwrap())
+        .collect();
+    for stage in ["where", "sort by", "group by"] {
+        assert!(completions.contains(&stage), "{completions:?}");
+    }
+}

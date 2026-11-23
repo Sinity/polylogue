@@ -10,7 +10,7 @@ use query_language::time::Clock;
 /// Exercise the same resolution and Keep producer used by a Save step.
 fn save_rows(reader: &Reader<'_>, ask: Ask<'_>) -> Result<Value, Failure> {
     let (retained, references) = capture_selection(reader, &ask)?;
-    keep_selected(reader, ask, &retained, references.as_deref())
+    save_selected(reader, ask, &retained, references.as_deref())
 }
 
 const DAY: i64 = 86_400_000;

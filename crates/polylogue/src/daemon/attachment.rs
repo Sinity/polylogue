@@ -155,17 +155,26 @@ pub(crate) fn read(range: Range, d: &Daemon) -> Answer<BytePage> {
         None => None,
     };
     let Some(found) = found else {
-        let failure = crate::protocol::failure(
-            polylogue_model::Code::AttachmentUnavailable,
-            "select one of the stored files with --input",
-        )
-        .with_candidates(
-            resolution
-                .matches
-                .iter()
-                .map(|found| found.input.clone())
-                .collect(),
-        );
+        let message = if resolution.matches.is_empty() {
+            let state = match resolution.state {
+                polylogue_store::assets::AttachmentState::Available => "available",
+                polylogue_store::assets::AttachmentState::Ambiguous => "ambiguous",
+                polylogue_store::assets::AttachmentState::Unavailable => "unavailable",
+                polylogue_store::assets::AttachmentState::Unknown => "unknown",
+            };
+            format!("the attachment has no stored file (availability: {state})")
+        } else {
+            "select one of the stored files with --input".to_string()
+        };
+        let failure =
+            crate::protocol::failure(polylogue_model::Code::AttachmentUnavailable, message)
+                .with_candidates(
+                    resolution
+                        .matches
+                        .iter()
+                        .map(|found| found.input.clone())
+                        .collect(),
+                );
         return Answer::error(failure);
     };
     if decoded

@@ -30,6 +30,21 @@ fn version() -> String {
     format!("{} (revision {revision})", env!("CARGO_PKG_VERSION"))
 }
 
+/// The global options that take their value as the next word. A reader of a
+/// raw command line (the hook and daemon peer checks) skips each with its value.
+pub(crate) const GLOBAL_VALUED_OPTIONS: [&str; 10] = [
+    "--deadline",
+    "--timeout",
+    "--archive",
+    "--config",
+    "--listen",
+    "--auth-token-file",
+    "--request",
+    "--request-id",
+    "--cursor",
+    "--budget",
+];
+
 /// The clap command tree: one subcommand per table command, grouped by
 /// their first word, and the bare query as the root's own arguments.
 pub fn command() -> clap::Command {

@@ -76,14 +76,15 @@ fn check_change(
 /// Prepare every row before delivery, releasing the reader before network writes.
 pub(crate) fn prepare_with(
     reader: &Reader<'_>,
-    since: Option<&str>,
+    after: Option<&str>,
     clock: &query_language::time::Clock,
     mut file: File,
 ) -> Result<File, Failure> {
-    let previous = since
+    let previous = after
         .map(|s| {
-            ChangePosition::parse(s)
-                .ok_or_else(|| Failure::bad_request("since takes GEN:COUNTER:ARCHIVE"))
+            ChangePosition::parse(s).ok_or_else(|| {
+                Failure::bad_request("after takes a position GENERATION:INDEX:ARCHIVE")
+            })
         })
         .transpose()?;
     let target = reader.change_position()?;

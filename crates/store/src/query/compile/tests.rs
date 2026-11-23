@@ -218,7 +218,7 @@ fn changes_continue_from_a_cursor() {
     let p = c("feed where after:generation:12:3");
     let sql = statements(&p);
     assert!(sql.contains("> 12") && sql.contains("> 3"), "{sql}");
-    assert!(compile_err("feed where after:12").contains("GEN:COUNTER:ARCHIVE"));
+    assert!(compile_err("feed where after:12").contains("GENERATION:INDEX:ARCHIVE"));
 }
 
 #[test]

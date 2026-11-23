@@ -186,10 +186,6 @@ macro_rules! browser {
     };
 }
 
-fn reader<'a>(call: &'a Call<'_>) -> Result<Reader<'a>, Failure> {
-    call.reader()
-}
-
 browser!(
     ChatSend,
     protocol::ChatSend,
@@ -197,7 +193,7 @@ browser!(
     print::json,
     |a, call| {
         let (d, invocation) = (call.daemon, call.invocation);
-        let reader = reader(call)?;
+        let reader = call.reader()?;
         match enabled(invocation, &reader) {
             Ok(true) => {}
             Ok(false) => {
@@ -218,6 +214,11 @@ browser!(
             submit: a.submit,
         };
         // Checked before any file is stored.
+        for file in &a.files {
+            if let Err(r) = actions::check_file_name(&file.name) {
+                return Ok(browser_refusal(r));
+            }
+        }
         if let Err(r) = actions::new_action(call.request_id, &action, vec![]) {
             return Ok(browser_refusal(r));
         }
@@ -243,7 +244,7 @@ browser!(
     protocol::ChatActionList,
     print::chat_actions,
     |_a, call| {
-        let reader = reader(call)?;
+        let reader = call.reader()?;
         let now = call.invocation.at.unix_ms();
         match reader.chat_actions() {
             Ok(list) => match list
@@ -266,7 +267,7 @@ browser!(
     protocol::ChatAnswer,
     print::json,
     |a, call| {
-        let reader = reader(call)?;
+        let reader = call.reader()?;
         let on = enabled(call.invocation, &reader)?;
         drop(reader);
         if !on {
@@ -350,7 +351,7 @@ browser!(
     protocol::ChatAttachmentBytes,
     print::json,
     |a, call| {
-        let reader = reader(call)?;
+        let reader = call.reader()?;
         match reader.chat_attachment(&a.id, &a.attachment) {
             Ok((attachment, bytes)) => Answer::ok(protocol::ChatAttachmentBytes {
                 media_type: attachment.media_type,
@@ -382,7 +383,7 @@ browser!(
     protocol::BackfillJobList,
     print::backfill_jobs,
     |_a, call| {
-        let reader = reader(call)?;
+        let reader = call.reader()?;
         let now = call.invocation.at.unix_ms();
         match reader.backfill_jobs() {
             Ok(jobs) => Answer::ok(protocol::BackfillJobList {
@@ -445,7 +446,7 @@ browser!(
     protocol::ConversationsAnswer,
     print::json,
     |a, call| {
-        let reader = reader(call)?;
+        let reader = call.reader()?;
         let sessions: Vec<_> = a
             .ids
             .iter()
@@ -492,7 +493,7 @@ browser!(
                 downloading: None,
             }));
         };
-        let reader = reader(call)?;
+        let reader = call.reader()?;
         match reader.stored_files(&session) {
             Ok(files) => match reader.downloading_files(&session) {
                 Ok(downloading) => Answer::ok(protocol::StoredFilesAnswer {
