@@ -3,7 +3,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 use crate::fields::ExpectedType as T;
 mod identity;
@@ -76,7 +76,7 @@ static WRAPPER_FIELDS: Fields = Fields::new(
         ("responses", Rule::Read(T::Array)),
     ],
 );
-static RESPONSE_WRAPPER: Fields =
+static RESPONSE_WRAPPER_FIELDS: Fields =
     Fields::new("response_wrapper", &[("response", Rule::Read(T::Object))]);
 
 impl ExportParser for Export {
@@ -164,7 +164,8 @@ impl Export {
                 let id = format!("~{hash}-{n}");
                 if *n > 0 {
                     warnings.push(
-                        "equal ID-less conversations are indistinguishable in the file".to_owned(),
+                        "equal conversations without an ID are indistinguishable in the file"
+                            .to_owned(),
                     );
                 }
                 *n += 1;
@@ -203,7 +204,7 @@ impl Export {
                 sink.records.fields(
                     "response wrapper",
                     &crate::fields::header(entry, &["response"]),
-                    &RESPONSE_WRAPPER,
+                    &RESPONSE_WRAPPER_FIELDS,
                 );
                 response
             } else {
@@ -249,17 +250,17 @@ impl Export {
                 warnings.push("missing, null or structured message is not read as text; original bytes stay in the stored input".into());
                 continue;
             };
-            let native_message = match identity::native(fields, "id", "responseId") {
-                Ok(Some(id)) => id.to_owned(),
+            let (native_message, id_kind) = match identity::native(fields, "id", "responseId") {
+                Ok(Some(id)) => (id.to_owned(), polylogue_model::IdKind::Native),
                 Ok(None) => {
                     let hash = identity::response(entry);
                     let n = occurrences.entry(hash.clone()).or_default();
                     let id = format!("{native}:~{}-{n}", &hash[..12]);
                     if *n > 0 {
-                        warnings.push("equal ID-less responses keep distinct occurrence IDs; which file record is which is ambiguous".into());
+                        warnings.push("equal responses without an ID keep distinct occurrence IDs; which file record is which is ambiguous".into());
                     }
                     *n += 1;
-                    id
+                    (id, polylogue_model::IdKind::Content)
                 }
                 Err(reason) => {
                     sink.records
@@ -291,7 +292,7 @@ impl Export {
             let offset = sink.position();
             sink.out.messages.push(MessageRow {
                 page_text: false,
-                id_kind: polylogue_model::IdKind::Native,
+                id_kind,
                 offset,
                 end: offset + 1,
                 message: {

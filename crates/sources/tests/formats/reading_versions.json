@@ -20,7 +20,7 @@
     "772aeaf490963ed1d9ba12440682a9730f823105dc2a36129b8433e3fe71cd64"
   ],
   "browser-capture": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::browser_capture::VERSION=4,crate::chatgpt::VERSION=3,crate::claude_ai::VERSION=2,crate::codex_cloud::VERSION=1,crate::grok::VERSION=1",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::browser_capture::VERSION=4,crate::chatgpt::VERSION=3,crate::claude_ai::VERSION=2,crate::codex_cloud::VERSION=1,crate::grok::VERSION=2",
     "3e5ecd895974d2c77a7f613096b41d9b5066ac2ea5a0e7765c374352dbe95d59"
   ],
   "chatgpt": [
@@ -68,7 +68,7 @@
     "1537c30b64d8c82b0c9cef3d8eed8ae22d73ad878898306e1ccf0727767f7466"
   ],
   "grok": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::export::VERSION=2,crate::grok::VERSION=1",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::export::VERSION=2,crate::grok::VERSION=2",
     "9ba0a160492e0e98758a0fe848bce9558c789798c2e4adb1a4f2edc85b75c764"
   ],
   "grok-cli": [
