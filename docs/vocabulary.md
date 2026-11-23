@@ -19,9 +19,6 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **previous index**: the index a build replaces, kept as
   `index-build/previous.db` until the new one is installed, and read
   meanwhile when its schema identity is the build's.
-- **set-aside cache**: in primary mode, a cache from another schema, renamed
-  beside the new one under its schema identity until the rebuild reaches the
-  confirmed stream's latest position.
 - **embeddings store**: message vectors for semantic ranking, kept apart
   because vectors cost money or time to make.
 - **segment log**: append-only files of compressed frames holding every blob;
@@ -112,12 +109,17 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **wire shape**: per origin, path and type, when a field was first and last
   seen and how often.
 - **format drift**: new, changed or vanished fields in a provider's format.
-- **versioned row**: every reading of a parsed row is kept; the **shown
-  version** is the current one in a total order.
+- **record**: `archive.db` with the bytes it cites: what was captured and
+  authored, which cannot be recomputed. The index is a function of it.
+- **reading**: what a parser, at its reading version, makes of one chain. It
+  is owned by its chain; the **shown rows** of a session are composed from
+  the readings that state it.
+- **covered chain**: a chain a newer chain of the same input is known to
+  begin with all of; it has no reading.
+- **upkeep** and **build**: keeping the installed index current as the record
+  grows, and making an index from nothing; they give the same index.
 - **re-parse**: reading a chain's stored bytes again with a newer reading
   version; it is not deletion.
-- **chain task**: a pool task that parses a stored chain's ranges in order
-  and commits its replacement reading once.
 - **user submission**: a user request together with its optional pinned read,
   trusted catalog context, and caller deadline and cancellation.
 
@@ -485,16 +487,18 @@ generated page of the thing they belong to, or on the area page that owns them.
   Sinex event type; Polylogue owns its `polylogue.*` declarations.
 - **kind version**: the numbered declaration a producer event selects.
 - **recall class**: the class a kind declaration gives its events for recall.
-- **confirmed stream**: Sinex's ordered stream of committed events, which
-  Polylogue applies to `index.db`. A recreated stream is a new **stream
-  instance**; its newest committed position is Sinex's **latest position**.
+- **confirmed stream**: Sinex's ordered log of committed changes. Polylogue's
+  reader applies from it what other hosts recorded and what Sinex's
+  lifecycle decided. A recreated stream is a new **stream instance**; its
+  newest committed position is Sinex's **latest position**.
 - **Sinex event** (or **confirmed event**): one of Polylogue's `polylogue.*`
   events as Sinex holds it after confirming it.
 - **acknowledgment**: Sinex's answer to a frame Polylogue sent: admitted,
   kinds registered, replayed or refused.
-- **producer spool**: the queue and files where Polylogue's prepared bytes and
-  writes are **held in the spool** until Sinex acknowledges them and the
-  index has applied their events.
+- **holding directory**: in primary mode, where bytes stay on the host until
+  Sinex acknowledges them.
+- **shipper**: in primary mode, the part that sends the record to Sinex in
+  commit order.
 - **record offset**: the byte position of a record inside a material.
 - **snapshot**: the current state Sinex sends a new consumer before its
   deltas, in bounded pages.

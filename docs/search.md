@@ -52,16 +52,10 @@ Counting rows applies the query's filters and transform selections without evalu
 
 ## Index maintenance
 
-The full-text indexes are contentless, keyed by text ID, with contentless delete. A text enters an index when its first block of that kind is written and leaves with its last. Ranking after re-parse retractions equals a fresh build's: whenever retracted rows exceed 10% of an index's rows, the writer rebuilds that index's statistics in the same pass. This is part of the write path, not a command.
-
-A deferred first build writes both full-text indexes from all marked texts in
-one transaction, which first clears earlier derived postings and statistics:
-each search segment is written once, and an interruption or failure leaves the
-indexes as they were, so a retry, also after a later deferred-index failure,
-has the same ranking and vocabulary as a fresh build. Parsed rows, source progress
-and original bytes remain committed. A reopen repeats this work while
-the build is incomplete; search becomes ready after deferred finalization
-succeeds.
+- **One entry for each distinct searchable text**, keyed by the text's key in this index ([archive.md](archive.md#text)). A text enters a full-text index when the first block of that kind that holds it is written and leaves with the last, as part of the write path, not a command.
+- **Full text lives in files beside the index, and how many is not observable.** The entries are held in several files, split by text key, so a build fills them at the same time on separate cores while the tables load. A search runs over all of them and ranks with the statistics of the whole corpus, so its results and their order are those of a single index over the same texts, however many files there are and however the texts are spread among them. Ties in rank are broken by natural keys.
+- **Entries follow the index through one queue.** The transaction that adds or removes a text queues the change to its entries; the search thread applies the queue to the files. A hit is joined to the text's row and its blocks, so an entry that is ahead of or behind the index never shows a text that is missing or removed; a flush applies every waiting change before it returns, and a reply says when search text is pending ([reading.md](reading.md#paging-and-budgets)).
+- **Ranking after upkeep equals a build's.** Statistics count the texts present and nothing else: a removed text's entry leaves with it, so the same record gives the same ranking whether its index was kept current or built from nothing.
 
 ## Semantic ranking
 
