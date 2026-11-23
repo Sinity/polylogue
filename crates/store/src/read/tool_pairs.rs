@@ -166,9 +166,6 @@ impl Reader<'_> {
         let Some(fact) = self.tool_pair_fact(message, ordinal)? else {
             return Ok(None);
         };
-        if !fact.call.visible()? {
-            return Ok(None);
-        }
         let call = self.tool_pair_block(&fact.call, full)?;
         let Block::ToolCall { call_id, .. } = &call.block else {
             return Err(crate::StoreError::stored(

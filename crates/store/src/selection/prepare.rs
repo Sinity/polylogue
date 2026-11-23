@@ -23,6 +23,24 @@ impl ProvisionalQueries {
         self.objects.entry(object.id.to_string()).or_insert(object);
         Ok(())
     }
+    /// The one prepared question whose id starts with `prefix`; two are
+    /// ambiguous, as they are among stored questions.
+    fn by_prefix(&self, prefix: &str) -> Result<Option<QuestionId>, QueryError> {
+        let matching: Vec<QuestionId> = self
+            .objects
+            .values()
+            .filter(|object| object.id.to_string().starts_with(prefix))
+            .map(|object| object.id)
+            .collect();
+        match matching.as_slice() {
+            [] => Ok(None),
+            [only] => Ok(Some(*only)),
+            _ => Err(QueryError::Ambiguous {
+                what: format!("query:{prefix}"),
+                candidates: matching.iter().map(ToString::to_string).collect(),
+            }),
+        }
+    }
     /// Prepared query body only. It is not stored by this.
     pub(crate) fn object(
         &self,
@@ -187,30 +205,28 @@ pub(crate) fn named_definitions(
     // `query:<prefix>`: a unique prefix of 12 or more hex characters names the
     // saved question it starts. Saved names are never all hex, so a prefix
     // cannot shadow one.
-    for name in polylogue_query::plan::referenced_saved_names(&parsed) {
+    for name in &names {
         let prefix = (12..64).contains(&name.len())
             && name
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
-        if !prefix || bindings.saved.contains_key(&name) {
+        if !prefix || bindings.saved.contains_key(name) {
             continue;
         }
-        let found = crate::query_objects::query_object_on(
+        let stored = crate::query_objects::query_object_on(
             original,
             crate::source::Source::reading(original)?,
-            &name,
+            name,
             pending,
         )?
-        .map(|found| found.id)
-        .or_else(|| {
-            provisional.and_then(|prepared| {
-                let mut matching = prepared
-                    .objects()
-                    .filter(|object| object.id.to_string().starts_with(&name));
-                let first = matching.next()?.id;
-                matching.next().is_none().then_some(first)
-            })
-        })
+        .map(|found| found.id);
+        let found = match stored {
+            Some(found) => Some(found),
+            None => match provisional {
+                Some(prepared) => prepared.by_prefix(name)?,
+                None => None,
+            },
+        }
         .ok_or_else(|| QueryError::Unavailable {
             reason: format!("saved query:{name} is unavailable"),
         })?;
@@ -219,10 +235,8 @@ pub(crate) fn named_definitions(
                 reason: format!("the stored body of saved query:{found} is unavailable"),
             })?;
         let definition = saved_nodes[&found.to_string()].clone();
-        saved_nodes.insert(name, definition);
-        for (id, nodes) in saved_nodes {
-            bindings.saved.entry(id).or_insert(nodes);
-        }
+        saved_nodes.insert(name.clone(), definition);
+        keep_missing(&mut bindings.saved, saved_nodes);
     }
     for id in polylogue_query::plan::referenced_question_ids(&parsed) {
         if bindings.saved.contains_key(&id.to_string()) {
@@ -232,9 +246,7 @@ pub(crate) fn named_definitions(
             .ok_or_else(|| QueryError::Unavailable {
                 reason: format!("the stored body of saved query:{id} is unavailable"),
             })?;
-        for (id, nodes) in saved_nodes {
-            bindings.saved.entry(id).or_insert(nodes);
-        }
+        keep_missing(&mut bindings.saved, saved_nodes);
     }
     let mut kept: BTreeSet<String> = polylogue_query::plan::referenced_kept_results(&parsed)
         .into_iter()
@@ -251,6 +263,16 @@ pub(crate) fn named_definitions(
     (bindings.kept, bindings.kept_names) =
         named_kept_bindings(authored, kept.iter().map(String::as_str))?;
     Ok(bindings)
+}
+
+/// Merge definitions, keeping the ones already bound.
+fn keep_missing(
+    into: &mut BTreeMap<String, Vec<SavedQuery>>,
+    from: BTreeMap<String, Vec<SavedQuery>>,
+) {
+    for (id, nodes) in from {
+        into.entry(id).or_insert(nodes);
+    }
 }
 
 fn named_kept_bindings<'a>(
@@ -352,9 +374,7 @@ fn saved_queries_from(
                 match stored_bindings(original, conn, pending, provisional, hash) {
                     Ok(Some(saved_nodes)) => {
                         value.body = saved_nodes[&hash.to_string()][0].body.clone();
-                        for (hash, nodes) in saved_nodes {
-                            saved.entry(hash).or_insert(nodes);
-                        }
+                        keep_missing(&mut saved, saved_nodes);
                     }
                     Ok(None) => {}
                     Err(SelectionError::Store(error))

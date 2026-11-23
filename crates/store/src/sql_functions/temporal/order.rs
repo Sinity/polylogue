@@ -57,6 +57,14 @@ fn point(text: &str) -> Result<TimePoint, Failure> {
         _ => Err("unknown order time point".into()),
     }
 }
+/// The point a distance is measured to; the match selectors have no state
+/// span to measure against and give NULL.
+fn distance_point(ctx: &Context<'_>) -> rusqlite::Result<Option<TimePoint>> {
+    let at: String = ctx.get(4)?;
+    let at = point(&at).map_err(Error::UserFunctionError)?;
+    Ok((!matches!(at, TimePoint::MatchStart | TimePoint::MatchEnd)).then_some(at))
+}
+
 fn periods(ctx: &Context<'_>) -> rusqlite::Result<Option<(Period, Period)>> {
     let outer: Option<Vec<u8>> = ctx.get(0)?;
     let outer_storage: String = ctx.get(1)?;
@@ -160,19 +168,15 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
         Ok(periods(ctx)?.map(|(a, b)| relates(a, b, relation, within, at)))
     })?;
     conn.create_scalar_function("pl_time_distance_key", 5, flags, |ctx| {
-        let at: String = ctx.get(4)?;
-        let at = point(&at).map_err(Error::UserFunctionError)?;
-        if matches!(at, TimePoint::MatchStart | TimePoint::MatchEnd) {
+        let Some(at) = distance_point(ctx)? else {
             return Ok(None);
-        }
+        };
         Ok(periods(ctx)?.map(|(a, b)| format!("{:039}", (b.start - a.point(at)).unsigned_abs())))
     })?;
     conn.create_scalar_function("pl_time_distance", 5, flags, |ctx| {
-        let at: String = ctx.get(4)?;
-        let at = point(&at).map_err(Error::UserFunctionError)?;
-        if matches!(at, TimePoint::MatchStart | TimePoint::MatchEnd) {
+        let Some(at) = distance_point(ctx)? else {
             return Ok(None);
-        }
+        };
         Ok(periods(ctx)?.map(|(a, b)| (b.start - a.point(at)) as f64 / 1_000_000_000.0))
     })?;
     Ok(())

@@ -919,7 +919,7 @@ impl Here {
             live: index
                 .live_under(dirs, me, now)
                 .into_iter()
-                .map(|live| (live.session.clone(), live.state))
+                .map(|live| (live.session.clone(), live.state.as_str()))
                 .collect(),
             beads: index.open_beads(dirs),
         }
@@ -984,7 +984,9 @@ fn live_items(
                 let _ = write!(line, ", task {task}");
             }
             if s.edited_files() > 0 {
-                let _ = write!(line, ", uncommitted edits to {}", s.edited_files());
+                let files = s.edited_files();
+                let noun = if files == 1 { "file" } else { "files" };
+                let _ = write!(line, ", uncommitted edits to {files} {noun}");
             }
 
             if let Some(todo) = s.todo() {
@@ -1271,7 +1273,7 @@ fn session_start(
                 "- {}: last observed claim by {}; session last active {}; no close or release observed; current external state unverified",
                 b.id,
                 b.session,
-                day(b.since, context.clock.day.zone())
+                day(b.last_active, context.clock.day.zone())
             ),
             refs: vec![format!("session:{}", b.session)],
         })

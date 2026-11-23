@@ -340,6 +340,16 @@ fn parent_links_use_index() {
             "{sql}: {steps:#?}"
         );
     }
+    let steps = plan(
+        &reader,
+        "SELECT pk FROM link WHERE parent_id = ?1 OR child_id = ?1",
+    );
+    assert!(
+        steps
+            .iter()
+            .any(|step| step.contains("link_parent") || step.contains("link_statement")),
+        "{steps:#?}"
+    );
 }
 
 /// `model:` keeps reading `message_model_at` now that `message_model` is gone.

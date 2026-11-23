@@ -283,7 +283,7 @@ fn parent_keys(conn: &Connection, pk: i64, id: &SessionId) -> Result<(Vec<Key>, 
             });
         }
         active.remove(&done.pk);
-        let Some(parent) = frames.last_mut() else {
+        let Some(child_frame) = frames.last_mut() else {
             let mut seen = HashSet::new();
             done.keys.retain(|key| seen.insert(key.message_pk));
             return Ok((done.keys, done.issues));
@@ -306,12 +306,12 @@ fn parent_keys(conn: &Connection, pk: i64, id: &SessionId) -> Result<(Vec<Key>, 
         }
         // Move the common single-parent prefix rather than copying it at
         // every ancestor of a long chain.
-        if parent.keys.is_empty() {
-            parent.keys = done.keys;
+        if child_frame.keys.is_empty() {
+            child_frame.keys = done.keys;
         } else {
-            parent.keys.extend(done.keys);
+            child_frame.keys.extend(done.keys);
         }
-        parent.issues.extend(done.issues);
+        child_frame.issues.extend(done.issues);
     }
 }
 

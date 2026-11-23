@@ -708,9 +708,8 @@ pub fn sql(unit: Unit, name: &str, a: &Aliases, now: i64) -> Option<String> {
     lookup(unit, name).and_then(|id| rule(id).expr(a, now))
 }
 
-/// The sum of a column over session `s`'s own messages.
-/// A session's token kind over its own responses, the population every
-/// usage figure sums.
+/// The sum of a column over session `s`'s own responses, the population
+/// every usage figure sums.
 fn own_sum(s: &str, col: &str) -> String {
     crate::measure::own_responses_sum(&format!("{s}.pk"), col)
 }
@@ -814,10 +813,18 @@ fn sessions_waiting(a: &Aliases, now: i64) -> String {
 }
 
 fn sessions_running(a: &Aliases, now: i64) -> String {
-    format!(
-        "({} IN ('working', 'waiting', 'idle', 'unknown'))",
-        live_state(&a.s, now)
-    )
+    format!("({} IN {})", live_state(&a.s, now), running_states_sql())
+}
+
+/// The live states that count as running, as a SQL list; the model's
+/// `LiveState::running` is the one definition.
+pub(crate) fn running_states_sql() -> String {
+    let names: Vec<String> = polylogue_model::live::LiveState::ALL
+        .iter()
+        .filter(|state| state.running())
+        .map(|state| format!("'{}'", state.as_str()))
+        .collect();
+    format!("({})", names.join(", "))
 }
 
 fn sessions_waiting_on(a: &Aliases, now: i64) -> String {

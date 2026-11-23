@@ -118,14 +118,14 @@ impl ReferenceText<'_> {
         from: Option<&NativeTextPosition>,
         visit: &mut Visit<'_>,
     ) -> Result<bool> {
-        let (first, previous) = match from.map(|position| position.piece) {
-            Some(NativeTextPiece::Body { body }) => (Some(body.block), None),
-            Some(NativeTextPiece::Separator { after, .. }) => (Some(after.block), None),
-            Some(NativeTextPiece::Empty) | None => (None, None),
+        let first = match from.map(|position| position.piece) {
+            Some(NativeTextPiece::Body { body }) => Some(body.block),
+            Some(NativeTextPiece::Separator { after, .. }) => Some(after.block),
+            Some(NativeTextPiece::Empty) | None => None,
         };
         let mut text = Text {
             visit,
-            previous,
+            previous: None,
             expected: from.map(|position| position.piece),
             reference,
         };

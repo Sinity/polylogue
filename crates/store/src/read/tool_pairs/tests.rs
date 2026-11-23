@@ -114,6 +114,32 @@ fn missing_and_orphan_results_never_pair_by_recency_or_cross_session_ids() {
     );
 }
 #[test]
+fn result_shape_reports_whether_data_is_present_and_how_many_attachments() {
+    for (attachments, expected) in [(0, (false, 0)), (1, (false, 1))] {
+        let mut archive = WriterArchive::new();
+        let (call, mut result) = pair("s", 1, "output");
+        if let Block::ToolResult {
+            attachments: stored,
+            ..
+        } = &mut result.blocks[0]
+        {
+            *stored = (0..attachments)
+                .map(|_| polylogue_model::Attachment {
+                    name: Some("file".into()),
+                    ..Default::default()
+                })
+                .collect();
+        }
+        archive.write("s", vec![call.clone(), result.clone()]);
+        let pool = ReadPool::open(&archive.archive).unwrap();
+        let reader = pool.reader().unwrap();
+        assert_eq!(
+            reader.message_tool_pair_result_shape(&call.id, 0).unwrap(),
+            Some(expected)
+        );
+    }
+}
+#[test]
 fn metadata_and_collapsed_view_skip_remote_output_and_data() {
     let mut archive = WriterArchive::new();
     let (call, mut result) = pair("s", 1, "remote output");
@@ -181,6 +207,10 @@ fn metadata_and_collapsed_view_skip_remote_output_and_data() {
         .message_tool_pair_header(&call.id, 0)
         .unwrap()
         .unwrap();
+    assert!(matches!(
+        &header.call.block,
+        Block::ToolCall { input, .. } if input.is_null()
+    ));
     assert!(matches!(
         header.result.unwrap().block,
         Block::ToolResult {

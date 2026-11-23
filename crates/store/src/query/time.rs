@@ -1,5 +1,6 @@
 //! Shared time mechanics with explicit conversion at the millisecond SQL seam.
-//! Bounds are ceiled for integer-index comparisons.
+//! Candidate bounds for integer-index comparisons are widened by one
+//! millisecond on each side, so the exact test decides.
 //! Temporal predicates compare stored source times at nanosecond precision.
 //! Millisecond conversions remain for derived point fields and broad candidates.
 use polylogue_query::QueryError;

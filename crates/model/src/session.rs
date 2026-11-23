@@ -43,6 +43,14 @@ pub enum TitleSource {
     FileName,
 }
 
+stored_names!(TitleSource {
+    Custom => "custom",
+    Generated => "generated",
+    Summary => "summary",
+    AgentName => "agent_name",
+    FileName => "file_name",
+});
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Title {
     pub text: String,

@@ -502,19 +502,24 @@ impl Reader<'_> {
                     (self.row_before(selection, at).map_err(E::from)?, false)
                 }
                 VisitFrom::At(_) => (None, false),
-                VisitFrom::After(after) => (Some(after.clone()), false),
+                VisitFrom::After(after) => (Some(after.values.clone()), false),
                 VisitFrom::Before(_) if selection.direct.is_some() => return Ok(()),
-                VisitFrom::Before(before) => (Some(before.clone()), true),
+                VisitFrom::Before(before) => (Some(before.values.clone()), true),
                 VisitFrom::Last => (None, true),
             };
-            self.visit_selection_scoped_in_direction(selection, after.as_ref(), reverse, &mut visit)
+            self.visit_selection_scoped_in_direction(
+                selection,
+                after.as_deref(),
+                reverse,
+                &mut visit,
+            )
         })
     }
 
     fn visit_selection_scoped_in_direction<E>(
         &self,
         selection: &PreparedSelection<'_>,
-        after: Option<&OrderPosition>,
+        after: Option<&[serde_json::Value]>,
         reverse: bool,
         visit: &mut impl FnMut(SelectionRow) -> Result<ControlFlow<()>, E>,
     ) -> Result<(), E>
@@ -541,64 +546,56 @@ impl Reader<'_> {
         }
         // The enclosing selection context has validated the program once.
         let program = &selection.program;
-        if after.is_some_and(|after| after.values.len() != program.order.len()) {
+        if after.is_some_and(|after| after.len() != program.order.len()) {
             return Err(E::from(SelectionError::invalid(
                 polylogue_model::Code::InvalidQuery,
                 "selection order position has the wrong arity",
             )));
         }
-        self.visit_page(
-            program,
-            after.map(|after| after.values.as_slice()),
-            reverse,
-            -1,
-            |mut row| {
-                selection
-                    .scope
-                    .check()
-                    .map_err(SelectionError::from)
-                    .map_err(E::from)?;
-                let order = program
-                    .order
-                    .iter()
-                    .map(|key| row[&key.column].clone())
-                    .collect::<Vec<_>>();
-                let target = selection
-                    .direct
-                    .clone()
-                    .or_else(|| row_target(program, &row));
-                let identity = RowIdentity::from_row(program, &row);
-                let aggregates = aggregate_values(program, &row);
-                let row_identity = target
-                    .as_ref()
-                    .map(|target| target.reference().stored_form())
-                    .or_else(|| {
-                        identity
-                            .as_ref()
-                            .map(|key| serde_json::to_string(key).expect("row identity is JSON"))
-                    })
-                    .unwrap_or_else(|| {
-                        serde_json::to_string(&order).expect("order position is JSON")
-                    });
-                crate::query::execute::present(program, &mut row).map_err(E::from)?;
-                let flow = visit(SelectionRow {
-                    target,
-                    values: row,
-                    identity,
-                    aggregates,
-                    position: OrderPosition {
-                        values: order,
-                        row_identity,
-                    },
-                })?;
-                // A direct reference selects its one row.
-                Ok(if selection.direct.is_some() {
-                    ControlFlow::Break(())
-                } else {
-                    flow
+        self.visit_page(program, after, reverse, -1, |mut row| {
+            selection
+                .scope
+                .check()
+                .map_err(SelectionError::from)
+                .map_err(E::from)?;
+            let order = program
+                .order
+                .iter()
+                .map(|key| row[&key.column].clone())
+                .collect::<Vec<_>>();
+            let target = selection
+                .direct
+                .clone()
+                .or_else(|| row_target(program, &row));
+            let identity = RowIdentity::from_row(program, &row);
+            let aggregates = aggregate_values(program, &row);
+            let row_identity = target
+                .as_ref()
+                .map(|target| target.reference().stored_form())
+                .or_else(|| {
+                    identity
+                        .as_ref()
+                        .map(|key| serde_json::to_string(key).expect("row identity is JSON"))
                 })
-            },
-        )
+                .unwrap_or_else(|| serde_json::to_string(&order).expect("order position is JSON"));
+            crate::query::execute::present(program, &mut row).map_err(E::from)?;
+            let flow = visit(SelectionRow {
+                target,
+                values: row,
+                identity,
+                aggregates,
+                position: OrderPosition {
+                    values: order,
+                    row_identity,
+                },
+            })?;
+            // A direct reference selects its one row.
+            Ok(if selection.direct.is_some() {
+                ControlFlow::Break(())
+            } else {
+                flow
+            })
+        })
     }
 
     fn in_selection_context<T, E>(

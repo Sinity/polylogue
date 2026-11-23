@@ -829,9 +829,6 @@ pub fn shape_value(
     Ok(())
 }
 
-/// Each default with the rows it keeps of the rows without it, then each
-/// top-level condition counted alone against the rows the defaults keep:
-/// `repo:other → 0 of 5`.
 /// How many rows one clause of an empty query matches, of the rows its
 /// unit has.
 #[derive(
@@ -844,6 +841,9 @@ pub struct Explanation {
     pub of: u64,
 }
 
+/// Each default with the rows it keeps of the rows without it, then each
+/// top-level condition counted alone against the rows the defaults keep:
+/// `repo:other → 0 of 5`.
 pub fn why(
     reader: &Reader<'_>,
     program: &Program,
