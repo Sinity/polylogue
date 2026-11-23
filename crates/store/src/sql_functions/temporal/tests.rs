@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_model::{TimeEvidence, TimeQuality};
+use polylogue_model::{TimeEvidence, TimeQuality, Timestamp};
 use rusqlite::params;
 
 fn conn() -> Connection {
