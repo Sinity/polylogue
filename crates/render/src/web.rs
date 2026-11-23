@@ -32,7 +32,9 @@ pub fn read(
         .arguments
         .str("target")
         .unwrap_or(&page.snapshot.query);
-    frame.query = selection;
+    // JSON escapes keep controls visible as `\uXXXX` in the query field.
+    let selection_display = crate::terminal::json(&Value::String(selection.into()), false);
+    frame.query = &selection_display[1..selection_display.len() - 1];
     frame.navigation = navigation_entries();
     frame.status = freshness(&page.snapshot.freshness.sinex);
     let body = html! {
