@@ -90,7 +90,7 @@ impl PresentationMap {
                 });
         } else {
             for (n, range) in variant.alignment.iter().enumerate() {
-                Reference::parse_stored(&range.source.reference)
+                let reference = Reference::parse_stored(&range.source.reference)
                     .map_err(|e| ReadError::invalid(e.to_string()))?;
                 if range.start > range.end {
                     return Err(ReadError::invalid("reversed variant body range"));
@@ -101,7 +101,9 @@ impl PresentationMap {
                     end: Some(range.end),
                     first: n == 0,
                 };
-                let ranges = pending.entry(body_key(&range.source)).or_default();
+                let ranges = pending
+                    .entry(body_key_of(&range.source, &reference))
+                    .or_default();
                 if ranges.iter().any(|prior| overlap(prior, &patch)) {
                     return Err(ReadError::invalid("overlapping variant body ranges"));
                 }
@@ -217,8 +219,14 @@ fn active(variant: &VariantText, options: &ReadOptions) -> bool {
     !variant.mark.stale || options.variants.contains(&variant.mark.key)
 }
 fn body_key(source: &Source) -> BodyKey {
-    let block = match Reference::parse_stored(&source.reference) {
-        Ok(Reference::Block { n, .. }) => Some(n),
+    match Reference::parse_stored(&source.reference) {
+        Ok(reference) => body_key_of(source, &reference),
+        Err(_) => (source.reference.clone(), source.block),
+    }
+}
+fn body_key_of(source: &Source, reference: &Reference) -> BodyKey {
+    let block = match reference {
+        Reference::Block { n, .. } => Some(*n),
         _ => source.block,
     };
     (source.reference.clone(), block)

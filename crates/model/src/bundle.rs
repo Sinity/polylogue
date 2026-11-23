@@ -396,7 +396,7 @@ pub enum BundleError {
     #[error("bundle declares blob records while with_blobs is false")]
     BlobFlagMismatch,
     #[error("invalid bundle read options: {0}")]
-    ReadOptions(String),
+    ReadOptions(#[from] crate::read::ReadError),
     #[error("bundle member path is not a canonical relative path")]
     InvalidPath,
     #[error("bundle record reference does not match its record identity")]
@@ -520,10 +520,7 @@ impl Manifest {
         if self.counts.blobs > 0 && !self.flags.with_blobs {
             return Err(BundleError::BlobFlagMismatch);
         }
-        self.flags
-            .read
-            .validate()
-            .map_err(|error| BundleError::ReadOptions(error.to_string()))?;
+        self.flags.read.validate()?;
         if let Some(inventory) = &self.inventory {
             inventory.validate()?;
         }

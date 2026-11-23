@@ -27,24 +27,6 @@ pub enum Line {
     Script,
 }
 
-/// Programs whose first non-option argument is a subcommand.
-const MULTI: &[&str] = &[
-    "cargo",
-    "git",
-    "nix",
-    "npm",
-    "pnpm",
-    "yarn",
-    "uv",
-    "go",
-    "docker",
-    "systemctl",
-    "bd",
-    "gh",
-    "kubectl",
-    "just",
-];
-
 /// Wrapper programs and the options of theirs that take a value.
 const WRAPPERS: &[(&str, &[&str])] = &[
     (
@@ -68,8 +50,9 @@ const WRAPPERS: &[(&str, &[&str])] = &[
     ("exec", &["-a"]),
 ];
 
-/// Global options of multi-command programs that take a value, skipped
-/// before the subcommand (`git -C dir status` → `git status`).
+/// Programs whose first non-option argument is a subcommand, with their
+/// global options that take a value, skipped before the subcommand
+/// (`git -C dir status` → `git status`).
 const GLOBAL_VALUE_OPTS: &[(&str, &[&str])] = &[
     (
         "git",
@@ -242,17 +225,9 @@ struct Script;
 /// One stage's program and arguments; `None` for a stage of assignments
 /// or redirections only.
 fn stage(words: Vec<String>) -> Option<Result<Stage, Script>> {
-    let mut rest = words.into_iter().peekable();
-    // Leading assignments and redirections.
-    while let Some(w) = rest.peek() {
-        if is_assignment(w) || w.starts_with('>') || w.starts_with('<') || w.starts_with("2>") {
-            rest.next();
-        } else {
-            break;
-        }
-    }
-    let words: Vec<String> = rest.collect();
     let mut rest = without_redirections(words).into_iter().peekable();
+    // Leading assignments.
+    while rest.next_if(|w| is_assignment(w)).is_some() {}
     loop {
         let first = rest.next()?;
         if first == "}" {
@@ -304,12 +279,15 @@ fn function_name(word: &str) -> Option<&str> {
     let name = word
         .strip_suffix("(){")
         .or_else(|| word.strip_suffix("()"))?;
-    (name
-        .chars()
+    is_identifier(name).then_some(name)
+}
+
+/// A shell identifier: a letter or underscore, then letters, digits or underscores.
+fn is_identifier(name: &str) -> bool {
+    name.chars()
         .next()
         .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
-    .then_some(name)
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// A word that redirects (`2>/dev/null`, `>out`, `2>&1`, `<in`), with
@@ -343,12 +321,7 @@ fn is_assignment(w: &str) -> bool {
     let Some((name, _)) = w.split_once('=') else {
         return false;
     };
-    !name.is_empty()
-        && name
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    is_identifier(name)
 }
 
 fn base_name(program: &str) -> &str {
@@ -359,13 +332,7 @@ impl Stage {
     /// The subcommand of a multi-command program, after its global
     /// options.
     pub fn subcommand(&self) -> Option<&str> {
-        if !MULTI.contains(&self.program.as_str()) {
-            return None;
-        }
-        let value_opts = GLOBAL_VALUE_OPTS
-            .iter()
-            .find(|(p, _)| *p == self.program)
-            .map_or(&[][..], |(_, o)| *o);
+        let (_, value_opts) = GLOBAL_VALUE_OPTS.iter().find(|(p, _)| *p == self.program)?;
         let mut args = self.args.iter();
         while let Some(a) = args.next() {
             if self.program == "cargo" && a.starts_with('+') {
@@ -428,7 +395,7 @@ impl Stage {
     /// --command …`, `nix shell … -c …`, `flock FILE …`, `bash -c '…'`.
     /// The normalized command keeps the runner; what a
     /// command does is read from the command it runs.
-    pub fn runs(&self) -> Option<Line> {
+    fn runs(&self) -> Option<Line> {
         let after = |flags: &[&str]| {
             let at = self.args.iter().position(|a| flags.contains(&a.as_str()))?;
             Some(&self.args[at + 1..])

@@ -80,10 +80,9 @@ fn class_kind(entry: &IndexEntry) -> ClassKind {
         EntryKind::Thinking => ClassKind::Thinking,
         EntryKind::ThinkingEncrypted => ClassKind::ThinkingEncrypted,
         EntryKind::Call
-            if matches!(
-                entry.action,
-                Some(ToolAction::FileEdit | ToolAction::FileWrite | ToolAction::Shell)
-            ) =>
+            if entry
+                .action
+                .is_some_and(ToolAction::changes_files_or_runs_commands) =>
         {
             ClassKind::ChangeCall
         }

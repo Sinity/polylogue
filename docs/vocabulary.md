@@ -277,7 +277,7 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **withdrawal**: an authored statement that takes annotations back; nothing
   is deleted.
 - **undo line**: the line a write prints that withdraws what it wrote.
-- **author**: who wrote a record (`operator`, `agent:<session>`,
+- **author**: who wrote a record (`operator`, `agent:<session>`, `agent:<origin>`, `agent`,
   `script:<unit>`, `unattributed`), computed by the daemon. **via**: the
   channel the write arrived on.
 - **judgment**: a verdict on one exact revision (`accept`, `reject`,

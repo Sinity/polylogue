@@ -126,6 +126,14 @@ stored_names!(ToolAction {
     Other => "other",
 });
 
+impl ToolAction {
+    /// Whether a call of this action edits files or runs a command: the calls
+    /// the changes reading shows.
+    pub fn changes_files_or_runs_commands(self) -> bool {
+        matches!(self, Self::FileEdit | Self::FileWrite | Self::Shell)
+    }
+}
+
 impl Block {
     /// Attachments carried directly or returned by a tool, in source order.
     pub fn attachments(&self) -> &[Attachment] {

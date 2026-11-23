@@ -55,6 +55,85 @@ fn bundle_header_refuses_earlier_and_newer_formats_before_contents() {
 }
 
 #[test]
+fn manifest_refuses_a_query_that_is_no_question_or_run_and_a_bad_position() {
+    for query in ["session:test:one", "not a reference", ""] {
+        let mut value = manifest();
+        value.query = query.into();
+        assert_eq!(value.validate(), Err(BundleError::InvalidQuery), "{query}");
+    }
+    let mut value = manifest();
+    value.read_at.generation.clear();
+    assert_eq!(value.validate(), Err(BundleError::InvalidPosition));
+    let mut value = manifest();
+    value.read_at.index = -1;
+    assert_eq!(value.validate(), Err(BundleError::InvalidPosition));
+    let mut value = manifest();
+    value.read_at.archive = -1;
+    assert_eq!(value.validate(), Err(BundleError::InvalidPosition));
+}
+
+#[test]
+fn event_identity_refuses_each_malformed_claim() {
+    let claim = SourceClaim {
+        input: "a".into(),
+        source: "codex".into(),
+        source_chain: 1,
+        source_start: Some(10),
+        source_end: Some(20),
+    };
+    assert!(claim.validate().is_ok());
+    for bad in [
+        SourceClaim {
+            source_chain: 0,
+            ..claim.clone()
+        },
+        SourceClaim {
+            source_end: None,
+            ..claim.clone()
+        },
+        SourceClaim {
+            source_start: None,
+            ..claim.clone()
+        },
+        SourceClaim {
+            source_start: Some(21),
+            ..claim.clone()
+        },
+        SourceClaim {
+            input: String::new(),
+            ..claim.clone()
+        },
+    ] {
+        assert_eq!(bad.validate(), Err(BundleError::InvalidEventIdentity));
+    }
+    let identity = |id: &str, sources: Vec<SourceClaim>| ImportedEventIdentity {
+        id: id.into(),
+        sources,
+    };
+    assert!(identity("e", vec![claim.clone()]).validate().is_ok());
+    assert_eq!(
+        identity("", vec![claim.clone()]).validate(),
+        Err(BundleError::InvalidEventIdentity)
+    );
+    assert_eq!(
+        identity("e", vec![]).validate(),
+        Err(BundleError::InvalidEventIdentity)
+    );
+    let mut event: Event = serde_json::from_value(
+        serde_json::json!({ "kind": "quota_report", "data": {"remaining": 7} }),
+    )
+    .unwrap();
+    event.after = Some(crate::MessageId::parse("test:one:m1").unwrap());
+    let record = InputEventRecord {
+        reference: "event:e".into(),
+        commit: 1,
+        identity: identity("e", vec![claim]),
+        event,
+    };
+    assert_eq!(record.validate(), Err(BundleError::InvalidEventAssociation));
+}
+
+#[test]
 fn inventory_names_are_relative_and_cannot_escape_or_alias_members() {
     for path in [
         "",

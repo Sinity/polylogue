@@ -88,14 +88,14 @@ fn a_notice_never_starts_or_resumes_a_session() {
 /// name is refused as unsupported.
 #[test]
 fn new_sessions_start_on_the_declared_control_protocol() {
-    assert_eq!(host_channel("codex"), Ok(HostProtocol::CodexAppServer));
+    assert_eq!(host_protocol("codex"), Ok(HostProtocol::CodexAppServer));
     assert_eq!(
-        host_channel("claude-code"),
+        host_protocol("claude-code"),
         Ok(HostProtocol::ClaudeStreamJson)
     );
-    assert_eq!(host_channel("gemini-cli"), Ok(HostProtocol::Acp));
-    assert_eq!(host_channel("hermes"), Ok(HostProtocol::Acp));
-    let refused = host_channel("chatgpt").unwrap_err();
+    assert_eq!(host_protocol("gemini-cli"), Ok(HostProtocol::Acp));
+    assert_eq!(host_protocol("hermes"), Ok(HostProtocol::Acp));
+    let refused = host_protocol("chatgpt").unwrap_err();
     assert_eq!(refused.reason, "unsupported");
     assert!(refused.detail.contains("chatgpt"));
     assert!(!HostProtocol::CodexAppServer.stdio());

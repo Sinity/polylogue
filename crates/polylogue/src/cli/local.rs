@@ -673,7 +673,7 @@ pub fn host(
     let session_id = v.request.arguments.str("session_id").map(str::to_owned);
     let (Some(argv), Ok(protocol)) = (
         crate::hosting::agent_command(&harness, session_id.as_deref()),
-        polylogue_model::live::channel::host_channel(&harness),
+        polylogue_model::live::channel::host_protocol(&harness),
     ) else {
         return fail(
             output,

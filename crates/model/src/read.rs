@@ -44,7 +44,7 @@ pub enum ReadError {
         accepted_views: Vec<View>,
     },
     #[error(
-        "unknown view {name:?}; views: transcript, dialogue, summary, context, links, changes, live, raw"
+        "unknown view {name:?}; views: transcript, dialogue, summary, context, links, changes, live, raw, trace"
     )]
     UnknownView { name: String },
     #[error("view {view} does not accept {option}; accepted by {accepted_by}")]

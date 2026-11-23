@@ -18,10 +18,18 @@ fn ids_round_trip_through_json() {
 
 #[test]
 fn bad_ids_are_refused() {
-    assert!(Origin::new("Claude").is_err());
-    assert!(Origin::new("").is_err());
-    assert!(SessionId::parse("no-colon").is_err());
-    assert!(SessionId::parse("codex:").is_err());
+    assert!(matches!(Origin::new("Claude"), Err(IdError::BadOrigin(_))));
+    assert!(matches!(Origin::new(""), Err(IdError::BadOrigin(_))));
+    assert!(matches!(
+        SessionId::parse("no-colon"),
+        Err(IdError::NoOrigin(_))
+    ));
+    assert!(matches!(
+        SessionId::parse("codex:"),
+        Err(IdError::EmptyNative)
+    ));
+    assert!(serde_json::from_str::<Origin>("\"Claude\"").is_err());
+    assert!(serde_json::from_str::<NativeId>("\"\"").is_err());
 }
 
 #[test]
@@ -29,6 +37,8 @@ fn blob_hash_round_trips_hex() {
     let h = BlobHash::of(b"abc");
     assert_eq!(BlobHash::parse(&h.to_string()).unwrap(), h);
     assert!(BlobHash::parse("zz").is_err());
+    let signed = format!("+f{}", &h.to_string()[2..]);
+    assert!(matches!(BlobHash::parse(&signed), Err(IdError::BadHash(_))));
 }
 
 #[test]

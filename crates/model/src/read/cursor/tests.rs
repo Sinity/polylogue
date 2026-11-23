@@ -29,6 +29,19 @@ fn seal(key: u8, generation: &str) -> CursorSeal {
     }
 }
 
+/// The sealed text with one letter of the target changed inside the payload
+/// and the original MAC kept, so the payload still decodes.
+fn with_changed_target(sealed: &str) -> String {
+    let (payload, mac) = sealed.split_once('.').unwrap();
+    let mut payload = unhex(payload).unwrap();
+    let at = payload
+        .windows(b"session:test:one".len())
+        .position(|window| window == b"session:test:one")
+        .unwrap();
+    payload[at + "session:test:on".len()] = b'f';
+    format!("{}.{mac}", hex(&payload))
+}
+
 #[test]
 fn sealed_cursor_opens_to_the_same_value() {
     let key = seal(7, "g1");
@@ -44,10 +57,8 @@ fn a_changed_byte_or_another_key_is_refused() {
         PageCursor::open(&sealed, &seal(8, "g1")),
         Err(CursorError::Invalid)
     );
-    let mut forged = sealed.clone().into_bytes();
-    forged[4] = if forged[4] == b'0' { b'1' } else { b'0' };
     assert_eq!(
-        PageCursor::open(&String::from_utf8(forged).unwrap(), &key),
+        PageCursor::open(&with_changed_target(&sealed), &key),
         Err(CursorError::Invalid)
     );
     assert_eq!(
@@ -130,7 +141,7 @@ fn a_cursor_sealed_with_the_same_key_for_another_generation_is_stale() {
 }
 
 #[test]
-fn physical_session_lower_bound_is_authenticated_and_old_default_encoding_opens() {
+fn physical_session_lower_bound_round_trips_and_old_default_encoding_opens() {
     let key = seal(7, "g1");
     let ordinary = cursor();
     let old = serde_json::to_value(&ordinary).unwrap();
@@ -145,6 +156,19 @@ fn physical_session_lower_bound_is_authenticated_and_old_default_encoding_opens(
         after: Some("block:test:one:m1#0".into()),
     });
     assert_eq!(PageCursor::open(&bound.seal(&key), &key).unwrap(), bound);
+    // The lower bound is inside the sealed payload: changing it is refused.
+    let sealed = bound.seal(&key);
+    let (payload, mac) = sealed.split_once('.').unwrap();
+    let mut payload = unhex(payload).unwrap();
+    let at = payload
+        .windows(b"block:test:one:m1#0".len())
+        .position(|window| window == b"block:test:one:m1#0")
+        .unwrap();
+    payload[at + "block:test:one:m".len()] = b'2';
+    assert_eq!(
+        PageCursor::open(&format!("{}.{mac}", hex(&payload)), &key),
+        Err(CursorError::Invalid)
+    );
 }
 
 #[test]

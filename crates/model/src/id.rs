@@ -46,7 +46,7 @@ impl fmt::Display for Origin {
 }
 
 /// An identifier as the source wrote it. Opaque; may contain colons.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
 pub struct NativeId(String);
 
@@ -61,6 +61,13 @@ impl NativeId {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for NativeId {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(d)?;
+        Self::new(&text).map_err(serde::de::Error::custom)
     }
 }
 
@@ -202,7 +209,7 @@ impl BlobHash {
 
     pub fn parse(hex: &str) -> Result<Self, IdError> {
         let bad = || IdError::BadHash(hex.to_owned());
-        if hex.len() != 64 {
+        if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(bad());
         }
         let mut out = [0u8; 32];
