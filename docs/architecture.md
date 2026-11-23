@@ -118,7 +118,7 @@ that needs the archive with no daemon running fails with `not_running`, naming t
 | segment log | the bytes of every input revision, as content-addressed blobs in append-only segment files of seekable zstd frames | nothing: it is the source |
 | `archive.db` | the record, which cannot be recomputed: inputs, revisions, chains, extents, observations; the request log (every query run and kept result); annotations, settings among them; alternates; delivery records | nothing |
 | `index.db` and its full-text files | everything parsed and derived: each chain's reading, the shown sessions, messages, blocks, tool calls, attachments and links composed from them, each text once, derived columns and tables, the search indexes; which reading it holds of each chain and the record position it has taken in. Built whole in private files and installed when the build ends ([durability](#durability)) | the stored bytes and `archive.db` |
-| embeddings store | message vectors for semantic ranking, selected by the [paid-vector restore policy](search.md#what-is-embedded), with earlier values preserved in original source stores | the model that made them (vectors bought from a paid provider are kept as data) |
+| embeddings store | message and annotation vectors for semantic ranking, selected by the [paid-vector restore policy](search.md#what-is-embedded), with earlier values preserved in original source stores | the model that made them (vectors bought from a paid provider are kept as data) |
 
 The segment container, blob hashing and member access are the common
 [`hashed-blobs`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/hashed-blobs/README.md)

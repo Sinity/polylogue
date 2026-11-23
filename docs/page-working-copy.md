@@ -154,7 +154,7 @@ Leaving one text (edited or not) and checking in writes one revision that revise
 - headings become sections and paragraphs notes, one slot each;
 - Markdown links to other files imported in the same request become page links; `[[Name]]` and `[[Name|text]]` become page links, red until those pages exist;
 - URLs become `url:` links;
-- footnotes become citations of outside sources, shown `○ not checked`, unless they name Polylogue references, which resolve and are checked like any citation;
+- footnotes become citations of outside sources, shown `○ outside, not checked`, unless they name Polylogue references, which resolve and are checked like any citation;
 - front-matter `title` and `tags` become the title and tags; front-matter `aliases` are ignored with a note, since a page has one name;
 - local images are not copied; their links stay as text.
 

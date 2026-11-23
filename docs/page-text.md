@@ -35,7 +35,7 @@ weekday_offset() compared with >= instead of >.[^1] Errors fell to ![34 of 1,210
 
 ## Links
 
-`[text](REF)` or `<REF>` links to anything with a reference. A link to a page that does not exist is a red link: it is stored waiting and attaches when the page is created, and the shipped query `wanted` lists such names with how many link to each ([pages.md](pages.md#finding-pages)). A link to a section (`page:X#anchor`) is stored by the section's slot root, so renaming the heading breaks nothing. Pasting a bare reference or a provider URL into the web editor makes a link ([web-pages.md](web-pages.md#editing)).
+`[text](REF)` or `<REF>` links to anything with a reference. A link to a page that does not exist is a red link: it is stored waiting and attaches when the page is created, and the shipped query `wanted` lists such names with how many link to each ([pages.md](pages.md#finding-pages)). A link to a section (`page:X#anchor`) is stored by the section's slot root, so renaming the heading breaks nothing. Pasting a bare reference or a provider URL into the web editor makes a link, or a card when it is pasted alone on a line ([web-pages.md](web-pages.md#copy-and-paste)).
 
 ## Citations
 
@@ -113,7 +113,7 @@ A report states its numbers this way: `First builds fell from ![41 min](result:0
 
 An inclusion shows another annotation's or page section's text as part of this page, in step with its source.
 
-- **What can be included:** one annotation (`![](annotation:01JE4K8P "text")`), a page section (`![](page:morrow/architecture#parser "text")`, the heading and everything under it), a whole page (`![](page:morrow/glossary "text")`), and a span of an annotation revision (`span:annotation:<root>@<rev>#c=…`, shown as an excerpt, since a span is fixed).
+- **What can be included:** one annotation (`![](annotation:01JE4K8P "text")`), a page section (`![](page:morrow/architecture#parser "text")`, the heading and everything under it), a whole page (`![](page:morrow/glossary "text")`). A span of an annotation revision (`span:annotation:<root>@<rev>#c=…`) is an excerpt, not an inclusion, since a span is fixed.
 - **Placing a note that lives elsewhere is an inclusion.** The mechanism is the slot; the form `text` and a home other than this page make it one. Its home is shown: `from page:morrow/architecture`, or `note about codex:01a20000-0005` for a note written about a session.
 - **Current or fixed.** `current` follows the source's current revision and marks `revised since you looked` from the reader's seen mark. `fixed` shows the named revision and, once the source moves on, `source revised (r3 → r5) · show diff · take r5`.
 - **Editing included text edits its source.** The editor says `this text is also on page:morrow/architecture (2 pages)` before saving; the revision changes it everywhere it is included. A fixed inclusion is read-only: editing one is refused with the two choices, switch it to current or edit the source.
@@ -135,7 +135,7 @@ The query form is the unit `links` (record, role, target, target_kind, target_st
 
 Polylogue deletes nothing, so a source never disappears: it changes, is revised or withdrawn, or turns out never to exist.
 
-| Event | Link | Citation | Live embed | Kept embed | Current inclusion | Fixed inclusion |
+| Event | Link | Citation | Live cell | Kept answer | Current inclusion | Fixed inclusion |
 |---|---|---|---|---|---|---|
 | a re-parse moves the text's offsets | — | the quote and context are found again: `✓ re-anchored` | shows the new reading | rows unchanged; `computed under reading X, now Y` | — | — |
 | a re-parse changes the text | — | `≠ source changed`: the text as cited and the text now | the new text | unchanged | — | — |
@@ -146,7 +146,7 @@ Polylogue deletes nothing, so a source never disappears: it changes, is revised 
 | a query's rows change | — | — | shows the new rows | unchanged; **compare with now** lists rows added and gone | — | — |
 | a page is renamed or withdrawn | still resolves; the old name redirects; withdrawn is marked | — | — | — | follows; withdrawn dimmed | — |
 
-A citation of a target that is not stored yet gets its hash when the target arrives. Changes reach people through what already exists: the page header's counts, `read --view changes` ([pages.md](pages.md#time-and-checkpoints)), a page watch (a citation whose source changed is one of its events), the shipped query `changed-sources`, and the brief of any session in the page's scope (`page:morrow/architecture: 1 source changed since cited`).
+A citation of a target that is not stored yet gets its hash when the target arrives. Changes reach people through what already exists: the page header's counts, `read --view changes` ([pages.md](pages.md#time-and-checkpoints)), a page watch (a citation whose source changed is one of its events), the shipped query `changed-sources`, and the brief of any session in the page's scope (`1 source changed`, listed under the page).
 
 ## Grounding
 

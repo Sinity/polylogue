@@ -25,7 +25,7 @@ Tab completes every position · polylogue help is one screen
 
 - The screen is the shipped page `page:home` rendered for a terminal ([pages.md](pages.md#templates-and-shipped-pages)); revising that page changes the screen. Rows new since the reader's seen mark ([reading.md](reading.md#ranges)) are marked.
 - **Pages changed since you looked** (`edits` with `since:seen`) and **Open items** (`open`) follow `recent here` when they have rows ([page-templates.md](page-templates.md#shipped-pages-and-templates)).
-- Each section is a shipped saved query's listing (`waiting`, `running`, `recent` filtered to `here`; [saved-queries.md](saved-queries.md#shipped-saved-queries)), so the same rows are one word away; rows are numbered, so row numbers work at once.
+- Each section is a shipped saved query's listing (`waiting`, `running` and `recent`, the last narrowed to `here`; [saved-queries.md](saved-queries.md#shipped-saved-queries)), so the same rows are one word away; rows are numbered, so row numbers work at once.
 - The `next:` line is built from what is on screen: answer the first waiting session, follow the first running one, this repository this week. With nothing waiting it offers a recent session's `read` and the `brief` of a recent phrase.
 - The last line shows while the archive has recorded fewer than about twenty runs by the operator, counted from the `runs` unit with no separate state.
 - **Daemon down:** one line naming the service and how to start it, then `polylogue demo DIR`; exit 6.
@@ -60,7 +60,7 @@ It opens only when standard input and a display output are terminals and no mach
 
 ### Keys
 
-The picker and the web use the same letter for the same act wherever both offer it. Movement and copying take their letters from the common [`web-shell`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/web-shell/README.md)'s key table; the picker's own table adds its reading, printing, mode and preview keys and drives both dispatch and the footer. Polylogue's web bindings are in [web.md](web.md#keys). The picker uses Ctrl forms for letters that would otherwise type into its prompt.
+The picker and the web use the same letter for the same act wherever both offer it, except marking (`Tab` in the picker, `x` on the web) and rejecting a judged annotation (`Ctrl-x` in the picker, `r` on the web's review card), whose picker letters are taken by the prompt's reading and mark keys. Movement and copying take their letters from the common [`web-shell`](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/web-shell/README.md)'s key table; the picker's own table adds its reading, printing, mode and preview keys and drives both dispatch and the footer. Polylogue's web bindings are in [web.md](web.md#keys). The picker uses Ctrl forms for letters that would otherwise type into its prompt.
 
 | Act | Key |
 |---|---|
@@ -158,7 +158,7 @@ With `--json` the reply has `outcome: "error"` and an `error` object on standard
 
 ## Output
 
-- **Machine formats:** `--json` selects the typed reply. Finite daemon replies use the reply envelope of [query.md](query.md#replies); local commands use their declared output. Listings accept `--fields a,b`, `--page-size N` and `--cursor C`; reads take `--budget N` and `--cursor C`. Each operation's JSON schema is generated from its reply type and published by `help --all --json`; MCP tools carry no output schema.
+- **Machine formats:** `--json` selects the typed reply. Finite daemon replies use the reply envelope of [query.md](query.md#replies); local commands use their declared output. Listings accept `--fields a,b`, `--page-size N`, `--cursor C` and `--budget N`; reads take `--budget N` and `--cursor C`. Each operation's JSON schema is generated from its reply type and published by `help --all --json`; MCP tools carry no output schema.
 - **Outcome and notes:** the operation that assembles a reply decides its outcome (`ok`, `empty`, `degraded`, `error`) and its notes; every surface carries both unchanged, and no surface infers an outcome from the value. On a terminal the notes go to standard error after the value.
 - **Colour and decoration** only when standard output is a terminal, `NO_COLOR` is unset and `TERM` is not `dumb`; standard error is judged on its own. There is no `--plain` option, because detection decides. Only the 16 ANSI colours are used, so the terminal's palette applies.
 - **Width:** the terminal's; 100 columns for pipes, so piped columns are stable.
@@ -220,7 +220,7 @@ step 1:     would tag each matched session needs-tests; needs --all if more than
 ## Defaults a person would guess
 
 - The default unit is sessions: a session with its continuations and subagents ([sessions.md](sessions.md#logical-sessions)).
-- A word search covers prose and tool input and output; the footer says what was searched; it ranks by relevance fused with recency, and says so.
+- A word search covers prose and tool input and output; the footer says what was searched; it ranks by relevance, ties going to the more recent message, and says so.
 - Lists are newest first and fill one screen (20 sessions, 50 other rows); the pager takes over for more.
 - Reads show the transcript with tool calls on one line and thinking folded.
 - `here` is the repository with its worktrees, not the directory.
@@ -233,7 +233,7 @@ step 1:     would tag each matched session needs-tests; needs --all if more than
 
 For a person, on the Morrow archive:
 
-1. `polylogue` shows the orientation screen with numbered rows and three `next:` lines.
+1. `polylogue` shows the orientation screen with numbered rows and a `next:` line of three commands.
 2. Running the third, `polylogue 'repo:here since:7d'`, gives a numbered table whose footer offers `polylogue @1 read`.
 3. `polylogue @1 read` shows the transcript in the pager; `q` leaves it.
 4. Typing `polylogue 'repo:here since:7d' ` and pressing Tab lists the verbs with one line each; choosing `pick read` opens the picker with its keys in the footer.

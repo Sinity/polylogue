@@ -27,7 +27,7 @@ generated page of the thing they belong to, or on the area page that owns them.
   identity>.db` (with its write-ahead files) while the new index is rebuilt
   from the stream; status shows it until the rebuild reaches the stream's
   latest position.
-- **embeddings store**: message vectors for semantic ranking, kept apart
+- **embeddings store**: message and annotation vectors for semantic ranking, kept apart
   because vectors cost money or time to make.
 - **segment log**: append-only files of compressed frames holding every blob;
   a **segment** is one such file.
@@ -119,8 +119,8 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **parser**: reads one origin's chains into parsed rows; one per origin.
 - **reading version**: a parser module's version; changing it re-parses the
   chains that module read.
-- **record**: one entry in an input (a JSON line, an export item, a row). Each
-  record ends **used**, **skipped** (with a reason) or **unreadable**: its
+- **input record**: one entry in an input (a JSON line, an export item, a
+  row). Each input record ends **used**, **skipped** (with a reason) or **unreadable**: its
   **record outcome**.
 - **record wrapper**: the outer JSON of a harness record around its message.
 - **stated**: a value as a source states it, before it is checked (a stated
@@ -540,7 +540,8 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **write identity**: the identity of a prepared write, saved with it and
   reused on retry.
 - **move to Sinex**: the one-way move of a standalone archive to primary mode
-  through ordinary import and deployment configuration.
+  by attaching the archive to Sinex in place, through deployment
+  configuration; nothing is imported or parsed again.
 
 ## Development
 
