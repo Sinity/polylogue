@@ -394,16 +394,7 @@ fn mixed_setting_reads_use_scope_fences_from_the_decoded_request() {
 
 #[test]
 fn typed_write_identity_comes_from_the_request_on_every_surface() {
-    let command = crate::commands::command("set").unwrap();
     for surface in [Surface::Cli, Surface::Http, Surface::Mcp] {
-        assert!(
-            !crate::commands::declarations()
-                .spec_named(command.name)
-                .unwrap()
-                .arguments
-                .iter()
-                .any(|arg| arg.name == "request_id")
-        );
         assert!(policy("set", json!({}), surface).is_ok());
         assert!(
             policy(

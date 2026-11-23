@@ -335,14 +335,14 @@ fn internal_completion_http_returns_candidates() {
     let (answer, exit) = http_answer(&web, command, &arguments, "internal-http-completion");
     assert_eq!(exit, Some(0));
     let candidates = answer.unwrap();
-    assert!(
-        candidates
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|candidate| candidate["value"] == "error"),
-        "{candidates}"
-    );
+    // The outcomes are ok, error, pending and unknown; only `error` starts with `err`.
+    let values: Vec<&str> = candidates
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|candidate| candidate["value"].as_str().unwrap())
+        .collect();
+    assert_eq!(values, ["error"], "{candidates}");
 }
 
 #[test]

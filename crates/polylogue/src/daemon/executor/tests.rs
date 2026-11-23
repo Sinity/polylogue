@@ -125,5 +125,8 @@ fn work_that_ignores_its_cancellation_does_not_hold_up_a_stop() {
     let (_started, _never_released) = hold(&executor, Class::Ordinary);
     let started = Instant::now();
     assert_eq!(executor.stop(Duration::from_millis(200)), 1);
-    assert!(started.elapsed() < WAIT, "the stop waited past its bound");
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the stop waited past its 200 ms bound"
+    );
 }

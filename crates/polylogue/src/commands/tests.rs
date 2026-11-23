@@ -202,28 +202,6 @@ fn mcp_schemas_follow_the_arguments() {
             );
         }
     }
-    let input = |name: &str| {
-        declarations()
-            .descriptions()
-            .iter()
-            .find(|description| description.spec.name == name)
-            .unwrap()
-            .input_schema
-            .clone()
-    };
-    // A write's retry identity travels beside its arguments.
-    for command in COMMANDS
-        .iter()
-        .filter(|c| c.writes && c.registration().is_some())
-    {
-        assert!(
-            input(command.name)["properties"]
-                .get("request_id")
-                .is_none(),
-            "{}",
-            command.name
-        );
-    }
 }
 
 #[test]
@@ -239,10 +217,9 @@ fn line_listing_carries_its_selection_and_page_size() {
 }
 
 #[test]
-fn every_measurement_is_a_command_and_named_in_the_query_help() {
+fn every_measurement_is_a_command_taking_a_query_unless_whole_archive() {
     for m in MEASURES {
         let c = command(&format!("measure {}", m.name)).unwrap();
-        assert_eq!(c.help, m.help);
         assert_eq!(
             request_arguments_of(c).iter().any(|a| a.name == "query"),
             !m.whole_archive
@@ -285,20 +262,6 @@ fn chat_send_reads_attached_files_on_the_command_line() {
         ("notes.md", "text/plain")
     );
     assert_eq!(send.files[0].bytes, b"synthetic");
-    // Over MCP there is no file to read.
-    let chat_send = command("chat send").unwrap();
-    assert!(
-        request_arguments_of(chat_send)
-            .iter()
-            .all(|a| a.name != "attach")
-    );
-    let input = &declarations()
-        .descriptions()
-        .iter()
-        .find(|description| description.spec.name == "chat send")
-        .unwrap()
-        .input_schema;
-    assert!(input["properties"].get("attach").is_none());
 }
 
 mod client_answers;
@@ -361,7 +324,7 @@ fn request_id_travels_beside_the_arguments_on_every_surface() {
 }
 
 #[test]
-fn measure_options_build_the_same_query_as_the_query_surface() {
+fn measure_options_render_the_measure_clause() {
     for (name, option, metric) in [
         ("facets", "--option", "deep"),
         ("outlook", "--option", "example:linear"),

@@ -90,10 +90,11 @@ fn explicit_primary_configuration_resolves_credentials_beside_its_own_file() {
         config.password_file,
         Some(selected.join("producer-password"))
     );
-    assert!(matches!(
-        startup.config.primary_auth,
-        polylogue_sinex::Authentication::Password(_)
-    ));
+    let polylogue_sinex::Authentication::Password(password) = &startup.config.primary_auth else {
+        panic!("primary password was not resolved");
+    };
+    // The file's trailing newline is not part of the password.
+    assert_eq!(password, "synthetic-producer-password");
 }
 
 #[test]
@@ -140,7 +141,10 @@ fn standalone_day_uses_the_named_zone_across_dst_and_refuses_invalid_zones() {
         root.path(),
         "[day]\nzone='Invalid/Zone'\nstart='06:00:00'\n",
     );
-    assert!(Startup::load(&process(root.path()), Overrides::default()).is_err());
+    assert!(matches!(
+        Startup::load(&process(root.path()), Overrides::default()),
+        Err(Error::Invalid(_))
+    ));
 }
 #[test]
 fn configuration_precedence_is_file_then_flags_then_meaningful_environment() {
@@ -264,6 +268,16 @@ fn outlets_use_typed_arguments_and_stable_resolved_identity() {
     assert_eq!(
         config.identity().unwrap(),
         SignalDeployment::load(&path).unwrap().identity().unwrap()
+    );
+    let before = config.identity().unwrap();
+    std::fs::write(
+        &path,
+        "[action_commands.refresh]\nprogram='bin/refresh'\narguments=['--mode','twice']\n",
+    )
+    .unwrap();
+    assert_ne!(
+        SignalDeployment::load(&path).unwrap().identity().unwrap(),
+        before
     );
     // The route function decides where a notice goes; no route is configured.
     std::fs::write(&path, "[notifications]\nroute='command'\n").unwrap();
@@ -406,7 +420,7 @@ fn synthetic_archive_gets_an_explicit_day_without_operator_outlets() {
 }
 
 #[test]
-fn captured_terminal_hints_disable_both_sinks_without_environment_rereads() {
+fn captured_terminal_hints_disable_color_on_both_sinks() {
     let environment = EnvSnapshot::from_values([("TERM".into(), "dumb".into())]);
     let output = OutputConfig::new(
         true,
