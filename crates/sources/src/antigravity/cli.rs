@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 pub const LOCATION: &str =
     ".gemini/antigravity-cli/brain/*/.system_generated/logs/transcript_full.jsonl";
 const TYPES: &[&str] = &[
@@ -306,7 +306,8 @@ fn action(tool: &str) -> ToolAction {
         "run_command" => ToolAction::Shell,
         "view_file" => ToolAction::FileRead,
         "grep_search" | "list_dir" | "list_directory" => ToolAction::Search,
-        "code_action" | "write_to_file" | "replace_file_content" | "multi_replace_file_content" => {
+        "write_to_file" => ToolAction::FileWrite,
+        "code_action" | "replace_file_content" | "multi_replace_file_content" => {
             ToolAction::FileEdit
         }
         _ => ToolAction::Other,

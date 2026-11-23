@@ -8,7 +8,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 use crate::document::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, text_of, time_of};
@@ -180,14 +180,16 @@ impl ExportParser for GeminiCli {
     ) -> Result<(), String> {
         let m: Json = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
         let m = &m;
-        let Some(sid) = self.state.session.clone() else {
-            return Ok(());
-        };
         let kind = m
             .str("type")
             .filter(|s| !s.is_empty())
             .unwrap_or("?")
             .to_owned();
+        let Some(sid) = self.state.session.clone() else {
+            sink.records
+                .record(&kind, &RecordOutcome::unreadable("no session"));
+            return Ok(());
+        };
         sink.records.fields(&kind, m, &MESSAGE_FIELDS);
         let role = match kind.as_str() {
             "user" => Role::User,

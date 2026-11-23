@@ -310,3 +310,39 @@ fn unknown_summary_parts_leave_an_explicit_boundary_without_an_empty_message() {
         .unwrap();
     assert!(boundary.data["summary"].is_null());
 }
+
+#[test]
+fn a_message_without_a_time_stays_after_the_message_before_it() {
+    let mut untimed = m(
+        "b",
+        "assistant",
+        "a",
+        "2026-01-01T00:00:00Z",
+        json!([{"type": "text", "text": "b"}]),
+    );
+    untimed["created_at"] = Json::Null;
+    let step = run(vec![conv(vec![
+        m(
+            "a",
+            "human",
+            ROOT_PARENT,
+            "2026-01-01T00:00:10Z",
+            json!([{"type": "text", "text": "a"}]),
+        ),
+        untimed,
+        m(
+            "c",
+            "human",
+            "b",
+            "2026-01-01T00:00:20Z",
+            json!([{"type": "text", "text": "c"}]),
+        ),
+    ])]);
+    let texts: Vec<_> = step
+        .output
+        .messages
+        .iter()
+        .map(|r| r.message.text())
+        .collect();
+    assert_eq!(texts, ["a", "b", "c"]);
+}

@@ -204,3 +204,10 @@ fn listing_a_directory_is_a_search_and_viewing_a_file_is_a_read() {
     assert_eq!(action("list_directory"), ToolAction::Search);
     assert_eq!(action("view_file"), ToolAction::FileRead);
 }
+
+#[test]
+fn file_tools_are_writes_or_edits_by_what_they_do() {
+    assert_eq!(action("write_to_file"), ToolAction::FileWrite);
+    assert_eq!(action("replace_file_content"), ToolAction::FileEdit);
+    assert_eq!(action("multi_replace_file_content"), ToolAction::FileEdit);
+}

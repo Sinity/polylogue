@@ -113,6 +113,16 @@ impl ExportParser for History {
             .map_or((body, None), |(request, response)| {
                 (request, Some(response))
             });
+        // Parse everything that can fail before touching parser state, so an
+        // unreadable element leaves no session identity, content-ID counts or
+        // parent link behind.
+        let mut messages = parse_messages(request)?;
+        let reply = response
+            .map(|response| {
+                let (at, body) = response.split_once('\n').unwrap_or((response, ""));
+                parse_messages(body).map(|replies| (at, replies))
+            })
+            .transpose()?;
         let first = self.native.is_none();
         let native = self
             .native
@@ -129,7 +139,6 @@ impl ExportParser for History {
                 .sessions
                 .push(Session::new(sid.clone(), SessionKind::Main));
         }
-        let mut messages = parse_messages(request)?;
         let copied = messages
             .iter()
             .zip(&self.context)
@@ -138,9 +147,7 @@ impl ExportParser for History {
         for (role, text) in &messages[copied..] {
             self.emit(&sid, *role, text.clone(), header, sink)?;
         }
-        if let Some(response) = response {
-            let (at, body) = response.split_once('\n').unwrap_or((response, ""));
-            let replies = parse_messages(body)?;
+        if let Some((at, replies)) = reply {
             for (role, text) in replies {
                 self.emit(&sid, role, text.clone(), at, sink)?;
                 messages.push((role, text));
@@ -233,9 +240,7 @@ fn parse_messages(text: &str) -> Result<Vec<(LogRole, String)>, String> {
     let mut current: Option<(LogRole, Vec<&str>)> = None;
     for line in text.lines() {
         if line == "-------" {
-            if let Some((role, lines)) = current.take() {
-                messages.push((role, lines.join("\n")));
-            }
+            flush(&mut current, &mut messages);
             continue;
         }
         if line.is_empty() {
@@ -254,16 +259,19 @@ fn parse_messages(text: &str) -> Result<Vec<(LogRole, String)>, String> {
         if current
             .as_ref()
             .is_some_and(|(previous, _)| *previous != role)
-            && let Some((role, lines)) = current.take()
         {
-            messages.push((role, lines.join("\n")));
+            flush(&mut current, &mut messages);
         }
         current.get_or_insert((role, Vec::new())).1.push(body);
     }
-    if let Some((role, lines)) = current {
+    flush(&mut current, &mut messages);
+    Ok(messages)
+}
+
+fn flush(current: &mut Option<(LogRole, Vec<&str>)>, messages: &mut Vec<(LogRole, String)>) {
+    if let Some((role, lines)) = current.take() {
         messages.push((role, lines.join("\n")));
     }
-    Ok(messages)
 }
 struct Companion;
 impl DocumentParser for Companion {

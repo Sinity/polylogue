@@ -18,7 +18,7 @@
 use crate::document::first_byte;
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 use crate::fields::ExpectedType as T;
 pub mod assets;
@@ -322,7 +322,7 @@ fn conversation_with_sessions(
         .str("default_model_slug")
         .filter(|s| !s.is_empty())
         .map(str::to_owned);
-    let mut rows: Vec<(f64, usize, Message)> = Vec::new();
+    let mut rows: Vec<(i128, usize, Message)> = Vec::new();
     let mut nodes: Vec<(&String, &Json)> = mapping.iter().collect();
     nodes.sort_by_key(|(id, _)| places.get(id.as_str()).copied());
     for (index, (node_id, node)) in nodes.into_iter().enumerate() {
@@ -342,10 +342,12 @@ fn conversation_with_sessions(
         sink.records.fields(&kind, msg, &MESSAGE_FIELDS);
         match message(&sid, node_id, msg, &tree, default_model.as_deref()) {
             Ok(m) => {
+                // The same reading as the stored time, so a string time
+                // orders a message where it is stored.
                 let time = msg
                     .get("create_time")
-                    .and_then(Json::as_f64)
-                    .unwrap_or(f64::MIN);
+                    .and_then(time_of)
+                    .map_or(i128::MIN, |time| time.unix_ns());
                 rows.push((time, index, m));
                 sink.records.record(&kind, &RecordOutcome::Used);
             }
@@ -354,15 +356,15 @@ fn conversation_with_sessions(
     }
     // A message without a time keeps its place in the tree among its
     // neighbours: it takes the time of the message before it.
-    let mut last = f64::MIN;
+    let mut last = i128::MIN;
     for row in &mut rows {
-        if row.0 == f64::MIN {
+        if row.0 == i128::MIN {
             row.0 = last;
         } else {
             last = row.0;
         }
     }
-    rows.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    rows.sort_by_key(|row| (row.0, row.1));
     // Messages an earlier conversation holds are that conversation's: this
     // one is a branch of it. It keeps only its own tail and a fork link at
     // the last message they share.
