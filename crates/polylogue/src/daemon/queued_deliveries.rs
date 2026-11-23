@@ -282,23 +282,22 @@ fn hand_over(state: &mut State, writes: &WriterSender) -> Result<(), StoreError>
                 }
                 return Err(error);
             }
-            Ok(Queued::Committing(committed)) if outcome.is_some() => {
-                state.outcomes.push_back(PendingOutcome {
-                    request: outcome.expect("outcome submission retained"),
-                    committed,
-                });
-            }
-            Ok(Queued::Committing(committed)) => {
-                if let Some(advice) = state.advice.get_mut(&id) {
-                    advice.committed = Some(committed);
-                } else if let Some(latest) = next
-                    .recipient
-                    .and_then(|recipient| state.latest.get_mut(&recipient))
-                    .filter(|latest| latest.request == id)
-                {
-                    latest.committed = Some(committed);
+            Ok(Queued::Committing(committed)) => match outcome {
+                Some(request) => state
+                    .outcomes
+                    .push_back(PendingOutcome { request, committed }),
+                None => {
+                    if let Some(advice) = state.advice.get_mut(&id) {
+                        advice.committed = Some(committed);
+                    } else if let Some(latest) = next
+                        .recipient
+                        .and_then(|recipient| state.latest.get_mut(&recipient))
+                        .filter(|latest| latest.request == id)
+                    {
+                        latest.committed = Some(committed);
+                    }
                 }
-            }
+            },
             Ok(Queued::Full(submission)) => {
                 state.waiting.push_front(Waiting {
                     request: submission.request,

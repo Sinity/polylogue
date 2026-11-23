@@ -245,7 +245,7 @@ pub(crate) fn context(
                     Ask::Recall { text, .. } => Some(text.as_str()),
                     _ => None,
                 };
-                Box::new(crate::daemon::execution::refusal(
+                Box::new(crate::daemon::execution::stopped_read(
                     &e, "context", text, limit,
                 ))
             }
@@ -281,7 +281,7 @@ pub(crate) fn context(
             Ask::Recall { text, .. } => Some(text.as_str()),
             _ => None,
         };
-        return crate::daemon::execution::refusal(&error, "context", text, limit);
+        return crate::daemon::execution::stopped_read(&error, "context", text, limit);
     }
     let mut delivery = None;
     if let Some(sender) = sender

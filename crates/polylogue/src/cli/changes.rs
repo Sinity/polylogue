@@ -18,7 +18,7 @@ pub fn run(
 ) -> ExitCode {
     let timeout = call
         .deadline
-        .duration(Some(crate::daemon::execution::timeout()));
+        .duration(Some(crate::daemon::execution::default_read_deadline()));
     let archive = Archive::at(&startup.config.archive);
     let mut request = call.clone();
     // The feed's arguments: only the last applied position.

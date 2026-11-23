@@ -58,3 +58,17 @@ fn here_uses_recorded_repository_roots_for_the_worktree_paths() {
     assert_eq!(scoped.paths, vec![main.to_str().unwrap()]);
     assert_eq!(scoped.repo_roots, vec!["a".repeat(40)]);
 }
+
+#[test]
+fn here_refuses_a_relative_working_directory() {
+    let error = paths(Path::new("relative")).unwrap_err();
+    assert_eq!(error.error.code.as_deref(), Some("bad_request"));
+}
+
+#[test]
+fn here_refuses_a_git_file_that_is_not_a_directory_pointer() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join(".git"), "worktree: x\n").unwrap();
+    let error = paths(temp.path()).unwrap_err();
+    assert_eq!(error.error.code.as_deref(), Some("bad_value"));
+}

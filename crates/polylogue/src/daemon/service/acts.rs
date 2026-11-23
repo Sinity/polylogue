@@ -79,18 +79,18 @@ act!(Start, protocol::Start, |a, call| {
             a.harness
                 .as_deref()
                 .is_some_and(|name| matches!(name, "chatgpt" | "claude-ai" | "grok")),
-            "in a web chat",
+            format!("--in {}", a.harness.as_deref().unwrap_or_default()),
         ),
-        (a.submit, "submit"),
-        (a.model.is_some(), "model"),
-        (a.effort.is_some(), "effort"),
-        (a.project.is_some(), "project"),
-        (!a.attach.is_empty(), "attach"),
+        (a.submit, "--submit".to_owned()),
+        (a.model.is_some(), "--model".to_owned()),
+        (a.effort.is_some(), "--effort".to_owned()),
+        (a.project.is_some(), "--project".to_owned()),
+        (!a.attach.is_empty(), "--attach".to_owned()),
     ];
     if let Some((_, option)) = pending.into_iter().find(|(used, _)| *used) {
         return Ok(error(
             polylogue_model::Code::NotBuilt,
-            format!("start --{option} is not built yet"),
+            format!("start {option} is not built yet"),
         ));
     }
     if a.harness.is_none() && a.role.is_none() {

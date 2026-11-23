@@ -2,6 +2,7 @@
 //! payload observation release their SQL readers independently.
 use super::service::{Daemon, error, store_error};
 use command_surface::Answer;
+use polylogue_model::LockExt as _;
 use polylogue_sources::{
     Capture, Parse,
     schema::{Framing, Observer, Schema, Selection},
@@ -103,7 +104,7 @@ struct Activity {
 pub(super) struct Foreground<'a>(&'a IdleGate);
 impl Drop for Foreground<'_> {
     fn drop(&mut self) {
-        let mut s = self.0.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = self.0.state.locked();
         s.foreground -= 1;
         self.0.changed.notify_all();
     }
@@ -111,20 +112,13 @@ impl Drop for Foreground<'_> {
 pub(super) struct BackgroundTurn<'a>(&'a IdleGate);
 impl Drop for BackgroundTurn<'_> {
     fn drop(&mut self) {
-        self.0
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .background = false;
+        self.0.state.locked().background = false;
         self.0.changed.notify_all();
     }
 }
 impl IdleGate {
     pub(super) fn foreground(&self) -> Foreground<'_> {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .foreground += 1;
+        self.state.locked().foreground += 1;
         Foreground(self)
     }
     /// Waits on this thread until `ready` holds, then runs `claim` under the
@@ -140,11 +134,11 @@ impl IdleGate {
         let _wake = limit.as_ref().map(|limit| {
             let shared = Arc::clone(&self.0);
             limit.cancellation.on_cancel(move || {
-                let _held = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+                let _held = shared.state.locked();
                 shared.changed.notify_all();
             })
         });
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self.state.locked();
         let mut before_waiting = Some(before_waiting);
         while !ready(&state) {
             if let Some(release) = before_waiting.take() {
@@ -152,13 +146,8 @@ impl IdleGate {
             }
             check()?;
             state = match limit.as_ref().and_then(ReadLimit::remaining) {
-                Some(left) => {
-                    self.changed
-                        .wait_timeout(state, left)
-                        .unwrap_or_else(|e| e.into_inner())
-                        .0
-                }
-                None => self.changed.wait(state).unwrap_or_else(|e| e.into_inner()),
+                Some(left) => polylogue_model::unpoisoned(self.changed.wait_timeout(state, left)).0,
+                None => polylogue_model::unpoisoned(self.changed.wait(state)),
             };
         }
         check()?;

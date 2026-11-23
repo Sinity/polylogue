@@ -1022,7 +1022,7 @@ pub(crate) fn within_limit<T>(
     }
     limit.scope(|| {
         if let Err(error) = limit.check() {
-            return super::execution::refusal(&error, stage, text, limit);
+            return super::execution::stopped_read(&error, stage, text, limit);
         }
         let response = work();
         // A checked writer handoff or completed primary answer ends required
@@ -1030,7 +1030,7 @@ pub(crate) fn within_limit<T>(
         if ReadLimit::current().is_some()
             && let Err(error) = limit.check()
         {
-            return super::execution::refusal(&error, stage, text, limit);
+            return super::execution::stopped_read(&error, stage, text, limit);
         }
         response
     })

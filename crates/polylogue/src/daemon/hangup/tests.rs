@@ -33,3 +33,13 @@ fn a_hang_up_cancels_only_that_connection_and_a_half_close_cancels_nothing() {
     assert!(!cancellations[2].is_cancelled());
     drop(half);
 }
+
+#[test]
+fn a_peer_that_hung_up_before_registration_is_still_seen() {
+    let watcher = Watcher::start().unwrap();
+    let (socket, peer) = UnixStream::pair().unwrap();
+    drop(peer);
+    let cancellation = Cancellation::default();
+    let _watched = watcher.watch(&socket, cancellation.clone()).unwrap();
+    assert!(cancelled_soon(&cancellation));
+}
