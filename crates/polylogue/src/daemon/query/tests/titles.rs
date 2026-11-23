@@ -53,6 +53,7 @@ fn session_query_uses_the_derived_title_without_replacing_recorded_values() {
         },
     )
     .unwrap();
+    assert_eq!(selected["rows"].as_array().unwrap().len(), 4, "{selected}");
     for shown in selected["rows"].as_array().unwrap() {
         assert_eq!(shown["title"], row(shown["id"].as_str().unwrap())["title"]);
         assert_eq!(shown.as_object().unwrap().len(), 2);

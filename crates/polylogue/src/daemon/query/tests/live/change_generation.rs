@@ -98,10 +98,6 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
 fn fresh_change_cursors_keep_two_counters_and_include_late_notes() {
     let home = ClaudeHome::new();
     home.append(
-        "gone.jsonl",
-        &claude_user("g1", "gone", "remove this exact text"),
-    );
-    home.append(
         "kept.jsonl",
         &claude_user("k1", "kept", "keep this exact text"),
     );
@@ -154,9 +150,18 @@ fn fresh_change_cursors_keep_two_counters_and_include_late_notes() {
             > initial["read_at"]["archive"].as_i64().unwrap()
     );
     let rows = changes["rows"].as_array().unwrap();
-    assert!(
-        rows.iter()
-            .any(|r| r["kind"] == "assertion" && r["ref"] == "000-late-note")
+    let mut changed: Vec<(&str, &str)> = rows
+        .iter()
+        .map(|r| (r["kind"].as_str().unwrap(), r["ref"].as_str().unwrap()))
+        .collect();
+    changed.sort_unstable();
+    assert_eq!(
+        changed,
+        [
+            ("assertion", "000-late-note"),
+            ("session", "claude-code:kept")
+        ],
+        "{changes}"
     );
     let after = format!(
         "feed where after:{}",
