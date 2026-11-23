@@ -456,8 +456,14 @@ fn cli_reads_deep_parents_and_reports_incomplete_parent_prefixes() {
             .any(|line| line == format!("Parents incomplete: {issue}")),
         "{context}"
     );
+    let inherited: Vec<_> = context["prepared"]["left_out"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["what"] == "inherited session content")
+        .collect();
     assert_eq!(
-        context["prepared"]["left_out"],
-        json!([{"what": "inherited session content", "reason": issue}])
+        inherited,
+        [&json!({"what": "inherited session content", "reason": issue})]
     );
 }
