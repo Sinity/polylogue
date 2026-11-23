@@ -58,9 +58,7 @@ pub(crate) fn source(
             format: format.clone(),
             route: polylogue_model::Route::Export,
         };
-        if import.version != 1
-            || import.import_id.is_empty()
-            || import.member.is_empty()
+        if !import.is_valid()
             || import.import_id != namespace
             || import.member != member
             || format.is_empty()

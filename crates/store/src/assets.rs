@@ -12,6 +12,9 @@ pub use read::{AssetMatch, AttachmentResolution, AttachmentState};
 
 pub const RULES: u32 = 1;
 
+/// The meta key holding the last import observation row already projected.
+const OBSERVATION_ROW_KEY: &str = "import_observation_row";
+
 #[derive(Debug, Clone)]
 pub struct AssetSource {
     pub chain: i64,
@@ -23,12 +26,12 @@ pub struct AssetSource {
 fn asset_source(
     index: &Connection,
     conn: &Connection,
-    schema: &str,
+    prefix: &str,
     input: &str,
 ) -> Result<Option<AssetSource>> {
     let revision: Option<(i64, i64)> = conn
         .query_row(
-            &format!("SELECT chain,length FROM {schema}revision WHERE input=?1 ORDER BY number DESC LIMIT 1"),
+            &format!("SELECT chain,length FROM {prefix}revision WHERE input=?1 ORDER BY number DESC LIMIT 1"),
             [input],
             |r| <(_, _)>::try_from(r),
         )
@@ -39,13 +42,13 @@ fn asset_source(
     let length =
         u64::try_from(length).map_err(|_| crate::StoreError::stored(0, "negative asset length"))?;
     if length == 0 {
-        return empty::source(index, conn, schema, input, chain, None, None);
+        return empty::source(index, conn, prefix, input, chain, None, None);
     }
     let mut hash = blake3::Hasher::new();
     hash.update(&chain.to_le_bytes());
     hash.update(&length.to_le_bytes());
     let mut stmt=conn.prepare_cached(&format!("SELECT e.offset,e.length,e.blob,e.blob_offset,b.size
-        FROM {schema}extent e LEFT JOIN {schema}blob b ON b.hash=e.blob WHERE e.input=?1 AND e.chain=?2 ORDER BY e.offset"))?;
+        FROM {prefix}extent e LEFT JOIN {prefix}blob b ON b.hash=e.blob WHERE e.input=?1 AND e.chain=?2 ORDER BY e.offset"))?;
     let mut rows = stmt.query(params![input, chain])?;
     let mut end = 0u64;
     let mut count = 0;
@@ -53,14 +56,17 @@ fn asset_source(
     while let Some(row) = rows.next()? {
         let offset = row.get::<_, i64>(0)?;
         let size = row.get::<_, i64>(1)?;
-        let stored = row.get::<_, Option<i64>>(4)?;
-        let at = row.get::<_, i64>(3)?;
+        let blob_size = row.get::<_, Option<i64>>(4)?;
+        let blob_offset = row.get::<_, i64>(3)?;
         if offset < 0
             || size < 0
-            || at < 0
+            || blob_offset < 0
             || offset as u64 != end
-            || stored.is_none_or(|stored| {
-                stored < 0 || at.checked_add(size).is_none_or(|end| end > stored)
+            || blob_size.is_none_or(|blob_size| {
+                blob_size < 0
+                    || blob_offset
+                        .checked_add(size)
+                        .is_none_or(|end| end > blob_size)
             })
         {
             return Err(StoreError::Invalid(
@@ -80,12 +86,12 @@ fn asset_source(
         hash.update(&offset.to_le_bytes());
         hash.update(&size.to_le_bytes());
         hash.update(&current.0);
-        hash.update(&at.to_le_bytes());
+        hash.update(&blob_offset.to_le_bytes());
         blob = if count == 1
             && offset == 0
-            && at == 0
+            && blob_offset == 0
             && size as u64 == length
-            && stored == Some(size)
+            && blob_size == Some(size)
         {
             Some(current)
         } else {
@@ -157,8 +163,8 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let after: i64 = conn
             .scalar_optional(
-                "SELECT CAST(value AS INTEGER) FROM meta WHERE key='import_observation_row'",
-                [],
+                "SELECT CAST(value AS INTEGER) FROM meta WHERE key=?1",
+                [OBSERVATION_ROW_KEY],
             )?
             .unwrap_or(0);
         let mut out = Vec::new();
@@ -272,10 +278,7 @@ pub(crate) fn visit_import_members(
             {
                 continue;
             }
-            if membership.version != 1
-                || membership.import_id.is_empty()
-                || membership.member.is_empty()
-            {
+            if !membership.is_valid() {
                 return Err(StoreError::Invalid(
                     "unsupported or invalid import membership".into(),
                 ));
@@ -377,7 +380,7 @@ fn count_import_change(conn: &Connection, import_id: &str) -> Result<()> {
 fn count_input_change(conn: &Connection, input: &str) -> Result<()> {
     conn.prepare_cached(
         "INSERT INTO import_change(import_id,changed)
-         SELECT DISTINCT import_id,1 FROM import_member WHERE input=?1 AND true
+         SELECT DISTINCT import_id,1 FROM import_member WHERE input=?1
          ON CONFLICT(import_id) DO UPDATE SET changed=changed+1",
     )?
     .execute([input])?;
@@ -451,10 +454,7 @@ pub(crate) fn install(
     mut staged: ExportItems,
 ) -> Result<()> {
     crate::fault::check("assets.install", "")?;
-    let catalog_prefix = match crate::source::Source::of(archive)? {
-        crate::source::Source::Cache => "source_",
-        crate::source::Source::Standalone => "",
-    };
+    let catalog_prefix = crate::source::Source::of(archive)?.prefix();
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     while let Some(item) = staged.next_item()? {
         match serde_json::from_reader(item.reader)? {
@@ -517,8 +517,8 @@ pub(crate) fn install(
             }
             AssetRow::Scan { through } => {
                 tx.execute(
-                    "INSERT OR REPLACE INTO meta VALUES ('import_observation_row',?1)",
-                    [through.to_string()],
+                    "INSERT OR REPLACE INTO meta VALUES (?1,?2)",
+                    params![OBSERVATION_ROW_KEY, through.to_string()],
                 )?;
             }
         }

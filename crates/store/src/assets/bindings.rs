@@ -701,10 +701,7 @@ impl Reader<'_> {
         hash: BlobHash,
         size: u64,
     ) -> Result<ValidatedMember> {
-        if source.membership.version != 1
-            || source.membership.import_id.is_empty()
-            || source.membership.member.is_empty()
-        {
+        if !source.membership.is_valid() {
             return Err(crate::StoreError::invalid(
                 "invalid receiving import member",
             ));

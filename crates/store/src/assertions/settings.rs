@@ -134,12 +134,10 @@ impl crate::Reader<'_> {
                 conflicts: Vec::new(),
             });
         }
-        let target = match spec.scope {
-            settings::Scope::Archive => None,
-            settings::Scope::Host => Some(machine),
-        };
+        let target = settings::target_machine(key, None, machine)
+            .map_err(|error| crate::StoreError::invalid(error.to_string()))?;
         let (mut candidates, conflicts) =
-            candidates(conn, key, target, roots(conn, key)?, |root| {
+            candidates(conn, key, target.as_deref(), roots(conn, key)?, |root| {
                 Ok(self
                     .assertion_family_state(&RevisionReference {
                         root,

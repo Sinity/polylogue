@@ -294,7 +294,7 @@ impl Compiler<'_> {
             (left, right)
             && !matches!(arithmetic, Some(Arithmetic::Multiply | Arithmetic::Divide))
         {
-            let is_money = |value: &Value| matches!(value,Value::Scalar { text,quoted:false } if text.starts_with('$') || text.to_ascii_lowercase().ends_with("usd"));
+            let is_money = |value: &Value| matches!(value, Value::Scalar { text, quoted: false } if looks_like_money(text));
             if is_money(left) || is_money(right) {
                 let (left, left_kind) = self.expression_literal(left, Some(ColKind::Money), at)?;
                 let (right, right_kind) =
@@ -382,7 +382,7 @@ impl Compiler<'_> {
             if let Some(number) = time::duration_ms(text) {
                 return Ok((self.bind(Param::Int(number)), ColKind::Duration));
             }
-            if (text.starts_with('$') || text.to_ascii_lowercase().ends_with("usd"))
+            if looks_like_money(text)
                 && let Some(number) = time::money_nusd(text)
             {
                 return Ok((self.bind(Param::Int(number)), ColKind::Money));
@@ -535,4 +535,9 @@ fn arithmetic_column(operator: Arithmetic, left: ColKind, right: ColKind) -> Opt
             _ => ColKind::Number,
         }
     })
+}
+
+/// A literal written as money: a leading `$` or a trailing `usd`.
+fn looks_like_money(text: &str) -> bool {
+    text.starts_with('$') || text.to_ascii_lowercase().ends_with("usd")
 }
