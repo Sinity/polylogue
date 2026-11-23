@@ -1,3 +1,5 @@
+//! One Hermes state row as a message: its blocks, tool calls and results,
+//! and the diagnostics for fields that could not be read.
 use super::{decoded, identity, native, text};
 use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
@@ -132,7 +134,7 @@ pub(super) fn parse(
             .is_some_and(|text| text.starts_with("[CONTEXT COMPACTION"));
     let mut covered = HashSet::<String>::new();
     let mut thinking_covered = HashSet::<String>::new();
-    if let Some(reasoning) = text(row, "reasoning_content").or_else(|| text(row, "reasoning")) {
+    if let Some(reasoning) = native(row, "reasoning_content").or_else(|| native(row, "reasoning")) {
         thinking_covered.insert(reasoning.trim().to_owned());
         blocks.push(Block::Thinking {
             text: Some(reasoning),
@@ -182,15 +184,10 @@ pub(super) fn parse(
                 }
             }
         }
-        if let Some(content) = content
-            .as_ref()
-            .filter(|content| !content.is_empty() || prose.is_empty())
-        {
+        if let Some(content) = content.filter(|content| !content.is_empty() || prose.is_empty()) {
             covered.insert(content.trim().to_owned());
             covered.extend(content.lines().map(|line| line.trim().to_owned()));
-            blocks.push(Block::Text {
-                text: content.clone(),
-            });
+            blocks.push(Block::Text { text: content });
         }
         for text in prose {
             if !covered.contains(text.trim()) {
@@ -294,9 +291,7 @@ pub(super) fn parse(
     message
         .set_time(at, accuracy)
         .expect("decoded source time is valid");
-    message.model = (role == Role::Assistant && !harness)
-        .then_some(model)
-        .flatten();
+    message.model = model.filter(|_| role == Role::Assistant && !harness);
     message.stop_reason = text(row, "finish_reason");
     if let Some(tokens) = row.u64("token_count") {
         if role == Role::User {

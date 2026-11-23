@@ -12,12 +12,12 @@ pub(super) fn native<'a>(
         match value.get(field) {
             Some(Json::String(text)) if !text.is_empty() => {
                 if id.is_some_and(|id| id != text) {
-                    return Err("conflicting Grok native identifiers");
+                    return Err("conflicting Grok native IDs");
                 }
                 id = Some(text.as_str());
             }
             Some(Json::Null) | None => {}
-            _ => return Err("Grok native identifier is not a nonempty string"),
+            _ => return Err("Grok native ID is not a nonempty string"),
         }
     }
     Ok(id)
@@ -119,14 +119,14 @@ pub(super) fn response(entry: &Json) -> String {
     digest(&response_identity_form(entry))
 }
 
-pub(super) fn conversation(metadata: &Json, responses: &[Json], wrapper: &Json) -> String {
+pub(super) fn conversation(conversation: &Json, responses: &[Json], wrapper: &Json) -> String {
     let mut responses: Vec<_> = responses.iter().map(response_identity_form).collect();
     responses.sort_by_cached_key(|value| ordered(value).to_string());
     let mut extra = wrapper.as_object().cloned().unwrap_or_default();
     extra.remove("conversation");
     extra.remove("responses");
     digest(&serde_json::json!([
-        identity_form(metadata),
+        identity_form(conversation),
         responses,
         extra
     ]))

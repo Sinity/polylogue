@@ -363,15 +363,13 @@ fn blocks(m: &Json) -> Vec<Block> {
     }
     for call in m.array("toolCalls").into_iter().flatten() {
         let args = call.get("args").cloned().unwrap_or(Json::Null);
+        let name = call.str("name").filter(|s| !s.is_empty());
         out.push(Block::ToolCall {
             written_text: None,
             run_by_script: false,
             call_id: call.str("id").filter(|s| !s.is_empty()).map(str::to_owned),
-            tool: call
-                .str("name")
-                .filter(|s| !s.is_empty())
-                .map(str::to_owned),
-            action: action(call.str("name").filter(|s| !s.is_empty()).unwrap_or("")),
+            tool: name.map(str::to_owned),
+            action: action(name.unwrap_or("")),
             command: args.str("command").map(str::to_owned),
             path: args
                 .get("file_path")

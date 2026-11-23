@@ -41,6 +41,20 @@ pub struct History {
     last: Option<polylogue_model::MessageId>,
 }
 
+fn push_element(
+    items: &mut dyn ItemSink,
+    stats: &mut ScanStats,
+    range: std::ops::Range<u64>,
+    bytes: &[u8],
+) -> Result<(), ScanError> {
+    items
+        .push(range, Vec::new(), None, bytes)
+        .map_err(ScanError::Callback)?;
+    stats.elements += 1;
+    stats.peak_element_bytes = stats.peak_element_bytes.max(bytes.len());
+    Ok(())
+}
+
 impl ExportParser for History {
     fn bind_context(&mut self, context: polylogue_model::parser_context::Handle) {
         self.ids.bind_context(context, "aider".into());
@@ -66,11 +80,7 @@ impl ExportParser for History {
                 break;
             }
             if line.starts_with(b"TO LLM ") && !bytes.is_empty() {
-                items
-                    .push(start..offset, Vec::new(), None, &bytes)
-                    .map_err(ScanError::Callback)?;
-                stats.elements += 1;
-                stats.peak_element_bytes = stats.peak_element_bytes.max(bytes.len());
+                push_element(items, &mut stats, start..offset, &bytes)?;
                 bytes.clear();
                 start = offset;
             }
@@ -81,11 +91,7 @@ impl ExportParser for History {
             offset += n as u64;
         }
         if !bytes.is_empty() {
-            stats.elements += 1;
-            stats.peak_element_bytes = stats.peak_element_bytes.max(bytes.len());
-            items
-                .push(start..offset, Vec::new(), None, &bytes)
-                .map_err(ScanError::Callback)?;
+            push_element(items, &mut stats, start..offset, &bytes)?;
         }
         Ok(stats)
     }

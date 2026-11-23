@@ -122,7 +122,7 @@ fn grok_account_import_reads_turns_without_path_or_export_order_identity() {
     assert_eq!(
         listing(json(&query))["count"],
         3,
-        "ID-less append continuity is not guessed"
+        "append continuity without IDs is not guessed"
     );
 }
 

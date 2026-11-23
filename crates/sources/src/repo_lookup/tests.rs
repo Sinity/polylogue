@@ -24,3 +24,18 @@ fn a_lookup_without_a_remote_keeps_its_root() {
     assert_eq!(out.repo_lookups[0].remote, None);
     assert_eq!(out.repo_lookups[0].root_commits, vec!["def".to_owned()]);
 }
+
+#[test]
+fn root_commits_that_are_not_a_list_of_strings_are_unreadable_not_empty() {
+    for doc in [
+        r#"{"path":"/w","root_commits":"abc"}"#,
+        r#"{"path":"/w","root_commits":[1,"abc"]}"#,
+    ] {
+        let step = crate::run_document(&Lookup, doc.as_bytes()).unwrap();
+        assert!(step.output.repo_lookups.is_empty(), "{doc}");
+        assert_eq!(
+            step.counts.unreadable["repo_lookup: root_commits is not a list of strings"],
+            1
+        );
+    }
+}

@@ -20,6 +20,13 @@ fn source_time_encodings_keep_declared_precision() {
 }
 
 #[test]
+fn clock_without_seconds_has_minute_precision() {
+    let time = rfc3339(&json!("2026-01-02T03:04Z")).unwrap();
+    assert_eq!(time.accuracy(), TimeEvidence::intrinsic(Precision::Minute));
+    assert_eq!(time.timestamp().unix_ms() / 1000, 1767323040);
+}
+
+#[test]
 fn decimal_seconds_and_otlp_nanos_are_exact() {
     let decimal: Json = serde_json::from_str("1767323045.123456789").unwrap();
     let at = epoch_seconds(&decimal).unwrap();
@@ -59,9 +66,12 @@ fn explicit_observation_and_file_semantics_preserve_resolution() {
 
 #[test]
 fn persisted_parser_time_rejects_inconsistent_accuracy() {
-    let invalid = json!({"at":"2026-01-02T03:04:05Z", "evidence":{"quality":"unknown","precision":null,"until":null}});
-    assert!(serde_json::from_value::<SourceTime>(invalid).is_err());
     let valid = rfc3339(&json!("2026-01-02T03:04:05Z")).unwrap();
+    // Only the precision differs from the readable value, so a rejection
+    // cannot come from a misspelled key or a wrong JSON type.
+    let mut invalid = serde_json::to_value(valid).unwrap();
+    invalid["evidence"]["precision"] = Json::Null;
+    assert!(serde_json::from_value::<SourceTime>(invalid).is_err());
     assert_eq!(
         serde_json::from_value::<SourceTime>(serde_json::to_value(valid).unwrap()).unwrap(),
         valid

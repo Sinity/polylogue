@@ -12,9 +12,7 @@ pub(super) fn read(reader: impl Read, names: &BTreeSet<String>) -> Result<Tree, 
         parents: 0,
     };
     let tree = parser.value(names)?;
-    if parser.space()?.is_some() {
-        return Err(invalid());
-    }
+    parser.end()?;
     Ok(tree)
 }
 
@@ -43,9 +41,7 @@ pub(super) fn array(
         }
     }
     parser.byte()?;
-    if parser.space()?.is_some() {
-        return Err(invalid());
-    }
+    parser.end()?;
     Ok(whole)
 }
 
@@ -120,9 +116,7 @@ pub(super) fn row_dump(
         }
         Ok(())
     })?;
-    if parser.space()?.is_some() {
-        return Err(invalid());
-    }
+    parser.end()?;
     for (name, metadata) in metadata {
         record.tables.insert(name, Some(metadata));
     }
@@ -313,6 +307,14 @@ impl<R: BufRead> Parser<R> {
         }
     }
 
+    /// Fails when anything but whitespace follows the value just read.
+    fn end(&mut self) -> Result<(), serde_json::Error> {
+        if self.space()?.is_some() {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+
     fn space(&mut self) -> Result<Option<u8>, serde_json::Error> {
         self.skip_while(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))?;
         self.peek()
@@ -395,10 +397,7 @@ impl<R: BufRead> Parser<R> {
             frame.first = false;
             let child = if frame.array {
                 let index = tree.child(frame.node, "[]".into());
-                if tree.nodes[index].last_parent != frame.parent {
-                    tree.nodes[index].present += 1;
-                    tree.nodes[index].last_parent = frame.parent;
-                }
+                tree.count_in_parent(index, frame.parent);
                 index
             } else {
                 let name = self.string(true)?;

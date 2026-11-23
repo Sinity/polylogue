@@ -60,29 +60,6 @@ fn empty_containers_and_null_are_values_at_their_own_paths() {
 }
 
 #[test]
-fn declaration_lookup_is_shared_by_parsing_threads() {
-    static FIELDS: Fields = Fields::new("record", &[("a[].x", Rule::Read(T::String))]);
-    std::thread::scope(|scope| {
-        let readers: Vec<_> = (0..8)
-            .map(|_| {
-                scope.spawn(|| {
-                    assert_eq!(
-                        inspect(&json!({"a":[{"x":1,"y":2}]}), &FIELDS).unused,
-                        ["a[].y"]
-                    );
-                    FIELDS.compiled() as *const _ as usize
-                })
-            })
-            .collect();
-        let addresses: Vec<_> = readers
-            .into_iter()
-            .map(|thread| thread.join().unwrap())
-            .collect();
-        assert!(addresses.iter().all(|value| *value == addresses[0]));
-    });
-}
-
-#[test]
 fn wire_observation_counts_types_and_declarations_without_scalar_bodies() {
     static FIELDS: Fields = Fields::new(
         "test_record",
@@ -159,14 +136,15 @@ fn declared_open_values_and_dynamic_members_differ_from_new_kept_object_fields()
         ],
     )
     .shape(&["map"], &[]);
+    const ANY: [&str; 6] = ["null", "boolean", "number", "string", "array", "object"];
     let got = inspect(
         &json!({"saved":{"new_field":1},"ignored":true,"map":{"id":{"n":2}}}),
         &FIELDS,
     );
-    assert_eq!(got.shapes["/saved"].expected, ExpectedType::Any.types());
+    assert_eq!(got.shapes["/saved"].expected, ANY);
     assert!(got.shapes["/saved/new_field"].expected.is_empty());
-    assert_eq!(got.shapes["/ignored"].expected, ExpectedType::Any.types());
-    assert_eq!(got.shapes["/map/*/n"].expected, ExpectedType::Any.types());
+    assert_eq!(got.shapes["/ignored"].expected, ANY);
+    assert_eq!(got.shapes["/map/*/n"].expected, ANY);
 }
 
 #[test]

@@ -5,7 +5,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 use crate::parse::{DocumentParser, Output, Parse};
 use crate::{RecordOutcome, Records};
@@ -41,20 +41,29 @@ impl DocumentParser for Lookup {
             records.record("repo_lookup", &RecordOutcome::unreadable("no path"));
             return;
         };
+        // An empty list means no root commits were found, so a value that is
+        // not a list of strings is unreadable rather than empty.
+        let roots = match v.get("root_commits") {
+            None | Some(Json::Null) => Some(Vec::new()),
+            Some(Json::Array(roots)) => roots
+                .iter()
+                .map(|root| root.as_str().map(str::to_owned))
+                .collect::<Option<Vec<_>>>(),
+            Some(_) => None,
+        };
+        let Some(root_commits) = roots else {
+            records.record(
+                "repo_lookup",
+                &RecordOutcome::unreadable("root_commits is not a list of strings"),
+            );
+            return;
+        };
         // `read_at` says when the lookup was taken; the row needs only what
         // it found.
         out.repo_lookups.push(RepoLookup {
             path,
             remote: v.str("remote").filter(|s| !s.is_empty()).map(str::to_owned),
-            root_commits: v["root_commits"]
-                .as_array()
-                .map(|roots| {
-                    roots
-                        .iter()
-                        .filter_map(|root| root.as_str().map(str::to_owned))
-                        .collect()
-                })
-                .unwrap_or_default(),
+            root_commits,
         });
         records.record("repo_lookup", &RecordOutcome::Used);
     }

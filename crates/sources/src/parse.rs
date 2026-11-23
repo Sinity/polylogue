@@ -68,7 +68,7 @@ pub enum ParseError {
     CaptureLog(String),
     #[error(transparent)]
     Counts(#[from] CountMismatch),
-    #[error("carried state is unreadable: {0}")]
+    #[error("parser state is unreadable: {0}")]
     ParserState(serde_json::Error),
     #[error("parser context: {0}")]
     Context(String),

@@ -183,6 +183,41 @@ fn compression_parents_use_nonempty_ancestor_and_its_leaf() {
 }
 
 #[test]
+fn compression_cycle_through_empty_session_does_not_link_a_session_to_itself() {
+    let parsed = parse(vec![
+        header("a"),
+        session("a", Some("b"), None),
+        session("b", Some("a"), Some("compression")),
+        message(1, "a", "user", "body"),
+    ]);
+    assert!(
+        parsed
+            .output
+            .links
+            .iter()
+            .all(|link| link.parent != link.child)
+    );
+}
+
+#[test]
+fn profile_names_are_escaped_into_distinct_session_ids() {
+    let id = |path: &str| session_at(Path::new(path), "s").map(|id| id.to_string());
+    assert_eq!(
+        id("/h/.hermes/profiles/a:b/state.db").as_deref(),
+        Some("hermes:s@profile-a%3Ab")
+    );
+    assert_eq!(
+        id("/h/.hermes/profiles/a%3Ab/state.db").as_deref(),
+        Some("hermes:s@profile-a%253Ab")
+    );
+    assert_eq!(
+        id("/h/.hermes/profiles/x/../y/state.db").as_deref(),
+        Some("hermes:s@profile-y")
+    );
+    assert_eq!(id("profiles/a/state.db"), None);
+}
+
+#[test]
 fn prose_and_reasoning_reach_blocks_without_duplicates() {
     let mut row = message(1, "s", "assistant", "");
     row["r"]["reasoning_content"] = json!("primary reasoning");
@@ -218,6 +253,24 @@ fn prose_and_reasoning_reach_blocks_without_duplicates() {
 }
 
 #[test]
+fn empty_reasoning_content_does_not_hide_reasoning() {
+    let mut row = message(1, "s", "assistant", "answer");
+    row["r"]["reasoning_content"] = json!("");
+    row["r"]["reasoning"] = json!("worked through the plan");
+    let parsed = parse(vec![header("a"), session("s", None, None), row]);
+    assert!(
+        parsed.output.messages[0]
+            .message
+            .blocks
+            .iter()
+            .any(|block| matches!(
+                block,
+                Block::Thinking { text: Some(text), .. } if text == "worked through the plan"
+            ))
+    );
+}
+
+#[test]
 fn json_tool_outputs_keep_status_and_unknown_limits() {
     for (raw, expected) in [
         (r#"{"output":"ok","exit_code":0}"#, ToolOutcome::Ok),
@@ -237,6 +290,12 @@ fn json_tool_outputs_keep_status_and_unknown_limits() {
             r#"{"output":"waiting","status":"running"}"#,
             ToolOutcome::Unknown {
                 reason: UnknownReason::RunningInBackground,
+            },
+        ),
+        (
+            r#"{"output":"partial","exit_code":null,"status":"timeout"}"#,
+            ToolOutcome::Error {
+                reason: Some(ErrorReason::TimedOut),
             },
         ),
         (

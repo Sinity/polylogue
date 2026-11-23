@@ -102,27 +102,35 @@ pub fn scan(
     finish_scan(result, &scan_state)
 }
 
+/// Reads up to and including the first non-whitespace byte, which the caller
+/// chains back in front of the reader. `None` when the input is all whitespace.
+pub(crate) fn peek_first_byte<R: std::io::BufRead + ?Sized>(
+    reader: &mut R,
+) -> Result<(Option<u8>, Vec<u8>), ScanError> {
+    let mut prefix = Vec::new();
+    loop {
+        let buffer = reader
+            .fill_buf()
+            .map_err(|error| ScanError::Input(serde_json::Error::io(error)))?;
+        if buffer.is_empty() {
+            return Ok((None, prefix));
+        }
+        let byte = buffer[0];
+        reader.consume(1);
+        prefix.push(byte);
+        if !byte.is_ascii_whitespace() {
+            return Ok((Some(byte), prefix));
+        }
+    }
+}
+
 /// Single-conversation exports use the same item pipeline as an export array.
 /// The array path buffers one conversation, and the object path is one conversation.
 pub fn scan_array_or_object(
     reader: &mut dyn Input,
     mut item: impl FnMut(Range<u64>, &RawValue) -> Result<(), String>,
 ) -> Result<ScanStats, ScanError> {
-    let mut prefix = Vec::new();
-    let first = loop {
-        let buffer = reader
-            .fill_buf()
-            .map_err(|error| ScanError::Input(serde_json::Error::io(error)))?;
-        if buffer.is_empty() {
-            break None;
-        }
-        let byte = buffer[0];
-        reader.consume(1);
-        prefix.push(byte);
-        if !byte.is_ascii_whitespace() {
-            break Some(byte);
-        }
-    };
+    let (first, prefix) = peek_first_byte(reader)?;
     if first != Some(b'{') {
         return scan(std::io::Cursor::new(prefix).chain(reader), item);
     }
