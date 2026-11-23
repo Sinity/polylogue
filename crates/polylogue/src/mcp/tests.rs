@@ -887,7 +887,7 @@ fn set_mcp_keeps_typed_write_repeat_and_read_results() {
     let mut invoke = |id, arguments| {
         session.prepare(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":tool_call("set", arguments,"mcp-setting-write-result")})).answer(&daemon.daemon.archive).unwrap()
     };
-    let first = invoke(1, json!({"key":"reading.variants","value":"[]"}));
+    let first = invoke(1, json!({"key":"reading.alternates","value":"[]"}));
     assert_eq!(first["result"]["isError"], false, "{first}");
     let first: crate::protocol::setting::Answer =
         serde_json::from_value(first["result"]["structuredContent"]["value"].clone()).unwrap();
@@ -895,7 +895,7 @@ fn set_mcp_keeps_typed_write_repeat_and_read_results() {
         panic!("write must return a write result")
     };
     assert!(!first.pending);
-    let repeat = invoke(2, json!({"key":"reading.variants","value":"[]"}));
+    let repeat = invoke(2, json!({"key":"reading.alternates","value":"[]"}));
     let repeat: crate::protocol::setting::Answer =
         serde_json::from_value(repeat["result"]["structuredContent"]["value"].clone()).unwrap();
     let crate::protocol::setting::Answer::Outcome(repeat) = repeat else {
@@ -904,14 +904,14 @@ fn set_mcp_keeps_typed_write_repeat_and_read_results() {
     assert_eq!(first.id, repeat.id);
     assert!(repeat.repeat);
     assert!(!repeat.pending);
-    let shown = session.prepare(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":tool_call("set",json!({"key":"reading.variants"}),"mcp-setting-current")})).answer(&daemon.daemon.archive).unwrap();
+    let shown = session.prepare(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":tool_call("set",json!({"key":"reading.alternates"}),"mcp-setting-current")})).answer(&daemon.daemon.archive).unwrap();
     assert_eq!(shown["result"]["isError"], false, "{shown}");
     let current: crate::protocol::setting::Answer =
         serde_json::from_value(shown["result"]["structuredContent"]["value"].clone()).unwrap();
     let crate::protocol::setting::Answer::Current(current) = current else {
         panic!("MCP returns setting details");
     };
-    assert_eq!(current.current.key, "reading.variants");
+    assert_eq!(current.current.key, "reading.alternates");
     assert!(current.allowed_values.is_empty());
     assert_eq!(current.history.len(), 1);
     assert_eq!(

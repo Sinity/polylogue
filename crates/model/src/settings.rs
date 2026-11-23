@@ -46,7 +46,7 @@ pub const CATALOG: &[Declaration] = &[
         standalone_only: false,
     },
     Declaration {
-        key: "reading.variants",
+        key: "reading.alternates",
         kind: Kind::Variants,
         default: Some("[]"),
         scope: Scope::Archive,
@@ -454,11 +454,11 @@ impl Snapshot {
             }),
         }
     }
-    pub fn reading_variants(&self) -> Result<&[String], Error> {
-        match self.get("reading.variants")? {
+    pub fn reading_alternates(&self) -> Result<&[String], Error> {
+        match self.get("reading.alternates")? {
             Some(Value::Variants(value)) => Ok(value),
             _ => Err(Error::Invalid {
-                key: "reading.variants".into(),
+                key: "reading.alternates".into(),
                 expected: "a typed ordered variant list",
             }),
         }

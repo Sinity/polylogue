@@ -230,7 +230,7 @@ fn typed_setting_answer_and_snapshot_share_defaults_scope_and_authored_value() {
     );
     let snapshot = reader.settings_snapshot("synthetic-machine").unwrap();
     assert!(snapshot.browser_actions().unwrap());
-    assert!(snapshot.reading_variants().unwrap().is_empty());
+    assert!(snapshot.reading_alternates().unwrap().is_empty());
     assert_eq!(snapshot.standalone_attention().unwrap(), (None, 4));
 }
 

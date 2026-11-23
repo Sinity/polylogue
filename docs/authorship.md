@@ -27,7 +27,7 @@ The client process gathers its identity and sends it as `caller` in the request 
 | **Browser extension** | `operator`, `via: extension`, for acts in the extension's own UI. Acts it performs for a request (a turn sent to a web chat, a provider import) carry the requester's author from the request record ([extension.md](extension.md#authorship-from-the-extension)). |
 | **Desktop notifications** | `operator`, `via: desktop`, for actions taken on a desktop notification ([operations.md](operations.md#notices)); a rule cannot supply this channel |
 | **Hooks** | records a hook writes for a session are `agent:<that session>` or `daemon`, never `operator` |
-| **Markup** | the author of the message the marker is in (see Markup) |
+| **Markup** | the author of the message the marker is in ([markup.md](markup.md)) |
 | **Import of user state** | each record keeps its stored author |
 | **Launched work** (job runners, schedulers, scripts) | the CLI rule: `script:<unit>` from the cgroup, or the requesting session when the launcher forwards the harness variables. Polylogue recognises no job runner by name and requires no forwarding. |
 

@@ -114,13 +114,13 @@ fn a_read_honours_its_view_format_and_budget() {
 }
 
 #[test]
-fn reading_variants_setting_is_the_default_and_is_bound_in_the_cursor() {
+fn reading_alternates_setting_is_the_default_and_is_bound_in_the_cursor() {
     let w = test_daemon::start("a prompt long enough to need two pages of one token each");
     let set = |value: &str| {
         crate::test_answers::ok(
             crate::test_daemon::Call::new(
                 "set",
-                serde_json::json!({"key": "reading.variants", "value": value}),
+                serde_json::json!({"key": "reading.alternates", "value": value}),
             )
             .answer(&w.daemon),
         );
@@ -180,7 +180,7 @@ fn several_setting_alternates_survive_next_and_previous_when_the_setting_changes
         crate::test_answers::ok(
             crate::test_daemon::Call::new(
                 "set",
-                serde_json::json!({"key":"reading.variants","value":value}),
+                serde_json::json!({"key":"reading.alternates","value":value}),
             )
             .answer(&w.daemon),
         );

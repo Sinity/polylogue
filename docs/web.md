@@ -32,7 +32,7 @@ Each view is HTML rendered by the daemon with `maud` from the same typed reply t
 └──────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Header:** wordmark; navigation Home · Running · Search · Notes · Pages · Review · Saved · Cost · Status (Review links to [Judging passes](web-views.md#judging-passes-judge)); the persistent query field with completion on every view. The Running item carries `running · waiting` counts, so "waiting on you" is visible from every page. While the tab has an [active page](web-pages.md#citing-while-reading), the header ends with `Collecting to page:flaky-ci › Evidence ✕`: the page and section that `+` places into, and the control that stops collecting.
+- **Header:** wordmark; navigation Home · Running · Search · Notes · Pages · Review · Saved · Cost · Status (Review opens [Review and compare](web-views.md#review-and-compare-review-compare)); the persistent query field with completion on every view. The Running item carries `running · waiting` counts, so "waiting on you" is visible from every page. While the tab has an [active page](web-pages.md#citing-while-reading), the header ends with `Collecting to page:flaky-ci › Evidence ✕`: the page and section that `+` places into, and the control that stops collecting.
 - **Status strip:** daemon state and uptime; **live lag per source** (time from the newest byte a live source wrote to its commit in the archive, per origin; `—` when the source is idle; a figure state when not measured); the extension's connection (from the host's last contact); index work pending; in primary mode, the Sinex position lag. Each item links to its Status section. The strip is the daemon state indicator: `live`, `catching up · N inputs waiting`, `disconnected · retrying`, `stopped (start: <service command>)`.
 - **Main column** up to 1,200 px; transcript text 75–90 characters per line.
 - **Inspector** (right rail, 280–320 px): the view's own facts by default, switching to the focused target with a "back to session" link.
@@ -64,9 +64,9 @@ The tokens, marks of meaning, value states and chips are `web-shell`'s. Polylogu
 
 ### Workspaces
 
-A workspace is several targets open at once: sessions, pages, kept results and searches side by side. A saved workspace is a page from the `workspace` template ([pages.md](pages.md#templates-and-shipped-pages)): its slots are the open targets in order, each slot's `w` the width of its column, and the page's parameters record the mode and the focused target, so saving a workspace is saving a page and reopening it is reading that page (`/page/NAME`). An unsaved workspace lives in the URL (`/w/stack?ids=codex:019d0f2a,claude-code:7f3a2c10&focus=claude-code:7f3a2c10`); **Save workspace** writes the page (`polylogue 'codex:019d0f2a OR claude-code:7f3a2c10' save page:morrow/desk --template workspace`).
+A workspace is several targets open at once: sessions, pages, kept results and searches side by side. A saved workspace is a page from the `workspace` template ([pages.md](pages.md#templates-and-shipped-pages)): its slots are the open targets in order, each slot's `w` the width of its column, and the page's parameters record the mode and the focused target, so saving a workspace is saving a page and reopening it is reading that page (`/page/NAME`). An unsaved workspace lives in the URL (`/w/columns?ids=codex:019d0f2a,claude-code:7f3a2c10&focus=claude-code:7f3a2c10`); **Save workspace** writes the page (`polylogue 'codex:019d0f2a OR claude-code:7f3a2c10' save page:morrow/desk --template workspace`).
 - **Tabs** (`/w/tabs`): open targets as tabs; `Ctrl`-click opens in the background; each tab shows its live state and a short title.
-- **Stack** (`/w/stack`): two to five columns, each a compact reader with its own scroll and live chip, and one inspector following the active column. Columns are filled by stack builders: parent chain, siblings and forks, subagents, recent sessions in the same repository, the marked search results, sessions sharing a file. Opening more columns folds the oldest into tabs.
+- **Columns** (`/w/columns`): two to five columns, each a compact reader with its own scroll and live chip, and one inspector following the active column. Columns are filled by column builders: parent chain, siblings and forks, subagents, recent sessions in the same repository, the marked search results, sessions sharing a file. Opening more columns folds the oldest into tabs.
 - **Compare** (`/w/compare`): the open columns read with the `compare` view ([Compare](web-views.md#review-and-compare-review-compare)).
 - **Timeline** (`/w/timeline`): the columns' messages, tool calls, notes and lineage events merged by time or grouped by session; clock gaps and provider-relative times flagged; tool bursts collapsed (`… tool burst · 42 runs · 22m · expand`).
 
@@ -175,10 +175,10 @@ Only view state in progress: focus, open disclosures within a view, live reading
 
 ## Access
 
-- The listen address and authentication mode are deployment configuration ([operations.md](installing.md#configuration)): by default a loopback bind with a peer-uid check; any other address needs a token file, and a non-loopback address without one refuses to start. Remote or phone access is that configuration; every view works at 390 px.
+- The listen address and authentication mode are deployment configuration ([installing.md](installing.md#configuration)): by default a loopback bind with a peer-uid check; any other address needs a token file, and a non-loopback address without one refuses to start. Remote or phone access is that configuration; every view works at 390 px.
 - `polylogue web` (and `read --to browser`) hands the token over as an `HttpOnly; SameSite=Strict` cookie through a URL fragment exchanged at `/auth`; sign-in removes the fragment from the browser history before exchanging it. The cookie's name distinguishes archives, because cookies do not distinguish ports. Credentials never appear in query strings or change positions.
 - Every route checks the Host header, the peer uid where it applies, and authentication. Writes are POST only and require an allowed Origin; POST bodies are `application/json`. There is no CORS.
-- Every response carries `no-store`, `no-referrer`, `nosniff` and the content security policy. Archived markup stays inert, and reading content never fetches remote previews.
+- Every view and API response carries `no-store`, `no-referrer`, `nosniff` and the content security policy; the shell's static assets under `/assets/` carry the other three and revalidate (`max-age=0, must-revalidate`) instead. Archived markup stays inert, and reading content never fetches remote previews.
 - IDs are percent-encoded once. The archive directory's path is never sent over HTTP; text shows it as `[archive]`.
 
 ## Routes
@@ -189,7 +189,7 @@ The HTTP API carries the same operations as the CLI and MCP, with the same argum
 |---|---|
 | `POST /api/v1/rows` | the `rows` arguments (`selection`, `steps`, `all`, `dry_run`, `explain`) in the shared envelope with a client `request_id`; any line, writes and acts included |
 | `GET /api/v1/rows?selection=…&steps=read&view=…` | a line whose steps only read (the listing, `read`, `brief`); each step's arguments are query values under their own names (`show`, `around`, `cwd`, …) |
-| `/api/v1/<command>` | a command: `status`, `help`, `set`, `import`, `start`, `embed`, `dev/sql`, `dev/schema`, `dev/feed`; GET for those that only read, POST for the rest |
+| `/api/v1/<command>` | a command: `status`, `help`, `set`, `import`, `start`, `embed`, `dev/sql`, `dev/schema/infer`, `dev/schema/unread`, `dev/feed`; GET for those that only read, POST for the rest |
 
 - **One reply, two encodings.** A route asked for `application/json` returns the typed reply; asked for `text/html`, it renders the same typed reply and its `next` calls as links and buttons. A view's HTML is that rendering inside the frame.
 - **Live reading.** A GET with `follow=true` on a `read` step streams `read --follow` with the shared server-sent-event framing until the client closes it; it is the transport of [live behaviour](#live-behaviour).

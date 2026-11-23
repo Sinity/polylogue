@@ -179,7 +179,7 @@ pub struct AttachmentPlace {
 
 /// The read with the variants it renders resolved once: the request's own
 /// (`none` for the originals), else those its cursor's first page rendered,
-/// else the `reading.variants` setting.
+/// else the `reading.alternates` setting.
 pub fn with_variants(
     reader: &Reader<'_>,
     services: &impl ReadServices,
@@ -209,7 +209,7 @@ pub fn with_variants(
         }
         None => reader
             .settings_snapshot(services.requests().machine())?
-            .reading_variants()
+            .reading_alternates()
             .map_err(Error::conflict)?
             .to_vec(),
     };

@@ -18,7 +18,7 @@ use polylogue_model::{
 };
 use rusqlite::{Connection, params};
 
-/// Derive the stable preference key used by `reading.variants`.
+/// Derive the stable preference key used by `reading.alternates`.
 pub fn key(variant: &Variant) -> String {
     match &variant.to_lang {
         Some(lang) => format!("{}:{lang}", variant.kind.as_str()),

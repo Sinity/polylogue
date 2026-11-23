@@ -546,7 +546,7 @@ const WRITTEN: &[Command] = &[
     Command {
         name: "set",
         examples: &["polylogue set browser.actions"],
-        help: "List the typed runtime settings catalog, read KEY, or write KEY VALUE. Includes reading.variants, browser.actions, embed.* and plan.*. Standalone attention settings are local; in primary mode Sinex holds attention settings",
+        help: "List the typed runtime settings catalog, read KEY, or write KEY VALUE. Includes reading.alternates, browser.actions, embed.* and plan.*. Standalone attention settings are local; in primary mode Sinex holds attention settings",
         reason: "Inspect declared runtime settings and author changes at their declared scope",
         latency: command_surface::LatencyClass::Local,
         run: Run::Daemon(daemon::<H::Setting>()),

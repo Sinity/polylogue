@@ -24,6 +24,7 @@ Tab completes every position · polylogue help is one screen
 ```
 
 - The screen is the shipped page `page:home` rendered for a terminal ([pages.md](pages.md#templates-and-shipped-pages)); revising that page changes the screen. Rows new since the reader's seen mark ([reading.md](reading.md#ranges)) are marked.
+- **Pages changed since you looked** (`edits` with `since:seen`) and **Open items** (`open`) follow `recent here` when they have rows ([page-templates.md](page-templates.md#shipped-pages-and-templates)).
 - Each section is a shipped saved query's listing (`waiting`, `running`, `recent` filtered to `here`; [saved-queries.md](saved-queries.md#shipped-saved-queries)), so the same rows are one word away; rows are numbered, so row numbers work at once.
 - The `next:` line is built from what is on screen: answer the first waiting session, follow the first running one, this repository this week. With nothing waiting it offers a recent session's `read` and the `brief` of a recent phrase.
 - The last line shows while the archive has recorded fewer than about twenty runs by the operator, counted from the `runs` unit with no separate state.
@@ -38,7 +39,7 @@ One embedded fuzzy picker, with no external program, in an inline viewport below
 - for `pick` in a line, over the selection's rows;
 - for a verb with no selection, over its usual rows ([interfaces.md](interfaces.md#a-verb-with-no-selection));
 - for a one-row verb given several rows on a terminal;
-- for Alt-p in any shell line, inserting the chosen references at the cursor (the key `install zsh` and `install fish` bind, [operations.md](installing.md#installing)).
+- for Alt-p in any shell line, inserting the chosen references at the cursor (the key `install zsh` and `install fish` bind, [installing.md](installing.md#installing)).
 
 It opens only when standard input and a display output are terminals and no machine format (`--json`, `--format json|jsonl`) is asked for; running inside a harness is not a condition of its own, since a harness's tool shell has no terminal. It never opens for one row and never takes a row silently. An explicit `pick` may send its references to a pipe while drawing on terminal standard error, as the Alt-p shell binding does. Automatic pickers still require terminal standard output. The line runner prints the selected references once; drawing and explicit Ctrl-p output stay on the display terminal.
 
@@ -213,7 +214,7 @@ step 1:     would tag each matched session needs-tests; needs --all if more than
 - On a command it says what the command would do with its arguments: `polylogue import chatgpt --explain` prints `would ask the browser extension to fetch chatgpt conversations the archive lacks`.
 - A line that does not parse is explained up to where it fails, with the refusal's `try:` line.
 - The grammar part needs no daemon; reading the selection back in words asks the daemon's compiler without running the query.
-- `--dry-run` instead resolves the selection and reports counts and per-step effects ([interfaces.md](interfaces.md#chains)).
+- `--dry-run` instead resolves the selection and reports counts and per-step effects ([interfaces.md](interfaces.md#steps)).
 - Over MCP it is `explain: true` on any call, and the reply carries the parsed query with spans, which the web uses for facet editing.
 
 ## Defaults a person would guess

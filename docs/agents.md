@@ -56,7 +56,7 @@ How the author of a record affects rendering: operator annotations are quoted as
 
 - **Each tool holds everything the one before it holds**, so an agent uses the smallest tool that holds all its verbs. The split exists for the clients' access hints, which clients filter on; the server has no read-only mode. No tool is destructive, because Polylogue deletes nothing.
 - **Access belongs to the request**, from its typed arguments: `set` without a value and `import` of paths are not acts. A call's access is its highest step's; a tool refuses a step above its access and names the tool that takes it.
-- **On every call:** `explain: true` says how the call is read and what it would do, running nothing; `dry_run: true` resolves the selection and reports what each step would do, writing and reaching nothing ([interfaces.md#chains](interfaces.md#chains)).
+- **On every call:** `explain: true` says how the call is read and what it would do, running nothing; `dry_run: true` resolves the selection and reports what each step would do, writing and reaching nothing ([interfaces.md#steps](interfaces.md#steps)).
 - **Not over MCP:** `pick` (it needs a person), `edit` without `text` (it opens an editor; the refusal gives the `read --to` and `import` lines of the [working copy](page-working-copy.md#editing-in-your-editor)), `read` with `follow` (a stream; the refusal gives the `read` call with `from` that continues), row numbers, `--to`, `status --verify`, `web`, `install`, `demo`, `daemon`, `mcp`, `dev feed`. Every write is a step or operation of `polylogue_write` or `polylogue_act` ([authorship.md#mcp-completeness](authorship.md#mcp-completeness)).
 
 ### Call shape
@@ -64,7 +64,7 @@ How the author of a record affects rendering: operator annotations are quoted as
 The shared request envelope: `{operation?, arguments, request_id?, deadline?, budget_tokens?, cursor?}`. `operation` defaults to `rows`; `request_id` is optional ([Retries never write twice](#retries-never-write-twice)); `deadline` is milliseconds or `null` for none. For `rows`, `arguments` holds:
 
 - `selection`: one query or reference, the text that would be inside the quotes on the command line, so no shell quoting. It may be left out only when the one step is `brief` (the brief for the directory `cwd`).
-- `steps`: an array of `{verb, …}` objects, run in order on the same rows ([interfaces.md#chains](interfaces.md#chains)). Each step's other keys are the CLI's option and word names with `_` for `-`: `text`, `as`, `name`, `verdict`, `value`, `in`, `on`, `seed`, `view`, `show`, `around`, `format`, `section`, `brief`, `stop_source`, ….
+- `steps`: an array of `{verb, …}` objects, run in order on the same rows ([interfaces.md#steps](interfaces.md#steps)). Each step's other keys are the CLI's option and word names with `_` for `-`: `text`, `as`, `name`, `verdict`, `value`, `in`, `on`, `seed`, `view`, `show`, `around`, `format`, `section`, `brief`, `stop_source`, ….
 - `all`: the `--all` that a write or act over several query rows needs.
 - `dry_run` and `explain`.
 
@@ -165,7 +165,7 @@ A resource read is a read like any other: the caller identity, trust rendering a
 
 ### Waiting
 
-`"wait": "30m"` in `arguments` is the line option `--wait` ([interfaces.md](interfaces.md#chains)): a listing returns when rows match or the time passes, and `import` of a provider returns when its job finishes. One MCP call waits at most 50 seconds, so it never outlives a client's tool timeout; a call that runs out of its 50 seconds replies `empty` with the same call, its `wait` less the elapsed time, as its `next`, and an agent that runs that call keeps waiting.
+`"wait": "30m"` in `arguments` is the line option `--wait` ([interfaces.md](interfaces.md#steps)): a listing returns when rows match or the time passes, and `import` of a provider returns when its job finishes. One MCP call waits at most 50 seconds, so it never outlives a client's tool timeout; a call that runs out of its 50 seconds replies `empty` with the same call, its `wait` less the elapsed time, as its `next`, and an agent that runs that call keeps waiting.
 
 ```
 polylogue_read  {"arguments": {"selection": "session:codex:019d0f2a live:idle", "wait": "30m"}}

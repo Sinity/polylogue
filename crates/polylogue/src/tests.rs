@@ -153,8 +153,8 @@ fn every_catalog_key_changes_an_output() {
             .unwrap()
             .to_string()
         }),
-        ("reading.variants", r#"["translation:pl"]"#, &[], |s| {
-            format!("{:?}", s.reading_variants())
+        ("reading.alternates", r#"["translation:pl"]"#, &[], |s| {
+            format!("{:?}", s.reading_alternates())
         }),
         (
             "signal.quiet_hours",

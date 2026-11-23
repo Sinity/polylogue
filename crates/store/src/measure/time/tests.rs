@@ -340,7 +340,7 @@ fn assertions_settings_and_read_clocks_do_not_change_stored_time_products() {
     f.note("tag", Some("new"), None, "session:codex:independent")
         .unwrap();
     f.setting("browser.actions", "on").unwrap();
-    f.setting("reading.variants", r#"["summary"]"#).unwrap();
+    f.setting("reading.alternates", r#"["summary"]"#).unwrap();
     let after = {
         let pool = f.reads().unwrap();
         let r = pool.reader().unwrap();

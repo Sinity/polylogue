@@ -51,7 +51,7 @@ fn authed(b: axum::http::request::Builder) -> axum::http::request::Builder {
 fn setting_request(id: &str) -> String {
     serde_json::to_string(&command_surface::Request {
         operation: "set".into(),
-        arguments: serde_json::json!({"key":"reading.variants", "value":"[]"}),
+        arguments: serde_json::json!({"key":"reading.alternates", "value":"[]"}),
         request_id: id.into(),
         deadline: command_surface::Deadline::Default,
         budget_tokens: Default::default(),
@@ -1139,7 +1139,7 @@ fn setting_http_keeps_typed_write_repeat_and_current_results() {
         assert!(!repeat.pending);
         let request = command_surface::Request {
             operation: "set".into(),
-            arguments: serde_json::json!({"key":"reading.variants"}),
+            arguments: serde_json::json!({"key":"reading.alternates"}),
             request_id: "http-setting-current".into(),
             deadline: command_surface::Deadline::None,
             budget_tokens: Default::default(),
@@ -1157,7 +1157,7 @@ fn setting_http_keeps_typed_write_repeat_and_current_results() {
         else {
             panic!("read must return a current setting")
         };
-        assert_eq!(current.current.key, "reading.variants");
+        assert_eq!(current.current.key, "reading.alternates");
         assert!(current.allowed_values.is_empty());
         assert_eq!(current.history.len(), 1);
         assert_eq!(

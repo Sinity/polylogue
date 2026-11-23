@@ -65,7 +65,7 @@ A *reading* is what a parser, at its reading version, makes of one chain: one ro
 - **Origin, format, route and harness are separate coordinates.** A record's model field is trusted over the harness name: a DeepSeek model running under the Claude Code harness is DeepSeek.
 - **Parsers are pure.** What a parser makes of a record depends on the bytes of its chain up to the end of that record and on nothing else: no stored state, no other input and no lookup in the index. What it carries from one record to the next is bounded by what is still open, never by how much it has read ([architecture.md](architecture.md#parsers)).
 - **Rows name things as the source names them.** A parent, a tool call, a link's ends and a record that stands for another are written into rows by the names the source used, and are joined to what they name afterwards: within the chain when its reading is formed, within the session when it is composed, and across sessions when read ([sessions.md](sessions.md#names-and-references)). A parser never waits for, looks up or remembers the thing a record names.
-- **Markup** (`::kind(args)` in transcripts) is extracted at parse time into annotations authored by the message's author, with IDs derived from the message and position so a re-parse writes the same annotations ([markup.md](markup.md)).
+- **Markup** (`::kind(args)` in transcripts) is extracted at parse time into annotations authored by the message's author, with IDs derived from the origin, message and marker line (never its position) so a re-parse writes the same annotations ([markup.md](markup.md)).
 
 ### Reading versions
 

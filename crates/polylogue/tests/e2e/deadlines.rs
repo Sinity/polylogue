@@ -95,7 +95,7 @@ fn cli_reports_deadline_refusals_with_exit_seven() {
 #[test]
 fn a_read_timeout_does_not_turn_a_write_reply_into_a_failure() {
     let output = answer(
-        &["--request-id", "synthetic-write", "--json", "set", "reading.variants", "[]"],
+        &["--request-id", "synthetic-write", "--json", "set", "reading.alternates", "[]"],
         Duration::from_millis(1250),
         b"{\"outcome\":\"ok\",\"value\":{\"id\":\"synthetic-write\",\"repeat\":false,\"pending\":false},\"notes\":[],\"next\":[]}\n",
         command_surface::Deadline::Default,

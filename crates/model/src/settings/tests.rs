@@ -27,14 +27,14 @@ fn all_declared_defaults_validate_and_variants_keep_order() {
     }
     assert_eq!(
         parse(
-            "reading.variants",
+            "reading.alternates",
             r#"["translation:pl","simplification"]"#,
             SettingMode::Standalone
         )
         .unwrap(),
         Value::Variants(vec!["translation:pl".into(), "simplification".into()])
     );
-    assert!(parse("reading.variants", "[\"\"]", SettingMode::Standalone).is_err());
+    assert!(parse("reading.alternates", "[\"\"]", SettingMode::Standalone).is_err());
 }
 #[test]
 fn typed_values_refuse_invalid_minutes_counts_and_plans() {
@@ -71,10 +71,10 @@ fn scope_resolution_uses_accepting_host_and_rejects_archive_overrides() {
         Some("host-b".into())
     );
     assert_eq!(
-        target_machine("reading.variants", None, "host-a").unwrap(),
+        target_machine("reading.alternates", None, "host-a").unwrap(),
         None
     );
-    assert!(target_machine("reading.variants", Some("host-b"), "host-a").is_err());
+    assert!(target_machine("reading.alternates", Some("host-b"), "host-a").is_err());
     assert!(target_machine("signal.quiet_hours", Some("*"), "host-a").is_err());
 }
 
@@ -97,7 +97,7 @@ fn setting_conflict_picks_no_default_and_spares_other_keys() {
             conflicts: conflict.clone(),
         },
         Current {
-            key: "reading.variants".into(),
+            key: "reading.alternates".into(),
             kind: Kind::Variants,
             default: Some(Value::Variants(vec![])),
             scope: Scope::Archive,
@@ -110,7 +110,7 @@ fn setting_conflict_picks_no_default_and_spares_other_keys() {
     assert!(
         matches!(snapshot.browser_actions(),Err(Error::Conflict {key,revisions}) if key=="browser.actions" && revisions==conflict)
     );
-    assert_eq!(snapshot.reading_variants().unwrap(), ["translation:pl"]);
+    assert_eq!(snapshot.reading_alternates().unwrap(), ["translation:pl"]);
     assert_eq!(snapshot.get("embed.endpoint").unwrap(), None);
 }
 

@@ -31,7 +31,7 @@ The visual style of MK2 (graphite and slate, dark only, Inter and JetBrains Mono
 | [08 Inspector](web/boards/mk3/index.html#a08) | the inspector for each selection context |
 | [09 Topology](web/boards/mk3/index.html#a09) | the lineage view over the closed set of session links ([sessions.md](sessions.md#session-links)), with unresolved parents shown as waiting |
 | [10 Flows](web/boards/mk3/index.html#a10) | resuming from a message in another harness (`resume --in`), forking (`resume --fork`) and a bundle from a selection (a `bundle` page), each explicit and previewed ([Web reader](web-reader.md#session-reader-ssession)) |
-| [11 Tabs](web/boards/mk3/index.html#a11), [12 Stack](web/boards/mk3/index.html#a12) | the workspace modes, saved as `workspace` pages ([Workspaces](web.md#workspaces)) |
+| [11 Tabs](web/boards/mk3/index.html#a11), [12 Columns](web/boards/mk3/index.html#a12) | the workspace modes, saved as `workspace` pages ([Workspaces](web.md#workspaces)) |
 | [13 Compare](web/boards/mk3/index.html#a13), [14 Timeline](web/boards/mk3/index.html#a14) | compare with its four alignments, the timeline, and the matching workspace modes |
 | [15 User state](web/boards/mk3/index.html#a15) | marks, notes, saved queries, bundles and workspaces as the notes list shows them; marks are tags ([annotations.md](annotations.md#kinds)) |
 | [16 Palette](web/boards/mk3/index.html#a16) | the palette scoped by selection, with disabled reasons, and the keyboard help |
