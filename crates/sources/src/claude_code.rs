@@ -161,6 +161,9 @@ pub struct ParserState {
     /// every record. A file names a few sessions.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     names: BTreeMap<String, String>,
+    /// The directory each session was last in, by native ID.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    cwd: BTreeMap<String, String>,
 }
 
 fn origin() -> Origin {
@@ -227,7 +230,12 @@ impl ClaudeCode {
     /// The record's session, stated with the record's wrapper fields. Also
     /// sends the link that explains why a record belongs to a session other
     /// than the file's own.
-    fn session(&self, v: &Json, out: &mut Output) -> Option<SessionId> {
+    fn session(
+        &self,
+        parser_state: &mut ParserState,
+        v: &Json,
+        out: &mut Output,
+    ) -> Option<SessionId> {
         let record_session = self.record_session(v);
         let id = session_id(&record_session.native)?;
         let parent = v
@@ -268,7 +276,18 @@ impl ClaudeCode {
         }
         let mut s = Session::new(id.clone(), record_session.kind);
         if let Some(cwd) = v.str("cwd").filter(|s| !s.is_empty()) {
+            // A step's directories continue from the one the session was
+            // last in, so its moves, a move back included, join the earlier
+            // ones (`Session::merge`).
+            if !out.sessions.iter().any(|stated| stated.id == id)
+                && let Some(previous) = parser_state.cwd.get(&record_session.native)
+            {
+                s.offer_cwd(previous);
+            }
             s.offer_cwd(cwd);
+            parser_state
+                .cwd
+                .insert(record_session.native.clone(), cwd.to_owned());
         }
         if let Some(branch) = v.str("gitBranch").filter(|s| !s.is_empty()) {
             s.git_branch = Some(branch.to_owned());
@@ -388,7 +407,7 @@ impl ClaudeCode {
         out: &mut Output,
     ) -> RecordOutcome {
         let session = match v.get("sessionId").or(v.get("agentId")) {
-            Some(_) => self.session(v, out),
+            Some(_) => self.session(parser_state, v, out),
             None => self.own_session(out),
         };
         let Some(session) = session else {
@@ -465,7 +484,7 @@ impl ClaudeCode {
             invalid,
         } = summary;
         if !blocks.is_empty() {
-            let Some(session) = self.session(v, out) else {
+            let Some(session) = self.session(parser_state, v, out) else {
                 return RecordOutcome::unreadable("session ID is empty");
             };
             let (id, id_kind) = match v.str("uuid").filter(|s| !s.is_empty()) {
@@ -551,7 +570,7 @@ impl ClaudeCode {
     ) -> RecordOutcome {
         let kind = self.kind(v);
         records.fields(&kind, v, &fields::MESSAGE_FIELDS);
-        let Some(session) = self.session(v, out) else {
+        let Some(session) = self.session(parser_state, v, out) else {
             return RecordOutcome::unreadable("session ID is empty");
         };
         let msg = v.get("message").unwrap_or(&Json::Null);
@@ -760,9 +779,15 @@ impl ClaudeCode {
 
 /// States a session's facts from one record: merged into what the step
 /// already states about it, as the writer merges steps.
-fn state(out: &mut Output, session: Session) {
+fn state(out: &mut Output, mut session: Session) {
     match out.sessions.iter_mut().find(|s| s.id == session.id) {
-        Some(stated) => stated.merge(&session),
+        Some(stated) => {
+            let cwd = std::mem::take(&mut session.cwd);
+            stated.merge(&session);
+            for dir in &cwd {
+                stated.offer_cwd(dir);
+            }
+        }
         None => out.sessions.push(session),
     }
 }
@@ -1279,7 +1304,7 @@ impl Parser for ClaudeCode {
             "queue-operation" => {
                 if let Some((task_id, outcome, call_id, output_file)) = background_update(v)
                     && let Some(session) = match v.get("sessionId") {
-                        Some(_) => self.session(v, out),
+                        Some(_) => self.session(parser_state, v, out),
                         None => self.own_session(out),
                     }
                 {
@@ -1338,7 +1363,7 @@ impl Parser for ClaudeCode {
                 RecordOutcome::Used
             }
             "fork-context-ref" => {
-                let child = self.session(v, out);
+                let child = self.session(parser_state, v, out);
                 let (Some(parent), Some(child)) = (
                     v.str("parentSessionId")
                         .filter(|s| !s.is_empty())
@@ -1373,7 +1398,7 @@ impl Parser for ClaudeCode {
                             v,
                             &fields::AGENT_PROGRESS_FIELDS,
                         );
-                        let parent = self.session(v, out);
+                        let parent = self.session(parser_state, v, out);
                         let child = data
                             .str("agentId")
                             .filter(|s| !s.is_empty())

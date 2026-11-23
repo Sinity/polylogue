@@ -130,6 +130,25 @@ impl ChainRows {
         self.count(name, i64::try_from(position).unwrap_or(i64::MAX))
     }
 
+    /// The message of `session` whose first record is the chain's latest.
+    pub fn latest_opened(&mut self, session: &SessionId) -> Result<Option<MessageId>> {
+        let id = self
+            .conn
+            .prepare_cached(
+                "SELECT m.id FROM message_source s JOIN session ss ON ss.pk=s.session_pk
+                 JOIN message m ON m.pk=s.message_pk
+                 WHERE s.input_pk=?1 AND s.chain=?2 AND ss.id=?3
+                 ORDER BY s.source_start DESC LIMIT 1",
+            )?
+            .query_row(
+                params![self.input_pk, self.chain, session.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        id.map(|id| MessageId::parse(&id).map_err(StoreError::invalid))
+            .transpose()
+    }
+
     fn count(&self, name: &str, before: i64) -> Result<u64> {
         let count: i64 = self
             .conn

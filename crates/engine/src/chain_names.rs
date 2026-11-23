@@ -59,4 +59,10 @@ impl EarlierRows for Committed {
             None => Ok(0),
         }
     }
+    fn latest_opened(&mut self, session: &SessionId) -> Result<Option<MessageId>, String> {
+        match &mut self.0 {
+            Some(rows) => rows.latest_opened(session).map_err(|e| e.to_string()),
+            None => Ok(None),
+        }
+    }
 }

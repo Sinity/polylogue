@@ -649,3 +649,35 @@ fn rewritten_compactor_markers_report_unknown_session() {
         polylogue_model::WrittenBy::Unknown
     );
 }
+
+/// An event after a later record of a response follows the latest message
+/// opened before it, read at once or in two steps.
+#[test]
+fn an_event_after_a_reopened_response_follows_the_latest_opened_message() {
+    let records = vec![
+        assistant("a1", "msg_1", json!({"type":"text","text":"one"})),
+        assistant("b1", "msg_2", json!({"type":"text","text":"two"})),
+        json!({"type":"user","uuid":"u1","parentUuid":"b1","sessionId":"s1",
+               "message":{"role":"user","content":"go on"}}),
+        assistant("a2", "msg_1", json!({"type":"text","text":"more"})),
+        json!({"type":"system","subtype":"informational","uuid":"e1","sessionId":"s1"}),
+    ];
+    let bytes = jsonl(&records);
+    let after = |steps: Vec<crate::parse::Step>| {
+        crate::chain_names::tests::settled(&steps)
+            .iter()
+            .flat_map(|step| step.output.events.clone())
+            .find(|event| event.kind == "informational")
+            .unwrap()
+            .after
+    };
+    let whole = after(vec![
+        run(&main_file("s1"), &mut ParserState::default(), &bytes, 0).unwrap(),
+    ]);
+    assert_eq!(whole, message_id("u1"));
+    let cut = jsonl(&records[..4]).len();
+    let mut state = ParserState::default();
+    let first = run(&main_file("s1"), &mut state, &bytes[..cut], 0).unwrap();
+    let second = run(&main_file("s1"), &mut state, &bytes[cut..], cut as u64).unwrap();
+    assert_eq!(after(vec![first, second]), whole);
+}
