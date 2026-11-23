@@ -12,9 +12,10 @@ const SRC = join(dirname(fileURLToPath(import.meta.url)), "../src");
 const source = (path) => readFileSync(join(SRC, path), "utf8");
 
 /** A chat page with the extension's page scripts, its fetches answered by `routes`. */
-function page(url, scripts, { html = "<body></body>", routes = {}, resources = [] } = {}) {
+function page(url, scripts, { html = "<body></body>", routes = {}, resources = [], storage = {} } = {}) {
   const dom = new JSDOM(html, { url, runScripts: "outside-only", pretendToBeVisual: true });
   const { window } = dom;
+  for (const [key, value] of Object.entries(storage)) window.localStorage.setItem(key, value);
   // Chrome's Blob reads its bytes; jsdom's does not.
   window.Blob = Blob;
   const sent = [];
@@ -116,13 +117,33 @@ describe("the ChatGPT page script", () => {
 });
 
 describe("the Claude page script", () => {
-  const list = "https://claude.ai/api/organizations/0b1c2d3e-0000-4000-8000-000000000001/chat_conversations";
+  const org = "0b1c2d3e-0000-4000-8000-000000000001";
+  const list = `https://claude.ai/api/organizations/${org}/chat_conversations`;
+  const selected = { "omelette-org-settings-cache": JSON.stringify({ orgUuid: org }) };
   const open = (routes) => {
-    const { window } = page("https://claude.ai/recents", ["content/claude.js"], {
-      routes, resources: [`${list}?limit=1`],
-    });
+    const { window } = page("https://claude.ai/recents", ["content/claude.js"], { routes, storage: selected });
     return window.polylogueProvider;
   };
+
+  it("an_unknown_selected_organization_captures_nothing", async () => {
+    // The page has requested another workspace's API, but claude.ai has no
+    // selected organization stored: the script must not borrow that ID.
+    const other = "https://claude.ai/api/organizations/9f8e7d6c-0000-4000-8000-000000000002/chat_conversations";
+    const { window, fetched } = page("https://claude.ai/chat/c1", ["content/claude.js"], {
+      routes: { [other]: [200, [{ uuid: "theirs", name: "Not ours" }]] },
+      resources: [`${other}?limit=30`],
+      storage: { "omelette-org-settings-cache": JSON.stringify({ orgUuid: "not-a-uuid" }) },
+    });
+    const provider = window.polylogueProvider;
+    expect(await provider.list(null)).toEqual({ status: 401, error: "signed_out" });
+    expect(await provider.fetchConversation(null)).toEqual({ status: 401, error: "signed_out" });
+    expect(fetched).toEqual([]);
+  });
+
+  it("reads the list of the organization claude.ai has selected", async () => {
+    const provider = open({ [`${list}?limit=100&offset=0`]: [200, [{ uuid: "u1", name: "One", updated_at: "2026-01-01T00:00:00Z" }]] });
+    expect((await provider.list(null)).info.conversations).toEqual([{ id: "u1", title: "One", updated_at: "2026-01-01T00:00:00Z" }]);
+  });
 
   it("ends the list on an empty page, not a short one", async () => {
     const provider = open({ [`${list}?limit=100&offset=0`]: [200, [{ uuid: "u1", name: "One" }]] });

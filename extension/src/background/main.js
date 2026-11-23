@@ -19,7 +19,7 @@ const SWEEP = "polylogue.sweep";
 const SPACING_MS = 10_000;
 const PROBLEMS_KEPT = 20;
 // Backfill job states that are over.
-const JOB_ENDED = ["finished", "cancelled"];
+const JOB_ENDED = ["finished", "failed", "cancelled"];
 const JOBS_ENDED_SHOWN = 3;
 const DEFAULT_SETTINGS = { automatic: true, panel: true, hidden_sites: [] };
 

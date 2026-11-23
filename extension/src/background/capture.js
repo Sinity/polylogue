@@ -115,10 +115,13 @@ function content(value, key = null) {
   return value;
 }
 
-async function fingerprint(raw, session) {
-  const value = raw ? JSON.parse(await raw.text()) : session || {};
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(content(value))));
+async function sha256(text) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function fingerprint(raw, session) {
+  return sha256(JSON.stringify(content(raw ? JSON.parse(await raw.text()) : session || {})));
 }
 
 export class Capturer {
@@ -164,7 +167,40 @@ export class Capturer {
     finally { resolve?.(); }
   }
 
-  async captureObserved(tabId, provider, { id = null, reason = "changed", force = false, confirm = null, before = null } = {}) {
+  /**
+   * A tab's own conversation is first asked what its page shows. A sweep
+   * whose page shows what it showed at the conversation's last capture,
+   * which the archive holds, ends there without fetching from the provider.
+   */
+  async captureObserved(tabId, provider, options = {}) {
+    const shown = options.id ? null : await this.shownOnPage(tabId);
+    if (options.reason === "sweep" && !options.force && shown && (await this.shownUnchanged(provider, shown))) {
+      return { outcome: "unchanged", provider, conversation: shown.conversation, confirmedTurn: null };
+    }
+    const done = await this.fetchAndStore(tabId, provider, options);
+    // Read before the fetch, so the capture holds at least what the page showed.
+    if (shown && shown.conversation === done.conversation) {
+      await this.seen.set({ [`shown ${provider}:${done.conversation}`]: shown.digest });
+    }
+    return done;
+  }
+
+  /** The tab's conversation and a digest of what its page shows, or null. */
+  async shownOnPage(tabId) {
+    const page = await askPage(this.chrome, tabId, { type: "page" }).catch(() => null);
+    if (page?.status !== 200 || !page.info?.id || typeof page.shown !== "string") return null;
+    return { conversation: page.info.id, digest: await sha256(page.shown) };
+  }
+
+  async shownUnchanged(provider, shown) {
+    const key = `${provider}:${shown.conversation}`;
+    const known = await this.seen.get({ [`shown ${key}`]: null });
+    if (known[`shown ${key}`] !== shown.digest) return false;
+    const held = (await this.host.conversations(provider, [shown.conversation]).catch(() => null))?.conversations?.[0];
+    return ["archived", "spooled"].includes(held?.state) && (!held.downloading || this.downloading.has(key));
+  }
+
+  async fetchAndStore(tabId, provider, { id = null, reason = "changed", force = false, confirm = null, before = null } = {}) {
     const capturedAt = new Date();
     const page = await this.scheduler.run(provider, () => askPage(this.chrome, tabId, { type: "conversation", id }), { background: reason === "backfill", owner: tabId, before });
     if (page.status !== 200) throw refused(page);

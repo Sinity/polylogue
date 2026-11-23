@@ -507,6 +507,31 @@ it("keeps unchanged conversation fingerprints across a browser restart", async (
   expect(host.stored).toHaveLength(1);
 });
 
+it("an_unchanged_conversation_is_not_fetched_on_a_sweep, while an explicit capture still fetches", async () => {
+  const host = storingHost([]);
+  const page = chatgptPage();
+  let shown = "https://chatgpt.com/c/c1\n5\nhello";
+  const answer = (request) => (request.type === "page"
+    ? { status: 200, info: { id: "c1", temporary: false }, shown }
+    : page.answer(request));
+  const chrome = fakeChrome({ routes: host.routes, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+  const fetches = () => page.asked.filter((request) => request.type === "conversation").length;
+  expect((await start(chrome, { indexedDB: new IDBFactory() }).captureTab(1, "changed")).outcome).toBe("stored");
+  expect(fetches()).toBe(1);
+  // The service worker restarts between sweeps.
+  const extension = start(chrome, { indexedDB: new IDBFactory() });
+  expect((await extension.captureTab(1, "sweep")).outcome).toBe("unchanged");
+  expect(fetches()).toBe(1);
+  expect((await extension.captureTab(1, "asked", true)).outcome).toBe("stored");
+  expect(fetches()).toBe(2);
+  // The page shows another turn: the sweep fetches.
+  shown = "https://chatgpt.com/c/c1\n11\nhello again";
+  expect((await extension.captureTab(1, "sweep")).outcome).toBe("unchanged");
+  expect(fetches()).toBe(3);
+  // Only the explicit capture was stored again.
+  expect(host.stored).toHaveLength(2);
+});
+
 it.each(["missing", "unknown"])("captures cached content when the daemon reports it as %s", async (state) => {
   const host = storingHost([]);
   const page = chatgptPage();
