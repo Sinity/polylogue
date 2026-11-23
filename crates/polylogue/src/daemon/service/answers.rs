@@ -68,11 +68,7 @@ pub(crate) fn query_outcome(
 pub(crate) fn import_answer(
     report: polylogue_engine::ImportReport,
 ) -> Answer<polylogue_engine::ImportReport> {
-    let pending = report.user_state.pending > 0
-        || report
-            .python_import
-            .as_ref()
-            .is_some_and(|report| report.pending);
+    let pending = report.user_state.pending > 0;
     crate::protocol::written(report, pending)
 }
 

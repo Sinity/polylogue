@@ -327,17 +327,6 @@ const CLAUDE_CODE: OriginSpec = OriginSpec {
     collector: None,
 };
 
-/// The same Claude reading for a verified predecessor member whose file name
-/// does not establish a session or a copied transcript.
-pub static CLAUDE_CODE_WIRE_MESSAGES: OriginSpec = OriginSpec {
-    open: |_| {
-        Some(Parse::Lines(Box::new(crate::claude_code::ClaudeCode {
-            file: crate::claude_code::File::WireMessages,
-        })))
-    },
-    ..CLAUDE_CODE
-};
-
 pub static ORIGINS: &[OriginSpec] = &[
     CLAUDE_CODE,
     OriginSpec {

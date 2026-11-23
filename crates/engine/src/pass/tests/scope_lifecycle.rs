@@ -339,7 +339,6 @@ fn queued_import_yields_then_resumes_from_saved_positions() {
             let queued = tx.send(LoopMsg::Import {
                 paths: vec![import],
                 format: None,
-                from_archive: None,
                 dry_run: false,
                 authorship: Authorship {
                     author: Author::Operator,
@@ -616,7 +615,6 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
         let sent = tx.send(LoopMsg::Import {
             paths: vec![import],
             format: None,
-            from_archive: None,
             dry_run: false,
             authorship: Authorship {
                 author: Author::Operator,

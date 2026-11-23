@@ -71,11 +71,10 @@ pub const LOCATIONS: &[&str] = &[
     "polylogue/hooks/git/*.ndjson",
 ];
 
-/// Per-session and per-process spools are `.jsonl` or `.ndjson`; the
-/// Python Polylogue's dated spool held one event per `.json` file.
+/// Per-session and per-process spools are `.jsonl` or `.ndjson`.
 fn is_spool_file(path: &Path) -> bool {
     path.extension()
-        .is_some_and(|e| e == "jsonl" || e == "ndjson" || e == "json")
+        .is_some_and(|e| e == "jsonl" || e == "ndjson")
 }
 
 /// A spool line starts `{"event_type"` (per-session files), `{"event_id"`

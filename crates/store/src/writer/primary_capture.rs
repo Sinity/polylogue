@@ -543,7 +543,6 @@ impl Inner {
                         (BlobHash::of(&metadata_bytes), metadata_bytes.len() as u64)
                     });
                 let captured = CapturedInput {
-                    provenance: crate::primary::InputProvenance::Acquired,
                     generation: batch
                         .acquisition
                         .as_ref()
@@ -874,14 +873,6 @@ impl Inner {
         ready_revisions: &BTreeMap<String, Revision>,
         ready_extents: &[Placed],
     ) -> Result<Option<InputRows>> {
-        if input.provenance == crate::primary::InputProvenance::Restored {
-            self.primary_cache_ready()?;
-            super::older_archive::primary::restored_rows(&self.index, &input.rows)?;
-            if let Some(material) = material {
-                material.offset_of(&input.rows.extents)?;
-            }
-            return Ok(Some(input.rows.clone()));
-        }
         let source = input
             .basis
             .as_ref()

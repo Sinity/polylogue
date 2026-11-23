@@ -37,6 +37,30 @@ static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 /// this many characters of its NFC form, and its best chunk ranks it.
 pub const CHUNK_CHARS: usize = 6000;
 
+/// A vector bought for another store, as it was stored there.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredVector {
+    pub text_hash: Vec<u8>,
+    pub model: String,
+    pub chunk: i64,
+    pub dims: i64,
+    /// `dims` little-endian f32 values, as stored.
+    pub vector: Vec<u8>,
+    pub embedded_at: i64,
+}
+
+/// What became of one vector given to [`Vectors::restore`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Restored {
+    /// Its row was written.
+    Stored,
+    /// No write is needed: the same values are present, or the address
+    /// already has a newer purchase.
+    Present,
+    /// Not written, for the reason given.
+    Refused(String),
+}
+
 pub fn writes() -> u64 {
     WRITES.load(std::sync::atomic::Ordering::Acquire)
 }
@@ -339,11 +363,7 @@ impl Vectors {
     /// place. Conflicting dimensions are refused; equal-time conflicting
     /// values cannot be ordered and are also refused.
     /// Original source stores keep the earlier paid values.
-    pub fn restore(
-        &mut self,
-        vectors: &[crate::older_archive::StoredVector],
-    ) -> Result<Vec<crate::writer::Restored>> {
-        use crate::writer::Restored;
+    pub fn restore(&mut self, vectors: &[StoredVector]) -> Result<Vec<Restored>> {
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -411,45 +431,6 @@ impl Vectors {
         if stored {
             wrote();
         }
-        Ok(out)
-    }
-
-    /// Stores permanent rejections recorded by another archive, with their
-    /// original error and time. One this archive holds with another error
-    /// is refused rather than replaced.
-    pub fn restore_failures(
-        &mut self,
-        failures: &[crate::older_archive::VectorFailure],
-    ) -> Result<Vec<crate::writer::Restored>> {
-        use crate::writer::Restored;
-        let tx = self
-            .conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let mut out = Vec::with_capacity(failures.len());
-        {
-            let mut find = tx.prepare_cached(
-                "SELECT error FROM embed_failure WHERE text_hash = ?1 AND model = ?2",
-            )?;
-            let mut insert = tx.prepare_cached(
-                "INSERT INTO embed_failure(text_hash, model, error, failed_at) VALUES (?1, ?2, ?3, ?4)",
-            )?;
-            for f in failures {
-                let known: Option<String> = find
-                    .query_row(params![f.text_hash, f.model], |r| r.get(0))
-                    .optional()?;
-                out.push(match known {
-                    Some(error) if error == f.error => Restored::Present,
-                    Some(_) => Restored::Refused(
-                        "this archive records another error for the same text and key".into(),
-                    ),
-                    None => {
-                        insert.execute(params![f.text_hash, f.model, f.error, f.failed_at])?;
-                        Restored::Stored
-                    }
-                });
-            }
-        }
-        tx.commit()?;
         Ok(out)
     }
 

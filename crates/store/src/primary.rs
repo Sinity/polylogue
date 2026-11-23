@@ -28,9 +28,9 @@ use crate::Result;
 use polylogue_model::BlobHash;
 use polylogue_model::user::UserOutcome;
 pub use products::{
-    Capture, CaptureGroup, CapturedInput, Confirmed, ConfirmedChange, ExportReadingKey,
-    InputProvenance, Material, ParsedSource, PendingCapture, PreparedInput, PreparedWrite, Product,
-    ProductWrite, Reading, SourceLocation, SourceRecord,
+    Capture, CaptureGroup, CapturedInput, Confirmed, ConfirmedChange, ExportReadingKey, Material,
+    ParsedSource, PendingCapture, PreparedInput, PreparedWrite, Product, ProductWrite, Reading,
+    SourceLocation, SourceRecord,
 };
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};

@@ -38,21 +38,13 @@ fn pending(queue: &crate::spool::Spool, entry: crate::spool::Prepared) -> Result
 fn compared_fields(input: &CapturedInput, mode: CaptureMode) -> Result<serde_json::Value> {
     // The first accepted capture fixes cache coordinates and observer clocks.
     // Byte identity must still match.
-    let mut fields = serde_json::json!({
+    Ok(serde_json::json!({
         "hash":input.hash, "length":input.length, "raw_range":input.raw_range,
         "generation":input.generation, "raw_total":input.raw_total, "raw_predecessor":input.raw_predecessor,
         "index":input.index, "route":input.route,
         "origin":input.input.origin,
         "source":(mode == CaptureMode::Mutable).then(|| input.basis.as_ref().map(|base| &base.source)),
-    });
-    if input.provenance == polylogue_store::primary::InputProvenance::Restored {
-        fields["provenance"] = serde_json::to_value(input.provenance)?;
-        fields["restored"] = serde_json::to_value(&input.rows)?;
-        // The accepted group fixes its material predecessors. Retrying exact
-        // history cannot replace them with a newer pending group position.
-        fields["index"] = serde_json::Value::Null;
-    }
-    Ok(fields)
+    }))
 }
 
 impl Sinex {
@@ -120,7 +112,6 @@ impl Sinex {
         )?;
         let staging = staged.queue();
         let mut ordinal = 0u64;
-        let mut restored_chains = BTreeMap::<(String, i64), (u32, String)>::new();
         let mut adjacent_members = BTreeMap::<Vec<u8>, (u64, String)>::new();
         {
             members(&mut |mut input, body| {
@@ -180,25 +171,6 @@ impl Sinex {
                         input.raw_predecessor = Some(previous.clone());
                     }
                     adjacent_members.insert(key, (range.end, member.clone()));
-                }
-                if input.provenance == polylogue_store::primary::InputProvenance::Restored
-                    && let Some(extent) = input.rows.extents.first()
-                {
-                    let key = (input.rows.input.clone(), extent.chain);
-                    if let Some((index, previous)) = restored_chains.get(&key) {
-                        input.index = *index;
-                        input.previous =
-                            Some(crate::material_id(&self.config.producer, previous).to_string());
-                    }
-                    restored_chains.insert(
-                        key,
-                        (
-                            input.index.checked_add(1).ok_or_else(|| {
-                                Error::invalid("restored chain has too many material parts")
-                            })?,
-                            member.clone(),
-                        ),
-                    );
                 }
                 let kept = {
                     let queue = self.queue()?;

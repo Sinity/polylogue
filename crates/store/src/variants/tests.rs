@@ -260,24 +260,13 @@ fn variant_restoration_is_idempotent_and_refuses_changed_facts() {
 }
 
 #[test]
-fn restored_variant_keeps_authorship_when_copied() {
-    use polylogue_model::authored::ImportAttribution;
+fn copied_variant_keeps_authorship() {
     let mut origin = archive();
     let request = request("first", None, "Original");
     write_request(&mut origin, &request, 1);
     let effect = capture(&origin, &request, 1).unwrap();
     let target = archive();
-    let current = ImportAttribution {
-        machine: "receiver".into(),
-        input: "local-bundle".into(),
-        chain: 1,
-        actor: Author::Operator,
-        at: Timestamp::parse_rfc3339("2026-01-02T03:04:05.123456789Z").unwrap(),
-    };
-    restore(&target, &effect, &current, 2).unwrap();
-    let mut rollback = current.clone();
-    rollback.at = Timestamp::from_unix_ms(0).unwrap();
-    restore(&target, &effect, &rollback, 3).unwrap();
+    apply(&target, &effect, 2).unwrap();
     let original = rows::get(&target, "first").unwrap().unwrap();
     assert_eq!(original.author, Author::Agent(None));
     assert_eq!(original.machine, "machine");

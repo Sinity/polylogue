@@ -1,6 +1,5 @@
 mod immutable;
 mod rebuild;
-mod restored;
 use super::*;
 use crate::primary::PreparedInput;
 use crate::primary::Sinex as _;

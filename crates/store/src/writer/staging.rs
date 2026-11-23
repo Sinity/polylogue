@@ -359,55 +359,6 @@ impl Inner {
         Ok(stored)
     }
 
-    pub(super) fn confirm_imports(
-        &mut self,
-        group: Vec<Batch>,
-    ) -> Result<Option<Vec<StoredInput>>> {
-        if self.sinex.is_some() {
-            return Ok(None);
-        }
-        for batch in &group {
-            let Some(observation) = batch.observation.as_ref() else {
-                return Ok(None);
-            };
-            let Some(member) = observation.import.as_ref() else {
-                return Ok(None);
-            };
-            if member.format.as_deref() != Some(batch.input.format.as_str())
-                || observation.container.is_some()
-                || !matches!(batch.change, Change::First)
-                || batch.continues
-                || batch.new_blob.as_ref().is_none_or(|blob| {
-                    !blob.chunks.is_empty()
-                        || blob.hash.to_string() != batch.input.id
-                        || blob.size != batch.length
-                })
-            {
-                return Ok(None);
-            }
-            check_import_format(&self.archive, &batch.input.id, Some(member))?;
-        }
-        let Some((stored, missing)) = self.held_imports(group.iter())? else {
-            return Ok(None);
-        };
-        if !missing.is_empty() {
-            // Verified originals already have extents. The normal archive
-            // transaction can record a different receiving observation
-            // without acquiring and staging their bodies a second time.
-            let mut observations: Vec<_> = group
-                .into_iter()
-                .enumerate()
-                .filter(|(index, _)| missing.contains(index))
-                .map(|(_, batch)| PreparedBatch {
-                    batch,
-                    files: Vec::new(),
-                })
-                .collect();
-            self.write_rows_first(&mut observations, None)?;
-        }
-        Ok(Some(stored))
-    }
-
     /// A retry of an unchanged import group has nothing new to write.
     /// Format validation has already run through `check_staged`; a new path,
     /// receiver or import membership is a new observation even for known bytes.
@@ -415,18 +366,8 @@ impl Inner {
         &self,
         group: impl ExactSizeIterator<Item = &'a Batch>,
     ) -> Result<Option<Vec<StoredInput>>> {
-        Ok(self
-            .held_imports(group)?
-            .and_then(|(stored, missing)| missing.is_empty().then_some(stored)))
-    }
-
-    fn held_imports<'a>(
-        &self,
-        group: impl ExactSizeIterator<Item = &'a Batch>,
-    ) -> Result<Option<(Vec<StoredInput>, BTreeSet<usize>)>> {
         let mut stored = Vec::with_capacity(group.len());
-        let mut missing = BTreeSet::new();
-        for (index, b) in group.enumerate() {
+        for b in group {
             let (Some(observation), Some(blob)) = (&b.observation, &b.new_blob) else {
                 return Ok(None);
             };
@@ -455,12 +396,9 @@ impl Inner {
                 params![b.input.id,b.length as i64,&blob.hash.0[..],observation.machine,observation.path_bytes,details],
                 |row| <(i64, i64, bool)>::try_from(row),
             ).optional()?;
-            let Some((chain, length, observed)) = known else {
+            let Some((chain, length, true)) = known else {
                 return Ok(None);
             };
-            if !observed {
-                missing.insert(index);
-            }
             stored.push(StoredInput {
                 input: b.input.id.clone(),
                 chain,
@@ -469,7 +407,7 @@ impl Inner {
                 bytes_written: 0,
             });
         }
-        Ok(Some((stored, missing)))
+        Ok(Some(stored))
     }
 
     /// What a batch must satisfy before any of its rows are written.

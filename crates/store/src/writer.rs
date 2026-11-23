@@ -52,8 +52,6 @@ mod source_snapshot;
 pub(crate) use retractions::{apply_source_retractions, prepare_source_retractions};
 pub(crate) use rows::finish as finish_rows;
 mod hook_fields;
-mod older_archive;
-pub use older_archive::{GroupOutcome, OlderGroup, Restored};
 pub(crate) mod resolve;
 mod rows;
 mod search;
@@ -78,10 +76,6 @@ enum StoreGroup {
         Vec<crate::staging::PreparedBatch>,
         Arc<crate::blobs::Blobs>,
         SyncSender<Vec<Result<crate::staging::StoredInput>>>,
-    ),
-    ConfirmImports(
-        Vec<Batch>,
-        SyncSender<Result<Option<Vec<crate::staging::StoredInput>>>>,
     ),
 }
 
@@ -157,11 +151,6 @@ enum Msg {
     RestoreAssertion(
         Box<assertions::Restoration>,
         SyncSender<Result<polylogue_model::user::UserOutcome>>,
-    ),
-    /// Inputs of an archive in the older format, stored as that archive held them.
-    RestoreOlder(
-        Box<older_archive::OlderGroup>,
-        SyncSender<Result<older_archive::GroupOutcome>>,
     ),
     Stop,
     /// A user write is waiting in its own queue.
@@ -635,23 +624,6 @@ impl WriterSender {
             .map_err(|_| StoreError::WriterGone)
     }
 
-    /// Confirm previously stored standalone imports after the caller has hashed
-    /// their current source bytes. A miss makes no writes and needs ordinary
-    /// prepared admission for the whole group.
-    pub fn confirm_imports(
-        &self,
-        group: Vec<Batch>,
-    ) -> Result<Option<Vec<crate::staging::StoredInput>>> {
-        if self.0.resolver.location().is_primary() {
-            return Ok(None);
-        }
-        let (reply, wait) = sync_channel(1);
-        self.0
-            .send(Msg::StoreGroup(StoreGroup::ConfirmImports(group, reply)))
-            .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)?
-    }
-
     /// Queue a group; parsing can continue while the writer commits it.
     pub fn enqueue_group(
         &self,
@@ -1010,7 +982,6 @@ impl Inner {
         let mut derive_writes = Vec::new();
         let mut single_files = Vec::new();
         let mut file_groups = Vec::new();
-        let mut import_checks = Vec::new();
         let mut assets = Vec::new();
         let mut coverage = Vec::new();
         let mut live_clock = Vec::new();
@@ -1029,7 +1000,6 @@ impl Inner {
         let mut assertion_restorations = Vec::new();
         let mut replacements = Vec::new();
         let mut blobs = Vec::new();
-        let mut older_groups = Vec::new();
         loop {
             let first = match rx.recv() {
                 Ok(first) => first,
@@ -1056,11 +1026,6 @@ impl Inner {
                             *bytes += input_bytes(&item.batch);
                         }
                         file_groups.push((items, store, reply));
-                        true
-                    }
-                    Msg::StoreGroup(StoreGroup::ConfirmImports(items, reply)) => {
-                        crate::timing::queue(crate::timing::Queue::Writer, -1);
-                        import_checks.push((items, reply));
                         true
                     }
                     Msg::Assets(staged, reply) => {
@@ -1105,10 +1070,6 @@ impl Inner {
                     }
                     Msg::RestoreAssertion(restoration, reply) => {
                         assertion_restorations.push((restoration, reply));
-                        false
-                    }
-                    Msg::RestoreOlder(group, reply) => {
-                        older_groups.push((group, reply));
                         false
                     }
                     Msg::ByteCursor(query, reply) => {
@@ -1225,9 +1186,6 @@ impl Inner {
                 let _ = reply.send(self.store_bytes(*prepared, *batch));
             }
             self.store_groups(std::mem::take(&mut file_groups));
-            for (items, reply) in import_checks.drain(..) {
-                let _ = reply.send(self.confirm_imports(items));
-            }
             for (input, chain, length, reading, reply) in replacements.drain(..) {
                 let _ = reply.send(crate::timing::time(crate::timing::Stage::Rows, || {
                     self.replace_chain(input, chain, length, reading)
@@ -1243,9 +1201,6 @@ impl Inner {
             }
             for (restoration, reply) in assertion_restorations.drain(..) {
                 let _ = reply.send(self.restore_assertion(*restoration));
-            }
-            for (group, reply) in older_groups.drain(..) {
-                let _ = reply.send(self.restore_older(*group));
             }
             self.serve_users();
 

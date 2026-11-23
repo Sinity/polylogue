@@ -1,4 +1,3 @@
-mod authored_import;
 mod confirmed_inputs;
 mod withdrawals;
 
@@ -198,14 +197,21 @@ fn missing_config_is_standalone() {
 }
 
 #[test]
-fn older_import_preserves_scope_refusal_and_succeeds_after_initial_confirmation() {
+fn import_preserves_scope_refusal_and_succeeds_after_initial_confirmation() {
     use polylogue_store::fault::{self, Action};
     use polylogue_store::primary::{Confirmed, ConfirmedChange, ReplayControl};
 
     let home = ClaudeHome::new();
-    let older = home.dir.path().join("older");
-    let _fixture = polylogue_store::older_archive::fixture::standard(&older);
-    let original_files = polylogue_store::older_archive::fixture::file_hashes(&older);
+    let staged = home
+        .dir
+        .path()
+        .join("staged/projects/-home-op/7f3a2c10-0009-4000-8000-000000000009.jsonl");
+    std::fs::create_dir_all(staged.parent().unwrap()).unwrap();
+    std::fs::write(
+        &staged,
+        polylogue_testkit::claude_user("u1", "7f3a2c10-0009-4000-8000-000000000009", "staged"),
+    )
+    .unwrap();
     let runtime = launch(primary(&home)).unwrap();
     let writer = runtime.daemon.writes.as_ref().unwrap();
     let control = |control| Confirmed {
@@ -237,7 +243,7 @@ fn older_import_preserves_scope_refusal_and_succeeds_after_initial_confirmation(
         .expect("failed reset fences reads");
     assert!(matches!(&fenced, StoreError::ScopeChanged), "{fenced}");
     let import = || {
-        crate::test_daemon::Call::new("import", serde_json::json!({"from_archive": older}))
+        crate::test_daemon::Call::new("import", serde_json::json!({"paths": [staged]}))
             .answer(&runtime.daemon)
     };
     let refused = import();
@@ -275,17 +281,8 @@ fn older_import_preserves_scope_refusal_and_succeeds_after_initial_confirmation(
     let report = accepted
         .value()
         .unwrap_or_else(|| panic!("import accepted after scope completion: {accepted:?}"));
-    assert_eq!(report["older_archive"]["pending"], true);
-    assert!(
-        report["older_archive"]["classes"]["input"]["pending"]
-            .as_u64()
-            .unwrap()
-            > 0
-    );
-    assert_eq!(
-        polylogue_store::older_archive::fixture::file_hashes(&older),
-        original_files
-    );
+    assert_eq!(report["pass"]["capture_pending"], true, "{report}");
+    assert_eq!(report["refused"], serde_json::json!([]), "{report}");
 }
 
 #[test]

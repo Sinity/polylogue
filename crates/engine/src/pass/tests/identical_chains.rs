@@ -53,7 +53,6 @@ fn a_user_request_yields_between_complete_copies_and_resume_selects_only_the_rem
         let sent = send.send(LoopMsg::Import {
             paths: Vec::new(),
             format: None,
-            from_archive: None,
             dry_run: false,
             authorship: Authorship {
                 author: Author::Operator,

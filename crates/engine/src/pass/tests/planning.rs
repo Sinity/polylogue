@@ -85,7 +85,6 @@ fn interrupt(engine: &mut Engine, send: Sender<LoopMsg>, request: PathBuf) -> Pa
         send.send(LoopMsg::Import {
             paths: vec![request],
             format: None,
-            from_archive: None,
             dry_run: false,
             authorship: Authorship {
                 author: Author::Operator,
@@ -351,7 +350,6 @@ fn the_daemon_loop_keeps_its_planning_page_when_refreshing_committed_progress() 
             .send(LoopMsg::Import {
                 paths: vec![request],
                 format: None,
-                from_archive: None,
                 dry_run: false,
                 authorship: Authorship {
                     author: Author::Operator,

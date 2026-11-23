@@ -10,9 +10,7 @@ mod assets;
 mod authored;
 mod bundle;
 pub(crate) mod exports;
-pub(crate) mod older_archive;
 mod package;
-mod python_archive;
 pub(crate) mod python_polylogue;
 mod recognition;
 
@@ -32,48 +30,26 @@ impl Engine {
     ) -> Result<ImportReport, EngineError> {
         let started = Instant::now();
         let mut report = ImportReport::default();
-        if let Some(root) = &options.from_archive {
-            if !paths.is_empty() || options.format.is_some() || options.explain {
-                return Err(std::io::Error::other(
-                    "--from-archive names one archive and takes no other paths, --format or --explain",
-                )
-                .into());
-            }
-            let older =
-                self.import_older_archive(root, options.dry_run, options.authorship.as_ref())?;
-            report.pass.capture_pending = older.pending;
-            report.older_archive = Some(older);
-            report.pass.seconds = started.elapsed().as_secs_f64();
-            return Ok(report);
-        }
-        if options.dry_run {
-            return Err(std::io::Error::other("--dry-run applies to --from-archive").into());
-        }
-        if let Some(format) = options.format.as_deref()
-            && format != python_polylogue::ARCHIVE
-            && python_polylogue::STORES.contains(&format)
-        {
+        if options.format.as_deref() == Some(python_polylogue::VECTORS) {
             let [path] = paths else {
                 return Err(std::io::Error::other(format!(
-                    "--format {format} names one Python Polylogue store"
+                    "--format {} names one Python Polylogue vector store",
+                    python_polylogue::VECTORS
                 ))
                 .into());
             };
-            if options.explain {
-                return Err(
-                    std::io::Error::other(format!("--explain does not apply to {format}")).into(),
-                );
+            if options.explain || options.dry_run {
+                return Err(std::io::Error::other(format!(
+                    "--explain and --dry-run do not apply to {}",
+                    python_polylogue::VECTORS
+                ))
+                .into());
             }
-            report.python_import =
-                Some(self.import_python_store(format, path, options.authorship.as_ref())?);
+            report.python_import = Some(self.import_python_vectors(path)?);
             report.pass.seconds = started.elapsed().as_secs_f64();
             return Ok(report);
         }
         for path in paths {
-            if options.format.as_deref() == Some(python_polylogue::ARCHIVE) {
-                self.import_python_archive(path, options, &mut report)?;
-                continue;
-            }
             let members = match package::stage(path, &self.archive, options.format.as_deref()) {
                 Ok(members) => members,
                 Err(error) => {
@@ -83,7 +59,7 @@ impl Engine {
             };
             self.import_members(path, members, options, &mut report)?;
         }
-        if options.explain {
+        if options.explain || options.dry_run {
             report.pass.seconds = started.elapsed().as_secs_f64();
             return Ok(report);
         }
@@ -123,7 +99,7 @@ impl Engine {
         let mut authored_records = Vec::new();
         let mut items = Vec::new();
         let mut hashes = std::collections::BTreeMap::new();
-        let python_archive = options.format.as_deref() == Some(python_polylogue::ARCHIVE);
+        let classify_only = options.explain || options.dry_run;
         let import_id = import_identity(
             &self.config.machine,
             path,
@@ -147,19 +123,9 @@ impl Engine {
                 continue;
             };
             classify_accepted(report, &mut package, &member.path, origin, member.container);
-            if options.explain {
+            if classify_only {
                 continue;
             }
-            let import_id = if python_archive {
-                import_identity(
-                    &self.config.machine,
-                    path,
-                    options.authorship.as_ref(),
-                    std::iter::once((member.path.as_path(), member.bytes.hash())),
-                )
-            } else {
-                import_id.clone()
-            };
             let authored_bytes = (origin.name == "polylogue-bundle").then(|| member.bytes.clone());
             let mut captured = Captured {
                 prepared: member.bytes,
@@ -174,7 +140,7 @@ impl Engine {
                 path,
                 &member.path,
                 member.parent.is_some(),
-                import_id,
+                import_id.clone(),
                 options,
             ));
             captured.container = member.parent.and_then(|(parent, member_index)| {
@@ -199,7 +165,7 @@ impl Engine {
             }
             items.push((member.path, origin, None, captured));
         }
-        if !options.explain {
+        if !classify_only {
             let executed = self.store_import_group(items, report)?;
             for (at, id, bytes) in authored_records {
                 if executed.contains(&id) {
@@ -209,11 +175,9 @@ impl Engine {
                     self.restore_bundle_authored(&at, &mut bytes.reader()?, report)?;
                 }
             }
-            if !python_archive {
-                let counts = self.reads.reader()?.import_counts(&ids)?;
-                package.sessions = counts.sessions;
-                package.documents = counts.documents;
-            }
+            let counts = self.reads.reader()?.import_counts(&ids)?;
+            package.sessions = counts.sessions;
+            package.documents = counts.documents;
         }
         report.packages.push(package);
         Ok(())
@@ -272,22 +236,10 @@ impl Engine {
         // Other formats keep their authored and document execution order.
         const LINE_PLANS: usize = 128;
         let mut lines: Vec<Plan> = Vec::with_capacity(LINE_PLANS);
-        let standalone = !self.archive.is_primary();
         for ((at, origin, facts, input), outcome) in metadata.into_iter().zip(outcomes) {
             let batch_lines = matches!(origin.name, "hook-spool" | "codex" | "claude-code")
                 && matches!((origin.open)(&at), Some(polylogue_sources::Parse::Lines(_)));
-            // The Python importer keeps the verified fragment before each
-            // joined reading. All members' raw bytes have already committed,
-            // and a kept fragment has no reading to run.
-            let kept_fragment = standalone
-                && origin.name == KEPT
-                && origin.support == Support::Kept
-                && at.to_str().is_some_and(|path| {
-                    path.rsplit_once("!/raw_sessions/")
-                        .and_then(|(_, member)| member.split_once('/'))
-                        .is_some_and(|(id, name)| !id.is_empty() && name == "fragment")
-                });
-            if (!batch_lines && !kept_fragment)
+            if !batch_lines
                 || outcome.is_err()
                 || lines.len() == LINE_PLANS
                 || lines
@@ -529,8 +481,6 @@ impl Engine {
             return Ok(None);
         }
         let reading = reader.parser_checkpoint(&input.id, stored.chain, &version)?;
-        let origin =
-            self.stored_import_origin(Some(&reader), path, origin, &input.id, stored.chain, size)?;
         let parser = (origin.open)(path);
         let interrupted_lines = matches!(parser.as_ref(), Some(polylogue_sources::Parse::Lines(_)))
             && reading.as_ref().is_some_and(|reading| {
@@ -633,15 +583,15 @@ fn classify_accepted(
     report.members.push(ImportClassification {
         path: at.to_path_buf(),
         origin: Some(origin.name.into()),
-        class: if origin.support == Support::Parsed {
-            "parsed"
-        } else {
-            "asset"
+        class: match origin.support {
+            Support::Parsed => "parsed",
+            Support::NoParser => "no parser yet",
+            Support::Kept => "asset",
         }
         .into(),
         reason: None,
     });
-    if origin.support != Support::Parsed && !container {
+    if origin.support == Support::Kept && !container {
         package.assets += 1;
     }
 }

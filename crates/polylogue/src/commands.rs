@@ -488,7 +488,7 @@ const WRITTEN: &[Command] = &[
     Command {
         name: "import",
         examples: &["polylogue import /home/op/morrow/export.json --origin chatgpt"],
-        help: "Store explicit files, directories and bundles through the daemon, or with --from-archive an archive written before the version 1 baseline. The typed report lists imported and already stored paths, classifications and refusals, packages and authored restoration counts, and for an older archive what became of each class of row. Primary authored restores awaiting confirmation are pending",
+        help: "Store explicit files, directories and bundles through the daemon. The typed report lists imported and already stored paths, classifications and refusals, packages and authored restoration counts, and for a Python Polylogue vector store what became of each vector. Primary authored restores awaiting confirmation are pending",
         reason: "Capture explicitly selected source bytes and restore the notes and other user records a bundle carries",
         latency: command_surface::LatencyClass::Aggregate,
         run: Run::Daemon(daemon::<H::Import>()),

@@ -701,12 +701,8 @@ fn ranking_with_model_calls_off_uses_stored_vectors() {
     });
 }
 
-fn restored_vector(
-    hash: u8,
-    at: i64,
-    values: [f32; 2],
-) -> polylogue_store::older_archive::StoredVector {
-    polylogue_store::older_archive::StoredVector {
+fn restored_vector(hash: u8, at: i64, values: [f32; 2]) -> polylogue_store::vectors::StoredVector {
+    polylogue_store::vectors::StoredVector {
         text_hash: vec![hash],
         model: "synthetic/model/2/document/unit".into(),
         chunk: 0,

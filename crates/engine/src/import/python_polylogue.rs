@@ -1,45 +1,53 @@
-//! `polylogue import --origin NAME PATH` for Python Polylogue's own
-//! stores ([`polylogue_store::python_polylogue`]), each named explicitly:
-//!
-//! - `python-user-db`: its `user.db`. Every row of every table is kept
-//!   verbatim as one imported input (`user.db!/rows.jsonl`); its assertions
-//!   become assertions with their identities, authors, times and revision
-//!   history, all with one `pass` as their origin.
-//! - `python-vectors`: one of its vector stores. A vector named by the
-//!   address of the request that bought it is stored for every text here
-//!   whose embedding request has that address. A vector that matches no
-//!   text, and every vector of a store keyed by message (whose embedded text
-//!   cannot be checked), stays in its source file and is reported.
-//!
-//! The source catalog (`python-archive`) is staged as package members
-//! by `python_archive`. Importing the same store again changes nothing.
+//! `polylogue import --origin python-vectors PATH`: one of Python
+//! Polylogue's vector stores ([`polylogue_store::python_polylogue`]). A
+//! vector named by the address of the request that bought it is stored for
+//! every text here whose embedding request has that address. A vector that
+//! matches no text, and every vector of a store keyed by message (whose
+//! embedded text cannot be checked), stays in its source file and is
+//! reported. Importing the same store again changes nothing.
 
-use super::older_archive::{ClassCount, RefusedRow, keep, refusal, restored, tally};
 use super::*;
 use polylogue_model::hex;
-use polylogue_store::python_polylogue::user_db::{self, UserDb};
 pub use polylogue_store::python_polylogue::vectors::request_address as address;
 use polylogue_store::python_polylogue::vectors::{Layout, VectorStore};
-use polylogue_store::writer::Restored;
+use polylogue_store::vectors::{Restored, StoredVector};
 use std::collections::{BTreeSet, HashMap};
 use unicode_normalization::UnicodeNormalization;
 
-/// Python Polylogue's source catalog: a folder with `source.db` and `blob/`.
-pub const ARCHIVE: &str = "python-archive";
-/// Python Polylogue's `user.db` of authored records.
-pub const USER_DB: &str = "python-user-db";
 /// One of Python Polylogue's vector stores.
 pub const VECTORS: &str = "python-vectors";
-
-/// The format names that name a Python Polylogue store, not a parser.
-pub const STORES: [&str; 3] = [ARCHIVE, USER_DB, VECTORS];
 
 /// Vectors written in one transaction.
 const VECTORS_PER_GROUP: usize = 4096;
 /// Texts read from the index per page while matching addresses.
 const TEXTS_PER_PAGE: u64 = 4096;
 
-/// What became of the rows of one Python Polylogue store.
+/// What became of the rows of one class. `found` is always the sum of the
+/// other three.
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+pub struct ClassCount {
+    /// Rows the store holds.
+    pub found: u64,
+    /// Written by this import.
+    pub stored: u64,
+    /// Already here unchanged, from an earlier import.
+    pub present: u64,
+    /// Not carried; each is listed in the report's `refused` with its reason.
+    pub refused: u64,
+}
+
+/// One row the import did not carry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct RefusedRow {
+    pub class: String,
+    /// The row's identity in the store.
+    pub row: String,
+    pub reason: String,
+}
+
+/// What became of the vectors of one Python Polylogue vector store.
 #[derive(Debug, Default, Clone, Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct PythonImportReport {
     pub path: PathBuf,
@@ -47,13 +55,6 @@ pub struct PythonImportReport {
     /// Per class of row: `found` is the sum of its reported outcomes.
     pub classes: BTreeMap<String, ClassCount>,
     pub refused: Vec<RefusedRow>,
-    /// The imported input keeping every row of a `user.db` verbatim, by its ID.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rows_input: Option<String>,
-    /// Authored publication or its confirmed source membership is unfinished.
-    /// Repeat after the rows input is confirmed to record that membership.
-    #[serde(default)]
-    pub pending: bool,
     /// Vectors the store holds.
     #[serde(default)]
     pub vectors: u64,
@@ -80,13 +81,21 @@ fn embedding_key(model: &str, dims: usize) -> Option<String> {
 }
 
 impl PythonImportReport {
-    fn tally(&mut self, class: &str, n: u64, outcome: &Restored, row: &str) {
-        self.pending |= matches!(outcome, Restored::Pending);
-        tally(&mut self.classes, &mut self.refused, class, n, outcome, row);
-    }
-
-    fn keep(&mut self, class: &str, n: u64) {
-        keep(&mut self.classes, class, n);
+    fn tally(&mut self, class: &str, outcome: &Restored, row: &str) {
+        let count = self.classes.entry(class.to_owned()).or_default();
+        count.found += 1;
+        match outcome {
+            Restored::Stored => count.stored += 1,
+            Restored::Present => count.present += 1,
+            Restored::Refused(reason) => {
+                count.refused += 1;
+                self.refused.push(RefusedRow {
+                    class: class.to_owned(),
+                    row: row.to_owned(),
+                    reason: reason.clone(),
+                });
+            }
+        }
     }
 
     fn unmatched(&mut self, reason: &str, n: u64) {
@@ -96,130 +105,27 @@ impl PythonImportReport {
 }
 
 impl Engine {
-    /// Imports the Python Polylogue store at `path` named by `format`, one of
-    /// [`USER_DB`] and [`VECTORS`].
-    pub(super) fn import_python_store(
+    /// Imports the vector store at `path`.
+    pub(super) fn import_python_vectors(
         &mut self,
-        format: &str,
         path: &Path,
-        authorship: Option<&polylogue_model::authorship::Authorship>,
     ) -> Result<PythonImportReport, EngineError> {
         let scratch = self
             .archive
             .archive_db()
             .parent()
-            .map(|root| root.join("older-archive-copies"))
+            .map(|root| root.join("vector-store-copies"))
             .ok_or_else(|| std::io::Error::other("the archive has no folder"))?;
         let mut report = PythonImportReport {
             path: path.to_path_buf(),
-            format: format.to_owned(),
+            format: VECTORS.to_owned(),
             ..Default::default()
         };
-        match format {
-            USER_DB => self.import_python_user_db(path, &scratch, authorship, &mut report)?,
-            VECTORS => self.import_python_vectors(path, &scratch, &mut report)?,
-            _ => {
-                return Err(std::io::Error::other(format!(
-                    "{format} is not a Python Polylogue store this route imports"
-                ))
-                .into());
-            }
-        }
+        self.read_vectors(path, &scratch, &mut report)?;
         Ok(report)
     }
 
-    fn import_python_user_db(
-        &mut self,
-        path: &Path,
-        scratch: &Path,
-        authorship: Option<&polylogue_model::authorship::Authorship>,
-        report: &mut PythonImportReport,
-    ) -> Result<(), EngineError> {
-        let db = UserDb::open(path, scratch)?;
-        let (rows_bytes, _) = self.archive.prepare_write(|out| db.write_rows(out))?;
-        let rows_id = rows_bytes.hash().to_string();
-        report.rows_input = Some(rows_id.clone());
-        let folder = path.parent().unwrap_or(Path::new(""));
-        let container = path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "user.db".into());
-        self.store_kept_member(folder, &container, "rows.jsonl", rows_bytes, authorship)?;
-
-        let rows = db.assertions()?;
-        let machine = self.config.machine.clone();
-        let writer = self.writer.sender();
-        let pass_id = format!("predecessor-user-db:{rows_id}");
-        let pass = polylogue_model::RevisionReference::exact(pass_id.clone(), pass_id.clone());
-        if !rows.is_empty() {
-            let outcome = match user_db::pass(&pass_id, &rows, &machine) {
-                Ok(fact) => match writer.restore_assertion(fact, None) {
-                    Ok(outcome) => restored(&outcome),
-                    Err(error) => refusal(error)?,
-                },
-                Err(reason) => Restored::Refused(reason),
-            };
-            if let Restored::Refused(reason) = &outcome {
-                return Err(std::io::Error::other(format!(
-                    "the pass grouping Python Polylogue's assertions was refused: {reason}"
-                ))
-                .into());
-            }
-            report.tally("pass", 1, &outcome, &pass_id);
-        }
-        for (id, mapped) in user_db::facts(&rows, &machine, &pass, &db.result_set_members()?) {
-            let outcome = match mapped {
-                Ok(fact) => match writer.restore_assertion(fact, None) {
-                    Ok(outcome) => restored(&outcome),
-                    Err(error) => refusal(error)?,
-                },
-                Err(reason) => Restored::Refused(reason),
-            };
-            report.tally("assertions", 1, &outcome, &id);
-        }
-        // Source membership has its own observed import time; it never supplies
-        // a missing original authored time or changes a rubric's identity.
-        let progress = self.reads.reader()?.input_progress(&rows_id)?;
-        if progress.is_none() && !self.archive.is_primary() {
-            return Err(std::io::Error::other("the rows input was not stored").into());
-        }
-        let ingress = progress.map(|progress| polylogue_model::authored::ImportAttribution {
-            input: rows_id.clone(),
-            chain: progress.chain,
-            machine: machine.clone(),
-            actor: authorship.map_or_else(
-                || polylogue_model::Author::Script("polylogue-import".into()),
-                |a| a.author.clone(),
-            ),
-            at: self.config.clock.now().into(),
-        });
-        // The original facts are durable even while their source capture is
-        // pending. A later import adds its separately observed membership;
-        // no proposed capture chain becomes confirmed attribution.
-        report.pending |= ingress.is_none();
-        for schema in db.schemas()? {
-            let row = format!("{}@{}", schema.id, schema.version);
-            let outcome = match user_db::rubric(&schema, &machine) {
-                Ok(fact) => match writer.restore_assertion(fact, ingress.clone()) {
-                    Ok(outcome) => restored(&outcome),
-                    Err(error) => refusal(error)?,
-                },
-                Err(reason) => Restored::Refused(reason),
-            };
-            report.tally("annotation_schemas", 1, &outcome, &row);
-        }
-        // Rows with no counterpart here are kept verbatim in the rows input:
-        // Python Polylogue's query plans (selections run by its own analysis
-        // code, not queries of this language), result sets and receipts.
-        for (table, n) in db.row_counts()? {
-            if !["assertions", "annotation_schemas"].contains(&table.as_str()) && n > 0 {
-                report.keep(&table, n);
-            }
-        }
-        Ok(())
-    }
-
-    fn import_python_vectors(
+    fn read_vectors(
         &mut self,
         path: &Path,
         scratch: &Path,
@@ -314,9 +220,9 @@ impl Engine {
 
         let reader = self.reads.reader()?;
         let mut vectors = reader.vectors_writer()?;
-        let mut batch: Vec<polylogue_store::older_archive::StoredVector> = Vec::new();
+        let mut batch: Vec<StoredVector> = Vec::new();
         let mut seen = BTreeSet::new();
-        let mut flush = |batch: &mut Vec<polylogue_store::older_archive::StoredVector>,
+        let mut flush = |batch: &mut Vec<StoredVector>,
                          report: &mut PythonImportReport|
          -> Result<(), polylogue_store::StoreError> {
             if batch.is_empty() {
@@ -324,7 +230,7 @@ impl Engine {
             }
             let outcomes = vectors.restore(batch)?;
             for (vector, outcome) in batch.iter().zip(&outcomes) {
-                report.tally("text key", 1, outcome, &hex(&vector.text_hash));
+                report.tally("text key", outcome, &hex(&vector.text_hash));
             }
             batch.clear();
             Ok(())
@@ -367,7 +273,7 @@ impl Engine {
             report.vectors += 1;
             report.vectors_matched += 1;
             for hash in whole {
-                batch.push(polylogue_store::older_archive::StoredVector {
+                batch.push(StoredVector {
                     text_hash: hash.clone(),
                     model: keys[&identity.model].clone(),
                     chunk: 0,

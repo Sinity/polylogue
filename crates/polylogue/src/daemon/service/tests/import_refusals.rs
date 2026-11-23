@@ -22,19 +22,3 @@ fn a_provider_import_option_is_refused_as_not_built() {
     assert_eq!(kind, "not_yet_available");
     assert!(message.contains("--cancel"), "{message}");
 }
-
-/// `--dry-run` belongs to `--from-archive` alone.
-#[test]
-fn dry_run_without_an_archive_is_a_bad_request() {
-    let (kind, message) = refusal(json!({"dry_run": true}));
-    assert_eq!(kind, "bad_request");
-    assert!(message.contains("--dry-run"), "{message}");
-}
-
-/// An archive import names its own structure, so an origin is refused.
-#[test]
-fn an_archive_import_takes_no_origin() {
-    let (kind, message) = refusal(json!({"from_archive": "/home/op/older", "origin": "codex"}));
-    assert_eq!(kind, "bad_request");
-    assert!(message.contains("--origin"), "{message}");
-}
