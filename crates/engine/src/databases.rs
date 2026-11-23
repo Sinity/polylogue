@@ -403,8 +403,7 @@ impl Engine {
 
     pub(super) fn refresh_database_progress(&mut self) -> Result<(), EngineError> {
         let reader = self.reads.reader()?;
-        for (path, origin) in &self.databases {
-            let origin: &'static OriginSpec = *origin;
+        for (path, &origin) in &self.databases {
             let input_id = self.database_input_id(path, origin);
             let Some(progress) = reader.input_progress(&input_id)? else {
                 continue;
