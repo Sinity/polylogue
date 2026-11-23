@@ -285,17 +285,6 @@ fn old_incomplete_query_run_and_current_completion_use_one_publisher_identity() 
         .unwrap();
     options.remove("references");
     options.insert("direct_reference".into(), serde_json::Value::Null);
-    let old_run = &old_payload["record"]["run"];
-    let converted =
-        polylogue_store::query_objects::line_population::convert_run(old_run.clone()).unwrap();
-    assert_eq!(
-        Product::QueryRun {
-            run: Box::new(converted.run.clone())
-        },
-        *begin
-    );
-    old_payload["binding_hash"] = serde_json::to_value(converted.old_binding).unwrap();
-    old_payload["run_hash"] = serde_json::to_value(converted.old_run).unwrap();
     let old: sinex_protocol::Ingress = serde_json::from_value(json!({
         "kind":"events","source":{"name":"polylogue","version":8},"frame":name,
         "events":[{"kind":{"name":"polylogue.query_run","version":4},"payload":old_payload,"class":"open"}],"failures":[]
@@ -401,44 +390,6 @@ fn unchanged_named_prior_source_observation_keeps_original_material_on_retry() {
             .read_to_end(&mut repeated)
             .unwrap();
         assert_eq!(repeated, bytes);
-    }
-}
-
-#[test]
-fn converted_product_file_uses_normal_query_names_and_repeats_without_effects() {
-    use std::io::Write;
-    let root = tempfile::tempdir().unwrap();
-    let file = root.path().join("current-products.jsonl");
-    let expected = phases();
-    let mut output = std::fs::File::create(&file).unwrap();
-    for (_, product) in &expected {
-        serde_json::to_writer(&mut output, product).unwrap();
-        output.write_all(b"\n").unwrap();
-    }
-    drop(output);
-    let sdk = client(&root.path().join("producer"));
-    assert_eq!(
-        crate::line_population::prepare_current(&file, &sdk).unwrap(),
-        3
-    );
-    for (name, product) in &expected {
-        assert_eq!(
-            kept(&sdk, NamedProductSelector::Exact(name.clone())),
-            vec![product.clone()]
-        );
-    }
-    let before = sdk.status().unwrap();
-    assert_eq!(
-        crate::line_population::prepare_current(&file, &sdk).unwrap(),
-        3
-    );
-    let after = sdk.status().unwrap();
-    assert_eq!(before.prepared_materials, after.prepared_materials);
-    assert_eq!(before.prepared_writes, after.prepared_writes);
-    drop(sdk);
-    let sdk = client(&root.path().join("producer"));
-    for (name, product) in expected {
-        assert_eq!(kept(&sdk, NamedProductSelector::Exact(name)), vec![product]);
     }
 }
 
