@@ -20,7 +20,7 @@ fn infer_and_unread_share_typed_requests_and_keep_local_output_off_remote_surfac
         "2",
         "--field",
         "named",
-        "--output",
+        "--to",
         "schema.json",
     ]);
     assert_eq!(
@@ -28,20 +28,20 @@ fn infer_and_unread_share_typed_requests_and_keep_local_output_off_remote_surfac
         json!({"origin":"claude-code","input":["opaque:input"],"revision":2,"field":["named"]})
     );
     assert!(command.tool == Some(crate::commands::Tool::Read) && command.http);
-    // MCP and HTTP requests carry the input schema's fields; `--output`
+    // MCP and HTTP requests carry the input schema's fields; `--to`
     // acts on the calling machine and is not one of them.
     let declared = crate::commands::declarations()
         .descriptions()
         .iter()
         .find(|description| description.spec.name == "dev schema infer")
         .unwrap();
-    assert!(declared.input_schema["properties"].get("output").is_none());
+    assert!(declared.input_schema["properties"].get("to").is_none());
     assert!(
         declared
             .spec
             .arguments
             .iter()
-            .any(|argument| argument.name == "output" && argument.calling_process)
+            .any(|argument| argument.name == "to" && argument.calling_process)
     );
     let daemon = crate::test_daemon::start("schema arguments");
     for args in [
@@ -90,7 +90,7 @@ fn explicit_local_artifacts_are_reusable_for_diff_without_archive_access() {
             )
             .unwrap();
         let schema = observer.finish("synthetic".into(), vec![]);
-        serde_json::json!({"selection":{"origin":"synthetic","explicit_inputs":true,"revision":null,"since_ms":null,"unknown_time_inputs":0,"missing_revisions":[],"selected_inputs":1,"selected_bytes":bytes.len(),"read_bytes":bytes.len()},"origins":{"synthetic":schema}})
+        serde_json::json!({"selection":{"origin":"synthetic","explicit_inputs":true,"revision":null,"since_ms":null,"unknown_time_inputs":null,"missing_revisions":[],"selected_inputs":1,"selected_bytes":bytes.len(),"read_bytes":bytes.len()},"origins":{"synthetic":schema}})
     };
     std::fs::write(&before, serde_json::to_vec(&infer(b"{\"a\":1}\n")).unwrap()).unwrap();
     std::fs::write(
@@ -105,7 +105,7 @@ fn explicit_local_artifacts_are_reusable_for_diff_without_archive_access() {
         "diff",
         before.to_str().unwrap(),
         after.to_str().unwrap(),
-        "--output",
+        "--to",
         diff_output.to_str().unwrap(),
     ])
     .unwrap();
@@ -157,7 +157,7 @@ fn artifact_diff_reports_type_changes_in_empty_tables() {
             )
             .unwrap();
         let schema = observer.finish("tool-database".into(), vec![]);
-        let artifact = json!({"selection":{"origin":"tool-database","explicit_inputs":true,"revision":null,"since_ms":null,"unknown_time_inputs":0,"missing_revisions":[],"selected_inputs":1,"selected_bytes":1,"read_bytes":1},"origins":{"tool-database":schema}});
+        let artifact = json!({"selection":{"origin":"tool-database","explicit_inputs":true,"revision":null,"since_ms":null,"unknown_time_inputs":null,"missing_revisions":[],"selected_inputs":1,"selected_bytes":1,"read_bytes":1},"origins":{"tool-database":schema}});
         std::fs::write(path, serde_json::to_vec(&artifact).unwrap()).unwrap();
     }
     let (command, values) = crate::cli::parse(&[
@@ -167,7 +167,7 @@ fn artifact_diff_reports_type_changes_in_empty_tables() {
         "diff",
         before.to_str().unwrap(),
         after.to_str().unwrap(),
-        "--output",
+        "--to",
         result.to_str().unwrap(),
     ])
     .unwrap();

@@ -228,20 +228,7 @@ pub fn resume(answer: &protocol::resume::Answer, _style: TextStyle) -> String {
 fn resumable(sessions: &[crate::resume::ResumableSession]) -> String {
     let mut out = String::new();
     for entry in sessions {
-        let open = &entry.open;
-        let mut why = Vec::new();
-        if open.unanswered_prompt {
-            why.push("unanswered prompt".to_owned());
-        }
-        if open.open_tool_call {
-            why.push("unfinished tool call".to_owned());
-        }
-        if let Some(todo) = &open.todo {
-            why.push(format!("todo: {todo}"));
-        }
-        if let Some(waiting) = &open.waiting_on {
-            why.push(format!("waiting on {waiting}"));
-        }
+        let mut why = entry.open.phrases();
         why.extend(entry.follow_ups.iter().cloned());
         let _ = writeln!(
             out,

@@ -649,7 +649,7 @@ fn open_reader(startup: &crate::config::Startup, json: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `polylogue host`: holds a hosted agent's stdio for the daemon until the
+/// `polylogue internal host`: holds a hosted agent's stdio for the daemon until the
 /// agent exits (`crate::hosting`).
 pub fn host(
     _: &Command,

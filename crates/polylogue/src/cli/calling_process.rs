@@ -1,4 +1,4 @@
-//! Options that act on the calling machine (`--to DIR`, `--out FILE`,
+//! Options that act on the calling machine (`--to FILE`, `--out FILE`,
 //! `--exec`): the command line reads them and they never enter a request.
 //! Each struct declares a row's options the way a request type declares its
 //! arguments; [`options`] reads them back typed.
@@ -16,7 +16,7 @@ pub(crate) struct Attachment {
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub(crate) struct SchemaOutput {
     /// Write the result to this explicit local path (default: standard output)
-    pub output: Option<String>,
+    pub to: Option<String>,
 }
 
 /// `chat send`: the files read here and sent as bytes.

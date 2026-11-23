@@ -70,6 +70,24 @@ impl OpenItems {
             || self.todo.is_some()
             || self.waiting_on.is_some()
     }
+
+    /// What is open, one phrase per item; every surface words it the same way.
+    pub fn phrases(&self) -> Vec<String> {
+        let mut open = Vec::new();
+        if self.unanswered_prompt {
+            open.push("the last prompt has no answer".to_owned());
+        }
+        if self.open_tool_call {
+            open.push("a tool call never finished".to_owned());
+        }
+        if let Some(todo) = &self.todo {
+            open.push(format!("todo in progress: {todo}"));
+        }
+        if let Some(waiting) = &self.waiting_on {
+            open.push(format!("waiting on {waiting}"));
+        }
+        open
+    }
 }
 
 /// One prompt a person typed, for re-grounding after compaction.

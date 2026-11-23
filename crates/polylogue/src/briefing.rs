@@ -1515,20 +1515,7 @@ fn takeover(
         });
     }
     if open_items.any() {
-        let mut open = Vec::new();
-        if open_items.unanswered_prompt {
-            open.push("the last prompt has no answer".to_owned());
-        }
-        if open_items.open_tool_call {
-            open.push("a tool call never finished".to_owned());
-        }
-        if let Some(t) = &open_items.todo {
-            open.push(format!("todo in progress: {t}"));
-        }
-        if let Some(w) = &open_items.waiting_on {
-            open.push(format!("waiting on {w}"));
-        }
-        let _ = writeln!(text, "Left open: {}.", open.join("; "));
+        let _ = writeln!(text, "Left open: {}.", open_items.phrases().join("; "));
     }
     let note_items = notes
         .iter()
