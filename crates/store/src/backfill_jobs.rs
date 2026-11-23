@@ -89,7 +89,8 @@ fn refused(code: &'static str) -> StoreError {
 }
 
 /// Starts a job, or finds the provider's job that has not ended: one runs
-/// per provider at a time.
+/// per provider at a time. Finding a paused job resumes it from its saved
+/// position and totals.
 pub(crate) fn start(
     tx: &Connection,
     new: &NewBackfillJob,
@@ -105,10 +106,26 @@ pub(crate) fn start(
         .query_map([&new.provider], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     for id in ids {
-        if let Some(job) = read(tx, source.prefix(), &id)?
-            && !job.status(at).0.ended()
-        {
-            return Ok(id);
+        let Some(job) = read(tx, source.prefix(), &id)? else {
+            continue;
+        };
+        match job.status(at).0 {
+            status if status.ended() => {}
+            BackfillStatus::Paused => {
+                let (counts, position) = job.progress();
+                let event = BackfillEvent {
+                    request: request.into(),
+                    at,
+                    kind: "resumed".into(),
+                    by: None,
+                    position: position.map(str::to_owned),
+                    counts,
+                    detail: None,
+                };
+                add_event(tx, &id, &event, seq)?;
+                return Ok(id);
+            }
+            _ => return Ok(id),
         }
     }
     tx.execute(

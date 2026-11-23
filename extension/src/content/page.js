@@ -74,7 +74,9 @@
       case "file":
         return provider.fetchFile(request.file, request.conversation);
       case "page":
-        return { status: 200, info: await provider.currentConversation() };
+        // `shown` lets the background tell whether the page changed since it
+        // last captured the conversation, without fetching it.
+        return { status: 200, info: await provider.currentConversation(), shown: shownText() };
       default:
         return { status: 400, error: "unknown_request" };
     }

@@ -567,6 +567,10 @@ pub enum BackfillStatus {
     /// Started and not held by an extension instance.
     Waiting,
     Running,
+    /// Stopped by the provider refusing the browser's sign-in; not claimed
+    /// until the operator starts the import again, which resumes it from
+    /// its saved position.
+    Paused,
     Finished,
     Failed,
     Cancelled,
@@ -583,6 +587,7 @@ impl BackfillStatus {
 pub fn backfill_report_status(kind: &str) -> Option<BackfillStatus> {
     Some(match kind {
         "progress" => BackfillStatus::Running,
+        "paused" => BackfillStatus::Paused,
         "finished" => BackfillStatus::Finished,
         "failed" => BackfillStatus::Failed,
         _ => return None,
@@ -613,6 +618,10 @@ impl BackfillJob {
                 }
                 "cancelled" => {
                     status = BackfillStatus::Cancelled;
+                    claim = None;
+                }
+                "resumed" => {
+                    status = BackfillStatus::Waiting;
                     claim = None;
                 }
                 kind => {

@@ -11,18 +11,16 @@
     return parts[0] === "chat" && parts[1] ? parts[1] : null;
   }
 
-  // The organization the page works in, as claude.ai itself remembers it,
-  // or as the page's own API requests name it.
+  // The organization the page has selected, as claude.ai itself remembers
+  // it. Without it the page is signed out or its choice is unknown; any
+  // other organization ID the page has seen may belong to another workspace.
   function organization() {
     try {
       const selected = JSON.parse(localStorage.getItem("omelette-org-settings-cache") || "null")?.orgUuid;
-      if (UUID.test(selected || "")) return selected;
-    } catch { /* Fall back to the page's requests. */ }
-    for (const entry of performance.getEntriesByType("resource").reverse()) {
-      const id = new URL(entry.name, location.href).pathname.match(/^\/api\/organizations\/([^/]+)\//)?.[1];
-      if (UUID.test(id || "")) return id;
+      return UUID.test(selected || "") ? selected : null;
+    } catch {
+      return null;
     }
-    return null;
   }
 
   // The conversation's own page: this one, or where it would open.

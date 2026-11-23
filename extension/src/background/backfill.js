@@ -1,5 +1,5 @@
 // Backfill: capturing a web chat's older conversations. The job lives in
-// Polylogue (started with `polylogue backfill start`); this side claims it
+// Polylogue (started with `polylogue import PROVIDER`); this side claims it
 // through the host, pages through the provider's conversation list, captures
 // each conversation the archive lacks or holds an older copy of, and reports
 // its position and totals. A restarted extension claims its job again and
@@ -61,6 +61,13 @@ export class Backfill {
         return false;
       }
     };
+    // A refused sign-in pauses the job at the page's start: Polylogue keeps
+    // it from being claimed until the operator starts the import again.
+    const pause = async () => {
+      const notice = `Sign in to ${job.provider} in this browser, then run \`polylogue import ${job.provider}\` to resume.`;
+      this.log(`Import of ${job.provider} paused: ${notice}`);
+      await report("paused", notice);
+    };
     const { tab, opened } = await workTab(this.chrome, job.provider);
     try {
       for (;;) {
@@ -69,8 +76,8 @@ export class Backfill {
           await report("progress", "The provider asked to wait; continuing later.");
           return;
         }
-        if (page.status === 401 || page.status === 403) {
-          await report("failed", `Sign in to ${job.provider} in this browser, then start the backfill again.`);
+        if (signInRefused(page.status)) {
+          await pause();
           return;
         }
         if (page.status !== 200) {
@@ -104,6 +111,10 @@ export class Backfill {
             if (error.until) throw new ProviderDeferred(error.until, error.message);
             if (error.status === 429 || error.status >= 500) {
               await report("progress", "The provider asked to wait; continuing later.");
+              return;
+            }
+            if (signInRefused(error.status)) {
+              await pause();
               return;
             }
             tally.failed += 1;
@@ -144,11 +155,18 @@ export class Backfill {
   }
 }
 
-/** Whether the archive holds this conversation as the provider has it. */
+function signInRefused(status) {
+  return status === 401 || status === 403;
+}
+
+/**
+ * Whether the archive holds this conversation as the provider has it: read
+ * by the daemon from a capture taken after the provider's last change. A
+ * spooled conversation has some capture in the spool, of no known version,
+ * so it is fetched again; the capturer stores it only if its content changed.
+ */
 function current(held, conversation) {
-  if (held?.downloading) return false;
-  if (!held || held.state === "missing" || held.state === "unknown") return false;
-  if (held.state === "spooled") return true;
+  if (held?.state !== "archived" || held.downloading) return false;
   if (!conversation.updated_at || !held.last_captured_at) return false;
   return held.last_captured_at >= Date.parse(conversation.updated_at);
 }

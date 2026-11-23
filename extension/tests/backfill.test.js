@@ -7,8 +7,9 @@ import { Outbox } from "../src/background/outbox.js";
 import { fakeChrome, json } from "./support/fake_chrome.js";
 
 /** A provider with two list pages and the archive's view of their conversations. */
-function setup({ job, held, listing = null, acceptReport = () => true }) {
+function setup({ job, held, listing = null, conversation = null, acceptReport = () => true }) {
   const reports = [];
+  const problems = [];
   const stored = [];
   const routes = {
     "POST /v1/backfill/claim": () => ({ json: { job } }),
@@ -40,6 +41,7 @@ function setup({ job, held, listing = null, acceptReport = () => true }) {
         return { status: 200, info: { conversations: [{ id: "spooled", updated_at: "2026-01-07T00:00:00Z" }], next: null, done: true, newest_first: true } };
       }
       if (request.type === "conversation") {
+        if (conversation) return conversation(request.id);
         return { status: 200, info: { id: request.id, url: `https://chatgpt.com/c/${request.id}` }, body: new Blob([JSON.stringify({ conversation_id: request.id })]) };
       }
       return { status: 400 };
@@ -48,8 +50,8 @@ function setup({ job, held, listing = null, acceptReport = () => true }) {
   const chrome = fakeChrome({ routes, pages, tabs: [{ id: 7, url: "https://chatgpt.com/" }] });
   const host = new Host(chrome.runtime);
   const capturer = new Capturer({ chrome, host, outbox: new Outbox(new IDBFactory()), seen: chrome.storage.session });
-  const backfill = new Backfill({ chrome, host, capturer, instance: async () => job.claimed_by, sleep: async () => {} });
-  return { backfill, reports, stored, lists, chrome };
+  const backfill = new Backfill({ chrome, host, capturer, instance: async () => job.claimed_by, log: (text) => problems.push(text), sleep: async () => {} });
+  return { backfill, reports, stored, lists, chrome, capturer, problems };
 }
 
 const HELD = {
@@ -64,10 +66,12 @@ describe("a backfill job held by Polylogue", () => {
     const { backfill, reports, stored, lists } = setup({ job, held: HELD });
     await backfill.step();
     expect(lists).toEqual([null, "0:3"]);
-    expect(stored.map((c) => c.session.provider_session_id)).toEqual(["changed", "new"]);
+    // A spooled conversation is of no known version, so it is fetched; this
+    // browser has not captured it before, so it is stored.
+    expect(stored.map((c) => c.session.provider_session_id)).toEqual(["changed", "new", "spooled"]);
     expect(stored[0].provenance.reason).toBe("backfill");
-    expect(reports.filter((r) => r.position !== null || r.kind === "finished").map((r) => [r.kind, r.position])).toEqual([["progress", "0:3"], ["progress", "0:3"], ["finished", null]]);
-    expect(reports.at(-1).counts).toEqual({ listed: 4, captured: 2, unchanged: 2, failed: 0 });
+    expect(reports.filter((r) => r.position !== null || r.kind === "finished").map((r) => [r.kind, r.position])).toEqual([["progress", "0:3"], ["progress", "0:3"], ["progress", "0:3"], ["finished", null]]);
+    expect(reports.at(-1).counts).toEqual({ listed: 4, captured: 3, unchanged: 1, failed: 0 });
   });
 
   it("continues from the reported position after the extension restarts", async () => {
@@ -75,7 +79,7 @@ describe("a backfill job held by Polylogue", () => {
     const { backfill, reports, lists } = setup({ job, held: HELD });
     await backfill.step();
     expect(lists).toEqual(["0:3"]);
-    expect(reports.at(-1)).toMatchObject({ kind: "finished", counts: { listed: 4, captured: 2, unchanged: 2, failed: 0 } });
+    expect(reports.at(-1)).toMatchObject({ kind: "finished", counts: { listed: 4, captured: 3, unchanged: 1, failed: 0 } });
   });
 
   it("stops at the provider's wait and at conversations older than the job's date", async () => {
@@ -88,23 +92,46 @@ describe("a backfill job held by Polylogue", () => {
     expect(reports.at(-1)).toMatchObject({ kind: "finished", counts: { captured: 2, unchanged: 0 } });
   });
 
-  it("asks the operator to sign in when the provider refuses the list", async () => {
+  it.each([401, 403])("a_sign_in_refusal_pauses_the_import_and_raises_a_notice (%i), and a resume continues from the saved position", async (status) => {
     const job = { id: "j1", provider: "chatgpt", claimed_by: "ext-1", position: null, listed: 0, captured: 0, unchanged: 0, failed: 0 };
-    const { backfill, reports, chrome } = setup({ job, held: HELD });
-    chrome.tabs.list.length = 0;
-    const created = [];
-    chrome.tabs.create = async ({ url }) => { const tab = { id: 9, url, status: "complete" }; chrome.tabs.list.push(tab); created.push(tab); return tab; };
-    chrome.tabs.connect = (() => {
-      const original = fakeChrome({ pages: { 9: async () => ({ status: 401, error: "signed_out" }) }, tabs: [{ id: 9, url: "https://chatgpt.com/" }] });
-      return original.tabs.connect;
-    })();
-    await backfill.step();
-    expect(created).toHaveLength(1);
-    expect(reports.at(-1).kind).toBe("failed");
-    expect(reports.at(-1).detail).toContain("Sign in");
-    // The tab the backfill opened is closed again.
-    expect(chrome.tabs.list).toHaveLength(0);
+    const refusing = setup({ job, held: HELD, listing: (position) => (position === "0:3"
+      ? { status, error: "signed_out" }
+      : { status: 200, info: { conversations: [{ id: "new", updated_at: "2026-01-06T00:00:00Z" }], next: "0:3", done: false, newest_first: true } }) });
+    await refusing.backfill.step();
+    expect(refusing.lists).toEqual([null, "0:3"]);
+    const paused = refusing.reports.at(-1);
+    expect(paused).toMatchObject({ kind: "paused", position: "0:3", counts: { listed: 1, captured: 1, unchanged: 0, failed: 0 } });
+    expect(paused.detail).toBe("Sign in to chatgpt in this browser, then run `polylogue import chatgpt` to resume.");
+    expect(refusing.problems).toEqual([`Import of chatgpt paused: ${paused.detail}`]);
+
+    // Starting the import again hands the job back with its saved position.
+    const resumed = setup({ job: { ...job, position: paused.position, ...paused.counts }, held: HELD });
+    await resumed.backfill.step();
+    expect(resumed.lists).toEqual(["0:3"]);
+    expect(resumed.stored.map((c) => c.session.provider_session_id)).toEqual(["spooled"]);
+    expect(resumed.reports.at(-1)).toMatchObject({ kind: "finished", counts: { listed: 2, captured: 2, unchanged: 0, failed: 0 } });
   });
+});
+
+it("a_provider_edit_after_spooling_is_captured", async () => {
+  const job = { id: "j1", provider: "chatgpt", claimed_by: "ext-1", position: null, listed: 0, captured: 0, unchanged: 0, failed: 0 };
+  let text = "first";
+  const { backfill, capturer, stored, reports } = setup({ job, held: { a: { state: "spooled" }, b: { state: "spooled" } },
+    listing: () => ({ status: 200, info: { conversations: [
+      { id: "a", updated_at: "2026-01-02T00:00:00Z" },
+      { id: "b", updated_at: "2026-01-02T00:00:00Z" },
+    ], next: null, done: true, newest_first: true } }),
+    conversation: (id) => ({ status: 200, info: { id, url: `https://chatgpt.com/c/${id}` },
+      body: new Blob([JSON.stringify({ conversation_id: id, text: id === "a" ? text : "same" })]) }),
+  });
+  // Both conversations were captured into the spool before the provider changed `a`.
+  await capturer.capture(7, "chatgpt", { id: "a" });
+  await capturer.capture(7, "chatgpt", { id: "b" });
+  stored.length = 0;
+  text = "edited";
+  await backfill.step();
+  expect(stored.map((c) => [c.session.provider_session_id, c.raw_provider_payload.text])).toEqual([["a", "edited"]]);
+  expect(reports.at(-1)).toMatchObject({ kind: "finished", counts: { listed: 2, captured: 1, unchanged: 1, failed: 0 } });
 });
 
 it("resumes a current conversation whose attachment bytes are still downloading", async () => {
@@ -113,7 +140,7 @@ it("resumes a current conversation whose attachment bytes are still downloading"
     "old-same": { ...HELD["old-same"], downloading: true },
   } });
   await backfill.step();
-  expect(stored.map((c) => c.session.provider_session_id)).toEqual(["old-same", "changed", "new"]);
+  expect(stored.map((c) => c.session.provider_session_id)).toEqual(["old-same", "changed", "new", "spooled"]);
 });
 
 it("continues the other ChatGPT partitions after a date cutoff in each partition", async () => {
@@ -133,9 +160,9 @@ it("continues the other ChatGPT partitions after a date cutoff in each partition
 
 it("observes cancellation within an unchanged page", async () => {
   const job = { id: "j1", provider: "chatgpt", claimed_by: "ext-1", position: null, listed: 0, captured: 0, unchanged: 0, failed: 0 };
-  const conversations = Array.from({ length: 30 }, (_, i) => ({ id: String(i) }));
+  const conversations = Array.from({ length: 30 }, (_, i) => ({ id: String(i), updated_at: "2026-01-02T00:00:00Z" }));
   let reportsSeen = 0;
-  const { backfill, reports } = setup({ job, held: Object.fromEntries(conversations.map((c) => [c.id, { state: "spooled" }])),
+  const { backfill, reports } = setup({ job, held: Object.fromEntries(conversations.map((c) => [c.id, HELD["old-same"]])),
     acceptReport: () => ++reportsSeen < 2,
     listing: () => ({ status: 200, info: { conversations, done: true, next: null } }),
   });
@@ -144,18 +171,25 @@ it("observes cancellation within an unchanged page", async () => {
   expect(reports.some((report) => report.kind === "finished")).toBe(false);
 });
 
-it("counts a page's conversations only when the page is done, so a resumed page is not counted twice", async () => {
-  const job = { id: "j1", provider: "chatgpt", claimed_by: "ext-1", position: null, listed: 0, captured: 0, unchanged: 0, failed: 0 };
-  const conversations = Array.from({ length: 25 }, (_, i) => ({ id: String(i) }));
-  const { backfill, reports } = setup({ job, held: Object.fromEntries(conversations.map((c) => [c.id, { state: "spooled" }])),
-    listing: () => ({ status: 200, info: { conversations, done: true, next: null } }),
-  });
-  await backfill.step();
-  const empty = { listed: 0, captured: 0, unchanged: 0, failed: 0 };
-  expect(reports.filter((report) => report.kind === "progress").map((report) => report.counts)).toEqual([empty, empty, empty]);
-  expect(reports.at(-1)).toMatchObject({ kind: "finished", counts: { listed: 25, captured: 0, unchanged: 25, failed: 0 } });
+it("a_resumed_import_counts_each_conversation_once", async () => {
+  const job = { id: "j1", provider: "chatgpt", claimed_by: "ext-1", position: "0:100", listed: 100, captured: 4, unchanged: 96, failed: 0 };
+  const conversations = Array.from({ length: 25 }, (_, i) => ({ id: String(i), updated_at: "2026-01-02T00:00:00Z" }));
+  const held = Object.fromEntries(conversations.map((c) => [c.id, HELD["old-same"]]));
+  held["15"] = { state: "missing" };
+  const listing = () => ({ status: 200, info: { conversations, done: true, next: null } });
+  // Reports go out before the list is read, after ten conversations and
+  // before conversation 15 is fetched, where the provider refuses the sign-in.
+  const first = setup({ job, held, listing, conversation: () => ({ status: 403, error: "chatgpt_http_403" }) });
+  await first.backfill.step();
+  const before = { listed: 100, captured: 4, unchanged: 96, failed: 0 };
+  expect(first.reports.map((r) => [r.kind, r.position, r.counts])).toEqual([
+    ["progress", "0:100", before], ["progress", "0:100", before], ["progress", "0:100", before], ["paused", "0:100", before],
+  ]);
+  const paused = first.reports.at(-1);
+  const second = setup({ job: { ...job, position: paused.position, ...paused.counts }, held, listing });
+  await second.backfill.step();
+  expect(second.reports.at(-1)).toMatchObject({ kind: "finished", counts: { listed: 125, captured: 5, unchanged: 120, failed: 0 } });
 });
-
 
 it("does not run an unconfirmed authored job receipt", async () => {
   const receipt = { id: "job-pending", repeat: false, pending: true };

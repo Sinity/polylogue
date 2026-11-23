@@ -169,3 +169,43 @@ fn an_expired_claim_lets_the_job_wait_and_the_operator_can_cancel_it() {
         Err(StoreError::NotFound(message)) if message == "a waiting backfill job"
     ));
 }
+
+#[test]
+fn a_paused_job_is_not_claimed_until_the_import_is_started_again_and_then_resumes_where_it_stopped()
+{
+    let (_dir, _archive, _lock, writer, reads) = setup();
+    start(&writer, "j1", "claude-ai");
+    write(&writer, UserWrite::BackfillClaim { by: "ext-1".into() }).unwrap();
+    let mut paused = progress("200", 150);
+    paused.kind = "paused".into();
+    paused.detail = Some("Sign in to claude-ai in this browser".into());
+    write(
+        &writer,
+        UserWrite::BackfillReport {
+            job: "j1".into(),
+            by: "ext-1".into(),
+            report: paused,
+        },
+    )
+    .unwrap();
+    let job = reads.reader().unwrap().backfill_job("j1").unwrap().unwrap();
+    assert_eq!(job.status(i64::MAX), (BackfillStatus::Paused, None));
+    assert!(matches!(
+        write(&writer, UserWrite::BackfillClaim { by: "ext-1".into() }),
+        Err(StoreError::NotFound(message)) if message == "a waiting backfill job"
+    ));
+
+    // Starting the provider's import again finds the paused job and resumes it.
+    let again = start(&writer, "j2", "claude-ai");
+    assert_eq!((again.id.as_str(), again.repeat), ("j1", true));
+    let job = reads.reader().unwrap().backfill_job("j1").unwrap().unwrap();
+    assert_eq!(job.status(i64::MAX), (BackfillStatus::Waiting, None));
+    let claimed = write(&writer, UserWrite::BackfillClaim { by: "ext-2".into() }).unwrap();
+    assert_eq!(claimed.id, "j1");
+    let job = reads.reader().unwrap().backfill_job("j1").unwrap().unwrap();
+    let (counts, position) = job.progress();
+    assert_eq!(
+        (counts.listed, counts.captured, counts.unchanged, position),
+        (151, 150, 1, Some("200"))
+    );
+}
