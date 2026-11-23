@@ -43,9 +43,9 @@ fn bare_request_needs_no_caller_details() {
 
 #[test]
 fn a_malformed_request_line_says_what_is_wrong() {
-    let not_json = incoming("{\"operation\":").unwrap_err().to_string();
+    let not_json = incoming("{\"operation\":").err().unwrap().to_string();
     assert!(not_json.contains("EOF"), "{not_json}");
-    let no_operation = incoming("{\"arguments\":{}}").unwrap_err().to_string();
+    let no_operation = incoming("{\"arguments\":{}}").err().unwrap().to_string();
     assert!(no_operation.contains("operation"), "{no_operation}");
     assert!(incoming("[1]").is_err());
 }
