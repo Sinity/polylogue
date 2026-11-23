@@ -264,7 +264,7 @@ impl<'a> Encoder<'a> {
                     text.push_str(&match context {
                         ValueState::Value { value } => format!(" · ctx {}", tokens(*value)),
                         ValueState::Inferred { value } => format!(" · ctx ≈{}", tokens(*value)),
-                        _ => " · ctx unknown (no usage recorded)".into(),
+                        other => format!(" · ctx {}", value_text(other)),
                     });
                 }
                 match &header.branch {

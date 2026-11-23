@@ -60,7 +60,7 @@ pub(super) fn prepare(
         .iter()
         .any(|revision| revision.reference == selected_revision)
     {
-        // A withdrawn authored override may have fallen back to a shipped definition.
+        // A withdrawn authored saved query may leave its shipped saved query in force.
         return Ok(None);
     }
     let dependents = reader.dependent_saved_queries(&query.dependents)?;
@@ -69,8 +69,8 @@ pub(super) fn prepare(
         .iter()
         .any(|dependent| format!("query:{}", dependent.value.hash) == self_question)
     {
-        // Queuing this read's anonymous alias must not change its own history.
-        // A current authored alias remains a real dependent with its Save call.
+        // Queuing this read's own question must not change its own history.
+        // A current saved query remains a real dependent with its Save call.
         query
             .dependents
             .retain(|reference| *reference != self_question);
