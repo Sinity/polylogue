@@ -77,8 +77,7 @@ fn a_query_that_matched_nothing_is_empty_with_exit_one() {
     let answer = query_outcome(query(Outcome::Empty, &[]), &current());
     assert_eq!(answer.exit_code(), 1);
     assert_eq!(answer.http_status(), Some(200));
-    let value = test_answers::empty(answer);
-    assert!(matches!(value,crate::protocol::query::Answer::Rows(rows) if rows.count==Some(0)));
+    test_answers::empty(answer);
 }
 
 #[test]

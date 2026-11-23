@@ -311,6 +311,14 @@ fn object_read_pages_past_its_budget() {
             panic!("stored request")
         };
         assert_eq!(record.prepared.request, request);
+        let [fact] = record.prepared.effect.assertions.as_slice() else {
+            panic!("one stored assertion")
+        };
+        assert_eq!(fact.kind, AssertionKind::Note);
+        assert_eq!(
+            fact.value,
+            Some(serde_json::json!("SYNTHETIC λ🙂 ".repeat(64)))
+        );
         ReadItem {
             source: Source::record(reference.to_string()),
             kind: ItemKind::Other {

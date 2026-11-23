@@ -158,7 +158,8 @@ fn page_read_never_touches_blob_bodies() {
     assert!(verified_hash.is_none());
     assert!(open.is_some());
     assert!(
-        matches!(refused.outcome, command_surface::Outcome::Error(_)),
+        matches!(&refused.outcome, command_surface::Outcome::Error(error)
+            if error.code.as_deref() == Some("store")),
         "{refused:?}"
     );
 }

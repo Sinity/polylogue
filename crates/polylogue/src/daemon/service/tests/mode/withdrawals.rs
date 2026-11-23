@@ -60,7 +60,7 @@ fn an_offline_withdrawal_retry_keeps_its_original_saved_family() {
     );
     assert!(
         matches!(denied.outcome, command_surface::Outcome::Error(error)
-        if matches!(error.code.as_deref(), Some("primary_context_missing" | "primary_context_unavailable")))
+        if error.code.as_deref() == Some("primary_context_unavailable"))
     );
     assert!(pending_requests(&runtime).is_empty());
     let ModeState::Primary { connection } = &runtime.daemon.mode else {
