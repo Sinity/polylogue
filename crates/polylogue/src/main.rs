@@ -51,9 +51,6 @@ use std::process::ExitCode;
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-/// Exit code when a command needs the daemon and it is not running.
-pub const EXIT_DAEMON_REQUIRED: u8 = 6;
-
 /// Exit code when the daemon refuses an archive that is not in this build's
 /// format (sysexits' `EX_CONFIG`). Starting again cannot
 /// help, so a service manager should not restart on it (systemd:

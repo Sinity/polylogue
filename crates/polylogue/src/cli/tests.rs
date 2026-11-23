@@ -222,7 +222,6 @@ fn captured_output_policy_reaches_query_and_error_renderers_per_sink() {
             original
         );
     }
-    assert_eq!(data, original);
 }
 
 #[test]

@@ -125,6 +125,17 @@ fn selection_must_be_one_argument_with_corrected_line() {
     assert_eq!(error.code, Code::NotAVerb);
 }
 #[test]
+fn literal_selection_keeps_its_marker_in_the_corrected_line() {
+    let error = parse(
+        &["--".into(), "foo".into(), "bar".into()],
+        &FirstWordCatalog::default(),
+        true,
+    )
+    .unwrap_err();
+    assert_eq!(error.try_line.as_deref(), Some("polylogue -- 'foo bar'"));
+    assert_eq!(error.code, Code::NotAVerb);
+}
+#[test]
 fn row_numbers_refused_off_terminal() {
     let error = parse(
         &["@1".into(), "read".into()],

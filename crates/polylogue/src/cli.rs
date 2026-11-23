@@ -454,7 +454,6 @@ pub fn run_local(matches: &ArgMatches, output: crate::config::OutputConfig) -> O
                 matches.get_flag("json"),
                 polylogue_model::Code::BadRequest,
                 &error,
-                2,
             ));
         }
     };
@@ -464,7 +463,6 @@ pub fn run_local(matches: &ArgMatches, output: crate::config::OutputConfig) -> O
             parsed.json,
             polylogue_model::Code::BadRequest,
             &error,
-            2,
         ));
     }
     Some(run(command, &parsed, output, parsed.json))
@@ -483,24 +481,23 @@ pub fn run(
             json,
             polylogue_model::Code::BadRequest,
             "no such command",
-            2,
         );
     };
     let mut values = match parsed(cmd, m) {
         Ok(parsed) => parsed,
-        Err(error) => return fail(policy, json, polylogue_model::Code::BadRequest, &error, 2),
+        Err(error) => return fail(policy, json, polylogue_model::Code::BadRequest, &error),
     };
     match cmd.run {
         Run::Local(run, _, validate) => {
             return match validate(&values.request.arguments) {
                 Ok(()) => run(cmd, &values, policy, json),
-                Err(error) => fail(policy, json, polylogue_model::Code::BadRequest, &error, 2),
+                Err(error) => fail(policy, json, polylogue_model::Code::BadRequest, &error),
             };
         }
         Run::ConfiguredLocal(run, _, validate) => {
             return match validate(&values.request.arguments) {
                 Ok(()) => run(cmd, &values, startup, json),
-                Err(error) => fail(policy, json, polylogue_model::Code::BadRequest, &error, 2),
+                Err(error) => fail(policy, json, polylogue_model::Code::BadRequest, &error),
             };
         }
         Run::Daemon(_) | Run::Feed { .. } => {}
@@ -514,11 +511,10 @@ pub fn run(
                 json,
                 polylogue_model::Code::BadRequest,
                 "operation arguments must be an object",
-                2,
             );
         };
         if let Err(message) = prepare(&values, cwd, &mut arguments) {
-            return fail(policy, json, polylogue_model::Code::BadRequest, &message, 2);
+            return fail(policy, json, polylogue_model::Code::BadRequest, &message);
         }
         values.request.arguments = Value::Object(arguments);
     }
@@ -534,7 +530,6 @@ pub fn run(
                 json,
                 polylogue_model::Code::BadRequest,
                 &failure.error.message,
-                2,
             );
         }
         return deliver(&values, startup, call);
@@ -551,7 +546,6 @@ pub fn run(
                     "no daemon is serving {}; start it with `polylogue daemon`",
                     root.display()
                 ),
-                crate::EXIT_DAEMON_REQUIRED,
             );
         }
         Err(e)
@@ -565,10 +559,9 @@ pub fn run(
                 json,
                 polylogue_model::Code::DeadlineExceeded,
                 &e.to_string(),
-                7,
             );
         }
-        Err(e) => return fail(policy, json, polylogue_model::Code::Io, &e.to_string(), 1),
+        Err(e) => return fail(policy, json, polylogue_model::Code::Io, &e.to_string()),
     };
     let outcome_code = answer.exit_code();
     if json && cmd.output.is_none() {
@@ -653,7 +646,6 @@ pub fn status_output(
                 json,
                 polylogue_model::Code::Internal,
                 &error.to_string(),
-                1,
             );
         }
     };
@@ -733,20 +725,17 @@ fn run_plan(
     let mut cmd = std::process::Command::new(&resume.program);
     cmd.args(&resume.args).current_dir(dir);
     if !replace {
+        use std::os::unix::process::ExitStatusExt as _;
         return match cmd.status() {
+            // A harness killed by a signal exits as a shell reports it: 128 + signal.
             Ok(status) => ExitCode::from(
                 status
                     .code()
+                    .or_else(|| status.signal().map(|signal| 128 + signal))
                     .and_then(|code| u8::try_from(code).ok())
                     .unwrap_or(1),
             ),
-            Err(error) => fail(
-                output,
-                false,
-                polylogue_model::Code::Io,
-                &error.to_string(),
-                4,
-            ),
+            Err(error) => fail(output, false, polylogue_model::Code::Io, &error.to_string()),
         };
     }
     let err = cmd.exec();
@@ -812,7 +801,6 @@ pub(crate) fn fail(
     json: bool,
     code: polylogue_model::Code,
     message: &str,
-    _exit: u8,
 ) -> ExitCode {
     fail_with(output, json, &crate::protocol::failure(code, message), &[])
 }

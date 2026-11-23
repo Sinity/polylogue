@@ -243,7 +243,7 @@ pub(crate) fn run(
         parsed.selection = Some(SelectionWord::References(references));
     }
     if let Err(error) = read_stdin(&mut parsed, &mut io::stdin().lock()) {
-        return super::fail(startup.output, json, Code::Io, &error.to_string(), 4);
+        return super::fail(startup.output, json, Code::Io, &error.to_string());
     }
     for step in &mut parsed.steps {
         if step.verb == "read" {
@@ -353,7 +353,6 @@ pub(crate) fn run(
                     json,
                     Code::DaemonProtocolMismatch,
                     "the line omitted its requested population",
-                    4,
                 );
             };
             if let Outcome::Error(error) = &population.outcome {

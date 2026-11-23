@@ -63,9 +63,7 @@ pub fn tour(
             }
             ExitCode::SUCCESS
         }
-        Err(error) => {
-            crate::cli::fail(startup.output, json, polylogue_model::Code::Demo, &error, 1)
-        }
+        Err(error) => crate::cli::fail(startup.output, json, polylogue_model::Code::Demo, &error),
     }
 }
 

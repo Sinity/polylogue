@@ -36,7 +36,6 @@ pub fn run(
                 true,
                 polylogue_model::Code::DeadlineExceeded,
                 &e.to_string(),
-                7,
             )
         }
         Err(e) => fail(
@@ -44,7 +43,6 @@ pub fn run(
             true,
             polylogue_model::Code::Io,
             &e.to_string(),
-            1,
         ),
     }
 }
@@ -186,7 +184,7 @@ fn consume(
                 {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        "the change feed completion moved its checkpoint backwards",
+                        "the change feed completion moved its position backwards",
                     ));
                 }
                 true

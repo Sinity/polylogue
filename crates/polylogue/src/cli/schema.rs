@@ -85,7 +85,6 @@ pub fn output(
                 json,
                 polylogue_model::Code::BadRequest,
                 &message,
-                2,
             );
         }
     };
@@ -132,7 +131,7 @@ fn run(
     });
     match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(message) => super::fail(output, json, polylogue_model::Code::Schema, &message, 1),
+        Err(message) => super::fail(output, json, polylogue_model::Code::Schema, &message),
     }
 }
 
