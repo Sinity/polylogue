@@ -268,3 +268,26 @@ fn process_and_registry_lines_are_live_events() {
     assert_eq!(step.counts.records, 4);
     assert!(polylogue_model::live::is_live_event(kinds[0]));
 }
+
+#[test]
+fn a_provider_or_route_that_is_not_a_string_is_unreadable() {
+    let input = lines(&[
+        json!({"event_type": "Stop", "session_id": "s", "provider": 3, "at_ns": "1792400000123456789"}),
+        json!({"event_type": "Status", "session_id": "s", "provider": "claude-code", "route": 5}),
+    ]);
+    let step = run(&HookSpool, &mut ParserState::default(), &input, 0).unwrap();
+    assert!(step.output.events.is_empty());
+    assert_eq!(step.counts.unreadable.len(), 2);
+    assert!(
+        step.counts
+            .unreadable
+            .keys()
+            .any(|k| k.ends_with("provider is not a string"))
+    );
+    assert!(
+        step.counts
+            .unreadable
+            .keys()
+            .any(|k| k.ends_with("route is not a string"))
+    );
+}

@@ -7,10 +7,10 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 use crate::document::first_byte;
-use crate::document::{Sink, first_key, message_id, session_id, time_of};
+use crate::document::{Sink, first_key, message_id, session_id, text_of, time_of};
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
 use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
@@ -357,10 +357,8 @@ fn message(
         AttachmentDirection::Output
     };
     let mut blocks = Vec::new();
-    if let Some(text) = m.str("content").filter(|s| !s.is_empty()) {
-        blocks.push(Block::Text {
-            text: text.to_owned(),
-        });
+    if let Some(text) = text_of(m.get("content")) {
+        blocks.push(Block::Text { text });
     }
     if let Some(reasoning) = m.pointer("/metadata/reasoning").and_then(Json::as_str) {
         blocks.insert(

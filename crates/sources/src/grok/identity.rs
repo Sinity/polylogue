@@ -2,13 +2,15 @@
 use polylogue_model::JsonExt;
 use polylogue_model::{BlobHash, Json};
 
-pub(super) fn native<'a>(
+/// The native ID of `value`, written under `id_field` or `alternate_field`.
+/// Both are read; a value present under both must agree.
+pub(super) fn native_id<'a>(
     value: &'a Json,
-    first: &str,
-    second: &str,
+    id_field: &str,
+    alternate_field: &str,
 ) -> Result<Option<&'a str>, &'static str> {
     let mut id = None;
-    for field in [first, second] {
+    for field in [id_field, alternate_field] {
         match value.get(field) {
             Some(Json::String(text)) if !text.is_empty() => {
                 if id.is_some_and(|id| id != text) {

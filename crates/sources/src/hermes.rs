@@ -507,11 +507,12 @@ impl ExportParser for Database {
                     .get(&raw)
                     .ok_or("missing Hermes session facts")?;
                 sink.records.fields("sessions", row, &SESSION_FIELDS);
+                let parent = self.parent(&raw);
                 if !facts.messages
                     && !facts.system
-                    && self
-                        .parent(&raw)
-                        .is_some_and(|(_, kind)| kind == LinkKind::Continuation)
+                    && parent
+                        .as_ref()
+                        .is_some_and(|(_, kind)| *kind == LinkKind::Continuation)
                 {
                     sink.records.record(
                         table,
@@ -583,7 +584,7 @@ impl ExportParser for Database {
                         serde_json::json!({"reason":limits}),
                     ));
                 }
-                if let Some((parent, kind)) = self.parent(&raw)
+                if let Some((parent, kind)) = parent
                     && let Some(parent_id) = self.sid(&parent)
                 {
                     // A live fork/spawn parent can have advanced since the child

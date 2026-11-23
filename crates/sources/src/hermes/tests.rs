@@ -84,14 +84,13 @@ fn rowid_reinsertion_keeps_content_identity_and_equal_turns_keep_occurrences() {
         repeated.output.messages[0].message.id,
         repeated.output.messages[1].message.id
     );
-    assert!(
-        repeated.output.messages[0]
-            .message
-            .id
-            .native()
-            .as_str()
-            .contains(":~")
-    );
+    let first = repeated.output.messages[0].message.id.native().as_str();
+    let second = repeated.output.messages[1].message.id.native().as_str();
+    let (first_seed, first_occurrence) = first.rsplit_once('-').unwrap();
+    let (second_seed, second_occurrence) = second.rsplit_once('-').unwrap();
+    assert_eq!(first_seed, second_seed);
+    assert!(first_seed.contains(":~"));
+    assert_eq!((first_occurrence, second_occurrence), ("0", "1"));
 }
 
 #[test]
@@ -109,9 +108,35 @@ fn profiles_bind_exports_and_unbound_or_conflicting_exports_do_not_guess() {
     let without_source = parse([vec![unbound], records.clone()].concat());
     assert!(without_source.output.sessions.is_empty());
     assert!(!without_source.counts.skipped.is_empty());
-    let conflicting = parse([vec![header("a"), header("b")], records].concat());
+    assert!(
+        without_source
+            .counts
+            .skipped
+            .keys()
+            .all(|reason| reason.contains("names no profile"))
+    );
+    let conflicting = parse([vec![header("a"), header("b")], records.clone()].concat());
     assert!(conflicting.output.messages.is_empty());
     assert!(!conflicting.counts.skipped.is_empty());
+    assert!(
+        conflicting
+            .counts
+            .skipped
+            .keys()
+            .all(|reason| reason.contains("source bindings"))
+    );
+    let mut unbound_first = header("a");
+    unbound_first.as_object_mut().unwrap().remove("source");
+    let late_binding = parse([vec![unbound_first, header("a")], records].concat());
+    assert!(late_binding.output.sessions.is_empty());
+    assert!(!late_binding.counts.skipped.is_empty());
+    assert!(
+        late_binding
+            .counts
+            .skipped
+            .keys()
+            .all(|reason| reason.contains("source bindings"))
+    );
 }
 
 #[test]

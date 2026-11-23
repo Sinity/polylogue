@@ -80,7 +80,7 @@
     "7b6c40723ad956c9a495b4d80ab64635380654b922fa917304a4579ea379e250"
   ],
   "hook-spool": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::hook_spool::VERSION=2",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::hook_spool::VERSION=3",
     "f4115e2f3cda1a916bd063fc32fdf5c58478d709469274c6b4c787ef82cd9196"
   ],
   "openai-chat": [
@@ -88,7 +88,7 @@
     "126eb657b5ea732dd6b008c700ccce7c4d86d30495e5d78b30e470dd2836e30e"
   ],
   "openrouter": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::export::VERSION=2,crate::openrouter::VERSION=1",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::export::VERSION=2,crate::openrouter::VERSION=2",
     "2f6b1b969d307266a60e93d52b673cfcaedc3481b51a9536c5fb84df37c40069"
   ],
   "otel-genai": [

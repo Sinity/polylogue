@@ -156,7 +156,7 @@ impl Export {
         sink.records
             .fields("conversation", conversation, &CONVERSATION_FIELDS);
         let mut warnings = Vec::new();
-        let native = match identity::native(conversation, "id", "conversationId") {
+        let native = match identity::native_id(conversation, "id", "conversationId") {
             Ok(Some(id)) => id.to_owned(),
             Ok(None) => {
                 let hash = identity::conversation(conversation, responses, value);
@@ -250,7 +250,7 @@ impl Export {
                 warnings.push("missing, null or structured message is not read as text; original bytes stay in the stored input".into());
                 continue;
             };
-            let (native_message, id_kind) = match identity::native(fields, "id", "responseId") {
+            let (native_message, id_kind) = match identity::native_id(fields, "id", "responseId") {
                 Ok(Some(id)) => (id.to_owned(), polylogue_model::IdKind::Native),
                 Ok(None) => {
                     let hash = identity::response(entry);
