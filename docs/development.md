@@ -20,6 +20,8 @@ input. Change the compiler version in common and both products together.
 | `nix flake check` | locked package, source, module and VM checks |
 | `nix build` | the package |
 
+`cargo xtask check` also builds the flake's `nix-fmt`, `settings` and `modules` checks (formatting, deployment-file rendering and module evaluation) when every test runs, and when the changes touch `nix/`, `flake.nix` or `flake.lock`. A diff confined to those files runs them instead of Clippy and the Rust tests.
+
 The Nix package includes the Sinex adapter (the Cargo feature `sinex`, off in a plain `cargo build`). `packages.polylogue-extension`
 builds the Chrome and Firefox archives with the extension's Node builder and
 provides an unpacked Chrome extension; the overlay adds both packages. Package

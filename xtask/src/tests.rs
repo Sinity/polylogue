@@ -391,3 +391,30 @@ fn git(root: &Path, args: &[&str]) {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn nix_checks_follow_the_files_changed_since_the_base() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::create_dir_all(root.join("nix/lib")).unwrap();
+    fs::write(root.join("nix/lib/settings.nix"), "{ }\n").unwrap();
+    fs::write(root.join("README.md"), "a\n").unwrap();
+    git(root, &["init", "-q", "-b", "main"]);
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "baseline"]);
+    assert_eq!(
+        nix::changed_files(root, "HEAD").unwrap(),
+        Vec::<String>::new()
+    );
+
+    fs::write(root.join("nix/lib/settings.nix"), "{ a = 1; }\n").unwrap();
+    fs::write(root.join("flake.nix"), "{ }\n").unwrap();
+    let mut files = nix::changed_files(root, "HEAD").unwrap();
+    files.sort();
+    assert_eq!(files, ["flake.nix", "nix/lib/settings.nix"]);
+    assert!(files.iter().all(|file| nix::is_nix_input(file)));
+
+    fs::write(root.join("README.md"), "b\n").unwrap();
+    let files = nix::changed_files(root, "HEAD").unwrap();
+    assert!(files.iter().any(|file| !nix::is_nix_input(file)));
+}
