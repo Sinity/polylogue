@@ -714,10 +714,10 @@ impl PreparedQuery<'_, '_> {
                 crate::protocol::query::Answer::Rows(rows) => {
                     rows.count = Some(count);
                     if program.counts_near {
-                        rows.unknown.insert("near".into(), without);
+                        rows.unknown.insert("similar".into(), without);
                         if without > 0 {
                             let note = format!(
-                                "{without} of {count} rows have no vector; their semantic similarity is unknown"
+                                "{without} of {count} rows have no vector; their semantic ranking is unknown"
                             );
                             rows.notes.push(note.clone());
                             answer.notes.push(note);

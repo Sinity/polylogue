@@ -56,7 +56,7 @@ Daemon and hosted-session messages carry service-journal priorities: errors for 
 The writer syncs `archive.db`'s log after each commit ([architecture.md#durability](architecture.md#durability)). When that sync, or the sync a writer makes when it starts, fails, the daemon stops writing for the rest of the boot:
 
 - **It stops.** The writer stops at once, so no request gets a reply after the failure, not even a retry that would find its rows already stored. The journal names the file and the operating system's error number (`storage I/O error syncing …/archive.db-wal: … (errno 5); writing stopped for this boot`), and the daemon exits 74. The service does not restart it.
-- **It stays stopped until the machine reboots.** The failure is kept in the archive's runtime directory with the boot's identifier, and a daemon started again in the same boot refuses with the same message and exit 74. After a failed sync the kernel may have marked the unwritten pages clean, and they stay in the page cache across a process restart, so no later sync in that boot can show that they reached the disk. A reboot drops the page cache.
+- **It stays stopped until the machine reboots.** The failure is kept in the archive's runtime directory with the boot's identifier, and a daemon started again in the same boot refuses with the same message and exit 74 (a machine without a boot identifier keeps nothing, and only the stopped process refuses). After a failed sync the kernel may have marked the unwritten pages clean, and they stay in the page cache across a process restart, so no later sync in that boot can show that they reached the disk. A reboot drops the page cache.
 
 Recovery:
 

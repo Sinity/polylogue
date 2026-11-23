@@ -67,20 +67,28 @@ fn pending_files_live_in_the_daemon_and_known_hashes_can_be_reused() {
     let files = reader.stored_files(&session).unwrap();
     assert_eq!(files.len(), 1);
     assert_eq!(files[0].blob, BlobHash::of(b"hello"));
+    let first_captured_at = reader
+        .captured_sessions(std::slice::from_ref(&session))
+        .unwrap()[0]
+        .as_ref()
+        .unwrap()
+        .last_captured_at
+        .unwrap();
     drop(reader);
     let file = json!({"provider_attachment_id":"file1", "message_provider_id":"m1", "blob":BlobHash::of(b"hello").to_string()});
     append(&path, &capture(file, "2026-10-27T00:01:00Z"));
     let report = engine.run_pass().unwrap();
     assert!(report.errors.is_empty(), "{report:?}");
-    assert_eq!(
-        engine
-            .reads
-            .reader()
-            .unwrap()
-            .stored_files(&session)
-            .unwrap(),
-        files
-    );
+    let reader = engine.reads.reader().unwrap();
+    assert_eq!(reader.stored_files(&session).unwrap(), files);
+    let reused = reader
+        .captured_sessions(std::slice::from_ref(&session))
+        .unwrap()[0]
+        .as_ref()
+        .unwrap()
+        .last_captured_at
+        .unwrap();
+    assert_eq!(reused - first_captured_at, 60_000);
 }
 
 #[test]

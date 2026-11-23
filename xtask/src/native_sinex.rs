@@ -1,3 +1,5 @@
+//! Runs the real Sinex rebuild and backup tests against the sinexd and
+//! postgresql packages that Cargo.lock pins.
 use devkit::Run;
 use std::path::{Path, PathBuf};
 use std::process::Command;

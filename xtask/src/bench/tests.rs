@@ -54,7 +54,12 @@ fn sample_cli_keeps_manifests_under_flag_environment_and_xdg_roots() {
         .unwrap();
         let mut child = Command::new(env::current_exe().unwrap());
         child
-            .args(["--exact", "bench::tests::sample_cli_child", "--nocapture"])
+            .args([
+                "--exact",
+                "bench::tests::sample_cli_child",
+                "--ignored",
+                "--nocapture",
+            ])
             .env("DEVKIT_TEST_BENCH_ROOT", &root)
             .env("DEVKIT_TEST_BENCH_MODE", mode)
             .env("CLAUDE_CONFIG_DIR", &claude)
@@ -89,6 +94,7 @@ fn sample_cli_keeps_manifests_under_flag_environment_and_xdg_roots() {
 }
 
 #[test]
+#[ignore = "child of the sample CLI test, which launches it with its environment"]
 fn sample_cli_child() {
     use clap::Parser;
     let Some(root) = env::var_os("DEVKIT_TEST_BENCH_ROOT") else {

@@ -814,7 +814,7 @@ proptest! {
             prop_assert_eq!(&v["count"], &plain["count"], "{}", vectors);
             if similarity.is_some() {
                 prop_assert!(
-                    v["unknown"]["near"]
+                    v["unknown"]["similar"]
                         .as_u64()
                         .is_some_and(|n| Some(n) <= plain["count"].as_u64()),
                     "{}", v
