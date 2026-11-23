@@ -154,7 +154,6 @@ pub trait ReadServices {
         reader: &Reader<'_>,
         operation: &Arc<Context>,
         target: &str,
-        seed: u64,
         run: impl FnOnce(Compile<'_>) -> Result<T, Error>,
     ) -> Result<T, Error>;
     fn continuation(
@@ -183,7 +182,7 @@ pub struct AttachmentPlace {
 /// else the `reading.variants` setting.
 pub fn with_variants(
     reader: &Reader<'_>,
-    d: &impl ReadServices,
+    services: &impl ReadServices,
     mut request: ReadRequest,
 ) -> Result<ReadRequest, Error> {
     if request.options.view == View::Trace {
@@ -209,7 +208,7 @@ pub fn with_variants(
                 .variants
         }
         None => reader
-            .settings_snapshot(d.requests().machine())?
+            .settings_snapshot(services.requests().machine())?
             .reading_variants()
             .map_err(Error::conflict)?
             .to_vec(),
@@ -300,96 +299,90 @@ struct Compiled<'a> {
 
 fn prepared<T>(
     reader: &Reader<'_>,
-    d: &impl ReadServices,
+    services: &impl ReadServices,
     operation: &Arc<Context>,
     reading: &Reading,
     run: impl FnOnce(&Compiled<'_>, ReadSnapshot, ReadHeader, Option<&NearFn<'_>>) -> Result<T, Error>,
 ) -> Result<T, Error> {
-    d.compiled(
-        reader,
-        operation,
-        &reading.target,
-        seed(&reading.target),
-        |compile| {
-            polylogue_store::read::limit::ReadLimit::set_stage("read preparation");
-            let selection = match &reading.references {
-                Some(references) => {
-                    reader.prepare_fixed_selection(&reading.target, references, &compile.options)?
-                }
-                None => reader.prepare_selection(&reading.target, &compile.options)?,
-            };
-            let snapshot = ReadSnapshot {
-                query: format!("query:{}", selection.question_id()),
-                query_text: reading.target.clone(),
-                ran_at: operation.ran_at,
-                read_at: reader.change_position()?,
-                freshness: d.freshness(reader)?,
-                enabled_variants: reading.options.variants.clone(),
-                author: operation.authorship.author.clone(),
-                notes: selection.program().notes.clone(),
-                incomplete: selection.program().incomplete.clone(),
-            };
-            let (title, mut kind) = match selection.direct_target() {
-                Some(ReadTarget::Session(id)) => {
-                    let session = reader
-                        .session(id)?
-                        .ok_or_else(|| Error::not_found(format!("no session {id}")))?;
-                    let title = reader
-                        .display_title(id)?
-                        .map(ValueState::known)
-                        .unwrap_or_default();
-                    (
-                        title,
-                        HeaderKind::Session {
-                            session: Box::new(session),
-                        },
-                    )
-                }
-                Some(target) => (
-                    ValueState::NotApplicable,
-                    HeaderKind::Record {
-                        record_type: target
-                            .to_string()
-                            .split_once(':')
-                            .map_or("record", |(kind, _)| kind)
-                            .into(),
-                    },
-                ),
-                None => (
-                    ValueState::NotApplicable,
-                    HeaderKind::Record {
-                        record_type: "query".into(),
-                    },
-                ),
-            };
-            let history = saved_query::prepare(reader, &reading.target, &selection, operation)?;
-            if let Some(saved) = &history {
-                kind = HeaderKind::SavedQuery(Box::new(saved.header.clone()));
+    services.compiled(reader, operation, &reading.target, |compile| {
+        polylogue_store::read::limit::ReadLimit::set_stage("read preparation");
+        let selection = match &reading.references {
+            Some(references) => {
+                reader.prepare_fixed_selection(&reading.target, references, &compile.options)?
             }
-            let header = ReadHeader {
-                target: selection
-                    .direct_target()
-                    .map_or_else(|| snapshot.query.clone(), ToString::to_string),
-                view: reading.options.view,
-                title,
-                kind,
-                figures: Vec::new(),
-                zone: Some(operation.clock.day.zone_name().to_owned()),
-            };
-            polylogue_store::read::limit::ReadLimit::set_stage("read records");
-            run(
-                &Compiled {
-                    selection: &selection,
-                    options: &compile.options,
-                    ranking_identity: compile.ranking_identity,
-                    history: history.as_ref(),
+            None => reader.prepare_selection(&reading.target, &compile.options)?,
+        };
+        let snapshot = ReadSnapshot {
+            query: format!("query:{}", selection.question_id()),
+            query_text: reading.target.clone(),
+            ran_at: operation.ran_at,
+            read_at: reader.change_position()?,
+            freshness: services.freshness(reader)?,
+            enabled_variants: reading.options.variants.clone(),
+            author: operation.authorship.author.clone(),
+            notes: selection.program().notes.clone(),
+            incomplete: selection.program().incomplete.clone(),
+        };
+        let (title, mut kind) = match selection.direct_target() {
+            Some(ReadTarget::Session(id)) => {
+                let session = reader
+                    .session(id)?
+                    .ok_or_else(|| Error::not_found(format!("no session {id}")))?;
+                let title = reader
+                    .display_title(id)?
+                    .map(ValueState::known)
+                    .unwrap_or_default();
+                (
+                    title,
+                    HeaderKind::Session {
+                        session: Box::new(session),
+                    },
+                )
+            }
+            Some(target) => (
+                ValueState::NotApplicable,
+                HeaderKind::Record {
+                    record_type: target
+                        .to_string()
+                        .split_once(':')
+                        .map_or("record", |(kind, _)| kind)
+                        .into(),
                 },
-                snapshot,
-                header,
-                Some(compile.near),
-            )
-        },
-    )
+            ),
+            None => (
+                ValueState::NotApplicable,
+                HeaderKind::Record {
+                    record_type: "query".into(),
+                },
+            ),
+        };
+        let history = saved_query::prepare(reader, &reading.target, &selection, operation)?;
+        if let Some(saved) = &history {
+            kind = HeaderKind::SavedQuery(Box::new(saved.header.clone()));
+        }
+        let header = ReadHeader {
+            target: selection
+                .direct_target()
+                .map_or_else(|| snapshot.query.clone(), ToString::to_string),
+            view: reading.options.view,
+            title,
+            kind,
+            figures: Vec::new(),
+            zone: Some(operation.clock.day.zone_name().to_owned()),
+        };
+        polylogue_store::read::limit::ReadLimit::set_stage("read records");
+        run(
+            &Compiled {
+                selection: &selection,
+                options: &compile.options,
+                ranking_identity: compile.ranking_identity,
+                history: history.as_ref(),
+            },
+            snapshot,
+            header,
+            Some(compile.near),
+        )
+    })
 }
 
 type Emit<'a> = dyn FnMut(&ReadRecord, SelectionLocator, Option<u64>) -> Result<bool, Error> + 'a;
@@ -426,14 +419,22 @@ struct Rendering<'a> {
     history_seed: Option<polylogue_model::BlobHash>,
 }
 
+/// A paged read has a budget; only page delivery sets one.
+fn require_page_delivery(reading: &Reading) -> Result<(), Error> {
+    if reading.budget.is_none() {
+        return Err(Error::bad_request("paged reads require page delivery"));
+    }
+    Ok(())
+}
+
 fn attachment_call(
-    d: &impl ReadServices,
+    services: &impl ReadServices,
     message: &MessageId,
     block: u64,
     attachment: u64,
     input: Option<&str>,
 ) -> Result<ReadyCall, Error> {
-    d.attachment_call(&AttachmentPlace {
+    services.attachment_call(&AttachmentPlace {
         message: message.clone(),
         block,
         attachment,
@@ -444,7 +445,7 @@ fn attachment_call(
 /// First pages queue their run after reading; an answer stands without its run record.
 fn record_run(
     reader: &Reader<'_>,
-    d: &impl ReadServices,
+    services: &impl ReadServices,
     operation: &Arc<Context>,
     request: &ReadRequest,
     reading: &Reading,
@@ -453,39 +454,33 @@ fn record_run(
     if history.is_none() {
         return Ok(());
     }
-    d.compiled(
-        reader,
-        operation,
-        &reading.target,
-        seed(&reading.target),
-        |compile| {
-            let target = reading
-                .target
-                .strip_prefix("root:")
-                .unwrap_or(&reading.target);
-            let selection = reader.prepare_selection(target, &compile.options)?;
-            record_compiled(
-                reader,
-                d,
-                operation,
-                request,
-                reading,
-                &Compiled {
-                    selection: &selection,
-                    options: &compile.options,
-                    ranking_identity: compile.ranking_identity,
-                    history: None,
-                },
-                history,
-            )
-        },
-    )
+    services.compiled(reader, operation, &reading.target, |compile| {
+        let target = reading
+            .target
+            .strip_prefix("root:")
+            .unwrap_or(&reading.target);
+        let selection = reader.prepare_selection(target, &compile.options)?;
+        record_compiled(
+            reader,
+            services,
+            operation,
+            request,
+            reading,
+            &Compiled {
+                selection: &selection,
+                options: &compile.options,
+                ranking_identity: compile.ranking_identity,
+                history: None,
+            },
+            history,
+        )
+    })
 }
 
 /// Record a reading's run from its compiled target, as [`record_run`] says.
 fn record_compiled(
     reader: &Reader<'_>,
-    d: &impl ReadServices,
+    services: &impl ReadServices,
     operation: &Arc<crate::operation::Context>,
     request: &ReadRequest,
     reading: &Reading,
@@ -547,7 +542,7 @@ fn record_compiled(
         run: run.id.clone(),
         binding_hash: run.binding_hash().map_err(Error::internal)?,
         run_hash: run.record_hash().map_err(Error::internal)?,
-        at: d.requests().now(),
+        at: services.requests().now(),
         outcome: RunOutcome::Ok,
         count: None,
         exact: false,
@@ -557,8 +552,9 @@ fn record_compiled(
 }
 
 /// A reading's seed is its target's, so a sampled or shuffled reading
-/// keeps its order across pages.
-fn seed(target: &str) -> u64 {
+/// keeps its order across pages. `ReadServices::compiled` implementations
+/// compile with this seed.
+pub fn seed(target: &str) -> u64 {
     u64::from_le_bytes(
         blake3::hash(target.as_bytes()).as_bytes()[..8]
             .try_into()
@@ -576,12 +572,12 @@ fn deadline(operation: &crate::operation::Context) -> command_surface::Deadline 
 }
 
 fn next_call(
-    d: &impl ReadServices,
+    services: &impl ReadServices,
     request: &ReadRequest,
     cursor: String,
     deadline: Deadline,
 ) -> Result<ReadyCall, Error> {
-    d.continuation(request, Some(cursor), deadline)
+    services.continuation(request, Some(cursor), deadline)
 }
 
 pub fn is_object_read(request: &ReadRequest) -> bool {
@@ -681,7 +677,7 @@ fn validate_at(reader: &Reader<'_>, request: &ReadRequest) -> Result<(), Error> 
 /// pinned reader. The consumer decides whether this delivery acknowledges it.
 pub fn page(
     reader: &Reader<'_>,
-    d: &impl ReadServices,
+    services: &impl ReadServices,
     request: &ReadRequest,
     operation: &Arc<Context>,
     history: Option<HistorySlot>,
@@ -693,17 +689,14 @@ pub fn page(
         return Err(Error::bad_request("with_blobs requires streaming delivery"));
     }
     if request.options.view == View::Trace {
-        return trace::page(reader, d, request, operation, history).map(|page| (page, vec![]));
+        return trace::page(reader, services, request, operation, history)
+            .map(|page| (page, vec![]));
     }
-    if let Some(response) = object::page(reader, d, request, operation) {
+    if let Some(response) = object::page(reader, services, request, operation) {
         return response.map(|page| (page, vec![]));
     }
     let (reading, cursor) = reading(request)?;
-    if reading.budget.is_none() {
-        return Err(Error::bad_request(
-            "streaming reads require stream delivery",
-        ));
-    }
+    require_page_delivery(&reading)?;
     let session_page = match session::scope(reader, &reading.target)? {
         Some(scope)
             if matches!(
@@ -711,21 +704,22 @@ pub fn page(
                 View::Transcript | View::Dialogue | View::Context | View::Raw | View::Changes
             ) =>
         {
-            session::page(reader, d, request, operation, scope)?
+            session::page(reader, services, request, operation, scope)?
         }
-        Some(scope) if reading.options.view == View::Links => {
-            (links::page(reader, d, request, operation, scope)?, vec![])
-        }
+        Some(scope) if reading.options.view == View::Links => (
+            links::page(reader, services, request, operation, scope)?,
+            vec![],
+        ),
         _ => {
             return prepared(
                 reader,
-                d,
+                services,
                 operation,
                 &reading,
                 |compiled, snapshot, header, near| {
                     let page = rows_page(
                         reader,
-                        d,
+                        services,
                         request,
                         operation,
                         &reading,
@@ -748,7 +742,7 @@ pub fn page(
                     )?;
                     if cursor.is_none() {
                         let _ = record_compiled(
-                            reader, d, operation, request, &reading, compiled, history,
+                            reader, services, operation, request, &reading, compiled, history,
                         );
                     }
                     Ok((page, vec![]))
@@ -757,7 +751,7 @@ pub fn page(
         }
     };
     if cursor.is_none() {
-        let _ = record_run(reader, d, operation, request, &reading, history);
+        let _ = record_run(reader, services, operation, request, &reading, history);
     }
     Ok(session_page)
 }
@@ -768,7 +762,7 @@ const BACKWARD_START_ROW: u64 = 1 << 32;
 #[allow(clippy::too_many_arguments)]
 fn rows_page(
     reader: &Reader<'_>,
-    d: &impl ReadServices,
+    services: &impl ReadServices,
     request: &ReadRequest,
     operation: &Arc<Context>,
     reading: &Reading,
@@ -836,7 +830,7 @@ fn rows_page(
         None
     };
     let ready_attachment = |message: &MessageId, block, index, input: Option<&str>| {
-        attachment_call(d, message, block, index, input)
+        attachment_call(services, message, block, index, input)
     };
     let rendering = Rendering {
         at: operation.ran_at,
@@ -930,7 +924,7 @@ fn rows_page(
             },
             direction,
         };
-        next_call(d, request, cursor.seal(&key), deadline(operation))
+        next_call(services, request, cursor.seal(&key), deadline(operation))
             .map_err(|e| PageError::Serialization(e.to_string()))
     };
     let mut document = pager
@@ -971,7 +965,7 @@ fn rows_page(
 
 pub fn stream(
     reader: &Reader<'_>,
-    d: &impl ReadServices,
+    services: &impl ReadServices,
     request: &ReadRequest,
     operation: &Arc<Context>,
     output: &mut dyn Write,
@@ -985,26 +979,28 @@ pub fn stream(
         ));
     }
     if request.options.view == View::Trace {
-        return trace::stream(reader, d, request, operation, output);
+        return trace::stream(reader, services, request, operation, output);
     }
-    if let Some(result) = object::stream(reader, d, request, operation, output) {
+    if let Some(result) = object::stream(reader, services, request, operation, output) {
         return result;
     }
     let (reading, _) = reading(request)?;
     prepared(
         reader,
-        d,
+        services,
         operation,
         &reading,
         |compiled, snapshot, header, near| {
             if (reading.options.view == View::Context || request.start.uses_seen())
                 && let Some(scope) = session::scope(reader, &reading.target)?
             {
-                return session::stream(reader, d, request, operation, scope, snapshot, output);
+                return session::stream(
+                    reader, services, request, operation, scope, snapshot, output,
+                );
             }
             rows_stream(
                 reader,
-                d,
+                services,
                 request,
                 &reading,
                 &match compiled.history {
@@ -1025,7 +1021,7 @@ pub fn stream(
 #[allow(clippy::too_many_arguments)]
 fn rows_stream(
     reader: &Reader<'_>,
-    d: &impl ReadServices,
+    services: &impl ReadServices,
     request: &ReadRequest,
     reading: &Reading,
     selected: &rows::Rows<'_>,
@@ -1037,7 +1033,7 @@ fn rows_stream(
     output: &mut dyn Write,
 ) -> Result<ReadComplete, Error> {
     let ready_attachment = |message: &MessageId, block, index, input: Option<&str>| {
-        attachment_call(d, message, block, index, input)
+        attachment_call(services, message, block, index, input)
     };
     let rendering = Rendering {
         at: snapshot.ran_at,

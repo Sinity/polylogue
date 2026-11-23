@@ -199,7 +199,7 @@ fn typed_lineage_issues_keep_unknowns_and_evidence_in_every_encoder() {
     assert!(!html.contains("native.<field>"));
     assert!(html.contains("not stored"));
     assert!(html.contains("missing branch point"));
-    assert!(html.contains("data-state=\"measured\">0</span> own"));
+    assert!(html.contains("data-state=\"known\">0</span> own"));
 }
 
 fn url_parameters(url: &str) -> std::collections::BTreeMap<String, String> {

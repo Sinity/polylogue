@@ -219,10 +219,9 @@ impl ReadServices for LineReads<'_> {
         reader: &Reader<'_>,
         operation: &Arc<polylogue_reading::operation::Context>,
         target: &str,
-        seed: u64,
         run: impl FnOnce(Compile<'_>) -> Result<T, Error>,
     ) -> Result<T, Error> {
-        ReadServices::compiled(self.daemon, reader, operation, target, seed, run)
+        ReadServices::compiled(self.daemon, reader, operation, target, run)
     }
     fn continuation(
         &self,

@@ -311,4 +311,26 @@ fn unsupported_document_pages_preserve_direct_errors_and_mixed_coverage() {
     assert_eq!(footer.coverage.len(), 1);
     assert_eq!(footer.coverage[0].omitted, 1);
     assert_eq!(footer.coverage[0].target, TargetKind::Document);
+    output::document_omission("document:claude-ai:other", &options, true, &mut footer)
+        .unwrap()
+        .unwrap();
+    assert_eq!(footer.coverage.len(), 1);
+    assert_eq!(footer.coverage[0].omitted, 2);
+}
+
+#[test]
+fn documents_are_not_omitted_from_views_that_present_them() {
+    let mut footer = ReadFooter::default();
+    for view in [View::Transcript, View::Raw] {
+        let options = ReadOptions {
+            view,
+            ..Default::default()
+        };
+        assert!(
+            output::document_omission("document:claude-ai:doc", &options, true, &mut footer)
+                .unwrap()
+                .is_none()
+        );
+    }
+    assert!(footer.coverage.is_empty());
 }

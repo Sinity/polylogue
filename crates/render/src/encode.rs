@@ -269,9 +269,9 @@ impl<'a> Encoder<'a> {
                 }
                 match &header.branch {
                     BranchState::Abandoned { n, total } => text.push_str(&format!(
-                        " · abandoned branch {}/{}",
-                        n.map_or_else(|| "?".into(), |n| n.to_string()),
-                        total.map_or_else(|| "?".into(), |n| n.to_string())
+                        " · abandoned branch {} of {}",
+                        n.map_or_else(|| "unknown".into(), |n| n.to_string()),
+                        total.map_or_else(|| "unknown".into(), |n| n.to_string())
                     )),
                     BranchState::Unknown { versions: Some(n) } => {
                         text.push_str(&format!(" · active version unknown: {n} versions"))

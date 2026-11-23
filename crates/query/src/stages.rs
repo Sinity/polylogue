@@ -1,5 +1,5 @@
-//! The stages after a selection, in the order they apply (docs/query.md:
-//! Stages, Combining queries). A stage points at the bound transforms it
+//! The stages after a selection, in the order they apply (docs/transforms.md:
+//! Transforms, Combining queries). A stage points at the bound transforms it
 //! lowers rather than copying them; the store reads those transforms and
 //! lowers each stage to one statement over the rows entering it.
 use crate::{QueryError, ast::*};
@@ -24,8 +24,9 @@ pub enum StageKind {
     Fusion,
 }
 
-/// The stages of `transforms` from index `from` on. A `| measure` ends
-/// the query.
+/// The stages of `transforms` from index `from` on. A `| measure` must be
+/// the last transform; a transform after it is `QueryError::Invalid` at that
+/// transform's position.
 pub fn stages(transforms: &[Transform], from: usize) -> Result<Vec<Stage>, QueryError> {
     let mut stages = vec![];
     let mut index = from;

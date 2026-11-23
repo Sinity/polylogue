@@ -44,7 +44,9 @@ fn resolve(
         return Ok(Availability::Present { input: None });
     }
     match resolution.state {
-        AttachmentState::Unknown => Ok(Availability::Unknown("attachment bytes were not recorded")),
+        AttachmentState::Unknown => Ok(Availability::Unknown(
+            "the attachment has no source identity or import scope to match stored files",
+        )),
         AttachmentState::Ambiguous => Ok(Availability::Unknown(
             "several stored files match this attachment",
         )),
@@ -53,8 +55,8 @@ fn resolve(
         )),
         AttachmentState::Available => {
             let [asset] = resolution.matches.as_slice() else {
-                return Ok(Availability::Unknown(
-                    "several stored files match this attachment",
+                return Err(StoreError::Conflict(
+                    "an available attachment must match exactly one stored file".into(),
                 ));
             };
             Ok(Availability::Present {

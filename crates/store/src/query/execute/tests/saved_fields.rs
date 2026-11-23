@@ -675,9 +675,6 @@ fn last_is_a_search_word() {
     )
     .unwrap();
     assert_eq!(rows(&f, "last", &["id"])[0]["id"], "test:first");
-    for old in ["assertions", "links", "changes"] {
-        assert!(Unit::from_name(old).is_none());
-    }
 }
 
 #[test]

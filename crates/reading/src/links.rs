@@ -382,7 +382,7 @@ fn encoded_size(items: &[ReadItem]) -> (usize, u64) {
 
 pub(super) fn page(
     reader: &Reader<'_>,
-    d: &impl ReadServices,
+    services: &impl ReadServices,
     request: &ReadRequest,
     operation: &Arc<crate::operation::Context>,
     scope: super::session::Scope,
@@ -485,7 +485,12 @@ pub(super) fn page(
             },
             direction,
         };
-        super::next_call(d, request, next.seal(&key), super::deadline(operation))
+        super::next_call(
+            services,
+            request,
+            next.seal(&key),
+            super::deadline(operation),
+        )
     };
     let footer = ReadFooter {
         estimator: Some(TOKEN_ESTIMATOR.into()),
@@ -511,7 +516,7 @@ pub(super) fn page(
         query: target.clone(),
         ran_at: operation.ran_at,
         read_at: reader.change_position()?,
-        freshness: d.freshness(reader)?,
+        freshness: services.freshness(reader)?,
     };
     Ok(ReadPage {
         format,

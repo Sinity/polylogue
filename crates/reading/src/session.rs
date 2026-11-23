@@ -134,7 +134,7 @@ struct Composed {
 }
 /// A part that reads a spawned session inline.
 fn spawned(part: &Part) -> bool {
-    part.joined_by.as_deref().is_some_and(|how| how == "spawn")
+    part.joined_by.as_deref() == Some("spawn")
 }
 
 impl Composed {
@@ -378,7 +378,7 @@ fn prefix(reader: &Reader<'_>, session: &SessionId, composed: &mut Composed) -> 
 }
 
 fn compose(
-    d: &impl ReadServices,
+    services: &impl ReadServices,
     reader: &Reader<'_>,
     scope: &Scope,
     options: &ReadOptions,
@@ -394,9 +394,7 @@ fn compose(
         after: Vec::new(),
     };
     // The prefix is composed always: hidden, it is one `continues` line.
-    let context = options.view == View::Context
-        && scope.has_context_anchor()
-        && options.around.unwrap_or(0) == 0;
+    let context = options.view == View::Context && scope.has_context_anchor() && around == 0;
     if scope.range.is_none() || context {
         prefix(reader, &scope.session, &mut composed)?;
     }
@@ -444,9 +442,9 @@ fn compose(
         joined_by: None,
     });
     composed.indexes.push(own);
-    children(d, reader, scope, &mut composed, options.view)?;
+    children(services, reader, scope, &mut composed, options.view)?;
     if let SpawnFold::Inline { depth } = options.spawns {
-        inline_spawns(d, reader, &mut composed, depth, options.view)?;
+        inline_spawns(services, reader, &mut composed, depth, options.view)?;
     }
     Ok(composed)
 }
@@ -456,7 +454,7 @@ fn compose(
 /// at their branch point or spawning call. The walk is iterative and visits
 /// each session once.
 fn children(
-    d: &impl ReadServices,
+    services: &impl ReadServices,
     reader: &Reader<'_>,
     scope: &Scope,
     composed: &mut Composed,
@@ -545,7 +543,7 @@ fn children(
                 }
             };
             let Some(slot) = slot else { continue };
-            let card = card(d, reader, &link, &child, call.as_ref(), view)?;
+            let card = card(services, reader, &link, &child, call.as_ref(), view)?;
             composed.after.push(CardsAfterEntry {
                 session: session.clone(),
                 seq: slot,
@@ -562,7 +560,7 @@ fn children(
 /// levels and are cards below it; a session already in the reading stays a
 /// card, so the walk ends.
 fn inline_spawns(
-    d: &impl ReadServices,
+    services: &impl ReadServices,
     reader: &Reader<'_>,
     composed: &mut Composed,
     depth: Option<u32>,
@@ -614,7 +612,7 @@ fn inline_spawns(
             // The first level's cards come from composition; deeper levels
             // place their own.
             if level > 0 {
-                let card = card(d, reader, &link, &child, Some(&call), view)?;
+                let card = card(services, reader, &link, &child, Some(&call), view)?;
                 composed.after.push(CardsAfterEntry {
                     session: part.session.clone(),
                     seq: entry,
@@ -723,7 +721,7 @@ fn logical_header(
 /// spawn, a session card for a fork, each with the call that reads it in
 /// the reading's view.
 fn card(
-    d: &impl ReadServices,
+    services: &impl ReadServices,
     reader: &Reader<'_>,
     link: &polylogue_store::lineage::SessionLink,
     child: &SessionId,
@@ -731,7 +729,7 @@ fn card(
     view: View,
 ) -> Result<ReadItem, Error> {
     let reference = format!("session:{child}");
-    let open = d.continuation(
+    let open = services.continuation(
         &ReadRequest {
             start: Default::default(),
             references: None,
@@ -994,7 +992,7 @@ fn bind_context(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn stream(
     reader: &Reader<'_>,
-    d: &impl ReadServices,
+    services: &impl ReadServices,
     request: &ReadRequest,
     operation: &Arc<crate::operation::Context>,
     scope: Scope,
@@ -1011,10 +1009,10 @@ pub(super) fn stream(
         logical: scope.logical && !options.physical,
         ..scope
     };
-    let mut composed = compose(d, reader, &scope, options)?;
+    let mut composed = compose(services, reader, &scope, options)?;
     let accepted = bind_seen(reader, request, operation, &composed)?;
     let request = &accepted;
-    if options.annotation_at().is_some() {
+    if options.view == View::Context && options.annotation_at().is_some() {
         bind_context(reader, request, &mut composed)?;
     }
     trim_start(reader, request, &mut composed)?;
@@ -1091,7 +1089,7 @@ pub(super) fn stream(
         }
         let mut laid = lay_out(
             reader,
-            d,
+            services,
             &composed,
             &runs,
             &page.entries,
@@ -1291,7 +1289,8 @@ fn trim_owner(
         let index = &composed.indexes[at];
         if let Some(seq) = reader.item_place(index.pk, &key)? {
             let part = &composed.parts[at];
-            if (seq as usize) < part.start || seq as usize >= part.end && &part.session != owner {
+            if (seq as usize) < part.start || ((seq as usize) >= part.end && &part.session != owner)
+            {
                 continue;
             }
             let end = if whole_message {
@@ -1328,7 +1327,7 @@ fn trim_owner(
 
 pub(super) fn page(
     reader: &Reader<'_>,
-    d: &impl ReadServices,
+    services: &impl ReadServices,
     request: &ReadRequest,
     operation: &Arc<crate::operation::Context>,
     scope: Scope,
@@ -1373,7 +1372,7 @@ pub(super) fn page(
             ..scope
         },
     };
-    let mut composed = compose(d, reader, &scope, options)?;
+    let mut composed = compose(services, reader, &scope, options)?;
     let accepted = bind_seen(reader, request, operation, &composed)?;
     let request = &accepted;
     let bound = if options.view == View::Context && options.annotation_at().is_some() {
@@ -1525,7 +1524,7 @@ pub(super) fn page(
     let mut cache = None;
     let mut laid = lay_out(
         reader,
-        d,
+        services,
         &composed,
         &runs,
         &page_entries,
@@ -1636,7 +1635,12 @@ pub(super) fn page(
             },
             direction,
         };
-        super::next_call(d, continuation, next.seal(&key), super::deadline(operation))
+        super::next_call(
+            services,
+            continuation,
+            next.seal(&key),
+            super::deadline(operation),
+        )
     };
     let positions = reader.change_position()?;
     let mut marks = Vec::new();
@@ -1720,7 +1724,7 @@ pub(super) fn page(
                 direction: ReadDirection::After,
             };
             Some(super::next_call(
-                d,
+                services,
                 continuation,
                 cursor.seal(&key),
                 super::deadline(operation),
@@ -1751,7 +1755,7 @@ pub(super) fn page(
         query: target.clone(),
         ran_at: operation.ran_at,
         read_at: positions,
-        freshness: d.freshness(reader)?,
+        freshness: services.freshness(reader)?,
     };
     Ok((
         ReadPage {
@@ -2050,7 +2054,7 @@ struct LaidOut {
 #[allow(clippy::too_many_arguments)]
 fn lay_out(
     reader: &Reader<'_>,
-    d: &impl ReadServices,
+    services: &impl ReadServices,
     composed: &Composed,
     reading: &Runs,
     page: &[PageEntry],
@@ -2087,12 +2091,7 @@ fn lay_out(
         Ok(false)
     };
     let ready_attachment = |message: &MessageId, block, index, input: Option<&str>| {
-        d.attachment_call(&crate::AttachmentPlace {
-            message: message.clone(),
-            block,
-            attachment: index,
-            input: input.map(str::to_owned),
-        })
+        super::attachment_call(services, message, block, index, input)
     };
     let mut footer = ReadFooter::default();
     let mut captured = HashSet::new();

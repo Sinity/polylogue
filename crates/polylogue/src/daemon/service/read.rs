@@ -184,7 +184,6 @@ impl ReadServices for Daemon {
         reader: &Reader<'_>,
         operation: &Arc<Context>,
         target: &str,
-        seed: u64,
         run: impl FnOnce(Compile<'_>) -> Result<T, Error>,
     ) -> Result<T, Error> {
         crate::daemon::query::with_ranking(
@@ -204,8 +203,12 @@ impl ReadServices for Daemon {
                     near: Some(near),
                     fields: &[],
                 };
-                let options = crate::daemon::query::execution_options(reader, &ask, seed)
-                    .map_err(|failure| Error::Operation(failure.error))?;
+                let options = crate::daemon::query::execution_options(
+                    reader,
+                    &ask,
+                    polylogue_reading::seed(target),
+                )
+                .map_err(|failure| Error::Operation(failure.error))?;
                 run(Compile {
                     options,
                     ranking_identity,

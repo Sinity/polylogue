@@ -19,7 +19,7 @@ pub(super) fn target(request: &ReadRequest) -> Option<Result<Reference, Error>> 
 
 fn execute<T>(
     reader: &Reader<'_>,
-    d: &impl ReadServices,
+    services: &impl ReadServices,
     request: &ReadRequest,
     operation: &Arc<crate::operation::Context>,
     reference: Reference,
@@ -84,7 +84,7 @@ fn execute<T>(
             execution: Box::new(binding),
         },
     };
-    let writer = d
+    let writer = services
         .writer()
         .ok_or_else(|| Error::not_yet_available("the read's run record is unavailable"))?;
     reader.check()?;
@@ -94,7 +94,7 @@ fn execute<T>(
         operation.parent_lifetime(),
         begin,
         hash,
-        || d.requests().now(),
+        || services.requests().now(),
         || {
             reader.check()?;
             scope.check()?;
@@ -104,7 +104,7 @@ fn execute<T>(
                 query_text: reference.to_string(),
                 ran_at: operation.ran_at,
                 read_at: positions,
-                freshness: d.freshness(reader)?,
+                freshness: services.freshness(reader)?,
                 enabled_variants: vec![],
                 author: operation.authorship.author.clone(),
                 notes: vec![],
@@ -217,7 +217,7 @@ fn execute<T>(
 
 pub(super) fn page(
     reader: &Reader<'_>,
-    d: &impl ReadServices,
+    services: &impl ReadServices,
     request: &ReadRequest,
     operation: &Arc<Context>,
 ) -> Option<Result<ReadPage, Error>> {
@@ -232,20 +232,16 @@ pub(super) fn page(
     };
     Some(execute(
         reader,
-        d,
+        services,
         request,
         operation,
         reference,
         |record, snapshot, header, _, _, id, footer, facts, content_hash| {
             let (reading, _) = reading(request)?;
-            if reading.budget.is_none() {
-                return Err(Error::bad_request(
-                    "streaming reads require stream delivery",
-                ));
-            }
+            crate::require_page_delivery(&reading)?;
             let page = rows_page(
                 reader,
-                d,
+                services,
                 request,
                 operation,
                 &reading,
@@ -266,7 +262,7 @@ pub(super) fn page(
 
 pub(super) fn stream(
     reader: &Reader<'_>,
-    d: &impl ReadServices,
+    services: &impl ReadServices,
     request: &ReadRequest,
     operation: &Arc<Context>,
     output: &mut dyn Write,
@@ -282,7 +278,7 @@ pub(super) fn stream(
     };
     Some(execute(
         reader,
-        d,
+        services,
         request,
         operation,
         reference,
@@ -290,7 +286,7 @@ pub(super) fn stream(
             let (reading, _) = reading(request)?;
             let complete = rows_stream(
                 reader,
-                d,
+                services,
                 request,
                 &reading,
                 &rows::Rows::Object(&record, kind),

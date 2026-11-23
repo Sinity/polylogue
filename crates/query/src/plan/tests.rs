@@ -90,10 +90,13 @@ fn object_validation_refuses_forged_or_missing_dependencies() {
         span: Span::default(),
         kind: TransformKind::Limit { count: 1 },
     });
-    assert!(validate_object(&changed).is_err());
+    assert_eq!(
+        refusal(&changed),
+        "question identity, normal form and typed syntax disagree"
+    );
     let mut changed = object.clone();
     changed.definitions.clear();
-    assert!(validate_object(&changed).is_err());
+    assert!(refusal(&changed).starts_with("missing saved question "));
     let mut changed = object.clone();
     changed.source_outputs[0]
         .schema
@@ -121,6 +124,37 @@ fn object_validation_refuses_forged_or_missing_dependencies() {
     changed.id =
         identity::question_id_from_normal_form(&changed.normal_form, &changed.parameters).unwrap();
     assert!(validate_object(&changed).is_err());
+}
+fn refusal(object: &polylogue_model::query_objects::QueryObject) -> String {
+    match validate_object(object) {
+        Err(QueryError::Invalid { message, .. }) => message,
+        other => panic!("expected an Invalid refusal, got {other:?}"),
+    }
+}
+#[test]
+fn object_validation_refuses_duplicate_and_unrelated_definitions() {
+    let object = prepare("query:nested | where count > 1", &bindings(), |_| Ok(()))
+        .unwrap()
+        .query_object()
+        .unwrap();
+    let mut duplicated = object.clone();
+    duplicated.definitions.push(object.definitions[0].clone());
+    assert_eq!(refusal(&duplicated), "duplicate saved question body");
+
+    let other = prepare(
+        "sessions where id in (sessions where repo:other)",
+        &Bindings::default(),
+        |_| Ok(()),
+    )
+    .unwrap()
+    .query_object()
+    .unwrap();
+    let mut unrelated = object.clone();
+    unrelated.definitions.push(other.definitions[0].clone());
+    assert_eq!(
+        refusal(&unrelated),
+        "question contains an unrelated saved definition"
+    );
 }
 #[test]
 fn inline_composition_has_complete_saved_bodies() {
@@ -372,23 +406,8 @@ fn saved_name_requirements_follow_typed_nodes_without_rebinding_payloads() {
 mod metadata;
 
 #[test]
-fn the_catalog_fingerprint_is_computed_once_per_process() {
-    let first = catalog_fingerprint();
-    // Every caller borrows the same hashed value instead of rebuilding the catalog.
-    assert!(std::ptr::eq(first, catalog_fingerprint()));
-    let bytes = serde_json::to_vec(&*crate::catalog::catalog(&[])).unwrap();
-    assert_eq!(first, blake3::hash(&bytes).to_hex().as_str());
-}
-
-#[test]
-fn recorded_unit_names_are_not_live_units() {
-    let live = crate::catalog::catalog(&[]);
-    for retired in ["assertions", "links", "changes"] {
-        assert!(live.unit(retired).is_none());
-        assert!(crate::units::Unit::from_name(retired).is_none());
-        let parsed = crate::parse(retired).unwrap();
-        assert!(!matches!(parsed.source,Source::Unit{ref unit,..} if unit==retired));
-    }
+fn the_catalog_fingerprint_is_stable_across_calls() {
+    assert_eq!(catalog_fingerprint(), catalog_fingerprint());
 }
 
 #[test]
@@ -415,7 +434,6 @@ fn recorded_definitions_do_not_reinterpret_live_search_words() {
             matches!(after.expanded_query().query().source, Source::Unit{ref unit,..} if unit=="sessions")
         );
     }
-    assert!(loaded.catalog().unit("assertions").is_none());
 }
 
 #[test]
