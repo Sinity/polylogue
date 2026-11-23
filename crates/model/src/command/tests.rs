@@ -32,7 +32,13 @@ fn quotes_keep_separators_inside_one_word() {
     assert_eq!(n("jq '.a | .b' file.json"), "jq");
     assert_eq!(n("python3 -c \"import x; print(1)\""), "python3");
     assert_eq!(n("echo $(date; uptime)"), "echo");
-    assert_eq!(effective_stages("echo $(date; uptime) && ls").len(), 2);
+    assert_eq!(
+        effective_stages("echo $(date; uptime) && ls")
+            .iter()
+            .map(Stage::normalized)
+            .collect::<Vec<_>>(),
+        ["echo", "ls"]
+    );
 }
 
 #[test]

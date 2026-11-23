@@ -176,17 +176,31 @@ fn rubric_integer_ranges_and_enum_numbers_have_one_mathematical_meaning() {
 }
 #[test]
 fn comparison_values_round_trip_and_refuse_forged_verdict_shapes() {
-    for text in [
-        r#""prefer:message:codex:m""#,
-        r#""tie""#,
-        r#""incomparable""#,
-        r#""abstain""#,
-        r#""insufficient_evidence""#,
-        r#"{"ranking":["message:codex:a","message:codex:b"]}"#,
+    let reference = |text: &str| Reference::parse_stored(text).unwrap();
+    for (text, expected) in [
+        (
+            r#""prefer:message:codex:m""#,
+            Verdict::Prefer(reference("message:codex:m")),
+        ),
+        (r#""tie""#, Verdict::Tie),
+        (r#""incomparable""#, Verdict::Incomparable),
+        (r#""abstain""#, Verdict::Abstain),
+        (r#""insufficient_evidence""#, Verdict::InsufficientEvidence),
+        (
+            r#"{"ranking":["message:codex:a","message:codex:b"]}"#,
+            Verdict::Ranking(vec![
+                reference("message:codex:a"),
+                reference("message:codex:b"),
+            ]),
+        ),
     ] {
         let verdict: Verdict = serde_json::from_str(text).unwrap();
-        let json = serde_json::to_value(&verdict).unwrap();
-        assert_eq!(serde_json::from_value::<Verdict>(json).unwrap(), verdict);
+        assert_eq!(verdict, expected, "{text}");
+        assert_eq!(
+            serde_json::to_value(&verdict).unwrap(),
+            serde_json::from_str::<Json>(text).unwrap(),
+            "{text}"
+        );
     }
     for text in [
         r#""winner""#,
@@ -429,9 +443,73 @@ fn kind_shapes_decode_declared_and_refuse_malformed() {
             .iter()
             .find(|(candidate, _, _)| candidate == kind)
             .unwrap_or_else(|| panic!("missing value oracle for {kind:?}"));
-        decode(*kind, *key, value.as_ref()).unwrap_or_else(|error| panic!("{error}"));
+        let decoded = decode(*kind, *key, value.as_ref()).unwrap_or_else(|error| panic!("{error}"));
+        let expected = match kind {
+            K::Tag => "tag",
+            K::Highlight | K::Member | K::Withdrawal => "absent",
+            K::Hidden
+            | K::Note
+            | K::Title
+            | K::Lesson
+            | K::Goal
+            | K::Problem
+            | K::Handoff
+            | K::Correction
+            | K::Memory => "text",
+            K::Claim | K::Finding | K::Question => "claim",
+            K::Decision => "decision",
+            K::Outcome => "outcome",
+            K::Forecast => "forecast",
+            K::Judgment => "judgment",
+            K::Comparison => "comparison",
+            K::Rubric => "rubric",
+            K::Pass => "pass",
+            K::Annotation => "annotation",
+            K::Method => "method",
+            K::SavedQuery => "saved_query",
+            K::Signal => "signal",
+            K::Page => "page",
+            K::Slot => "slot",
+            K::Role => "role",
+            K::Ping => "ping",
+            K::Setting => "setting",
+            K::Seen => "seen",
+        };
+        let found = match decoded {
+            Value::Absent => "absent",
+            Value::Text(_) => "text",
+            Value::Tag(_) => "tag",
+            Value::Outcome(_) => "outcome",
+            Value::Claim(_) => "claim",
+            Value::Decision(_) => "decision",
+            Value::Forecast(_) => "forecast",
+            Value::Judgment(_) => "judgment",
+            Value::Comparison(_) => "comparison",
+            Value::Rubric(_) => "rubric",
+            Value::Pass(_) => "pass",
+            Value::Annotation(_) => "annotation",
+            Value::Method(_) => "method",
+            Value::SavedQuery(_) => "saved_query",
+            Value::Signal(_) => "signal",
+            Value::Page(_) => "page",
+            Value::Slot(_) => "slot",
+            Value::Role(_) => "role",
+            Value::Ping(_) => "ping",
+            Value::Setting(_) => "setting",
+            Value::Seen(_) => "seen",
+        };
+        assert_eq!(found, expected, "{kind:?}");
         assert!(
             decode(*kind, *key, Some(&serde_json::json!({"author":"operator"}))).is_err(),
+            "{kind:?}"
+        );
+        let value_is_optional = matches!(
+            kind,
+            K::Tag | K::Highlight | K::Judgment | K::Member | K::Hidden | K::Withdrawal
+        );
+        assert_eq!(
+            decode(*kind, *key, None).is_ok(),
+            value_is_optional,
             "{kind:?}"
         );
     }
@@ -470,6 +548,12 @@ fn checked_claims_and_experiment_assignments_keep_their_declared_shapes() {
     assert!(decode(K::Claim, None, Some(&claim)).is_ok());
     assert!(decode(K::Finding, None, Some(&claim)).is_err());
     assert!(decode(K::Question, None, Some(&claim)).is_err());
+    let outcomes_only = serde_json::json!({"text":"evidence","outcomes":[{"observation":"no rows","implies":"the source is absent"}]});
+    assert!(decode(K::Claim, None, Some(&outcomes_only)).is_ok());
+    assert!(decode(K::Finding, None, Some(&outcomes_only)).is_err());
+    let check_only =
+        serde_json::json!({"text":"what follows?","check":{"query":"messages","expect":"rows"}});
+    assert!(decode(K::Question, None, Some(&check_only)).is_err());
     assert!(
         decode(
             K::Finding,
@@ -780,7 +864,7 @@ fn comparison_verdicts_keep_their_stored_reference_spelling() {
 }
 
 #[test]
-fn finding_and_question_schemas_refuse_the_claim_fields_they_do_not_carry() {
+fn finding_and_question_schemas_carry_only_their_claim_fields() {
     // The structured branch of a claim-shaped kind's value schema.
     fn detail<'a>(schema: &'a Json, kind: &str) -> &'a Json {
         &schema["allOf"]
@@ -798,8 +882,14 @@ fn finding_and_question_schemas_refuse_the_claim_fields_they_do_not_carry() {
         assert_ne!(claim["outcomes"], null);
         assert_ne!(claim["check"], null);
         assert_eq!(detail(schema, "finding")["properties"]["outcomes"], null);
-        assert_ne!(detail(schema, "finding")["properties"]["check"], null);
+        assert_eq!(
+            detail(schema, "finding")["properties"]["check"],
+            claim["check"]
+        );
         assert_eq!(detail(schema, "question")["properties"]["check"], null);
-        assert_ne!(detail(schema, "question")["properties"]["outcomes"], null);
+        assert_eq!(
+            detail(schema, "question")["properties"]["outcomes"],
+            claim["outcomes"]
+        );
     }
 }

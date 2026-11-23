@@ -48,18 +48,23 @@ fn observed_empty_sinex_differs_from_an_unobserved_cache() {
     assert!(!current.degraded());
     let unobserved = IndexFreshness::primary(None, Some(0), Some(0.), Some(true), None);
     assert!(unobserved.degraded());
-    assert!(matches!(
+    assert_eq!(
         unobserved,
         IndexFreshness::Primary {
+            scope: None,
+            applied_position: None,
+            sinex_position: Some(0),
+            sinex_position_seconds_ago: Some(0.),
+            reachable: Some(true),
             lag_positions: None,
             state: FreshnessState::Unknown,
-            ..
+            error: None,
         }
-    ));
+    );
 }
 
 #[test]
-fn stale_or_older_sinex_position_has_no_lag() {
+fn unreachable_stale_or_older_sinex_position_has_no_lag() {
     for (sinex, age, reachable, state) in [
         (12, 0., false, FreshnessState::Unavailable),
         (12, 6., true, FreshnessState::Unknown),
@@ -67,10 +72,35 @@ fn stale_or_older_sinex_position_has_no_lag() {
     ] {
         let freshness =
             IndexFreshness::primary(Some(10), Some(sinex), Some(age), Some(reachable), None);
-        assert!(
-            matches!(freshness,IndexFreshness::Primary{lag_positions:None,state:actual,..} if actual==state)
+        assert_eq!(
+            freshness,
+            IndexFreshness::Primary {
+                scope: None,
+                applied_position: Some(10),
+                sinex_position: Some(sinex),
+                sinex_position_seconds_ago: Some(age),
+                reachable: Some(reachable),
+                lag_positions: None,
+                state,
+                error: None,
+            }
         );
     }
+    let failed = IndexFreshness::primary(
+        Some(10),
+        Some(12),
+        Some(0.),
+        Some(false),
+        Some("unreachable".into()),
+    );
+    assert!(matches!(
+        failed,
+        IndexFreshness::Primary {
+            error: Some(ref error),
+            state: FreshnessState::Unavailable,
+            ..
+        } if error == "unreachable"
+    ));
     let behind = IndexFreshness::primary(Some(10), Some(12), Some(0.2), Some(true), None);
     assert!(matches!(
         behind,

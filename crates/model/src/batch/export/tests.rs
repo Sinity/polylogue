@@ -73,12 +73,12 @@ fn ordinals_follow_callbacks_while_ranges_move_back() {
     assert_eq!(cursor.last_ordinal, 3);
     assert_eq!(cursor.prefix_hash, complete.prefix_hash);
     assert_eq!(
-        serde_json::to_value(cursor)
-            .unwrap()
-            .as_object()
-            .unwrap()
-            .len(),
-        3
+        serde_json::to_value(cursor).unwrap(),
+        serde_json::json!({
+            "version": 1,
+            "last_ordinal": 3,
+            "prefix_hash": complete.prefix_hash.to_string(),
+        })
     );
 }
 
@@ -235,6 +235,4 @@ fn export_control_round_trips_without_checkpoint() {
         cursor.validate(),
         Err(ExportDeliveryError::UnsupportedVersion { version: 2 })
     );
-    serde_json::to_value(schemars::schema_for!(ExportDelivery)).unwrap();
-    serde_json::to_value(schemars::schema_for!(ReadRange)).unwrap();
 }

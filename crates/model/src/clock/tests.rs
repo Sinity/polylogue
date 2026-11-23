@@ -22,7 +22,7 @@ fn a_fixed_clock_returns_its_instant() {
 }
 
 #[test]
-fn milliseconds_keep_the_supplied_instant_precision() {
+fn whole_milliseconds_round_trip_for_both_signs() {
     for milliseconds in [-1_234, 1_234] {
         let instant = jiff::Timestamp::from_millisecond(milliseconds).unwrap();
         assert_eq!(WallClock::fixed(instant).now_ms(), milliseconds);

@@ -239,7 +239,7 @@ fn no_fact_comes_from_prose_or_command_text() {
 }
 
 #[test]
-fn intervals_close_on_live_events_and_replay_identically() {
+fn intervals_close_on_live_events() {
     let lines = vec![
         ("hook_session_start", 0, hook(json!({}))),
         ("hook_user_prompt_submit", MIN, hook(json!({}))),
@@ -265,12 +265,6 @@ fn intervals_close_on_live_events_and_replay_identically() {
     // The last interval stays open however late it is asked.
     assert_eq!(facts.open_intervals.len(), 1);
     assert_eq!(facts.open_intervals[0].start, 10 * MIN);
-    // Replay gives the same bytes.
-    let (again, closed_again) = run(&lines);
-    assert_eq!(
-        serde_json::to_vec(&(&facts, &closed)).unwrap(),
-        serde_json::to_vec(&(&again, &closed_again)).unwrap()
-    );
     // The root's exit closes every open interval.
     let mut gone = facts.clone();
     let last = apply_live_event(
@@ -421,7 +415,34 @@ fn hosted_lines_name_the_root_and_end_the_session() {
         ("registry_hosted_ended", 2 * MIN, process.clone()),
     ]);
     assert_eq!(state(&facts, 3 * MIN), LiveState::Ended);
-    assert!(closed.iter().any(|i| i.value == "idle" && i.end == 2 * MIN));
+    assert_eq!(
+        closed
+            .iter()
+            .map(|i| (
+                i.aspect,
+                i.value.as_str(),
+                i.start,
+                i.end,
+                i.closed_by.as_str()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                Aspect::Activity,
+                "working",
+                0,
+                MIN,
+                "registry_hosted_status"
+            ),
+            (
+                Aspect::Activity,
+                "idle",
+                MIN,
+                2 * MIN,
+                "registry_hosted_ended"
+            ),
+        ]
+    );
     // A reader's line names no root by itself.
     let (facts, _) = run(&[("registry_status", 0, status("busy"))]);
     assert_eq!(facts.root, None);

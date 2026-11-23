@@ -34,15 +34,31 @@ fn link_statement_identity_preserves_recorded_coordinates() {
         evidence: "agent_progress".into(),
         ..from_child.clone()
     };
+    // blake3 of the bytes
+    // ["polylogue.link.selection.v2",["spawn","claude-code:p","claude-code:agent-1",null,null,null]]
+    // computed outside this code; the tag is stored and used for dedupe.
+    assert_eq!(
+        from_child.selection_tag(),
+        "9d1e2e7b2fe0d02451d15f633d26c833c9c7c80a1df11fee21003f78973a1078"
+    );
     assert_ne!(from_child.selection_tag(), from_parent.selection_tag());
     let mut same_statement = from_parent.clone();
     same_statement.evidence = "another field".into();
     same_statement.copies_prefix = true;
     assert_eq!(same_statement.selection_tag(), from_parent.selection_tag());
+    let baseline = from_parent.selection_tag();
     let mut different = from_parent.clone();
     different.kind = LinkKind::Continuation;
-    assert_ne!(from_child.selection_tag(), different.selection_tag());
-    different = from_parent;
+    assert_ne!(baseline, different.selection_tag());
+    let mut different = from_parent.clone();
     different.child = s("claude-code:agent-2");
-    assert_ne!(from_child.selection_tag(), different.selection_tag());
+    assert_ne!(baseline, different.selection_tag());
+    let mut different = from_parent.clone();
+    different.at = Some(MessageId::parse("claude-code:m1").unwrap());
+    assert_ne!(baseline, different.selection_tag());
+    let mut different = from_parent;
+    different.kind = LinkKind::Reference;
+    let reference = different.clone();
+    different.how = Some(ReferenceReason::Ping);
+    assert_ne!(reference.selection_tag(), different.selection_tag());
 }

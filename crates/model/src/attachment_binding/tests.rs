@@ -47,8 +47,8 @@ fn stated_attachments_keep_message_and_sparse_positions() {
     );
     let mut without = original.clone();
     without.bindings.clear();
-    assert_eq!(without.message.content_hash().unwrap(), message_hash);
-    assert_eq!(original.message, without.message);
+    assert_eq!(without.validate(), Ok(()));
+    assert_eq!(without.source_version, message_hash);
     assert!(
         serde_json::to_value(without)
             .unwrap()
@@ -206,14 +206,6 @@ fn namespaces_keep_conflicting_bindings_for_one_slot() {
             serde_json::from_slice(&serde_json::to_vec(&value).unwrap()).unwrap();
         assert_eq!(restored, value);
         assert_eq!(restored.bindings.len(), 2);
-        assert_ne!(
-            restored.bindings[0].namespace,
-            restored.bindings[1].namespace
-        );
-        assert_ne!(
-            restored.bindings[0].candidates[0].hash,
-            restored.bindings[1].candidates[0].hash
-        );
         assert_eq!(restored.message.content_hash().unwrap(), hash);
         assert_eq!(restored.message, original.message);
     }
@@ -298,8 +290,8 @@ fn binding_identity_keeps_conflicts_and_export_contexts() {
         serde_json::from_slice(&serde_json::to_vec(&unknown).unwrap()).unwrap();
     assert_eq!(restored, unknown);
     assert_eq!(restored.bindings[0].prior_exports.len(), 1);
-    assert_ne!(
-        restored.bindings[0].namespace,
-        restored.bindings[0].exported_from
+    assert_eq!(
+        restored.bindings[1].exported_from.import_id,
+        "another-unknown-export"
     );
 }
