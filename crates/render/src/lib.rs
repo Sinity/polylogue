@@ -77,17 +77,6 @@ pub fn short_duration(ms: i64) -> String {
     }
 }
 
-/// One argument as a POSIX shell reads it. This only formats stored arguments.
-pub fn shell_quote(word: &str) -> String {
-    if !word.is_empty()
-        && word
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_./:=@%+,".contains(c))
-    {
-        word.to_owned()
-    } else {
-        format!("'{}'", word.replace('\'', r"'\''"))
-    }
-}
+pub use polylogue_model::command::shell_quote;
 #[cfg(test)]
 mod tests;

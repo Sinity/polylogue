@@ -137,3 +137,20 @@ fn trace_span_does_not_require_unknown_text_after_its_end() {
             .any(|step| matches!(step, ChainStep::StoredBytes { .. }))
     );
 }
+
+#[test]
+fn trace_states_when_the_reader_checkpoint_stops_before_the_record() {
+    let mut archive = WriterArchive::new();
+    archive.write("trace", prose("trace", 1, 1, "first"));
+    let index = Connection::open(archive.archive.index_db()).unwrap();
+    index.execute("UPDATE message_source SET source_start=1,source_end=3 WHERE message_pk=(SELECT pk FROM message WHERE id='claude-code:trace-p1')",[]).unwrap();
+    index.execute("UPDATE parse_state SET parsed_upto=0 WHERE input_pk=(SELECT pk FROM input_ref WHERE id='input-trace')",[]).unwrap();
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let card = reader
+        .record_chain(&Reference::parse("message:claude-code:trace-p1").unwrap())
+        .unwrap()
+        .unwrap();
+    assert!(card.chain.iter().any(|step| matches!(step,ChainStep::Unavailable{reason} if reason=="the current reader checkpoint does not cover this record; its original reader version is unavailable")));
+    assert!(card.chain.iter().any(|step| matches!(step,ChainStep::ReaderVersion{reading_version,parsed_upto:0,..} if reading_version=="synthetic=1")));
+}

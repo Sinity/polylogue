@@ -11,11 +11,7 @@ pub fn json(data: &Value) -> String {
 
 /// `usage` and `cost`: tokens by kind and cost by model.
 pub fn usage(data: &Value) -> String {
-    crate::terminal::escape(&usage_text(data))
-}
-
-fn usage_text(data: &Value) -> String {
-    usage_at(data, "")
+    crate::terminal::escape(&usage_at(data, ""))
 }
 
 fn answer_zone(data: &Value) -> jiff::tz::TimeZone {
@@ -32,12 +28,23 @@ fn time(ms: &Value, zone: &jiff::tz::TimeZone) -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
-fn tokens(n: u64) -> String {
-    match n {
-        n if n >= 1_000_000_000 => format!("{:.2}B", n as f64 / 1e9),
-        n if n >= 1_000_000 => format!("{:.1}M", n as f64 / 1e6),
-        n if n >= 1_000 => format!("{:.1}k", n as f64 / 1e3),
-        n => n.to_string(),
+/// Token counts in k, M and B. The unit is chosen from the rounded figure, so
+/// 999_999 reads `1.0M`, never `1000.0k`.
+pub(crate) fn tokens(n: u64) -> String {
+    const UNITS: [(f64, &str, usize); 3] = [(1e3, "k", 1), (1e6, "M", 1), (1e9, "B", 2)];
+    if n < 1_000 {
+        return n.to_string();
+    }
+    let mut unit = 0;
+    loop {
+        let (scale, suffix, digits) = UNITS[unit];
+        let shown = format!("{:.digits$}", n as f64 / scale);
+        let rounds_up = shown.parse::<f64>().is_ok_and(|value| value >= 1000.0);
+        if rounds_up && unit + 1 < UNITS.len() {
+            unit += 1;
+        } else {
+            return format!("{shown}{suffix}");
+        }
     }
 }
 

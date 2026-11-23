@@ -56,10 +56,25 @@ fn measure_times_print_in_answer_zone() {
 }
 
 #[test]
-fn failing_times_use_resolved_context_without_changing_array_data() {
+fn failing_times_use_resolved_context() {
     let data = json!([{"repo":"sample","command":"cargo test","at":0,"last_ok_at":0}]);
     let warsaw = jiff::tz::TimeZone::get("Europe/Warsaw").unwrap();
     let output = failing(&data, &warsaw);
     assert_eq!(output.matches("1970-01-01 01:00 +01:00").count(), 2);
-    assert!(data.is_array());
+}
+
+#[test]
+fn token_counts_change_unit_at_the_rounded_figure() {
+    for (count, expected) in [
+        (999, "999"),
+        (1_000, "1.0k"),
+        (1_500, "1.5k"),
+        (999_949, "999.9k"),
+        (999_999, "1.0M"),
+        (1_500_000, "1.5M"),
+        (999_999_999, "1.00B"),
+        (2_500_000_000, "2.50B"),
+    ] {
+        assert_eq!(tokens(count), expected, "{count}");
+    }
 }

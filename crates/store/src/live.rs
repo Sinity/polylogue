@@ -240,7 +240,6 @@ pub struct LiveDetail {
 pub struct ProcessRow {
     pub pid: i64,
     pub parent_pid: Option<i64>,
-    pub start: i64,
     pub comm: Option<String>,
     pub argv: Vec<String>,
     pub cwd: Option<String>,
@@ -443,7 +442,7 @@ impl crate::Reader<'_> {
         let facts: Option<LiveFacts> = facts.map(|f| serde_json::from_str(&f)).transpose()?;
         let view = live::view(facts.as_ref(), grew_at, now);
         let mut statement = conn.prepare(&format!(
-            "SELECT r.pid, r.parent_pid, r.start, r.comm, r.argv, r.cwd, r.started_at, r.ended_at,
+            "SELECT r.pid, r.parent_pid, r.comm, r.argv, r.cwd, r.started_at, r.ended_at,
                     r.role, {tool_call}
              FROM process r WHERE r.session_pk = ?1
              ORDER BY r.role <> 'harness', r.started_at, r.pid",
@@ -454,17 +453,16 @@ impl crate::Reader<'_> {
                 Ok(ProcessRow {
                     pid: r.get(0)?,
                     parent_pid: r.get(1)?,
-                    start: r.get(2)?,
-                    comm: r.get(3)?,
+                    comm: r.get(2)?,
                     argv: r
-                        .get::<_, Option<String>>(4)?
+                        .get::<_, Option<String>>(3)?
                         .and_then(|a| serde_json::from_str(&a).ok())
                         .unwrap_or_default(),
-                    cwd: r.get(5)?,
-                    started_at: r.get(6)?,
-                    ended_at: r.get(7)?,
-                    role: r.get(8)?,
-                    tool_call: r.get(9)?,
+                    cwd: r.get(4)?,
+                    started_at: r.get(5)?,
+                    ended_at: r.get(6)?,
+                    role: r.get(7)?,
+                    tool_call: r.get(8)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
