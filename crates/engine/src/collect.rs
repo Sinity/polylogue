@@ -122,8 +122,6 @@ pub fn scan_paths(
             }
         }
     }
-    let claude_root = config.root(polylogue_sources::claude_code::ROOT);
-    found.retain(|file| !user_project(&claude_root, &file.path));
     found.sort_by(|a, b| a.path.cmp(&b.path));
     found.dedup_by(|a, b| a.path == b.path);
     (found, unreadable)
@@ -311,11 +309,6 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
                 .or_else(|| {
                     (!meta.is_file()).then_some(("**", "special filesystem entry is not read"))
                 })
-                .or_else(|| {
-                    (tool.is_some_and(|tool| tool.name == "claude-code")
-                        && user_project(&root, &path))
-                    .then_some(("**", "user project under tool home"))
-                })
                 .or_else(|| git_metadata(relative, tool).then_some((".git/**", "git metadata")))
                 .or_else(|| {
                     tool.and_then(|tool| {
@@ -346,6 +339,15 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
             } else {
                 None
             };
+            // A path a location names is the tool's data whatever git
+            // metadata sits above it; only what no location names can be a
+            // user's checkout.
+            let ignored = ignored.or_else(|| {
+                (matched.is_none()
+                    && tool.is_some_and(|tool| tool.name == "claude-code")
+                    && user_project(&root, &path))
+                .then_some(("**", "user project under tool home"))
+            });
             let (class, pattern, reason) = if let Some((pattern, reason)) = ignored {
                 (Class::Ignored, pattern.to_owned(), Some(reason.to_owned()))
             } else if let Some((origin, pattern)) = matched {
@@ -420,6 +422,8 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
     scan
 }
 
+/// A file below a git working tree inside the tool's home, the home itself
+/// excepted: a user's checkout rather than the tool's data.
 fn user_project(root: &Path, path: &Path) -> bool {
     path.ancestors()
         .skip(1)

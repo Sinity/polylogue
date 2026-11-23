@@ -278,21 +278,97 @@ fn known_locations_fully_recognized() {
     assert!(unknown.is_empty(), "{unknown:?}");
 }
 
+/// A checkout under the Claude Code home that no location names is the
+/// user's own project, ignored with its reason by both walks.
 #[test]
 fn a_user_project_inside_claude_home_is_ignored_with_its_reason() {
     let home = tempfile::tempdir().unwrap();
-    let project = home.path().join(".claude/projects/user-project");
+    let project = home.path().join(".claude/work");
     fs::create_dir_all(project.join(".git")).unwrap();
     fs::write(project.join(".git/HEAD"), "ref: refs/heads/main").unwrap();
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::write(project.join("src/main.rs"), "fn main() {}\n").unwrap();
     fs::write(project.join("code.jsonl"), "{}\n").unwrap();
     let c = config(home.path());
     let scan = scan_with_coverage(&c);
     assert!(scan.found.is_empty());
-    assert_eq!(scan.coverage.iter().map(|row| row.files).sum::<u64>(), 2);
-    assert!(scan.coverage.iter().all(|row| row.class == Class::Ignored
-        && row.reason.as_deref() == Some("user project under tool home")));
+    let mut rows: Vec<_> = scan
+        .coverage
+        .iter()
+        .map(|row| {
+            (
+                row.class,
+                row.pattern.as_str(),
+                row.reason.as_deref(),
+                row.files,
+            )
+        })
+        .collect();
+    rows.sort();
+    assert_eq!(
+        rows,
+        [
+            (
+                Class::Ignored,
+                "**",
+                Some("user project under tool home"),
+                2
+            ),
+            (Class::Ignored, ".git/**", Some("git metadata"), 1),
+        ]
+    );
     let changed = std::collections::BTreeSet::from([project]);
     assert!(scan_paths(&c, &changed).0.is_empty());
+}
+
+/// The projects folder being a git repository (a backup of the transcripts)
+/// does not make the transcripts a user project: every file a location names
+/// is collected, and only the git metadata is ignored.
+#[test]
+fn transcripts_inside_a_git_repository_are_collected() {
+    let home = tempfile::tempdir().unwrap();
+    let claude = home.path().join(".claude");
+    let projects = claude.join("projects");
+    fs::create_dir_all(projects.join(".git")).unwrap();
+    fs::write(projects.join(".git/HEAD"), "ref: refs/heads/main").unwrap();
+    let session = "0b5e8c1a-4d2f-4e6a-9c3b-1f2e3d4c5b6a";
+    let transcripts = [
+        projects.join(format!("-home-op-work/{session}.jsonl")),
+        projects.join(format!("-home-op-work/{session}/subagents/agent-a1.jsonl")),
+        projects.join("-home-op-notes/1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f.jsonl"),
+        projects.join("-home-op-work/sessions-index.json"),
+    ];
+    for path in &transcripts {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "{}\n").unwrap();
+    }
+    let c = config(home.path());
+    let scan = scan_with_coverage(&c);
+    let found: Vec<_> = scan.found.iter().map(|f| f.path.clone()).collect();
+    let mut expected = transcripts.to_vec();
+    expected.sort();
+    assert_eq!(found, expected);
+    let ignored: Vec<_> = scan
+        .coverage
+        .iter()
+        .filter(|row| row.class != Class::Collected)
+        .map(|row| {
+            (
+                row.class,
+                row.pattern.as_str(),
+                row.reason.as_deref(),
+                row.files,
+            )
+        })
+        .collect();
+    assert_eq!(
+        ignored,
+        [(Class::Ignored, ".git/**", Some("git metadata"), 1)]
+    );
+    let changed = std::collections::BTreeSet::from([projects.join("-home-op-work")]);
+    let (found, _) = scan_paths(&c, &changed);
+    let found: Vec<_> = found.into_iter().map(|f| f.path).collect();
+    assert_eq!(found, expected[1..].to_vec());
 }
 
 #[test]
