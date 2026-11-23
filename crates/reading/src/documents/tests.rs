@@ -134,19 +134,20 @@ fn a_document_page_stops_before_corrupt_later_blocks_but_full_transfer_refuses()
     let page = page.finish(ReadFooter::default()).unwrap();
     assert_eq!(page.items, vec![expected(&id, 0, "first")]);
     let mut visited = 0;
-    assert!(
-        super::super::records::reference(
-            &reader,
-            &polylogue_model::read::ReadTarget::Document(id),
-            false,
-            None,
-            &mut |_, _, _| {
-                visited += 1;
-                Ok(true)
-            }
-        )
-        .is_err()
-    );
+    let refusal = super::super::records::reference(
+        &reader,
+        &polylogue_model::read::ReadTarget::Document(id),
+        false,
+        None,
+        &mut |_, _, _| {
+            visited += 1;
+            Ok(true)
+        },
+    )
+    .unwrap_err();
+    // An undecodable stored body is a store failure, not a missing or
+    // not-yet-available document.
+    assert_eq!(refusal.code(), "store");
     assert_eq!(visited, 0);
 }
 
@@ -300,14 +301,30 @@ fn unsupported_document_pages_preserve_direct_errors_and_mixed_coverage() {
         ..Default::default()
     };
     let mut footer = ReadFooter::default();
-    assert!(
-        output::document_omission("document:claude-ai:doc", &options, false, &mut footer).is_err()
+    let refusal = output::document_omission("document:claude-ai:doc", &options, false, &mut footer)
+        .unwrap_err();
+    assert_eq!(refusal.code(), "bad_request");
+    assert_eq!(
+        refusal.to_string(),
+        "view dialogue does not read document:claude-ai:doc; use transcript or raw"
     );
     assert!(footer.coverage.is_empty());
     let omitted = output::document_omission("document:claude-ai:doc", &options, true, &mut footer)
         .unwrap()
         .unwrap();
-    assert!(matches!(item(&omitted).kind, ItemKind::Omission { .. }));
+    assert_eq!(
+        item(&omitted),
+        ReadItem {
+            source: Source::record("document:claude-ai:doc"),
+            kind: ItemKind::Omission {
+                count: ValueState::known(1),
+                unit: "document".into(),
+                why: "view dialogue does not read document:claude-ai:doc; use transcript or raw"
+                    .into(),
+                continue_call: None,
+            },
+        }
+    );
     assert_eq!(footer.coverage.len(), 1);
     assert_eq!(footer.coverage[0].omitted, 1);
     assert_eq!(footer.coverage[0].target, TargetKind::Document);

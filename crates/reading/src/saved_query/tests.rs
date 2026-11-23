@@ -41,15 +41,12 @@ fn history_version_work_uses_immutable_ids_not_original_query_text() {
         },
         dependents: vec![],
     };
-    let small = saved.version_material().unwrap().len();
-    saved.query.revisions[0].text = format!("sessions{}", " ".repeat(128 * 1024));
-    // A distinct accepted revision is the content witness. Its ID has the
-    // same length; the growing body must not enter the version encoding.
-    saved.query.revisions[0].reference = "annotation:other@other".into();
-    let large = saved.version_material().unwrap();
-    assert_eq!(large.len(), small);
-    assert!(large.len() < 1024);
     let before = saved.version().unwrap();
+    // Version work follows the immutable revision IDs; the body text must not
+    // enter the version.
+    saved.query.revisions[0].text = format!("sessions{}", " ".repeat(128 * 1024));
+    assert_eq!(saved.version().unwrap(), before);
+    // A distinct accepted revision is the content witness.
     saved.query.revisions[0].reference = "annotation:third@third".into();
     assert_ne!(saved.version().unwrap(), before);
 }

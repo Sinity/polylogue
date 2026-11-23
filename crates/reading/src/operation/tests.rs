@@ -36,10 +36,13 @@ fn replayed_evaluation_time_never_rewrites_the_accepting_invocation() {
     );
     assert_eq!(samples.load(Ordering::Relaxed), 1);
     assert_eq!(request.at, invocation.at);
+    let accepted_instant: jiff::Timestamp = "2026-10-29T08:00:00.123456789Z".parse().unwrap();
+    assert_eq!(jiff::Timestamp::from(request.at), accepted_instant);
     assert_eq!(request.authorship, authorship);
     assert_eq!(request.machine, "synthetic-machine");
     assert_ne!(jiff::Timestamp::from(request.at), replay.clock.now);
     assert_eq!(replay.ran_at, context.ran_at);
+    assert_eq!(jiff::Timestamp::from(replay.ran_at), accepted_instant);
     assert_eq!(replay.cursor_versions(), context.cursor_versions());
     let changed = Clock::new(
         replay.clock.now,
@@ -88,11 +91,23 @@ fn accepted_request_survives_context_replay() {
             Some(envelope.as_ref())
         );
         assert!(!format!("{replay:?}").contains("synthetic-private-input"));
-        assert!(
-            !serde_json::to_string(&replay.run_context())
-                .unwrap()
-                .contains("accepted-id")
+        // The run context is a closed record: none of the accepted request's
+        // fields (its target, id or deadline) can appear in it.
+        let wire = serde_json::to_value(replay.run_context()).unwrap();
+        let mut fields: Vec<&str> = wire
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        fields.sort_unstable();
+        assert_eq!(
+            fields,
+            ["authorship", "clock", "machine", "ran_at", "sinex"]
         );
+        assert_eq!(wire["machine"], "fixture");
+        assert_eq!(wire["ran_at"], "2026-10-29T08:00:00Z");
+        assert_eq!(wire["sinex"], serde_json::json!({"mode":"standalone"}));
         assert_eq!(replay.ran_at, at);
     }
     let day = DaySetting::new(
@@ -111,9 +126,7 @@ fn accepted_request_survives_context_replay() {
 }
 
 #[test]
-fn server_run_ids_are_random_v4_and_independent_of_captured_time() {
-    let at = Timestamp::from_unix_ms(-100).unwrap();
-    let invocation = Invocation::new(at, "fixture".into(), Context::worker_authorship("fixture"));
+fn server_run_ids_are_random_v4() {
     let first = new_run_id();
     let second = new_run_id();
     assert_ne!(first, second);
@@ -122,7 +135,6 @@ fn server_run_ids_are_random_v4_and_independent_of_captured_time() {
         assert_eq!(id.get_version_num(), 4);
         assert_eq!(id.get_variant(), uuid::Variant::RFC4122);
     }
-    assert_eq!(invocation.at, at);
 }
 
 #[test]
@@ -185,9 +197,19 @@ fn sinex_context_records_its_settings_revision() {
         observed_at: Timestamp::parse_rfc3339("2026-10-29T07:59:59Z").unwrap(),
         received_seconds_ago: 1.0,
     };
-    let context = Context::primary(invocation, day, sinex.clone());
-    assert_eq!(context.run_context().machine, "synthetic-machine");
-    assert_eq!(context.run_context().sinex, sinex);
+    let context = Context::primary(invocation, day, sinex);
+    let wire = serde_json::to_value(context.run_context()).unwrap();
+    assert_eq!(wire["machine"], "synthetic-machine");
+    assert_eq!(
+        wire["sinex"],
+        serde_json::json!({
+            "mode": "primary",
+            "settings_identity": "public-settings:17",
+            "settings_revision": 17,
+            "observed_at": "2026-10-29T07:59:59Z",
+            "received_seconds_ago": 1.0
+        })
+    );
 }
 
 #[test]
