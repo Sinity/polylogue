@@ -81,7 +81,7 @@ pub struct TypeObservation {
     pub last: Occurrence,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct Observation {
+pub struct PathShape {
     pub format: String,
     pub reading_version: String,
     pub record_kind: String,
@@ -99,6 +99,17 @@ pub struct Observation {
     pub last: Occurrence,
     pub complete_presence: Option<Occurrence>,
     pub present_in_latest: bool,
+}
+impl PathShape {
+    /// The record kind this path belongs to, within its format, version and table.
+    fn record_key(&self) -> (String, String, String, Option<String>) {
+        (
+            self.format.clone(),
+            self.reading_version.clone(),
+            self.record_kind.clone(),
+            self.table.clone(),
+        )
+    }
 }
 
 #[derive(
@@ -166,7 +177,9 @@ impl<'a> Scope<'a> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     NewPath,
@@ -187,14 +200,14 @@ pub enum DriftReason {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Drift {
     pub kind: Kind,
-    pub shape: Observation,
+    pub shape: PathShape,
     pub coverage: CoverageStatus,
     pub reason: DriftReason,
     pub compared_with: Vec<Coverage>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Report {
-    pub shapes: Vec<Observation>,
+    pub shapes: Vec<PathShape>,
     pub drift: Vec<Drift>,
     pub coverage: Vec<Coverage>,
 }
@@ -219,12 +232,12 @@ struct Reading {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     export_refusals: Option<ExportRefusals>,
     /// The latest occurrence at which this reading, since its last reset,
-    /// covered its whole source: a path counted now and first seen before it
-    /// was present in a complete reading.
+    /// covered its whole source: a path counted now and first seen at or
+    /// before it was present in a complete reading.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     completed: Option<Occurrence>,
     /// The latest completion before the last reset: a path the reset left
-    /// uncounted and last seen before it was present in a complete reading.
+    /// uncounted and last seen at or before it was present in a complete reading.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     completed_before_reset: Option<Occurrence>,
 }
@@ -280,6 +293,21 @@ impl Reading {
     }
 }
 
+/// The stored state of one chain's reading under a reading version.
+fn stored_reading(tx: &Connection, source: Source<'_>, version: &str) -> Result<Option<Reading>> {
+    let state: Option<String> = tx
+        .prepare_cached(
+            "SELECT state FROM wire_reading WHERE input_pk=?1 AND chain=?2 AND reading_version=?3",
+        )?
+        .query_row(params![source.input_pk, source.chain, version], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    Ok(state
+        .map(|json| serde_json::from_str::<Reading>(&json))
+        .transpose()?)
+}
+
 /// Restates a reading copied from another chain's reading (with its occurrences
 /// already taken again for this chain) against this chain's own `source`:
 /// its length, whether the copy read it to its end, and so whether, and at
@@ -291,17 +319,9 @@ pub(crate) fn copied(
     reading_version: &str,
     reaches_end: bool,
 ) -> Result<()> {
-    let key = params![source.input_pk, source.chain, reading_version];
-    let Some(state) = tx
-        .prepare_cached(
-            "SELECT state FROM wire_reading WHERE input_pk=?1 AND chain=?2 AND reading_version=?3",
-        )?
-        .query_row(key, |row| row.get::<_, String>(0))
-        .optional()?
-    else {
+    let Some(mut reading) = stored_reading(tx, source, reading_version)? else {
         return Ok(());
     };
-    let mut reading: Reading = serde_json::from_str(&state)?;
     reading.length = source.length;
     reading.progress = reading.progress.clone().with_end(reaches_end);
     reading.completed = None;
@@ -392,18 +412,7 @@ fn apply_inner(
     let hash = step
         .delivery
         .map_or(computed_hash, |delivery| delivery.body_hash.to_string());
-    let previous: Option<String> = tx
-        .prepare_cached(
-            "SELECT state FROM wire_reading WHERE input_pk=?1 AND chain=?2 AND reading_version=?3",
-        )?
-        .query_row(
-            params![source.input_pk, source.chain, step.reading_version],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let previous = previous
-        .map(|json| serde_json::from_str::<Reading>(&json))
-        .transpose()?;
+    let previous = stored_reading(tx, source, &step.reading_version)?;
     let duplicate = !replacement
         && !export_delivery
         && previous.as_ref().is_some_and(|old| {
@@ -584,7 +593,7 @@ fn apply_inner(
                 stored_count(observation.unused_count)?,
                 number,
             ])?;
-        for (kind, &count) in &observation.types {
+        for (json_type, &count) in &observation.types {
             if count == 0 {
                 continue;
             }
@@ -596,7 +605,7 @@ fn apply_inner(
                     observation.record_kind,
                     observation.path,
                     table_key,
-                    kind,
+                    json_type,
                     stored_count(count)?,
                     number,
                 ])?;
