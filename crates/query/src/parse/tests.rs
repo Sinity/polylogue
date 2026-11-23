@@ -229,7 +229,7 @@ fn repairs_are_stable() {
         );
     }
     // A quoted `where` is a search word, not the keyword.
-    let ConditionKind::And { conditions } = cond("kind:* \"where\"") else {
+    let ConditionKind::And { conditions } = &cond("kind:* \"where\"") else {
         panic!("not a conjunction");
     };
     assert!(matches!(
