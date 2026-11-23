@@ -150,7 +150,7 @@ Each harness's inline cap is declared with its hooks. A brief larger than the ca
 
 A **delivery** records each time prepared content is handed to a session or a person: the hooks' injected briefs, advisories, notices to sessions, sent messages, live-session acts, the first turn of a session Polylogue starts, and turns written into web chats. A delivery records:
 - `delivery:<id>`; sender (`hook`, `signal`, `send`, `act`); event (`session_start`, `resume`, `compaction`, `takeover`, `advice`, `notice`, `message`, `control`, `first_turn`);
-- its computed author; recipient kind and reference (session, role instance, web conversation); `cwd`;
+- its computed author; recipient kind and reference (session, role instance, web conversation, or the operator when a brief names no recipient session; the operator has no reference); `cwd`;
 - the delivered bytes, `refs`, `left_out`, `content_hash`, and its outcome events.
 
 **Outcomes** (one vocabulary for deliveries and notices):

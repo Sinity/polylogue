@@ -63,8 +63,9 @@ pub(crate) fn query_outcome(
     }
 }
 
-/// An import whose restored user state Sinex has not confirmed yet is
-/// degraded, with the awaiting-confirmation note.
+/// An import is degraded, with the awaiting-confirmation note, while restored
+/// user state Sinex has not confirmed is pending or the Python Polylogue
+/// import's authored publication or source membership is unfinished.
 pub(crate) fn import_answer(
     report: polylogue_engine::ImportReport,
 ) -> Answer<polylogue_engine::ImportReport> {
@@ -566,7 +567,8 @@ pub(crate) fn query_targets(
 }
 
 /// A browser selection additionally requires one stored row in its supplied
-/// conversation. Membership is decided by the same prepared population.
+/// conversation. The selection must resolve to exactly one message, and that
+/// message's recorded session membership must be exactly the supplied session.
 pub(crate) fn query_targets_in(
     d: &Daemon,
     reader: &polylogue_store::Reader<'_>,

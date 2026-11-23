@@ -421,10 +421,10 @@ pub fn start(
     // flags; those to sessions no longer running are closed.
     acts::finish_ended(&daemon, daemon.config.requests.now().unix_ms(), true);
     let operations = Arc::new(crate::commands::table(Arc::clone(&daemon)));
-    assert!(
-        daemon.operations.set(Arc::downgrade(&operations)).is_ok(),
-        "runtime installs its operation table once"
-    );
+    daemon
+        .operations
+        .set(Arc::downgrade(&operations))
+        .expect("runtime installs its operation table once");
     let mut runtime = Runtime {
         daemon,
         operations,

@@ -29,13 +29,13 @@ impl Verb for Brief {
             .as_deref()
             .map(|text| SessionId::parse(text).map_err(Failure::bad_value))
             .transpose()?;
-        let budget = match step.budget {
-            Some(tokens) => TokenBudget::Tokens(
-                u32::try_from(tokens)
-                    .map_err(|_| Failure::bad_value("brief --budget exceeds 4294967295"))?,
-            ),
-            None => call.call.budget,
-        };
+        let budget =
+            match step.budget {
+                Some(tokens) => TokenBudget::Tokens(u32::try_from(tokens).map_err(|_| {
+                    Failure::bad_value(format!("brief --budget exceeds {}", u32::MAX))
+                })?),
+                None => call.call.budget,
+            };
         let call = Call {
             cursor: step.cursor.as_deref(),
             budget,

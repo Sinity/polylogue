@@ -84,9 +84,9 @@ struct VectorCache {
     /// Passes the worker finished, and how the last one failed.
     passes: u64,
     failure: Option<String>,
-    /// Replaced by [`Warm::clear`]: a pass that started before cannot
+    /// Advanced by [`Warm::clear`]: a pass that started before cannot
     /// publish after it.
-    invalidation: Arc<()>,
+    invalidation: u64,
     stopping: bool,
     /// Reads that have waited for the worker.
     #[cfg(test)]
@@ -444,7 +444,7 @@ impl Warm {
             v.sets.clear();
             v.wanted = None;
             v.failure = None;
-            v.invalidation = Arc::new(());
+            v.invalidation += 1;
         }
         if let Ok(mut q) = self.query_vectors.lock() {
             q.clear();
@@ -531,7 +531,7 @@ fn run_worker(
                 continue;
             };
             let held = cache.newest(&key).cloned();
-            (key, held, Arc::clone(&cache.invalidation))
+            (key, held, cache.invalidation)
         };
         #[cfg(test)]
         if let Ok(mut cache) = share.cache.lock()
@@ -557,7 +557,7 @@ fn run_worker(
         let Ok(mut cache) = share.cache.lock() else {
             return;
         };
-        if Arc::ptr_eq(&invalidation, &cache.invalidation) {
+        if invalidation == cache.invalidation {
             match result {
                 Ok(Some(loaded)) => {
                     let keep = cache.newest(&key).cloned();
