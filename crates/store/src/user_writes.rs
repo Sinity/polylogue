@@ -498,7 +498,7 @@ pub(crate) fn apply_using(
         } => {
             crate::chat_actions::report(
                 tx,
-                crate::chat_actions::ChatEvent {
+                crate::chat_actions::ChatEventReport {
                     id: action,
                     by: Some(by),
                     kind: outcome,

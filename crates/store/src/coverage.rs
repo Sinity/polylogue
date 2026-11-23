@@ -1,4 +1,4 @@
-//! Current completed discovery snapshots. A partial incremental walk never
+//! Current completed discovery walks. A partial incremental walk never
 //! replaces these full-walk facts. Confirmation order chooses the current fact.
 use crate::ConnExt as _;
 use crate::{Reader, Result, StoreError};

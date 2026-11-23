@@ -62,6 +62,22 @@ fn a_call_left_behind_has_passed_without_result() {
 }
 
 #[test]
+fn a_prompt_title_is_cut_after_eighty_characters_with_an_ellipsis() {
+    let exact = "a".repeat(80);
+    assert_eq!(super::title::title_of(&exact), Some(exact.clone()));
+    let long = "b".repeat(81);
+    assert_eq!(
+        super::title::title_of(&long),
+        Some(format!("{}…", "b".repeat(80)))
+    );
+    // Only the first non-blank line is used.
+    assert_eq!(
+        super::title::title_of("\n  \n  second line \nthird"),
+        Some("second line".to_owned())
+    );
+}
+
+#[test]
 fn a_session_without_a_title_is_named_by_its_first_prompt() {
     let mut w = WriterArchive::new();
     w.write(

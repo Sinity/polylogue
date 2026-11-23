@@ -15,6 +15,12 @@ fn scalar_and_optional_preserve_sql_results() {
             .exists("SELECT EXISTS(SELECT 1 WHERE false)", [])
             .unwrap()
     );
+    // A failing statement or a mismatched column type is an error, never a missing row.
+    assert!(conn.scalar_optional::<i64>("SELECT 'x'", []).is_err());
+    assert!(
+        conn.scalar_optional::<i64>("SELECT * FROM no_such_table", [])
+            .is_err()
+    );
     assert!(matches!(
         conn.scalar::<i64>("SELECT 1 WHERE false", []),
         Err(StoreError::Sqlite(rusqlite::Error::QueryReturnedNoRows))
@@ -50,4 +56,6 @@ fn metadata_reads_missing_and_replaced_values() {
     assert_eq!(meta_get(&conn, "version").unwrap().as_deref(), Some("1"));
     meta_set(&conn, "version", "2").unwrap();
     assert_eq!(meta_get(&conn, "version").unwrap().as_deref(), Some("2"));
+    // Without the table the read fails; it is not a missing key.
+    assert!(meta_get(&Connection::open_in_memory().unwrap(), "version").is_err());
 }

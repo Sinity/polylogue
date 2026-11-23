@@ -102,7 +102,7 @@ fn an_expired_claim_returns_the_action_to_the_queue() {
         created_at: 0,
         execution: polylogue_model::authored::ExecutionEligibility::Live,
         attachments: vec![],
-        events: vec![StoredChatEvent {
+        events: vec![ChatEvent {
             request: "event-request".into(),
             at: 1_000,
             kind: "claimed".into(),
