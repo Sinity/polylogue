@@ -52,16 +52,8 @@ impl Reader<'_> {
 
     /// Current assertions About a message or a span of its original message/block text.
     /// Indexed address ranges nominate candidates; typed containers decide membership.
-    pub fn visit_message_annotation_references(
-        &self,
-        message: &polylogue_model::MessageId,
-        visit: impl FnMut(RevisionReference) -> Result<ControlFlow<()>>,
-    ) -> Result<ControlFlow<()>> {
-        self.visit_message_annotation_references_at(message, None, visit)
-    }
-
-    /// The same About candidates and revision graph, bounded by local commit
-    /// position or known authored time. Unknown authored times stay unknown.
+    /// With `at`, the same candidates and revision graph are bounded by local
+    /// commit position or known authored time. Unknown authored times stay unknown.
     pub fn visit_message_annotation_references_at(
         &self,
         message: &polylogue_model::MessageId,
@@ -75,11 +67,7 @@ impl Reader<'_> {
         let block_prefix = format!("span:block:{message}#");
         let message_end = format!("span:{}$", reference.stored_form());
         let block_end = format!("span:block:{message}$");
-        let (through, until) = match at {
-            Some(polylogue_model::read::AnnotationAt::Position(through)) => (Some(through), None),
-            Some(polylogue_model::read::AnnotationAt::Time(until)) => (None, Some(until.unix_ms())),
-            None => (None, None),
-        };
+        let (through, until) = annotation_bounds(at);
         let sql = if at.is_some() {
             "SELECT a.root,a.id,l.ref FROM @source.link l JOIN @source.assertion a ON a.id=l.record WHERE l.role='about' AND (?6 IS NULL OR a.commit_seq<=?6) AND (?7 IS NULL OR a.created_at<=?7) AND (l.ref=?1 OR (l.ref>=?2 AND l.ref<?3) OR (l.ref>=?4 AND l.ref<?5)) ORDER BY a.root,a.id,l.ref"
         } else {
@@ -214,11 +202,7 @@ impl Reader<'_> {
     ) -> Result<ControlFlow<()>> {
         let conn = self.conn()?;
         let source = Source::reading(conn)?;
-        let (through, until) = match at {
-            Some(polylogue_model::read::AnnotationAt::Position(through)) => (Some(through), None),
-            Some(polylogue_model::read::AnnotationAt::Time(until)) => (None, Some(until.unix_ms())),
-            None => (None, None),
-        };
+        let (through, until) = annotation_bounds(at);
         let mut statement = conn.prepare_cached(&source.sql(
             "SELECT DISTINCT a.root,a.id FROM @source.link l JOIN @source.assertion a ON a.id=l.record WHERE l.ref=?1 AND l.role IN (SELECT value FROM json_each(?2)) AND (?3 IS NULL OR a.commit_seq<=?3) AND (?4 IS NULL OR a.created_at<=?4) ORDER BY a.root,a.id",
         ))?;
@@ -233,10 +217,7 @@ impl Reader<'_> {
             self.check()?;
             let root = row.get::<_, String>(0)?;
             let id = row.get::<_, String>(1)?;
-            let revision = RevisionReference {
-                root,
-                revision: Some(id.clone()),
-            };
+            let revision = RevisionReference::exact(root, id.clone());
             let current = if let Some(graph) = &mut graph {
                 graph
                     .current(&authored::Revision::new(&revision.root, &id))
@@ -252,6 +233,17 @@ impl Reader<'_> {
         }
         self.check()?;
         Ok(ControlFlow::Continue(()))
+    }
+}
+
+/// The commit-position and authored-time bounds of a read at `at`.
+fn annotation_bounds(
+    at: Option<polylogue_model::read::AnnotationAt>,
+) -> (Option<i64>, Option<i64>) {
+    match at {
+        Some(polylogue_model::read::AnnotationAt::Position(through)) => (Some(through), None),
+        Some(polylogue_model::read::AnnotationAt::Time(until)) => (None, Some(until.unix_ms())),
+        None => (None, None),
     }
 }
 

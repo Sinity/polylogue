@@ -431,7 +431,7 @@ impl Archive {
     /// private file and installed when its build ends ([`index_build`]). The
     /// primary cache from another format is set aside under its schema
     /// identity and rebuilt from the confirmed stream; the set-aside file is
-    /// removed once that rebuild reaches the stream's latest position ([`index_rebuild`]).
+    /// removed once that rebuild is complete ([`index_rebuild::built`]).
     pub(crate) fn prepare_index(&self) -> Result<()> {
         if !self.is_primary() {
             return index_build::prepare(self);

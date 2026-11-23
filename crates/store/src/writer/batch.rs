@@ -60,6 +60,13 @@ pub struct ImportMember {
     pub format: Option<String>,
 }
 
+impl ImportMember {
+    /// The one current membership format, naming an import and a member.
+    pub(crate) fn is_valid(&self) -> bool {
+        self.version == 1 && !self.import_id.is_empty() && !self.member.is_empty()
+    }
+}
+
 #[derive(
     Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]

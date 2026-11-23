@@ -307,14 +307,21 @@ fn kept_result_retries_ignore_resolved_rows_and_time_but_preserve_intent() {
         save.read_at = "{\"now\":2}".into();
     }
     assert!(writer.user(changed.clone()).unwrap().repeat);
-    assert!(
-        reads
-            .reader()
-            .unwrap()
-            .user_request("kept")
-            .unwrap()
-            .is_some()
+    // The retry's rows and read time do not replace the original request.
+    let stored = reads
+        .reader()
+        .unwrap()
+        .user_request("kept")
+        .unwrap()
+        .expect("the kept request is stored");
+    let UserWrite::Save(stored) = stored.write else {
+        panic!("the stored request is not a save");
+    };
+    assert_eq!(
+        stored.rows_json,
+        "{\"unit\":\"annotations\",\"columns\":[],\"rows\":[]}"
     );
+    assert_eq!(stored.read_at, "{\"now\":1}");
     if let UserWrite::Save(save) = &mut changed.write {
         save.query = "sessions".into();
     }
@@ -486,14 +493,18 @@ fn a_missing_request_is_absent_and_request_content_cannot_be_removed() {
         },
     );
     writer.user(request).unwrap();
+    let refusal = rusqlite::Connection::open(archive.archive_db())
+        .unwrap()
+        .execute(
+            "UPDATE client_request SET request = NULL WHERE id = 'kept'",
+            [],
+        )
+        .unwrap_err();
     assert!(
-        rusqlite::Connection::open(archive.archive_db())
-            .unwrap()
-            .execute(
-                "UPDATE client_request SET request = NULL WHERE id = 'kept'",
-                [],
-            )
-            .is_err()
+        refusal
+            .to_string()
+            .contains("NOT NULL constraint failed: client_request.request"),
+        "unexpected refusal: {refusal}"
     );
     assert!(
         reads

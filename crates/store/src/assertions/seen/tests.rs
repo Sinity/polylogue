@@ -113,6 +113,36 @@ fn seen_mark_written_only_when_it_advances() {
 }
 
 #[test]
+fn seen_mark_on_a_session_refuses_an_item_that_is_not_a_message_or_block() {
+    let mut archive = WriterArchive::new();
+    archive.write(
+        "reader",
+        vec![message("only", "reader", Role::User, 1, vec![])],
+    );
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let target = Reference::parse("session:claude-code:reader").unwrap();
+    let position = pool.reader().unwrap().change_position().unwrap();
+    let mark = SeenMark {
+        target: target.to_string(),
+        item: Some(target.to_string()),
+        at: position,
+    };
+    assert!(
+        archive
+            .writer
+            .user(request("seen-session-item", mark))
+            .is_err()
+    );
+    assert!(
+        pool.reader()
+            .unwrap()
+            .seen_marks("operator", &[target])
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn seen_marks_can_move_to_the_current_generation_without_changing_archive_position() {
     let archive = WriterArchive::new();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();

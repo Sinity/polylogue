@@ -54,20 +54,18 @@ fn previous(path: &Path) -> Result<Option<Previous>> {
         Err(error) => return Err(error),
     }
     let state = crate::primary::confirmed::replay_state(&index)?;
-    Ok(
-        match (
-            state.scope.as_deref(),
-            stream(&state),
-            state.applied_position,
-        ) {
-            (Some(scope), Some(stream), Some(position)) => Some(Previous {
-                scope: scope.into(),
-                stream: stream.into(),
-                position,
-            }),
-            _ => None,
-        },
-    )
+    let (Some(scope), Some(stream), Some(position)) = (
+        state.scope.as_deref(),
+        stream(&state),
+        state.applied_position,
+    ) else {
+        return Ok(None);
+    };
+    Ok(Some(Previous {
+        scope: scope.into(),
+        stream: stream.into(),
+        position,
+    }))
 }
 
 pub(super) fn published(paths: &Paths) -> bool {
@@ -233,6 +231,31 @@ pub(crate) fn observe(archive: &Archive, index: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Whether the rebuild has a scope and a stream, no snapshot in progress, and
+/// has applied the stream's latest position (and the position the previous
+/// index had reached).
+fn stream_applied(state: &ReplayState, previous_position: Option<i64>) -> bool {
+    let caught_up = matches!(
+        (state.applied_position, state.latest_position),
+        (Some(applied), Some(latest))
+            if applied >= latest && previous_position.is_none_or(|previous| applied >= previous)
+    );
+    state.snapshot_progress.is_none()
+        && state.scope.is_some()
+        && stream(state).is_some()
+        && caught_up
+}
+
+/// Whether derivations, pending writes and the primary rebuild itself are all
+/// finished.
+fn work_drained(index: &Connection) -> Result<bool> {
+    Ok(crate::derive::caught_up(index)?
+        && !index.exists(
+            "SELECT EXISTS(SELECT 1 FROM primary_pending) OR EXISTS(SELECT 1 FROM primary_complete) OR EXISTS(SELECT 1 FROM search_pending)", []
+        )?
+        && crate::archive::index_rebuild::built(index)?)
+}
+
 /// The normal flush checks a primary rebuild after parsing. Keep the one
 /// follower on this inode through publication; a later exclusive startup
 /// moves the closed file into place and retires the previous SQLite files.
@@ -249,16 +272,7 @@ pub(crate) fn finish(archive: &Archive, index: &Connection) -> Result<bool> {
     };
     crate::primary::scope::require_readable(index)?;
     let state = crate::primary::confirmed::replay_state(index)?;
-    if state.snapshot_progress.is_some()
-        || state.scope.is_none()
-        || stream(&state).is_none()
-        || !matches!((state.applied_position, state.latest_position), (Some(applied), Some(latest)) if applied >= latest && previous_position.is_none_or(|previous| applied >= previous))
-        || !crate::derive::caught_up(index)?
-        || index.exists(
-            "SELECT EXISTS(SELECT 1 FROM primary_pending) OR EXISTS(SELECT 1 FROM primary_complete) OR EXISTS(SELECT 1 FROM search_pending)", []
-        )?
-        || !crate::archive::index_rebuild::built(index)?
-    {
+    if !stream_applied(&state, previous_position) || !work_drained(index)? {
         return Ok(false);
     }
     // Publication changes a name. SQLite keeps both the database and its WAL
