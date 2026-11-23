@@ -107,7 +107,7 @@ fn seeded_random_refuses_seeds_outside_unsigned_decimal_range() {
     for seed in ["", "-1", "1.5", "18446744073709551616", "seed"] {
         assert!(
             conn.query_row("SELECT pl_random('session:1', ?1)", [seed], |r| {
-                r.get::<_, i64>(0)
+                r.get::<_, Option<i64>>(0)
             })
             .is_err(),
             "seed {seed:?}"

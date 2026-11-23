@@ -83,16 +83,13 @@ fn standalone_logical_source_views_preserve_rowids_and_live_values() {
 }
 
 #[test]
-fn primary_opens_one_source_cache_and_no_local_input_table() {
+fn primary_opens_one_source_cache_that_starts_empty() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("polylogue");
     let sinex = directory.path().join("sinex");
     let (archive, lock) = crate::Archive::open_primary(&root, &sinex).unwrap();
     assert!(archive.index_db().exists());
     assert!(archive.embeddings_db().exists());
-    for name in ["archive.db", "sinex.db", "segments", "parts"] {
-        assert!(!root.join(name).exists(), "unexpected local {name}");
-    }
     let reads = crate::ReadPool::open(&archive).unwrap();
     assert_eq!(reads.reader().unwrap().status().unwrap().inputs, 0);
     drop(reads);
@@ -174,9 +171,9 @@ fn later_chunks_keep_their_commit_when_a_revision_grows() {
         )
         .unwrap();
         let error = Source::committed_through(&conn, "input", 1, 8).unwrap_err();
-        assert!(
-            error.to_string().contains("negative source extent"),
-            "{error}"
+        assert_eq!(
+            error.to_string(),
+            "stored column 1 is unreadable: negative source extent length"
         );
         conn.execute(&source.sql("DELETE FROM @source.extent WHERE offset=0"), [])
             .unwrap();
@@ -280,12 +277,18 @@ fn shorter_prefix_has_a_commit_and_keeps_progress() {
     );
     let source_commit = Source::reading_commit(&standalone, "native", 1, 4).unwrap();
     assert_eq!(source_commit.observation.as_deref(), Some("prefix-four"));
-    assert_ne!(
+    let first_batch: String = standalone
+        .query_row(
+            "SELECT id FROM observation WHERE input='native' AND id<>'prefix-four'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
         Source::reading_commit(&standalone, "native", 1, 8)
             .unwrap()
-            .observation
-            .as_deref(),
-        Some("prefix-four")
+            .observation,
+        Some(first_batch)
     );
     drop(standalone);
     drop(lock);

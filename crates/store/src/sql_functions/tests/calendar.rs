@@ -71,7 +71,7 @@ fn cached_and_nested_sql_uses_the_connection_calendar() {
     );
 }
 #[test]
-fn nested_unwind_restores_the_previous_day_without_zone_lookup() {
+fn nested_unwind_restores_the_previous_day() {
     let (conn, context) = connection();
     context.with_clock(&clock("UTC", "00:00:01"), || {
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

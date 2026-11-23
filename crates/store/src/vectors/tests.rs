@@ -161,7 +161,8 @@ fn stores_scans_and_survives_reopening() {
     let (one, two) = (near.of(&[1]).unwrap(), near.of(&[2]).unwrap());
     assert!(one > two, "{one} {two}");
     // Text 2's nearer second chunk counts, not its first.
-    assert!(two > 0.9, "{two}");
+    // cos = (0.9*1 + 0.1*0.05) / (|[0.9,0.1,0]| * |[1,0.05,0]|) = 0.99816
+    assert!((two - 0.9982).abs() < 0.01, "{two}");
     assert!(near.of(&[3]).is_none());
     // A query of another dimension is refused, not scored.
     match loaded.similarity(&[1.0, 0.0]).err() {
@@ -262,7 +263,7 @@ fn vector_write_upgrade_keeps_its_cache_and_its_read_results() {
 }
 
 #[test]
-fn the_smallest_vector_writer_budget_keeps_its_total_cache_target() {
+fn the_smallest_vector_writer_budget_gives_the_writer_one_cache_share() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(&dir.path().join("a")).unwrap();
     texts(&archive, &[&[1; 32], &[2; 32]]);
@@ -862,8 +863,10 @@ fn a_stored_vector_of_another_length_is_named_by_its_values() {
     let Err(error) = vectors.load(key) else {
         panic!("a vector of another length loaded");
     };
-    let error = error.to_string();
-    assert!(error.contains("has 3 values, not 2"), "{error}");
+    assert_eq!(
+        error.to_string(),
+        "a stored vector under local/test/2/document/unit has 3 values, not 2"
+    );
 }
 
 #[test]
