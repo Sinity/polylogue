@@ -54,13 +54,13 @@ A view chooses content. A view exists only where its output is not a list of row
 | View | Rows | Shows |
 |---|---|---|
 | `transcript` (default) | sessions, messages, documents, query rows | the active path; tool calls on one line, thinking collapsed, indicators in place |
-| `dialogue` | as transcript | the human's messages and the model's prose only: no thinking, calls or harness messages |
+| `dialogue` | as transcript, except documents | the human's messages and the model's prose only: no thinking, calls or harness messages |
 | `overview` | sessions | the header block: when, where, model, tools with error counts, tokens, cost, how the session ends (`ends_with`), files written, failing checks left, annotations, and the subagent section; never the transcript |
 | `context` | a message | what the model had at that message ([transcripts.md](transcripts.md#the-context-view)) |
 | `tree` | sessions | the session's continuations, subagents and forks as a tree ([transcripts.md](transcripts.md#the-tree-view)) |
 | `changes` | sessions | per file, the cumulative diff of edits in order (failed edits counted, not made); commands run with outcomes; commits and pull requests captured for the session; check runs |
-| `live` | sessions | live state, what it waits on, the open call, the task, peers, the process tree ([agents.md](live-sessions.md#live-state)) |
-| `raw` | messages, sessions | the stored input records of the selected messages as the provider wrote them |
+| `live` | sessions | live state, what it waits on, the open call, the task, peers, the process tree ([live-sessions.md](live-sessions.md#live-state)) |
+| `raw` | messages, sessions, documents | the stored input records of the selected messages as the provider wrote them |
 | `compare` | two or more rows | side by side, aligned by prompt (`--align lineage\|time\|file` for the others); with `--blind`, labelled `A`, `B`, … ([Compare and blind](#compare-and-blind)) |
 | `contents` | a page | the generated table of contents ([pages.md](pages.md#reading)) |
 | `trace` | a message, span, block, tool call, or a file line (`file:PATH#Ln`) | where it came from ([Trace](#trace)) |
@@ -135,7 +135,7 @@ A word without a level means its fullest. Tool output cut to head and tail marks
 - A stale page names what changed and gives the read command to start again. Its ready follow-up repeats the same reading without its cursor. Query cursors say to run the query again without its cursor; attachment cursors say to read the attachment again from its start.
 - **Named saved-query reads** keep a compact header naming the query, selected exact revision and immutable question. History comes first as ordinary budgeted items: authored revisions in revision order, kept results newest first, the watch and dependent question references, then the query's selected rows. Long history items use the same lossless fragments as other readings; forward and backward pages cross the history/row boundary. Each uniquely current named dependent includes a ready Save command using its authored text and recorded denominator, so an explicit re-save resolves changed names again. Those exact action IDs survive paging and daemon restart; an independent accepted read gets its own actions. Reading invokes none of them. `query:NAME@N` keeps the selected historical revision; a missing or withdrawn current name follows normal query resolution, including a shipped fallback when one exists. A changed saved history or an obsolete saved-history cursor layout asks the reader to start again, rather than mixing histories.
 - **Session and query reads queue their run.** They write nothing on their reply path. The first page's question and run are handed to the writer without waiting and committed on its next turn; later pages are pages of that run. One `freshness` value describes the reply at its read position (parsing, derivation, pending search text, primary-stream progress, and the cached view of Sinex's latest position); any incomplete or unknown part gives a degraded reply naming the reason. Reads of stored requests and runs commit an execution before each page returns. A normal run card shows the selected run, not this new read execution; its final next command runs the available saved question. Raw runs show their original beginning and optional completion. Object cursors become stale if that completion changes. Each fragment names that page's run, while its encoded content keeps the stored object's reference.
-- **One token estimator** in `model`, used by pages, briefs and listings: `max(ceil(utf8_bytes / 4), ceil(words × 1.3))`, a run over 16 characters counting `len/8` words. It over-estimates on purpose, and its name is recorded in every budgeted reply.
+- **One token estimator** in `model`, used by pages, briefs and listings: `max(ceil(utf8_bytes / 4), ceil(words × 1.3))`, a run over 16 characters counting `ceil(len/8)` words. It over-estimates on purpose, and its name is recorded in every budgeted reply.
 - **Product and harness bounds.** A budget controls the page Polylogue returns; a harness's inline output cap and its handling of tool results are separate from it ([agent-context.md](agent-context.md#deliveries)).
 - **Streaming.** An unbudgeted reading to the pager, a file or a directory is produced item by item from the selection; no whole session or selection is built in memory. Pages come from the [session item index](transcripts.md#the-session-item-index), so a page costs the same at any depth.
 
@@ -187,7 +187,7 @@ This writes a bundle; `read --to FILE` writes one document. Annotations are writ
 **Rules:**
 
 - Absent means unknown; no `null` is written for unknown. Times are RFC 3339 at the precision the source gave, each with its quality, precision and recorded upper bound; stored record times stay UTC. Encrypted reasoning is never written.
-- A JSON Schema generated from the Rust types is committed and tested current. A newer major version is refused by name, and so are Polylogue's own earlier export formats: Polylogue reads only its current bundle version.
+- A JSON Schema generated from the Rust types is committed and tested current. A newer major version is refused by name, and so are Polylogue's own earlier bundle versions: Polylogue reads only its current bundle version.
 - Every object carries its reference.
 - A message's `commit` is the commit position of its shown body. Copied-prefix membership names its observed parent, child, original source reading and order beside the message; a conflicting current session of the message leaves that stated parent intact.
 - Sessions are written one at a time to a temporary directory renamed over the previous bundle only when complete; memory is bounded by the largest item, not the selection. Progress goes to standard error.

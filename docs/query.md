@@ -92,7 +92,7 @@ Field rules:
 - **Alternate fields:** `alternate:true` admits alternate text into text search; `lang:<code>` matches alternate parts in that language and messages by their derived `lang`.
 - **Names shared with Sinex** retain their meaning per product: `seen_by:` is Polylogue's as-of field, and Sinex's "as of" is a different concept. Polylogue does not store historical query membership at earlier read positions: `| as of POSITION|TIME` replies `not_yet_available`. `seen_by:` selects records received by then (annotations by their authored `created_at`, [annotations.md](annotations.md#reading)), read with current parsers and prices.
 
-Readings that are queries rather than views: a note's history (`annotations where root:X withdrawn:*`), what links to a note (`annotations where links_to:X`), what places, links, cites or includes anything (`links where target:X`), prompts only (`messages where written_by:human`), file edits as rows (`tool_calls where action:file_edit`) and the map of a session (`turns where session:REF`), and several sessions' openings and endings (`polylogue 'repo:sinex since:7d' read --view dialogue --first 2 --last 2`). A row of a word search is read starting at its first hit. Views are [reading.md](reading.md).
+Readings that are queries rather than views, and the rule that a row of a word search is read from its first hit, are listed in [reading.md](reading.md#views).
 
 ## Defaults
 

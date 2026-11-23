@@ -381,3 +381,19 @@ fn text_hash_is_blake3_of_the_composed_form() {
     assert_eq!(normalized_text_hash("caf\u{e9}"), composed);
     assert_eq!(normalized_text_hash("cafe\u{301}"), composed);
 }
+
+#[path = "../../examples/row_dictionary/samples.rs"]
+mod row_dictionary_samples;
+
+#[test]
+fn the_row_dictionary_reproduces_from_its_samples() {
+    let rows = row_dictionary_samples::rows().unwrap();
+    let rebuilt = zstd::dict::from_samples(&rows, 8192).unwrap();
+    assert!(
+        rebuilt == ROW_DICTIONARY,
+        "rows.dict differs from the dictionary the samples build ({} and {} bytes); \
+         rebuild it with the row_dictionary example",
+        ROW_DICTIONARY.len(),
+        rebuilt.len()
+    );
+}
