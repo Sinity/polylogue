@@ -31,11 +31,10 @@ fn watched_gemini_turns_keep_tools_notices_and_header_facts_through_rewrites_and
             }
         )
     };
-    let mut final_bytes = String::new();
     {
         let (mut e, _lock) = engine(&w, 8);
         for edited in [false, true] {
-            final_bytes = dialogue(edited);
+            let final_bytes = dialogue(edited);
             fs::write(&path, &final_bytes).unwrap();
             let pass = e.run_pass().unwrap();
             assert!(pass.errors.is_empty(), "{:?}", pass.errors);
@@ -94,5 +93,4 @@ fn watched_gemini_turns_keep_tools_notices_and_header_facts_through_rewrites_and
             .unwrap(),
         [json!({"records":5}), json!({"records":6})]
     );
-    assert!(!final_bytes.is_empty());
 }

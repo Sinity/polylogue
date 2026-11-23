@@ -64,15 +64,21 @@ fn openai_message_arrays_and_wrappers_rebuild_the_same_tool_dialogue_from_stored
                 matches!(&shown[2].blocks[0],polylogue_model::Block::ToolResult{output:Some(s),..} if s=="rain")
             );
             let ranges = r
-                .query("SELECT source_start,source_end FROM message_source", &[])
+                .query(
+                    "SELECT source_start,source_end FROM message_source ORDER BY source_start",
+                    &[],
+                )
                 .unwrap();
             assert_eq!(ranges.len(), 4);
-            for row in ranges {
+            for (row, role) in ranges
+                .iter()
+                .zip(["user", "assistant", "tool", "assistant"])
+            {
                 let start = row["source_start"].as_u64().unwrap() as usize;
                 let end = row["source_end"].as_u64().unwrap() as usize;
                 let raw: serde_json::Value =
                     serde_json::from_slice(&bytes.as_bytes()[start..end]).unwrap();
-                assert!(raw.get("role").is_some());
+                assert_eq!(raw["role"], role);
             }
             assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 5);
             assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
@@ -108,4 +114,11 @@ fn malformed_openai_wrapper_suffix_commits_no_prefix_messages() {
     assert!(report.pass.errors.is_empty());
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM message"), 0);
     assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 1);
+    assert_eq!(
+        w.count(
+            "SELECT count(*) AS n FROM parse_state WHERE status='refused' AND reason IS NOT NULL"
+        ),
+        1
+    );
+    assert_eq!(w.count("SELECT sum(unreadable) AS n FROM parse_state"), 1);
 }

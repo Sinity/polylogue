@@ -74,4 +74,11 @@ fn a_bad_room_suffix_refuses_before_any_header_or_message_is_committed() {
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM message"), 0);
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM session"), 0);
     assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 1);
+    assert_eq!(
+        w.count(
+            "SELECT count(*) AS n FROM parse_state WHERE status='refused' AND reason IS NOT NULL"
+        ),
+        1
+    );
+    assert_eq!(w.count("SELECT sum(unreadable) AS n FROM parse_state"), 1);
 }

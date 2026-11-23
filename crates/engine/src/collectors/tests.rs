@@ -116,49 +116,55 @@ fn collector_acceptance_requires_the_complete_archived_body() {
     let small = br#"{"runSettings":{},"chunkedPrompt":{"chunks":[]}}"#;
     let complete = br#"{"runSettings":{},"chunkedPrompt":{"chunks":[{"role":"user","text":"full stored bytes"}]}}"#;
     std::fs::write(paths.archive.join("expected.json"), complete).unwrap();
-    assert!(
+    assert_eq!(
         engine
             .advance_collector("ai-studio", &ARCHIVE_ACCEPTANCE, &paths)
-            .is_err()
+            .unwrap_err(),
+        "revision is not archived"
     );
     std::fs::write(&path, small).unwrap();
     let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
-    assert!(
+    assert_eq!(
         engine
             .advance_collector("ai-studio", &ARCHIVE_ACCEPTANCE, &paths)
-            .is_err()
+            .unwrap_err(),
+        "revision is not archived"
     );
     std::fs::write(&path, complete).unwrap();
-    assert!(
+    assert_eq!(
         engine
             .advance_collector("ai-studio", &ARCHIVE_ACCEPTANCE, &paths)
-            .is_err()
+            .unwrap_err(),
+        "revision is not archived"
     );
     let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
     engine
         .advance_collector("ai-studio", &ARCHIVE_ACCEPTANCE, &paths)
         .unwrap();
-    assert!(
+    assert_eq!(
         engine
             .advance_collector("codex", &ARCHIVE_ACCEPTANCE, &paths)
-            .is_err()
+            .unwrap_err(),
+        "revision is not archived"
     );
     let mut wrong = complete.to_vec();
     let at = wrong.iter().position(|byte| *byte == b'f').unwrap();
     wrong[at] = b'F';
     std::fs::write(paths.archive.join("expected.json"), &wrong).unwrap();
-    assert!(
+    assert_eq!(
         engine
             .advance_collector("ai-studio", &ARCHIVE_ACCEPTANCE, &paths)
-            .is_err()
+            .unwrap_err(),
+        "revision is not archived"
     );
     // A missing local file must be written again; it is never an acceptance.
     std::fs::remove_file(&path).unwrap();
-    assert!(
+    assert_eq!(
         engine
             .advance_collector("ai-studio", &ARCHIVE_ACCEPTANCE, &paths)
-            .is_err()
+            .unwrap_err(),
+        "revision is not archived"
     );
 }

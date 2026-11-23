@@ -509,7 +509,7 @@ fn replayed_import_keeps_the_captured_winner() {
 mod documents;
 
 #[test]
-fn batched_line_import_selects_the_same_overlapping_message_after_restart() {
+fn batched_and_reversed_import_groups_select_the_same_overlapping_message() {
     use polylogue_testkit::{ClaudeHome, claude_user};
 
     let batched = ClaudeHome::new();
@@ -580,7 +580,8 @@ fn repeated_explicit_import_keeps_a_stopped_attempt_until_its_executable_changes
     use polylogue_testkit::{ClaudeHome, claude_user};
     let home = ClaudeHome::new();
     let path = home.dir.path().join("stopped-import.jsonl");
-    std::fs::write(&path, claude_user("one", "stopped-import", "kept original")).unwrap();
+    let content = claude_user("one", "stopped-import", "kept original");
+    std::fs::write(&path, &content).unwrap();
     let (mut engine, lock) = engine(&home, 4096);
     let options = ImportOptions {
         format: Some("claude-code".into()),
@@ -616,7 +617,7 @@ fn repeated_explicit_import_keeps_a_stopped_attempt_until_its_executable_changes
         .import_with_options(std::slice::from_ref(&path), &options)
         .unwrap();
     assert!(retried.pass.errors.is_empty(), "{retried:?}");
-    assert!(retried.pass.bytes_read > 0, "{retried:?}");
+    assert_eq!(retried.pass.bytes_read, content.len() as u64, "{retried:?}");
     assert_eq!(retried.pass.bytes_stored, 0, "{retried:?}");
     assert_eq!(
         home.count(

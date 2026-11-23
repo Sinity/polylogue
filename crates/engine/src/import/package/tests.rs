@@ -115,7 +115,7 @@ fn a_repeated_container_is_kept_once_and_expanded_once() {
 }
 
 #[test]
-fn a_declared_size_beyond_free_staging_space_is_refused_before_decoding() {
+fn fits_in_staging_refuses_only_sizes_beyond_free_space() {
     let scratch = tempfile::tempdir().unwrap();
     let archive = Archive::at(&scratch.path().join("encoded"));
     assert!(fits_in_staging(&archive, 1).is_ok());
@@ -126,7 +126,7 @@ fn a_declared_size_beyond_free_staging_space_is_refused_before_decoding() {
 }
 
 #[test]
-fn corrupt_member_refuses_container_before_staging_completes() {
+fn a_corrupt_member_refuses_the_whole_container() {
     let scratch = tempfile::tempdir().unwrap();
     let source = scratch.path().join("broken.zip");
     zip(
@@ -319,6 +319,8 @@ fn member_names_are_never_filesystem_paths() {
         Some(b"/absolute/conversations.json".as_slice())
     );
     assert_eq!(std::fs::read(&marker).unwrap(), b"untouched");
+    assert!(!root.path().join("conversations.json").exists());
+    assert!(!Path::new("/absolute/conversations.json").exists());
     let source = root.path().join("names.tar");
     let mut tar = tar::Builder::new(std::fs::File::create(&source).unwrap());
     for name in ["../conversations.json", "/absolute/conversations.json"] {
@@ -342,6 +344,8 @@ fn member_names_are_never_filesystem_paths() {
         Some(b"/absolute/conversations.json".as_slice())
     );
     assert_eq!(std::fs::read(&marker).unwrap(), b"untouched");
+    assert!(!root.path().join("conversations.json").exists());
+    assert!(!Path::new("/absolute/conversations.json").exists());
 }
 
 #[test]
@@ -386,7 +390,9 @@ fn package_preflight_releases_refused_members() {
     assert_eq!(std::fs::read_dir(&parts).unwrap().count(), 0);
 }
 
+/// Run only by `package_import_respects_a_bounded_descriptor_window`.
 #[test]
+#[ignore = "child process of package_import_respects_a_bounded_descriptor_window"]
 #[allow(unsafe_code)]
 fn descriptor_window_child() {
     if std::env::var_os("POLYLOGUE_PACKAGE_FD_CHILD").is_none() {
@@ -429,6 +435,7 @@ fn package_import_respects_a_bounded_descriptor_window() {
         .args([
             "--exact",
             "import::package::tests::descriptor_window_child",
+            "--ignored",
             "--nocapture",
         ])
         .env("POLYLOGUE_PACKAGE_FD_CHILD", "1")
@@ -439,6 +446,12 @@ fn package_import_respects_a_bounded_descriptor_window() {
         "descriptor child failed: {}\n{}",
         String::from_utf8_lossy(&result.stdout),
         String::from_utf8_lossy(&result.stderr)
+    );
+    // A renamed child would match no test and still exit successfully.
+    assert!(
+        String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+        "descriptor child did not run: {}",
+        String::from_utf8_lossy(&result.stdout)
     );
 }
 

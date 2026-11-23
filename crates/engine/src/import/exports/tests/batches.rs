@@ -64,8 +64,11 @@ fn an_export_commits_one_transaction_per_chunk_of_items() {
     // commit, and the tenth commits with the export's completion.
     let (batched, batched_commits) = import(&bytes, item * 5 / 2);
     assert_eq!(batched_commits - whole_commits, 3);
-    assert_eq!(all_texts(&batched), all_texts(&whole));
-    assert_eq!(all_texts(&whole)[9], ["body of c09"]);
+    let expected: Vec<Vec<String>> = (0..CONVERSATIONS)
+        .map(|i| vec![format!("body of c{i:02}")])
+        .collect();
+    assert_eq!(all_texts(&whole), expected);
+    assert_eq!(all_texts(&batched), expected);
     let records = "SELECT sum(records) AS n FROM parse_state";
     assert_eq!(batched.count(records), whole.count(records));
     assert_eq!(

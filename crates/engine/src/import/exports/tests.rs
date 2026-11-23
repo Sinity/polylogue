@@ -52,14 +52,24 @@ fn array_order_and_parent_sessions_survive_rebuild() {
         );
         let reads = w.reads();
         let r = reads.reader().unwrap();
-        for row in r
-            .query("SELECT source_start,source_end FROM message_source", &[])
-            .unwrap()
-        {
+        // Three messages are stored: the two shared ones once, and one more.
+        let sources = r
+            .query(
+                "SELECT s.id AS session, m.source_start, m.source_end \
+                 FROM message_source m JOIN session s ON s.pk=m.session_pk",
+                &[],
+            )
+            .unwrap();
+        assert_eq!(sources.len(), 3);
+        for row in sources {
             let range = row["source_start"].as_u64().unwrap() as usize
                 ..row["source_end"].as_u64().unwrap() as usize;
             let raw: serde_json::Value = serde_json::from_slice(&bytes[range]).unwrap();
             assert!(raw.get("mapping").is_some());
+            assert_eq!(
+                format!("chatgpt:{}", raw["id"].as_str().unwrap()),
+                row["session"].as_str().unwrap()
+            );
         }
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
         assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 7);
