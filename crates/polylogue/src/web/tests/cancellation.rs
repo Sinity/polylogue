@@ -215,7 +215,7 @@ fn an_expired_http_parent_never_submits_a_new_pure_write() {
     rt().block_on(async {
         let request = command_surface::Request {
             operation: "set".into(),
-            arguments: serde_json::json!({"key":"reading.variants","value":"[]"}),
+            arguments: serde_json::json!({"key":"reading.alternates","value":"[]"}),
             request_id: id.into(),
             deadline: command_surface::Deadline::None,
             budget_tokens: Default::default(),

@@ -416,3 +416,30 @@ fn status_exit_code_is_degraded_when_answer_is_degraded() {
         );
     }
 }
+
+#[test]
+fn a_refusal_for_several_rows_suggests_the_same_request_with_all() {
+    let request = crate::client::request(
+        "rows",
+        serde_json::json!({"selection": "repo:morrow", "steps": [{"verb": "tag"}]}),
+        "r1".into(),
+    );
+    let refused = crate::protocol::failure(
+        polylogue_model::Code::NeedsAll,
+        "3 rows match; a write or act on all of them needs --all",
+    );
+    let suggested = run_line::with_all_retry(refused, &request);
+    let Some(command_surface::Suggestion::Request(retry)) = suggested.suggestion() else {
+        panic!("{suggested:?}");
+    };
+    assert_eq!(retry.arguments["all"], true);
+    assert_eq!(retry.arguments["selection"], "repo:morrow");
+    assert_eq!(retry.arguments["steps"], request.arguments["steps"]);
+
+    let other = crate::protocol::failure(polylogue_model::Code::NotFound, "nothing");
+    assert!(
+        run_line::with_all_retry(other, &request)
+            .suggestion()
+            .is_none()
+    );
+}

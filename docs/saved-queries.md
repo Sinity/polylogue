@@ -1,6 +1,6 @@
 # Saved queries
 
-A question and its reply are stored objects with identities, so they can be cited, reused and compared over time. This page owns those objects: questions, runs, saved queries, kept results, figures, findings, pre-registration and watches, and the verb `save` that writes them, rows on a page and page checkpoints included. The query language is [query.md](query.md); the reference grammar is [references.md](references.md); signal rules and notices are [operations.md](operations.md#notices); the line grammar and the `--all` rule are [interfaces.md](interfaces.md#chains).
+A question and its reply are stored objects with identities, so they can be cited, reused and compared over time. This page owns those objects: questions, runs, saved queries, kept results, figures, findings, pre-registration and watches, and the verb `save` that writes them, rows on a page and page checkpoints included. The query language is [query.md](query.md); the reference grammar is [references.md](references.md); signal rules and notices are [operations.md](operations.md#notices); the line grammar and the `--all` rule are [interfaces.md](interfaces.md#steps).
 
 ## Query objects
 

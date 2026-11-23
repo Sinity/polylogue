@@ -81,7 +81,7 @@ Kinds are one closed declaration in the `model` crate. Each states the key's mea
 | `comparison` | dimension | `{verdict, blind?}` | many | two or more references | `judge` | — |
 | `rubric` | name | `{instructions, unit_query, fields, abstain, confidence}` | one per name | — | `import` | — |
 | `pass` | — | `{rubric, population: result:<id>, counts}` | many | — | `import` | — |
-| `rubric_value` | a rubric field, or `abstain` | `{value, confidence?, rationale?}`: the field's value, or the reason for abstaining | one per (about, rubric revision, key, author) | one row of the pass's population | `import` | `::rubric_value(rubric=…, key=…)` |
+| `rubric_value` | a rubric field, or `abstain` | `{value, confidence?, rationale?}`: the field's value, or the reason for abstaining | one per (about, rubric revision, key, author) | one row of the pass's population | `import` | `::rubric_value(rubric=…, pass=…, key=…)` |
 | `memory` | path | file text | one per (scope, key) | — (`scope` link) | `note --as memory`, the memory-tool adapter | — |
 | `method` | name | `{inputs, conditions: [{name, check}], steps, expected, stop}` | one per name | — (optional scope) | `import` | — |
 | `seen` | the target's reference | `{position}` | one per (key, author) | — | reads shown to their reader ([reading.md](reading.md#ranges)) | — |
@@ -181,12 +181,12 @@ Every write step is a request `{id, machine, at, write}`, executed by the daemon
 
 1. **Idempotency.** The same request ID with the same content hash returns the original reply (`repeat: true`); with other content it is refused as `conflict`. The CLI makes a fresh request ID per invocation; an MCP or HTTP call without one gets an ID derived from its author, tool, operation and arguments, so a re-issued call never writes twice ([agents.md](agents.md#retries-never-write-twice)).
 2. **Author**, computed as [authorship.md](authorship.md) describes.
-3. **Resolution.** References resolve; the selection was resolved once for the whole line ([interfaces.md](interfaces.md#chains)).
+3. **Resolution.** References resolve; the selection was resolved once for the whole line ([interfaces.md](interfaces.md#steps)).
 4. **Validation:** the kind's shape, cardinality, the rubric's allowance, a stale base.
 5. **Insert** with `commit_seq`. A step over many rows writes one annotation per row in one request, numbered `<request>.1`, `<request>.2`, …; a large write commits in steps under one request ID so the single writer never stalls live capture.
 6. **Reply** with the committed references, the count, the recorded author and channel, and **the undo line**: a declared `withdraw` command over the exact created revisions, passed on standard input for a bulk write. Existing annotations reused by the write get no new undo; a retry retains the original undo. Refusals carry their kind: `conflict`, `ambiguous`, `bad_value` with the shape, `not_allowed_by_rubric`, `single_valued_bulk`, `needs_all`.
 
-Undo is the safety for named rows; a query matching several rows also needs `--all` first ([interfaces.md](interfaces.md#chains)). An annotation **about** `result:<id>` is about the kept result itself, which is different from annotations on its rows. Markup annotations are the only ones the parse step writes, and only for derived IDs not already present.
+Undo is the safety for named rows; a query matching several rows also needs `--all` first ([interfaces.md](interfaces.md#steps)). An annotation **about** `result:<id>` is about the kept result itself, which is different from annotations on its rows. Markup annotations are the only ones the parse step writes, and only for derived IDs not already present.
 
 ### note
 

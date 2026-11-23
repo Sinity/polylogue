@@ -106,7 +106,7 @@ and purchase use the same selected prose.
 
 ## Fusion
 
-A query with text terms and `similar:` fuses its rankings by reciprocal rank: each row scores Σ 1/(60 + rank) over the lists that rank it; ties go to recency, then identity. Fusion never changes membership or `count`. Each row carries `found_in`; `--why` adds each list's rank and contribution. A list that could not run is omitted and named, and the reply is `incomplete`. Combining queries with `| union` and `| fuse` uses the same fusion ([query.md](query.md)).
+A query with text terms and `similar:` fuses its rankings by reciprocal rank: each row scores Σ 1/(60 + rank) over the lists that rank it; ties go to recency, then identity. Fusion never changes membership or `count`. Each row carries `found_in`; `--why` adds each list's rank and contribution. A list that could not run is omitted and named, and the reply is `incomplete`. Combining queries with `| union` and `| fuse` uses the same fusion ([transforms.md](transforms.md)).
 
 ## Recall
 

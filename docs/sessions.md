@@ -49,7 +49,7 @@ Who wrote a message is separate from its role, in two closed sets and no third f
 - `at_quality` uses the same closed set as Sinex: `intrinsic` (the source recorded the time of the thing), `captured` (Polylogue saw it live and took the time at capture), `file_mtime` (only a file's modification time is known), `operator` (stated by the user), `unknown`.
 - `at_precision` is `instant` through `year`, or `bounded` with `at_until`.
 - Provider and commit times are `intrinsic`. Drive and ZIP member times are `file_mtime` (Drive bounded by revision, ZIP to the second). An offset-less local time is `intrinsic` with the zone it was read in recorded. A time the source does not give is `unknown`, with no instant: nothing is placed at 1970, at midnight or at import time.
-- A file's modification time is never presented as a message's own time. Queries treat coarse and estimated times by the shared coarse-times rule ([query.md](query.md#units-and-fields)).
+- A file's modification time is never presented as a message's own time. Queries treat coarse and estimated times by the shared coarse-times rule ([query.md](query.md#times)).
 - The index and every `polylogue.*` record sent to Sinex carry all three fields.
 
 ## Session links

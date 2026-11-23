@@ -285,7 +285,7 @@ fn setting_resolves_target_host_keeping_accepting_host() {
     );
     assert!(
         Value::Variants(vec!["invented:pl".into()])
-            .validate_for("reading.variants", SettingMode::Standalone)
+            .validate_for("reading.alternates", SettingMode::Standalone)
             .is_err()
     );
     assert!(

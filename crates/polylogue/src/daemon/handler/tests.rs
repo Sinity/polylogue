@@ -637,7 +637,7 @@ fn answer_errors_keep_credential_shaped_messages_and_hints() {
 fn setting_write_returns_its_result_and_value() {
     let daemon = crate::test_daemon::start("setting transport example");
     let (_, _, arguments) = crate::cli::request_arguments(
-        &["polylogue", "set", "reading.variants", "[]"],
+        &["polylogue", "set", "reading.alternates", "[]"],
         std::path::Path::new("/"),
     )
     .unwrap();
@@ -663,7 +663,7 @@ fn setting_write_returns_its_result_and_value() {
         &daemon.daemon.archive,
         &request(
             "set",
-            json!({"key":"reading.variants"}),
+            json!({"key":"reading.alternates"}),
             "setting-socket-read",
         ),
     )
@@ -673,7 +673,7 @@ fn setting_write_returns_its_result_and_value() {
     else {
         panic!("read must return its current setting: {shown:?}")
     };
-    assert_eq!(current.current.key, "reading.variants");
+    assert_eq!(current.current.key, "reading.alternates");
     assert!(current.allowed_values.is_empty());
     assert_eq!(current.history.len(), 1);
     assert_eq!(

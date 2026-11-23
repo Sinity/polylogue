@@ -38,7 +38,7 @@ SESSION-CONDITIONS | UNIT [where CONDITIONS] [| TRANSFORM]... tag:project:morrow
 ```
 
 - Conditions side by side are AND; parentheses group everywhere; without a unit, the unit is `sessions`.
-- **Atoms:** `field:value`; `field OP scalar`; `field between A and B`; `field ~ "text"` (contains); a text term (bare word or `"phrase"`, `word*` prefix, `word~` approximate, see [search.md](search.md)); `exists UNIT(…)`; `count(UNIT [where …]) OP N`; `FIELD in (QUERY)`; `in:result:<id>`; `seq(step -> [next|within:D] step …)`; `query:<hash>` or `query:NAME[(p=v,…)]`; `similar:TEXT|REF`; a reference.
+- **Atoms:** `field:value`; `field OP scalar`; `field between A and B`; `field ~ "text"` (contains); a text term (bare word or `"phrase"`, `word*` prefix, `word~` approximate, see [search.md](search.md)); `exists UNIT(…)`; `count(UNIT [where …]) OP N`; `FIELD in (QUERY)`; `in:result:<id>`; `seq(step -> [next|within D] step …)`; `query:<hash>` or `query:NAME[(p=v,…)]`; `similar:TEXT|REF`; a reference.
 - **Values:** `word`, `"quoted"` with backslash escapes, `(a|b|c)`, `*` (names the field without restricting it and drops its default), `unknown`.
 - **Comparisons:** `> >= < <= = !=`; durations `ms s m h d w`; money `2.90` or `2.90usd`. An amount is read exactly from its decimal spelling into signed 64-bit nano-USD, half ties rounded away from zero; an amount outside that range is refused, never saturated. There is one spelling: the compact `field:>=N` is refused with `field >= N` as its suggestion.
 - **Depth:** nesting has no limit. Parsing, binding, compiling and evaluation grow their stack as a query nests (`query_language::depth::deeper`), so a deep query is answered or refused for what it says, never for how deep it is. Two negations cancel, and a set inside a set adds its values. Saved-query expansion refuses a cycle and names the chain.
@@ -151,7 +151,7 @@ Conditions over related rows, transforms after `|`, attached rows and combining 
 - **Refusals:** a cursor from another question is `invalid_query`; one from an earlier index generation, or a ranked cursor after a vector write, is `stale_cursor`, never restarted silently. Only the page size may change between pages.
 - A page may be empty and still carry a cursor; only a page without `next` is the end. An enumeration that must not change is saved first ([saved-queries.md](saved-queries.md#kept-results)), then paged.
 - The count is computed once per question and read position, and reused by later pages.
-- A listing that should wait for rows takes the line option `--wait D` ([interfaces.md](interfaces.md#chains)).
+- A listing that should wait for rows takes the line option `--wait D` ([interfaces.md](interfaces.md#steps)).
 - On a terminal the pager requests each page as it consumes the last; elsewhere every page ends with the line or call that continues it ([terminal.md](terminal.md#output)).
 
 ## Deadlines
@@ -195,7 +195,7 @@ A facet count is `group by F | count` over the same filtered population as the r
 
 ## Acting on rows
 
-Verbs after the selection act on the rows it resolved, once, in order: reading, briefing, notes, tags, judgments, saving and acts on live sessions ([interfaces.md](interfaces.md#verbs), [interfaces.md](interfaces.md#chains)). A write over several rows of a query needs `--all`, writes one annotation per row in one request, and reports the committed count with `query:<hash>` and its undo line; a reviewed population is named with `in:result:<id>`. There is no export verb, because writing out is `read --to`, and no delete verb, because Polylogue has no deletion.
+Verbs after the selection act on the rows it resolved, once, in order: reading, briefing, notes, tags, judgments, saving and acts on live sessions ([interfaces.md](interfaces.md#verbs), [interfaces.md](interfaces.md#steps)). A write over several rows of a query needs `--all`, writes one annotation per row in one request, and reports the committed count with `query:<hash>` and its undo line; a reviewed population is named with `in:result:<id>`. There is no export verb, because writing out is `read --to`, and no delete verb, because Polylogue has no deletion.
 
 ## Read-only SQL
 

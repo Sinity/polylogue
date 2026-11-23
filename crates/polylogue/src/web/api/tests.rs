@@ -455,7 +455,7 @@ fn a_cancelled_http_parent_without_a_header_cannot_submit_a_pure_write() {
     let id = "cancelled-parent-no-new-write";
     let request = command_surface::Request {
         operation: "set".into(),
-        arguments: serde_json::json!({"key":"reading.variants","value":"[]"}),
+        arguments: serde_json::json!({"key":"reading.alternates","value":"[]"}),
         request_id: id.into(),
         deadline: command_surface::Deadline::None,
         budget_tokens: Default::default(),
@@ -515,7 +515,7 @@ fn writer_dispatch_refuses_queued_expiry_but_finishes_an_already_owned_write() {
         let parent = Instant::now() + Duration::from_secs(2);
         let request = command_surface::Request {
             operation: "set".into(),
-            arguments: serde_json::json!({"key":"reading.variants","value":"[]"}),
+            arguments: serde_json::json!({"key":"reading.alternates","value":"[]"}),
             request_id: id.into(),
             deadline: command_surface::Deadline::None,
             budget_tokens: Default::default(),
