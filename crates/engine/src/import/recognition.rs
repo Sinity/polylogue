@@ -125,13 +125,13 @@ impl<'de> Deserialize<'de> for Shape {
 pub(super) fn declared(
     path: &Path,
     file: &mut (impl std::io::Read + std::io::Seek),
-    format: Option<&str>,
+    named_origin: Option<&str>,
 ) -> std::io::Result<Option<&'static OriginSpec>> {
     file.rewind()?;
     let mut head = [0; 64];
     let n = file.read(&mut head)?;
     file.rewind()?;
-    if format == Some("polylogue-export") || retired_export(&mut *file)? {
+    if named_origin == Some("polylogue-export") || retired_export(&mut *file)? {
         file.rewind()?;
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -144,8 +144,8 @@ pub(super) fn declared(
         return Ok(polylogue_sources::origin::by_name("polylogue-bundle"));
     }
     file.rewind()?;
-    if let Some(format) = format {
-        return Ok(polylogue_sources::origin::by_name(format).filter(|o| {
+    if let Some(name) = named_origin {
+        return Ok(polylogue_sources::origin::by_name(name).filter(|o| {
             importable(o) && ((o.recognize)(path, &head[..n]) || o.arrival == Arrival::Import)
         }));
     }

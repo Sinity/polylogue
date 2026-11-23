@@ -9,11 +9,15 @@ use std::io::{BufRead, BufReader, Read, Seek};
 /// Codex rollout, plain or compressed. Codex's other files are locations.
 pub(crate) fn is_rollout(found: &collect::Found) -> bool {
     found.origin.input_identity == polylogue_sources::InputIdentity::ProviderId
-        && (found.origin.name == "codex-compressed"
+        && (is_compressed(found)
             || matches!(
                 polylogue_sources::codex::File::from_path(&found.path),
                 Some(polylogue_sources::codex::File::Rollout { .. })
             ))
+}
+
+fn is_compressed(found: &collect::Found) -> bool {
+    found.origin.name == "codex-compressed"
 }
 
 fn decoded(source: &std::fs::File, compressed: bool) -> std::io::Result<Box<dyn BufRead>> {
@@ -28,7 +32,7 @@ fn decoded(source: &std::fs::File, compressed: bool) -> std::io::Result<Box<dyn 
     }
 }
 
-fn recorded_copy(
+fn matching_revision(
     reader: &polylogue_store::Reader<'_>,
     blobs: &Arc<polylogue_store::blobs::Blobs>,
     input: &str,
@@ -81,7 +85,7 @@ impl Engine {
             self.refresh_confirmed_input(path)?;
         }
         let origin = polylogue_sources::origin::by_name("codex").expect("declared origin");
-        let compressed = found.origin.name == "codex-compressed";
+        let compressed = is_compressed(found);
         let mut context = self.source_read_context(
             path,
             origin.name,
@@ -123,12 +127,10 @@ impl Engine {
         {
             let id = self.inputs[path].input_id.clone();
             if let Some(progress) = self.reads.reader()?.input_progress(&id)? {
-                let state = self.inputs.get_mut(path).expect("known rollout");
-                state.chain = Some(progress.chain);
-                state.stored = progress.length;
-                state.parsed_upto = progress.parsed_upto;
-                state.parsed = progress.parsed;
-                state.waiting = progress.waiting;
+                self.inputs
+                    .get_mut(path)
+                    .expect("known rollout")
+                    .take_progress(&progress);
             }
             return self.stored_plan(path);
         }
@@ -185,7 +187,7 @@ impl Engine {
                 same = stream.fill_buf()?.is_empty();
                 appended = !same;
             } else {
-                historical = recorded_copy(&reader, &self.blobs, &id, &source, compressed)?;
+                historical = matching_revision(&reader, &self.blobs, &id, &source, compressed)?;
                 stream = decoded(&source, compressed)?;
             }
         }
@@ -223,6 +225,7 @@ impl Engine {
             prepared.as_ref().expect("new bytes").len()
         };
         let mut observation = self.observation(path, Some(facts));
+        let original_observation = observation.clone();
         let mut group = Vec::new();
         let mut original_added = 0;
         if let Some((original, original_context)) = original {
@@ -232,13 +235,13 @@ impl Engine {
                 original_added = original.len();
             }
             let original_length = original.len();
-            group.push(self.rollout_batch(
+            group.push(Self::rollout_batch(
                 if exists {
                     Change::Unchanged
                 } else {
                     Change::First
                 },
-                self.observation(path, Some(facts)),
+                original_observation,
                 Some(original.clone()),
                 &original_context,
                 original_context.observed_file(
@@ -297,7 +300,7 @@ impl Engine {
         } else {
             polylogue_store::primary::RawStreamRole::ProviderBytes
         };
-        group.push(self.rollout_batch(
+        group.push(Self::rollout_batch(
             change,
             observation,
             prepared,
@@ -345,25 +348,13 @@ impl Engine {
                 .saturating_add(progress.parsed_upto);
             self.archive.record_build_bytes(bytes, read);
         }
-        self.inputs.insert(
-            path.clone(),
-            InputState {
-                input_id: id,
-                origin,
-                facts: Some(facts),
-                stored: progress.length,
-                parsed_upto: progress.parsed_upto,
-                parsed: progress.parsed,
-                waiting: progress.waiting,
-                chain: Some(progress.chain),
-                unread: None,
-                working: None,
-            },
-        );
+        let mut state = InputState::new(id, origin);
+        state.facts = Some(facts);
+        state.take_progress(&progress);
+        self.inputs.insert(path.clone(), state);
         self.stored_plan(path)
     }
     fn rollout_batch(
-        &self,
         change: Change,
         observation: Observation,
         bytes: Option<PreparedBytes>,

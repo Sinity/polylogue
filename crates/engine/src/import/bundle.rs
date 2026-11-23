@@ -2,7 +2,6 @@
 use super::*;
 use polylogue_model::bundle::{Counts, InventoryRecord, MemberKind, Record};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Read;
 
 fn verify(
     member: &package::Member,
@@ -10,16 +9,7 @@ fn verify(
 ) -> std::io::Result<()> {
     let mut source = member.bytes.reader().map_err(std::io::Error::other)?;
     let mut hash = blake3::Hasher::new();
-    let mut bytes = [0; 65536];
-    let mut size = 0u64;
-    loop {
-        let n = source.read(&mut bytes)?;
-        if n == 0 {
-            break;
-        }
-        hash.update(&bytes[..n]);
-        size += n as u64;
-    }
+    let size = std::io::copy(&mut source, &mut hash)?;
     if hash.finalize().as_bytes() != &file.hash.0 || size != file.size {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -103,14 +93,15 @@ fn count(counts: &mut Counts, record: &Record) {
 }
 
 pub(super) fn preflight(members: &mut [package::Member]) -> std::io::Result<()> {
+    let is_bundle_member = |member: &package::Member| {
+        member
+            .origin
+            .is_some_and(|origin| origin.name == polylogue_sources::polylogue_bundle::ORIGIN)
+    };
     let primary: Vec<_> = members
         .iter()
         .enumerate()
-        .filter(|(_, member)| {
-            member
-                .origin
-                .is_some_and(|origin| origin.name == "polylogue-bundle")
-        })
+        .filter(|(_, member)| is_bundle_member(member))
         .filter_map(|(index, member)| {
             member
                 .bytes
@@ -120,13 +111,7 @@ pub(super) fn preflight(members: &mut [package::Member]) -> std::io::Result<()> 
                 .map(|_| index)
         })
         .collect();
-    if primary.is_empty()
-        && members.iter().any(|member| {
-            member
-                .origin
-                .is_some_and(|origin| origin.name == "polylogue-bundle")
-        })
-    {
+    if primary.is_empty() && members.iter().any(is_bundle_member) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "a bundle is missing its primary manifest",
@@ -193,7 +178,9 @@ pub(super) fn preflight(members: &mut [package::Member]) -> std::io::Result<()> 
                 verify(&members[index], &entry.file)?;
                 if entry.kind == MemberKind::Records {
                     records.push(index);
-                    members[index].origin = polylogue_sources::origin::by_name("polylogue-bundle");
+                    members[index].origin = polylogue_sources::origin::by_name(
+                        polylogue_sources::polylogue_bundle::ORIGIN,
+                    );
                 } else {
                     members[index].origin = polylogue_sources::origin::by_name(KEPT);
                 }

@@ -144,7 +144,7 @@ impl PresentationMap {
     ) -> Option<&'a VariantMark> {
         self.for_source(source)
             .map(|(_, variant)| variant)
-            .find(|variant| active(variant, options))
+            .find(|variant| variant.is_active(options))
             .map(|variant| &variant.mark)
     }
     /// Apply simultaneously against original bytes. Never use offsets in the
@@ -158,7 +158,7 @@ impl PresentationMap {
         let mut patches = Vec::new();
         for patch in self.1.get(&body_key(source)).into_iter().flatten() {
             let variant = &self.0[&patch.original];
-            if !active(variant, options) {
+            if !variant.is_active(options) {
                 continue;
             }
             let replacement = if variant
@@ -206,8 +206,11 @@ impl PresentationMap {
         Ok(Cow::Owned(text))
     }
 }
-fn active(variant: &VariantText, options: &ReadOptions) -> bool {
-    !variant.mark.stale || options.variants.contains(&variant.mark.key)
+impl VariantText {
+    /// A stale variant applies only when the reader names its key.
+    pub fn is_active(&self, options: &ReadOptions) -> bool {
+        !self.mark.stale || options.variants.contains(&self.mark.key)
+    }
 }
 fn body_key(source: &Source) -> BodyKey {
     match Reference::parse_stored(&source.reference) {

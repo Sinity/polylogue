@@ -143,12 +143,12 @@ impl Engine {
                 import_id.clone(),
                 options,
             ));
-            captured.container = member.parent.and_then(|(parent, member_index)| {
+            captured.container = member.parent.and_then(|parent| {
                 hashes
-                    .get(&parent)
+                    .get(&parent.container)
                     .map(|input| polylogue_store::InContainer {
                         input: input.clone(),
-                        member_index,
+                        member_index: parent.member_index,
                         kind: member
                             .container_kind
                             .clone()
@@ -256,7 +256,10 @@ impl Engine {
                 }
                 Err(error @ polylogue_store::StoreError::ScopeChanged) => return Err(error.into()),
                 Err(error) => {
-                    report.pass.errors.push(error.to_string());
+                    report
+                        .pass
+                        .errors
+                        .push(format!("{}: {error}", at.display()));
                     continue;
                 }
             };
@@ -692,7 +695,10 @@ pub(super) const KEPT: &str = "export-file";
 pub(super) fn files_under(path: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     let meta = std::fs::symlink_metadata(path)?;
     if !meta.is_dir() {
-        out.push(path.to_path_buf());
+        // A link to a directory, or a broken link, has no bytes to stage.
+        if !meta.file_type().is_symlink() || std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+            out.push(path.to_path_buf());
+        }
         return Ok(());
     }
     let mut entries: Vec<PathBuf> = std::fs::read_dir(path)?

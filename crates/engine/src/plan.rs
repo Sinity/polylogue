@@ -48,6 +48,15 @@ impl InputState {
         }
     }
 
+    /// Copy the cursor fields of committed progress.
+    pub(crate) fn take_progress(&mut self, progress: &ChainProgress) {
+        self.chain = Some(progress.chain);
+        self.stored = progress.length;
+        self.parsed_upto = progress.parsed_upto;
+        self.parsed = progress.parsed;
+        self.waiting = progress.waiting;
+    }
+
     /// Adopt committed logical progress. Bytes held in the spool never supply a cursor.
     pub(crate) fn adopt_confirmed(
         &mut self,

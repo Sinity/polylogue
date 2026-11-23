@@ -46,13 +46,21 @@ pub(crate) fn copy_point(
 }
 
 /// Bytes two chains of one input share from their starts.
-struct Shared<'a> {
+struct ChainComparison<'a> {
     engine: &'a Engine,
     input: &'a str,
     layouts: &'a ChainLayouts,
 }
 
-impl Shared<'_> {
+impl ChainComparison<'_> {
+    fn cached(&self, x: &ChainLayout, y: &ChainLayout) -> Result<Option<u64>, EngineError> {
+        Ok(self.engine.shared_prefixes.borrow().get(
+            self.input,
+            (x.chain, x.length),
+            (y.chain, y.length),
+        )?)
+    }
+
     /// Bytes chains `a` and `b` (`a` older) share from their starts. Bytes
     /// in the same blobs are alike without being read. Otherwise the chain
     /// after `a` decides most of it: if `a` shares a different number of
@@ -61,11 +69,7 @@ impl Shared<'_> {
     /// Cached adjacent comparisons avoid rereading prefixes while planning.
     fn between(&self, a: usize, b: usize) -> Result<u64, EngineError> {
         let (x, y) = (self.layouts.get(a)?, self.layouts.get(b)?);
-        if let Some(n) = self.engine.shared_prefixes.borrow().get(
-            self.input,
-            (x.chain, x.length),
-            (y.chain, y.length),
-        )? {
+        if let Some(n) = self.cached(&x, &y)? {
             return Ok(n);
         }
         let mut onward = None;
@@ -73,11 +77,7 @@ impl Shared<'_> {
         // for every historical chain between the two being compared.
         for left in (a..b).rev() {
             let (x, y) = (self.layouts.get(left)?, self.layouts.get(b)?);
-            if let Some(n) = self.engine.shared_prefixes.borrow().get(
-                self.input,
-                (x.chain, x.length),
-                (y.chain, y.length),
-            )? {
+            if let Some(n) = self.cached(&x, &y)? {
                 onward = Some(n);
                 continue;
             }
@@ -125,7 +125,7 @@ impl Shared<'_> {
         planned: Option<(usize, u64)>,
     ) -> Result<bool, EngineError> {
         Ok(match planned {
-            Some((chain, from)) if chain == newer => from <= shared,
+            Some((planned_ordinal, from)) if planned_ordinal == newer => from <= shared,
             _ => self
                 .layouts
                 .get(newer)?
@@ -216,8 +216,8 @@ impl Engine {
         if !layouts.unread_before(planned)? {
             return Ok(());
         }
-        let version = plan.origin.reading_version();
-        let shared = Shared {
+        let reading_version = plan.origin.reading_version();
+        let shared = ChainComparison {
             engine: self,
             input: &plan.input.id,
             layouts: &layouts,
@@ -231,7 +231,7 @@ impl Engine {
                 continue;
             }
             let Some((source, bytes)) =
-                shared.source(older, &version, Some((planned, plan.parse_pos)))?
+                shared.source(older, &reading_version, Some((planned, plan.parse_pos)))?
             else {
                 continue;
             };
@@ -388,7 +388,7 @@ impl Engine {
         if older_chain.reading.is_some() {
             return Ok(None);
         }
-        let shared = Shared {
+        let shared = ChainComparison {
             engine: self,
             input,
             layouts: &layouts,

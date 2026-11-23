@@ -10,7 +10,13 @@ fn visit(value: &Json, emit: &mut impl FnMut(&str) -> std::io::Result<()>) -> st
         Json::Object(o) => {
             if let Some(images) = value.array("local_images") {
                 for image in images {
-                    if let Some(path) = image.as_str().or_else(|| image.str("path")) {
+                    // A typed entry is emitted once by the recursion below.
+                    let path = image.as_str().or_else(|| {
+                        image
+                            .str("path")
+                            .filter(|_| image.str("type") != Some("local_image"))
+                    });
+                    if let Some(path) = path {
                         emit(path)?;
                     }
                 }
@@ -223,7 +229,7 @@ impl Engine {
             required_outcome: None,
             input: InputKey {
                 id: id.clone(),
-                format: "codex-local-file".into(),
+                format: origin.name.into(),
                 route: polylogue_model::Route::Copy,
             },
             change: if exists {

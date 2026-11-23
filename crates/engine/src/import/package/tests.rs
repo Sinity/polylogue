@@ -79,7 +79,13 @@ fn nested_tar_and_compressed_tar_keep_originals_and_decoded_members() {
     let members = stage(&source, &Archive::at(&scratch.path().join("encoded")), None).unwrap();
     assert_eq!(members.len(), 3);
     assert_eq!(members[2].origin.unwrap().name, "chatgpt");
-    assert_eq!(members[2].parent, Some((1, 0)));
+    assert_eq!(
+        members[2].parent,
+        Some(MemberPlace {
+            container: 1,
+            member_index: 0
+        })
+    );
 }
 
 #[test]

@@ -3,12 +3,21 @@
 use super::*;
 use std::io::{Read, Seek};
 
+/// Where a member sits in its container.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct MemberPlace {
+    /// Index of the container's own member.
+    pub container: usize,
+    /// The entry's position in the container's listing.
+    pub member_index: u64,
+}
+
 pub(super) struct Member {
     pub path: PathBuf,
     pub bytes: polylogue_store::staging::PreparedBytes,
     pub container: bool,
     pub origin: Option<&'static OriginSpec>,
-    pub parent: Option<(usize, u64)>,
+    pub parent: Option<MemberPlace>,
     pub container_kind: Option<String>,
     pub member_path_bytes: Option<Vec<u8>>,
     /// Why a member with no origin is refused, when it is not that no
@@ -19,7 +28,7 @@ pub(super) struct Member {
 pub(super) fn stage(
     path: &Path,
     archive: &Archive,
-    format: Option<&str>,
+    origin: Option<&str>,
 ) -> std::io::Result<Vec<Member>> {
     let mut members = Vec::new();
     let mut seen = Expansion::default();
@@ -46,7 +55,7 @@ pub(super) fn stage(
             &mut members,
         )?;
     }
-    classify(&mut members, format)?;
+    classify(&mut members, origin)?;
     super::bundle::preflight(&mut members)?;
     Ok(members)
 }
@@ -93,7 +102,7 @@ fn fits_in_staging(archive: &Archive, declared: u64) -> std::io::Result<()> {
 fn expand(
     path: PathBuf,
     bytes: polylogue_store::staging::PreparedBytes,
-    parent: Option<(usize, u64)>,
+    parent: Option<MemberPlace>,
     archive: &Archive,
     seen: &mut Expansion,
     out: &mut Vec<Member>,
@@ -235,7 +244,10 @@ fn expand(
         expand(
             PathBuf::from(format!("{}!/{display}", path.display())),
             member,
-            Some((index, i)),
+            Some(MemberPlace {
+                container: index,
+                member_index: i,
+            }),
             archive,
             seen,
             out,
@@ -247,15 +259,15 @@ fn expand(
     Ok(())
 }
 
-fn classify(members: &mut [Member], format: Option<&str>) -> std::io::Result<()> {
+fn classify(members: &mut [Member], origin: Option<&str>) -> std::io::Result<()> {
     #[derive(Default)]
     struct Package {
         chatgpt: bool,
         claude: bool,
         recognized: bool,
         conversations: bool,
-        user: bool,
-        users: bool,
+        chatgpt_account_file: bool,
+        claude_accounts_file: bool,
         aider_llm: bool,
         aider_md: bool,
         takeout: bool,
@@ -265,8 +277,15 @@ fn classify(members: &mut [Member], format: Option<&str>) -> std::io::Result<()>
         member.origin = super::recognition::declared(
             &member.path,
             &mut member.bytes.reader().map_err(std::io::Error::other)?,
-            format,
+            origin,
         )?;
+        if member.origin.is_none()
+            && let Some(name) = origin
+        {
+            member.refusal = Some(format!(
+                "origin {name} is not an importable origin or does not recognize this file"
+            ));
+        }
         let name = member
             .path
             .file_name()
@@ -279,7 +298,7 @@ fn classify(members: &mut [Member], format: Option<&str>) -> std::io::Result<()>
             )
         {
             package_roots.push((
-                member.parent.map(|parent| parent.0),
+                member.parent.map(|parent| parent.container),
                 member.path.parent().unwrap_or(Path::new("")).to_path_buf(),
             ));
         }
@@ -287,7 +306,7 @@ fn classify(members: &mut [Member], format: Option<&str>) -> std::io::Result<()>
         for part in member.path.components() {
             prefix.push(part);
             if part.as_os_str() == "Takeout" {
-                package_roots.push((member.parent.map(|parent| parent.0), prefix));
+                package_roots.push((member.parent.map(|parent| parent.container), prefix));
                 break;
             }
         }
@@ -295,7 +314,7 @@ fn classify(members: &mut [Member], format: Option<&str>) -> std::io::Result<()>
     let keys: Vec<_> = members
         .iter()
         .map(|member| {
-            let parent = member.parent.map(|parent| parent.0);
+            let parent = member.parent.map(|parent| parent.container);
             let root = package_roots
                 .iter()
                 .filter(|(container, root)| *container == parent && member.path.starts_with(root))
@@ -321,8 +340,8 @@ fn classify(members: &mut [Member], format: Option<&str>) -> std::io::Result<()>
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("");
-        package.user |= name == "user.json";
-        package.users |= name == "users.json";
+        package.chatgpt_account_file |= name == "user.json";
+        package.claude_accounts_file |= name == "users.json";
         package.aider_llm |= name == polylogue_sources::aider::HISTORY;
         package.aider_md |= name == polylogue_sources::aider::COMPANION;
         if name.starts_with("conversations") && name.ends_with(".json") {
@@ -334,8 +353,8 @@ fn classify(members: &mut [Member], format: Option<&str>) -> std::io::Result<()>
         }
     }
     for package in packages.values_mut() {
-        package.chatgpt |= package.conversations && package.user;
-        package.claude |= package.conversations && package.users;
+        package.chatgpt |= package.conversations && package.chatgpt_account_file;
+        package.claude |= package.conversations && package.claude_accounts_file;
         if package.chatgpt && package.claude {
             return Err(std::io::Error::other(
                 "export package declares conflicting ChatGPT and claude.ai structures",
@@ -425,7 +444,10 @@ fn classify(members: &mut [Member], format: Option<&str>) -> std::io::Result<()>
         .collect::<Vec<_>>()
     {
         if members.iter().any(|member| {
-            member.parent.is_some_and(|parent| parent.0 == index) && member.origin.is_some()
+            member
+                .parent
+                .is_some_and(|parent| parent.container == index)
+                && member.origin.is_some()
         }) {
             members[index].origin = polylogue_sources::origin::by_name(KEPT);
         }
