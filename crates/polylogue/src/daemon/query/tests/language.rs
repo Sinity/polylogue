@@ -155,8 +155,8 @@ fn three_valued_filters_partition() {
     let top: BTreeSet<String> = ids(&q(&r, "sessions where physical:true"))
         .into_iter()
         .collect();
-    // Six physical sessions (daemon/query/tests.rs: physical_true_lists_each_session).
-    assert_eq!(top.len(), 6, "{top:?}");
+    // Every one of Morrow's eight sessions is a physical session.
+    assert_eq!(top, all);
     let has: BTreeSet<String> = ids(&q(
         &r,
         "sessions where physical:true exists tool_calls(outcome:error)",

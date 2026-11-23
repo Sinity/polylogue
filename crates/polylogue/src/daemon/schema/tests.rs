@@ -150,9 +150,10 @@ fn schema_tools_no_values_stored_revisions_and_unreadable_records() {
         ),
         (1, 1, 0)
     );
+    // The record root and its one field; the malformed line adds none.
     assert_eq!(
         schema.fields.keys().map(String::as_str).collect::<Vec<_>>(),
-        ["/id"]
+        ["", "/id"]
     );
     assert_eq!(schema.selection[0].revision, Some(1));
     assert_eq!(report.selection.missing_revisions, ["missing"]);
