@@ -1,4 +1,4 @@
-//! Reading stored sessions and records as pages and streams.
+//! Reading stored sessions and records as pages and streams (selection probe).
 mod error;
 pub mod execution;
 pub mod operation;
