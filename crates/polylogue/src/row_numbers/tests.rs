@@ -47,9 +47,10 @@ fn row_number_ranges_and_hits_resolve() {
         select("@2.1", &shown).unwrap_err(),
         "row @2 has no hit 1; use @2"
     );
+    assert_eq!(select("@0", &shown).unwrap_err(), "@0: rows start at 1");
     assert_eq!(
-        select("@0", &shown).unwrap_err(),
-        "@0: the last list has 3 rows"
+        select("@1-2.1", &shown).unwrap_err(),
+        "@1-2.1: a row range has no hit; use @1-2 or @2.1"
     );
     assert_eq!(
         select("@3-2", &shown).unwrap_err(),

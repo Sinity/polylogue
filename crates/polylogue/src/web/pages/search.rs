@@ -17,13 +17,24 @@ pub fn search(
             "<div class=\"error\" role=\"alert\"><p>{}</p>",
             esc(&e.message)
         );
-        if let Some(fix) = crate::protocol::suggestion_text(e).as_deref() {
-            let _ = write!(
-                body,
-                "<p>Try <a href=\"/search?q={}\"><code>{}</code></a></p>",
-                encode_id(fix),
-                esc(fix)
-            );
+        match (
+            e.suggestion(),
+            crate::protocol::suggestion_text(e).as_deref(),
+        ) {
+            // A corrected query reruns as a search; a request is a command to
+            // copy, not a selection.
+            (Some(command_surface::Suggestion::Query(_)), Some(fix)) => {
+                let _ = write!(
+                    body,
+                    "<p>Try <a href=\"/search?q={}\"><code>{}</code></a></p>",
+                    encode_id(fix),
+                    esc(fix)
+                );
+            }
+            (_, Some(fix)) => {
+                let _ = write!(body, "<p>Try <code>{}</code></p>", esc(fix));
+            }
+            _ => {}
         }
         body.push_str("</div>");
     }

@@ -250,6 +250,46 @@ fn access_rules() {
 }
 
 #[test]
+fn an_error_answer_never_carries_the_archive_path() {
+    let root = std::path::Path::new("/home/op/archive");
+    let failure = command_surface::Failure::new(
+        command_surface::FailureKind::BadRequest,
+        "cannot open /home/op/archive/index.db",
+    )
+    .with_hint("look in /home/op/archive");
+    let answer = browser_response(
+        command_surface::Answer::<Value>::error(failure).with_note("see /home/op/archive/log"),
+        root,
+    );
+    assert_eq!(answer.envelope.notes, ["see [archive]/log"]);
+    let command_surface::Outcome::Error(error) = answer.outcome else {
+        panic!("the answer stays an error");
+    };
+    assert_eq!(error.message, "cannot open [archive]/index.db");
+    assert_eq!(error.hint.as_deref(), Some("look in [archive]"));
+}
+
+#[test]
+fn a_blank_search_returns_to_the_overview() {
+    let r = reader();
+    rt().block_on(async {
+        let req = authed(get("/search?q=%20")).body(Body::empty()).unwrap();
+        let (status, headers, _) = send(&r, req).await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(headers[header::LOCATION], "/");
+    });
+}
+
+#[test]
+fn form_bodies_decode_plus_percent_escapes_and_malformed_percent() {
+    let fields = form_fields("token=t%2B0ken&x=a+b&bad=%zz&short=%4");
+    assert_eq!(fields["token"], "t+0ken");
+    assert_eq!(fields["x"], "a b");
+    assert_eq!(fields["bad"], "%zz");
+    assert_eq!(fields["short"], "%4");
+}
+
+#[test]
 fn pages_and_api_never_carry_the_archive_path() {
     let r = reader();
     let root = r.web.daemon.archive.root.to_string_lossy().into_owned();

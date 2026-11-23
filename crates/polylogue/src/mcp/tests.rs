@@ -734,10 +734,9 @@ fn generated_ready_mcp_call_executes_its_typed_envelope() {
         &Default::default(),
         None,
     );
-    assert!(
-        outside_arguments.is_err(),
-        "typed MCP operation accepted arguments outside its declared envelope"
-    );
+    let refusal = outside_arguments
+        .expect_err("typed MCP operation accepted arguments outside its declared envelope");
+    assert!(refusal.contains("selection"), "{refusal}");
     let tool = tools()
         .into_iter()
         .find(|tool| tool["name"] == "polylogue_read")

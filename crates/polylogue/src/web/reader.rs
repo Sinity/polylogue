@@ -54,11 +54,12 @@ pub(super) async fn assertion(
                 Err(reason) => failed(StatusCode::BAD_REQUEST, "bad_request", &reason),
             }
         }
-        _ => failed(
+        Ok(_) => failed(
             StatusCode::BAD_REQUEST,
             "bad_request",
             "an assertion URL requires its natural reference",
         ),
+        Err(error) => failed(StatusCode::BAD_REQUEST, "bad_request", &error.to_string()),
     }
 }
 

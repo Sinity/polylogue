@@ -61,6 +61,12 @@ fn every_product_page_uses_the_shared_frame_and_shows_direction_controls_as_text
 }
 
 #[test]
+fn the_overview_shows_a_missing_store_as_unknown() {
+    let page = home(&json!({"store": null}), &json!(null));
+    assert!(page.contains("<div><dt>store</dt><dd>unknown</dd></div>"));
+}
+
+#[test]
 fn the_overview_shows_an_unknown_status_value_as_unknown_and_zero_as_zero() {
     let status = json!({"store": {"search_pending": null, "messages": 0}});
     let page = home(&status, &json!(null));

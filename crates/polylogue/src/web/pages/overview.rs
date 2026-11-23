@@ -17,6 +17,8 @@ pub fn home(status: &Value, sessions: &Value) -> String {
                 esc(&shown)
             );
         }
+    } else {
+        body.push_str("<div><dt>store</dt><dd>unknown</dd></div>");
     }
     body.push_str(
         "</dl><p><a href=\"/search?q=documents\">Browse Documents</a></p><h2>Latest sessions</h2>",
