@@ -86,6 +86,11 @@ fn later_item(
             crate::read::compare_session_messages(conn, session, previous_message, next_message)?;
         return Ok(order.is_lt() || order.is_eq() && next_block > previous_block);
     }
+    if matches!(target, Reference::Session(_)) {
+        return Err(StoreError::invalid(
+            "a seen mark on a session names a message or block",
+        ));
+    }
     let Some(previous) = previous else {
         return Ok(true);
     };
@@ -94,20 +99,19 @@ fn later_item(
     if let (Some((previous, previous_block)), Some((next, next_block))) =
         (message_item(&previous), message_item(&next))
     {
-        let coordinate =
-            |id: &polylogue_model::MessageId| -> Result<Option<(i64, String, String)>> {
-                let id = crate::parser_context::resolved_message(conn, id)?;
-                Ok(conn.query_row(
+        let coordinate = |id: &polylogue_model::MessageId| -> Result<(i64, String, String)> {
+            let resolved = crate::parser_context::resolved_message(conn, id)?;
+            conn.query_row(
                 "SELECT session_pk,session_order,id FROM message WHERE id=?1 AND duplicate_of IS NULL",
-                [id.to_string()], |row| <(_, _, _)>::try_from(row),
-            ).optional()?)
-            };
-        return Ok(match (coordinate(previous)?, coordinate(next)?) {
-            (Some(previous), Some(next)) if previous.0 == next.0 => {
-                (next.1, next.2, next_block) > (previous.1, previous.2, previous_block)
-            }
-            _ => false,
-        });
+                [resolved.to_string()],
+                |row| <(_, _, _)>::try_from(row),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::NotFound(Reference::Message(id.clone()).to_string()))
+        };
+        let (previous, next) = (coordinate(previous)?, coordinate(next)?);
+        return Ok(previous.0 == next.0
+            && (next.1, next.2, next_block) > (previous.1, previous.2, previous_block));
     }
     Ok(match (&previous, &next) {
         (
@@ -210,12 +214,6 @@ pub(crate) fn advancing(
         }
         if ChangePosition::parse(&mark.at.to_string()).is_none() {
             return Err(StoreError::invalid("invalid seen change position"));
-        }
-        Reference::parse_stored(&mark.target)
-            .map_err(|error| StoreError::invalid(error.to_string()))?;
-        if let Some(item) = &mark.item {
-            Reference::parse_stored(item)
-                .map_err(|error| StoreError::invalid(error.to_string()))?;
         }
         if !current.contains_key(&mark.target) {
             later_item(index, &mark.target, None, mark.item.as_deref())?;

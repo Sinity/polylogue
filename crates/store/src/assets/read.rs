@@ -239,11 +239,12 @@ pub(super) fn scope_matches(
             asset.names.extend(name);
             asset.media_types.extend(media);
             if let Some(size) = size {
-                asset
-                    .declared_sizes
-                    .push(size.parse().map_err(|_| {
-                        crate::StoreError::stored(2, "invalid declared asset size")
-                    })?);
+                asset.declared_sizes.push(size.parse().map_err(|error| {
+                    crate::StoreError::stored(
+                        2,
+                        format!("invalid declared asset size {size:?}: {error}"),
+                    )
+                })?);
             }
         }
     }
