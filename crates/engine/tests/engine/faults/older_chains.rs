@@ -22,7 +22,9 @@ fn an_older_chain_parse_failure_waits_across_restart_until_the_executable_change
             .unwrap();
             assert!(engine.run_pass().unwrap().errors.is_empty());
             before = w.texts("history");
-            assert_eq!(before.len(), 2);
+            let mut sorted = before.clone();
+            sorted.sort();
+            assert_eq!(sorted, ["current sibling", "historical unique secret"]);
         }
         delete_index(&w.root);
         fault::arm("parse", "history.jsonl", Action::Panic, 1, 1);

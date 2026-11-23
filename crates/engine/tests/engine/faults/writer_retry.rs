@@ -36,6 +36,13 @@ fn a_new_input_retries_without_a_source_change_or_restart() {
         fault::arm(point, "", Action::Fail, 0, 64);
         let failed = engine.run_pass().unwrap();
         assert!(!failed.errors.is_empty(), "{point}: {failed:?}");
+        assert!(
+            failed
+                .errors
+                .iter()
+                .all(|e| e.contains(&format!("injected fault at {point}"))),
+            "{point}: {failed:?}"
+        );
         assert!(w.texts("new").is_empty(), "{point}");
         fault::clear();
         let retry = engine.run_pass().unwrap();
@@ -48,7 +55,7 @@ fn a_new_input_retries_without_a_source_change_or_restart() {
 }
 
 #[test]
-fn append_and_rewrite_failures_reload_only_the_rejected_inputs_checkpoints() {
+fn append_and_rewrite_failures_keep_other_inputs_and_retry_the_rejected_one() {
     for rewrite in [false, true] {
         fault::clear();
         let w = ClaudeHome::new();
@@ -93,14 +100,15 @@ fn append_and_rewrite_failures_reload_only_the_rejected_inputs_checkpoints() {
         fault::clear();
         let retry = engine.run_pass().unwrap();
         assert!(retry.errors.is_empty(), "rewrite={rewrite}: {retry:?}");
-        let texts = w.texts("target");
-        for n in 0..12 {
-            assert!(
-                texts.contains(&format!("new body {n}")),
-                "rewrite={rewrite}: {texts:?}"
-            );
+        // Ties in timestamp make the order unspecified, so compare sorted.
+        let mut got = w.texts("target");
+        got.sort();
+        let mut want: Vec<String> = (0..12).map(|n| format!("new body {n}")).collect();
+        if !rewrite {
+            want.push("old body".into());
         }
-        assert_eq!(texts.len(), 12 + usize::from(!rewrite));
+        want.sort();
+        assert_eq!(got, want, "rewrite={rewrite}");
         exactly_stored(&w, "target.jsonl");
         assert_eq!(w.texts("other"), ["other stored"]);
     }
@@ -108,7 +116,7 @@ fn append_and_rewrite_failures_reload_only_the_rejected_inputs_checkpoints() {
 }
 
 #[test]
-fn a_growing_rewrite_after_restart_checks_the_stored_prefix_before_appending() {
+fn a_growing_rewrite_after_restart_replaces_the_input_with_its_new_contents() {
     let w = ClaudeHome::new();
     w.append("rewrite.jsonl", &user("same", "target", "before"));
     {

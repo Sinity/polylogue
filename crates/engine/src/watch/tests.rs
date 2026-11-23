@@ -18,13 +18,13 @@ fn missing_roots_advance_without_watching_unrelated_subtrees_or_reads() {
 
     let spool = config.spool_dir(polylogue_sources::browser_capture::ORIGIN);
     fs::create_dir_all(&spool).unwrap();
-    rx.recv().unwrap();
+    rx.recv_timeout(Duration::from_secs(10)).expect("a wake-up");
     roots.take();
     roots.refresh(&config).unwrap();
     let provider = spool.join("synthetic");
     fs::create_dir_all(&provider).unwrap();
     fs::write(provider.join("capture.json"), "{}").unwrap();
-    rx.recv().unwrap();
+    rx.recv_timeout(Duration::from_secs(10)).expect("a wake-up");
     roots.take();
     // Drain the finite write burst before checking read access.
     while rx.recv_timeout(Duration::from_millis(100)).is_ok() {}
@@ -58,7 +58,7 @@ fn repeated_paths_are_coalesced_and_watch_failures_request_a_full_scan() {
 }
 
 #[test]
-fn a_change_to_a_watched_root_itself_watches_it_again() {
+fn removing_a_watched_root_marks_it_for_rewatch_but_a_change_below_it_does_not() {
     let home = tempfile::tempdir().unwrap();
     let mut config = crate::test_config();
     config.home = home.path().to_path_buf();

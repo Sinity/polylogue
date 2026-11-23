@@ -101,8 +101,8 @@ fn two_profiles_with_one_session_id_stay_apart_after_provider_removal_and_rebuil
             .iter()
             .map(|id| w.reads().reader().unwrap().messages(id, false).unwrap()[0].text())
             .collect::<Vec<_>>();
-        assert!(bodies.contains(&"first profile text".into()));
-        assert!(bodies.contains(&"second profile text".into()));
+        // Ids are sorted: the default profile (the home) comes before "work".
+        assert_eq!(bodies, ["first profile text", "second profile text"]);
     }
     fs::remove_file(first).unwrap();
     fs::remove_file(second).unwrap();
@@ -111,16 +111,13 @@ fn two_profiles_with_one_session_id_stay_apart_after_provider_removal_and_rebuil
     let pass = restored.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     assert_eq!(hermes_ids(&w), before);
-    for id in before {
-        assert_eq!(
-            w.reads()
-                .reader()
-                .unwrap()
-                .messages(&id, false)
-                .unwrap()
-                .len(),
-            4
-        );
+    for (id, body) in before
+        .iter()
+        .zip(["first profile text", "second profile text"])
+    {
+        let messages = w.reads().reader().unwrap().messages(id, false).unwrap();
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0].text(), body);
     }
 }
 

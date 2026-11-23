@@ -43,12 +43,20 @@ fn interrupted_database_read_keeps_committed_batches_and_retries_without_duplica
             keys.iter().collect::<std::collections::BTreeSet<_>>().len(),
             12
         );
-        assert!(!w.root.join("exports").exists());
+        // printf('%01000000d', n): the id, zero-padded to a million digits.
+        for record in rows.iter().filter(|r| r["t"] == "kept_rows") {
+            let id = record["r"]["id"].as_i64().unwrap();
+            assert_eq!(
+                record["r"]["body"].as_str().unwrap(),
+                format!("{}{id}", "0".repeat(1_000_000 - id.to_string().len())),
+                "{action:?}: row {id}"
+            );
+        }
     }
 }
 
 #[test]
-fn a_stopped_parse_recovers_stored_database_rows_before_reading_the_source() {
+fn a_failed_comparison_commit_recovers_stored_database_rows_on_retry() {
     fault::clear();
     let w = Morrow::lay_out(Set::Main);
     let db = database(&w);
@@ -65,8 +73,12 @@ fn a_stopped_parse_recovers_stored_database_rows_before_reading_the_source() {
         let (mut engine, _lock) = w.engine();
         let result = engine.run_pass().unwrap();
         assert!(
-            !result.errors.is_empty(),
-            "comparison failure must be reported"
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("injected fault at tool_database.comparison_commit")),
+            "{:?}",
+            result.errors
         );
     }
     fault::clear();

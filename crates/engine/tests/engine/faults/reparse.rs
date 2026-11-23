@@ -48,6 +48,10 @@ fn rejected_replacement_keeps_the_committed_reading() {
                 false,
             )
             .unwrap();
+        assert_eq!(
+            messages.iter().map(|m| m.text()).collect::<Vec<_>>(),
+            ["stored text", "second body"]
+        );
         let mut engine = Engine::new(
             w.config(first.len() as u64),
             archive,

@@ -304,8 +304,10 @@ fn antigravity_exports_are_read_by_the_real_loop_and_rebuild() {
         reader
             .messages(&SessionId::parse("antigravity:exported").unwrap(), false)
             .unwrap()
-            .len(),
-        2
+            .iter()
+            .map(Message::text)
+            .collect::<Vec<_>>(),
+        ["Markdown prompt", "Markdown answer"]
     );
 }
 

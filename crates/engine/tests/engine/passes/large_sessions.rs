@@ -23,13 +23,23 @@ fn a_session_past_the_parameter_limit_exports_whole() {
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
 
     let export = w.export("claude-code:big");
-    assert_eq!(
-        export
-            .iter()
-            .filter(|record| matches!(record, polylogue_model::bundle::Record::Message(_)))
-            .count(),
-        PAST_THE_PARAMETER_LIMIT
-    );
+    let exported: Vec<String> = export
+        .iter()
+        .filter_map(|record| match record {
+            polylogue_model::bundle::Record::Message(record) => Some(record.message.text()),
+            _ => None,
+        })
+        .collect();
+    let expected: Vec<String> = (0..PAST_THE_PARAMETER_LIMIT)
+        .map(|i| {
+            if i % 2 == 0 {
+                format!("quokka prompt {i}")
+            } else {
+                format!("quokka answer {i}")
+            }
+        })
+        .collect();
+    assert_eq!(exported, expected);
 
     assert_eq!(w.texts("small"), ["kept"]);
 }
