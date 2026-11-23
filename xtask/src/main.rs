@@ -289,13 +289,13 @@ fn main() -> ExitCode {
                     !files.is_empty() && files.iter().all(|file| nix::is_nix_input(file))
                 });
                 fmt_check(run)?;
+                if nix_changed {
+                    nix::check(run)?;
+                }
                 if !nix_only {
                     clippy(run)?;
                     let arguments = test_arguments(&args, None).expect("the selection is valid");
                     run.nextest("test", &nextest(arguments))?;
-                }
-                if nix_changed {
-                    nix::check(run)?;
                 }
                 if !changed {
                     native_sinex::check(run)?;
