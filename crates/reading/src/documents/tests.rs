@@ -61,7 +61,7 @@ fn layout<'a>(
         facts,
         selected: &selected,
         ready_attachment: &ready,
-        by_source: false,
+        per_item_source: false,
         backwards,
         page_start: None,
     }

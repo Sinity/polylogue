@@ -36,18 +36,23 @@ pub(super) fn prepare(
     selection: &PreparedSelection<'_>,
     operation: &Context,
 ) -> Result<Option<SavedQuery>, Error> {
-    let Ok(Reference::Query { key, .. }) = Reference::parse(target) else {
+    let Ok(Reference::Query {
+        key: pinned_name, ..
+    }) = Reference::parse(target)
+    else {
         return Ok(None);
     };
     let Some(definition) = selection
         .definitions()
         .iter()
-        .find(|definition| definition.name == key)
+        .find(|definition| definition.name == pinned_name)
     else {
         return Ok(None);
     };
-    let name = key.rsplit_once('@').map_or(key.as_str(), |(name, _)| name);
-    let Some(mut query) = reader.saved_query_record(name)? else {
+    let bare_name = pinned_name
+        .rsplit_once('@')
+        .map_or(pinned_name.as_str(), |(name, _)| name);
+    let Some(mut query) = reader.saved_query_record(bare_name)? else {
         return Ok(None);
     };
     let selected_revision = Reference::Assertion(RevisionReference::exact(

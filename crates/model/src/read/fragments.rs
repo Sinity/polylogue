@@ -27,6 +27,31 @@ pub struct FragmentBodyOrigin {
     pub end: u64,
     pub kind: BlockKind,
 }
+/// The classification a reader sees: the message's role and prompt kind (or
+/// a document), then the distinct kinds of the bodies the text came from.
+impl std::fmt::Display for FragmentOrigin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.message {
+            Some(message) => {
+                write!(f, "{} message", message.role.as_str())?;
+                if let Some(kind) = message.prompt_kind {
+                    write!(f, " ({})", kind.as_str())?;
+                }
+            }
+            None => write!(f, "document")?,
+        }
+        let mut kinds: Vec<&str> = Vec::new();
+        for body in &self.bodies {
+            if !kinds.contains(&body.kind.as_str()) {
+                kinds.push(body.kind.as_str());
+            }
+        }
+        if !kinds.is_empty() {
+            write!(f, " · {}", kinds.join(", "))?;
+        }
+        Ok(())
+    }
+}
 impl FragmentOrigin {
     pub fn validate(&self, start: u64, end: u64) -> Result<(), ReadError> {
         let invalid = |why: &str| {

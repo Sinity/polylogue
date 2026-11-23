@@ -9,6 +9,8 @@ use std::io::Read;
 /// Bytes read and sent per blob chunk; bounds memory, not the file size.
 const CHUNK_BYTES: usize = 16 << 10;
 
+/// Streams each attachment blob once per read: `seen` remembers the hashes
+/// already sent, `source` reads the blob bodies.
 pub(super) struct Blobs {
     seen: ExportItems,
     source: polylogue_store::blobs::Blobs,

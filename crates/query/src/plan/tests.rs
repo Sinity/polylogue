@@ -62,7 +62,9 @@ fn saved_object_replays_names_and_shapes_without_a_clock() {
         Err(QueryError::NotBuilt { .. })
     ));
     let bytes = serde_json::to_vec(&object).unwrap();
-    let decoded = serde_json::from_slice(&bytes).unwrap();
+    let decoded: polylogue_model::query_objects::QueryObject =
+        serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(decoded, object);
     validate_object(&decoded).unwrap();
 }
 #[test]

@@ -86,7 +86,7 @@ pub(super) struct Layout<'a> {
     pub ready_attachment: &'a super::attachment_facts::ReadyAttachment<'a>,
     /// Indexed session entries transfer each item at its own source address.
     /// A paired call keeps its output text, while result extras stay at the result.
-    pub by_source: bool,
+    pub per_item_source: bool,
     pub backwards: bool,
     pub page_start: Option<u64>,
 }
@@ -143,14 +143,15 @@ fn segments(
     };
     let mut segments = Vec::new();
     let mut offset = 0u64;
-    let mut replaced = None;
+    // The record whose remaining items the call's pair already presents.
+    let mut folded_record = None;
     let mut attachment_indices = std::collections::BTreeMap::<String, u64>::new();
     for part in base {
         let ReadPart::Item(item) = part else { continue };
-        if replaced.as_ref() == Some(&item.source.reference) {
+        if folded_record.as_ref() == Some(&item.source.reference) {
             continue;
         }
-        replaced = None;
+        folded_record = None;
         let mut pair_at = None;
         let mut count = 1u64;
         if matches!(item.kind, ItemKind::Call { .. })
@@ -163,13 +164,13 @@ fn segments(
             {
                 // The source's result extras are replaced by the same indexed pair's
                 // extras, or suppressed with its already-selected call.
-                replaced = Some(item.source.reference.clone());
-                if layout.by_source && call.reference != item.source.reference {
+                folded_record = Some(item.source.reference.clone());
+                if layout.per_item_source && call.reference != item.source.reference {
                     // The call's combined presentation was emitted at the call.
                     // Keep this result's ordinary typed data and attachment items
                     // here, rather than buffering them from that earlier message.
                     if layout.options.tools() == Expansion::Full {
-                        replaced = None;
+                        folded_record = None;
                     }
                     continue;
                 }
@@ -177,7 +178,7 @@ fn segments(
                     continue;
                 }
                 pair_at = Some((message.clone(), ordinal));
-                if !layout.by_source
+                if !layout.per_item_source
                     && layout.options.tools() == Expansion::Full
                     && let Some(result) = &result
                     && (layout.options.view != View::Context || (layout.selected)(result)?)
@@ -276,7 +277,7 @@ fn pair_parts(
     let mut continuing = true;
     let mut attachment_index = 0u64;
     polylogue_render::visit_source_block(&source, layout.options, &detail, |mut item| {
-        if layout.by_source && item.source.reference != segment.item.source.reference {
+        if layout.per_item_source && item.source.reference != segment.item.source.reference {
             return true;
         }
         if item.source.reference == segment.item.source.reference

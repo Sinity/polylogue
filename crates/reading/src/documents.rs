@@ -56,7 +56,8 @@ fn emit_items(
         items.reverse();
     }
     for (item, value) in items {
-        let item = u64::try_from(item).map_err(|_| stale())?;
+        let item = u64::try_from(item)
+            .map_err(|_| Error::internal("a document has more items than the supported count"))?;
         if page_start.is_some_and(|page_start| {
             if layout.backwards {
                 item > page_start.item
@@ -115,7 +116,9 @@ fn block_items(
                 attachment,
                 layout.ready_attachment,
             )?;
-            attachment = attachment.checked_add(1).ok_or_else(stale)?;
+            attachment = attachment.checked_add(1).ok_or_else(|| {
+                Error::internal("a block has more attachments than the supported count")
+            })?;
         }
     }
     Ok(items)

@@ -1000,7 +1000,7 @@ static ALTERNATES: UnitSpec = UnitSpec {
 };
 static QUERIES: UnitSpec = UnitSpec {
     from: T(
-        "(SELECT q.hash,q.commit_seq,a.key AS name,CASE WHEN count(DISTINCT a.id)=1 THEN min(a.id) END AS revision,coalesce(min(json_extract(a.value,'$.text')),q.normal_form) AS text,CASE WHEN count(DISTINCT a.id)=1 THEN min(a.created_at) END AS saved_at FROM source_query q LEFT JOIN source_assertion a ON a.kind='saved_query' AND json_extract(a.value,'$.hash')=q.hash AND EXISTS(SELECT 1 FROM source_revision_state rs WHERE rs.id=a.id AND rs.current=1 AND rs.withdrawn=0) GROUP BY q.hash,a.key) {r}",
+        "(SELECT q.hash,q.commit_seq,a.key AS name,CASE WHEN count(DISTINCT a.id)=1 THEN min(a.id) END AS revision,coalesce(CASE WHEN count(DISTINCT a.id)<=1 THEN min(json_extract(a.value,'$.text')) END,q.normal_form) AS text,CASE WHEN count(DISTINCT a.id)=1 THEN min(a.created_at) END AS saved_at FROM source_query q LEFT JOIN source_assertion a ON a.kind='saved_query' AND json_extract(a.value,'$.hash')=q.hash AND EXISTS(SELECT 1 FROM source_revision_state rs WHERE rs.id=a.id AND rs.current=1 AND rs.withdrawn=0) GROUP BY q.hash,a.key) {r}",
     ),
     key: "({r}.hash || ':' || coalesce({r}.name,''))",
     identity: &["{r}.hash", "coalesce({r}.name,'')"],

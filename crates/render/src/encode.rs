@@ -403,7 +403,7 @@ impl<'a> Encoder<'a> {
                 ))?;
                 self.line(&format!(
                     "Source classification: {} · recorded source length: {}",
-                    fragment_origin_label(origin),
+                    value_text(origin),
                     fragment
                         .coverage
                         .total_bytes
@@ -887,22 +887,6 @@ pub(crate) fn call_label(call: &CallItem) -> String {
         format!("result for unknown call {id}")
     } else {
         value_text(&call.tool)
-    }
-}
-
-pub(crate) fn fragment_origin_label(origin: &ValueState<FragmentOrigin>) -> &'static str {
-    match origin {
-        ValueState::Value { .. } => "known",
-        ValueState::Unknown { .. } => "unknown",
-        ValueState::NotRecorded => "not recorded",
-        ValueState::Unavailable { .. } => "unavailable",
-        ValueState::NotApplicable => "not applicable",
-        ValueState::Partial { .. } => "partial",
-        ValueState::Inferred { .. } => "inferred",
-        ValueState::Pending => "pending",
-        ValueState::Error { .. } => "error",
-        ValueState::Stale { .. } => "stale",
-        ValueState::Inherited { .. } => "inherited",
     }
 }
 

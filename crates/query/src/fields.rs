@@ -43,8 +43,12 @@ impl Kind {
                 .map(|n| n.to_string())
                 .ok_or_else(|| format!("{field} is a duration such as 90s, 5m or 2h")),
             _ => {
+                let digits = text.strip_prefix(['-', '+']).unwrap_or(text);
                 if let Ok(n) = text.parse::<i64>() {
                     Ok(n.to_string())
+                } else if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+                    // Rounding it through f64 would compare a different value.
+                    Err(format!("{field} is out of range for a whole number"))
                 } else if let Ok(f) = text.parse::<f64>()
                     && f.is_finite()
                 {
