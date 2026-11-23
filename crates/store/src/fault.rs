@@ -1,6 +1,6 @@
-//! Test-only fault injection. With the `faults` feature a
-//! test arms a point to fail or panic; without it every check compiles to
-//! nothing, and no shipped build enables the feature.
+//! Test-only fault injection. With the `faults` feature a test arms a point
+//! to fail, panic, stop the process or hold the thread; without it every
+//! check compiles to nothing, and no shipped build enables the feature.
 
 /// What an armed point does when reached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,8 +93,9 @@ mod armed {
 #[cfg(feature = "faults")]
 pub use armed::{arm, clear, held, release};
 
-/// Reaching `point` for `subject` (a path, a table): fails or panics if a
-/// test armed it, otherwise nothing.
+/// Reaching `point` for `subject` (a path, a table): fails, panics, stops the
+/// process or holds the thread if a test armed it (a hold or stop returns only
+/// once the test releases or continues it), otherwise nothing.
 #[inline]
 pub fn check(point: &str, subject: &str) -> crate::Result<()> {
     #[cfg(feature = "faults")]

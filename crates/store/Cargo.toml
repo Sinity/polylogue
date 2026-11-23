@@ -18,7 +18,6 @@ rusqlite.workspace = true
 blake3.workspace = true
 unicode-normalization.workspace = true
 sha2 = "0.10"
-memchr.workspace = true
 zstd.workspace = true
 uuid.workspace = true
 serde.workspace = true

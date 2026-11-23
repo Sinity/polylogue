@@ -105,6 +105,7 @@ impl Blobs {
     }
 
     /// Check each committed extent without changing stored bytes.
+    #[cfg(test)]
     pub fn scan(&self) -> Result<Vec<hashed_blobs::Mismatch>> {
         let conn = Connection::open_with_flags(&self.catalog, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         let mut statement = conn.prepare(&format!(
@@ -125,13 +126,11 @@ impl Blobs {
     pub fn read_plain(
         &self,
         hash: &hashed_blobs::Hash,
-        expected: Option<u64>,
+        expected: u64,
         check: impl FnMut() -> hashed_blobs::Result<()> + Send + 'static,
     ) -> Result<super::BlobReader> {
         let extent = self.extent(hash)?;
-        if extent.kind != hashed_blobs::Kind::Plain
-            || expected.is_some_and(|length| extent.decoded_len != length)
-        {
+        if extent.kind != hashed_blobs::Kind::Plain || extent.decoded_len != expected {
             return Err(StoreError::BlobCorrupt(BlobHash(hash.0)));
         }
         Ok(
@@ -150,7 +149,7 @@ impl Blobs {
         mut visit: impl FnMut(&[u8]) -> std::result::Result<(), E>,
     ) -> std::result::Result<hashed_blobs::VerificationStats, E> {
         use std::io::Read;
-        let mut reader = self.read_plain(hash, Some(expected), || Ok(()))?;
+        let mut reader = self.read_plain(hash, expected, || Ok(()))?;
         let mut digest = blake3::Hasher::new();
         let mut buffer = vec![0; 64 << 10];
         loop {
@@ -170,11 +169,11 @@ impl Blobs {
 
 pub(crate) fn load_extent(
     conn: &Connection,
-    schema: &str,
+    table_prefix: &str,
     hash: &hashed_blobs::Hash,
 ) -> Result<Option<hashed_blobs::Extent>> {
     let bytes: Option<Vec<u8>> = conn.scalar_optional(
-        &format!("SELECT storage FROM {schema}blob WHERE hash=?1"),
+        &format!("SELECT storage FROM {table_prefix}blob WHERE hash=?1"),
         [hash.0.as_slice()],
     )?;
     bytes

@@ -10,6 +10,26 @@ use polylogue_model::Timestamp;
 use rusqlite::OptionalExtension;
 use serde::Serialize;
 
+/// The bodies of a message's text blocks in order; `check` runs once per
+/// block so a caller can cancel a long read.
+fn message_text_parts(
+    conn: &rusqlite::Connection,
+    message_pk: i64,
+    mut check: impl FnMut() -> Result<()>,
+) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT g.body, t.start, t.length FROM block b JOIN text t ON t.id = b.text_id
+           JOIN text_group g ON g.id = t.group_id
+          WHERE b.message_pk = ?1 AND b.kind = 'text' ORDER BY b.idx",
+    )?;
+    let mut parts = Vec::new();
+    for text in stmt.query_and_then([message_pk], |r| crate::text_rows::joined(r, 0))? {
+        check()?;
+        parts.push(text?);
+    }
+    Ok(parts)
+}
+
 /// A delivery as stored, without its text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeliveryRow {
@@ -149,16 +169,7 @@ impl Reader<'_> {
             .query_row([pk], |r| r.get(0))?;
         let last_answer = match last_answer {
             Some(message) => {
-                let mut parts = Vec::new();
-                let mut stmt = conn.prepare_cached(
-                    "SELECT g.body, t.start, t.length FROM block b JOIN text t ON t.id = b.text_id
-                       JOIN text_group g ON g.id = t.group_id
-                      WHERE b.message_pk = ?1 AND b.kind = 'text' ORDER BY b.idx",
-                )?;
-                for text in stmt.query_and_then([message], |r| crate::text_rows::joined(r, 0))? {
-                    parts.push(text?);
-                }
-                let text = parts.join("\n");
+                let text = message_text_parts(conn, message, || Ok(()))?.join("\n");
                 (!text.trim().is_empty()).then_some(text)
             }
             None => None,
@@ -251,12 +262,7 @@ impl Reader<'_> {
         let Some((pk, message_id, at, written_by)) = selected else {
             return Ok(None);
         };
-        let mut parts = Vec::new();
-        let mut statement = conn.prepare_cached("SELECT g.body,t.start,t.length FROM block b JOIN text t ON t.id=b.text_id JOIN text_group g ON g.id=t.group_id WHERE b.message_pk=?1 AND b.kind='text' ORDER BY b.idx")?;
-        for text in statement.query_and_then([pk], |r| crate::text_rows::joined(r, 0))? {
-            self.check()?;
-            parts.push(text?);
-        }
+        let parts = message_text_parts(conn, pk, || self.check())?;
         self.check()?;
         Ok(Some(Prompt {
             written_by,
@@ -366,7 +372,7 @@ impl Reader<'_> {
         Ok(out)
     }
 
-    /// The sessions Polylogue started whose first turn (a `pack`
+    /// The sessions Polylogue started whose first turn (a `first_turn`
     /// delivery) refers to `reference`, such as `role:reviewer`, newest
     /// first: each with the directory it was started in and when.
     pub fn sessions_started_with(
@@ -430,12 +436,12 @@ impl Reader<'_> {
             .filter(|spec| !spec.key.ends_with('*'))
             .map(|spec| spec.key.to_string())
             .collect();
-        let rows = self
+        let stored_keys = self
             .conn()?
             .prepare("SELECT DISTINCT key FROM source_assertion WHERE kind='setting' ORDER BY key")?
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        for key in rows {
+        for key in stored_keys {
             if polylogue_model::settings::declaration(&key).is_ok()
                 && polylogue_model::settings::historical_hint(&key).is_none()
                 && !keys.contains(&key)
@@ -458,15 +464,12 @@ impl Reader<'_> {
     /// The text of a message's text blocks, joined.
     pub fn message_text(&self, message: &str) -> Result<Option<String>> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare_cached(
-            "SELECT g.body, t.start, t.length FROM message m JOIN block b ON b.message_pk = m.pk AND b.kind = 'text'
-               JOIN text t ON t.id = b.text_id JOIN text_group g ON g.id = t.group_id
-              WHERE m.id = ?1 ORDER BY b.idx",
-        )?;
-        let mut parts = Vec::new();
-        for text in stmt.query_and_then([message], |r| crate::text_rows::joined(r, 0))? {
-            parts.push(text?);
-        }
+        let Some(pk) =
+            conn.scalar_optional::<i64>("SELECT pk FROM message WHERE id = ?1", [message])?
+        else {
+            return Ok(None);
+        };
+        let parts = message_text_parts(conn, pk, || Ok(()))?;
         Ok((!parts.is_empty()).then(|| parts.join("\n")))
     }
 
@@ -494,7 +497,7 @@ impl Reader<'_> {
         Ok((
             candidates,
             u64::try_from(inspect_count)
-                .map_err(|_| crate::StoreError::stored(0, "negative notice count"))?,
+                .map_err(|_| crate::StoreError::stored(0, "negative inspection count"))?,
         ))
     }
 

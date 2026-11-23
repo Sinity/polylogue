@@ -188,7 +188,7 @@ pub(crate) fn copy_reading(tx: &Connection, copy: &ReadingCopy, counter: i64) ->
                     .map(|column| match column.as_str() {
                         "chain" => "?3".to_owned(),
                         // The shown document source is the newest chain's
-                        // (documents.rs `refresh`); the older copy never is.
+                        // (`documents::apply_choice`); the older copy never is.
                         "shown" if table == "document_source" => "0".to_owned(),
                         // When this write committed the row, as a parse
                         // of the chain would record its own write.

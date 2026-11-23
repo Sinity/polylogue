@@ -88,6 +88,8 @@ pub struct Dependencies {
     pub names: BTreeMap<String, usize>,
     pub sources: std::collections::BTreeSet<String>,
 }
+/// Publication state reloaded on resume: each family's dependencies and each
+/// kept result's stored shape.
 #[derive(Default)]
 pub struct PublisherVocabulary {
     pub families: BTreeMap<String, Dependencies>,
@@ -512,15 +514,7 @@ impl CatalogWriter {
         self.remove_values(contributor)?;
         for (field, values) in values {
             for (value, n) in values {
-                if *n == 0 {
-                    continue;
-                }
-                let n = count(*n)?;
-                self.conn.execute(
-                    "INSERT INTO contribution VALUES(?1,?2,?3,?4)",
-                    params![contributor, field, value, n],
-                )?;
-                self.conn.execute("INSERT INTO value_count VALUES(?1,?2,?3) ON CONFLICT(field,value) DO UPDATE SET n=n+excluded.n", params![field,value,n])?;
+                self.set_value(contributor, field, value, *n)?;
             }
         }
         Ok(())
@@ -724,8 +718,10 @@ impl CatalogReader {
         let mut sessions = statement
             .query_map(params![prefix, upper], session)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        if sessions.is_empty() && !prefix.is_empty() {
-            let pattern = fuzzy_pattern(&text_key(prefix));
+        // A prefix of only combining marks has an empty key, which would match every title.
+        let key = text_key(prefix);
+        if sessions.is_empty() && !key.is_empty() {
+            let pattern = fuzzy_pattern(&key);
             sessions=self.conn.prepare("SELECT id,native_id,prefix,title,origin,repo,last_activity FROM session WHERE title_key LIKE ?1 ESCAPE '\\' ORDER BY last_activity IS NULL,last_activity DESC,id")?.query_map([pattern],session)?.collect::<rusqlite::Result<Vec<_>>>()?;
         }
         Ok(sessions)
@@ -800,6 +796,9 @@ fn common_prefix(a: &str, b: &str) -> usize {
         .map(|(c, _)| c.len_utf8())
         .sum()
 }
+/// The smallest string above every string that starts with `prefix`; `None`
+/// means no upper bound (the empty prefix, or a prefix of only the greatest
+/// character).
 fn prefix_end(prefix: &str) -> Option<String> {
     let mut value = prefix.to_owned();
     while let Some(c) = value.pop() {

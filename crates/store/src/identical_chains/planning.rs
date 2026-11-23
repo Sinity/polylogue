@@ -55,7 +55,7 @@ impl ChainLayouts {
             "SELECT EXISTS(SELECT 1 FROM layout WHERE version IS NULL)",
             [],
         )?;
-        if count > 1 && unread {
+        if unread {
             let mut statement = source.prepare(&schema.sql(
                 "SELECT chain,offset,length,blob,blob_offset FROM @source.extent WHERE input=?1 ORDER BY chain,offset",
             ))?;

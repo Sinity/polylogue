@@ -7,11 +7,9 @@
 //!   facts it needs without a parser or an input file.
 //! - [`writer::WriterArchive`]: the real writer over a temporary archive, for
 //!   tests of what the writer and the derive step make of parsed records.
-//! - [`text_search`]: whether a text is still stored or indexed anywhere.
 
 pub mod authored;
 pub mod signals;
-pub mod text_search;
 pub mod writer;
 
 use crate::ConnExt as _;

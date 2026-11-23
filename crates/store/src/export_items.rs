@@ -1,4 +1,6 @@
-//! Export items sorted in a temporary database, private to one import.
+//! Export items sorted in a SQLite database: a temporary one
+//! ([`ExportItems::new`]), or one kept in a directory so staging can resume
+//! after a stop ([`ExportItems::in_directory`]).
 use crate::ConnExt as _;
 use crate::OptionExt as _;
 use crate::{Result, StoreError};
@@ -92,14 +94,19 @@ impl ExportItems {
         })
     }
 
-    /// Commit ordering only after its referenced compressed bytes are on disk.
-    /// This is also used before keeping a failed client's working directory.
-    pub fn checkpoint(&mut self) -> Result<()> {
+    fn ensure_no_open_scan(&self) -> Result<()> {
         if self.scan_group.is_some() {
             return Err(StoreError::Invalid(
                 "export scan group is incomplete".into(),
             ));
         }
+        Ok(())
+    }
+
+    /// Commit ordering only after its referenced compressed bytes are on disk.
+    /// This is also used before keeping a failed client's working directory.
+    pub fn checkpoint(&mut self) -> Result<()> {
+        self.ensure_no_open_scan()?;
         self.payload.sync_data()?;
         self.db.execute_batch("COMMIT; BEGIN;")?;
         Ok(())
@@ -159,11 +166,7 @@ impl ExportItems {
 
     /// Restarts traversal without rereading or duplicating staged bytes.
     pub fn reset(&mut self, order: Order) -> Result<()> {
-        if self.scan_group.is_some() {
-            return Err(StoreError::Invalid(
-                "export scan group is incomplete".into(),
-            ));
-        }
+        self.ensure_no_open_scan()?;
         self.order = order;
         self.cursor = None;
         Ok(())
@@ -185,11 +188,7 @@ impl ExportItems {
     }
 
     pub fn next_item(&mut self) -> Result<Option<Item>> {
-        if self.scan_group.is_some() {
-            return Err(StoreError::Invalid(
-                "export scan group is incomplete".into(),
-            ));
-        }
+        self.ensure_no_open_scan()?;
         let (sort, ordinal) = self.cursor.clone().unwrap_or((vec![], -1));
         let column = match self.order {
             Order::Primary => "sort",
@@ -250,9 +249,7 @@ impl ExportItems {
         Ok(())
     }
     pub fn commit_scan(&mut self) -> Result<()> {
-        if self.scan_group.is_none() {
-            return Err(StoreError::Invalid("no export scan group".into()));
-        }
+        self.scan_group.or_invalid("no export scan group")?;
         self.db.execute_batch("RELEASE scan_group")?;
         self.scan_group = None;
         Ok(())

@@ -143,7 +143,7 @@ impl Read for Decoder {
             *self = match chain.single_file_blob() {
                 Some(hash) => Self::Plain(Box::new(
                     store
-                        .read_plain(&hashed_blobs::Hash(hash.0), Some(chain.length), || Ok(()))
+                        .read_plain(&hashed_blobs::Hash(hash.0), chain.length, || Ok(()))
                         .map_err(io::Error::other)?,
                 )),
                 None => Self::Chain(Box::new(chain.reader(std::sync::Arc::clone(store)))),
@@ -166,7 +166,7 @@ impl Imported {
         Ok(Self {
             reader: Decoder::Plain(Box::new(store.read_plain(
                 &hashed_blobs::Hash(hash.0),
-                Some(length),
+                length,
                 || Ok(()),
             )?)),
             start: 0,

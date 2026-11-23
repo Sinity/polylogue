@@ -66,6 +66,32 @@ fn database() -> Connection {
 }
 
 #[test]
+fn a_known_commit_replaces_an_unknown_one_and_is_then_kept() {
+    let conn = database();
+    let output = output(record(
+        0,
+        "hé",
+        Some(6),
+        BlobHash::of(b"complete provider value"),
+    ));
+    let prepared = PreparedFragments::prepare(&output).unwrap();
+    let committed = |conn: &Connection| -> Option<i64> {
+        conn.query_row("SELECT committed FROM text_fragment_source", [], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    };
+    prepared.apply(&conn, 1, 1, 9, |_| Ok(None)).unwrap();
+    assert_eq!(committed(&conn), None);
+    prepared.apply(&conn, 1, 1, 9, |_| Ok(Some(130))).unwrap();
+    assert_eq!(committed(&conn), Some(130));
+    prepared.apply(&conn, 1, 1, 9, |_| Ok(Some(200))).unwrap();
+    assert_eq!(committed(&conn), Some(130));
+    prepared.apply(&conn, 1, 1, 9, |_| Ok(None)).unwrap();
+    assert_eq!(committed(&conn), Some(130));
+}
+
+#[test]
 fn fragment_preparation_binds_ranges_and_never_uses_sender_commit() {
     let mut conn = database();
     let mut output = output(record(

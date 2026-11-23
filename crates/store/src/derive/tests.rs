@@ -95,7 +95,7 @@ fn a_session_takes_its_repository_from_the_nearest_lookup() {
     let mut w = WriterArchive::new();
     let mut s = Session::new(sid("a"), SessionKind::Main);
     s.offer_cwd("/r/project/x/sub");
-    w.lookups.push(RepoLookup {
+    w.repo_lookups.push(RepoLookup {
         path: "/r/project/x".into(),
         remote: Some("https://example.com/x".into()),
         root_commits: vec!["abc".into()],
@@ -106,7 +106,7 @@ fn a_session_takes_its_repository_from_the_nearest_lookup() {
         json!({"repo": "https://example.com/x", "repo_root": "abc"})
     );
     // The lookup changes: the session is attributed again.
-    w.lookups.push(RepoLookup {
+    w.repo_lookups.push(RepoLookup {
         path: "/r/project/x".into(),
         remote: Some("https://example.com/y".into()),
         root_commits: vec!["abc".into()],
@@ -124,7 +124,7 @@ fn a_repository_the_records_name_wins_over_the_lookup() {
     let mut s = Session::new(sid("a"), SessionKind::Main);
     s.offer_cwd("/r/project/x");
     s.repo = Some("git@own:repo".into());
-    w.lookups.push(RepoLookup {
+    w.repo_lookups.push(RepoLookup {
         path: "/r/project/x".into(),
         remote: Some("https://example.com/x".into()),
         root_commits: vec!["abc".into()],

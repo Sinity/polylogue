@@ -51,7 +51,7 @@ fn assert_blob(engine: &Engine, hash: polylogue_model::BlobHash, expected: &[u8]
         .blobs
         .read_plain(
             &hashed_blobs::Hash(hash.0),
-            Some(expected.len() as u64),
+            expected.len() as u64,
             || Ok(()),
         )
         .unwrap();

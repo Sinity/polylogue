@@ -89,7 +89,7 @@ impl Blobs {
         let size = size.unwrap_or(extent.decoded_len);
         let mut bytes = self
             .source
-            .read_plain(&hashed_blobs::Hash(hash.0), Some(size), || Ok(()))?;
+            .read_plain(&hashed_blobs::Hash(hash.0), size, || Ok(()))?;
         let descriptor = Record::Blob(BlobRecord {
             reference: format!("blob:{hash}"),
             file: FileDescriptor {

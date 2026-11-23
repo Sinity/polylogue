@@ -19,8 +19,6 @@ use crate::Result;
 use rusqlite::{Connection, params};
 
 const PROGRESS: &str = "chain_progress";
-/// Earlier writers marked counts `kept` before they accounted for linked
-/// database originals.
 const CURRENT: &str = "kept_with_database_rows";
 
 /// The rows of the chains in `chains`, a subquery of `(input, chain,
@@ -137,25 +135,12 @@ pub(crate) fn open(index: &Connection, standalone: bool) -> Result<()> {
     let synchronous: i64 = index.pragma_query_value(None, "synchronous", |r| r.get(0))?;
     index.pragma_update(None, "synchronous", synchronous.max(2))?;
     let tx = rusqlite::Transaction::new_unchecked(index, rusqlite::TransactionBehavior::Immediate)?;
-    match kept.as_deref() {
-        Some(CURRENT) => {}
-        Some("kept") => {
-            // Upgrade only the parents of existing row links. The other
-            // cached counts are already current.
-            let links = crate::source::database_links();
-            let chains = format!(
-                "SELECT r.input, r.chain, max(r.length) AS length
-                 FROM (SELECT DISTINCT container_input FROM ({links})) d
-                 CROSS JOIN source_revision r ON r.input = d.container_input
-                 GROUP BY r.input, r.chain"
-            );
-            tx.execute(&update_counts(&chains), [])?;
-        }
-        _ => tx.execute_batch(&format!(
+    if kept.as_deref() != Some(CURRENT) {
+        tx.execute_batch(&format!(
             "DELETE FROM chain_progress;
              INSERT INTO chain_progress(input, chain, origin, reading_version, state) {};",
             chain_rows(EVERY_CHAIN)
-        ))?,
+        ))?;
     }
     crate::meta_set(&tx, PROGRESS, if standalone { "open" } else { CURRENT })?;
     tx.commit()?;

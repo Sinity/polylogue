@@ -38,12 +38,12 @@ impl Reader<'_> {
     }
 }
 
-/// One backfill job from the archive tables under `schema` (`a.` when the
-/// archive is attached, empty on the archive connection).
-pub(crate) fn read(conn: &Connection, schema: &str, id: &str) -> Result<Option<BackfillJob>> {
+/// One backfill job from the archive tables, whose names start with `table_prefix`
+/// (`source_` on the cache connection, empty on a standalone archive).
+pub(crate) fn read(conn: &Connection, table_prefix: &str, id: &str) -> Result<Option<BackfillJob>> {
     let row = conn
         .prepare_cached(&format!(
-            "SELECT provider, since, created_at, execution FROM {schema}backfill_job WHERE id = ?1"
+            "SELECT provider, since, created_at, execution FROM {table_prefix}backfill_job WHERE id = ?1"
         ))?
         .query_row([id], |r| <(String, Option<i64>, i64, String)>::try_from(r))
         .optional()?;
@@ -54,7 +54,7 @@ pub(crate) fn read(conn: &Connection, schema: &str, id: &str) -> Result<Option<B
     let events = conn
         .prepare_cached(&format!(
             "SELECT at, kind, by, position, listed, captured, unchanged, failed, detail, request
-             FROM {schema}backfill_job_event WHERE job = ?1 ORDER BY n"
+             FROM {table_prefix}backfill_job_event WHERE job = ?1 ORDER BY n"
         ))?
         .query_map([id], |r| {
             Ok(BackfillEvent {

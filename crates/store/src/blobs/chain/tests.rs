@@ -269,7 +269,7 @@ fn a_segment_range_decodes_only_its_selected_frame() {
     let hash = w.add(0, size as u64, 0, &bytes);
     let mut reader = w
         .store
-        .read_plain(&hashed_blobs::Hash(hash.0), Some(size as u64), || Ok(()))
+        .read_plain(&hashed_blobs::Hash(hash.0), size as u64, || Ok(()))
         .unwrap();
     let start = size - 100;
     reader.seek(SeekFrom::Start(start as u64)).unwrap();
