@@ -53,8 +53,8 @@ pub struct Selection {
 }
 
 impl Selection {
-    /// The same selection, narrowed to one tool's sessions.
-    pub fn for_tool(mut self, origin: &str) -> Self {
+    /// The same selection, narrowed to one origin's sessions.
+    pub fn for_origin(mut self, origin: &str) -> Self {
         self.origins = Some(vec![origin.to_owned()]);
         self
     }

@@ -520,7 +520,7 @@ impl<'a> Compiler<'a> {
                 self.relation_aggregate(relation, None, aggregates, at)?
             }
             TransformKind::Join { query, on } => {
-                let inner = Relation::new(self.other_query(query, relation.program.unit, at)?);
+                let inner = Relation::new(self.other_query(query, at)?);
                 self.rel_join_pair(relation, inner, on, at)?;
             }
             TransformKind::Diff { query } => self.relation_diff(relation, query, at)?,
@@ -608,11 +608,7 @@ impl<'a> Compiler<'a> {
                     scope,
                     pick,
                 } => {
-                    let inner = Relation::new(self.other_query(
-                        query,
-                        input.program.unit,
-                        condition.span.start,
-                    )?);
+                    let inner = Relation::new(self.other_query(query, condition.span.start)?);
                     let predicate = self.rel_order_pair(
                         relation,
                         inner,
@@ -1196,7 +1192,7 @@ impl Compiler<'_> {
             query,
         } = &stage.kind
         {
-            let other = self.other_query(query, relation.program.unit, stage.span.start)?;
+            let other = self.other_query(query, stage.span.start)?;
             let yes = matches!(
                 stage.kind,
                 TransformKind::Combine {
@@ -1320,7 +1316,7 @@ impl Compiler<'_> {
         query: &Query,
         at: usize,
     ) -> Result<(), QueryError> {
-        let mut before = Relation::new(self.other_query(query, relation.program.unit, at)?);
+        let mut before = Relation::new(self.other_query(query, at)?);
         let after_input = self.input(relation);
         let before_input = self.input(&mut before);
         let left_keys = relation.identity_order();

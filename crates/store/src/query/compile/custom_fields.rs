@@ -946,8 +946,14 @@ pub(crate) fn alternate_lang(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<S
 }
 
 pub(crate) fn run_outcome(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+    const STATES: [&str; 2] = ["ok", "error"];
     let mut parts = Vec::new();
     for value in x.values() {
+        let value = value.to_ascii_lowercase();
+        if !STATES.contains(&value.as_str()) {
+            let message = format!("outcome is one of {}", STATES.join(", "));
+            return Err(x.bad(value, message));
+        }
         let p = c.text_param(&value);
         parts.push(format!("json_extract({}.outcome,'$.state')={p}", x.row()));
     }

@@ -329,8 +329,8 @@ impl Prefix {
         let spans: Vec<(i64, i64)> = intervals.iter().map(|(a, b, _)| (*a, *b)).collect();
         self.intervals += intervals.len() as i64;
         self.tool_sum_ms += spans.iter().map(|(a, b)| b - a).sum::<i64>();
-        self.tool_union_ms += union_ms(spans.clone());
-        clustered.extend(spans);
+        clustered.extend(spans.iter().copied());
+        self.tool_union_ms += union_ms(spans);
         self.clustered_ms += union_ms(clustered);
         if let Some((a, b)) = lower.or(self.first).zip(self.last) {
             let waiting: Vec<_> = waiting
@@ -690,7 +690,7 @@ fn split(
                     .or_default() += ms / n + i64::from((rank as i64) < ms % n);
             }
         } else {
-            let party = if active_wait.len() == 1 && active_wait.values().sum::<usize>() == 1 {
+            let party = if active_wait.values().sum::<usize>() == 1 {
                 *active_wait.keys().next().unwrap()
             } else {
                 "unattributed"

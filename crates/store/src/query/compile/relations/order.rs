@@ -214,11 +214,6 @@ impl Compiler<'_> {
             )),
         );
         let mut identity = identity_columns(outer);
-        for key in identity_columns(&inner) {
-            let slot = self.slot();
-            select_list.push(format!("i.{} AS {}", column_sql(&key), column_sql(&slot)));
-            identity.push(slot);
-        }
         if matches!(on, JoinOn::Order { .. }) {
             for value in [&pair.coarse, &pair.distance_key] {
                 let slot = self.slot();
@@ -230,6 +225,7 @@ impl Compiler<'_> {
             let slot = self.slot();
             select_list.push(format!("i.{} AS {}", column_sql(&key), column_sql(&slot)));
             outer.program.order.push(OrderKey::ascending(&slot));
+            identity.push(slot);
         }
         let ctes = if pair.ctes.is_empty() {
             String::new()

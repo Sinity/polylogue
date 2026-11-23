@@ -72,15 +72,14 @@ impl KeyMaps {
         Self::load_with_budget(index, MemoryBudget::default().keys() / 3)
     }
     pub(crate) fn load_with_budget(index: &Connection, bytes: u64) -> Result<Self> {
-        let keys = Self {
-            messages: RwLock::new(Rows::new(bytes / 3)?),
-            events: RwLock::new(Rows::new(bytes / 3)?),
-            versions: RwLock::new(Rows::new(bytes / 3)?),
-        };
-        for (table, values) in [("message", &keys.messages), ("event", &keys.events)] {
+        // Nothing else sees the maps until they are returned, so they are
+        // filled unlocked and wrapped last.
+        let mut messages = Rows::new(bytes / 3)?;
+        let mut events = Rows::new(bytes / 3)?;
+        let mut versions = Rows::new(bytes / 3)?;
+        for (table, values) in [("message", &mut messages), ("event", &mut events)] {
             let mut statement = index.prepare(&format!("SELECT id,pk FROM {table}"))?;
             let mut rows = statement.query([])?;
-            let mut values = values.write().expect("key map lock");
             while let Some(row) = rows.next()? {
                 let key: String = row.get(0)?;
                 values.add(hash_of(key.as_bytes()), row.get(1)?)?;
@@ -90,9 +89,13 @@ impl KeyMaps {
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
             let hash: Vec<u8> = row.get(0)?;
-            keys.add_message_version(&hash, row.get(1)?)?;
+            versions.add(hash_of(&hash), row.get(1)?)?;
         }
-        Ok(keys)
+        Ok(Self {
+            messages: RwLock::new(messages),
+            events: RwLock::new(events),
+            versions: RwLock::new(versions),
+        })
     }
     pub(crate) fn message_version(&self, conn: &Connection, hash: &[u8]) -> Result<Option<i64>> {
         self.versions.read().expect("key map lock").find(

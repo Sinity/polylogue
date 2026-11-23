@@ -361,7 +361,10 @@ impl crate::Reader<'_> {
         let mut statement = conn.prepare_cached(
             "SELECT id, live_facts, last_activity_at, cwd FROM session
              WHERE (live_last_at IS NOT NULL AND live_last_at >= ?1)
-                OR (live_last_at IS NULL AND last_activity_at >= ?2)",
+                OR (live_last_at IS NULL AND last_activity_at >= ?2)
+                OR (json_extract(live_facts, '$.root') IS NOT NULL
+                    AND json_extract(live_facts, '$.root_gone_at') IS NULL
+                    AND json_extract(live_facts, '$.ended_at') IS NULL)",
         )?;
         let rows = statement.query_map(
             params![

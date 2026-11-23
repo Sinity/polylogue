@@ -94,7 +94,6 @@ pub enum RowKind {
     Group { columns: Vec<String> },
     Summary,
     Distinct { columns: Vec<String> },
-    Unknown { reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

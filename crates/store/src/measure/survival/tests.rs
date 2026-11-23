@@ -16,6 +16,9 @@ fn kaplan_meier_matches_a_hand_computed_curve() {
     assert!((s[2] - 0.3).abs() < 1e-12);
     assert_eq!(median, Some(3.0));
     assert_eq!(curve[1].at_risk, 4);
+    // Greenwood: S * sqrt(sum d/(n(n-d))) = 0.8*sqrt(1/20), then 0.3*sqrt(1/20+1/12+1/2).
+    assert!((curve[0].std_error - 0.178_885_4).abs() < 1e-6);
+    assert!((curve[2].std_error - 0.238_746_7).abs() < 1e-6);
 }
 
 #[test]

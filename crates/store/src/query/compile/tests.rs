@@ -217,7 +217,10 @@ fn fields_choose_the_columns() {
 fn changes_continue_from_a_feed_position() {
     let p = c("feed where after:generation:12:3");
     let sql = statements(&p);
-    assert!(sql.contains("> 12") && sql.contains("> 3"), "{sql}");
+    // Assertions follow the archive counter, removals and sessions the index.
+    assert!(sql.contains(".seq > 3) OR ("), "{sql}");
+    assert!(sql.contains(".seq > 12) OR"), "{sql}");
+    assert!(sql.contains(".changed > 12 OR"), "{sql}");
     assert!(compile_err("feed where after:12").contains("GENERATION:INDEX:ARCHIVE"));
 }
 
@@ -309,10 +312,14 @@ fn designed_units_answer_not_built() {
         assert!(what.contains(unit), "{text}: {what}");
     }
     // A unit nobody designed is still a spelling error, with candidates.
-    assert!(!matches!(
-        compile("pasties", &opts(&[])),
-        Err(QueryError::NotBuilt { .. }) | Ok(_)
-    ));
+    let error = compile("pasties", &opts(&[])).unwrap_err();
+    assert_eq!(error.suggestion(), Some("pastes"));
+}
+
+#[test]
+fn a_run_outcome_is_ok_or_error() {
+    assert!(compile("runs where outcome:Error", &opts(&[])).is_ok());
+    assert!(compile_err("runs where outcome:okay").contains("ok, error"));
 }
 
 #[test]

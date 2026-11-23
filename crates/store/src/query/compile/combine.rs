@@ -24,12 +24,7 @@ impl PendingFusion {
 impl<'a> Compiler<'a> {
     /// Another query in parentheses, compiled over this query's parameters.
     /// A nested query's bound unit, notes, terms and checks come from its tree.
-    pub(super) fn other_query(
-        &mut self,
-        query: &Query,
-        _unit: Unit,
-        at: usize,
-    ) -> Result<Program, QueryError> {
+    pub(super) fn other_query(&mut self, query: &Query, at: usize) -> Result<Program, QueryError> {
         let mut query = query.clone();
         // This query is compiled on its own, after its inherited unit was bound.
         if let Source::Unit { implicit, .. } = &mut query.source {
@@ -109,7 +104,7 @@ impl<'a> Compiler<'a> {
                 position: stage.span.start,
             });
         }
-        let program = self.other_query(query, unit, at)?;
+        let program = self.other_query(query, at)?;
         if program.shape != Shape::Rows {
             return Err(QueryError::Invalid {
                 message: "a combined query gives rows, not groups or a summary".into(),
@@ -161,7 +156,7 @@ impl<'a> Compiler<'a> {
                 position: span.start,
             });
         }
-        let program = self.other_query(query, Unit::Sessions, span.start)?;
+        let program = self.other_query(query, span.start)?;
         let (expr, kind) = self.expr(field, scope, span.start)?;
         scalar(kind, field, span.start)?;
         let grouped = &program.columns[0];
@@ -174,7 +169,7 @@ impl<'a> Compiler<'a> {
                 position: span.start,
             });
         }
-        let key = column_sql(program.column_slot(&program.columns[0].name));
+        let key = column_sql(program.column_slot(&grouped.name));
         Ok(format!(
             "CASE WHEN ({expr}) IS NULL THEN NULL ELSE ({expr}) IN (SELECT {key} FROM ({}) WHERE {key} IS NOT NULL) END",
             program.rows()

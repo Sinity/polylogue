@@ -5,13 +5,19 @@ struct Expressions<'a> {
     now: i64,
     aliases: &'a mut usize,
 }
+/// True when any part holds; an empty list holds nothing.
+fn any_part(parts: &[String]) -> String {
+    if parts.is_empty() {
+        "0".into()
+    } else {
+        format!("({})", parts.join(" OR "))
+    }
+}
+
 impl Expressions<'_> {
     fn fresh(&mut self) -> Aliases {
         *self.aliases += 1;
         Aliases::suffixed(*self.aliases)
-    }
-    fn unknown_field(&self, field: &str, unit: Unit, span: Span) -> QueryError {
-        unknown_field(self.text, field, unit, span)
     }
     fn expr(
         &mut self,
@@ -75,7 +81,7 @@ impl Expressions<'_> {
             {
                 id
             } else {
-                return Err(self.unknown_field(field, scope.unit, span));
+                return Err(unknown_field(self.text, field, scope.unit, span));
             };
             let def = id.declaration();
             let Some(expr) = fields::rule(id).expr(a, self.now) else {
@@ -421,11 +427,7 @@ impl Compiler<'_> {
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let comparison = if parts.is_empty() {
-                "0".into()
-            } else {
-                format!("({})", parts.join(" OR "))
-            };
+            let comparison = any_part(&parts);
             return Ok(if op == Op::Ne {
                 format!("NOT ({comparison})")
             } else {
@@ -482,11 +484,7 @@ impl Compiler<'_> {
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            return Ok(if parts.is_empty() {
-                "0".into()
-            } else {
-                format!("({})", parts.join(" OR "))
-            });
+            return Ok(any_part(&parts));
         }
         let (left, left_kind, right, right_kind) =
             self.expression_pair(left, right, None, at, field)?;

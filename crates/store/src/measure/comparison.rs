@@ -63,6 +63,39 @@ pub fn fields(options: &str) -> Result<Vec<&str>> {
     Ok(fields)
 }
 
+/// Fields read from the time rows.
+const TIME_FIELDS: &[&str] = &[
+    "wall_span",
+    "clustered_time",
+    "tool_time",
+    "tool_time_union",
+    "tool_untimed",
+    "ends_with",
+    "last_stop_reason",
+    "waiting_model",
+    "waiting_human",
+];
+
+fn reads_time(fields: &[&str]) -> bool {
+    fields.iter().any(|f| TIME_FIELDS.contains(f))
+}
+
+/// Fields read from the stored count columns.
+fn reads_counts(fields: &[&str]) -> bool {
+    fields
+        .iter()
+        .any(|f| session_sql::COUNT_FIELDS.iter().any(|(n, _)| n == f))
+}
+
+/// The waiting party a `waiting_*` field measures.
+fn party(field: &str) -> &'static str {
+    if field == "waiting_model" {
+        "model"
+    } else {
+        "human"
+    }
+}
+
 pub fn compare(reader: &Reader<'_>, selection: &Selection, options: &str) -> Result<Comparison> {
     let fields = fields(options)?;
     let (condition, params) = selection.session_condition("s.pk")?;
@@ -76,36 +109,7 @@ pub fn compare(reader: &Reader<'_>, selection: &Selection, options: &str) -> Res
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let single = keys.len() == 1;
-    let needs_time = fields.iter().any(|f| {
-        matches!(
-            *f,
-            "wall_span"
-                | "clustered_time"
-                | "tool_time"
-                | "tool_time_union"
-                | "tool_untimed"
-                | "ends_with"
-                | "last_stop_reason"
-                | "waiting_model"
-                | "waiting_human"
-        )
-    });
-    let needs_counts = fields.iter().any(|f| {
-        !matches!(
-            *f,
-            "origin"
-                | "cost_nusd"
-                | "wall_span"
-                | "clustered_time"
-                | "tool_time"
-                | "tool_time_union"
-                | "tool_untimed"
-                | "ends_with"
-                | "last_stop_reason"
-                | "waiting_model"
-                | "waiting_human"
-        )
-    });
+    let (needs_time, needs_counts) = (reads_time(&fields), reads_counts(&fields));
     let mut sessions = vec![];
     for (pk, session, origin) in keys {
         let time = if needs_time {
@@ -136,17 +140,14 @@ pub fn compare(reader: &Reader<'_>, selection: &Selection, options: &str) -> Res
                 "tool_untimed" => json!(span.map(|s| s.tool_untimed)),
                 "ends_with" => json!(span.map(|s| s.ends_with.as_str())),
                 "last_stop_reason" => json!(span.and_then(|s| s.last_stop_reason.as_deref())),
-                "waiting_model" | "waiting_human" => json!(
-                    parties
-                        .iter()
-                        .find(|l| l.party
-                            == if field == "waiting_model" {
-                                "model"
-                            } else {
-                                "human"
-                            })
-                        .map(|l| l.ms)
-                ),
+                "waiting_model" | "waiting_human" => {
+                    json!(
+                        parties
+                            .iter()
+                            .find(|l| l.party == party(field))
+                            .map(|l| l.ms)
+                    )
+                }
                 "cost_nusd" => {
                     let sql = cost_sql();
                     let value = conn.query_row(
@@ -206,16 +207,6 @@ fn field_sql(name: &str) -> Result<String> {
     fields(name)?;
     Ok(match name {
         "origin" => "s.origin".into(),
-        "messages" => stored_count("s", "message_count"),
-        "human_prompts" => stored_count("s", "human_prompt_count"),
-        "human_commands" => stored_count("s", "human_command_count"),
-        "words" => stored_count("s", "word_count"),
-        "human_words" => stored_count("s", "human_word_count"),
-        "model_words" => stored_count("s", "model_word_count"),
-        "thinking_messages" => stored_count("s", "thinking_count"),
-        "compactions" => stored_count("s", "compaction_count"),
-        "tool_calls" => stored_count("s", "tool_call_count"),
-        "errors" => stored_count("s", "error_count"),
         "wall_span" => session_sql::span("s", "wall_ms"),
         "clustered_time" => session_sql::span("s", "clustered_ms"),
         "tool_time" => session_sql::span("s", "tool_sum_ms"),
@@ -224,15 +215,14 @@ fn field_sql(name: &str) -> Result<String> {
         "ends_with" | "last_stop_reason" => session_sql::span("s", name),
         "waiting_model" | "waiting_human" => format!(
             "(SELECT ms FROM session_time st WHERE st.session_pk=s.pk AND st.party='{}' AND st.key='' AND {})",
-            if name == "waiting_model" {
-                "model"
-            } else {
-                "human"
-            },
+            party(name),
             session_sql::current("s", "session_span")
         ),
         "cost_nusd" => cost_sql(),
-        _ => unreachable!("checked field"),
+        _ => match session_sql::COUNT_FIELDS.iter().find(|(n, _)| *n == name) {
+            Some((_, column)) => stored_count("s", column),
+            None => unreachable!("checked field"),
+        },
     })
 }
 
@@ -265,36 +255,7 @@ pub fn summary(
             "count(DISTINCT {sql}) + (count(*)>count({sql})),count(*)-count({sql})"
         ));
     }
-    let needs_time = fields.iter().any(|f| {
-        matches!(
-            *f,
-            "wall_span"
-                | "clustered_time"
-                | "tool_time"
-                | "tool_time_union"
-                | "tool_untimed"
-                | "ends_with"
-                | "last_stop_reason"
-                | "waiting_model"
-                | "waiting_human"
-        )
-    });
-    let needs_counts = fields.iter().any(|f| {
-        !matches!(
-            *f,
-            "origin"
-                | "cost_nusd"
-                | "wall_span"
-                | "clustered_time"
-                | "tool_time"
-                | "tool_time_union"
-                | "tool_untimed"
-                | "ends_with"
-                | "last_stop_reason"
-                | "waiting_model"
-                | "waiting_human"
-        )
-    });
+    let (needs_time, needs_counts) = (reads_time(&fields), reads_counts(&fields));
     let current = format!(
         "({} OR {}) AND ({} OR {})",
         !needs_time,

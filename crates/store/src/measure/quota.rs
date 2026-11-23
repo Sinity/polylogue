@@ -102,11 +102,14 @@ pub struct Quota {
     pub tools: Vec<ToolQuota>,
 }
 
-/// Every limit reading of one response.
+/// Every limit reading of one response. A reading whose window length is
+/// not a positive number of minutes whose arithmetic fits cannot place a
+/// window and is left out.
 fn observations(tool: &str, at: Option<i64>, reading: &QuotaReading) -> Vec<Observation> {
     reading
         .windows
         .iter()
+        .filter(|w| w.limit.minutes > 0 && w.limit.minutes.checked_mul(4 * MINUTE).is_some())
         .map(|w| Observation {
             at,
             measured_at: at,
@@ -274,7 +277,7 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
             }
         }
         let boundaries_unknown =
-            usage::unknown_scope(reader, &Selection::default().for_tool(tool))?;
+            usage::unknown_scope(reader, &Selection::default().for_origin(tool))?;
         let mut windows = vec![];
         for (limit, minutes, from_first_response) in limits {
             let these: Vec<Observation> = mine
@@ -324,7 +327,7 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
                 .filter(|o| o.resets_at.is_none() && o.measured_at.is_none())
                 .map(|o| (*o).clone())
                 .collect(),
-            recorded_usage: usage::recorded(reader, &Selection::default().for_tool(tool))?,
+            recorded_usage: usage::recorded(reader, &Selection::default().for_origin(tool))?,
         });
     }
     Ok(Quota { now, tools: out })
@@ -387,7 +390,7 @@ fn build(
             until: Some(now.min(end)),
             ..Selection::default()
         }
-        .for_tool(tool),
+        .for_origin(tool),
     )?;
     let first = response_times(reader, tool, start, now.min(end))?
         .first()
@@ -396,7 +399,7 @@ fn build(
     let tokens = total_tokens(&usage);
     let per_hour = |x: f64| hours.filter(|&h| h > 0.0).map(|h| x / h);
     let unknown_time =
-        usage::recorded(reader, &Selection::default().for_tool(tool))?.untimed_observations > 0;
+        usage::recorded(reader, &Selection::default().for_origin(tool))?.untimed_observations > 0;
     let tokens_per_hour = (!unknown_time && usage.messages.is_some())
         .then(|| per_hour(tokens as f64))
         .flatten();

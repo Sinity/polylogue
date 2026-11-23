@@ -40,16 +40,16 @@ impl Reader<'_> {
         self.with_clock(&program.clock, || {
             if let Some(request) = &program.near {
                 let near = near.ok_or_else(|| {
-                    E::from(SelectionError::Invalid {
-                        kind: polylogue_model::Code::Embed,
-                        message: "semantic search unavailable".into(),
-                    })
+                    E::from(SelectionError::invalid(
+                        polylogue_model::Code::Embed,
+                        "semantic search unavailable",
+                    ))
                 })?;
                 let similarity = near(&request.text).map_err(|message| {
-                    E::from(SelectionError::Invalid {
-                        kind: polylogue_model::Code::Embed,
+                    E::from(SelectionError::invalid(
+                        polylogue_model::Code::Embed,
                         message,
-                    })
+                    ))
                 })?;
                 crate::read::limit::ReadLimit::set_stage("similarity");
                 self.rank_selection(
@@ -94,10 +94,10 @@ impl Reader<'_> {
     ) -> Result<QueryPage, SelectionError> {
         self.validate_selection(program)?;
         if program.page_size == 0 {
-            return Err(SelectionError::Invalid {
-                kind: polylogue_model::Code::BadRequest,
-                message: "page size must be positive".into(),
-            });
+            return Err(SelectionError::invalid(
+                polylogue_model::Code::BadRequest,
+                "page size must be positive",
+            ));
         }
         self.with_clock(&program.clock, || {
             crate::read::limit::ReadLimit::set_stage("page");
@@ -310,10 +310,10 @@ impl Reader<'_> {
                             .map(|key| sql_value(&order[&key.column])),
                     );
                     let row = self.query(&row_at, &row_params)?.pop().ok_or_else(|| {
-                        StreamError::Selection(SelectionError::Invalid {
-                            kind: polylogue_model::Code::StaleCursor,
-                            message: "the selected row position is unavailable".into(),
-                        })
+                        StreamError::Selection(SelectionError::invalid(
+                            polylogue_model::Code::StaleCursor,
+                            "the selected row position is unavailable",
+                        ))
                     })?;
                     flow(visit(row))
                 }),
@@ -467,10 +467,10 @@ impl Reader<'_> {
             return Ok(());
         }
         let missing = |what: &str| {
-            StreamError::Selection(SelectionError::Invalid {
-                kind: polylogue_model::Code::Store,
-                message: format!("a selected row has no {what}"),
-            })
+            StreamError::Selection(SelectionError::invalid(
+                polylogue_model::Code::Store,
+                format!("a selected row has no {what}"),
+            ))
         };
         // A unit's key is an integer or, for changes, text: both are JSON
         // scalars, and json_each returns each with its SQL type.
@@ -764,9 +764,11 @@ pub fn shape_value(
     match kind {
         ColKind::Json => {
             if let Some(text) = v.as_str() {
-                *v = serde_json::from_str(text).map_err(|_| SelectionError::Invalid {
-                    kind: polylogue_model::Code::Store,
-                    message: "invalid stored JSON value".into(),
+                *v = serde_json::from_str(text).map_err(|_| {
+                    SelectionError::invalid(
+                        polylogue_model::Code::Store,
+                        "invalid stored JSON value",
+                    )
                 })?;
             }
         }
@@ -775,9 +777,11 @@ pub fn shape_value(
                 return Ok(());
             }
             let selection: Value = if let Some(text) = v.as_str() {
-                serde_json::from_str(text).map_err(|e| SelectionError::Invalid {
-                    kind: polylogue_model::Code::Store,
-                    message: format!("invalid stored selection: {e}"),
+                serde_json::from_str(text).map_err(|e| {
+                    SelectionError::invalid(
+                        polylogue_model::Code::Store,
+                        format!("invalid stored selection: {e}"),
+                    )
                 })?
             } else {
                 v.take()
@@ -790,10 +794,10 @@ pub fn shape_value(
                 ids.iter()
                     .all(|id| id.as_str().is_some_and(|id| !id.is_empty()))
             }) {
-                return Err(SelectionError::Invalid {
-                    kind: polylogue_model::Code::Store,
-                    message: "a stored selection must be an array of IDs".into(),
-                });
+                return Err(SelectionError::invalid(
+                    polylogue_model::Code::Store,
+                    "a stored selection must be an array of IDs",
+                ));
             }
             *v = selection;
         }
@@ -814,10 +818,10 @@ pub fn shape_value(
             if let Some(nusd) = v.as_i64() {
                 *v = Value::Number(polylogue_model::money::usd_number(nusd));
             } else if !v.is_null() {
-                return Err(SelectionError::Invalid {
-                    kind: polylogue_model::Code::Store,
-                    message: "a money value must be integer nano-USD".into(),
-                });
+                return Err(SelectionError::invalid(
+                    polylogue_model::Code::Store,
+                    "a money value must be integer nano-USD",
+                ));
             }
         }
         _ => {}
