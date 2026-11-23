@@ -67,20 +67,11 @@ fn search_writes_are_available_through_the_command_table() {
             }
         }
     });
-    assert_eq!(
-        data(&r, "query:parser", None)["rows"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
-    assert_eq!(
-        data(&r, "result:kept-search-1", None)["rows"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
+    for selection in ["query:parser", "result:kept-search-1"] {
+        let rows = data(&r, selection, None)["rows"].clone();
+        assert_eq!(rows.as_array().unwrap().len(), 1, "{selection}");
+        assert_eq!(rows[0]["id"], "claude-code:s1", "{selection}");
+    }
     let kept = crate::mcp::tests::structured_call_as(
         &polylogue_store::Archive::at(&r.web.daemon.archive.root),
         "rows",

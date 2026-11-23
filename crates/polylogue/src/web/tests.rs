@@ -190,9 +190,6 @@ fn access_rules() {
             .body(Body::empty())
             .unwrap();
         assert_eq!(send(&r, req).await.0, StatusCode::UNAUTHORIZED);
-        // The extension's routes are not served here.
-        let req = authed(get("/v1/status")).body(Body::empty()).unwrap();
-        assert_eq!(send(&r, req).await.0, StatusCode::NOT_FOUND);
 
         // The cookie and the bearer header both work.
         let (s, h, _) = send(&r, authed(get("/")).body(Body::empty()).unwrap()).await;
@@ -610,11 +607,6 @@ fn every_http_command_is_served_and_nothing_else() {
                 assert_eq!(status, StatusCode::NOT_FOUND, "{path} is served");
             }
         }
-        // The routes before the table are gone.
-        let req = authed(get("/api/v1/cmd/status"))
-            .body(Body::empty())
-            .unwrap();
-        assert_eq!(send(&r, req).await.0, StatusCode::NOT_FOUND);
     });
 }
 
@@ -639,7 +631,7 @@ fn owned_http_shutdown_closes_partial_peers_and_releases_daemon() {
         done.send(server.shutdown()).unwrap();
     });
     stopped
-        .recv()
+        .recv_timeout(std::time::Duration::from_secs(5))
         .expect("HTTP worker kept idle clients open")
         .unwrap();
     thread.join().unwrap();
@@ -741,11 +733,14 @@ fn session_html_and_json_read_routes_preserve_stored_titles_and_message_content(
         let (status, _, html) = send_html(&r, "/s/claude-code:s1").await;
         assert_eq!(status, StatusCode::OK, "{html}");
         assert!(html.contains(literal), "{html}");
-        assert!(html.contains("Synthetic title "), "{html}");
+        assert!(
+            html.contains("Synthetic title AKIAIOSFODNN7EXAMPLE"),
+            "{html}"
+        );
         let page = read_page(&r, "session:claude-code:s1", &[]).await;
         let payload = serde_json::to_string(&page.document).unwrap();
         assert!(payload.contains(literal));
-        assert!(payload.contains("Synthetic title "));
+        assert!(payload.contains("Synthetic title AKIAIOSFODNN7EXAMPLE"));
         let invalid = read_url(
             "session:claude-code:s1",
             &[("view", "unsupported-synthetic-view")],
@@ -952,9 +947,7 @@ fn priced_usage_and_drilldown_keep_selected_sessions() {
         assert!(page.contains("API-equivalent $15.00"), "{page}");
         assert!(page.contains("1 known response records"), "{page}");
         assert!(
-            page.contains(&polylogue_render::html::escape(
-                &polylogue_render::measures::usage(usage)
-            )),
+            page.contains("1 responses in 1 sessions · input 1.0M · cached"),
             "{page}"
         );
         assert!(

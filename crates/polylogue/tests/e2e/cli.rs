@@ -522,8 +522,9 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
         .iter()
         .map(|r| r["id"].as_str().unwrap().to_owned())
         .collect();
-    assert!(ids.contains(&"claude-code:live".to_owned()), "{ids:?}");
-    assert!(ids.contains(&"claude-code:exported".to_owned()), "{ids:?}");
+    let mut ids = ids;
+    ids.sort();
+    assert_eq!(ids, ["claude-code:exported", "claude-code:live"]);
 
     let out = cli(&env, &["--json", "session:claude-code:exported", "read"]);
     let read: polylogue_model::read::ReadPage = read_page(json(&out));
@@ -778,7 +779,12 @@ fn killed_daemon_runtime_files_are_removed_with_its_fixture() {
     wait_status(&env, |_| true);
     let runtime = dir.path().join("runtime/polylogue");
     // Readiness of the socket precedes the HTTP listener's access files.
+    let started = std::time::Instant::now();
     loop {
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "the daemon never wrote its HTTP access files"
+        );
         if runtime.exists()
             && std::fs::read_dir(&runtime).unwrap().any(|entry| {
                 let path = entry.unwrap().path();

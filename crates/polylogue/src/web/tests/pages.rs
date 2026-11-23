@@ -346,7 +346,15 @@ fn inheritance_is_an_explicit_shared_read_option() {
         assert_eq!(status, StatusCode::OK, "{inherited}");
         assert!(inherited.contains("&lt;script&gt;alert"));
         let page = read_page(&r, "session:claude-code:child", &[("show", "inherited")]).await;
-        assert!(page.document.items.iter().any(|item| item.source.inherited));
+        assert_eq!(
+            page.document
+                .items
+                .iter()
+                .filter(|item| item.source.inherited)
+                .count(),
+            1,
+            "only the parent's u1 is inherited"
+        );
     });
 }
 
@@ -402,10 +410,7 @@ fn message_redirects_quote_literal_ids_without_resolving_source_rows() {
         assert_eq!(status, StatusCode::TEMPORARY_REDIRECT);
         assert_eq!(
             headers[header::LOCATION],
-            format!(
-                "/api/v1/rows?selection={}&steps=read",
-                polylogue_render::html::encode_path_segment(&format!("message:{id}"))
-            )
+            "/api/v1/rows?selection=message%3Aclaude-code%3Aslash%5Ctab%09line%0Aquote%22AKIAIOSFODNN7EXAMPLE&steps=read"
         );
         let (status, _, body) = send_html(&r, &path).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
@@ -472,10 +477,8 @@ fn live_initial_queries_page_through_the_real_http_api() {
                 break;
             }
         }
-        assert!(ids.iter().any(|id| id == "claude-code:s1"));
-        assert!(ids.len() >= 2);
-        let distinct: std::collections::HashSet<_> = ids.iter().collect();
-        assert_eq!(distinct.len(), ids.len());
+        ids.sort();
+        assert_eq!(ids, ["claude-code:s1", "claude-code:s2"]);
     });
 }
 

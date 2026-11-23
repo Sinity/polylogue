@@ -12,11 +12,11 @@ fn object_urls_forward_target_and_parameters() {
 }
 #[test]
 fn a_path_target_cannot_be_overridden_by_query_parameters() {
-    assert!(
+    assert_eq!(
         target_url(
             "session:test:session",
             &[("target".into(), "another selection".into())]
-        )
-        .is_err()
+        ),
+        Err("the object URL already supplies selection and its read step".to_owned())
     );
 }
