@@ -97,7 +97,7 @@ fn identical_conversations_in_conflicting_imports_do_not_pick_an_asset() {
 }
 
 #[test]
-fn directory_import_keeps_attachment_bytes_after_provider_removal() {
+fn directory_import_keeps_attachment_bytes_after_the_source_file_is_removed() {
     let w = ClaudeHome::new();
     let directory = w.dir.path().join("account-export");
     std::fs::create_dir_all(&directory).unwrap();
@@ -204,14 +204,17 @@ fn sidecar_parsing_is_scoped_to_its_declared_role_in_each_import() {
     let reader = engine.reads.reader().unwrap();
     let resolution = reader.attachment(&message_id(), 0, 0).unwrap();
     assert_eq!(resolution.matches.len(), 3);
-    for asset in resolution.matches {
-        if asset.blob == Some(polylogue_model::BlobHash::of(b"first")) {
-            assert_eq!(asset.names, ["native-name.png"]);
-        } else {
-            assert!(
-                asset.names.is_empty(),
-                "a filename role from another import must not be borrowed"
-            );
-        }
+    let first_blob = Some(polylogue_model::BlobHash::of(b"first"));
+    let first = resolution
+        .matches
+        .iter()
+        .find(|asset| asset.blob == first_blob)
+        .expect("the first import's asset");
+    assert_eq!(first.names, ["native-name.png"]);
+    for asset in resolution.matches.iter().filter(|a| a.blob != first_blob) {
+        assert!(
+            asset.names.is_empty(),
+            "a filename role from another import must not be borrowed"
+        );
     }
 }

@@ -26,7 +26,7 @@ fn append(path: &Path, bytes: &[u8]) {
 }
 
 #[test]
-fn pending_files_live_in_the_daemon_and_known_hashes_can_be_reused() {
+fn pending_files_survive_a_restart_and_known_hashes_can_be_reused() {
     let w = ClaudeHome::new();
     let path = w
         .config(64 << 20)
@@ -121,9 +121,15 @@ fn an_unknown_hash_keeps_the_conversation_and_leaves_the_file_not_fetched() {
     );
     assert!(reader.stored_files(&session).unwrap().is_empty());
     let messages = reader.messages(&session, false).unwrap();
-    assert!(
-        messages[0].blocks.iter().any(
-            |block| matches!(block, polylogue_model::Block::File(file) if file.blob.is_none())
-        )
-    );
+    assert_eq!(messages.len(), 1);
+    let files: Vec<_> = messages[0]
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            polylogue_model::Block::File(file) => Some(file),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(files.len(), 1);
+    assert!(files[0].blob.is_none());
 }

@@ -165,12 +165,37 @@ fn scans_exactly_the_claude_code_layout() {
             PathBuf::from("s1.jsonl"),
         ]
     );
-    assert!(names.contains(&PathBuf::from("s1/other.jsonl")));
+    let mut names = names;
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            PathBuf::from("s1/other.jsonl"),
+            PathBuf::from("s1/s1.jsonl"),
+            PathBuf::from("s1/subagents/agent-a.jsonl"),
+            PathBuf::from("s1/subagents/workflows/wf_1/agent-b.jsonl"),
+            PathBuf::from("s1/subagents/workflows/wf_1/journal.jsonl"),
+            PathBuf::from("s1.jsonl"),
+        ]
+    );
     assert!(unreadable.is_empty());
-    assert!(roots(&config(home.path())).contains(&WatchRoot {
-        path: home.path().join(".claude/projects"),
-        recursive: true
-    }));
+    let claude_roots: Vec<_> = roots(&config(home.path()))
+        .into_iter()
+        .filter(|root| root.path.starts_with(home.path().join(".claude")))
+        .collect();
+    assert_eq!(
+        claude_roots,
+        [
+            WatchRoot {
+                path: home.path().join(".claude"),
+                recursive: true
+            },
+            WatchRoot {
+                path: home.path().join(".claude/projects"),
+                recursive: true
+            },
+        ]
+    );
     assert!(roots(&config(home.path())).contains(&WatchRoot {
         path: home.path().to_path_buf(),
         recursive: false
@@ -188,10 +213,23 @@ fn a_tool_directory_variable_moves_the_root() {
     let (found, _) = scan(&c);
     assert_eq!(found.len(), 1);
     assert!(found[0].path.starts_with(&own));
-    assert!(roots(&c).contains(&WatchRoot {
-        path: own.join("projects"),
-        recursive: true
-    }));
+    let own_roots: Vec<_> = roots(&c)
+        .into_iter()
+        .filter(|root| root.path.starts_with(&own))
+        .collect();
+    assert_eq!(
+        own_roots,
+        [
+            WatchRoot {
+                path: own.clone(),
+                recursive: true
+            },
+            WatchRoot {
+                path: own.join("projects"),
+                recursive: true
+            },
+        ]
+    );
 }
 
 #[test]
@@ -261,15 +299,26 @@ fn root_follows_tool_variable_and_hermes_profiles_are_full_homes() {
 fn known_locations_fully_recognized() {
     let home = tempfile::tempdir().unwrap();
     let c = config(home.path());
+    let mut written = std::collections::BTreeSet::new();
     for tool in polylogue_sources::locations::TOOLS {
         for pattern in tool.locations {
             let relative = pattern.replace("**", "nested").replace('*', "one");
             let path = c.root(tool.root).join(relative);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, "{}").unwrap();
+            fs::write(&path, "{}").unwrap();
+            written.insert(path);
         }
     }
     let scan = scan_with_coverage(&c);
+    let total = |class| {
+        scan.coverage
+            .iter()
+            .filter(|row| row.class == class)
+            .map(|row| row.files)
+            .sum::<u64>()
+    };
+    assert_eq!(total(Class::Collected), written.len() as u64);
+    assert_eq!(total(Class::Ignored), 0);
     let unknown: Vec<_> = scan
         .coverage
         .iter()
@@ -404,7 +453,15 @@ fn completed_walk_distinguishes_accessible_empty_absent_and_unavailable_roots() 
     assert_eq!(root(".codex").status, Accessibility::Accessible);
     assert!(root(".codex").entries.is_empty());
     assert_eq!(root(".gemini").status, Accessibility::Unavailable);
-    assert!(!root(".gemini").unavailable_paths.is_empty());
+    assert_eq!(
+        root(".gemini").unavailable_paths,
+        [home
+            .home
+            .join(".gemini")
+            .as_os_str()
+            .as_encoded_bytes()
+            .to_vec()]
+    );
     assert_eq!(root(".grok").status, Accessibility::Absent);
 }
 

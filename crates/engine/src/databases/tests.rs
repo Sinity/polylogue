@@ -102,7 +102,6 @@ fn capture_continues_the_input_at_the_observed_path() {
     let header = serde_json::json!({"db":"state_5.sqlite","at_ms":1,"schema":{"threads":sql},"source":{"machine":"test-machine","path":"/synthetic/metadata-only/state_5.sqlite"}});
     let row = serde_json::json!({"t":"threads","k":["00000000-0000-4000-8000-000000000042"],"r":{"id":"00000000-0000-4000-8000-000000000042","name":"Synthetic title"},"h":"unused"});
     let bytes = format!("{header}\n{row}\n").into_bytes();
-    assert_eq!(bytes.len(), 343);
     let (archive, _lock) = Archive::open_or_create(&dir.path().join("archive")).unwrap();
     let initial_chain = {
         let writer = Writer::start(&archive).unwrap();

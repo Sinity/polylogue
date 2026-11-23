@@ -215,7 +215,10 @@ fn equal_decoded_read_keeps_its_body_without_a_revision() {
     let whole: Vec<u8> = original.bytes().chain(tail.iter().copied()).collect();
     let hash = hashed_blobs::Hash(*blake3::hash(&whole).as_bytes());
     // This chain comprises two blobs; its content hash is not a Blob address.
-    assert!(e.blobs.extent(&hash).is_err());
+    assert!(matches!(
+        e.blobs.extent(&hash),
+        Err(polylogue_store::StoreError::NotFound(_))
+    ));
     let compressed = dir.join("rollout-body-copy.jsonl.zst");
     std::fs::write(
         &compressed,

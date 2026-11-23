@@ -63,7 +63,8 @@ fn malformed_observer_suffix_never_commits_a_valid_prefix() {
     let path = w.dir.path().join("synthetic.atof.jsonl");
     fs::write(&path,b"{\"atof_version\":\"0.1\",\"kind\":\"mark\",\"uuid\":\"synthetic\",\"name\":\"neutral\"}\n{").unwrap();
     let (mut e, _lock) = engine(&w, 7);
-    let _ = e.import(&[path]);
+    let report = e.import(&[path]).unwrap();
+    assert!(report.pass.errors.is_empty(), "{report:?}");
     assert!(events(&w).is_empty());
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM session"), 0);
 }

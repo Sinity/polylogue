@@ -125,7 +125,20 @@ fn interrupted_delivery_replays_the_same_sealed_prefix_from_archived_bytes() {
         prefix.push(delivery);
         Ok(cursor)
     });
-    assert!(result.is_err());
+    let Err(error) = result else {
+        panic!("the interrupted callback did not stop the parse");
+    };
+    assert!(
+        error.to_string().contains("synthetic interrupted callback"),
+        "{error}"
+    );
+    assert_eq!(
+        prefix
+            .iter()
+            .filter(|delivery| matches!(delivery.source, ExportDeliverySource::Item { .. }))
+            .count(),
+        1
+    );
     assert!(
         prefix
             .iter()

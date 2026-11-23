@@ -38,7 +38,7 @@ fn bundle_keeps_authorship_apart_from_import_observation() {
         (1, 0)
     );
     assert_eq!(w.count("SELECT count(*) AS n FROM a.client_request"), 1);
-    assert_eq!(w.count("SELECT count(*) AS n FROM a.assertion WHERE id='setting-request' AND kind='setting' AND key='browser.actions' AND json_extract(value,'$.value.value')=1 AND author='operator'"),1);
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.assertion WHERE id='setting-request' AND kind='setting' AND key='browser.actions' AND json_extract(value,'$.value.value')=1 AND author='operator' AND via='cli' AND machine='exported-machine' AND created_at=1767225600000"),1);
     assert_eq!(import_actors(&engine), ["script:polylogue-import"]);
     let again = engine.import(std::slice::from_ref(&path)).unwrap();
     assert!(again.pass.errors.is_empty(), "{again:?}");
@@ -46,29 +46,41 @@ fn bundle_keeps_authorship_apart_from_import_observation() {
     assert_eq!(w.count("SELECT count(*) AS n FROM a.client_request"), 1);
 }
 
+/// Imports `bytes` as a fresh input and checks that exactly that file is
+/// refused and nothing is written.
+fn assert_refused_before_writes(bytes: Vec<u8>) {
+    let w = ClaudeHome::new();
+    let path = w.dir.path().join("input.jsonl");
+    fs::write(&path, bytes).unwrap();
+    let (mut engine, _lock) = engine(&w, 64);
+    let report = engine.import(std::slice::from_ref(&path)).unwrap();
+    assert_eq!(report.refused.len(), 1, "{report:?}");
+    assert_eq!(report.refused[0].path, path);
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.input"), 0);
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.client_request"), 0);
+}
+
 #[test]
 fn malformed_bundle_suffix_is_refused_before_writes() {
-    for bytes in [
+    assert_refused_before_writes(
         [
             authored_bundle(),
             b"{\"record\":\"session\",\"data\":false}\n".to_vec(),
         ]
         .concat(),
+    );
+}
+
+#[test]
+fn a_retired_export_document_is_refused_before_writes() {
+    assert_refused_before_writes(
         br#"{"format":"polylogue-export","version":4,"sessions":[],"user_state":[]}"#.to_vec(),
-    ] {
-        let w = ClaudeHome::new();
-        let path = w.dir.path().join("input.jsonl");
-        fs::write(&path, bytes).unwrap();
-        let (mut engine, _lock) = engine(&w, 64);
-        let report = engine.import(&[path]).unwrap();
-        assert_eq!(report.refused.len(), 1, "{report:?}");
-        assert_eq!(w.count("SELECT count(*) AS n FROM a.input"), 0);
-        assert_eq!(w.count("SELECT count(*) AS n FROM a.client_request"), 0);
-    }
+    );
 }
 
 #[cfg(feature = "faults")]
 #[test]
+#[ignore = "child process of interrupt_authored_import"]
 fn authored_crash_child() {
     let Some(base) = std::env::var_os("POLYLOGUE_BUNDLE_CRASH_BASE") else {
         return;
@@ -111,6 +123,7 @@ fn interrupt_authored_import(w: &ClaudeHome, point: &str) {
         .args([
             "--exact",
             "import::exports::tests::polylogue_bundle::authored_crash_child",
+            "--ignored",
             "--nocapture",
         ])
         .env("POLYLOGUE_BUNDLE_CRASH_BASE", w.dir.path())
@@ -148,7 +161,7 @@ fn open_replays_stored_authored_state_after_real_interruption() {
         assert_eq!(w.count("SELECT count(*) AS n FROM a.client_request"), 1);
         assert_eq!(
             w.count(
-                "SELECT count(*) AS n FROM a.assertion WHERE id='setting-request' AND kind='setting' AND json_extract(value,'$.value.value')=1"
+                "SELECT count(*) AS n FROM a.assertion WHERE id='setting-request' AND kind='setting' AND author='operator' AND via='cli' AND machine='exported-machine' AND json_extract(value,'$.value.value')=1"
             ),
             1
         );
@@ -180,7 +193,7 @@ fn explicit_receiver_after_interruption_does_not_rewrite_historical_authorship()
     assert!(report.pass.errors.is_empty(), "{report:?}");
     assert_eq!(report.user_state.present, 1);
     assert_eq!(w.count("SELECT count(*) AS n FROM a.client_request"), 1);
-    assert_eq!(w.count("SELECT count(*) AS n FROM a.assertion WHERE id='setting-request' AND kind='setting' AND author='operator' AND json_extract(value,'$.value.value')=1"), 1);
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.assertion WHERE id='setting-request' AND kind='setting' AND author='operator' AND via='cli' AND machine='exported-machine' AND json_extract(value,'$.value.value')=1"), 1);
     assert_eq!(
         import_actors(&engine),
         ["script:polylogue-import", "script:receiver-b"]

@@ -67,17 +67,22 @@ fn stored_ai_studio_chunks_survive_source_deletion_and_index_rebuild() {
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
         let source_rows = r
             .query(
-                "SELECT source_start,source_end FROM message_source WHERE source_start>0",
+                "SELECT source_start,source_end FROM message_source WHERE source_start>0 \
+                 ORDER BY source_start",
                 &[],
             )
             .unwrap();
-        assert_eq!(source_rows.len(), 3);
-        for row in source_rows {
-            let start = row["source_start"].as_u64().unwrap() as usize;
-            let end = row["source_end"].as_u64().unwrap() as usize;
-            let chunk: serde_json::Value = serde_json::from_slice(&bytes[start..end]).unwrap();
-            assert!(chunk.get("role").is_some());
-        }
+        let slices: Vec<serde_json::Value> = source_rows
+            .iter()
+            .map(|row| {
+                let start = row["source_start"].as_u64().unwrap() as usize;
+                let end = row["source_end"].as_u64().unwrap() as usize;
+                serde_json::from_slice(&bytes[start..end]).unwrap()
+            })
+            .collect();
+        let fixture: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let chunks = fixture["chunkedPrompt"]["chunks"].as_array().unwrap();
+        assert_eq!(&slices, chunks);
         assert_eq!(
             r.session(&sid)
                 .unwrap()
