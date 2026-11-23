@@ -7,6 +7,7 @@ Where Polylogue's inputs come from: the location model and every live origin, ho
 - **Every relevant origin, at full fidelity.** Every AI tool whose sessions the user has is captured, with every side file that carries conversation content, context or harness-side state, even before a parser for it exists, because harnesses prune their own files and a pruned file is lost. A degraded form (a flattened transcript, a page scrape where the provider's data is available) is never the stored record.
 - **Nothing disappears silently.** Every file under a declared root is collected, ignored with a recorded reason, or reported unrecognized.
 - **Fixed locations, strict recognition, fail closed.** Polylogue reads data where each tool writes it; there are no path settings and no custom roots. Input that does not match its declared shape is refused, never reinterpreted.
+- **A leading UTF-8 byte order mark is ignored.** A text input saved with one (common from Windows tools) is recognized and parsed as without it. The stored bytes and every recorded byte offset still count the mark.
 - **Live is the normal case.** A growing file is tailed; a live origin needs no import step.
 - **Exports arrive by hand.** Provider exports are brought in with `polylogue import PATH`; nothing is picked up from a download or inbox directory.
 - **Databases are captured as rows, not images** ([Tool databases](#tool-databases)).

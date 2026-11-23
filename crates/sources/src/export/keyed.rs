@@ -9,10 +9,7 @@ pub fn scan_map(
     mut item: impl FnMut(Range<u64>, &str, &RawValue) -> Result<(), String>,
 ) -> Result<(Json, ScanStats), ScanError> {
     let scan_state = Rc::new(RefCell::new(ScanState::default()));
-    let input = PositionReader {
-        reader: BufReader::new(reader),
-        scan_state: Rc::clone(&scan_state),
-    };
+    let input = PositionReader::new(reader, &scan_state);
     let mut de = serde_json::Deserializer::from_reader(input);
     let metadata = MapDocument {
         field,

@@ -3,7 +3,9 @@
 //! finished (an import, an export member): then the end of the bytes ends the last record.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
+
+use crate::document::after_byte_order_mark;
 
 /// One line record: its bytes without the line ending, and where they
 /// start in the input.
@@ -16,16 +18,24 @@ pub struct Record<'a> {
 /// Complete records in `bytes`, which start at `input_offset` in the input, and how
 /// many bytes they cover. Blank lines are skipped: they hold no record.
 /// `finished` says the bytes reach the end of an input that will not grow,
-/// so a trailing line without its newline is a record too.
+/// so a trailing line without its newline is a record too. A byte order mark
+/// at the start of the input is not part of the first record; its offset
+/// still counts the mark.
 pub fn lines<'a>(bytes: &'a [u8], input_offset: u64, finished: bool) -> (Vec<Record<'a>>, usize) {
     let mut records = Vec::new();
     let mut push = |line_start: usize, mut line: &'a [u8]| {
+        let mut offset = input_offset + line_start as u64;
+        if input_offset == 0 && line_start == 0 {
+            let body = after_byte_order_mark(line);
+            offset += (line.len() - body.len()) as u64;
+            line = body;
+        }
         if let [rest @ .., b'\r'] = line {
             line = rest;
         }
         if !line.iter().all(u8::is_ascii_whitespace) {
             records.push(Record {
-                offset: input_offset + line_start as u64,
+                offset,
                 bytes: line,
             });
         }

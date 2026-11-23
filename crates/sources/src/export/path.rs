@@ -8,10 +8,7 @@ pub fn scan_path(
     mut item: impl FnMut(Range<u64>, &RawValue) -> Result<(), String>,
 ) -> Result<ScanStats, ScanError> {
     let scan_state = Rc::new(RefCell::new(ScanState::default()));
-    let input = PositionReader {
-        reader: BufReader::new(reader),
-        scan_state: Rc::clone(&scan_state),
-    };
+    let input = PositionReader::new(reader, &scan_state);
     let mut de = serde_json::Deserializer::from_reader(input);
     let result = (|| {
         Node {

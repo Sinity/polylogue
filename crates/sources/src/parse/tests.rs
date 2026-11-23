@@ -185,3 +185,29 @@ fn capture_event_ranges_name_the_capture_in_whole_and_incremental_reads() {
         .unwrap();
     assert_eq!(later[0].output.events, steps[1].output.events);
 }
+
+struct FirstByte;
+impl DocumentParser for FirstByte {
+    fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
+        out.events.push(polylogue_model::Event {
+            session: Some(polylogue_model::SessionId::parse("example:session").unwrap()),
+            kind: "metadata".into(),
+            at: None,
+            at_quality: polylogue_model::TimeQuality::Unknown,
+            at_precision: None,
+            at_until: None,
+            after: None,
+            range: None,
+            data: serde_json::json!({"first": bytes[0]}),
+        });
+        records.record("metadata", &RecordOutcome::Used);
+    }
+}
+
+#[test]
+fn a_document_starts_after_a_byte_order_mark_and_spans_the_whole_input() {
+    let step = run_document(&FirstByte, b"\xEF\xBB\xBF{}").unwrap();
+    assert_eq!(step.output.events[0].data["first"], b'{');
+    assert_eq!(step.output.events[0].range, Some((0, 5)));
+    assert_eq!(step.consumed, 5);
+}

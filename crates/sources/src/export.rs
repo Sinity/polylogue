@@ -1,12 +1,14 @@
 //! Export records and conversation scan state, with a Serde reader that splits
 //! JSON arrays into records.
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
+use crate::document::{BYTE_ORDER_MARK, after_byte_order_mark};
 use serde::Deserialize;
 use serde::de::{DeserializeSeed, SeqAccess, Visitor};
 use serde_json::value::RawValue;
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::io::{self, BufReader, Read};
 use std::ops::Range;
 use std::rc::Rc;
@@ -20,32 +22,66 @@ struct ScanState {
     failure: Option<ScanError>,
 }
 
+/// Reads one byte at a time and records each byte's position in the input,
+/// which counts a leading byte order mark that the reader does not deliver.
 struct PositionReader<R> {
-    reader: R,
+    reader: BufReader<R>,
     scan_state: Rc<RefCell<ScanState>>,
+    started: bool,
+    /// Bytes read ahead while looking for a byte order mark that was not one.
+    pending: VecDeque<u8>,
+}
+impl<R: Read> PositionReader<R> {
+    fn new(reader: R, scan_state: &Rc<RefCell<ScanState>>) -> Self {
+        Self {
+            reader: BufReader::new(reader),
+            scan_state: Rc::clone(scan_state),
+            started: false,
+            pending: VecDeque::new(),
+        }
+    }
+
+    fn skip_byte_order_mark(&mut self) -> io::Result<()> {
+        let mut head = Vec::new();
+        (&mut self.reader)
+            .take(BYTE_ORDER_MARK.len() as u64)
+            .read_to_end(&mut head)?;
+        if head == BYTE_ORDER_MARK {
+            self.scan_state.borrow_mut().position = head.len() as u64;
+        } else {
+            self.pending.extend(head);
+        }
+        Ok(())
+    }
 }
 impl<R: Read> Read for PositionReader<R> {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
         if out.is_empty() {
             return Ok(0);
         }
-        let n = self.reader.read(&mut out[..1])?;
-        if n == 1 {
-            let mut scan_state = self.scan_state.borrow_mut();
-            let at = scan_state.position;
-            scan_state.position += 1;
-            scan_state.last = Some((at, out[0]));
-            if let Some((start, bytes)) = &mut scan_state.copied {
-                // Copying a map value starts after its colon and whitespace; copying
-                // an array element already contains the value's first byte.
-                if bytes.is_empty() && (out[0].is_ascii_whitespace() || out[0] == b':') {
-                    *start = at + 1;
-                } else {
-                    bytes.push(out[0]);
-                }
+        if !self.started {
+            self.started = true;
+            self.skip_byte_order_mark()?;
+        }
+        if let Some(byte) = self.pending.pop_front() {
+            out[0] = byte;
+        } else if self.reader.read(&mut out[..1])? == 0 {
+            return Ok(0);
+        }
+        let mut scan_state = self.scan_state.borrow_mut();
+        let at = scan_state.position;
+        scan_state.position += 1;
+        scan_state.last = Some((at, out[0]));
+        if let Some((start, bytes)) = &mut scan_state.copied {
+            // Copying a map value starts after its colon and whitespace; copying
+            // an array element already contains the value's first byte.
+            if bytes.is_empty() && (out[0].is_ascii_whitespace() || out[0] == b':') {
+                *start = at + 1;
+            } else {
+                bytes.push(out[0]);
             }
         }
-        Ok(n)
+        Ok(1)
     }
 }
 
@@ -86,10 +122,7 @@ pub fn scan(
     mut item: impl FnMut(Range<u64>, &RawValue) -> Result<(), String>,
 ) -> Result<ScanStats, ScanError> {
     let scan_state = Rc::new(RefCell::new(ScanState::default()));
-    let input = PositionReader {
-        reader: BufReader::new(reader),
-        scan_state: Rc::clone(&scan_state),
-    };
+    let input = PositionReader::new(reader, &scan_state);
     let mut de = serde_json::Deserializer::from_reader(input);
     let result = (|| {
         ArraySeed {
@@ -102,8 +135,9 @@ pub fn scan(
     finish_scan(result, &scan_state)
 }
 
-/// Reads up to and including the first non-whitespace byte, which the caller
-/// chains back in front of the reader. `None` when the input is all whitespace.
+/// Reads up to and including the first non-whitespace byte after a byte order
+/// mark, which the caller chains back in front of the reader together with the
+/// mark and the whitespace. `None` when the input is all whitespace.
 pub(crate) fn peek_first_byte<R: std::io::BufRead + ?Sized>(
     reader: &mut R,
 ) -> Result<(Option<u8>, Vec<u8>), ScanError> {
@@ -118,6 +152,9 @@ pub(crate) fn peek_first_byte<R: std::io::BufRead + ?Sized>(
         let byte = buffer[0];
         reader.consume(1);
         prefix.push(byte);
+        if BYTE_ORDER_MARK.starts_with(&prefix) {
+            continue;
+        }
         if !byte.is_ascii_whitespace() {
             return Ok((Some(byte), prefix));
         }
@@ -135,7 +172,7 @@ pub fn scan_array_or_object(
         return scan(std::io::Cursor::new(prefix).chain(reader), item);
     }
     let start = prefix.len() as u64 - 1;
-    let input = std::io::Cursor::new(prefix).chain(reader);
+    let input = std::io::Cursor::new(after_byte_order_mark(&prefix).to_vec()).chain(reader);
     let mut de = serde_json::Deserializer::from_reader(input);
     let raw = Box::<RawValue>::deserialize(&mut de).map_err(classify_error)?;
     de.end().map_err(classify_error)?;

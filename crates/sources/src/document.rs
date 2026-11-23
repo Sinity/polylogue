@@ -8,6 +8,47 @@ pub const VERSION: u32 = 1;
 use crate::Records;
 use crate::parse::Output;
 use polylogue_model::{Json, JsonExt, MessageId, NativeId, Origin, SessionId};
+use std::io::{self, Read, Seek};
+
+/// The UTF-8 byte order mark some tools write at the start of a text file.
+/// It is part of the stored input and of every recorded byte offset, and is
+/// not part of the document: every reader starts after it, through the
+/// functions below.
+pub const BYTE_ORDER_MARK: &[u8] = b"\xEF\xBB\xBF";
+
+/// How many bytes of a document's start a recognizer sees, after the mark.
+pub const HEAD_LEN: usize = 64;
+
+/// `bytes` without a leading byte order mark.
+pub fn after_byte_order_mark(bytes: &[u8]) -> &[u8] {
+    bytes.strip_prefix(BYTE_ORDER_MARK).unwrap_or(bytes)
+}
+
+/// The first [`HEAD_LEN`] bytes of a document, after a byte order mark.
+pub fn read_head(reader: &mut impl Read) -> io::Result<Vec<u8>> {
+    let mut head = Vec::new();
+    reader
+        .by_ref()
+        .take((HEAD_LEN + BYTE_ORDER_MARK.len()) as u64)
+        .read_to_end(&mut head)?;
+    let mark = head.len() - after_byte_order_mark(&head).len();
+    head.drain(..mark);
+    head.truncate(HEAD_LEN);
+    Ok(head)
+}
+
+/// Seeks to the start of a document: past a byte order mark when there is one.
+pub fn rewind_past_byte_order_mark(file: &mut (impl Read + Seek)) -> io::Result<()> {
+    file.rewind()?;
+    let mut mark = Vec::new();
+    file.by_ref()
+        .take(BYTE_ORDER_MARK.len() as u64)
+        .read_to_end(&mut mark)?;
+    if mark != BYTE_ORDER_MARK {
+        file.rewind()?;
+    }
+    Ok(())
+}
 
 /// What a document or conversation parser writes into. `next` supplies
 /// placeholder message positions; the code that splits an input into records
@@ -104,3 +145,6 @@ pub fn text_of(content: Option<&Json>) -> Option<String> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests;

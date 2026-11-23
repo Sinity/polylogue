@@ -3,7 +3,7 @@
 //! JSON decoding, record counts and their check.
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 use crate::Records;
 use crate::lines::{self, Record};
@@ -188,7 +188,11 @@ pub fn run_document<D: DocumentParser + ?Sized>(
 ) -> Result<Step, ParseError> {
     let mut output = Output::default();
     let mut sink = Records::default();
-    parser.document(bytes, &mut output, &mut sink);
+    parser.document(
+        crate::document::after_byte_order_mark(bytes),
+        &mut output,
+        &mut sink,
+    );
     // Document parsers emit messages in reading order, not at byte offsets.
     for row in &mut output.messages {
         row.offset = 0;
@@ -326,7 +330,9 @@ fn capture_steps(
             position = MAGIC.len();
         } else {
             // An unframed file (an imported capture) is one capture.
-            match serde_json::from_slice::<serde::de::IgnoredAny>(bytes) {
+            match serde_json::from_slice::<serde::de::IgnoredAny>(
+                crate::document::after_byte_order_mark(bytes),
+            ) {
                 Err(error) if error.is_eof() => return empty_steps(),
                 _ => {}
             }
