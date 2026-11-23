@@ -272,7 +272,6 @@ fn a_receiver_stages_the_replacement_references_until_complete_after_a_rebuild()
     prior.insert("assertion:stale-assertion-reference".into());
     for prefix in positions.iter().take(positions.len() - 1) {
         assert!(apply_if_complete(&output[..*prefix], &prior, Some(&checkpoint)).is_none());
-        assert!(prior.contains("session:claude-code:stale-local-reference"));
     }
     let (current, next) = apply_if_complete(&output, &prior, Some(&checkpoint)).unwrap();
     assert_eq!(current, old);

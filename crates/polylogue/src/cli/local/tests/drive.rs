@@ -159,7 +159,7 @@ impl Provider {
         Self::new(
             Consent::Allow,
             200,
-            json!({"refresh_token":"retained-refresh","scope":auth::SCOPE}),
+            json!({"refresh_token":"retained-refresh","scope":DRIVE_READONLY}),
             200,
         )
     }
@@ -223,6 +223,9 @@ fn install(startup: &Startup, driver: &auth::Drive, extra: &[&str]) -> (ExitCode
     let exit = super::super::install_with_output(&parsed, startup, true, &mut output, driver);
     (exit, output)
 }
+/// The one scope the Drive collector may ask for.
+const DRIVE_READONLY: &str = "https://www.googleapis.com/auth/drive.readonly";
+
 fn valid(path: &Path) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, br#"{"type":"authorized_user","client_id":"synthetic-client","refresh_token":"retained-refresh"}"#).unwrap();
@@ -236,10 +239,11 @@ fn install_drive_dry_run_has_scope_pkce_and_no_requests_or_files() {
     assert_eq!(exit, ExitCode::SUCCESS);
     let report: Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(report["status"], "authorization_dry_run");
-    assert_eq!(report["scope"], auth::SCOPE);
+    assert_eq!(report["scope"], DRIVE_READONLY);
     let url = reqwest::Url::parse(report["url"].as_str().unwrap()).unwrap();
     let query = pairs(url.query().unwrap());
     assert_eq!(query["client_id"], "synthetic-client");
+    assert_eq!(query["scope"], DRIVE_READONLY);
     assert_eq!(query["code_challenge_method"], "S256");
     assert_eq!(query["access_type"], "offline");
     assert!(!token_path(&fixture.archive.root).exists());
@@ -297,7 +301,7 @@ fn install_drive_authorizes_reopens_collects_and_removes_through_one_token() {
         .iter()
         .find(|request| request.path == "/authorize")
         .unwrap();
-    assert_eq!(authorization.query["scope"], auth::SCOPE);
+    assert_eq!(authorization.query["scope"], DRIVE_READONLY);
     let exchanges: Vec<_> = seen
         .iter()
         .filter(|request| request.path == "/token")
@@ -330,23 +334,28 @@ fn install_drive_authorizes_reopens_collects_and_removes_through_one_token() {
 
 #[test]
 fn install_drive_refused_callback_and_exchange_keep_credentials_absent() {
-    for (consent, status, token) in [
-        (Consent::Deny, 200, json!({"refresh_token":"unexpected"})),
+    // The last field is how many token exchanges the case reaches: none when
+    // the callback is refused, one when the provider refuses the exchange.
+    for (consent, status, token, exchanges) in [
+        (Consent::Deny, 200, json!({"refresh_token":"unexpected"}), 0),
         (
             Consent::WrongState,
             200,
             json!({"refresh_token":"unexpected"}),
+            0,
         ),
-        (Consent::Allow, 503, json!({"error":"unavailable"})),
+        (Consent::Allow, 503, json!({"error":"unavailable"}), 1),
         (
             Consent::Allow,
             200,
             json!({"access_token":"no-offline-token"}),
+            1,
         ),
         (
             Consent::Allow,
             200,
             json!({"refresh_token":"other","scope":"unrelated"}),
+            1,
         ),
     ] {
         let (_dir, fixture, startup) = setup(Some("synthetic-client"));
@@ -357,14 +366,12 @@ fn install_drive_refused_callback_and_exchange_keep_credentials_absent() {
         );
         assert!(!token_path(&fixture.archive.root).exists());
         let seen = server.finish();
-        if matches!(consent, Consent::Deny | Consent::WrongState) {
-            assert_eq!(
-                seen.iter()
-                    .filter(|request| request.path == "/token")
-                    .count(),
-                0
-            );
-        }
+        assert_eq!(
+            seen.iter()
+                .filter(|request| request.path == "/token")
+                .count(),
+            exchanges
+        );
     }
 }
 

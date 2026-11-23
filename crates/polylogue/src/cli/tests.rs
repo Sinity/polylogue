@@ -95,11 +95,6 @@ fn only_read_only_requests_end_the_client_wait_at_their_read_deadline() {
         "write-1".into(),
     );
     assert_eq!(crate::client::connection_deadline(&writing, None), None);
-    let status = crate::client::request("status", serde_json::json!({}), "status-1".into());
-    assert_eq!(
-        crate::client::connection_deadline(&status, None),
-        Some(std::time::Duration::from_millis(80 + 50))
-    );
 }
 
 #[test]

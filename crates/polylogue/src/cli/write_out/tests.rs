@@ -149,4 +149,16 @@ fn streamed_primary_bundle_preserves_terminal_error_without_publication() {
     );
     assert!(!destination.join("manifest.json").exists());
     assert!(!destination.join("records.jsonl").exists());
+    let kept: Vec<_> = std::fs::read_dir(root.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".polylogue-bundle-")
+        })
+        .collect();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert!(kept[0].join("_staging/begin.json").is_file());
 }

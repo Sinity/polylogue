@@ -361,8 +361,9 @@ fn picker_footer_shows_keys_and_enter_action() {
         footer.join(" "),
         "↑ up · ↓ down · Tab mark · Enter tag reviewed · Esc cancel · ^j down · ^k up · ^y copy · ^r read · ^o browser · ^p print · ^e query/fuzzy · ^/ preview"
     );
-    assert!(
-        output.contains("session:codex:Beta\r\n"),
+    assert_eq!(
+        printed_references(&output),
+        ["session:codex:Beta"],
         "Ctrl-p prints the highlighted reference"
     );
     let actions: Vec<_> = events
@@ -473,6 +474,10 @@ fn picker_preview_drops_stale_reply() {
             json!({"preview":"session:codex:Beta","width":99,"deadline":100})
         ]
     );
+}
+
+#[test]
+fn a_preview_past_its_deadline_says_so() {
     let mut terminal = Terminal::new("preview", true, true);
     terminal.until("overview exceeded its 100 ms deadline");
     terminal.send(b"\x1b");
@@ -574,20 +579,9 @@ fn fuzzy_candidates_continue_across_pages() {
     assert_eq!(cursors[2], Value::Null);
 }
 
-#[test]
-fn ambiguity_filtering_printing_and_cancellation() {
-    let mut terminal = Terminal::new("ambiguous", true, true);
-    terminal.until("Esc cancel");
-    terminal.paste("Beta");
-    terminal.until("→ 1 rows");
-    terminal.send(b"\r");
-    let (result, _, _) = terminal.finish();
-    assert_eq!(result, json!({"choice":["session:codex:Beta"]}));
-    let mut terminal = Terminal::new("print", true, true);
-    terminal.until("Enter print references");
-    terminal.send(b"\r");
-    let (result, output, _) = terminal.finish();
-    assert_eq!(result, json!({"choice":["session:codex:Alpha"]}));
+/// The reference lines the picker printed, with terminal control sequences
+/// and carriage returns removed.
+fn printed_references(output: &str) -> Vec<String> {
     let mut plain = String::new();
     let mut characters = output.chars();
     while let Some(character) = characters.next() {
@@ -602,10 +596,28 @@ fn ambiguity_filtering_printing_and_cancellation() {
             plain.push(character);
         }
     }
-    let printed: Vec<_> = plain
+    plain
         .lines()
         .filter(|line| line.starts_with("session:"))
-        .collect();
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn ambiguity_filtering_printing_and_cancellation() {
+    let mut terminal = Terminal::new("ambiguous", true, true);
+    terminal.until("Esc cancel");
+    terminal.paste("Beta");
+    terminal.until("→ 1 rows");
+    terminal.send(b"\r");
+    let (result, _, _) = terminal.finish();
+    assert_eq!(result, json!({"choice":["session:codex:Beta"]}));
+    let mut terminal = Terminal::new("print", true, true);
+    terminal.until("Enter print references");
+    terminal.send(b"\r");
+    let (result, output, _) = terminal.finish();
+    assert_eq!(result, json!({"choice":["session:codex:Alpha"]}));
+    let printed = printed_references(&output);
     assert_eq!(printed, ["session:codex:Alpha"]);
     let mut terminal = Terminal::new("normal", true, true);
     terminal.until("Esc cancel");
@@ -627,31 +639,8 @@ fn archived_controls_are_escaped_in_preview() {
 }
 
 #[test]
-fn picker_latency_samples() {
-    let mut samples = vec![];
-    for _ in 0..5 {
-        let first = Instant::now();
-        let mut terminal = Terminal::new("normal", true, true);
-        terminal.until("Esc cancel");
-        let process = first.elapsed();
-        let first = terminal.event(|event| event.get("shown").is_some())["since_open_us"].clone();
-        let pressed = Instant::now();
-        terminal.paste("Beta");
-        terminal.until("→ 1 rows");
-        let key = pressed.elapsed();
-        terminal.until("overview: Beta");
-        let preview = pressed.elapsed();
-        terminal.send(b"\r");
-        let result = terminal.finish().0;
-        assert_eq!(result, json!({"choice":["session:codex:Beta"]}));
-        samples.push(json!({"first_candidates_us":first,"fixture_process_us":process.as_micros(),"keystroke_us":key.as_micros(),"preview_us":preview.as_micros()}));
-    }
-    eprintln!(
-        "picker latency, real PTY, fresh process per sample: {}",
-        json!(samples)
-    );
+fn a_ten_thousand_row_catalog_filters_to_one_page() {
     for text in ["", "retry"] {
-        let started = Instant::now();
         let page = fuzzy_page(
             (0..10_000).map(|number| row(&format!("Retry {number}"))),
             &PageRequest {
@@ -664,9 +653,5 @@ fn picker_latency_samples() {
         .unwrap();
         assert_eq!(page.count, Some(10_000));
         assert_eq!(page.rows.len(), 64);
-        eprintln!(
-            "picker catalog scan: {}",
-            json!({"rows":10000,"filter":text,"elapsed_us":started.elapsed().as_micros()})
-        );
     }
 }

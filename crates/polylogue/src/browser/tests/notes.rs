@@ -116,7 +116,7 @@ fn selected_passage_notes_survive_restart_and_identical_retries() {
 }
 
 #[test]
-fn missing_or_mismatched_browser_note_targets_never_acknowledge_a_save() {
+fn missing_or_malformed_browser_note_targets_never_acknowledge_a_save() {
     let w = test_daemon::start("unrelated");
     let host = host(&w);
     let input = selection();
@@ -130,6 +130,12 @@ fn missing_or_mismatched_browser_note_targets_never_acknowledge_a_save() {
             400
         );
     }
+    let mut elsewhere = input.clone();
+    elsewhere["source"]["page_url"] = "https://chatgpt.com/c/another-session".into();
+    assert_eq!(
+        exchange(&host, "POST", "/v1/notes", elsewhere.to_string().as_bytes()).status,
+        400
+    );
     let data = notes(&host);
     assert!(data.is_empty());
 }

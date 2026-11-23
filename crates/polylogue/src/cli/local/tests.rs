@@ -68,12 +68,27 @@ fn install_harness_writes_hooks() {
     let installed: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&settings).unwrap()).unwrap();
     assert_eq!(installed["theme"], "dark");
-    let start = installed["hooks"]["SessionStart"].as_array().unwrap();
-    assert!(start.iter().any(
-        |matcher| matcher["hooks"].as_array().unwrap().iter().any(|hook| {
-            hook["type"] == "command" && hook["command"].as_str().unwrap().contains("SessionStart")
-        })
-    ));
+    assert_eq!(
+        installed["hooks"]["SessionStart"][0]["hooks"][0],
+        json!({"type": "command", "command": "polylogue internal hook SessionStart", "timeout": 10})
+    );
+    for event in [
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "Notification",
+        "Stop",
+        "SubagentStop",
+        "PreCompact",
+        "SessionEnd",
+    ] {
+        assert_eq!(
+            installed["hooks"][event][0]["hooks"][0]["command"],
+            format!("polylogue internal hook {event}"),
+            "{event}"
+        );
+    }
     let report: serde_json::Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(report, json!({"removed":false,"files":[settings]}));
 }

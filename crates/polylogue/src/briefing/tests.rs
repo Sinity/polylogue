@@ -785,7 +785,7 @@ fn takeover_prompt_times_match_records() {
 }
 
 #[test]
-fn named_context_defaults_and_explicit_tight_budgets_share_one_fitter() {
+fn named_context_default_budgets_and_tight_budgets_fit() {
     let (_dir, f) = worked_directory();
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
@@ -886,6 +886,7 @@ fn numeric_default_and_unlimited_budgets_keep_distinct_meanings() {
     let unlimited = prepared(command_surface::TokenBudget::Unlimited);
     assert!(default.text.len() <= 4000 * 4);
     assert!(numeric.text.len() <= 2000 * 4);
+    assert!(default.text.len() > numeric.text.len());
     assert!(!default.left_out.is_empty() && !numeric.left_out.is_empty());
     assert!(unlimited.text.len() > 4000 * 4);
     assert!(visible_context(&unlimited.text).contains(&source));
