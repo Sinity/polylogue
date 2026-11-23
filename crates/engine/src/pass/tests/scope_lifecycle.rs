@@ -408,7 +408,12 @@ fn queued_import_yields_then_resumes_from_saved_positions() {
                 let resumed = engine.run_pass().unwrap();
                 assert!(resumed.errors.is_empty(), "{resumed:?}");
             }
-            assert_eq!(home.texts("request-turn").len(), 49);
+            assert_eq!(
+                home.texts("request-turn"),
+                std::iter::once("first stored record".to_owned())
+                    .chain((0..48).map(|n| format!("tail {n} {}", "x".repeat(512))))
+                    .collect::<Vec<_>>()
+            );
             if undiscovered {
                 assert_eq!(home.texts("unseen-source"), ["preexisting new file"]);
             }
@@ -493,7 +498,12 @@ fn a_stop_keeps_the_bytes_in_hand_without_reading_the_whole_input() {
     let (mut engine, _lock) = crate::import::tests::engine(&home, 256);
     let resumed = engine.run_pass().unwrap();
     assert!(resumed.errors.is_empty(), "{resumed:?}");
-    assert_eq!(home.texts("stop-request").len(), 33);
+    assert_eq!(
+        home.texts("stop-request"),
+        std::iter::once("initial body".to_owned())
+            .chain(std::iter::repeat_n("x".repeat(512), 32))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[cfg(feature = "faults")]

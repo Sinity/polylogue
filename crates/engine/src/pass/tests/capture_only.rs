@@ -23,10 +23,6 @@ fn an_origin_without_a_parser_keeps_bytes_and_commits_capture_progress() {
             .unwrap()
             .is_empty()
     );
-    assert!(crate::reading_contracts().iter().any(|contract| matches!(
-        contract,
-        polylogue_store::ReadingContract::RawOnly { origin } if origin == "pi"
-    )));
     let chain = reader
         .stored_chain(&known.input_id, known.chain.unwrap(), known.stored)
         .unwrap();

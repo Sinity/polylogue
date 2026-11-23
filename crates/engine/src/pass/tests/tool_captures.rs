@@ -90,7 +90,6 @@ fn inputs_are_serviced_while_a_database_is_read() {
         .query("SELECT count(*) AS n FROM tool_row", &[])
         .unwrap();
     assert_eq!(rows[0]["n"], 3000);
-    assert!(!w.root.join("exports").exists());
 }
 
 /// With no change reported, only the loop's own

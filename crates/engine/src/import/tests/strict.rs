@@ -148,7 +148,11 @@ fn a_directory_import_skips_links_that_lead_to_no_file() {
     let dir = w.dir.path().join("export");
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     std::fs::write(dir.join("real.txt"), b"x").unwrap();
-    std::os::unix::fs::symlink(dir.join("sub"), dir.join("to-directory")).unwrap();
+    // The link's target is outside the walked directory and holds a file.
+    let elsewhere = w.dir.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("inside.txt"), b"y").unwrap();
+    std::os::unix::fs::symlink(&elsewhere, dir.join("to-directory")).unwrap();
     std::os::unix::fs::symlink(dir.join("missing"), dir.join("broken")).unwrap();
     let mut found = Vec::new();
     files_under(&dir, &mut found).unwrap();
