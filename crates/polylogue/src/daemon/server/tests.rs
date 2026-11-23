@@ -983,8 +983,8 @@ fn a_follow_whose_client_hangs_up_gives_up_its_place_at_once() {
         )
         .unwrap();
     let mut records = follow_records(stream.try_clone().unwrap());
-    let first = records.next().expect("the first look shows the session");
-    assert_eq!(first["session"], "claude-code:s1", "{first}");
+    let first = records.next().expect("the follow answers with its marks");
+    assert_eq!(first["kind"], "marks", "{first}");
     assert_eq!(d.executor.running(), 1, "the follow holds its place");
     drop(records);
     drop(stream);
