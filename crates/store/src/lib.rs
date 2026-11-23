@@ -56,7 +56,8 @@ pub mod read;
 pub mod reference;
 mod repo_lookup;
 pub use identical_chains::{
-    ChainLayout, ChainLayouts, ChainReading, PrefixCopies, PrefixCopy, ReadingCopy, SharedPrefixes,
+    ChainLayout, ChainLayouts, PrefixCopies, PrefixCopy, ReadingCopy, SharedPrefixes,
+    StoredParseState,
 };
 pub mod schema;
 pub mod schema_inputs;

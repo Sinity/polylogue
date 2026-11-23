@@ -615,7 +615,7 @@ struct MessageWrite<'a> {
 struct CreatedMessage;
 
 /// The main route's reading of a shown message.
-pub(super) struct Version {
+pub(super) struct MainRoute {
     time: Vec<u8>,
     input_pk: i64,
     chain: i64,
@@ -624,11 +624,11 @@ pub(super) struct Version {
     in_progress: bool,
 }
 
-fn selected_version(
+fn main_route(
     choice: &resolve::membership::MessageChoice,
     value: Option<&resolve::membership::MessageValue>,
-) -> Version {
-    Version {
+) -> MainRoute {
+    MainRoute {
         time: value
             .map(|value| value.prepared.time.clone())
             .unwrap_or_default(),
@@ -897,7 +897,7 @@ impl RowWriter<'_, '_> {
         let route = row.route(self.route);
         let completion = Completion::of(m, route);
         let at = ms(row.message.at);
-        let v = Version {
+        let v = MainRoute {
             time: prepared.time.clone(),
             input_pk: self.input_pk,
             chain: self.chain,
@@ -919,7 +919,7 @@ impl RowWriter<'_, '_> {
                 let inserted = self.insert_message(
                     selected,
                     choice.session,
-                    &selected_version(choice, write.value),
+                    &main_route(choice, write.value),
                     &choice.order,
                     reserved,
                     try_insert,
@@ -974,7 +974,7 @@ impl RowWriter<'_, '_> {
         let choice = write.choice;
         let value = write.value;
         let created = write.created.take();
-        let winner = choice.map(|choice| (selected_version(choice, value), choice.session));
+        let winner = choice.map(|choice| (main_route(choice, value), choice.session));
         let Some((v, session_pk)) = winner else {
             if !self
                 .tx
@@ -1082,7 +1082,7 @@ impl RowWriter<'_, '_> {
         &self,
         m: &Message,
         session_pk: i64,
-        v: &Version,
+        v: &MainRoute,
         order: &str,
         reserved: Option<(&polylogue_model::MessageId, i64)>,
         try_insert: bool,
@@ -1115,7 +1115,7 @@ impl RowWriter<'_, '_> {
         id: Option<&str>,
         m: &Message,
         session_pk: i64,
-        v: &Version,
+        v: &MainRoute,
         order: &str,
         try_insert: bool,
     ) -> Result<bool> {

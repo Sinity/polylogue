@@ -17,12 +17,12 @@ pub struct ChainLayout {
     pub chain: i64,
     pub length: u64,
     /// The chain's reading, when it has one.
-    pub reading: Option<ChainReading>,
+    pub reading: Option<StoredParseState>,
 }
 
 /// How far a chain's reading has read, under which reading version.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChainReading {
+pub struct StoredParseState {
     pub reading_version: String,
     /// The stored parse status word (`parsing`, `waiting`, `done`, ...).
     pub status: String,
@@ -31,7 +31,7 @@ pub struct ChainReading {
     pub at_length: Option<u64>,
 }
 
-impl ChainReading {
+impl StoredParseState {
     /// Read through the end of a chain of `length` bytes: nothing remains
     /// for a later parse but a record still being written.
     pub fn settled(&self, length: u64) -> bool {

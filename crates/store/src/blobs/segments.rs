@@ -99,9 +99,14 @@ impl Blobs {
         Ok(self.count_reads(hashed_blobs::Reader::new(&self.root).open(&[extent], None)?))
     }
 
-    pub fn read_range(&self, hash: &hashed_blobs::Hash, offset: u64, len: u64) -> Result<Vec<u8>> {
+    pub fn read_range(
+        &self,
+        hash: &hashed_blobs::Hash,
+        offset: u64,
+        length: u64,
+    ) -> Result<Vec<u8>> {
         let extent = self.extent(hash)?;
-        Ok(hashed_blobs::Reader::new(&self.root).read_range(&[extent], offset, len, None)?)
+        Ok(hashed_blobs::Reader::new(&self.root).read_range(&[extent], offset, length, None)?)
     }
 
     /// Check each committed extent without changing stored bytes.

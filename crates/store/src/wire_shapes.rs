@@ -343,8 +343,10 @@ pub(crate) fn copied(
 
 /// Apply before or after the parse checkpoint, in the same transaction.
 /// A complete reset replaces current counts, keeping first/last occurrences and
-/// the rows of older reading versions. Overlapping non-identical ranges fail;
-/// callers must resume from their committed checkpoint rather than double-count.
+/// the rows of older reading versions. A step that ends inside the committed
+/// frontier is ignored as already counted (only the last range's hash is kept,
+/// so its bytes are not compared); a step that starts inside the frontier and
+/// extends past it, or repeats the last range with different bytes, fails.
 pub fn apply(tx: &Transaction<'_>, source: Source<'_>, step: &ParseStep) -> Result<()> {
     apply_inner(tx, source, step, false)
 }

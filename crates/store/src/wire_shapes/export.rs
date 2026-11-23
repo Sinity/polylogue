@@ -2,16 +2,6 @@
 use super::*;
 use crate::ConnExt as _;
 
-#[derive(Clone)]
-pub(crate) struct ExportPrefix {
-    cursor: Option<ExportCursor>,
-    first: ReadRange,
-    last: ReadRange,
-    length: u64,
-    body_hash: String,
-    refused: bool,
-}
-
 pub(crate) fn is_refusal(step: &ParseStep) -> bool {
     matches!(
         step.progress,
@@ -19,27 +9,17 @@ pub(crate) fn is_refusal(step: &ParseStep) -> bool {
     )
 }
 
-pub(crate) fn load_prefix(
+fn load_prefix(
     conn: &Connection,
     input: &str,
     chain: i64,
     version: &str,
-) -> Result<Option<ExportPrefix>> {
+) -> Result<Option<Reading>> {
     let previous: Option<String> = conn.scalar_optional(
         "SELECT w.state FROM wire_reading w JOIN input_ref i ON i.pk=w.input_pk WHERE i.id=?1 AND w.chain=?2 AND w.reading_version=?3",
         params![input,chain,version])?;
     previous
-        .map(|json| {
-            let old: Reading = serde_json::from_str(&json)?;
-            Ok(ExportPrefix {
-                cursor: old.export_cursor,
-                first: old.first.covered,
-                last: old.last.covered,
-                length: old.length,
-                body_hash: old.last_hash,
-                refused: old.refused_export,
-            })
-        })
+        .map(|json| Ok(serde_json::from_str(&json)?))
         .transpose()
 }
 
@@ -57,7 +37,7 @@ pub(crate) fn admit_export(
     )
 }
 
-fn accept(previous: Option<&ExportPrefix>, length: u64, step: &ParseStep) -> Result<bool> {
+fn accept(previous: Option<&Reading>, length: u64, step: &ParseStep) -> Result<bool> {
     // A failure carries no records and moves no cursor, so it switches
     // neither an export reading nor a byte-range reading.
     if matches!(
@@ -67,7 +47,7 @@ fn accept(previous: Option<&ExportPrefix>, length: u64, step: &ParseStep) -> Res
         return Ok(true);
     }
     let Some(delivery) = step.delivery.as_ref() else {
-        if previous.is_some_and(|old| old.cursor.is_some() || old.refused) {
+        if previous.is_some_and(|old| old.export_cursor.is_some() || old.refused_export) {
             return Err(StoreError::invalid(
                 "an export reading cannot switch to byte ranges",
             ));
@@ -117,9 +97,9 @@ fn accept(previous: Option<&ExportPrefix>, length: u64, step: &ParseStep) -> Res
         other => other,
     };
     if let Some(old) = previous
-        && old.refused
+        && old.refused_export
     {
-        if refused && old.body_hash == delivery.body_hash.to_string() {
+        if refused && old.last_hash == delivery.body_hash.to_string() {
             return Ok(false);
         }
         return Err(StoreError::invalid(
@@ -127,7 +107,7 @@ fn accept(previous: Option<&ExportPrefix>, length: u64, step: &ParseStep) -> Res
         ));
     }
     let first = if let Some(old) = previous {
-        let cursor = old.cursor.as_ref().ok_or_else(|| {
+        let cursor = old.export_cursor.as_ref().ok_or_else(|| {
             StoreError::Invalid(
                 "historical byte control cannot authenticate an export callback prefix".into(),
             )
@@ -155,7 +135,7 @@ fn accept(previous: Option<&ExportPrefix>, length: u64, step: &ParseStep) -> Res
             return Ok(false);
         }
         if matches!(
-            old.last,
+            old.last.covered,
             ReadRange::Export {
                 source: ExportDeliverySource::Complete { .. }
             }
@@ -172,7 +152,7 @@ fn accept(previous: Option<&ExportPrefix>, length: u64, step: &ParseStep) -> Res
                 "an export continuation cannot reset committed callback effects",
             ));
         }
-        old.first
+        old.first.covered
     } else {
         ExportCursor::from_first(delivery).map_err(crate::StoreError::invalid)?;
         if !step.reset {

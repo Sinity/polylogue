@@ -245,3 +245,16 @@ fn calendar_labels_keep_iso_years_before_the_common_era() {
     // Gregorian weekdays repeat every 400 years: this is the Tuesday of ISO week 9.
     assert_eq!(week_label(&day, at).unwrap(), "-0400-W09");
 }
+
+#[test]
+fn month_bounds_follow_the_logical_day_across_a_clock_change() {
+    let warsaw = day("Europe/Warsaw", "04:00:00");
+    let at = |text: &str| text.parse::<Timestamp>().unwrap().as_millisecond();
+    let (lower, upper) = month(&warsaw, "2026-10-05".parse().unwrap()).unwrap();
+    assert_eq!(lower, at("2026-10-01T02:00:00Z"));
+    assert_eq!(upper, at("2026-11-01T03:00:00Z"));
+    // 02:30Z on 1 November is 03:30 local, before the 04:00 day start.
+    let late = at("2026-11-01T02:30:00Z");
+    assert!(lower <= late && late < upper);
+    assert_eq!(month_label(&warsaw, late).unwrap(), "2026-10");
+}

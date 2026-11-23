@@ -54,6 +54,15 @@ fn apply_step(conn: &mut Connection, length: u64, step: &ParseStep) -> Result<()
     tx.commit()?;
     Ok(())
 }
+fn assert_rejected(result: Result<()>, reason: &str) {
+    match result {
+        Err(StoreError::Invalid(message)) => assert!(
+            message.contains(reason),
+            "rejected for another reason: {message}"
+        ),
+        other => panic!("expected a rejection containing {reason:?}, got {other:?}"),
+    }
+}
 fn state(conn: &Connection) -> String {
     conn.query_row("SELECT state FROM wire_reading", [], |row| row.get(0))
         .unwrap()
@@ -87,7 +96,10 @@ fn callback_prefix_retries_are_read_only_and_completion_waits_for_every_prior_ca
         ExportDeliverySource::Item { start: 1, end: 2 },
         item.delivery.unwrap().prefix_hash,
     );
-    assert!(apply_step(&mut conn, 2, &gap).is_err());
+    assert_rejected(
+        apply_step(&mut conn, 2, &gap),
+        "export delivery ordinal is not the expected callback position",
+    );
     assert_eq!(state(&conn), saved);
     let mut conflict = item.clone();
     conflict.counts.used.clear();
@@ -99,7 +111,10 @@ fn callback_prefix_retries_are_read_only_and_completion_waits_for_every_prior_ca
             header.delivery.unwrap().prefix_hash,
         )
         .unwrap();
-    assert!(apply_step(&mut conn, 2, &conflict).is_err());
+    assert_rejected(
+        apply_step(&mut conn, 2, &conflict),
+        "replayed export prefix differs",
+    );
     let wrong = callback(
         2,
         ExportDeliverySource::Complete {
@@ -109,7 +124,10 @@ fn callback_prefix_retries_are_read_only_and_completion_waits_for_every_prior_ca
         },
         item.delivery.unwrap().prefix_hash,
     );
-    assert!(apply_step(&mut conn, 2, &wrong).is_err());
+    assert_rejected(
+        apply_step(&mut conn, 2, &wrong),
+        "export completion does not account",
+    );
     assert_eq!(state(&conn), saved);
     let complete = callback(
         2,
@@ -151,17 +169,26 @@ fn callback_prefix_retries_are_read_only_and_completion_waits_for_every_prior_ca
         },
         conflict.delivery.unwrap().prefix_hash,
     );
-    assert!(apply_step(&mut conn, 2, &forked_completion).is_err());
+    assert_rejected(
+        apply_step(&mut conn, 2, &forked_completion),
+        "replayed export prefix differs",
+    );
     let after_complete = callback(
         3,
         ExportDeliverySource::Item { start: 1, end: 2 },
         complete.delivery.unwrap().prefix_hash,
     );
-    assert!(apply_step(&mut conn, 2, &after_complete).is_err());
+    assert_rejected(
+        apply_step(&mut conn, 2, &after_complete),
+        "a completed immutable export cannot acquire another callback",
+    );
     assert_eq!(state(&conn), done);
     assert_eq!(stored_rows(&conn), shape);
     item.delivery = None;
-    assert!(apply_step(&mut conn, 2, &item).is_err());
+    assert_rejected(
+        apply_step(&mut conn, 2, &item),
+        "an export reading cannot switch to byte ranges",
+    );
 }
 
 #[test]
@@ -214,7 +241,10 @@ fn unreadable_header_keeps_diagnostics_without_a_cursor_and_new_length_can_resta
         ExportDeliverySource::ContainerHeader,
         ExportDelivery::seed(),
     );
-    assert!(apply_step(&mut conn, 1, &header).is_err());
+    assert_rejected(
+        apply_step(&mut conn, 1, &header),
+        "a refused immutable source cannot change its callback",
+    );
     apply_step(&mut conn, 2, &header).unwrap();
     let complete = callback(
         1,

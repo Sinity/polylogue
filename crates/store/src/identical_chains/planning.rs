@@ -1,5 +1,5 @@
 //! Chain metadata, extents and planned copies stay on disk while one input is planned.
-use super::{ChainLayout, ChainReading};
+use super::{ChainLayout, StoredParseState};
 use crate::ConnExt as _;
 use crate::{Result, source::Source};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -102,7 +102,7 @@ impl ChainLayouts {
                 let version: Option<String> = row.get(2)?;
                 let reading = version
                     .map(|reading_version| -> rusqlite::Result<_> {
-                        Ok(ChainReading {
+                        Ok(StoredParseState {
                             reading_version,
                             status: row.get(3)?,
                             parsed_upto: row.get(4)?,
