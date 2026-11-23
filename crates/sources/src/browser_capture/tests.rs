@@ -218,6 +218,20 @@ fn the_files_of_a_capture_name_their_message_by_its_provider_id() {
 }
 
 #[test]
+fn a_capture_is_temporary_when_its_session_kind_says_so() {
+    for (kind, temporary) in [("temporary", true), ("standard", false)] {
+        let bytes = capture(
+            chatgpt_payload(),
+            json!({"provider":"chatgpt", "provider_session_id":"c1", "session_kind":kind}),
+        );
+        assert_eq!(
+            files(&bytes).unwrap()["conversation"]["temporary"],
+            temporary
+        );
+    }
+}
+
+#[test]
 fn a_capture_whose_provider_conversation_has_another_identity_is_refused() {
     let bytes = capture(
         chatgpt_payload(),

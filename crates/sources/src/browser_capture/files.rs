@@ -8,7 +8,7 @@ use serde_json::json;
 pub fn files(bytes: &[u8]) -> Result<Json, String> {
     // The capture tree is dropped before the parser builds its own, so a
     // capture with inlined files is never held twice.
-    let (provider, conversation, temporary) = {
+    let (provider, conversation) = {
         let capture: Json = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
         let text = |pointer: &str| {
             capture
@@ -16,17 +16,9 @@ pub fn files(bytes: &[u8]) -> Result<Json, String> {
                 .and_then(Json::as_str)
                 .map(str::to_owned)
         };
-        let flag = |pointer: &str| {
-            capture
-                .pointer(pointer)
-                .and_then(Json::as_bool)
-                .unwrap_or(false)
-        };
         (
             text("/session/provider"),
             text("/session/provider_session_id"),
-            flag("/raw_provider_payload/is_temporary")
-                || flag("/raw_provider_payload/conversation/temporary"),
         )
     };
     let step = run_document(&Capture, bytes).map_err(|e| e.to_string())?;
@@ -74,7 +66,7 @@ pub fn files(bytes: &[u8]) -> Result<Json, String> {
             "id": conversation,
             "title": session.title.as_ref().map(|t| &t.text),
             "messages": step.output.messages.len(),
-            "temporary": temporary,
+            "temporary": session.mode.as_deref() == Some(TEMPORARY_MODE),
         },
         "files": files,
     }))
