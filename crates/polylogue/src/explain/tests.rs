@@ -236,7 +236,7 @@ fn capabilities_list_each_operation_with_unlisted_arguments_and_answer() {
 
 #[test]
 fn transforms_subject_lists_the_pipe_stages() {
-    let page = answer("transforms", None, None, Some(100), None).unwrap();
+    let page = answer("transforms", None, Some(100), None).unwrap();
     let completions: Vec<_> = page["entries"]
         .as_array()
         .unwrap()
