@@ -158,12 +158,6 @@ fn terminal_child() {
                 "tag reviewed".into()
             },
             multiple: true,
-            json: case == "json",
-            format: match case.as_str() {
-                "jsonl" => Some("jsonl".into()),
-                "format-json" => Some("json".into()),
-                _ => None,
-            },
         },
     );
     let result = match result {
@@ -482,14 +476,8 @@ fn picker_preview_drops_stale_reply() {
 }
 
 #[test]
-fn picker_never_opens_off_terminal_or_with_json() {
-    for (case, input, output) in [
-        ("normal", false, true),
-        ("normal", true, false),
-        ("json", true, true),
-        ("jsonl", true, true),
-        ("format-json", true, true),
-    ] {
+fn picker_never_opens_off_terminal() {
+    for (case, input, output) in [("normal", false, true), ("normal", true, false)] {
         let terminal = Terminal::new(case, input, output);
         let (result, _, events) = terminal.finish();
         assert_eq!(result["error"], "ambiguous");

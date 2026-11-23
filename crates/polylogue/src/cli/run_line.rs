@@ -436,8 +436,6 @@ pub(crate) fn run(
                     .steps
                     .first()
                     .is_none_or(|step| step.verb != "resume"),
-                json: false,
-                format: None,
             };
             match picker::open(source, options) {
                 Ok(picker::Choice::Selected(references)) => references,
@@ -812,7 +810,7 @@ impl picker::Source for Source {
             }
             let mut fuzzy = request.clone();
             fuzzy.fuzzy.get_or_insert_default();
-            return picker::fuzzy_page(rows.iter().cloned(), &fuzzy, 50);
+            return picker::fuzzy_page(rows.iter().cloned(), &fuzzy, picker::CANDIDATE_PAGE);
         }
         let mut call = self.request.clone();
         call.request_id = polylogue_store::user_writes::new_request_id();
@@ -827,7 +825,7 @@ impl picker::Source for Source {
             let answer = picker_call(&archive, &call).await?;
             return candidates(&answer).map_err(crate::daemon::Failure::from);
         }
-        let mut matched = picker::FuzzyRows::new(&request, 50)?;
+        let mut matched = picker::FuzzyRows::new(&request, picker::CANDIDATE_PAGE)?;
         loop {
             let answer = picker_call(&archive, &call).await?;
             let page = candidates(&answer).map_err(crate::daemon::Failure::from)?;

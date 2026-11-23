@@ -30,7 +30,7 @@ fn begin() -> serde_json::Value {
     })
 }
 
-fn deliver(destination: &Path, failed: bool) -> Result<u8, DeliveryError> {
+fn deliver(destination: &Path, failed: bool) -> Result<u8, OutputError> {
     let engine = polylogue_engine::Config::new(
         destination.parent().unwrap().to_owned(),
         Default::default(),
@@ -93,7 +93,7 @@ fn deliver(destination: &Path, failed: bool) -> Result<u8, DeliveryError> {
         crate::protocol::stream::event(&mut bytes, "steps", &answer).unwrap();
         crate::protocol::stream::event(&mut bytes, "answer", &answer).unwrap();
     }
-    consume(&startup, &parsed, &mut Default::default(), |callback| {
+    write_read_stream(&startup, &parsed, &mut Default::default(), |callback| {
         crate::client::stream::receive(std::io::Cursor::new(bytes), callback)
     })
 }
@@ -132,7 +132,7 @@ fn streamed_primary_bundle_preserves_terminal_error_without_publication() {
     let root = tempfile::tempdir().unwrap();
     let destination = root.path().join("bundle");
     std::fs::create_dir(&destination).unwrap();
-    let Err(DeliveryError::Answer(answer)) = deliver(&destination, true) else {
+    let Err(OutputError::Answer(answer)) = deliver(&destination, true) else {
         panic!("the stream must return its terminal failure")
     };
     let command_surface::Outcome::Error(error) = answer.outcome else {

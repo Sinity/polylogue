@@ -45,6 +45,10 @@ impl StagedFile {
         self.temporary
             .persist(&self.target)
             .map_err(|error| error.error)?;
+        // The rename is durable only once its directory entry is synced.
+        if let Some(parent) = self.target.parent() {
+            fs::File::open(parent)?.sync_all()?;
+        }
         Ok(self.requested)
     }
 }

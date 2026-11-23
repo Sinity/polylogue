@@ -5,7 +5,7 @@ use std::io::{self, BufRead, Read};
 
 mod diff;
 mod observe;
-pub use diff::{Change, ChangeKind, Diff, Sample, TableChange, compare};
+pub use diff::{Change, ChangeKind, Diff, Sample, TableChange, compare, validate};
 
 pub const RULE_VERSION: u32 = 2;
 

@@ -115,36 +115,44 @@ pub fn line(answer: &protocol::line::LineAnswer, style: TextStyle) -> String {
                 undo.extend(lines);
             }
             StepOutcome::Failed { error } => {
-                let _ = writeln!(out, "{} failed: {}", step.verb, error.message);
+                let _ = writeln!(
+                    out,
+                    "{} failed: {}",
+                    step.verb,
+                    polylogue_render::terminal::escape(&error.message)
+                );
             }
             StepOutcome::NotRun => {
                 let _ = writeln!(out, "{} not run", step.verb);
             }
             StepOutcome::WouldDo { would, refusal } => {
-                let _ = writeln!(out, "{would}");
+                let _ = writeln!(out, "{}", polylogue_render::terminal::escape(would));
                 if let Some(refusal) = refusal {
-                    let _ = writeln!(out, "  refused: {}", refusal.message);
+                    let _ = writeln!(
+                        out,
+                        "  refused: {}",
+                        polylogue_render::terminal::escape(&refusal.message)
+                    );
                 }
             }
         }
     }
     for line in undo {
-        let _ = writeln!(out, "undo: {line}");
+        let _ = writeln!(out, "undo: {}", polylogue_render::terminal::escape(line));
     }
     out
 }
 
 fn wrote_each(report: &polylogue_model::user::AssertQueryOutcome, verb: &str) -> String {
     let mut out = String::new();
+    let written_suffix = if report.written == 1 { "" } else { "s" };
     if report.pending {
         let suffix = if report.targets == 1 { "" } else { "s" };
         let _ = writeln!(out, "{verb} pending for {} row{suffix}", report.targets);
     } else if verb == "tag" {
-        let suffix = if report.written == 1 { "" } else { "s" };
-        let _ = writeln!(out, "tagged {} row{suffix}", report.written);
+        let _ = writeln!(out, "tagged {} row{written_suffix}", report.written);
     } else {
-        let suffix = if report.written == 1 { "" } else { "s" };
-        let _ = writeln!(out, "wrote {} annotation{suffix}", report.written);
+        let _ = writeln!(out, "wrote {} annotation{written_suffix}", report.written);
     }
     if report.repeat {
         out.push_str("repeat; no new writes\n");
@@ -220,8 +228,8 @@ pub fn resume(answer: &protocol::resume::Answer, _style: TextStyle) -> String {
 
 fn resumable(sessions: &[crate::resume::ResumableSession]) -> String {
     let mut out = String::new();
-    for c in sessions {
-        let open = &c.open;
+    for entry in sessions {
+        let open = &entry.open;
         let mut why = Vec::new();
         if open.unanswered_prompt {
             why.push("unanswered prompt".to_owned());
@@ -229,22 +237,23 @@ fn resumable(sessions: &[crate::resume::ResumableSession]) -> String {
         if open.open_tool_call {
             why.push("unfinished tool call".to_owned());
         }
-        if let Some(t) = &open.todo {
-            why.push(format!("todo: {t}"));
+        if let Some(todo) = &open.todo {
+            why.push(format!("todo: {todo}"));
         }
-        if let Some(w) = &open.waiting_on {
-            why.push(format!("waiting on {w}"));
+        if let Some(waiting) = &open.waiting_on {
+            why.push(format!("waiting on {waiting}"));
         }
-        why.extend(c.follow_ups.iter().cloned());
+        why.extend(entry.follow_ups.iter().cloned());
         let _ = writeln!(
             out,
             "{}  {}  {}\n    {}",
-            c.session
+            entry
+                .session
                 .last_activity
                 .map(|at| at.to_string())
                 .unwrap_or_default(),
-            c.session.id,
-            c.session.title.as_deref().unwrap_or_default(),
+            entry.session.id,
+            entry.session.title.as_deref().unwrap_or_default(),
             why.join("; ")
         );
     }
@@ -254,10 +263,10 @@ fn resumable(sessions: &[crate::resume::ResumableSession]) -> String {
 /// A command line as a shell would run it, in its directory.
 pub(crate) fn command_line(command: &crate::resume::Command) -> String {
     let mut words = vec![shell_quote(&command.program)];
-    words.extend(command.args.iter().map(|a| shell_quote(a)));
+    words.extend(command.args.iter().map(|arg| shell_quote(arg)));
     let line = words.join(" ");
     match &command.cwd {
-        Some(d) => format!("cd {} && {line}", shell_quote(d)),
+        Some(dir) => format!("cd {} && {line}", shell_quote(dir)),
         None => line,
     }
 }
@@ -285,7 +294,7 @@ fn chat_actions_text(actions: &[crate::browser::actions::ActionSummary]) -> Stri
         return "no chat actions\n".into();
     }
     let mut out = String::new();
-    for a in actions {
+    for action in actions {
         let target = a
             .request
             .conversation
@@ -294,13 +303,13 @@ fn chat_actions_text(actions: &[crate::browser::actions::ActionSummary]) -> Stri
         let _ = writeln!(
             out,
             "{}  {}  {}  {}  {}",
-            a.id,
-            name_of(&a.status),
-            a.request.provider,
+            action.id,
+            name_of(&action.status),
+            action.request.provider,
             target,
-            a.updated_at.as_deref().unwrap_or_default()
+            action.updated_at.as_deref().unwrap_or_default()
         );
-        if let Some(error) = &a.last_error {
+        if let Some(error) = &action.last_error {
             let _ = writeln!(out, "    {error}");
         }
     }
@@ -328,20 +337,20 @@ fn backfill_jobs_text(jobs: &[crate::browser::backfill::JobSummary]) -> String {
         return "no backfill jobs\n".into();
     }
     let mut out = String::new();
-    for j in jobs {
+    for job in jobs {
         let _ = writeln!(
             out,
             "{}  {}  {}  listed {}, captured {}, unchanged {}, failed {}  {}",
-            j.id,
-            j.provider,
-            name_of(&j.status),
-            j.listed,
-            j.captured,
-            j.unchanged,
-            j.failed,
-            j.updated_at.as_deref().unwrap_or_default()
+            job.id,
+            job.provider,
+            name_of(&job.status),
+            job.listed,
+            job.captured,
+            job.unchanged,
+            job.failed,
+            job.updated_at.as_deref().unwrap_or_default()
         );
-        if let Some(detail) = &j.detail {
+        if let Some(detail) = &job.detail {
             let _ = writeln!(out, "    {detail}");
         }
     }

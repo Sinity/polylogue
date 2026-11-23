@@ -34,6 +34,9 @@ impl Ord for Ranked {
     }
 }
 
+/// Rows in one page of fuzzy candidates.
+pub const CANDIDATE_PAGE: usize = 64;
+
 /// Ranks catalog rows by title, first prompt and repository, retaining one
 /// transfer page. The iterator has a stable order for the catalog snapshot.
 /// Callers stream catalog rows here; no archive read or daemon call is needed.
@@ -76,7 +79,7 @@ impl FuzzyRows {
             .transpose()
             .map_err(Failure::bad_request)?;
         let text = text.to_lowercase();
-        let matcher = SkimMatcherV2::default().ignore_case();
+        let matcher = SkimMatcherV2::default();
         Ok(Self {
             text,
             after,
