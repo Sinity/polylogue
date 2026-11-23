@@ -101,7 +101,13 @@ fn hermes_verification_needs_its_schema_not_markers() {
         assert!(sessions(&parsed).is_empty());
         assert!(messages(&parsed).is_empty());
         assert!(parsed["output"]["events"].as_array().unwrap().is_empty());
-        assert!(!parsed["counts"]["skipped"].as_object().unwrap().is_empty());
+        assert!(
+            parsed["counts"]["skipped"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .any(|k| k.contains("unsupported or absent Hermes verification schema version"))
+        );
     }
     let marker = br#"{"polylogue_artifact":"hermes_verification_evidence_db","verification_db_path":"/neutral/never-open.db"}"#;
     assert!(!(by_name("hermes").unwrap().recognize)(
@@ -165,4 +171,19 @@ fn hermes_verification_history_keeps_row_occurrences_under_their_observed_schema
         assert!(sessions(&parsed).is_empty());
         assert!(messages(&parsed).is_empty());
     }
+}
+
+#[test]
+fn a_deleted_meta_row_clears_the_verification_schema_version() {
+    let event = |id: u64| json!({"t":"verification_events","k":[id],"r":{"id":id,"status":"passed","exit_code":0}});
+    let raw = crate::support::jsonl(&[
+        json!({"t":"meta","k":["schema_version"],"r":{"key":"schema_version","value":"1"}}),
+        event(1),
+        json!({"t":"meta","k":["schema_version"],"gone":true}),
+        event(2),
+    ]);
+    let parsed = parse("hermes", "verification_evidence.db.jsonl", &raw);
+    assert_eq!(events(&parsed, "hermes_verification_event").len(), 1);
+    assert_eq!(events(&parsed, "hermes_verification_row_deleted").len(), 1);
+    assert!(!parsed["counts"]["skipped"].as_object().unwrap().is_empty());
 }

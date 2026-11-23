@@ -133,13 +133,16 @@ struct Tree {
     free: Vec<usize>,
 }
 
+/// An object with more distinct member names than this groups its unforced
+/// members under one `*` path.
+const MAX_UNGROUPED_MEMBERS: usize = 50;
+
 #[derive(Default)]
 struct Node {
     types: BTreeMap<String, u64>,
     occurrences: u64,
     present: u64,
     children: BTreeMap<String, usize>,
-    // At most 51 names establish whether all unforced members must be grouped.
     members: BTreeSet<String>,
     grouped: bool,
     // Grouped presence is the number of objects with any unforced member.
@@ -147,6 +150,15 @@ struct Node {
     // Parser-assigned numbers count presence once per parent at a shared path.
     last_unforced: u64,
     last_parent: u64,
+}
+
+impl Node {
+    fn note_member(&mut self, key: String) {
+        self.members.insert(key);
+        if self.members.len() > MAX_UNGROUPED_MEMBERS {
+            self.grouped = true;
+        }
+    }
 }
 
 impl Tree {
@@ -194,10 +206,7 @@ impl Tree {
         let node = &mut self.nodes[parent];
         let was_grouped = node.grouped;
         if !node.grouped && !fixed {
-            node.members.insert(key.clone());
-            if node.members.len() > 50 {
-                node.grouped = true;
-            }
+            node.note_member(key.clone());
         }
         if !forced && node.last_unforced != object {
             node.unforced_present += 1;
@@ -270,9 +279,8 @@ impl Tree {
         node.grouped |= source.grouped;
         if !node.grouped {
             for key in &source.members {
-                node.members.insert(key.clone());
-                if node.members.len() > 50 {
-                    node.grouped = true;
+                node.note_member(key.clone());
+                if node.grouped {
                     break;
                 }
             }

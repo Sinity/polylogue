@@ -226,3 +226,22 @@ fn takeouts_with_different_zone_text_give_one_copy() {
         );
     }
 }
+
+#[test]
+fn a_link_quoted_in_the_prompt_does_not_name_the_conversation() {
+    let html = cell(
+        &format!("Prompted\u{a0}see {APP}quoted<br>Jul 27, 2026, 10:59:30\u{202f}PM CEST<br>ok"),
+        Some("real1"),
+    );
+    assert_eq!(entry(&html).unwrap().conversation.as_deref(), Some("real1"));
+    let html = cell(
+        &format!("Prompted\u{a0}see {APP}quoted<br>Jul 27, 2026, 10:59:30\u{202f}PM CEST<br>ok"),
+        None,
+    );
+    assert_eq!(entry(&html).unwrap().conversation, None);
+}
+
+#[test]
+fn tags_are_named_up_to_any_whitespace() {
+    assert_eq!(html_text("one<br\n>two"), "one\ntwo");
+}

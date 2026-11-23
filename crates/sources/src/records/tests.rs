@@ -105,3 +105,16 @@ fn public_shape_kind_uses_declarations_not_wire_type_fields() {
             .contains("distinctive-private-kind")
     );
 }
+
+#[test]
+fn a_repeated_key_counts_its_earlier_value_as_unread() {
+    let mut records = Records::default();
+    records.record("message", &RecordOutcome::Used);
+    records.repeated_key("message", "a.b");
+    records.repeated_key("message", "a.b");
+    let counts = records.finish().unwrap();
+    assert_eq!(
+        counts.unread_fields["message.a.b (repeated key; earlier value)"],
+        2
+    );
+}

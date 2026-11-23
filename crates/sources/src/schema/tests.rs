@@ -426,3 +426,20 @@ fn row_dump_hidden_declared_columns_are_explicitly_unobserved_beside_visible_row
     assert!(!table.fields.contains_key("/hidden~1value"));
     assert!(compare(&schema, &schema).is_ok());
 }
+
+#[test]
+fn a_table_without_observed_rows_is_not_compared_column_by_column() {
+    let before = infer(br#"{"schema":{"threads":"private SQL"}}"#, Framing::RowDump);
+    let after = infer(
+        br#"{"schema":{"threads":"private SQL"}}
+{"t":"threads","k":"a","r":{"title":"x"}}"#,
+        Framing::RowDump,
+    );
+    let diff = compare(&before, &after).unwrap();
+    assert!(diff.changes.is_empty());
+    assert!(!diff.comparable);
+    assert!(
+        diff.reasons
+            .contains(&"unobserved_table_columns".to_owned())
+    );
+}

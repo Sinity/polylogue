@@ -14,6 +14,21 @@ pub const HERMES_ROOT: Root = Root {
     default: ".hermes",
 };
 
+/// Both Antigravity homes hold the same kinds of program and account files.
+const ANTIGRAVITY_IGNORED: &[(&str, &str)] = &[
+    ("**/*-wal", "database sidecar"),
+    ("**/*-shm", "database sidecar"),
+    ("**/*-journal", "database sidecar"),
+    ("oauth_token", "secret or account state"),
+    ("bin/**", "program files"),
+    ("builtin/**", "program files"),
+    ("cache/**", "cache"),
+    ("updater/**", "program files"),
+    ("crashes/**", "diagnostics"),
+    ("log/**", "diagnostics"),
+    ("*.lock", "tool lock"),
+];
+
 pub static TOOLS: &[Tool] = &[
     Tool {
         name: "claude-code",
@@ -143,19 +158,7 @@ pub static TOOLS: &[Tool] = &[
             "knowledge/**",
             "user_settings.pb",
         ],
-        ignored: &[
-            ("**/*-wal", "database sidecar"),
-            ("**/*-shm", "database sidecar"),
-            ("**/*-journal", "database sidecar"),
-            ("oauth_token", "secret or account state"),
-            ("bin/**", "program files"),
-            ("builtin/**", "program files"),
-            ("cache/**", "cache"),
-            ("updater/**", "program files"),
-            ("crashes/**", "diagnostics"),
-            ("log/**", "diagnostics"),
-            ("*.lock", "tool lock"),
-        ],
+        ignored: ANTIGRAVITY_IGNORED,
     },
     Tool {
         name: "antigravity-cli",
@@ -173,19 +176,7 @@ pub static TOOLS: &[Tool] = &[
             "knowledge/**",
             "jetski_state.pbtxt",
         ],
-        ignored: &[
-            ("**/*-wal", "database sidecar"),
-            ("**/*-shm", "database sidecar"),
-            ("**/*-journal", "database sidecar"),
-            ("oauth_token", "secret or account state"),
-            ("bin/**", "program files"),
-            ("builtin/**", "program files"),
-            ("cache/**", "cache"),
-            ("updater/**", "program files"),
-            ("crashes/**", "diagnostics"),
-            ("log/**", "diagnostics"),
-            ("*.lock", "tool lock"),
-        ],
+        ignored: ANTIGRAVITY_IGNORED,
     },
     Tool {
         name: "hermes",

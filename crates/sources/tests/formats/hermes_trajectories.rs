@@ -156,7 +156,10 @@ fn atif_timing_and_ids_are_not_authorship_or_time() {
             .to_string()
             .contains("unpromoted request text")
     );
-    assert!(!events(&parsed, "hermes_import_diagnostic").is_empty());
+    assert!(
+        diagnostic_reasons(&parsed)
+            .contains(&"ATIF RFC3339 time unreadable; time remains unknown".to_owned())
+    );
 }
 
 #[test]
@@ -179,4 +182,89 @@ fn atif_result_content_parts_form_one_ordered_text_stream_without_a_second_text_
     assert_eq!(result["data"]["extra"]["status"], "supplied");
     assert_eq!(result["attachments"][0]["direction"], "unknown");
     assert_eq!(result["attachments"][0]["source_id"], "images/result.png");
+}
+
+#[test]
+fn an_unsupported_result_part_leaves_the_other_parts_readable() {
+    let value = trajectory(
+        "result-unsupported-part",
+        json!([{"step_id":1,"source":"agent","message":"","tool_calls":[{"tool_call_id":"c","function_name":"terminal","arguments":{}}],"observation":{"results":[{"source_call_id":"c","content":[{"type":"text","text":"before "},{"type":"audio"},{"type":"text","text":"after"}]}]}}]),
+    );
+    let parsed = parse(
+        "hermes",
+        "trajectory-result-unsupported-part.json",
+        &serde_json::to_vec(&value).unwrap(),
+    );
+    let doc = documents(&parsed)[0];
+    assert_eq!(doc["blocks"][2]["output"], "before after");
+}
+
+fn diagnostic_reasons(parsed: &Value) -> Vec<String> {
+    events(parsed, "hermes_import_diagnostic")
+        .iter()
+        .flat_map(|e| e["data"]["reason"].as_array().into_iter().flatten())
+        .map(|r| r.as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn atif_steps_with_conflicting_fields_or_repeated_step_ids_stay_distinct_and_are_reported() {
+    let value = trajectory(
+        "steps",
+        json!([
+            {"step_id":1,"source":"agent","message":"first","llm_call_count":0,"metrics":{"prompt_tokens":1}},
+            {"step_id":1,"source":"agent","message":"second"}
+        ]),
+    );
+    let parsed = parse(
+        "hermes",
+        "trajectory-steps.json",
+        &serde_json::to_vec(&value).unwrap(),
+    );
+    let docs = documents(&parsed);
+    assert_eq!(docs.len(), 2);
+    assert_ne!(docs[0]["id"], docs[1]["id"]);
+    let reasons = diagnostic_reasons(&parsed);
+    assert!(reasons.contains(
+        &"deterministic dispatch carries conflicting inference fields; authorship stays unknown"
+            .to_owned()
+    ));
+    assert!(reasons.contains(&"repeated step_id remains a distinct source occurrence".to_owned()));
+}
+
+#[test]
+fn atif_embedded_trajectories_need_a_unique_trajectory_id() {
+    let mut root = trajectory(
+        "root",
+        json!([{"step_id":1,"source":"agent","message":"root step"}]),
+    );
+    let step = json!([{"step_id":1,"source":"agent","message":"child step"}]);
+    let mut unnamed = trajectory("unnamed", step.clone());
+    unnamed.as_object_mut().unwrap().remove("trajectory_id");
+    root["subagent_trajectories"] = json!([
+        unnamed,
+        trajectory("dup", step.clone()),
+        trajectory("dup", step)
+    ]);
+    let parsed = parse(
+        "hermes",
+        "trajectory-embedded-ids.json",
+        &serde_json::to_vec(&root).unwrap(),
+    );
+    assert_eq!(documents(&parsed).len(), 2);
+    let skipped: Vec<&String> = parsed["counts"]["skipped"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .collect();
+    assert!(
+        skipped
+            .iter()
+            .any(|s| s.contains("embedded ATIF trajectory has no trajectory_id"))
+    );
+    assert!(
+        skipped
+            .iter()
+            .any(|s| s.contains("duplicate embedded ATIF trajectory_id"))
+    );
 }

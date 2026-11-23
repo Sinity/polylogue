@@ -76,7 +76,7 @@
     "679fad14f87adbdff886a69f44db5ca48940b1b52f5eb8dc2f9da8bbb1efd947"
   ],
   "hermes": [
-    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::export::VERSION=2,crate::hermes::VERSION=3",
+    "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::export::VERSION=2,crate::hermes::VERSION=4",
     "7b6c40723ad956c9a495b4d80ab64635380654b922fa917304a4579ea379e250"
   ],
   "hook-spool": [

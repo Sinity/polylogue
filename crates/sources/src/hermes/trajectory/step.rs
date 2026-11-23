@@ -161,8 +161,7 @@ fn result_content(
                 } else if let Some(image) = image(part) {
                     images.push(image);
                 } else {
-                    limits.push("unsupported ATIF result content part; original array remains in the source");
-                    return (None, vec![]);
+                    limits.push("unsupported ATIF result content part omitted; original array remains in the source");
                 }
             }
             (Some(text), images)

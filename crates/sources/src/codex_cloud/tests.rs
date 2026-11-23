@@ -146,3 +146,90 @@ fn an_empty_branch_falls_through_to_branch_name() {
         Some("feature/alt")
     );
 }
+
+fn parse_task(turns: serde_json::Value, extra: serde_json::Value) -> crate::parse::Step {
+    let mut task = serde_json::json!({"id":"task_e_meta","turns":turns});
+    for (key, value) in extra.as_object().unwrap() {
+        task[key] = value.clone();
+    }
+    crate::export::fixture::parse(
+        &mut open(Path::new("codex.json")).unwrap(),
+        &serde_json::to_vec(&vec![task]).unwrap(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn task_and_turn_metadata_are_kept_as_events_and_attributes() {
+    let step = parse_task(
+        serde_json::json!([
+            {"id":"t1","role":"user","input_items":[{"content":[{"content_type":"text","text":"Go."}]}]},
+            {"id":"t2","role":"assistant","previous_turn_id":"t1","external_pull_request_id":"pr_42","turn_status":"completed","pull_request_status":"open","output_items":[{"content":[{"content_type":"text","text":"Done."}]}]}
+        ]),
+        serde_json::json!({"archived":false}),
+    );
+    let messages = &step.output.messages;
+    assert_eq!(
+        messages[1].message.attrs["external_pull_request_id"],
+        "pr_42"
+    );
+    assert_eq!(messages[1].message.attrs["turn_status"], "completed");
+    let task: Vec<_> = step
+        .output
+        .events
+        .iter()
+        .filter(|e| e.kind == "codex_cloud_task")
+        .collect();
+    assert_eq!(task.len(), 1);
+    assert_eq!(task[0].data["archived"], false);
+    let turns: Vec<_> = step
+        .output
+        .events
+        .iter()
+        .filter(|e| e.kind == "codex_cloud_turn")
+        .collect();
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0].after.as_ref(), Some(&messages[1].message.id));
+    assert_eq!(turns[0].data["pull_request_status"], "open");
+}
+
+#[test]
+fn only_the_none_null_and_empty_pull_request_spellings_mean_no_reference() {
+    for spelling in ["None", "null", "", " NULL "] {
+        let step = parse_task(
+            serde_json::json!([{"id":"t1","role":"user","external_pull_request_id":spelling,"input_items":[{"content":[{"content_type":"text","text":"Go."}]}]}]),
+            serde_json::json!({}),
+        );
+        assert!(
+            !step.output.messages[0]
+                .message
+                .attrs
+                .contains_key("external_pull_request_id"),
+            "{spelling:?}"
+        );
+    }
+    let step = parse_task(
+        serde_json::json!([{"id":"t1","role":"user","external_pull_request_id":"pr_7","input_items":[{"content":[{"content_type":"text","text":"Go."}]}]}]),
+        serde_json::json!({}),
+    );
+    assert_eq!(
+        step.output.messages[0].message.attrs["external_pull_request_id"],
+        "pr_7"
+    );
+}
+
+#[test]
+fn cloud_shape_needs_nonempty_task_and_turn_ids() {
+    assert!(!task_shape(
+        &serde_json::json!({"id":"","turns":[{"id":"m","role":"user"}]})
+    ));
+    assert!(!task_shape(
+        &serde_json::json!({"id":"task_e_x","turns":[{"id":"","role":"user"}]})
+    ));
+    assert!(!task_shape(
+        &serde_json::json!({"id":"task_e_x","turns":[{"id":"m","role":""}]})
+    ));
+    assert!(task_shape(
+        &serde_json::json!({"id":"task_e_x","turns":[{"id":"m","role":"assistant"}]})
+    ));
+}

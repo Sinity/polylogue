@@ -112,7 +112,7 @@ pub fn scan_array_or_object(
     let first = loop {
         let buffer = reader
             .fill_buf()
-            .map_err(|error| ScanError::Callback(error.to_string()))?;
+            .map_err(|error| ScanError::Input(serde_json::Error::io(error)))?;
         if buffer.is_empty() {
             break None;
         }
@@ -129,8 +129,8 @@ pub fn scan_array_or_object(
     let start = prefix.len() as u64 - 1;
     let input = std::io::Cursor::new(prefix).chain(reader);
     let mut de = serde_json::Deserializer::from_reader(input);
-    let raw = Box::<RawValue>::deserialize(&mut de).map_err(ScanError::Malformed)?;
-    de.end().map_err(ScanError::Malformed)?;
+    let raw = Box::<RawValue>::deserialize(&mut de).map_err(classify_error)?;
+    de.end().map_err(classify_error)?;
     let length = raw.get().len();
     item(start..start + length as u64, &raw).map_err(ScanError::Callback)?;
     Ok(ScanStats {
@@ -148,13 +148,20 @@ fn finish_scan(
 }
 
 fn scan_error(error: serde_json::Error, scan_state: &Rc<RefCell<ScanState>>) -> ScanError {
-    scan_state.borrow_mut().failure.take().unwrap_or_else(|| {
-        if error.is_io() {
-            ScanError::Input(error)
-        } else {
-            ScanError::Malformed(error)
-        }
-    })
+    scan_state
+        .borrow_mut()
+        .failure
+        .take()
+        .unwrap_or_else(|| classify_error(error))
+}
+
+/// A reader failure is an input error; anything else is malformed JSON.
+fn classify_error(error: serde_json::Error) -> ScanError {
+    if error.is_io() {
+        ScanError::Input(error)
+    } else {
+        ScanError::Malformed(error)
+    }
 }
 
 fn map_value<
@@ -265,7 +272,7 @@ impl<'de, F: FnMut(Range<u64>, &RawValue) -> Result<(), String>> DeserializeSeed
     }
 }
 
-/// Numeric export times keep the previous total-float order; unknowns follow
+/// Numeric export times sort in total-float order; unknowns follow
 /// known values. Formats with integer or compound keys supply their own bytes.
 pub fn number_order(value: Option<f64>) -> Vec<u8> {
     let Some(value) = value else {
@@ -542,6 +549,8 @@ pub fn unreadable_item(error: String, range: Range<u64>) -> crate::parse::Step {
     }
 }
 
+/// The whole export is refused as malformed JSON: counted as one unreadable
+/// record over `length` bytes, with no rows.
 pub fn refused(error: String, length: u64) -> crate::parse::Step {
     let mut records = crate::Records::default();
     records.record(

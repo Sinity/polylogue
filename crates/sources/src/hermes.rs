@@ -2,7 +2,7 @@
 //! and record identities are metadata; message bodies are decoded one at a time.
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 use crate::fields::ExpectedType as T;
 mod identity;
