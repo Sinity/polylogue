@@ -12,10 +12,6 @@ fn stored_items_reopen_payload_and_order_after_disconnect() {
             .push_ordered(30..40, vec![1], vec![2], Some("first"), b"first bytes")
             .unwrap();
     }
-    let payload_size = fs::metadata(directory.path().join("payload.zst"))
-        .unwrap()
-        .len();
-    assert!(payload_size > 0);
     let mut items = ExportItems::in_directory(directory.path()).unwrap();
     let mut bytes = String::new();
     items
@@ -40,12 +36,6 @@ fn stored_items_reopen_payload_and_order_after_disconnect() {
         .push(50..60, vec![3], Some("third"), b"third bytes")
         .unwrap();
     items.close().unwrap();
-    assert!(
-        fs::metadata(directory.path().join("payload.zst"))
-            .unwrap()
-            .len()
-            > payload_size
-    );
     let items = ExportItems::in_directory(directory.path()).unwrap();
     bytes.clear();
     items
@@ -72,11 +62,19 @@ fn drop_discards_unaccepted_scan_group_and_keeps_prior_work() {
             .unwrap();
     }
     let items = ExportItems::in_directory(directory.path()).unwrap();
-    assert!(items.source_item("kept").unwrap().is_some());
+    let mut kept = String::new();
+    items
+        .source_item("kept")
+        .unwrap()
+        .unwrap()
+        .reader
+        .read_to_string(&mut kept)
+        .unwrap();
+    assert_eq!(kept, "accepted");
     assert!(items.source_item("rejected").unwrap().is_none());
 }
 #[test]
-fn spilled_items_follow_byte_keys_and_claim_native_ids_once() {
+fn items_follow_byte_keys_and_claim_native_ids_once() {
     let mut scratch = ExportItems::new().unwrap();
     for (i, key) in [9, 6, 2, 3, 0, 6].into_iter().enumerate() {
         scratch

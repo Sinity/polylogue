@@ -134,7 +134,24 @@ fn fragment_preparation_binds_ranges_and_never_uses_sender_commit() {
     assert!(prepared.validate(&output).is_err());
     output.fragments[0].record.commit = 900;
     prepared.validate(&output).unwrap();
-    assert!(prepared.apply(&conn, 1, 1, 8, |_| Ok(None)).is_err());
+    // The row ends at 9, beyond a reading that ends at 8; nothing is written.
+    let before: i64 = conn
+        .query_row("SELECT count(*) FROM text_fragment_source", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    match prepared.apply(&conn, 1, 1, 8, |_| Ok(None)) {
+        Err(StoreError::Invalid(message)) => {
+            assert_eq!(message, "fragment extends beyond its receiving reading");
+        }
+        other => panic!("expected an invalid fragment, got {other:?}"),
+    }
+    let after: i64 = conn
+        .query_row("SELECT count(*) FROM text_fragment_source", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(after, before);
 }
 
 #[test]
@@ -222,7 +239,19 @@ fn malformed_fragments_fail_before_writer_apply() {
             3 => bad.fragments[0].record.reference = "span:message:claude-code:s-m#b=1-5".into(),
             _ => unreachable!(),
         }
-        assert!(PreparedFragments::prepare(&bad).is_err(), "case {case}");
+        let error = PreparedFragments::prepare(&bad).err();
+        let expected = match case {
+            1 => Some("receiving fragment byte range ends before it starts"),
+            2 => Some("receiving fragment byte range exceeds SQLite's integer range"),
+            _ => None,
+        };
+        match (error, expected) {
+            (Some(StoreError::Invalid(message)), Some(expected)) => {
+                assert_eq!(message, expected, "case {case}");
+            }
+            (Some(StoreError::Invalid(_)), None) => {}
+            (error, _) => panic!("case {case}: expected an invalid fragment, got {error:?}"),
+        }
     }
     // The sender's UTF-8 coordinates keep their full u64 domain, independently
     // of local byte positions, which use SQLite's checked integer domain.
@@ -241,6 +270,10 @@ fn malformed_fragments_fail_before_writer_apply() {
         .query_row("SELECT end FROM text_fragment", [], |r| r.get(0))
         .unwrap();
     assert_eq!(end, u64::MAX.to_be_bytes());
+    let start: Vec<u8> = conn
+        .query_row("SELECT start FROM text_fragment", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(start, (u64::MAX - 5).to_be_bytes());
 }
 
 #[test]

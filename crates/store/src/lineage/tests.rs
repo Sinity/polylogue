@@ -107,7 +107,19 @@ fn missing_parent_arrival_stub_resolution_and_retraction_invalidate_descendants(
     let conn = db(&f);
     conn.execute("UPDATE session SET stub=1 WHERE pk=?1", [parent])
         .unwrap();
-    assert!(read(&f, "test:leaf").root_pending);
+    // A stub parent ends the walk at the child, exactly as a missing one does.
+    assert_eq!(
+        read(&f, "test:leaf"),
+        SessionLineage {
+            root: None,
+            depth: None,
+            root_pending: true,
+            issue: Some(LineageIssue::MissingParent {
+                child: SessionId::parse("test:child").unwrap(),
+                parent: SessionId::parse("test:parent").unwrap()
+            })
+        }
+    );
     conn.execute("UPDATE session SET stub=0 WHERE pk=?1", [parent])
         .unwrap();
     assert_eq!(read(&f, "test:leaf"), rooted("test:parent", 2));
@@ -132,7 +144,13 @@ fn depth_cycle_reported() {
     assert_eq!(value.root, None);
     assert_eq!(value.depth, None);
     assert!(!value.root_pending);
-    assert!(matches!(value.issue, Some(LineageIssue::Cycle { .. })));
+    // The walk climbs tail, b, a and stops where it meets b again.
+    assert_eq!(
+        value.issue,
+        Some(LineageIssue::Cycle {
+            session: SessionId::parse("test:b").unwrap()
+        })
+    );
     f.derive().unwrap();
     assert_eq!(read(&f, "test:tail"), value);
 }
