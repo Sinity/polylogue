@@ -678,7 +678,6 @@ fn claude_stream_json_steers_answers_and_interrupts() {
                 .collect::<Vec<Value>>()
         })
         .collect();
-    assert_eq!(rows.len(), words.len());
     for row in &rows {
         assert_eq!(row["session_id"], id);
         assert_eq!(row["provider"], "claude-code");

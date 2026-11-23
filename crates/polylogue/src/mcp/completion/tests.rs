@@ -86,7 +86,7 @@ fn completion_without_a_position_completes_at_the_end_of_the_text() {
         initialized: true,
         ..Default::default()
     };
-    let text = "live: | measure count";
+    let text = "live:";
     let mut complete = |meta: Value| {
         let reply = session
             .prepare(json!({
