@@ -2,7 +2,6 @@
 //! reading once per origin, so a copy in another input is not read twice.
 use super::Selection;
 use crate::{Reader, Result};
-use polylogue_model::JsonExt;
 use serde::de::DeserializeOwned;
 
 /// Visits every reading of `kind` in `selection`, in time order, with its

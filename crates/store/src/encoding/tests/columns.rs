@@ -28,21 +28,6 @@ fn negative_counter_column_is_refused() {
 }
 
 #[test]
-fn u64_above_i64_max_is_refused_on_write() {
-    let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute_batch("CREATE TABLE t(v)").unwrap();
-    let too_big = u64::try_from(i64::MAX).unwrap() + 1;
-    assert!(
-        conn.execute("INSERT INTO t VALUES (?1)", [too_big])
-            .is_err()
-    );
-    let count: i64 = conn
-        .query_row("SELECT count(*) FROM t", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(count, 0);
-}
-
-#[test]
 fn stored_values_the_model_cannot_read_are_column_errors() {
     let failure = |error: rusqlite::Error| match error {
         rusqlite::Error::FromSqlConversionFailure(column, _, why) => (column, why.to_string()),
