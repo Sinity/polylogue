@@ -1,6 +1,6 @@
 # Operations
 
-Running Polylogue: the daemon's lifetime, its idle and steady-state work, the halt state, `status` and its check of every stored byte, notices, and the change feed. Setting up and keeping an archive (installing, configuration and `set`, `embed`, `demo`, deployment, upgrades, storage failure, backup and restore) is [installing.md](installing.md).
+Running Polylogue: the daemon's lifetime, its idle and steady-state work, the halt state, `status` and its check of every stored byte, notices, and the change feed. Setting up and keeping an archive (installing, configuration and `set`, `embed`, `demo`, deployment, upgrades, backup and restore) is [installing.md](installing.md).
 
 Neighbouring facts live elsewhere: the durability order and pipeline are [architecture.md#durability](architecture.md#durability) and [architecture.md#pipeline](architecture.md#pipeline); the command forms and exit codes are [interfaces.md](interfaces.md#commands) and the latency classes are [latency.md](latency.md#latency-classes); the orientation screen is [terminal.md](terminal.md#the-orientation-screen); the schema tools are [archive.md#schema-tools](archive.md#schema-tools); the confirmed-stream cache and its [rebuild](primary-mode.md#rebuild-and-parser-upgrades) are in [primary mode](primary-mode.md); the signal rule schema and its evaluator are common's [signals](https://github.com/Sinity/polylogue-sinex-common/blob/master/crates/signals/README.md); the web views of status, notices and settings are [web.md](web.md).
 
@@ -13,7 +13,7 @@ Polylogue runs as one resident daemon per archive, `polylogue daemon [--until-id
 **Start.** `polylogue daemon` runs in the foreground under a service manager (a systemd user unit on Linux). In order, it:
 1. raises the open-file limit;
 2. takes the archive lock, an exclusive `flock` on `<archive>/lock` opened through the resolved directory path, and writes its pid into it; a second daemon on the same archive, by any path, exits 1 naming the pid of the daemon that has the lock;
-3. opens `archive.db` and `embeddings.db` at the current format, adding to an `embeddings.db` from an earlier build the tables added since, or refuses with exit 78 when either is in another format, naming the version it found; the refused file is left exactly as it was ([archive.md#evolution](archive.md#evolution));
+3. opens `archive.db` and `embeddings.db` at the current format, adding to an `embeddings.db` from an earlier build the tables added since, or refuses with exit 78 when either is in another format, naming the version it found for `archive.db` and what differs from the nearest schema for `embeddings.db`; the refused file is left exactly as it was ([archive.md#evolution](archive.md#evolution));
 4. opens `index.db` at its saved positions; with no index, or one written for another schema, it builds a new one in a private file and installs it when the build ends ([installing.md#replacing-an-index-from-another-schema](installing.md#replacing-an-index-from-another-schema));
 5. opens the segment log at its last committed extent;
 6. binds the socket, serves requests, then starts its work.
@@ -39,7 +39,7 @@ A continuous application worker that ends unexpectedly fails the run after clean
 
 Daemon and hosted-session messages carry service-journal priorities: errors for lost work or a stopped worker, warnings for work kept for retry or degraded operation, and information for lifecycle events and recovery. CLI and hook diagnostics remain plain text. A failed spool write logs once when it fails and once when it recovers.
 
-**Liveness.** With `WatchdogSec`, the daemon feeds the watchdog after each liveness request its own socket serves, so a process that no longer serves its own socket is restarted by the service manager. Slow or stuck work is not a liveness failure: it is reported as stalled, never restarted away, because a restart would hide the defect that caused it.
+**Liveness.** With `WatchdogSec`, the daemon sends a liveness request to its own socket on a timer, at half the watchdog period, and feeds the watchdog when the socket answers, so a process that no longer serves its own socket is restarted by the service manager. Slow or stuck work is not a liveness failure: it is reported as stalled, never restarted away, because a restart would hide the defect that caused it.
 
 **Restart** resumes from committed positions; it does not rescan the archive, replay tool-database captures or re-read history. Target: socket ready within 2 s of start.
 

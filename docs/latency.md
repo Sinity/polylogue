@@ -53,7 +53,7 @@ The daemon keeps derived state warm so the classes hold. Each item is keyed by w
 | sorted session index with titles, last activity, origin, repository, first prompt, shortest unique prefixes | short IDs, prefixes, `latest`, the picker, fuzzy titles in completion | write position | batch delta |
 | status snapshot | bare `polylogue`, `status`, `status --line` | write position and live-state change | after each batch and each hook event |
 | compiled plans, the shipped saved queries' precompiled | every query | normal form, definitions and options | on definition change |
-| first pages, next pages and counts | repeated listings, page turns, footers, the count preview, `--dry-run` counts | question hash and read position | evicted on write |
+| first pages, next pages and counts | repeated listings, page turns, footers, the count preview, `--dry-run` counts | question hash and read position | evicted on write; a live page cell's result stays until the change feed touches one of its sources ([pages.md](pages.md#queries-on-pages)) |
 | saved-query names and kept-result shapes | compiling | write position | on user write |
 | loaded vectors (int8 in memory, f32 on disk) and stored query vectors | `similar:` | vector write counter | on vector write |
 | search vocabulary | fuzzy matching in the brief of a search | write position | batch delta |

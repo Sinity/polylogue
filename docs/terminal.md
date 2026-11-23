@@ -82,7 +82,7 @@ Over annotations, three more keys make the one-key judging loop: each records a 
 | reject | `Ctrl-x` |
 | defer | `Ctrl-d` |
 
-Every other write is typed on the line: `polylogue review pick judge accept` judges the chosen annotations.
+Accept and defer are the web's `a` and `d` with Ctrl; reject is `Ctrl-x` because `Ctrl-r` reads. Every other write is typed on the line: `polylogue review pick judge accept` judges the chosen annotations.
 
 ## The editor
 

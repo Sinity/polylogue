@@ -150,7 +150,7 @@ Seen marks contain `{position: {item, at}}`, where `item` is the last displayed 
 
 **Target state.** Each link to a target (`about`, `evidence`, `mentions`, `cites`, `embeds`) is shown in one of six states, computed when read and never stored:
 - **current**: the target exists and its text hash equals `seen_hash`. When a re-parse moved the cited text's offsets, the stored quote and its context are found again in the new reading and the link reads `current, re-anchored`; the stored reference stays as written;
-- **changed**: the hash differs and the quote is not found again (a better version merged, a re-parse produced different text), shown as "the text has changed since this was written" with the text as cited and the text now;
+- **changed**: the hash differs and the quote is not found again (a better version merged, a re-parse produced different text), shown as "source changed" with the text as cited and the text now;
 - **waiting**: well formed, not stored yet, its session live or incomplete; it attaches on arrival with no rewrite and fills `seen_hash` then;
 - **missing**: the session is complete and the ID never appeared; `status` counts these;
 - **withdrawn**: the target is a withdrawn annotation; the quote stays shown;

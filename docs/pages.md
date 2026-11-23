@@ -139,7 +139,7 @@ Both are computed when the page is read, from links ([annotations.md](annotation
 Reading a page marks two things from stored revisions, with no model involved:
 
 - **Staleness.** A `current`-mode note whose shown revision was written before later findings or decisions were placed on the same page is marked `written before 2 findings and 1 decision on this page`. Revising the note clears the mark. A cited text that changed is the separate state `source changed`.
-- **Circle marker.** A decision or note whose current value equals an earlier, non-adjacent revision of the same root is marked `returned to the position of revision 2 (Nov 06)`. A → B → A is marked; A → B → C is not.
+- **Circle marker.** A decision or note whose current value equals an earlier, non-adjacent revision of the same root is marked `returned to the position of revision 1 (Nov 06)`. A → B → A is marked; A → B → C is not.
 
 ## Queries on pages
 
@@ -149,7 +149,7 @@ A query on a page is a slot: the question as text (a ```` ```query FORM ```` fen
 - **A kept answer** is the same cell fixed to stored rows: `about` names the `result:<id>`, and the question stays beside it. **Keep** (`save page:X --kept`) stores the current rows; **run again** keeps a new result and moves the slot to it, the old one staying in history and readable; **compare with now** lists rows added and gone against a fresh run without writing anything.
 - **Forms**: `table` (the default), `list` (references with one line each), `count`, `value` (a figure: value, denominator, unknown count, exactness), `chart` (measures and aggregates drawn as the Analysis view draws them; on a terminal a one-line spark of the series and the table) and `compare` (kept results only). A measure or figure on a page is a cell: `polylogue errors-30d save page:report/first-build --as value` places it kept, since a figure's rows are not archive things, and `--live` keeps it running ([saved-queries.md](saved-queries.md#saving-to-a-page)).
 - **A value inside a sentence is fixed when the sentence is written**, so the sentence keeps saying what it said ([page-text.md](page-text.md#values-in-sentences)).
-- **Cost and speed.** A cell costs its query's latency class. Results are cached by query hash and archive position and dropped when the change feed touches their sources, so reopening a page runs nothing that has not changed. A `similar:` cell whose vectors are not built shows `not built` with the `embed` line; spending stays an explicit act.
+- **Cost and speed.** A cell costs its query's latency class. Results are cached by query hash and archive position and dropped when the change feed touches their sources ([warm state](latency.md#warm-state)), so reopening a page runs nothing that has not changed. A `similar:` cell whose vectors are not built shows `not built` with the `embed` line; spending stays an explicit act.
 - **Saved queries.** Revising a saved query changes every live cell that names it, as it changes every other use; a cell that must not move names `query:NAME@N` or keeps its rows. A saved query's reading lists the pages that show it (`polylogue 'links where target:query:failing'`).
 
 ## Authorship and proposals
@@ -228,7 +228,7 @@ A **member** is an alias for a session: a `member` annotation whose key is the a
 
 ## Speed
 
-Budgets on a warm daemon, at the 95th percentile ([latency.md](latency.md)):
+Budgets of page operations on a warm daemon, at the 95th percentile, beside the classes of [latency.md](latency.md#latency-classes):
 
 | Operation | Budget | How |
 |---|---|---|
@@ -238,7 +238,7 @@ Budgets on a warm daemon, at the 95th percentile ([latency.md](latency.md)):
 | a paragraph write with five references | 30 ms to commit; within 1 s in every open view | the text is parsed and its link rows written in the write's transaction; the change feed reaches the views |
 | cite by quote within one session | 100 ms | the session's text index narrows to candidate messages, then an exact match over their text |
 | check-in of a 300-slot working copy with 20 changed elements | 500 ms | parse, compare with `base` by slot ID, one request with numbered writes |
-| `changed-sources` over all citations | the search class | each message stores the hash of its text when written and each citation the hash of its container's text, so changed containers are found by comparison and only those are read |
+| `changed-sources` over all citations | the search class | each message stores the hash of its text when written and each citation the hash of the cited text (`seen_hash`), so changed citations are found by comparison and only those are read |
 | `--at` and the page diff | 300 ms, plus 100 ms per 1,000 changes | revisions current at a position, from the revision graph |
 | a marker with `page=` during ingest | 1 ms | the page's heading map in memory |
 
