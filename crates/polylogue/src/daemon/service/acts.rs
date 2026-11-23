@@ -311,6 +311,21 @@ pub(crate) fn session_state(
     }
 }
 
+/// `resume` of a running session is refused `session_running`, offering the
+/// lines that reach the running session instead.
+pub(crate) fn refuse_running_resume(d: &Daemon, session: &SessionId) -> Result<(), Failure> {
+    let Some((state, facts, _)) = session_state(d, session, now(d))? else {
+        return Ok(());
+    };
+    match channel(Act::Resume, state, &probe(&d.acts, session, &facts)) {
+        Err(refusal) if refusal.reason == "session_running" => Err(Failure::refused(format!(
+            "session_running: {}; read it with `polylogue {session} read --follow` or send to it with `polylogue {session} send 'TEXT'`",
+            refusal.detail
+        ))),
+        _ => Ok(()),
+    }
+}
+
 /// Sends a ping or notice over a hosted connection: `delivered` when
 /// written, recorded later when it waits for the running prompt, and
 /// `not_sent` when the connection fails. The delivery stays handed out, so

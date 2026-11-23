@@ -15,7 +15,7 @@ Each table row declares a latency class, and the class applies on every surface 
 | **read** | the first screen of a one-row read, the first page of an indexed listing (`origin:`, `repo:`, `since:`, `tag:`, a shipped saved query), a page turn, `resume` | ≤ 100 ms | 250 ms |
 | **write** | one annotation acknowledged as committed | ≤ 100 ms | none ([below](#writes-and-deadlines)) |
 | **search** | the first page of a word search, `similar:` with a stored vector | ≤ 250 ms | 2,000 ms |
-| **brief** | every form of `brief` | ≤ 300 ms warm, ≤ 1 s cold | 2,000 ms |
+| **brief** | every form of `brief` | ≤ 300 ms warm, ≤ 1 s cold | 2,000 ms; the session-start hook narrows it to one shared 1.5 s ([agent-context.md](agent-context.md)) |
 | **aggregate** | `group by`, `\| measure`, `\| agg`, facet counts, the count `--dry-run` reports | ≤ 400 ms | 400 ms |
 
 A missed budget is a defect in the code, not a reason to relax the number. Budgets are measured as paired benchmark runs ([testing.md](testing.md#benchmarks)); no test asserts elapsed time.
@@ -36,7 +36,7 @@ A stopped read names the stage that ran out. A page or similarity stage suggests
 
 | Daemon | Command line |
 |---|---|
-| busy with a first build or re-parse | interactive replies keep their budgets on the reserved executor place and read connection; replies over data not yet indexed say `up_to_date: false` on standard error |
+| busy with a first build or re-parse | interactive replies keep their budgets on the reserved executor place and read connection; replies over data not yet indexed are `degraded` (exit 5) and name what is missing in their notes on standard error |
 | starting (lock held, socket not bound) | waits up to the class deadline, printing "polylogue: waiting for the daemon to finish opening the archive" once on standard error, then exit 7 if the deadline passes |
 | down | the local class, completion and the picker's candidates (from the catalog file) work; everything else exits 6 with one line naming the archive and `polylogue daemon`. Nothing starts a daemon implicitly |
 | hung | the socket timeout ends the command, exit 7 |
@@ -55,7 +55,6 @@ The daemon keeps derived state warm so the classes hold. Each item is keyed by w
 | compiled plans, the shipped saved queries' precompiled | every query | normal form, definitions and options | on definition change |
 | first pages, next pages and counts | repeated listings, page turns, footers, the count preview, `--dry-run` counts | question hash and read position | evicted on write |
 | saved-query names and kept-result shapes | compiling | write position | on user write |
-| session item index | the first screen of a one-row read, ranges, `--around` | session and write position | written with the rows |
 | loaded vectors (int8 in memory, f32 on disk) and stored query vectors | `similar:` | vector write counter | on vector write |
 | search vocabulary | fuzzy matching in the brief of a search | write position | batch delta |
 | scope index and session summaries | `brief` | write position and live-state change | batch delta and each hook event |

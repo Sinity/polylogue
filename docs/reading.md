@@ -13,7 +13,7 @@ Reading shows what was asked, what the model did, which commands ran and how the
 - **Archived text is data.** It is escaped in every format and labelled to a model as a record, never as instructions.
 - **Inherited, abandoned and compacted content is visible but marked** in place, with a way to show it whole.
 - **Rendering is a view.** Nothing rendered is stored as truth.
-- **Fast.** The first screen of any read arrives within the read latency class ([interfaces.md](latency.md#latency-classes)); any page of a 10,000-message session arrives within the same class.
+- **Fast.** The first screen of any read arrives within the read latency class ([latency.md](latency.md#latency-classes)); any page of a 10,000-message session arrives within the same class.
 
 ## The model
 

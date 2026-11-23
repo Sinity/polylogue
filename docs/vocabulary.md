@@ -82,7 +82,8 @@ generated page of the thing they belong to, or on the area page that owns them.
   database**: a tool's own SQLite file, stored as a **row dump** that keeps
   rows the tool later deleted.
 - **spool**: an append-only file Polylogue's own writers fill (hook events,
-  browser captures), synced per line.
+  browser captures, live events). Hook and browser spools are synced per
+  line; live-event appends are not ([live-sessions.md](live-sessions.md#live-state)).
 - **sources**: everything the daemon reads inputs from on its own: its roots'
   locations, the spools, tool databases and collectors. `daemon --no-sources`
   reads none of them; an `import` is not a source.
@@ -170,7 +171,7 @@ generated page of the thing they belong to, or on the area page that owns them.
   the message's **main route**.
 - **field group**: the fields of a message taken together from one route
   (content, time, model, usage, stop reason, parent, production).
-- **completion**: whether a reading's message is `finished`, `unknown` or
+- **message completion**: whether a reading's message is `finished`, `unknown` or
   `in_progress`.
 - **order time** and **session order**: the latest source time of a message
   and the messages before it in one input's reading; a message's place in its
@@ -231,8 +232,8 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **search leg**: the full-text part of a compiled query.
 - **semantic ranking**: ordering rows by meaning (`similar:`).
 - **fusion**: ranking rows by their places in several ordered lists.
-- **warm state**: what the daemon keeps in memory between requests, keyed by
-  read position.
+- **warm state**: derived state the daemon keeps between requests, each item
+  keyed by what it depends on (`docs/latency.md`).
 
 ## Reading
 
@@ -420,7 +421,8 @@ generated page of the thing they belong to, or on the area page that owns them.
   reached through the browser extension.
 - **held web-chat turn**: a turn Polylogue wrote into an existing web chat,
   waiting for the operator's `answer allow`.
-- **peers**: other live sessions in the same repository or worktree.
+- **peers**: other live sessions in the same repository, or in the same
+  working directory when there is no repository identity.
 - **task**: a session's open claim in a task tracker.
 - **delegation**: a parent session handing work to a child session.
 

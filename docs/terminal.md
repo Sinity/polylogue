@@ -141,7 +141,7 @@ One printer for every failure: what is wrong, a caret under it when there is a p
 | `@3` off a terminal | `row numbers work on a terminal; use the references printed above` |
 | `polylogue page:flaky-ci edit` off a terminal | `edit needs its text off a terminal` · `try: polylogue page:flaky-ci read --to .page/` · then `polylogue import .page/flaky-ci.md` |
 | `--blind` on a selection that is not a kept result | `blind judging needs kept rows: polylogue '@1,2' save` |
-| a timeout (exit 7) | `narrower:` and `complete: … --deadline none`, both runnable ([interfaces.md](latency.md#writes-and-deadlines)) |
+| a timeout (exit 7) | `narrower:` when a shorter query exists, and `complete: … --deadline none`, both runnable ([latency.md](latency.md#writes-and-deadlines)) |
 | a stale cursor or a re-parsed session | what changed and the line to run again |
 | an MCP call with a misplaced argument | the corrected call, as a `next` call |
 

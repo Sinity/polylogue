@@ -42,7 +42,7 @@ Every number links to the query that produced it.
 - Title `Running now · 2 sessions · 1 waiting on you · 15:00`.
 - **Window line:** `Anthropic 5h: $X API-equivalent so far · resets HH:MM · week N% (reported)`.
 - One section per repository (worktrees grouped under their repository), headed by its path, with a peer warning (`⚠ 2 agents in /home/op/morrow`) when several live sessions share it.
-- One row per session: state word and since; title; reference, start, pid; what it is doing (`waiting on you: permission for Bash: cargo test --all`, or `open tool call: exec, since 14:58:30`); the **process tree** (`codex (pid 5202) → cargo test parser (pid 5230, 14:58:32)`), each child linked to the tool call whose pre and post hook events bracket its start; model; cost so far; task (a task or job identifier the transcript or hook line names); subagents nested as a tree.
+- One row per session: state word and since; title; reference, start, pid; what it is doing (`waiting on you: permission for Bash: cargo test --all`, or `open tool call: exec, since 14:58:30`); the **process tree** (`codex (pid 5202) → cargo test parser (pid 5230, 14:58:32)`), each child linked to the tool call whose pre and post hook events bracket its start; model; cost so far; task (the live task a `TaskClaimed` event set, [live-sessions.md](live-sessions.md)); subagents nested as a tree.
 - Order: waiting, working, idle, unknown. **Stopped** lists `stale` sessions with the reason (`process gone at 13:40, no end event`).
 - Footer: the state legend and the line `polylogue running`.
 
