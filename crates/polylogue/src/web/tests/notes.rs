@@ -314,7 +314,12 @@ fn operator_edits_and_judgments_keep_earlier_revisions() {
         );
         let revision = stored(&f, "agent-1", "agent-new-1").await;
         assert_eq!(revision.fact.value, Some(json!("new proposal")));
-        assert!(revision.fact.author.is_agent());
+        assert_eq!(
+            revision.fact.author,
+            polylogue_model::Author::Agent(Some(
+                polylogue_model::SessionId::parse("claude-code:web-fixture-agent").unwrap()
+            ))
+        );
         assert_eq!(revision.fact.via, polylogue_model::authorship::Channel::Mcp);
     });
 }
@@ -654,6 +659,21 @@ fn assertion_fields_and_saved_query_edits_keep_metadata() {
         .await;
         let page=command(&f,"rows","projection",json!({"selection":"annotations where root = \"Saved:Case-1\" current:*","fields":["id","key","about","judged"]})).await;
         assert_eq!(page["count"], 2);
+        let mut ids: Vec<&str> = page["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_str().unwrap())
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["Saved:Case-1", "Saved:Case:new-1"]);
+        assert!(
+            page["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| row["key"] == "morrow")
+        );
         assert_eq!(
             query(&f, "annotations where root = \"saved:case-1\" current:*").await["count"],
             0

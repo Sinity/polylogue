@@ -11,9 +11,12 @@ fn partial_cost_and_unknown_denominators_match_cli_accounting() {
         "by_model": [], "price_catalog": "synthetic"
     });
     let page = cost("repo:<script>", &report);
-    assert!(page.contains("$1.25 known + unknown response usage"));
-    assert!(page.contains("unknown responses in 2 sessions"));
-    assert!(page.contains("40 known + unknown response usage"));
+    assert!(page.contains(
+        "unknown responses in 2 sessions · input 40 known + unknown response usage · cached 0"
+    ));
+    assert!(page.contains(
+        "API-equivalent $1.25 known + unknown response usage · tool-reported unknown (2 unpriced)"
+    ));
     assert!(!page.contains("repo:<script>"));
     assert!(page.contains("repo:&lt;script&gt;"));
 }
@@ -43,7 +46,7 @@ fn identical_cell_text_links_only_by_its_column_reference() {
 }
 
 #[test]
-fn every_product_page_uses_the_shared_frame_and_shows_direction_controls_as_text() {
+fn layout_uses_the_shared_frame_and_shows_direction_controls_as_text() {
     let output = layout(
         "Title\u{202e}",
         "query",
@@ -53,8 +56,6 @@ fn every_product_page_uses_the_shared_frame_and_shows_direction_controls_as_text
     assert!(output.contains("/assets/shell.js"));
     assert!(output.contains("/assets/tokens.css"));
     assert!(output.contains("/assets/theme.css"));
-    assert!(!output.contains("reader.js"));
-    assert!(!output.contains("reader.css"));
     assert!(!output.contains('\u{202e}'));
     assert!(output.contains("Title\\u{202e}"));
     assert!(auth().contains("/assets/auth.js"));

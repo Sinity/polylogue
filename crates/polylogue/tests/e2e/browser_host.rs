@@ -50,7 +50,10 @@ fn install_agent_chrome_writes_and_removes_the_host_manifest() {
         "chrome-extension://abcdefghijklmnop/"
     );
     assert_eq!(manifest["type"], "stdio");
-    assert!(std::path::Path::new(manifest["path"].as_str().unwrap()).is_absolute());
+    assert_eq!(
+        manifest["path"].as_str().unwrap(),
+        std::fs::canonicalize(crate::BIN).unwrap().to_str().unwrap()
+    );
     // Only the existing browser's directory is written.
     assert!(!config.join("google-chrome").exists());
     let out = run(&["install", "chrome", "--remove"]);
