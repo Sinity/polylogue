@@ -218,9 +218,23 @@ fn shared_units_stages_and_nested_queries_use_product_names() {
 fn repairs_are_stable() {
     let error = parse("\"unclosed phrase").unwrap_err();
     assert_eq!(error.suggestion(), Some("\"unclosed phrase\""));
-    assert!(parse("messages where").is_err());
-    assert!(parse("kind:* where exists tool_calls(outcome:error)").is_err());
-    assert!(parse("kind:* \"where\"").is_ok());
+    for (text, code) in [
+        ("messages where", polylogue_model::Code::InvalidQuery),
+        (
+            "kind:* where exists tool_calls(outcome:error)",
+            polylogue_model::Code::UnknownField,
+        ),
+    ] {
+        assert_eq!(parse(text).unwrap_err().kind(), code, "{text}");
+    }
+    // A quoted `where` is a search word, not the keyword.
+    let ConditionKind::And { conditions } = &cond("kind:* \"where\"") else {
+        panic!("not a conjunction");
+    };
+    assert!(matches!(
+        &conditions[1].kind,
+        ConditionKind::Text { text, .. } if text == "where"
+    ));
 }
 
 #[test]
@@ -276,13 +290,22 @@ fn shorthand_time_bounds_keep_their_shared_typed_meaning() {
 #[test]
 fn product_namespace_spelling_binds_to_the_same_declared_unit() {
     let catalog = crate::catalog::catalog(&[]);
-    for (qualified, local) in [
+    for (qualified, local, unit) in [
         (
             "pl.sessions where repo:morrow",
             "sessions where repo:morrow",
+            "sessions",
         ),
-        ("pl.messages where role:user", "messages where role:user"),
+        (
+            "pl.messages where role:user",
+            "messages where role:user",
+            "messages",
+        ),
     ] {
+        assert!(
+            matches!(&p(qualified).source, Source::Unit { unit: bound, .. } if bound.strip_prefix("pl.").unwrap_or(bound) == unit),
+            "{qualified}"
+        );
         assert_eq!(
             query_language::identity::normal_form(&p(qualified), &catalog).unwrap(),
             query_language::identity::normal_form(&p(local), &catalog).unwrap(),
@@ -303,14 +326,31 @@ fn time_companion_catalog_keeps_precision_and_unknown() {
     ] {
         p(text);
     }
-    for text in [
-        "messages where at.precision:milliseconds",
-        "messages where at.time_quality:guessed",
-        "sessions where precision:instant",
-        "sessions where started.precision:instant",
-        "events where precision:\"unknown\"",
+    // Values outside a companion's closed set are bad values; a companion
+    // the unit does not declare is an unknown field.
+    for (text, code) in [
+        (
+            "messages where at.precision:milliseconds",
+            polylogue_model::Code::BadValue,
+        ),
+        (
+            "messages where at.time_quality:guessed",
+            polylogue_model::Code::BadValue,
+        ),
+        (
+            "sessions where precision:instant",
+            polylogue_model::Code::UnknownField,
+        ),
+        (
+            "sessions where started.precision:instant",
+            polylogue_model::Code::UnknownField,
+        ),
+        (
+            "events where precision:\"unknown\"",
+            polylogue_model::Code::BadValue,
+        ),
     ] {
-        assert!(parse(text).is_err(), "{text}");
+        assert_eq!(parse(text).unwrap_err().kind(), code, "{text}");
     }
     assert!(matches!(
         &cond("events where at.time_quality:unknown"),

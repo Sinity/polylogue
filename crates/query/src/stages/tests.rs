@@ -101,5 +101,8 @@ fn a_measure_ends_the_query() {
     assert_eq!(message, "`| measure WHAT` is the last stage");
     // The refusal points at the stage after the measure.
     assert_eq!(position, transforms[1].span.start);
-    assert_eq!(shapes("sessions | limit 3 | measure cost").len(), 2);
+    assert_eq!(
+        shapes("sessions | limit 3 | measure cost"),
+        vec![(0..1, StageKind::Rows), (1..2, StageKind::Rows)]
+    );
 }
