@@ -339,7 +339,10 @@ pub(crate) fn context(
                         false,
                     );
                 }
-                Err(error) => return store_error(&error),
+                Err(error) => {
+                    recent.remove(&session.to_string());
+                    return store_error(&error);
+                }
             }
         } else {
             let recipient = ask.recipient().map(|r| (r.to_string(), since));

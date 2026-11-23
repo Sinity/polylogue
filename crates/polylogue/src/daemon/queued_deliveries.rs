@@ -279,6 +279,11 @@ fn hand_over(state: &mut State, writes: &WriterSender) -> Result<(), StoreError>
                 if let Some(outcome) = outcome {
                     state.waiting.push_front(outcome);
                     state.last_failure = Some(error.to_string());
+                } else {
+                    // The request is dropped, so nothing will commit it: it
+                    // must not stay as pending advice or a latest brief.
+                    state.advice.remove(&id);
+                    state.latest.retain(|_, latest| latest.request != id);
                 }
                 return Err(error);
             }

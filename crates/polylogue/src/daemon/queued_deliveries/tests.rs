@@ -150,3 +150,45 @@ fn captured_advice_remains_pending_until_current_history_confirms_application() 
     queued.advice_applied(&["advice-request".into()]);
     assert!(queued.pending_advice("codex:recipient").unwrap().is_empty());
 }
+
+#[test]
+fn advice_whose_hand_over_fails_is_not_left_pending() {
+    use polylogue_model::user::{Delivery, UserWrite};
+    let mut daemon = crate::test_daemon::start("advice hand-over failure fixture");
+    let invocation =
+        daemon
+            .daemon
+            .invocation(&polylogue_reading::operation::Context::worker_authorship(
+                "advice-failure",
+            ));
+    let advice = invocation.request(
+        "advice-request".into(),
+        UserWrite::Deliver(Delivery {
+            recipient_kind: "session".into(),
+            recipient_id: Some("claude-code:s1".into()),
+            sender: "hook".into(),
+            event: polylogue_model::DeliveryEvent::Advice.as_str().into(),
+            cwd: None,
+            text: "synthetic advice".into(),
+            refs: vec!["assertion:root@revision".into()],
+            left_out: vec![],
+        }),
+    );
+    // The writer has stopped, so the hand-over cannot succeed.
+    daemon.stop().unwrap();
+    let writes = daemon.daemon.writes.as_ref().unwrap();
+    let error = daemon
+        .daemon
+        .queued_deliveries
+        .submit(writes, advice, None, None)
+        .unwrap_err();
+    assert!(matches!(error, StoreError::WriterGone), "{error}");
+    assert_eq!(
+        daemon
+            .daemon
+            .queued_deliveries
+            .pending_advice("claude-code:s1")
+            .unwrap(),
+        Vec::<(String, Vec<String>)>::new()
+    );
+}

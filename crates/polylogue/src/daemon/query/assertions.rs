@@ -95,7 +95,22 @@ fn page(
         },
     )
     .and_then(|answer| answer.value.into_rows())
-    .map_err(|f| StoreError::Invalid(format!("annotations query {text:?}: {}", f.message)))
+    .map_err(|f| store_error(&f, text))
+}
+
+/// A failed assertions query as a store error that keeps what the caller
+/// decides on: a deadline or stop request stays retryable, and any other
+/// refusal keeps its product code.
+fn store_error(f: &crate::daemon::Failure, text: &str) -> StoreError {
+    let message = format!("annotations query {text:?}: {}", f.message);
+    match f.code() {
+        "deadline_exceeded" => StoreError::ReadDeadlineExceeded,
+        "cancelled" => StoreError::ReadCancelled,
+        code => match polylogue_model::Code::from_name(code) {
+            Some(code) => StoreError::Selection { code, message },
+            None => StoreError::Invalid(message),
+        },
+    }
 }
 
 #[cfg(test)]

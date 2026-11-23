@@ -480,8 +480,9 @@ fn ping(
         );
         let row = match chosen {
             Ok(Channel::Hook) => {
-                crate::mailbox::raise(d.acts.mail(), session).map_err(Failure::io)?;
-                d.acts.release(&delivery);
+                d.acts
+                    .hand_to_hook(&delivery, session)
+                    .map_err(Failure::io)?;
                 json!({"session": session, "delivery": delivery, "channel": "hook",
                        "outcome": "prepared", "note": "reaches the session at its next tool result or prompt"})
             }
@@ -937,10 +938,12 @@ fn resume_session(daemon: &std::sync::Arc<Daemon>, run: ResumeRun) {
                     next = Some(candidate);
                     break;
                 }
-                if let Err(error) = crate::mailbox::raise(daemon.acts.mail(), &candidate.session) {
+                if let Err(error) = daemon
+                    .acts
+                    .hand_to_hook(&candidate.delivery, &candidate.session)
+                {
                     crate::log::log!(warning, "session mailbox update failed: {error}");
                 }
-                daemon.acts.release(&candidate.delivery);
                 next = daemon.acts.resume_finished(&candidate.session);
             }
         }

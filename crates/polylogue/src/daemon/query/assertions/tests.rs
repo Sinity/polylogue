@@ -154,3 +154,23 @@ fn notes_are_listed_by_their_current_revision_and_withdrawals_leave_them_out() {
 fn a_quoted_value_keeps_quotes_and_backslashes() {
     assert_eq!(quoted(r#"cwd:/a "b"\c"#), r#""cwd:/a \"b\"\\c""#);
 }
+
+#[test]
+fn a_failed_query_keeps_its_code_as_a_store_error() {
+    use crate::daemon::Failure;
+    use polylogue_model::Code;
+    assert!(matches!(
+        store_error(&Failure::deadline_exceeded("slow"), "annotations"),
+        StoreError::ReadDeadlineExceeded
+    ));
+    assert!(matches!(
+        store_error(&Failure::new(Code::Cancelled, "stopped"), "annotations"),
+        StoreError::ReadCancelled
+    ));
+    let refused = store_error(&Failure::not_found("none"), "annotations");
+    assert_eq!(refused.code(), Code::NotFound);
+    assert_eq!(
+        refused.to_string(),
+        "annotations query \"annotations\": none"
+    );
+}
