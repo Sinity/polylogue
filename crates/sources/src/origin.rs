@@ -533,7 +533,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         route: Route::Live,
         input_identity: InputIdentity::Location,
         root: crate::locations::HERMES_ROOT,
-        locations: &["state.db", "verification_evidence.db"],
+        locations: crate::hermes::LOCATIONS,
         capture: Capture::RowDump,
         database: Some(Database {
             is_input: crate::hermes::is_database,

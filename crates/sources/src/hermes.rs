@@ -2,7 +2,7 @@
 //! and record identities are metadata; message bodies are decoded one at a time.
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 use crate::fields::ExpectedType as T;
 mod identity;
@@ -24,7 +24,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 use std::path::Path;
 
-pub const LOCATIONS: &[&str] = &[".hermes/state.db", ".hermes/verification_evidence.db"];
+/// Database file names under the Hermes root.
+pub const LOCATIONS: &[&str] = &["state.db", "verification_evidence.db"];
 pub const ORIGIN: &str = "hermes";
 
 /// The ID of a session in the Hermes state database at `state_db`, as its
@@ -32,7 +33,32 @@ pub const ORIGIN: &str = "hermes";
 pub fn session_at(state_db: &Path, native: &str) -> Option<SessionId> {
     let source = serde_json::json!({ "path": state_db });
     let profile = identity::profile(Some(&source)).ok()??;
+    session_key(native, &profile)
+}
+
+fn session_key(native: &str, profile: &str) -> Option<SessionId> {
     session_id(ORIGIN, &format!("{native}@profile-{profile}"))
+}
+
+/// An event whose time is unknown, as every Hermes diagnostic and marker is.
+fn unknown_time_event(
+    session: SessionId,
+    kind: &str,
+    after: Option<MessageId>,
+    data: Json,
+) -> Event {
+    let (at, time_evidence) = crate::time::parts(None);
+    Event {
+        session: Some(session),
+        kind: kind.into(),
+        at,
+        at_quality: time_evidence.quality,
+        at_precision: time_evidence.precision,
+        at_until: time_evidence.until,
+        after,
+        range: None,
+        data,
+    }
 }
 
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
@@ -88,7 +114,7 @@ struct Database {
     profile: Option<String>,
     refusal: Option<String>,
     unbound: bool,
-    view: Option<Range<u64>>,
+    rows_seen: bool,
     sessions: BTreeMap<String, Facts>,
     selected: HashMap<String, Selected>,
     superseded: BTreeMap<String, u64>,
@@ -178,10 +204,7 @@ fn decoded(value: &Json, field: &str) -> Option<Json> {
 
 impl Database {
     fn sid(&self, native: &str) -> Option<SessionId> {
-        session_id(
-            ORIGIN,
-            &format!("{native}@profile-{}", self.profile.as_ref()?),
-        )
+        session_key(native, self.profile.as_ref()?)
     }
     fn mid(&self, session: &str, native: &str) -> Option<MessageId> {
         message_id(ORIGIN, &format!("{}:{native}", self.sid(session)?.native()))
@@ -283,6 +306,11 @@ impl Database {
                 };
                 parent = next;
             }
+            // A cycle through compression intermediaries leads back to the
+            // session itself; a session is not its own continuation parent.
+            if parent == session {
+                return None;
+            }
         }
         Some((parent, kind))
     }
@@ -296,8 +324,8 @@ impl ExportParser for Database {
         items: &mut dyn ItemSink,
     ) -> Result<ScanStats, ScanError> {
         *self = Self::default();
-        let stats = lines(reader, |range, value, _| {
-            self.view = Some(range);
+        let stats = lines(reader, |_, value, _| {
+            self.rows_seen = true;
             if value.get("schema").is_some() {
                 self.header(value);
                 return Ok(());
@@ -433,7 +461,7 @@ impl ExportParser for Database {
             start: 0,
             consumed: length,
             // Rows restate their whole record: a later row replaces an earlier one.
-            repeats_whole_conversations: self.refusal.is_none() && self.view.is_some(),
+            repeats_whole_conversations: self.refusal.is_none() && self.rows_seen,
         }))
     }
     fn item(
@@ -508,79 +536,52 @@ impl ExportParser for Database {
                     .set_time(at, accuracy)
                     .expect("decoded source time is valid");
                 sink.out.sessions.push(session);
-                sink.out.events.push({
-                    let (at, time_evidence) = crate::time::parts(None);
-                    Event {
-                        session: Some(id.clone()),
-                        kind: "session_metadata".into(),
-                        at,
-                        at_quality: time_evidence.quality,
-                        at_precision: time_evidence.precision,
-                        at_until: time_evidence.until,
-                        after: None,
-                        range: None,
-                        data: row.clone(),
-                    }
-                });
-                let mut limits = Vec::new();
+                sink.out.events.push(unknown_time_event(
+                    id.clone(),
+                    "session_metadata",
+                    None,
+                    row.clone(),
+                ));
+                let mut limits: Vec<String> = Vec::new();
                 if facts.messages && (!facts.activity_known || facts.leaf.is_none()) {
-                    sink.out.events.push({
-                        let (at, time_evidence) = crate::time::parts(None);
-                        Event {
-                            session: Some(id.clone()),
-                            kind: if facts.activity_known {
-                                "active_path_empty"
-                            } else {
-                                "active_path_unknown"
-                            }
-                            .into(),
-                            at,
-                            at_quality: time_evidence.quality,
-                            at_precision: time_evidence.precision,
-                            at_until: time_evidence.until,
-                            after: None,
-                            range: None,
-                            data: Json::Null,
-                        }
-                    });
+                    sink.out.events.push(unknown_time_event(
+                        id.clone(),
+                        if facts.activity_known {
+                            "active_path_empty"
+                        } else {
+                            "active_path_unknown"
+                        },
+                        None,
+                        Json::Null,
+                    ));
                 }
                 if row.get("source").is_some_and(|value| {
                     !matches!(value.as_str(), Some("cli" | "subagent" | "tool"))
                 }) {
-                    limits.push("unrecognized source; default session kind is main");
+                    limits.push("unrecognized source; default session kind is main".into());
                 }
                 if row
                     .get("model")
                     .is_some_and(|value| !value.is_null() && !value.is_string())
                 {
-                    limits.push("model is not text; no model assigned");
+                    limits.push("model is not text; no model assigned".into());
                 }
                 for field in ["started_at", "ended_at"] {
                     if row.get(field).is_some_and(|value| {
                         !value.is_null() && crate::time::epoch_seconds(value).is_none()
                     }) {
-                        limits.push(if field == "started_at" {
-                            "started_at epoch seconds unreadable; time remains unknown"
-                        } else {
-                            "ended_at epoch seconds unreadable; time remains unknown"
-                        });
+                        limits.push(format!(
+                            "{field} epoch seconds unreadable; time remains unknown"
+                        ));
                     }
                 }
                 if !limits.is_empty() {
-                    sink.out.events.push({
-                        let (at, time_evidence) = crate::time::parts(None);
-                        Event {
-                            session: Some(id.clone()),
-                            kind: "hermes_session_diagnostic".into(),
-                            at,
-                            at_quality: time_evidence.quality,
-                            at_precision: time_evidence.precision,
-                            at_until: time_evidence.until,
-                            after: None,
-                            range: None,
-                            data: serde_json::json!({"reason":limits}),
-                        }
-                    });
+                    sink.out.events.push(unknown_time_event(
+                        id.clone(),
+                        "hermes_session_diagnostic",
+                        None,
+                        serde_json::json!({"reason":limits}),
+                    ));
                 }
                 if let Some((parent, kind)) = self.parent(&raw)
                     && let Some(parent_id) = self.sid(&parent)
@@ -708,20 +709,12 @@ impl ExportParser for Database {
                             message,
                         });
                         if facts.activity_known && facts.leaf.as_ref() == Some(id) {
-                            sink.out.events.push({
-                                let (at, time_evidence) = crate::time::parts(None);
-                                Event {
-                                    session: Some(sid),
-                                    kind: "active_leaf".into(),
-                                    at,
-                                    at_quality: time_evidence.quality,
-                                    at_precision: time_evidence.precision,
-                                    at_until: time_evidence.until,
-                                    after: Some(id.clone()),
-                                    range: None,
-                                    data: Json::Null,
-                                }
-                            });
+                            sink.out.events.push(unknown_time_event(
+                                sid,
+                                "active_leaf",
+                                Some(id.clone()),
+                                Json::Null,
+                            ));
                         }
                         sink.records.record(table, &RecordOutcome::Used);
                     }

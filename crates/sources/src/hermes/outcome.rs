@@ -1,3 +1,4 @@
+//! A Hermes tool-result string as a tool outcome and its result block.
 use polylogue_model::JsonExt;
 use polylogue_model::{Block, ErrorReason, Json, ToolOutcome, UnknownReason};
 
@@ -71,14 +72,14 @@ fn verdict(data: &Json) -> (ToolOutcome, Option<&'static str>) {
             (unknown(), Some("status_field_unreadable"))
         };
     }
-    if let Some(success) = data.get("success") {
+    if let Some(success) = data.get("success").filter(|value| !value.is_null()) {
         return match success.as_bool() {
             Some(true) => (ToolOutcome::Ok, None),
             Some(false) => (ToolOutcome::Error { reason: None }, None),
             None => (unknown(), Some("status_field_unreadable")),
         };
     }
-    if let Some(exit) = data.get("exit_code") {
+    if let Some(exit) = data.get("exit_code").filter(|value| !value.is_null()) {
         return match exit.as_i64() {
             Some(0) => (ToolOutcome::Ok, None),
             Some(code) => (
