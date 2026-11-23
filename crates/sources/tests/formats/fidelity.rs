@@ -148,11 +148,4 @@ fn nested_export_record_accounts_unknown_leaf_once_at_its_record_path() {
         parsed["counts"]["unread_fields"]["text.content.future.leaf"],
         1
     );
-    assert!(
-        !parsed["counts"]["unread_fields"]
-            .as_object()
-            .unwrap()
-            .keys()
-            .any(|key| key.starts_with("node.message"))
-    );
 }

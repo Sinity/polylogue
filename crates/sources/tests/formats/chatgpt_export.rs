@@ -85,9 +85,10 @@ fn a_media_part_without_a_pointer_invents_no_attachment() {
         )],
         json!({}),
     ));
-    let b = &message(&p, ":m1")["blocks"][0];
-    assert_eq!(b["type"], "other");
-    assert_eq!(b["type_name"], "image_asset_pointer");
+    let blocks = message(&p, ":m1")["blocks"].as_array().unwrap();
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0]["type"], "other");
+    assert_eq!(blocks[0]["type_name"], "image_asset_pointer");
 }
 
 #[test]
@@ -127,12 +128,12 @@ fn a_tool_result_takes_its_outcome_from_the_message_status() {
         json!({"kind": "ok"})
     );
     assert_eq!(
-        outcome(Some("finished_partial_completion"))["kind"],
-        "error"
+        outcome(Some("finished_partial_completion")),
+        json!({"kind": "error", "reason": {"kind": "interrupted"}})
     );
-    assert_ne!(
-        outcome(Some("in_progress"))["kind"],
-        "ok",
+    assert_eq!(
+        outcome(Some("in_progress")),
+        json!({"kind": "no_result"}),
         "a running call is not a success"
     );
     assert_eq!(
@@ -144,32 +145,39 @@ fn a_tool_result_takes_its_outcome_from_the_message_status() {
 
 #[test]
 fn a_failed_code_run_is_an_error_whatever_the_message_status() {
-    let call = with(
-        node(
-            "call",
-            "assistant",
-            json!({"content_type": "code", "text": "1/0"}),
-            json!({}),
-        ),
-        "recipient",
-        json!("python"),
-    );
-    let out = node(
-        "out",
-        "tool",
-        json!({"content_type": "execution_output", "text": "ZeroDivisionError"}),
-        json!({"aggregate_result": {"status": "failed_with_in_kernel_exception", "code": "1/0"}}),
-    );
-    let p = run(conversation(vec![call, out], json!({})));
-    let result = blocks(&p)
-        .into_iter()
-        .find(|b| b["type"] == "tool_result")
-        .unwrap();
-    assert_eq!(result["outcome"]["kind"], "error");
-    assert_eq!(
-        result["call_id"], "call",
-        "the result pairs with the call it answers"
-    );
+    for status in [
+        "finished_successfully",
+        "in_progress",
+        "finished_partial_completion",
+    ] {
+        let call = with(
+            node(
+                "call",
+                "assistant",
+                json!({"content_type": "code", "text": "1/0"}),
+                json!({}),
+            ),
+            "recipient",
+            json!("python"),
+        );
+        let mut out = node(
+            "out",
+            "tool",
+            json!({"content_type": "execution_output", "text": "ZeroDivisionError"}),
+            json!({"aggregate_result": {"status": "failed_with_in_kernel_exception", "code": "1/0"}}),
+        );
+        out["message"]["status"] = json!(status);
+        let p = run(conversation(vec![call, out], json!({})));
+        let result = blocks(&p)
+            .into_iter()
+            .find(|b| b["type"] == "tool_result")
+            .unwrap();
+        assert_eq!(result["outcome"]["kind"], "error", "{status}");
+        assert_eq!(
+            result["call_id"], "call",
+            "the result pairs with the call it answers"
+        );
+    }
 }
 
 #[test]

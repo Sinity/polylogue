@@ -41,7 +41,15 @@ fn a_room_becomes_one_session_named_by_its_first_message() {
     assert_eq!(s.title.as_ref().unwrap().text, "Nix help");
     let msgs: Vec<&Message> = step.output.messages.iter().map(|r| &r.message).collect();
     assert_eq!(msgs[0].text(), "How do I pin nixpkgs?");
-    assert!(matches!(&msgs[0].blocks[1], Block::File(a) if a.blob.is_some()));
+    match &msgs[0].blocks[1] {
+        Block::File(a) => {
+            assert_eq!(a.name, None);
+            assert_eq!(a.media_type.as_deref(), Some("text/plain"));
+            assert_eq!(a.size, Some(9));
+            assert_eq!(a.blob, Some(BlobHash::of(b"my config")));
+        }
+        other => panic!("expected a file block, got {other:?}"),
+    }
     assert_eq!(step.output.blobs[0].bytes, b"my config");
     let a = msgs[1];
     assert_eq!(a.parent.as_ref().unwrap().native().as_str(), "msg-1-aaa");
@@ -51,7 +59,18 @@ fn a_room_becomes_one_session_named_by_its_first_message() {
     assert_eq!(a.production.first_token_ms, Some(5889));
     assert_eq!(a.production.requested_model, None);
     assert_eq!(a.reported_cost_usd.as_ref().unwrap().to_string(), "0.0012");
-    assert!(step.output.events.iter().any(|e| e.kind == "room_models"));
+    let models: Vec<_> = step
+        .output
+        .events
+        .iter()
+        .filter(|e| e.kind == "room_models")
+        .collect();
+    assert_eq!(models.len(), 1);
+    assert_eq!(
+        models[0].data,
+        json!({"char-1": {"id": "char-1", "model": "openrouter/horizon-beta",
+                          "description": "d", "samplingParameters": {}}})
+    );
     let expected: std::collections::BTreeMap<String, u64> = [
         "assistant.context",
         "assistant.isCollapsed",
@@ -106,6 +125,9 @@ fn recognizes_room_exports_by_name_and_first_key() {
         Path::new("/a/chat.json"),
         br#"{"version": "orpg"#
     ));
+    let named = Path::new("/a/OpenRouter Chat Mon Aug 04 2025 (1).json");
+    assert!(!recognize(named, br#"{"title": "x"}"#));
+    assert!(!recognize(named, br#"["version"]"#));
 }
 
 #[test]
@@ -158,14 +180,12 @@ fn integer_time_id_and_object_key_order_matches_optional_tuple_comparison() {
 #[test]
 fn ordering_reads_last_header_values_without_parsing_the_message_body() {
     let raw=serde_json::value::RawValue::from_string(r#"{"id":"old","createdAt":"2026-01-02T00:00:00Z","id":"new","createdAt":"1969-12-31T23:59:59.999Z","content":{"nested":[1,2,3]}}"#.into()).unwrap();
-    assert_eq!(
-        message_order(&raw, "key"),
-        room_order(
-            polylogue_model::Timestamp::from_unix_ms(-1),
-            Some("new"),
-            "key"
-        )
-    );
+    // -1 ms is 0xffff_ffff_ffff_ffff with the sign bit flipped.
+    let expected = vec![
+        1, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 1, b'n', b'e', b'w', 0, 0, b'k', b'e',
+        b'y',
+    ];
+    assert_eq!(message_order(&raw, "key"), expected);
 }
 
 #[cfg(target_os = "linux")]

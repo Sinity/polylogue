@@ -97,8 +97,21 @@ fn public_shape_kind_uses_declarations_not_wire_type_fields() {
     );
     let got = records.finish().unwrap();
     let shape = &got.wire_shapes[&serde_json::to_string(&("unlisted_item", "/type")).unwrap()];
-    assert_eq!(shape.record_kind, "unlisted_item");
-    assert_eq!(shape.unknown_kind_count, 1);
+    assert_eq!(
+        *shape,
+        polylogue_model::WireShape {
+            record_kind: "unlisted_item".into(),
+            path: "/type".into(),
+            types: [("string".to_owned(), 1)].into(),
+            expected: vec!["null".into(), "string".into()],
+            dynamic_map: false,
+            known_kinds: vec!["message".into()],
+            unknown_kind_count: 1,
+            unused_count: 0,
+            table: None,
+            unknown_table_count: 0,
+        }
+    );
     assert!(
         !serde_json::to_string(&got.wire_shapes)
             .unwrap()

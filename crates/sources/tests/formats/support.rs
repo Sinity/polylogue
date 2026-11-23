@@ -38,8 +38,10 @@ pub fn jsonl(records: &[Value]) -> Vec<u8> {
 pub fn messages(parsed: &Value) -> Vec<&Value> {
     parsed["output"]["messages"]
         .as_array()
-        .map(|a| a.iter().map(|m| &m["message"]).collect())
-        .unwrap_or_default()
+        .expect("output.messages is an array")
+        .iter()
+        .map(|m| &m["message"])
+        .collect()
 }
 
 /// The message whose ID ends with `suffix` (IDs are `<origin>:<native>`).
@@ -54,21 +56,20 @@ pub fn message<'a>(parsed: &'a Value, suffix: &str) -> &'a Value {
 pub fn sessions(parsed: &Value) -> Vec<&Value> {
     parsed["output"]["sessions"]
         .as_array()
-        .map(|a| a.iter().collect())
-        .unwrap_or_default()
+        .expect("output.sessions is an array")
+        .iter()
+        .collect()
 }
 
 /// Events of one kind.
 pub fn events<'a>(parsed: &'a Value, kind: &str) -> Vec<&'a Value> {
     parsed["output"]["events"]
         .as_array()
-        .map(|a| {
-            a.iter()
-                .map(|e| e.get("event").unwrap_or(e))
-                .filter(|e| e["kind"].as_str() == Some(kind))
-                .collect()
-        })
-        .unwrap_or_default()
+        .expect("output.events is an array")
+        .iter()
+        .map(|e| e.get("event").unwrap_or(e))
+        .filter(|e| e["kind"].as_str() == Some(kind))
+        .collect()
 }
 
 /// All blocks of all messages.

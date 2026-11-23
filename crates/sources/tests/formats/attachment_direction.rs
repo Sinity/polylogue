@@ -85,10 +85,12 @@ fn ai_studio_uses_the_chunk_role_for_every_attachment_shape() {
     assert_eq!(attachments(user)[0]["source_id"], "user-drive-file");
     let model = message(&p, "#id:10:model-turn");
     assert_eq!(directions(model), ["output", "output"]);
-    assert!(
-        attachments(model)[0]["blob"].is_string(),
+    assert_eq!(
+        attachments(model)[0]["blob"],
+        polylogue_model::BlobHash::of(b"out").to_string(),
         "inline bytes are stored"
     );
+    assert_eq!(attachments(model)[0]["size"], 3);
     assert_eq!(
         attachments(model)[1]["url"],
         "drive://output-file",

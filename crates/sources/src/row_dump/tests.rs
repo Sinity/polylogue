@@ -50,7 +50,23 @@ fn malformed_row_records_are_counted_with_fixed_reasons() {
     )
     .unwrap();
     assert_eq!(step.counts.records, 3);
-    assert_eq!(step.counts.unreadable.values().sum::<u64>(), 3);
+    assert_eq!(step.counts.unreadable.len(), 3);
+    assert_eq!(
+        step.counts.unreadable["row: row-dump record has no row object"],
+        1
+    );
+    assert_eq!(
+        step.counts.unreadable["schema: row-dump schema is not an object"],
+        1
+    );
+    let malformed: Vec<_> = step
+        .counts
+        .unreadable
+        .iter()
+        .filter(|(key, _)| key.starts_with("?: malformed JSON: "))
+        .collect();
+    assert_eq!(malformed.len(), 1);
+    assert_eq!(*malformed[0].1, 1);
     let shape = &step.counts.wire_shapes
         [&serde_json::to_string(&("table_metadata", "facts", "/future/leaf")).unwrap()];
     assert_eq!(shape.unused_count, 1);
@@ -74,10 +90,9 @@ fn row_envelope_and_column_metadata_are_counted_once() {
     assert_eq!(observed("row_envelope", "facts", "/k").unused_count, 0);
     assert_eq!(observed("row_envelope", "facts", "").unknown_table_count, 0);
     assert_eq!(observed("row", "facts", "").unknown_table_count, 1);
-    assert!(
-        observed("table_metadata", "empty_table", "/columns/[]/name")
-            .expected
-            .contains(&"string".into())
+    assert_eq!(
+        observed("table_metadata", "empty_table", "/columns/[]/name").expected,
+        vec!["null".to_string(), "string".to_string()]
     );
     assert_eq!(
         observed("table_metadata", "empty_table", "/columns/[]/future/leaf").unused_count,

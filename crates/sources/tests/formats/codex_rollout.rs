@@ -134,6 +134,12 @@ fn a_result_before_its_call_still_pairs_by_call_id() {
     let p = run(&[meta(json!({})), output("c9", "early"), call("c9", "shell")]);
     let ids: Vec<_> = blocks(&p).iter().map(|b| b["call_id"].clone()).collect();
     assert_eq!(ids, [json!("c9"), json!("c9")]);
+    let mut types: Vec<_> = blocks(&p)
+        .iter()
+        .map(|b| b["type"].as_str().unwrap().to_owned())
+        .collect();
+    types.sort();
+    assert_eq!(types, ["tool_call", "tool_result"]);
 }
 
 #[test]
@@ -244,11 +250,9 @@ fn a_second_session_meta_does_not_open_another_session() {
         user("b"),
     ]);
     assert_eq!(sessions(&p).len(), 1);
-    assert!(
-        messages(&p)
-            .iter()
-            .all(|m| m["session"] == format!("codex:{SID}"))
-    );
+    let all = messages(&p);
+    assert_eq!(all.len(), 2);
+    assert!(all.iter().all(|m| m["session"] == format!("codex:{SID}")));
 }
 
 #[test]

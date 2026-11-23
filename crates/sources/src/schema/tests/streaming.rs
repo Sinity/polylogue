@@ -82,7 +82,23 @@ fn incremental_grouping_matches_whole_sample_across_merge_orders() {
     for observer in observers.into_iter().rev() {
         combined.merge(observer).unwrap();
     }
-    assert_eq!(combined.finish("synthetic".into(), vec![]), expected);
+    let merged = combined.finish("synthetic".into(), vec![]);
+    assert_eq!(merged, expected);
+    // Hand count: the 92 distinct sibling names exceed fifty, so all of them
+    // group under /mapping/*, three members in each of the 90 records. Of
+    // those, 180 are objects (entryN and fixed); only fixed has "text", and
+    // entryN has field(N % 7), which is 13 times for 0..=5 and 12 for 6.
+    let group = &merged.fields["/mapping/*"];
+    assert_eq!(
+        (group.present, group.parents, group.occurrences),
+        (90, 90, 270)
+    );
+    let text = &merged.fields["/mapping/*/text"];
+    assert_eq!((text.present, text.parents, text.missing), (90, 180, 90));
+    let field0 = &merged.fields["/mapping/*/field0"];
+    assert_eq!((field0.present, field0.parents), (13, 180));
+    let field6 = &merged.fields["/mapping/*/field6"];
+    assert_eq!((field6.present, field6.parents), (12, 180));
 }
 
 #[test]
@@ -99,14 +115,9 @@ fn streaming_json_matches_serde_validation_and_scalar_kinds() {
             observer
                 .read(BufReader::new(Chunks { bytes, size }), Framing::Json)
                 .unwrap();
-            assert!(
-                compare(
-                    &observer.finish("synthetic".into(), vec![]),
-                    &infer(bytes, Framing::Json)
-                )
-                .unwrap()
-                .changes
-                .is_empty()
+            assert_eq!(
+                observer.finish("synthetic".into(), vec![]),
+                infer(bytes, Framing::Json)
             );
         }
     }
