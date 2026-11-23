@@ -448,6 +448,19 @@ fn compaction_moves_and_removal_keep_both_sessions_across_rollback() {
             .unwrap();
         }
         changes.finish_summaries(&tx, Some(2)).unwrap();
+        for (id, expected) in [("s", 0), ("to", i64::from(!remove))] {
+            assert_eq!(
+                tx.query_row(
+                    "SELECT compaction_count FROM session WHERE id=?1",
+                    [format!("claude-code:{id}")],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                expected,
+                "{id} after {}",
+                if remove { "removal" } else { "move" }
+            );
+        }
         let sessions = tx
             .prepare("SELECT pk FROM session")
             .unwrap()

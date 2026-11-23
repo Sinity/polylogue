@@ -119,16 +119,10 @@ fn oversized_background_duration_keeps_the_stored_result() {
             .is_null()
     );
     let stored = reader.messages(&sid("s"), false).unwrap();
-    assert!(
-        stored
-            .iter()
-            .flat_map(|message| &message.blocks)
-            .any(|block| matches!(
-                block,
-                Block::ToolResult {
-                    reported_duration_ms: Some(27),
-                    ..
-                }
-            ))
-    );
+    let results: Vec<&Block> = stored
+        .iter()
+        .flat_map(|message| &message.blocks)
+        .filter(|block| matches!(block, Block::ToolResult { .. }))
+        .collect();
+    assert_eq!(results, [&messages(27).1.blocks[0]]);
 }

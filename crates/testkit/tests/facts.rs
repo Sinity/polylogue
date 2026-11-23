@@ -76,5 +76,15 @@ fn a_continuation_reads_its_inherited_prefix_logically() {
     // #4 copies #2's prefix: 18 inherited messages, then its 10 own turns
     // and the explicit isCompactSummary harness message (sessions.md compaction).
     // History copied into the file needs no invented provider resume link.
-    assert_eq!(r.messages(&session(4), true).unwrap().len(), 29);
+    let ids = |n: u8, logical: bool| {
+        r.messages(&session(n), logical)
+            .unwrap()
+            .into_iter()
+            .map(|message| message.id)
+            .collect::<Vec<_>>()
+    };
+    let mut expected = ids(2, false)[..18].to_vec();
+    expected.extend(ids(4, false));
+    assert_eq!(expected.len(), 29);
+    assert_eq!(ids(4, true), expected);
 }

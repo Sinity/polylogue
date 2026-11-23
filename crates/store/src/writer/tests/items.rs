@@ -743,7 +743,7 @@ fn an_append_moves_only_the_append_counter() {
     }
     let after = stored(&w, "s");
     assert_eq!(after.rewrite_version, before.rewrite_version);
-    assert!(after.append_seq > before.append_seq);
+    assert_eq!(after.append_seq, before.append_seq + 20);
     assert_eq!(after.entries[..before.entries.len()], before.entries[..]);
     assert_matches_rows(&w, "s");
 }

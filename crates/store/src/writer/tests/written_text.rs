@@ -184,5 +184,8 @@ fn written_tool_text_searches_output_and_snippets_and_retracts_without_losing_in
             .unwrap()[0]["n"],
             1
         );
+        let stored = r.messages(&sid("s"), false).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].blocks[1], call(None));
     }
 }
