@@ -127,12 +127,11 @@ fn seen_mark_on_a_session_refuses_an_item_that_is_not_a_message_or_block() {
         item: Some(target.to_string()),
         at: position,
     };
-    assert!(
-        archive
-            .writer
-            .user(request("seen-session-item", mark))
-            .is_err()
-    );
+    assert!(matches!(
+        archive.writer.user(request("seen-session-item", mark)),
+        Err(StoreError::Invalid(ref message))
+            if message == "a seen mark on a session names a message or block"
+    ));
     assert!(
         pool.reader()
             .unwrap()
@@ -178,7 +177,11 @@ fn seen_marks_can_move_to_the_current_generation_without_changing_archive_positi
             .unwrap(),
         vec![new]
     );
-    assert!(archive.writer.user(request("seen-stale", old)).is_err());
+    assert!(matches!(
+        archive.writer.user(request("seen-stale", old)),
+        Err(StoreError::Invalid(ref message))
+            if message == "seen mark belongs to a stale index generation"
+    ));
     assert!(
         pool.reader()
             .unwrap()
@@ -269,7 +272,15 @@ fn seen_session_items_follow_the_readers_branch_prefix_before_own_messages() {
         ("seen-excluded-tail", &excluded),
         ("seen-unrelated", &unrelated),
     ] {
-        assert!(archive.writer.user(request(id, mark(item))).is_err());
+        assert!(matches!(
+            archive.writer.user(request(id, mark(item))),
+            Err(StoreError::Invalid(ref message))
+                if *message == format!(
+                    "message:{} is not in session:{}",
+                    item.id,
+                    crate::fixture::writer::sid("child")
+                )
+        ));
         assert!(pool.reader().unwrap().user_request(id).unwrap().is_none());
     }
     let reader = pool.reader().unwrap();
@@ -340,12 +351,15 @@ fn seen_session_items_use_recorded_copy_membership_and_share_readers_ambiguity()
             .unwrap()
             .repeat
     );
-    assert!(
-        archive
-            .writer
-            .user(request("seen-copy-excluded", mark(&excluded)))
-            .is_err()
-    );
+    assert!(matches!(
+        archive.writer.user(request("seen-copy-excluded", mark(&excluded))),
+        Err(StoreError::Invalid(ref message))
+            if *message == format!(
+                "message:{} is not in session:{}",
+                excluded.id,
+                crate::fixture::writer::sid("child")
+            )
+    ));
     drop(pool);
 
     // Two original copied readings disagree. The reader exposes neither
@@ -374,13 +388,10 @@ fn seen_session_items_use_recorded_copy_membership_and_share_readers_ambiguity()
     let selection = reader
         .select_messages(&crate::fixture::writer::sid("conflict"), true)
         .unwrap();
-    assert!(
-        selection
-            .parents()
-            .issues
-            .iter()
-            .any(|issue| matches!(issue, crate::read::ParentIssue::ConflictingOrder { .. }))
-    );
+    assert!(matches!(
+        selection.parents().issues.as_slice(),
+        [crate::read::ParentIssue::ConflictingOrder { .. }]
+    ));
     assert!(selection.locate(Some(&copied.id)).unwrap().is_none());
     let mark = SeenMark {
         target: "session:claude-code:conflict".into(),

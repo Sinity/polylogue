@@ -34,21 +34,17 @@ fn open_refuses_mode_mismatch_before_creating_files() {
             Archive::open_primary(&root, &store).unwrap_err()
         }
         .to_string();
-        assert!(
-            error.contains(if primary {
-                "is primary"
-            } else {
-                "is standalone"
-            }),
-            "{error}"
-        );
-        assert!(
-            error.contains(if primary {
-                "requests standalone"
-            } else {
-                "requests primary"
-            }),
-            "{error}"
+        let (recorded, requested) = if primary {
+            ("primary", "standalone")
+        } else {
+            ("standalone", "primary")
+        };
+        assert_eq!(
+            error,
+            format!(
+                "archive {} is {recorded}, but configuration requests {requested}; select its recorded mode or another archive",
+                root.display()
+            )
         );
         assert_eq!(files(&root), before);
     }
@@ -257,11 +253,9 @@ fn an_exhausted_counter_refuses_instead_of_reusing_a_position() {
     let mut conn = Connection::open_in_memory().unwrap();
     conn.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL); INSERT INTO meta VALUES ('write_counter','9223372036854775807')").unwrap();
     let tx = conn.transaction().unwrap();
-    assert!(
-        bump_counter(&tx)
-            .unwrap_err()
-            .to_string()
-            .contains("counter exhausted")
+    assert_eq!(
+        bump_counter(&tx).unwrap_err().to_string(),
+        "write counter exhausted"
     );
     assert_eq!(
         tx.query_row("SELECT value FROM meta", [], |r| r.get::<_, String>(0))

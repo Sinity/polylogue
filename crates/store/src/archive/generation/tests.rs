@@ -44,10 +44,14 @@ fn same_boot_keeps_positions_but_changed_boot_ignores_a_stale_clean_stop() {
 #[test]
 fn a_missing_generation_is_created_and_a_failed_update_changes_nothing() {
     let conn = index();
+    begin(&conn, "boot-a", None).unwrap();
+    // Same boot, so only the missing generation can trigger the creation.
     conn.execute("DELETE FROM meta WHERE key='generation'", [])
         .unwrap();
     begin(&conn, "boot-a", None).unwrap();
+    assert_eq!(value(&conn, "boot_id"), "boot-a");
     let original = value(&conn, "generation");
+    assert!(!original.is_empty());
     conn.execute_batch("INSERT INTO removed_session VALUES ('claude-code:old',5); CREATE TRIGGER refuse_boot BEFORE UPDATE ON meta WHEN NEW.key='boot_id' BEGIN SELECT RAISE(ABORT,'boot update failed'); END;").unwrap();
     let sync: i64 = conn
         .pragma_query_value(None, "synchronous", |r| r.get(0))
@@ -110,7 +114,8 @@ fn a_deliberately_replaced_index_establishes_its_boot_before_restart() {
     let conn = super::super::open_read(&archive.index_db()).unwrap();
     let rebuilt = value(&conn, "generation");
     assert_ne!(rebuilt, before);
-    assert!(!value(&conn, "boot_id").is_empty());
+    let boot = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").unwrap();
+    assert_eq!(value(&conn, "boot_id"), boot.trim());
     drop(conn);
     drop(lock);
     let (archive, _lock) = crate::Archive::open_or_create(dir.path()).unwrap();

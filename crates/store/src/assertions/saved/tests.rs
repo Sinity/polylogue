@@ -180,7 +180,7 @@ fn saved_revision_history_diagnoses_missing_parents_and_cycles() {
     match named_revisions(&conn, "missing-parent").unwrap_err() {
         StoreError::ReferenceUnavailable { reference, reason } => {
             assert_eq!(reference, "annotation:family@missing");
-            assert!(reason.contains("parent"));
+            assert_eq!(reason, "saved-query revision parent is not stored");
         }
         other => panic!("missing original must be explicit: {other}"),
     }
@@ -195,12 +195,13 @@ fn saved_revision_history_diagnoses_missing_parents_and_cycles() {
         1,
     )
     .unwrap();
-    assert!(
-        named_revisions(&cycle, "cycle")
-            .unwrap_err()
-            .to_string()
-            .contains("cycle")
-    );
+    match named_revisions(&cycle, "cycle").unwrap_err() {
+        StoreError::Invalid(message) => assert_eq!(
+            message,
+            "saved-query revision links form a cycle: annotation:family@cycle-a, annotation:family@cycle-b"
+        ),
+        other => panic!("cycle must be explicit: {other}"),
+    }
 }
 
 #[test]
@@ -301,10 +302,16 @@ fn saved_revision_number_follows_a_merge_of_two_original_families() {
         named_revision(&conn, "focus", 2).unwrap().reference,
         RevisionReference::exact("family".into(), "merged".into())
     );
-    assert!(matches!(
-        named_revision(&conn, "focus", 1),
-        Err(StoreError::Ambiguous { .. })
-    ));
+    match named_revision(&conn, "focus", 1).unwrap_err() {
+        StoreError::Ambiguous { candidates, .. } => assert_eq!(
+            candidates,
+            [
+                "annotation:family@first",
+                "annotation:other-family@other-first"
+            ]
+        ),
+        other => panic!("independent originals must remain explicit: {other}"),
+    }
 }
 
 fn withdrawal(id: &str, target: &str) -> AssertionFact {
@@ -391,7 +398,7 @@ fn numeric_saved_revisions_keep_independent_current_and_retired_histories_ambigu
     let first = fact("first", "focus", 1, None);
     let mut other = fact("other", "focus", 2, None);
     other.root = "other-family".into();
-    super::super::apply(&conn, &[other, first], 1).unwrap();
+    super::super::apply(&conn, &[other.clone(), first.clone()], 1).unwrap();
     let expect_ambiguous = || match named_revision(&conn, "focus", 1).unwrap_err() {
         StoreError::Ambiguous { candidates, .. } => assert_eq!(
             candidates,
@@ -415,8 +422,8 @@ fn numeric_saved_revisions_keep_independent_current_and_retired_histories_ambigu
             .is_empty()
     );
     expect_ambiguous();
-    assert!(get(&conn, "first").unwrap().is_some());
-    assert!(get(&conn, "other").unwrap().is_some());
+    assert_eq!(get(&conn, "first").unwrap().unwrap().fact, first);
+    assert_eq!(get(&conn, "other").unwrap().unwrap().fact, other);
 }
 
 #[test]

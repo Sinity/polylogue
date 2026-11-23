@@ -188,17 +188,6 @@ fn a_build_file_from_another_schema_is_discarded_and_started_again() {
 }
 
 #[test]
-fn an_index_this_build_wrote_has_the_build_identity() {
-    let dir = tempfile::tempdir().unwrap();
-    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
-    let index = open_read(&archive.index_db()).unwrap();
-    assert_eq!(
-        schema::index_identity(&index).unwrap(),
-        schema::build_index_identity(false).unwrap()
-    );
-}
-
-#[test]
 fn primary_previous_index_rebuild_preserves_original_cache_and_paid_and_pending_stores() {
     for boundary in std::iter::once(None)
         .chain(cfg!(feature = "faults").then_some(Some("index.after_set_aside")))

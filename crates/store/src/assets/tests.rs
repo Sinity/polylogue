@@ -87,11 +87,10 @@ fn segmented_asset_ranges_and_hashes_match_and_old_selections_refuse_rewrites() 
             reader.attachment_range(&asset, 0..asset.size).unwrap(),
             original
         );
-        assert!(
-            reader
-                .attachment_range(&asset, asset.size..asset.size + 1)
-                .is_err()
-        );
+        assert!(matches!(
+            reader.attachment_range(&asset, asset.size..asset.size + 1),
+            Err(StoreError::Invalid(message)) if message == "attachment range is outside the stored bytes"
+        ));
         asset
     };
     let replacement = b"replacement body";
@@ -257,7 +256,7 @@ fn member_discovery_filters_before_decoding_and_propagates_visitor_refusal() {
 }
 
 #[test]
-fn import_members_and_asset_rows_move_their_import_counters() {
+fn import_members_move_their_import_counters() {
     let conn = Connection::open_in_memory().unwrap();
     crate::schema::ensure_index(&conn).unwrap();
     let counter = |import: &str| -> Option<i64> {
@@ -300,7 +299,7 @@ fn import_members_and_asset_rows_move_their_import_counters() {
 }
 
 #[test]
-fn an_identical_reimport_leaves_the_import_counters_unchanged() {
+fn an_identical_reimport_is_not_counted_and_asset_rows_report_only_real_changes() {
     let conn = Connection::open_in_memory().unwrap();
     crate::schema::ensure_index(&conn).unwrap();
     let counter = || -> Option<i64> {
