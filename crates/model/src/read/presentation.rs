@@ -127,15 +127,6 @@ impl PresentationMap {
         }
         Ok(())
     }
-    pub fn get(&self, original: &Reference) -> Option<&VariantText> {
-        self.0.get(original)
-    }
-    pub fn iter(&self) -> impl Iterator<Item = (&Reference, &VariantText)> {
-        self.0.iter()
-    }
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
     pub fn for_source<'a>(
         &'a self,
         source: &Source,

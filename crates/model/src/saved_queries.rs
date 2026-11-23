@@ -59,10 +59,6 @@ pub const SHIPPED_QUERIES: &[ShippedQuery] = &[
     },
 ];
 
-pub fn shipped_query(name: &str) -> Option<&'static ShippedQuery> {
-    SHIPPED_QUERIES.iter().find(|query| query.name == name)
-}
-
 /// A named question's authored history and its immutable kept results.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct SavedQueryRecord {

@@ -144,6 +144,15 @@ impl Block {
         }
     }
 
+    /// The attachments of [`Block::attachments`], for in-place updates.
+    pub fn attachments_mut(&mut self) -> &mut [Attachment] {
+        match self {
+            Self::Image(attachment) | Self::File(attachment) => std::slice::from_mut(attachment),
+            Self::ToolResult { attachments, .. } => attachments,
+            _ => &mut [],
+        }
+    }
+
     pub fn kind(&self) -> BlockKind {
         match self {
             Block::Text { .. } => BlockKind::Text,

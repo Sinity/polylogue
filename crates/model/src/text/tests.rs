@@ -6,6 +6,19 @@ fn strokes_fold_like_accents() {
     assert_eq!(key("łódź"), "lodz");
     assert_eq!(key("Straße"), "strasse");
     assert_eq!(fold("Ørsted"), "Orsted");
+    // docs/search.md: every stroke letter folds to its base letter.
+    for (input, base) in [
+        ("đ", "d"),
+        ("Đ", "d"),
+        ("ħ", "h"),
+        ("Ħ", "h"),
+        ("ı", "i"),
+        ("ŧ", "t"),
+        ("Ŧ", "t"),
+        ("ẞ", "ss"),
+    ] {
+        assert_eq!(key(input), base, "{input}");
+    }
     // A capital folds to the capital of the same base letter as its small
     // form, so the tokenizer's case fold brings both to one key.
     for (capital, small, base) in [("Ƀ", "ƀ", "b"), ("Ɨ", "ɨ", "i"), ("Ʉ", "ʉ", "u")] {
@@ -19,6 +32,14 @@ fn tokens_split_on_anything_but_letters_and_digits() {
     let t = "weekday_offset() in 2026, café";
     let words: Vec<&str> = tokens(t).into_iter().map(|(s, e)| &t[s..e]).collect();
     assert_eq!(words, ["weekday", "offset", "in", "2026", "café"]);
+    // A combining mark stays inside the run it follows.
+    let decomposed = "cafe\u{301} x";
+    let words: Vec<&str> = tokens(decomposed)
+        .into_iter()
+        .map(|(s, e)| &decomposed[s..e])
+        .collect();
+    assert_eq!(words, ["cafe\u{301}", "x"]);
+    assert_eq!(key("cafe\u{301}"), "cafe");
 }
 
 #[test]

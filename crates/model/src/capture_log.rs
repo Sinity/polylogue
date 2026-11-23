@@ -3,7 +3,11 @@
 //! the submitted JSON bytes unchanged.
 
 pub const MAGIC: &[u8] = b"POLYLOGUE-CAPTURES/1\n";
-pub const HEADER_LEN: usize = 86;
+/// Zero-padded decimal digits of the frame length.
+const LENGTH_DIGITS: usize = 20;
+const DIGEST_END: usize = LENGTH_DIGITS + 1 + blake3::OUT_LEN * 2;
+/// The length, a space, the hex digest and a newline.
+pub const HEADER_LEN: usize = DIGEST_END + 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
@@ -20,23 +24,26 @@ impl Header {
     }
 
     pub fn encode(&self) -> Vec<u8> {
-        format!("{:020} {}\n", self.length, self.digest).into_bytes()
+        format!("{:0LENGTH_DIGITS$} {}\n", self.length, self.digest).into_bytes()
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() != HEADER_LEN
-            || bytes[20] != b' '
-            || bytes[85] != b'\n'
-            || !bytes[..20].iter().all(u8::is_ascii_digit)
-            || !bytes[21..85].iter().all(u8::is_ascii_hexdigit)
+            || bytes[LENGTH_DIGITS] != b' '
+            || bytes[DIGEST_END] != b'\n'
+            || !bytes[..LENGTH_DIGITS].iter().all(u8::is_ascii_digit)
+            || !bytes[LENGTH_DIGITS + 1..DIGEST_END]
+                .iter()
+                .all(u8::is_ascii_hexdigit)
         {
             return Err("invalid capture frame header".into());
         }
-        let length = std::str::from_utf8(&bytes[..20])
+        let length = std::str::from_utf8(&bytes[..LENGTH_DIGITS])
             .map_err(|e| e.to_string())?
             .parse()
             .map_err(|e: std::num::ParseIntError| e.to_string())?;
-        let digest = String::from_utf8(bytes[21..85].to_vec()).map_err(|e| e.to_string())?;
+        let digest = String::from_utf8(bytes[LENGTH_DIGITS + 1..DIGEST_END].to_vec())
+            .map_err(|e| e.to_string())?;
         Ok(Self { length, digest })
     }
 

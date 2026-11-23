@@ -122,11 +122,7 @@ fn stored_blocks(
                 normalized = blocks.to_vec();
                 changed = true;
             }
-            let attachment = match &mut normalized[index] {
-                Block::File(a) | Block::Image(a) => a,
-                Block::ToolResult { attachments, .. } => &mut attachments[attachment_index],
-                _ => unreachable!("attachment block"),
-            };
+            let attachment = &mut normalized[index].attachments_mut()[attachment_index];
             attachment.blob = size.map(|_| hash);
             if let Some(size) = size {
                 attachment.size = Some(size);

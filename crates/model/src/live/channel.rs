@@ -140,7 +140,7 @@ pub struct Probe {
     pub harness: String,
     /// Polylogue holds a control connection to the session.
     pub hosted: bool,
-    /// The hook command is installed and has context-accepting events.
+    /// The session's live events show the hook installed, with context-accepting events.
     pub hooks: bool,
     /// The installed harness asks the synchronous permission hook.
     pub permission_hook: bool,

@@ -223,7 +223,7 @@ impl EmissionRecorder<'_> {
                 hook_event: self.event.into(),
                 deliveries: deliveries
                     .iter()
-                    .map(|id| polylogue_model::Reference::Delivery(id.clone()).to_string())
+                    .map(|id| polylogue_model::Reference::Delivery(id.clone()))
                     .collect(),
             };
             let record = serde_json::to_value(emission)

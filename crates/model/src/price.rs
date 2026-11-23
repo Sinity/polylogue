@@ -167,8 +167,8 @@ impl Price {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Catalog {
-    /// Changes whenever a price changes; stored costs computed under another
-    /// version are recomputed.
+    /// A label shown beside the catalog's content hash. The hash, not this
+    /// label, decides when stored costs are recomputed.
     pub version: String,
     models: BTreeMap<String, Price>,
 }

@@ -39,6 +39,10 @@ fn quotes_keep_separators_inside_one_word() {
 fn writing_flags_make_a_different_command() {
     assert_eq!(n("sed -n 1,5p f"), "sed");
     assert_eq!(n("sed -i s/a/b/ f"), "sed -i");
+    assert_eq!(n("sed -Ei s/a/b/ f"), "sed -i");
+    assert_eq!(n("sed -ni s/a/b/p f"), "sed -i");
+    assert_eq!(n("sed -i.bak s/a/b/ f"), "sed -i");
+    assert_eq!(n("sed -E s/a/b/ f"), "sed");
     assert_eq!(n("find . -name x -delete"), "find -delete");
     assert_eq!(n("find . -exec rm {} ;"), "find -exec");
 }
@@ -114,4 +118,13 @@ fn stages_expose_operands() {
     };
     assert_eq!(s[0].subcommand(), Some("update"));
     assert_eq!(s[0].operands(), ["proj-abc.7", "--status", "in_progress"]);
+}
+
+#[test]
+fn an_option_value_spelled_like_the_subcommand_is_not_the_subcommand() {
+    let Line::Stages(s) = parse("git -c log log x") else {
+        panic!()
+    };
+    assert_eq!(s[0].subcommand(), Some("log"));
+    assert_eq!(s[0].operands(), ["x"]);
 }

@@ -1,7 +1,7 @@
 //! Indexed tool relationships enrich layout one pair at a time. Stored
 //! records remain unchanged; offsets describe the existing emitted item order.
 use super::Error;
-use polylogue_model::{MessageId, PromptKind, Role, read::*};
+use polylogue_model::{MessageId, is_harness_message, read::*};
 use polylogue_store::Reader;
 use std::ops::ControlFlow;
 
@@ -119,8 +119,7 @@ fn visible(reader: &Reader<'_>, source: &Source, options: &ReadOptions) -> Resul
     };
     let mut shown = false;
     selected.visit(from, |message| {
-        let harness =
-            message.role == Role::System || message.prompt_kind == Some(PromptKind::Harness);
+        let harness = is_harness_message(message.role, message.prompt_kind);
         shown = options
             .view
             .keeps_message_metadata(message.role, message.prompt_kind)

@@ -157,6 +157,12 @@ fn rubric_integer_ranges_and_enum_numbers_have_one_mathematical_meaning() {
         description: None,
     };
     assert!(field.validate().is_err());
+    field.enum_values = Some(vec![serde_json::from_str("1").unwrap()]);
+    for text in ["1", "1.0", "10e-1"] {
+        assert!(field.allows(&serde_json::from_str(text).unwrap()), "{text}");
+    }
+    assert!(!field.allows(&serde_json::from_str("2").unwrap()));
+    assert!(!field.allows(&Json::String("1".into())));
     field.enum_values = Some(vec![
         Json::String("clear".into()),
         Json::String("uncertain".into()),
@@ -771,4 +777,29 @@ fn comparison_verdicts_keep_their_stored_reference_spelling() {
     let stored = serde_json::json!("prefer:assertion:choice@revision");
     assert_eq!(serde_json::to_value(&verdict).unwrap(), stored);
     assert_eq!(serde_json::from_value::<Verdict>(stored).unwrap(), verdict);
+}
+
+#[test]
+fn finding_and_question_schemas_refuse_the_claim_fields_they_do_not_carry() {
+    // The structured branch of a claim-shaped kind's value schema.
+    fn detail<'a>(schema: &'a Json, kind: &str) -> &'a Json {
+        &schema["allOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|condition| condition["if"]["properties"]["kind"]["const"] == kind)
+            .unwrap()["then"]["properties"]["value"]["anyOf"][1]
+    }
+    let live = schemars::schema_for!(super::super::NewAssertion).to_value();
+    let stored = schemars::schema_for!(super::super::AssertionFact).to_value();
+    let null = serde_json::json!({"type":"null"});
+    for schema in [&live, &stored] {
+        let claim = &detail(schema, "claim")["properties"];
+        assert_ne!(claim["outcomes"], null);
+        assert_ne!(claim["check"], null);
+        assert_eq!(detail(schema, "finding")["properties"]["outcomes"], null);
+        assert_ne!(detail(schema, "finding")["properties"]["check"], null);
+        assert_eq!(detail(schema, "question")["properties"]["check"], null);
+        assert_ne!(detail(schema, "question")["properties"]["outcomes"], null);
+    }
 }

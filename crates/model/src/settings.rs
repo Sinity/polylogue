@@ -340,10 +340,11 @@ pub fn parse(key: &str, text: &str, mode: SettingMode) -> Result<Value, Error> {
             if values.iter().any(|value| {
                 value.trim().is_empty()
                     || value.chars().any(char::is_control)
-                    || !matches!(
-                        value.split(':').next(),
-                        Some("translation" | "transliteration" | "simplification" | "summary")
-                    )
+                    || value
+                        .split(':')
+                        .next()
+                        .and_then(crate::VariantKind::from_name)
+                        .is_none()
             }) {
                 return Err(invalid("an ordered JSON list of variant keys"));
             }

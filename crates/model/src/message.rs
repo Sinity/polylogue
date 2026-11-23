@@ -58,6 +58,11 @@ impl PromptKind {
     }
 }
 
+/// Whether a message is the harness's own text rather than the participants'.
+pub fn is_harness_message(role: Role, prompt_kind: Option<PromptKind>) -> bool {
+    role == Role::System || prompt_kind.is_some_and(PromptKind::is_harness)
+}
+
 /// Who wrote a message's text, from its role and prompt kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]

@@ -630,7 +630,9 @@ impl BackfillJob {
         }
     }
 
-    /// The totals and list position of the latest report.
+    /// The totals of the latest event, and the latest reported list position: a
+    /// later event without a position keeps the earlier one, which is where a
+    /// later claim resumes.
     pub fn progress(&self) -> (BackfillCounts, Option<&str>) {
         let counts = self.events.last().map(|e| e.counts).unwrap_or_default();
         let position = self.events.iter().rev().find_map(|e| e.position.as_deref());
