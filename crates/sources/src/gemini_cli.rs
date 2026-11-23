@@ -11,7 +11,7 @@ use polylogue_model::JsonExt;
 pub const VERSION: u32 = 2;
 
 use crate::document::first_byte;
-use crate::document::{Sink, first_key, message_id, session_id, time_of};
+use crate::document::{Sink, first_key, message_id, session_id, text_of, time_of};
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
 use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
@@ -323,21 +323,6 @@ impl GeminiCli {
         }
 
         self.state.session = Some(sid);
-    }
-}
-
-/// Text of `content`: a string, or parts with `text`.
-fn text_of(content: Option<&Json>) -> Option<String> {
-    match content? {
-        Json::String(s) if !s.is_empty() => Some(s.clone()),
-        Json::Array(parts) => {
-            let texts: Vec<&str> = parts
-                .iter()
-                .filter_map(|p| p.str("text").filter(|s| !s.is_empty()))
-                .collect();
-            (!texts.is_empty()).then(|| texts.join("\n"))
-        }
-        _ => None,
     }
 }
 

@@ -11,7 +11,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 use crate::document::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id};
@@ -419,7 +419,9 @@ fn parts(m: &Json) -> Vec<Block> {
             Some("tool_call_response") => blocks.push(Block::ToolResult {
                 reported_duration_ms: None,
                 call_id: p.str("id").map(str::to_owned),
-                outcome: ToolOutcome::Ok,
+                outcome: ToolOutcome::Unknown {
+                    reason: polylogue_model::UnknownReason::StatusFieldUnreadable,
+                },
                 output: match p.get("response") {
                     Some(Json::String(s)) => Some(s.clone()),
                     Some(other) => Some(other.to_string()),

@@ -185,7 +185,16 @@ impl SelectionRules for FirstWordCatalog {
             .any(|c| c.is_whitespace() || " :|\"()~*,".contains(c))
     }
 }
-fn value(args: &[String], index: &mut usize) -> Result<String, Refusal> {
+/// An option word and its value when written `--name=value`.
+fn split_option(word: &str) -> (&str, Option<&str>) {
+    word.split_once('=')
+        .map_or((word, None), |(name, value)| (name, Some(value)))
+}
+/// The value of an option: the text after `=`, else the next word.
+fn value(args: &[String], index: &mut usize, assigned: Option<&str>) -> Result<String, Refusal> {
+    if let Some(assigned) = assigned {
+        return Ok(assigned.to_owned());
+    }
     *index += 1;
     args.get(*index)
         .cloned()
@@ -196,11 +205,7 @@ fn line_option(
     index: &mut usize,
     line: &mut LineOptions,
 ) -> Result<bool, Refusal> {
-    let (word, assigned) = args[*index]
-        .split_once('=')
-        .map_or((args[*index].as_str(), None), |(name, value)| {
-            (name, Some(value))
-        });
+    let (word, assigned) = split_option(&args[*index]);
     let flag = match word {
         "--json" => Some(&mut line.json),
         "--fresh" => Some(&mut line.fresh),
@@ -217,10 +222,10 @@ fn line_option(
             .unwrap_or(true);
         return Ok(true);
     }
-    match args[*index].as_str() {
-        "--deadline" => line.deadline = Some(value(args, index)?),
-        "--request-id" => line.request_id = Some(value(args, index)?),
-        "--wait" => line.wait = Some(value(args, index)?),
+    match word {
+        "--deadline" => line.deadline = Some(value(args, index, assigned)?),
+        "--request-id" => line.request_id = Some(value(args, index, assigned)?),
+        "--wait" => line.wait = Some(value(args, index, assigned)?),
         _ => return Ok(false),
     }
     Ok(true)
@@ -230,22 +235,29 @@ fn listing_option(
     index: &mut usize,
     listing: &mut ListingOptions,
 ) -> Result<bool, Refusal> {
-    match args[*index].as_str() {
+    let (word, assigned) = split_option(&args[*index]);
+    match word {
         "--page-size" => {
-            listing.page_size = Some(value(args, index)?.parse().map_err(|_| {
+            listing.page_size = Some(value(args, index, assigned)?.parse().map_err(|_| {
                 Refusal::new(Code::BadValue, "--page-size needs a positive integer")
             })?)
         }
-        "--fields" => listing.fields = value(args, index)?.split(',').map(str::to_owned).collect(),
-        "--why" => listing.why = true,
-        word if word.starts_with("--why=") => {
-            listing.why = word[6..]
-                .parse()
-                .map_err(|_| Refusal::new(Code::BadValue, "--why needs true or false"))?
+        "--fields" => {
+            listing.fields = value(args, index, assigned)?
+                .split(',')
+                .map(str::to_owned)
+                .collect()
         }
-        "--to" => listing.to = Some(Destination::parse(&value(args, index)?)),
-        "--cursor" => listing.cursor = Some(value(args, index)?),
-        "--budget" => listing.budget = Some(value(args, index)?),
+        "--why" => {
+            listing.why = assigned
+                .map(str::parse::<bool>)
+                .transpose()
+                .map_err(|_| Refusal::new(Code::BadValue, "--why needs true or false"))?
+                .unwrap_or(true)
+        }
+        "--to" => listing.to = Some(Destination::parse(&value(args, index, assigned)?)),
+        "--cursor" => listing.cursor = Some(value(args, index, assigned)?),
+        "--budget" => listing.budget = Some(value(args, index, assigned)?),
         _ => return Ok(false),
     }
     Ok(true)
@@ -376,8 +388,9 @@ pub(crate) fn parse(
                 if line_option(args, index, &mut parsed.line)? {
                     return Ok(true);
                 }
-                if args[*index] == "--to" && matches!(verb, "read" | "brief") {
-                    to = Some(Destination::parse(&value(args, index)?));
+                let (word, assigned) = split_option(&args[*index]);
+                if word == "--to" && matches!(verb, "read" | "brief") {
+                    to = Some(Destination::parse(&value(args, index, assigned)?));
                     return Ok(true);
                 }
                 Ok(false)

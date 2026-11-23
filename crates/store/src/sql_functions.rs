@@ -161,8 +161,20 @@ pub fn register(conn: &Connection) -> rusqlite::Result<()> {
             .expect("eight hash bytes");
         Ok(i64::from_le_bytes(bytes))
     })?;
-    conn.create_aggregate_function("pl_percentile", 2, FLAGS, Percentile)?;
-    conn.create_aggregate_function("pl_integer_percentile", 2, FLAGS, IntegerPercentile)?;
+    conn.create_aggregate_function(
+        "pl_percentile",
+        2,
+        FLAGS,
+        Percentile::<f64> {
+            order: f64::total_cmp,
+        },
+    )?;
+    conn.create_aggregate_function(
+        "pl_integer_percentile",
+        2,
+        FLAGS,
+        Percentile::<i64> { order: i64::cmp },
+    )?;
     conn.create_scalar_function("pl_similarity", 1, FunctionFlags::SQLITE_UTF8, |ctx| {
         let Some(hash) = ctx.get::<Option<Vec<u8>>>(0)? else {
             return Ok(None);
@@ -206,51 +218,29 @@ pub(crate) fn with_similarity<T>(
     f()
 }
 
-/// `pl_percentile(x, p)`: the nearest-rank p-th percentile of the known
-/// values (unknown ones are left out, as in `avg`); NULL when none is known.
-struct Percentile;
-
-impl rusqlite::functions::Aggregate<(Vec<f64>, f64), Option<f64>> for Percentile {
-    fn init(&self, _: &mut Context<'_>) -> rusqlite::Result<(Vec<f64>, f64)> {
-        Ok((vec![], 50.0))
-    }
-
-    fn step(&self, ctx: &mut Context<'_>, acc: &mut (Vec<f64>, f64)) -> rusqlite::Result<()> {
-        if let Some(x) = ctx.get::<Option<f64>>(0)? {
-            acc.0.push(x);
-        }
-        acc.1 = ctx.get::<f64>(1)?.clamp(0.0, 100.0);
-        Ok(())
-    }
-
-    fn finalize(
-        &self,
-        _: &mut Context<'_>,
-        acc: Option<(Vec<f64>, f64)>,
-    ) -> rusqlite::Result<Option<f64>> {
-        let Some((mut values, p)) = acc else {
-            return Ok(None);
-        };
-        if values.is_empty() {
-            return Ok(None);
-        }
-        values.sort_by(f64::total_cmp);
-        let rank = ((p / 100.0) * values.len() as f64).ceil() as usize;
-        Ok(Some(values[rank.clamp(1, values.len()) - 1]))
-    }
+/// `pl_percentile(x, p)` and `pl_integer_percentile(x, p)`: the nearest-rank
+/// p-th percentile of the known values (unknown ones are left out, as in
+/// `avg`); NULL when none is known. The integer form compares integers
+/// (money in nano-USD), so values above 2^53 keep every digit.
+struct Percentile<T> {
+    order: fn(&T, &T) -> std::cmp::Ordering,
 }
 
-/// `pl_integer_percentile(x, p)`: [`Percentile`] over integer values compared
-/// as integers (money in nano-USD), so values above 2^53 keep every digit.
-struct IntegerPercentile;
-
-impl rusqlite::functions::Aggregate<(Vec<i64>, f64), Option<i64>> for IntegerPercentile {
-    fn init(&self, _: &mut Context<'_>) -> rusqlite::Result<(Vec<i64>, f64)> {
+impl<T> rusqlite::functions::Aggregate<(Vec<T>, f64), Option<T>> for Percentile<T>
+where
+    T: rusqlite::types::FromSql
+        + rusqlite::types::ToSql
+        + Copy
+        + std::panic::RefUnwindSafe
+        + std::panic::UnwindSafe
+        + 'static,
+{
+    fn init(&self, _: &mut Context<'_>) -> rusqlite::Result<(Vec<T>, f64)> {
         Ok((vec![], 50.0))
     }
 
-    fn step(&self, ctx: &mut Context<'_>, acc: &mut (Vec<i64>, f64)) -> rusqlite::Result<()> {
-        if let Some(x) = ctx.get::<Option<i64>>(0)? {
+    fn step(&self, ctx: &mut Context<'_>, acc: &mut (Vec<T>, f64)) -> rusqlite::Result<()> {
+        if let Some(x) = ctx.get::<Option<T>>(0)? {
             acc.0.push(x);
         }
         acc.1 = ctx.get::<f64>(1)?.clamp(0.0, 100.0);
@@ -260,15 +250,15 @@ impl rusqlite::functions::Aggregate<(Vec<i64>, f64), Option<i64>> for IntegerPer
     fn finalize(
         &self,
         _: &mut Context<'_>,
-        acc: Option<(Vec<i64>, f64)>,
-    ) -> rusqlite::Result<Option<i64>> {
+        acc: Option<(Vec<T>, f64)>,
+    ) -> rusqlite::Result<Option<T>> {
         let Some((mut values, p)) = acc else {
             return Ok(None);
         };
         if values.is_empty() {
             return Ok(None);
         }
-        values.sort_unstable();
+        values.sort_by(self.order);
         let rank = ((p / 100.0) * values.len() as f64).ceil() as usize;
         Ok(Some(values[rank.clamp(1, values.len()) - 1]))
     }
