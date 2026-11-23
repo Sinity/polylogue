@@ -352,6 +352,8 @@ fn delivery_filters_read_string_refs_and_structured_omissions_without_reparsing_
             Some(expected),
             "{query}"
         );
+        assert_eq!(page.rows.len() as u64, expected, "{query}");
+        assert!(!page.more, "{query}");
         if expected == 1 {
             assert_eq!(page.rows[0]["id"], "advice-with-refs", "{query}");
         }

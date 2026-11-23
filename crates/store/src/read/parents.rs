@@ -21,7 +21,7 @@ struct Prefix {
 }
 
 struct CopiedKey {
-    source: String,
+    input: String,
     chain: i64,
     version: String,
     sequence: u64,
@@ -216,7 +216,7 @@ fn parent_keys(conn: &Connection, pk: i64, id: &SessionId) -> Result<(Vec<Key>, 
                          order::session_record_rows("?1")))?
                     .query_map(params![parent_pk, frame.session.to_string(), parent.to_string()], |r| {
                         Ok(CopiedKey {
-                            source: r.get(3)?,
+                            input: r.get(3)?,
                             chain: r.get(4)?,
                             version: String::new(),
                             sequence: r.get(5)?,
@@ -248,7 +248,7 @@ fn parent_keys(conn: &Connection, pk: i64, id: &SessionId) -> Result<(Vec<Key>, 
                             let value: String = r.get(index)?;
                             value.parse().map_err(|error| rusqlite::Error::FromSqlConversionFailure(index, rusqlite::types::Type::Text, Box::new(error)))
                         };
-                        Ok(CopiedKey { source:r.get(3)?,chain:r.get(4)?,version:r.get(5)?,sequence:coordinate(6)?,position:coordinate(7)?,key:Key {session_pk:parent_pk,session:parent.clone(),message_pk:r.get(0)?,id:r.get(1)?,order:r.get(2)?} })
+                        Ok(CopiedKey { input:r.get(3)?,chain:r.get(4)?,version:r.get(5)?,sequence:coordinate(6)?,position:coordinate(7)?,key:Key {session_pk:parent_pk,session:parent.clone(),message_pk:r.get(0)?,id:r.get(1)?,order:r.get(2)?} })
                     })?.collect::<rusqlite::Result<Vec<_>>>()?;
                 frame.copied.extend(explicit);
             } else if link.branch_point.is_none() {
@@ -384,12 +384,12 @@ fn copied_order(
     child: &SessionId,
     copies: Vec<CopiedKey>,
 ) -> Result<(Vec<Key>, Option<ParentIssue>)> {
-    let mut sources =
+    let mut readings =
         std::collections::BTreeMap::<(String, i64, String), Vec<(u64, u64, i64)>>::new();
     let mut keys = std::collections::BTreeMap::new();
     for copy in copies {
-        sources
-            .entry((copy.source, copy.chain, copy.version))
+        readings
+            .entry((copy.input, copy.chain, copy.version))
             .or_default()
             .push((copy.sequence, copy.position, copy.key.message_pk));
         keys.entry(copy.key.message_pk).or_insert(copy.key);
@@ -400,7 +400,7 @@ fn copied_order(
     let message = |key: i64| -> Result<MessageId> {
         MessageId::parse(&keys[&key].id).map_err(|error| StoreError::stored(0, error.to_string()))
     };
-    for positions in sources.values_mut() {
+    for positions in readings.values_mut() {
         positions.sort_unstable_by_key(|(sequence, position, _)| (*sequence, *position));
         positions.dedup();
         for pair in positions.windows(2) {

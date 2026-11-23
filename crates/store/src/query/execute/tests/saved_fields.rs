@@ -1582,3 +1582,81 @@ fn running_keeps_a_silent_session_whose_root_is_alive() {
     let ids: Vec<&str> = running.iter().map(|r| r.session.as_str()).collect();
     assert_eq!(ids, ["test:silent"]);
 }
+
+#[test]
+fn since_seen_returns_a_session_whose_live_or_derived_counter_passed_the_mark() {
+    use crate::fixture::{
+        authored::operator_request,
+        writer::{WriterArchive, message},
+    };
+    use polylogue_model::{Role, user::SeenMark};
+    let mut archive = WriterArchive::new();
+    archive.write("live", vec![message("one", "live", Role::User, 1, vec![])]);
+    archive.write(
+        "derived",
+        vec![message("one", "derived", Role::User, 1, vec![])],
+    );
+    let ids = |archive: &WriterArchive| {
+        let mut opts = all_columns_options();
+        opts.origins = vec!["claude-code".into()];
+        opts.seen_marks_of = Some("operator".into());
+        let program =
+            crate::query::compile("sessions where since:seen | fields id", &opts).unwrap();
+        let mut ids: Vec<String> = crate::ReadPool::open(&archive.archive)
+            .unwrap()
+            .reader()
+            .unwrap()
+            .query_rows(&program)
+            .unwrap()
+            .iter_mut()
+            .map(|row| {
+                present(&program, row).unwrap();
+                row["id"].as_str().unwrap().to_owned()
+            })
+            .collect();
+        ids.sort();
+        ids
+    };
+    let at = crate::ReadPool::open(&archive.archive)
+        .unwrap()
+        .reader()
+        .unwrap()
+        .change_position()
+        .unwrap();
+    archive
+        .writer
+        .user(operator_request(
+            "mark-both".into(),
+            UserWrite::MarkSeen {
+                marks: ["live", "derived"]
+                    .map(|name| SeenMark {
+                        target: format!("session:claude-code:{name}"),
+                        item: None,
+                        at: at.clone(),
+                    })
+                    .to_vec(),
+            },
+        ))
+        .unwrap();
+    assert!(ids(&archive).is_empty());
+    // A live-state change or a derive pass after the mark makes the session
+    // changed again (docs/live-sessions.md: live-state changes are session
+    // changes on the change feed).
+    let index = crate::archive::open_write(&archive.archive.index_db(), 16).unwrap();
+    for (column, name) in [("live_changed", "live"), ("derived_changed", "derived")] {
+        index
+            .execute(
+                &format!("UPDATE session SET {column} = ?1 WHERE id = ?2"),
+                rusqlite::params![at.index + 5, format!("claude-code:{name}")],
+            )
+            .unwrap();
+    }
+    drop(index);
+    assert_eq!(
+        ids(&archive),
+        vec![
+            "claude-code:derived".to_owned(),
+            "claude-code:live".to_owned()
+        ]
+    );
+}

@@ -65,7 +65,6 @@ impl BlockFact {
 struct PairFact {
     call: BlockFact,
     result: Option<BlockFact>,
-    matched: bool,
 }
 impl Reader<'_> {
     /// One selected original call or result position. An unavailable
@@ -101,7 +100,7 @@ impl Reader<'_> {
         let Some(fact) = self.tool_pair_fact(message, original_block_ordinal)? else {
             return Ok(None);
         };
-        let Some(result) = fact.result.filter(|_| fact.matched) else {
+        let Some(result) = fact.result else {
             return Ok(None);
         };
         self.check()?;
@@ -147,9 +146,7 @@ impl Reader<'_> {
             .map(|fact| {
                 (
                     fact.call.source(),
-                    fact.result
-                        .filter(|_| fact.matched)
-                        .map(|result| result.source()),
+                    fact.result.map(|result| result.source()),
                 )
             });
         self.check()?;
@@ -179,14 +176,11 @@ impl Reader<'_> {
                 "indexed call identity differs from its stored block",
             ));
         }
-        let result = if fact.matched {
-            fact.result
-                .as_ref()
-                .map(|result| self.tool_pair_block(result, full))
-                .transpose()?
-        } else {
-            None
-        };
+        let result = fact
+            .result
+            .as_ref()
+            .map(|result| self.tool_pair_block(result, full))
+            .transpose()?;
         if let Some(result) = &result {
             let Block::ToolResult { call_id, .. } = &result.block else {
                 return Err(crate::StoreError::stored(
@@ -291,9 +285,6 @@ impl Reader<'_> {
         let matched = row.get::<_, Option<bool>>(18)?.unwrap_or(false)
             && result
                 .as_ref()
-                .is_some_and(|result| result.session == call.session)
-            && result
-                .as_ref()
                 .map(BlockFact::visible)
                 .transpose()?
                 .unwrap_or(false);
@@ -308,8 +299,7 @@ impl Reader<'_> {
         }
         Ok(Some(PairFact {
             call,
-            result,
-            matched,
+            result: result.filter(|_| matched),
         }))
     }
     fn tool_pair_block(&self, fact: &BlockFact, full: bool) -> Result<SourceBlock> {

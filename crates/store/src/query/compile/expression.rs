@@ -261,23 +261,20 @@ impl Compiler<'_> {
                             position: at,
                         }),
                     },
-                    "hour" | "day" | "week" | "weekday" | "month" | "month_day" | "year"
-                        if kind == ColKind::Time =>
-                    {
-                        Ok((
-                            format!("pl_{name}({sql})"),
-                            if matches!(name.as_str(), "hour" | "year") {
+                    "hour" | "day" | "week" | "weekday" | "month" | "month_day" | "year" => {
+                        if kind == ColKind::Time {
+                            let result = if matches!(name.as_str(), "hour" | "year") {
                                 ColKind::Number
                             } else {
                                 ColKind::Text
-                            },
-                        ))
-                    }
-                    "hour" | "day" | "week" | "weekday" | "month" | "month_day" | "year" => {
-                        Err(QueryError::Invalid {
-                            message: format!("{name} takes a time"),
-                            position: at,
-                        })
+                            };
+                            Ok((format!("pl_{name}({sql})"), result))
+                        } else {
+                            Err(QueryError::Invalid {
+                                message: format!("{name} takes a time"),
+                                position: at,
+                            })
+                        }
                     }
                     _ => Err(not_built(&format!("function {name}"))),
                 }
@@ -510,14 +507,7 @@ fn expression_arity(name: &str, count: usize, at: usize) -> QueryError {
 }
 fn arithmetic_column(operator: Arithmetic, left: ColKind, right: ColKind) -> Option<ColKind> {
     use query_language::catalog::FieldKind as K;
-    let kind = |k| match k {
-        ColKind::Number => K::Number,
-        ColKind::Money => K::Money,
-        ColKind::Time => K::Time,
-        ColKind::Duration | ColKind::DurationSeconds => K::Duration,
-        ColKind::Json => K::Json,
-        _ => K::Text,
-    };
+    let kind = polylogue_query::compile::column_kind;
     query_language::scope::arithmetic_kind(operator, &kind(left), &kind(right)).map(|kind| {
         match kind {
             K::Money => ColKind::Money,

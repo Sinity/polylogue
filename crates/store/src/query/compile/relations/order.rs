@@ -362,8 +362,8 @@ impl Compiler<'_> {
                 reason: "source time accuracy was not kept for this relation".into(),
             });
         }
-        let (left, left_storage) = self.order_time(outer, "r");
-        let (right, right_storage) = self.order_time(inner, "i");
+        let (left, left_storage) = self.order_time(outer, "r")?;
+        let (right, right_storage) = self.order_time(inner, "i")?;
         let within = match within {
             Some(Distance::Time { duration }) => {
                 let text = duration
@@ -417,26 +417,36 @@ impl Compiler<'_> {
         })
     }
 
-    fn order_time(&mut self, relation: &Relation, alias: &str) -> (String, &'static str) {
+    fn order_time(
+        &mut self,
+        relation: &Relation,
+        alias: &str,
+    ) -> Result<(String, &'static str), QueryError> {
         let Some(source) = relation
             .sources
             .iter()
             .find(|source| source.prefix.is_empty())
         else {
-            return ("NULL".into(), "tuple");
+            return Err(QueryError::Unavailable {
+                reason: "source times were not kept for this relation".into(),
+            });
         };
         let context = RowContext {
             unit: source.unit,
             a: self.fresh(),
         };
-        let Some(field) = polylogue_query::units::spec(source.unit).main_time else {
-            return ("NULL".into(), "tuple");
+        let unordered = || QueryError::Unavailable {
+            reason: format!(
+                "{} rows have no stored time to order by",
+                source.unit.name()
+            ),
         };
-        let Some(time) = fields::stored_time(source.unit, field, &context.a) else {
-            return ("NULL".into(), "tuple");
-        };
+        let field = polylogue_query::units::spec(source.unit)
+            .main_time
+            .ok_or_else(unordered)?;
+        let time = fields::stored_time(source.unit, field, &context.a).ok_or_else(unordered)?;
         let key = context.a.expand(units::spec(source.unit).key);
-        (
+        Ok((
             format!(
                 "(SELECT {} FROM {} WHERE {key} = {alias}.{})",
                 time.bytes,
@@ -444,7 +454,7 @@ impl Compiler<'_> {
                 column_sql(&source.key)
             ),
             time.storage.as_str(),
-        )
+        ))
     }
 
     fn order_position(

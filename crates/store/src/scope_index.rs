@@ -124,7 +124,7 @@ struct ScopeRow {
     pk: i64,
     id: String,
     /// A main session with its transcript; other rows leave the index.
-    held: Option<ScopeSession>,
+    session: Option<ScopeSession>,
 }
 
 /// The scope index itself. See the module documentation.
@@ -151,8 +151,8 @@ fn scope_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ScopeRow> {
     let session_id: SessionId = r.id(1)?;
     let kind: String = r.get(2)?;
     let stub: bool = r.get(3)?;
-    let held = match kind.as_str() {
-        "main" if !stub => {
+    let session = match kind.as_str() {
+        name if name == SessionKind::Main.as_str() && !stub => {
             let cwd: Option<String> = r.get(7)?;
             let mut directories: Vec<String> = r
                 .get::<_, Option<String>>(8)?
@@ -202,7 +202,7 @@ fn scope_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ScopeRow> {
         }
         _ => None,
     };
-    Ok(ScopeRow { pk, id, held })
+    Ok(ScopeRow { pk, id, session })
 }
 
 impl Reader<'_> {
@@ -288,8 +288,9 @@ impl ScopeIndex {
     /// Whether it already follows the change feed past what `changes` read,
     /// in the same index generation.
     pub fn is_newer_than(&self, changes: &ScopeChanges) -> bool {
-        self.position.as_ref().is_some_and(|held| {
-            held.generation == changes.position.generation && held.index > changes.position.index
+        self.position.as_ref().is_some_and(|stored| {
+            stored.generation == changes.position.generation
+                && stored.index > changes.position.index
         })
     }
 
@@ -310,15 +311,15 @@ impl ScopeIndex {
             if let Some(pk) = self.by_id.get(&row.id).copied() {
                 self.remove(pk);
             }
-            if let Some(held) = row.held {
-                for directory in &held.directories {
+            if let Some(session) = row.session {
+                for directory in &session.directories {
                     self.by_directory
                         .entry(directory.clone())
                         .or_default()
-                        .insert(held.pk);
+                        .insert(session.pk);
                 }
-                self.by_id.insert(row.id, held.pk);
-                self.sessions.insert(held.pk, held);
+                self.by_id.insert(row.id, session.pk);
+                self.sessions.insert(session.pk, session);
             }
         }
         self.position = Some(changes.position);
