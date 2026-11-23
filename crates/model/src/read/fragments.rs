@@ -1,7 +1,7 @@
 //! How the source classifies a fragment is kept apart from what a portable
 //! fragment states.
 use super::{Expansion, LayoutFacts, ReadError, ReadOptions, ValueState, View};
-use crate::{BlockKind, PromptKind, Role, bundle::TextFragmentRecord};
+use crate::{BlockKind, PromptKind, Role, bundle::TextFragmentRecord, is_harness_message};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -125,14 +125,10 @@ pub(crate) fn project_fragment(
             return Err(unsupported());
         }
     }
-    let harness = origin.message.as_ref().is_some_and(|message| {
-        message.role == Role::System || message.prompt_kind.is_some_and(PromptKind::is_harness)
-    });
-    let missing = |facts: &str| ReadError::MissingPreparedData {
-        view: options.view,
-        facts: facts.into(),
-        reference: row.reference.clone(),
-    };
+    let harness = origin
+        .message
+        .as_ref()
+        .is_some_and(|message| is_harness_message(message.role, message.prompt_kind));
     if harness && options.harness() != Expansion::Full {
         return Err(ReadError::RequiredExpansion {
             view: options.view,
@@ -160,14 +156,10 @@ pub(crate) fn project_fragment(
             });
         }
     }
-    if options.view == View::Context {
-        let context = facts
-            .context
-            .as_ref()
-            .ok_or_else(|| missing("context membership"))?;
-        if !context.selected {
-            return Err(unsupported());
-        }
+    if options.view == View::Context
+        && !super::view_filter::context_selected(facts, options.view, &row.reference)?
+    {
+        return Err(unsupported());
     }
     Ok(())
 }

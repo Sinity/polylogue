@@ -1,7 +1,10 @@
+//! Offsets into the original source text of a span: UTF-8 bound resolution
+//! across chunks, and body positions that count the separators between bodies.
 use super::SpanUnit;
 use crate::Block;
 use std::ops::Range;
 
+/// Joins the bodies of one text; original offsets count it.
 pub const TEXT_BODY_SEPARATOR: &str = "\n\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

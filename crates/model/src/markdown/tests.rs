@@ -42,6 +42,15 @@ fn external_urls_keep_their_spelling_and_other_markdown_stays_plain() {
 }
 
 #[test]
+fn an_external_url_reference_is_the_written_text_unchanged() {
+    let found = links("[web](HTTPS://Example.test/a?utm_source=x)").unwrap();
+    assert_eq!(
+        found[0].reference,
+        Reference::Url("HTTPS://Example.test/a?utm_source=x".into())
+    );
+}
+
+#[test]
 fn code_never_supplies_reference_links() {
     let text = "`[inline](block:codex:m#bad)`\n\n\
                 ```query\n[block](message:codex:ignored)\n```\n\n\

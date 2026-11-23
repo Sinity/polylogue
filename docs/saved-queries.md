@@ -105,7 +105,7 @@ A name is lowercase letters, digits and `-`, starting with a letter. Saving a na
 
 ## Shipped saved queries
 
-Shipped saved queries are data in the code (`crates/model/src/saved_queries.rs`), listed beside your own without an author, resolved by name, completed by the shell ([completion.md](completion.md#positions)), shown on the orientation screen and in `help` ([terminal.md](terminal.md#the-orientation-screen)), and overridden by a saved query of your own with the same name. Their plans are compiled ahead of the first use ([interfaces.md](latency.md#warm-state)).
+Shipped saved queries are data in the code (`crates/model/src/saved_queries.rs`), listed beside your own without an author, resolved by name, completed by the shell ([completion.md](completion.md#positions)), shown on the orientation screen and in `help` ([terminal.md](terminal.md#the-orientation-screen)), and overridden by a saved query of your own with the same name. Their plans are compiled ahead of the first use ([latency.md](latency.md#warm-state)).
 
 | Name | Text |
 |---|---|

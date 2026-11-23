@@ -299,7 +299,7 @@ impl Reference {
                 {
                     return Err(invalid("URL scheme is invalid"));
                 }
-                Self::Url(nonempty(rest)?)
+                Self::Url(rest.to_owned())
             }
             "sinex" => sinex_reference(text)?,
             kind if SINEX_LOCAL_KINDS.contains(&kind) => {
@@ -385,7 +385,7 @@ impl Reference {
         if !container.split_once(':').is_some_and(|(kind, _)| {
             AUTHORED_REFERENCE_SPELLINGS
                 .iter()
-                .any(|(stored, _)| kind == *stored)
+                .any(|(stored_kind, _)| kind == *stored_kind)
         }) {
             return std::borrow::Cow::Borrowed(stored);
         }

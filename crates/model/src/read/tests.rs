@@ -158,6 +158,8 @@ fn estimator_uses_utf8_and_long_runs_consistently() {
     assert_eq!(estimate_tokens("a b c"), 4);
     assert_eq!(estimate_tokens("λ"), 2);
     assert_eq!(estimate_tokens(&"x".repeat(80)), 20);
+    // 17 characters count as three words, so the word term (6) beats the byte term (5).
+    assert_eq!(estimate_tokens(&format!("{} a", "x".repeat(17))), 6);
     assert_eq!(TOKEN_ESTIMATOR, "utf8-words-v1");
 }
 

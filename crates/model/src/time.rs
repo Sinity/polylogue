@@ -1,3 +1,6 @@
+//! Source times: a Timestamp as a source stated it, the TimeEvidence that says
+//! how well it is known (quality, precision, optional upper bound), and its
+//! rendering as RFC 3339 or as a local minute.
 use serde::{Deserialize, Serialize};
 use std::fmt;
 

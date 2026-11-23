@@ -48,7 +48,7 @@ pub struct HookContextEmission {
     pub invocation: String,
     pub session: crate::SessionId,
     pub hook_event: String,
-    pub deliveries: Vec<String>,
+    pub deliveries: Vec<crate::Reference>,
 }
 
 impl NativeHookField {

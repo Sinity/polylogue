@@ -45,20 +45,25 @@ pub fn usd_display(nusd: i64) -> String {
         return "$0".into();
     }
     if magnitude >= CENT {
-        let cents = (magnitude + CENT / 2) / CENT;
+        let cents = round_to_unit(magnitude, CENT);
         return format!("{sign}${}.{:02}", cents / 100, cents % 100);
     }
     // Below a cent: keep the three leading digits of the nano-USD figure.
     let digits = magnitude.ilog10() + 1;
     let drop = digits.saturating_sub(3);
     let unit = 10u64.pow(drop);
-    let kept = (magnitude + unit / 2) / unit * unit;
+    let kept = round_to_unit(magnitude, unit) * unit;
     format!("{sign}${}", usd_text(kept as i64))
+}
+
+/// `magnitude` in whole `unit`s, half up.
+fn round_to_unit(magnitude: u64, unit: u64) -> u64 {
+    (magnitude + unit / 2) / unit
 }
 
 /// A known amount, written to JSON as `{"nusd": 1234500000, "usd": 1.2345}`:
 /// the integer that every sum uses and the exact dollars beside it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Amount(pub i64);
 
 impl Amount {

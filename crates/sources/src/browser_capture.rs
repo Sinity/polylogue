@@ -600,12 +600,7 @@ fn attach_files(capture: &Json, origin: &str, first_message: usize, sink: &mut S
         };
         let mut matched = false;
         for block in &mut row.message.blocks {
-            let attachments: Vec<&mut Attachment> = match block {
-                Block::Image(x) | Block::File(x) => vec![x],
-                Block::ToolResult { attachments, .. } => attachments.iter_mut().collect(),
-                _ => continue,
-            };
-            for x in attachments {
+            for x in block.attachments_mut() {
                 let same = match (x.source_id.as_deref(), file_id) {
                     (Some(s), Some(f)) => s == f || f.ends_with(s) || s.ends_with(f),
                     _ => name.is_some() && x.name.as_deref() == name,

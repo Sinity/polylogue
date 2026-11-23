@@ -82,7 +82,7 @@ pub mod reports;
 pub use authorship::Author;
 pub use message::{
     ApiError, Attribution, Message, Production, PromptKind, Role, ServerToolUse, WrittenBy,
-    is_prompt,
+    is_harness_message, is_prompt,
 };
 pub use reports::{QuotaReport, UsageReport};
 pub use session::{Session, SessionKind, Title, TitleSource};

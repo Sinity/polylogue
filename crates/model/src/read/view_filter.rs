@@ -1,5 +1,23 @@
 use super::{BranchState, Expansion, LayoutFacts, ReadError, ReadOptions, View};
-use crate::{Block, PromptKind, Role, bundle::Record};
+use crate::{Block, bundle::Record, is_harness_message};
+
+/// Whether the context view selected this record. Missing prepared membership
+/// is an error, not an empty selection.
+pub(super) fn context_selected(
+    facts: &LayoutFacts,
+    view: View,
+    reference: &str,
+) -> Result<bool, ReadError> {
+    facts
+        .context
+        .as_ref()
+        .map(|context| context.selected)
+        .ok_or_else(|| ReadError::MissingPreparedData {
+            view,
+            facts: "context membership".into(),
+            reference: reference.into(),
+        })
+}
 
 /// Project a record already selected by the store. Source identity, original
 /// block positions, provider metadata and time accuracy are never reconstructed
@@ -19,16 +37,7 @@ pub fn project_record(
                 return Ok(None);
             }
             if options.view == View::Context {
-                let context =
-                    facts
-                        .context
-                        .as_ref()
-                        .ok_or_else(|| ReadError::MissingPreparedData {
-                            view: options.view,
-                            facts: "context membership".into(),
-                            reference: row.reference.clone(),
-                        })?;
-                if !context.selected {
+                if !context_selected(facts, options.view, &row.reference)? {
                     return Ok(None);
                 }
             } else {
@@ -39,9 +48,9 @@ pub fn project_record(
                     return Ok(None);
                 }
             }
-            let harness = message.role == Role::System
-                || message.prompt_kind.is_some_and(PromptKind::is_harness);
-            if options.harness() == Expansion::None && harness {
+            if options.harness() == Expansion::None
+                && is_harness_message(message.role, message.prompt_kind)
+            {
                 return Ok(None);
             }
             let old = std::mem::take(&mut row.message.blocks);
@@ -85,19 +94,10 @@ pub fn project_record(
             if options.view == View::Changes && facts.cards.is_empty() {
                 return Ok(None);
             }
-            if options.view == View::Context {
-                let context =
-                    facts
-                        .context
-                        .as_ref()
-                        .ok_or_else(|| ReadError::MissingPreparedData {
-                            view: options.view,
-                            facts: "context membership".into(),
-                            reference: record.reference().unwrap_or_default().into(),
-                        })?;
-                if !context.selected {
-                    return Ok(None);
-                }
+            if options.view == View::Context
+                && !context_selected(facts, options.view, record.reference().unwrap_or_default())?
+            {
+                return Ok(None);
             }
         }
         Record::Document(document) => {

@@ -329,12 +329,12 @@ fn base_name(program: &str) -> &str {
 }
 
 impl Stage {
-    /// The subcommand of a multi-command program, after its global
-    /// options.
-    pub fn subcommand(&self) -> Option<&str> {
+    /// The position of the subcommand among the arguments, after the global
+    /// options of a multi-command program.
+    fn subcommand_at(&self) -> Option<usize> {
         let (_, value_opts) = GLOBAL_VALUE_OPTS.iter().find(|(p, _)| *p == self.program)?;
-        let mut args = self.args.iter();
-        while let Some(a) = args.next() {
+        let mut args = self.args.iter().enumerate();
+        while let Some((at, a)) = args.next() {
             if self.program == "cargo" && a.starts_with('+') {
                 continue;
             }
@@ -344,19 +344,22 @@ impl Stage {
                 }
                 continue;
             }
-            return Some(a);
+            return Some(at);
         }
         None
+    }
+
+    /// The subcommand of a multi-command program, after its global
+    /// options.
+    pub fn subcommand(&self) -> Option<&str> {
+        self.subcommand_at().map(|at| self.args[at].as_str())
     }
 
     /// The arguments after the subcommand (or after the program, for a
     /// single-command program).
     pub fn operands(&self) -> &[String] {
-        match self.subcommand() {
-            Some(sub) => {
-                let at = self.args.iter().position(|a| a == sub).unwrap_or(0);
-                &self.args[at + 1..]
-            }
+        match self.subcommand_at() {
+            Some(at) => &self.args[at + 1..],
             None => &self.args,
         }
     }
@@ -373,7 +376,15 @@ impl Stage {
             "sed" => self
                 .args
                 .iter()
-                .find(|a| a.starts_with("-i") || a.starts_with("--in-place"))
+                .find(|a| {
+                    a.starts_with("--in-place")
+                        || a.strip_prefix('-').is_some_and(|flags| {
+                            flags.starts_with('i')
+                                || (!flags.is_empty()
+                                    && flags.chars().all(|c| c.is_ascii_alphabetic())
+                                    && flags.contains('i'))
+                        })
+                })
                 .map(|_| "-i"),
             "find" => self
                 .args

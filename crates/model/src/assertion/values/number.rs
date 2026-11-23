@@ -21,18 +21,9 @@ impl Integer {
         }
     }
     fn cmp(&self, other: &Self) -> Ordering {
-        match (self.negative, other.negative) {
-            (true, false) => Ordering::Less,
-            (false, true) => Ordering::Greater,
-            _ => {
-                let order = magnitude(&self.digits, &other.digits);
-                if self.negative {
-                    order.reverse()
-                } else {
-                    order
-                }
-            }
-        }
+        by_sign(self.negative, other.negative, || {
+            magnitude(&self.digits, &other.digits)
+        })
     }
     fn add(&self, delta: i128) -> Self {
         let other = Self::parse(&delta.to_string());
@@ -151,31 +142,36 @@ impl Decimal {
             }
             _ => {}
         }
-        match (self.negative, other.negative) {
-            (true, false) => Ordering::Less,
-            (false, true) => Ordering::Greater,
-            _ => {
-                let order = self.order.cmp(&other.order).then_with(|| {
-                    let length = self.digits.len().max(other.digits.len());
-                    self.digits
-                        .bytes()
-                        .chain(std::iter::repeat(b'0'))
-                        .take(length)
-                        .cmp(
-                            other
-                                .digits
-                                .bytes()
-                                .chain(std::iter::repeat(b'0'))
-                                .take(length),
-                        )
-                });
-                if self.negative {
-                    order.reverse()
-                } else {
-                    order
-                }
-            }
-        }
+        by_sign(self.negative, other.negative, || {
+            self.order.cmp(&other.order).then_with(|| {
+                let length = self.digits.len().max(other.digits.len());
+                self.digits
+                    .bytes()
+                    .chain(std::iter::repeat(b'0'))
+                    .take(length)
+                    .cmp(
+                        other
+                            .digits
+                            .bytes()
+                            .chain(std::iter::repeat(b'0'))
+                            .take(length),
+                    )
+            })
+        })
+    }
+}
+/// A negative number is below a non-negative one; two numbers of one sign
+/// order by magnitude, reversed when both are negative.
+fn by_sign(
+    left_negative: bool,
+    right_negative: bool,
+    magnitude: impl FnOnce() -> Ordering,
+) -> Ordering {
+    match (left_negative, right_negative) {
+        (true, false) => Ordering::Less,
+        (false, true) => Ordering::Greater,
+        (true, true) => magnitude().reverse(),
+        (false, false) => magnitude(),
     }
 }
 pub(super) fn compare(left: &Number, right: &Number) -> Ordering {
