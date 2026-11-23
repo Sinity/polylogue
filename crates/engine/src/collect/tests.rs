@@ -88,7 +88,7 @@ fn a_trailing_double_star_location_finds_every_file_beneath_it() {
         paths.sort();
         paths
     };
-    assert_eq!(scanned(&note), [note.clone()]);
+    assert_eq!(scanned(&note), std::slice::from_ref(&note));
     assert_eq!(
         scanned(&memory),
         [note.clone(), top, memory.join("untouched.md")]
