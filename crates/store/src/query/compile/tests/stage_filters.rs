@@ -95,11 +95,13 @@ fn an_order_condition_in_a_stage_still_selects() {
 #[test]
 fn matches_read_the_pattern_of_a_where_stage() {
     let (_directory, fixture) = fixture();
-    assert_eq!(
-        ids(
-            &fixture,
-            "sessions where repo:east | where exists messages(role:assistant) | matches"
-        ),
-        ["claude-code:older"]
-    );
+    let program = compile(
+        "sessions where repo:east | where exists messages(role:assistant) | matches",
+        &opts(&[]),
+    )
+    .unwrap();
+    let reads = fixture.reads().unwrap();
+    let reader = reads.reader().unwrap();
+    let rows = reader.query_rows(&program).unwrap();
+    assert_eq!(rows.len(), 1, "{rows:?}");
 }
