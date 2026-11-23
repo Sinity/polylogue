@@ -475,8 +475,8 @@ fn prose_and_tool_output_are_searchable_once_a_build_ends() {
 }
 
 /// After a first build, new text reaches the search index from the search
-/// thread, without a flush, within 2 s; `status`
-/// counts it as pending until then.
+/// thread, without a flush, shortly after it commits (the wait allows 10 s for
+/// a loaded host); `status` counts it as pending until then.
 #[test]
 fn the_search_thread_indexes_live_writes_without_a_flush() {
     let w = test_archive();

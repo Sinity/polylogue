@@ -139,6 +139,7 @@ fn block_rows_separate_text_and_data_and_restore_the_complete_value() {
         json!({"type": "tool_result", "call_id": "call:1", "output": "result", "data": {"kept": [1, null]}, "outcome": {"kind":"ok"}}),
         json!({"type": "tool_result", "call_id": "call:2", "output": null, "data": [true], "outcome": {"kind":"ok"}}),
         json!({"type": "tool_call", "call_id": "call:1", "tool": "shell", "input": {"command": "true"}}),
+        json!({"type": "tool_call", "call_id": "call:3", "tool": "write", "input": {"path": "a"}, "written_text": "new file body"}),
     ] {
         let block: Block = serde_json::from_value(value).unwrap();
         let text = block_text(&block).map(str::to_owned);
@@ -372,4 +373,11 @@ proptest::proptest! {
         };
         proptest::prop_assert_eq!(text(&a).cmp(&text(&b)), a.cmp(&b));
     }
+}
+
+#[test]
+fn text_hash_is_blake3_of_the_composed_form() {
+    let composed = *blake3::hash("caf\u{e9}".as_bytes()).as_bytes();
+    assert_eq!(normalized_text_hash("caf\u{e9}"), composed);
+    assert_eq!(normalized_text_hash("cafe\u{301}"), composed);
 }

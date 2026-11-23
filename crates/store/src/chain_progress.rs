@@ -56,16 +56,18 @@ fn chain_rows(chains: &str) -> String {
     )
 }
 
-/// Every chain of every input, at its stored length.
-const EVERY_CHAIN: &str =
-    "SELECT input, chain, max(length) AS length FROM source_revision GROUP BY input, chain";
+/// The chains of the inputs `filter` (an SQL `WHERE` clause, or empty for
+/// every input) selects, at their stored lengths.
+fn chain_lengths(filter: &str) -> String {
+    format!(
+        "SELECT input, chain, max(length) AS length FROM source_revision
+         {filter} GROUP BY input, chain"
+    )
+}
 
 /// Every chain of input `input` (an SQL expression).
 fn chains_of(input: &str) -> String {
-    format!(
-        "SELECT input, chain, max(length) AS length FROM source_revision
-         WHERE input = {input} GROUP BY input, chain"
-    )
+    chain_lengths(&format!("WHERE input = {input}"))
 }
 
 /// Chain `chain` of input `input` (SQL expressions) at the length of its
@@ -94,6 +96,8 @@ fn refresh_sql(chains: &str, scope: &str) -> [String; 2] {
     ]
 }
 
+/// `WHERE true` keeps SQLite from reading `ON CONFLICT` as part of the
+/// `SELECT` it follows (its upsert parsing rule); it is not a filter.
 fn update_counts(chains: &str) -> String {
     format!(
         "INSERT INTO chain_progress(input, chain, origin, reading_version, state)
@@ -139,7 +143,7 @@ pub(crate) fn open(index: &Connection, standalone: bool) -> Result<()> {
         tx.execute_batch(&format!(
             "DELETE FROM chain_progress;
              INSERT INTO chain_progress(input, chain, origin, reading_version, state) {};",
-            chain_rows(EVERY_CHAIN)
+            chain_rows(&chain_lengths(""))
         ))?;
     }
     crate::meta_set(&tx, PROGRESS, if standalone { "open" } else { CURRENT })?;

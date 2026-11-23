@@ -196,14 +196,13 @@ impl ExportItems {
         };
         let row = self
             .db
-            .query_row(
-                &format!(
-                    "SELECT {column},ordinal,start,end,compressed_start,compressed_end
+            .prepare_cached(&format!(
+                "SELECT {column},ordinal,start,end,compressed_start,compressed_end
             FROM item WHERE ({column},ordinal)>(?1,?2) ORDER BY {column},ordinal LIMIT 1"
-                ),
-                params![sort, ordinal],
-                |r| <(Vec<u8>, i64, i64, i64, i64, i64)>::try_from(r),
-            )
+            ))?
+            .query_row(params![sort, ordinal], |r| {
+                <(Vec<u8>, i64, i64, i64, i64, i64)>::try_from(r)
+            })
             .optional()?;
         let Some((sort, ordinal, start, end, compressed_start, compressed_end)) = row else {
             return Ok(None);

@@ -4,7 +4,8 @@ fn turns(keys: &[&str]) -> Vec<Turn> {
     keys.iter()
         .enumerate()
         .map(|(i, key)| Turn {
-            prompt: (i as i64, format!("m{i}")),
+            prompt_pk: i as i64,
+            prompt_id: format!("m{i}"),
             key: (*key).to_owned(),
             replies: Vec::new(),
         })

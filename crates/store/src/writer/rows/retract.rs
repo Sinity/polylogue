@@ -2,11 +2,13 @@
 use super::*;
 use crate::versions::VersionKind;
 
+/// The sessions a chain's retraction may leave without statements; pruning
+/// reads it even when no retraction ran on the connection.
+const REPARSE_SESSION_TABLE: &str = "CREATE TEMP TABLE IF NOT EXISTS reparse_session(input_pk INTEGER,chain INTEGER,pk INTEGER,PRIMARY KEY(input_pk,chain,pk)) WITHOUT ROWID";
+
 impl RowWriter<'_, '_> {
     pub(super) fn retract(&self) -> Result<()> {
-        self.tx.execute_batch(
-            "CREATE TEMP TABLE IF NOT EXISTS reparse_session(input_pk INTEGER,chain INTEGER,pk INTEGER,PRIMARY KEY(input_pk,chain,pk)) WITHOUT ROWID",
-        )?;
+        self.tx.execute_batch(REPARSE_SESSION_TABLE)?;
         self.tx.execute("INSERT OR IGNORE INTO temp.reparse_session SELECT input_pk,chain,session_pk FROM parsed WHERE input_pk=?1 AND chain=?2",params![self.input_pk,self.chain])?;
         // A retracted reading can change any of its sessions' rows.
         let sessions = self
@@ -60,6 +62,7 @@ impl RowWriter<'_, '_> {
             "unused",
             "message_injection_field",
             "export_reading",
+            "repo_lookup",
         ] {
             self.tx
                 .prepare_cached(&format!(
@@ -67,11 +70,6 @@ impl RowWriter<'_, '_> {
                 ))?
                 .execute(params![self.input_pk, self.chain])?;
         }
-        self.tx.execute(
-            "DELETE FROM repo_lookup WHERE input_pk=?1 AND chain=?2",
-            params![self.input_pk, self.chain],
-        )?;
-
         Ok(())
     }
 }
@@ -83,7 +81,7 @@ pub(crate) fn prune_sessions(
     chain: i64,
     counter: i64,
 ) -> Result<()> {
-    tx.execute_batch("CREATE TEMP TABLE IF NOT EXISTS reparse_session(input_pk INTEGER,chain INTEGER,pk INTEGER,PRIMARY KEY(input_pk,chain,pk)) WITHOUT ROWID")?;
+    tx.execute_batch(REPARSE_SESSION_TABLE)?;
     let sessions = tx
         .prepare(
             "SELECT s.pk,s.id FROM session s JOIN temp.reparse_session r ON r.pk=s.pk

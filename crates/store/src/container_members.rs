@@ -1,4 +1,4 @@
-//! Membership in stored container bytes: member names and positions.
+//! Checks a container membership before it is stored: the container is an original input, the member index fits, and the kind is named.
 use crate::ConnExt as _;
 use crate::{Batch, InContainer, Result, StoreError};
 use rusqlite::Connection;

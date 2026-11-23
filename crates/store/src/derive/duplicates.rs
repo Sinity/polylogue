@@ -44,9 +44,16 @@ enum Arrival {
 }
 
 struct Turn {
-    prompt: (i64, String),
+    prompt_pk: i64,
+    prompt_id: String,
     key: String,
-    replies: Vec<(i64, String, String)>,
+    replies: Vec<Reply>,
+}
+
+struct Reply {
+    pk: i64,
+    id: String,
+    role: String,
 }
 
 /// The session's messages whose repeat mark changes, each with the message
@@ -138,24 +145,28 @@ fn repeated(conn: &Connection, session_pk: i64) -> Result<HashMap<i64, String>> 
         if role == "user" {
             turns.push(Turn {
                 key: prompt_key(conn, pk)?,
-                prompt: (pk, id),
+                prompt_pk: pk,
+                prompt_id: id,
                 replies: Vec::new(),
             });
             open[slot] = Some(turns.len() - 1);
         } else if let Some(turn) = open[slot] {
-            turns[turn].replies.push((pk, id, role));
+            turns[turn].replies.push(Reply { pk, id, role });
         }
     }
     for (c, e) in paired(&captured, &exported) {
         let (c, e) = (&captured[c], &exported[e]);
         let same_shape = c.replies.len() == e.replies.len()
-            && c.replies.iter().zip(&e.replies).all(|(a, b)| a.2 == b.2);
+            && c.replies
+                .iter()
+                .zip(&e.replies)
+                .all(|(a, b)| a.role == b.role);
         if !same_shape {
             continue;
         }
-        wanted.insert(c.prompt.0, e.prompt.1.clone());
+        wanted.insert(c.prompt_pk, e.prompt_id.clone());
         for (a, b) in c.replies.iter().zip(&e.replies) {
-            wanted.insert(a.0, b.1.clone());
+            wanted.insert(a.pk, b.id.clone());
         }
     }
     Ok(wanted)

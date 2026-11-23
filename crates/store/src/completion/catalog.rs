@@ -341,8 +341,12 @@ impl CatalogWriter {
         })();
         // Reopening tests write capability and pins one snapshot without
         // changing the cache's rows, position or last-publication time.
-        writer.conn.execute_batch("ROLLBACK")?;
-        let Some((metadata, vocabulary)) = loaded? else {
+        // A load failure explains why the cache is unusable, so it is reported
+        // ahead of a rollback failure.
+        let rolled_back = writer.conn.execute_batch("ROLLBACK");
+        let loaded = loaded?;
+        rolled_back?;
+        let Some((metadata, vocabulary)) = loaded else {
             return Ok(None);
         };
         if !writer.is_current_file() {
@@ -713,8 +717,10 @@ impl CatalogReader {
     }
     pub fn sessions(&self, prefix: &str) -> Result<Vec<Session>> {
         let upper = prefix_end(prefix);
-        let sql = "SELECT id,native_id,prefix,title,origin,repo,last_activity FROM session WHERE (id>=?1 AND (?2 IS NULL OR id<?2)) OR (native_id>=?1 AND (?2 IS NULL OR native_id<?2)) ORDER BY last_activity IS NULL,last_activity DESC,id";
-        let mut statement = self.conn.prepare(sql)?;
+        let sql = format!(
+            "SELECT {SESSION_COLUMNS} FROM session WHERE (id>=?1 AND (?2 IS NULL OR id<?2)) OR (native_id>=?1 AND (?2 IS NULL OR native_id<?2)) ORDER BY last_activity IS NULL,last_activity DESC,id"
+        );
+        let mut statement = self.conn.prepare(&sql)?;
         let mut sessions = statement
             .query_map(params![prefix, upper], session)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -722,7 +728,13 @@ impl CatalogReader {
         let key = text_key(prefix);
         if sessions.is_empty() && !key.is_empty() {
             let pattern = fuzzy_pattern(&key);
-            sessions=self.conn.prepare("SELECT id,native_id,prefix,title,origin,repo,last_activity FROM session WHERE title_key LIKE ?1 ESCAPE '\\' ORDER BY last_activity IS NULL,last_activity DESC,id")?.query_map([pattern],session)?.collect::<rusqlite::Result<Vec<_>>>()?;
+            sessions = self
+                .conn
+                .prepare(&format!(
+                    "SELECT {SESSION_COLUMNS} FROM session WHERE title_key LIKE ?1 ESCAPE '\\' ORDER BY last_activity IS NULL,last_activity DESC,id"
+                ))?
+                .query_map([pattern], session)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
         }
         Ok(sessions)
     }
@@ -745,13 +757,18 @@ impl CatalogReader {
             .transpose()
     }
     pub fn session_details(&self, id: &str) -> Result<Option<Session>> {
-        let mut value=self.conn.query_row("SELECT id,native_id,prefix,title,origin,repo,last_activity FROM session WHERE id=?1",[id],session).optional()?;
-        if let Some(value) = value.as_mut() {
-            value.first_prompt = self
-                .conn
-                .scalar("SELECT first_prompt FROM session WHERE id=?1", [id])?;
-        }
-        Ok(value)
+        Ok(self
+            .conn
+            .query_row(
+                &format!("SELECT {SESSION_COLUMNS},first_prompt FROM session WHERE id=?1"),
+                [id],
+                |row| {
+                    let mut value = session(row)?;
+                    value.first_prompt = row.get(7)?;
+                    Ok(value)
+                },
+            )
+            .optional()?)
     }
     pub fn settings(&self, prefix: &str) -> Result<Vec<Setting>> {
         self.items("setting", prefix)
@@ -776,6 +793,8 @@ impl CatalogReader {
         rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
     }
 }
+/// The columns `session` reads, by position.
+const SESSION_COLUMNS: &str = "id,native_id,prefix,title,origin,repo,last_activity";
 fn session(row: &rusqlite::Row<'_>) -> rusqlite::Result<Session> {
     Ok(Session {
         id: row.get(0)?,
