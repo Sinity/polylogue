@@ -136,7 +136,7 @@ fn prepare_readings(
     for reading in readings.iter() {
         if reading.chain < 1 || !distinct.insert((reading.input.id.clone(), reading.chain)) {
             return Err(StoreError::Invalid(
-                "a position must name each valid input chain once".into(),
+                "a reading must name each valid input chain once".into(),
             ));
         }
         if reading.reading.first {
@@ -569,7 +569,7 @@ impl Inner {
         let mut local_steps = false;
         let mut version = None;
         let mut complete = false;
-        let mut diagnosed = false;
+        let mut refused_or_failed = false;
         reading.visit_source(|step| {
             if version
                 .as_ref()
@@ -580,7 +580,7 @@ impl Inner {
                 ));
             }
             version.get_or_insert_with(|| step.reading_version.clone());
-            diagnosed |= matches!(
+            refused_or_failed |= matches!(
                 step.progress,
                 polylogue_model::batch::StepProgress::Refused { .. }
                     | polylogue_model::batch::StepProgress::Failed { .. }
@@ -594,7 +594,7 @@ impl Inner {
                 "a chain replacement with non-export steps must finish its stored source".into(),
             ));
         }
-        if diagnosed {
+        if refused_or_failed {
             self.replace_index(input, chain, length, reading)
         } else {
             self.until_stopped(|inner| inner.replace_index(input, chain, length, reading))?

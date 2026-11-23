@@ -67,7 +67,10 @@ impl DeriveThread {
             Some(Waiting::Derive(reply)) => {
                 let _ = reply.send(Err(StoreError::WriterGone));
             }
-            Some(Waiting::Flush(reply, report)) => {
+            Some(Waiting::Flush(reply, mut report)) => {
+                report
+                    .errors
+                    .push(format!("derive: {}", StoreError::WriterGone));
                 let _ = reply.send(Ok(*report));
             }
             Some(Waiting::Nobody) | None => {}

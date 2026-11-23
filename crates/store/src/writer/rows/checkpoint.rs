@@ -1,6 +1,9 @@
 //! A parser checkpoint changes with committed parser state, never with a retry.
 use super::*;
+use crate::helpers::to_i64;
 use polylogue_model::batch::{ParseProgress, StepProgress};
+
+const RECORD_ACCOUNTING_RANGE: &str = "record accounting exceeds SQLite's integer range";
 
 #[derive(PartialEq)]
 struct State {
@@ -71,17 +74,15 @@ impl Update {
         ];
         let mut totals = [0; 4];
         for (index, value) in counts.into_iter().enumerate() {
-            let value = i64::try_from(value).map_err(|_| {
-                StoreError::Invalid("record accounting exceeds SQLite's integer range".into())
-            })?;
+            let value = to_i64(value, RECORD_ACCOUNTING_RANGE)?;
             let prior = if step.reset {
                 0
             } else {
                 previous.map_or(0, |prior| prior.state.counts[index])
             };
-            totals[index] = prior.checked_add(value).ok_or_else(|| {
-                StoreError::Invalid("record accounting exceeds SQLite's integer range".into())
-            })?;
+            totals[index] = prior
+                .checked_add(value)
+                .ok_or_else(|| StoreError::invalid(RECORD_ACCOUNTING_RANGE))?;
         }
         let progress = if step.source_prefix_missing {
             ParseProgress::Partial

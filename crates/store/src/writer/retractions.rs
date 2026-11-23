@@ -15,7 +15,7 @@ pub(crate) fn prepare_source_retractions(
         };
         if chain < 1 || !distinct.insert((&batch.input.id, chain)) {
             return Err(StoreError::Invalid(
-                "a position must name each valid input chain once".into(),
+                "a retraction must name each valid input chain once".into(),
             ));
         }
         let [step] = batch.parse.as_slice() else {

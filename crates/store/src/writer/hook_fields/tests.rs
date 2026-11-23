@@ -3,6 +3,12 @@ use crate::writer::ParseStep;
 use polylogue_model::{Block, HookFieldClaim, MessageRow, Output, RecordCounts, Role};
 
 fn step() -> ParseStep {
+    step_with_second_block(Block::Text {
+        text: "actual context".into(),
+    })
+}
+
+fn step_with_second_block(second: Block) -> ParseStep {
     let message = message(
         "hook",
         "session",
@@ -12,9 +18,7 @@ fn step() -> ParseStep {
             Block::Text {
                 text: "hook diagnostic".into(),
             },
-            Block::Text {
-                text: "actual context".into(),
-            },
+            second,
         ],
     );
     let mut output = Output {
@@ -81,6 +85,21 @@ fn stated_hook_fields_bind_record_and_text_block() {
         ][case];
         assert!(error.contains(cause), "case {case}: {error}");
     }
+}
+
+#[test]
+fn a_stated_hook_field_must_name_a_text_block() {
+    let step = step_with_second_block(Block::Thinking {
+        text: Some("reasoning".into()),
+        signature: None,
+        redacted: false,
+    });
+    let error = step
+        .prepared
+        .validate(&step.output)
+        .expect_err("a claim on a non-text block is refused")
+        .to_string();
+    assert!(error.contains("not text"), "{error}");
 }
 
 #[test]

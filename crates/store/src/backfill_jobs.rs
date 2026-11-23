@@ -50,7 +50,6 @@ pub(crate) fn read(conn: &Connection, table_prefix: &str, id: &str) -> Result<Op
     let Some((provider, since, created_at, execution)) = row else {
         return Ok(None);
     };
-    let count = |n: i64| u64::try_from(n).unwrap_or(0);
     let events = conn
         .prepare_cached(&format!(
             "SELECT at, kind, by, position, listed, captured, unchanged, failed, detail, request
@@ -64,10 +63,10 @@ pub(crate) fn read(conn: &Connection, table_prefix: &str, id: &str) -> Result<Op
                 by: r.get(2)?,
                 position: r.get(3)?,
                 counts: BackfillCounts {
-                    listed: count(r.get(4)?),
-                    captured: count(r.get(5)?),
-                    unchanged: count(r.get(6)?),
-                    failed: count(r.get(7)?),
+                    listed: r.get(4)?,
+                    captured: r.get(5)?,
+                    unchanged: r.get(6)?,
+                    failed: r.get(7)?,
                 },
                 detail: r.get(8)?,
             })
@@ -223,7 +222,6 @@ pub(crate) fn cancel(tx: &Connection, id: &str, at: i64, seq: i64, request: &str
 
 fn add_event(tx: &Connection, id: &str, e: &BackfillEvent, seq: i64) -> Result<()> {
     let source = crate::source::Source::of(tx)?;
-    let count = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
     tx.execute(
         &source.sql("INSERT INTO @source.backfill_job_event(job, n, at, kind, by, position, listed, captured,
              unchanged, failed, detail, request, commit_seq)
@@ -235,10 +233,10 @@ fn add_event(tx: &Connection, id: &str, e: &BackfillEvent, seq: i64) -> Result<(
             e.kind,
             e.by,
             e.position,
-            count(e.counts.listed),
-            count(e.counts.captured),
-            count(e.counts.unchanged),
-            count(e.counts.failed),
+            e.counts.listed,
+            e.counts.captured,
+            e.counts.unchanged,
+            e.counts.failed,
             e.detail,
             e.request,
             seq
