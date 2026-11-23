@@ -800,3 +800,16 @@ fn assertion_aggregates_keep_the_selected_rowid_scope() {
         [json!({"kind":"note", "count":2})]
     );
 }
+
+#[test]
+fn order_relation_over_a_unit_without_stored_time_is_unavailable() {
+    let Err(error) = compile("sessions where before(annotations) within 20s", &opts(&[])) else {
+        panic!("annotations have no stored time to order by");
+    };
+    match error {
+        polylogue_query::QueryError::Unavailable { reason } => {
+            assert!(reason.contains("no stored time to order by"), "{reason}");
+        }
+        other => panic!("expected Unavailable, got {other:?}"),
+    }
+}
