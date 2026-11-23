@@ -27,10 +27,7 @@ pub(crate) fn scan_objects(
     mut item: impl FnMut(u64, &str, Option<&str>, Range<u64>, &RawValue) -> Result<(), String>,
 ) -> Result<(Vec<ObjectFields>, ScanStats), ScanError> {
     let scan_state = Rc::new(RefCell::new(ScanState::default()));
-    let input = PositionReader {
-        reader: BufReader::new(reader),
-        scan_state: Rc::clone(&scan_state),
-    };
+    let input = PositionReader::new(reader, &scan_state);
     let mut de = serde_json::Deserializer::from_reader(input);
     let objects = RefCell::new(Vec::new());
     let object = Object {

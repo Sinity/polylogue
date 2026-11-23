@@ -39,3 +39,16 @@ fn a_finished_input_ends_its_last_record_at_its_last_byte() {
     assert_eq!(records.len(), 1);
     assert_eq!(consumed, 10, "trailing blanks are covered, not a record");
 }
+
+#[test]
+fn a_byte_order_mark_is_not_part_of_the_first_record_but_counts_in_offsets() {
+    let (records, consumed) = lines(b"\xEF\xBB\xBF{\"a\":1}\n{\"b\":2}\n", 0, false);
+    let got: Vec<_> = records.iter().map(|r| (r.offset, r.bytes)).collect();
+    assert_eq!(got, [(3, &br#"{"a":1}"#[..]), (11, &br#"{"b":2}"#[..])]);
+    assert_eq!(consumed, 19);
+    let (later, _) = lines(b"\xEF\xBB\xBFx\n", 50, false);
+    assert_eq!(
+        later[0].bytes, b"\xEF\xBB\xBFx",
+        "only the input's start has a mark"
+    );
+}

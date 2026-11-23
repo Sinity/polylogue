@@ -1,6 +1,7 @@
 //! Declared structures, inspected through the complete JSON stream. Field
 //! order and a long first value do not affect recognition.
 use super::*;
+use polylogue_sources::document::{read_head, rewind_past_byte_order_mark};
 use serde::Deserialize;
 use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
 use std::collections::BTreeMap;
@@ -128,9 +129,8 @@ pub(super) fn declared(
     named_origin: Option<&str>,
 ) -> std::io::Result<Option<&'static OriginSpec>> {
     file.rewind()?;
-    let mut head = [0; 64];
-    let n = file.read(&mut head)?;
-    file.rewind()?;
+    let head = read_head(&mut *file)?;
+    rewind_past_byte_order_mark(file)?;
     if named_origin == Some("polylogue-export") || retired_export(&mut *file)? {
         file.rewind()?;
         return Err(std::io::Error::new(
@@ -145,10 +145,10 @@ pub(super) fn declared(
             polylogue_sources::polylogue_bundle::ORIGIN,
         ));
     }
-    file.rewind()?;
+    rewind_past_byte_order_mark(file)?;
     if let Some(name) = named_origin {
         return Ok(polylogue_sources::origin::by_name(name).filter(|o| {
-            importable(o) && ((o.recognize)(path, &head[..n]) || o.arrival == Arrival::Import)
+            importable(o) && ((o.recognize)(path, &head) || o.arrival == Arrival::Import)
         }));
     }
     if path.file_name().is_some_and(|name| name == "codex.json") {
@@ -164,14 +164,14 @@ pub(super) fn declared(
                 Ok(())
             },
         );
-        file.rewind()?;
+        rewind_past_byte_order_mark(file)?;
         if scanned.is_ok() && recognized && count > 0 {
             return Ok(polylogue_sources::origin::by_name("codex-cloud"));
         }
     }
-    file.rewind()?;
+    rewind_past_byte_order_mark(file)?;
     let shape = serde_json::from_reader::<_, Shape>(std::io::BufReader::new(&mut *file)).ok();
-    file.rewind()?;
+    rewind_past_byte_order_mark(file)?;
     let has = |keys: &[&str]| {
         shape
             .as_ref()
@@ -192,7 +192,7 @@ pub(super) fn declared(
             || (claude_project_path(path)
                 && (has(&["docs"]) || has(&["prompt_template"]))
                 && polylogue_sources::origin::by_name("claude-ai")
-                    .is_some_and(|origin| (origin.recognize)(path, &head[..n]))))
+                    .is_some_and(|origin| (origin.recognize)(path, &head))))
     {
         Some("claude-ai")
     } else if kind("chunkedPrompt", Kind::Object) {
@@ -228,7 +228,7 @@ pub(super) fn declared(
         // sidecar recognizer's path alone cannot declare neighboring objects.
         if let Some(origin) = polylogue_sources::origin::by_name(name)
             && (name != "claude-ai" || !claude_project_path(path))
-            && (origin.recognize)(path, &head[..n])
+            && (origin.recognize)(path, &head)
         {
             return Ok(Some(origin));
         }
@@ -237,7 +237,7 @@ pub(super) fn declared(
     // read only when named with --format.
     for name in ["hermes", "claude-design"] {
         if let Some(origin) = polylogue_sources::origin::by_name(name)
-            && (origin.recognize)(path, &head[..n])
+            && (origin.recognize)(path, &head)
         {
             return Ok(Some(origin));
         }
@@ -247,7 +247,7 @@ pub(super) fn declared(
         .iter()
         .filter(|o| o.arrival != Arrival::Import && importable(o))
         .find(|o| {
-            o.locations.iter().any(|p| collect::ends_in(path, p)) && (o.recognize)(path, &head[..n])
+            o.locations.iter().any(|p| collect::ends_in(path, p)) && (o.recognize)(path, &head)
         }))
 }
 

@@ -380,3 +380,48 @@ fn a_repeated_key_is_reported_by_its_path() {
         None
     );
 }
+
+#[test]
+fn a_byte_order_mark_is_skipped_and_counted_in_spans() {
+    let input = b"\xEF\xBB\xBF [ {\"a\":1} , 2 ]";
+    let expected = [(6u64, 13u64), (16, 17)];
+    for fragment in 1..=5 {
+        let mut spans = Vec::new();
+        scan(
+            Fragmented {
+                bytes: input,
+                fragment,
+            },
+            |range, _| {
+                spans.push((range.start, range.end));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(spans, expected, "fragment {fragment}");
+    }
+    let mut spans = Vec::new();
+    let reader = &mut BufReader::new(io::Cursor::new(input.to_vec()));
+    scan_array_or_object(reader, |range, _| {
+        spans.push((range.start, range.end));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(spans, expected);
+    let object = b"\xEF\xBB\xBF\n{\"a\":1}";
+    let mut spans = Vec::new();
+    let reader = &mut BufReader::new(io::Cursor::new(object.to_vec()));
+    scan_array_or_object(reader, |range, raw| {
+        assert_eq!(raw.get(), r#"{"a":1}"#);
+        spans.push((range.start, range.end));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(spans, [(4, 11)]);
+}
+
+#[test]
+fn a_first_byte_that_only_starts_like_a_mark_is_malformed_input() {
+    let result = scan(io::Cursor::new(b"\xEF\xBBx[1]".to_vec()), |_, _| Ok(()));
+    assert!(matches!(result, Err(ScanError::Malformed(_))));
+}

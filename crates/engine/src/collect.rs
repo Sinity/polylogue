@@ -8,7 +8,6 @@
 use crate::Config;
 use polylogue_sources::{Arrival, ORIGINS, OriginSpec};
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 pub struct Found {
@@ -534,11 +533,10 @@ fn match_path(path: &Path, pattern: &str, explicit_hidden: bool) -> bool {
 
 /// Whether `found.origin` claims the file, from its path and first bytes.
 pub fn recognize(found: &Found) -> bool {
-    let mut head = [0u8; 64];
-    let n = fs::File::open(&found.path)
-        .and_then(|mut f| f.read(&mut head))
-        .unwrap_or(0);
-    (found.origin.recognize)(&found.path, &head[..n])
+    let head = fs::File::open(&found.path)
+        .and_then(|mut f| polylogue_sources::document::read_head(&mut f))
+        .unwrap_or_default();
+    (found.origin.recognize)(&found.path, &head)
 }
 
 /// An existing input directory is watched recursively. Until it exists,
