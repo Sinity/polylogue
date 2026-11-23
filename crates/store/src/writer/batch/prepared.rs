@@ -254,6 +254,26 @@ impl ParseStep {
     }
 }
 impl ParseStep {
+    /// An event about its input, not a session, is that input's record: it
+    /// has the record's byte range and follows no message.
+    pub(crate) fn check_events(&self, input: &str) -> Result<()> {
+        for event in &self.output.events {
+            if event.session.is_none() && input.is_empty() {
+                return Err(StoreError::Invalid(
+                    "an input event needs its input identity".into(),
+                ));
+            }
+            if event.session.is_none()
+                && (event.after.is_some() || !event.range.is_some_and(|(start, end)| start < end))
+            {
+                return Err(StoreError::Invalid(
+                    "an input event needs its record range and cannot follow a message".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Event identities are derived once from the complete reading. Subsets of
     /// confirmed events and portable imports keep the IDs they were given.
     pub(crate) fn event_identities(&self, input: &str, chain: i64) -> Result<Vec<String>> {
@@ -305,7 +325,7 @@ impl ParseStep {
                 if let Some(identity) = self.output.imported_events.get(&index) {
                     return Ok(identity.id.clone());
                 }
-                super::super::resolve::event_id(input, chain, event, &packed.0, occurrence)
+                super::super::readings::event_id(input, chain, event, &packed.0, occurrence)
             })
             .collect()
     }

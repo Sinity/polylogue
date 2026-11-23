@@ -176,29 +176,6 @@ impl Unit {
     }
 }
 
-/// Whether an event's stored item already describes its current metadata.
-/// Older item fingerprints are repaired when the session is next rewritten.
-pub(crate) fn event_is_current(
-    conn: &Connection,
-    pk: i64,
-    session: i64,
-    id: &str,
-    kind: &str,
-    at: Option<i64>,
-    data: &[u8],
-) -> Result<bool> {
-    let expected = event_identity(
-        pk,
-        id,
-        &event_item(id, kind, at, data.len() as u64, Some(data))?,
-    )?;
-    let stored: Option<Vec<u8>> = conn
-        .prepare_cached("SELECT unit FROM session_item WHERE event_pk=?1 AND session_pk=?2")?
-        .query_row(params![pk, session], |row| row.get(0))
-        .optional()?;
-    Ok(stored.as_ref() == Some(&expected))
-}
-
 /// An indexed message entry the rebuild starts from: entries before it stay.
 #[derive(Debug, Clone, Copy)]
 struct StartPoint {
@@ -243,12 +220,13 @@ impl EventRow {
 }
 
 const MESSAGE_COLUMNS: &str = "m.pk, m.id,
-    coalesce((SELECT version_hash FROM message_version WHERE pk=s.version_pk), (SELECT CAST(count(*) || ':' || coalesce(max(b.pk), 0) AS BLOB)
+    coalesce(m.version_hash, (SELECT CAST(count(*) || ':' || coalesce(max(b.pk), 0) AS BLOB)
                               FROM block b WHERE b.message_pk = m.pk)),
     m.on_active_path, m.at,
     EXISTS(SELECT 1 FROM message c WHERE c.session_pk = m.session_pk AND c.parent_id = m.id
            AND c.duplicate_of IS NULL LIMIT 1 OFFSET 1)";
-const EVENT_COLUMNS: &str = "e.pk, e.id, e.kind, e.at, length(e.data), e.after_message_pk, e.seq,
+const EVENT_COLUMNS: &str = "e.pk, e.id, e.kind, e.at, length(e.data),
+    (SELECT m.pk FROM message m WHERE m.id = e.after_message_id), e.seq,
     CASE WHEN e.kind IN ('compaction','microcompaction') THEN e.data END";
 
 fn message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
@@ -292,7 +270,7 @@ fn units_from(
         None => conn
             .prepare_cached(&format!(
                 "SELECT {MESSAGE_COLUMNS}
-                 FROM message m LEFT JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
+                 FROM message m
                  WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL
                  ORDER BY m.session_order, m.id"
             ))?
@@ -301,7 +279,7 @@ fn units_from(
         Some(start_point) => conn
             .prepare_cached(&format!(
                 "SELECT {MESSAGE_COLUMNS}
-                 FROM message a, message m LEFT JOIN message_source s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
+                 FROM message a, message m
                  WHERE a.pk = ?2 AND m.session_pk = ?1 AND m.duplicate_of IS NULL
                    AND (m.session_order, m.id)
                        >= (a.session_order, a.id)
@@ -421,7 +399,7 @@ fn events_from(
     let mut found: HashMap<i64, EventRow> = HashMap::new();
     let mut following = conn.prepare_cached(&format!(
         "SELECT {EVENT_COLUMNS} FROM event e
-         WHERE e.after_message_id = ?1 AND e.after_message_pk = ?2 AND e.session_pk = ?3"
+         WHERE e.after_message_id = ?1 AND e.session_pk = ?3"
     ))?;
     for row in rows {
         for event in following.query_map(params![row.id, row.pk, session_pk], event_row)? {
@@ -431,12 +409,14 @@ fn events_from(
     }
     // Timed ones from the start point's bound on, and the untimed ones.
     let mut timed = conn.prepare_cached(&format!(
-        "SELECT {EVENT_COLUMNS} FROM event e INDEXED BY event_placed_by_time
-         WHERE e.session_pk = ?1 AND e.after_message_pk IS NULL AND e.at >= coalesce(?2, -9223372036854775808)"
+        "SELECT {EVENT_COLUMNS} FROM event e INDEXED BY event_session_at
+         WHERE e.session_pk = ?1 AND e.at >= coalesce(?2, -9223372036854775808)
+           AND NOT EXISTS(SELECT 1 FROM message m WHERE m.id = e.after_message_id)"
     ))?;
     let mut untimed = conn.prepare_cached(&format!(
-        "SELECT {EVENT_COLUMNS} FROM event e INDEXED BY event_placed_by_time
-         WHERE e.session_pk = ?1 AND e.after_message_pk IS NULL AND e.at IS NULL"
+        "SELECT {EVENT_COLUMNS} FROM event e INDEXED BY event_session_at
+         WHERE e.session_pk = ?1 AND e.at IS NULL
+           AND NOT EXISTS(SELECT 1 FROM message m WHERE m.id = e.after_message_id)"
     ))?;
     for event in timed
         .query_map(params![session_pk, start_point.time_bound], event_row)?
@@ -721,8 +701,8 @@ fn start(conn: &Connection, session_pk: i64, change: &SessionChange) -> Result<S
         }
     }
     let mut event = conn.prepare_cached(
-        "SELECT e.after_message_pk, e.at,
-                EXISTS(SELECT 1 FROM message m WHERE m.pk = e.after_message_pk
+        "SELECT (SELECT m.pk FROM message m WHERE m.id = e.after_message_id), e.at,
+                EXISTS(SELECT 1 FROM message m WHERE m.id = e.after_message_id
                        AND m.session_pk = e.session_pk AND m.duplicate_of IS NULL)
          FROM event e WHERE e.pk = ?1 AND e.session_pk = ?2",
     )?;
@@ -1128,15 +1108,8 @@ fn stored_message_entries(conn: &Connection, pk: i64) -> Result<Vec<IndexEntry>>
 /// present. Its worker prepares the shown value under its snapshot;
 /// the existing derive token protects these entries when the writer applies it.
 pub(crate) fn prepare_stored_message(conn: &Connection, pk: i64) -> Result<Vec<IndexEntry>> {
-    let (version, hash): (i64, Vec<u8>) = conn
-        .prepare_cached(
-            "SELECT s.version_pk,v.version_hash FROM message m JOIN message_source s
-           ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
-         JOIN message_version v ON v.pk=s.version_pk WHERE m.pk=?1",
-        )?
-        .query_row([pk], |row| Ok((row.get(0)?, row.get(1)?)))?;
     let (mut message, block_selection) =
-        crate::versions::read_message_by_key(conn, version, &hash)?.ok_or_else(|| {
+        crate::writer::shown_message(conn, pk)?.ok_or_else(|| {
             StoreError::Invalid("revealed message has no kept selected version".into())
         })?;
     conn.prepare_cached(
@@ -1656,7 +1629,7 @@ impl Reader<'_> {
             Some(end) => end,
             None => conn.scalar("SELECT coalesce(
                     (SELECT min(s) FROM (
-                        SELECT source_start AS s FROM message_source WHERE input_pk = ?1 AND chain = ?2 AND source_start > ?3
+                        SELECT source_start AS s FROM reading_message WHERE input_pk = ?1 AND chain = ?2 AND source_start > ?3
                         UNION ALL
                         SELECT source_start FROM event WHERE input_pk = ?1 AND source_chain = ?2 AND source_start > ?3)),
                     (SELECT parsed_upto FROM parse_state WHERE input_pk = ?1 AND chain = ?2),

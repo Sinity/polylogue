@@ -476,8 +476,8 @@ fn restart_replays_a_registered_import_after_the_original_is_deleted() {
 }
 
 /// Messages whose shown reading is an imported copy of a tool's file.
-const SHOWN_FROM_COPY: &str = "SELECT count(*) AS n FROM message m JOIN message_source s
-    ON s.message_pk = m.pk AND s.input_pk = m.input_pk AND s.chain = m.source_chain
+const SHOWN_FROM_COPY: &str = "SELECT count(*) AS n FROM message m JOIN reading_message s
+    ON s.message_id = m.id AND s.input_pk = m.input_pk AND s.chain = m.source_chain
     WHERE s.route = 'copy'";
 
 #[test]

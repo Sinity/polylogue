@@ -16,11 +16,9 @@ impl Reader<'_> {
     ) -> Result<Vec<InjectionEvidence>> {
         let conn = self.conn()?;
         let mut statement=conn.prepare_cached(
-            "SELECT f.block_ordinal,f.field,p.layout FROM message_injection_field f
-             JOIN message m ON m.pk=f.message_pk
-             JOIN message_block_selection p ON p.version_pk=f.version_pk
-             JOIN message_source s ON s.message_pk=f.message_pk AND s.input_pk=f.input_pk AND s.chain=f.chain AND s.version_pk=f.version_pk
-             WHERE m.id=?1 AND f.version_pk=(SELECT pk FROM message_version WHERE version_hash=?2) ORDER BY length(f.block_ordinal),f.block_ordinal,f.field",
+            "SELECT DISTINCT f.block_ordinal,f.field,r.layout FROM reading_message r
+             JOIN message_injection_field f ON f.input_pk=r.input_pk AND f.chain=r.chain AND f.message_id=r.message_id
+             WHERE r.message_id=?1 AND r.hash=?2 ORDER BY length(f.block_ordinal),f.block_ordinal,f.field",
         )?;
         let mut rows =
             statement.query(params![message.to_string(), source_version.0.as_slice()])?;
@@ -36,7 +34,7 @@ impl Reader<'_> {
             let field: NativeHookField = serde_json::from_str(&row.get::<_, String>(1)?)?;
             if block_selection.is_none() {
                 let layout: Vec<u8> = row.get(2)?;
-                block_selection = Some(crate::versions::message_block_selection(
+                block_selection = Some(crate::encoding::message_block_selection(
                     &source_version.0,
                     Some(&layout),
                     0,

@@ -964,7 +964,15 @@ pub(crate) fn apply_prepared(
     coverage(&tx, &plan)?;
     refusals(&tx, next)?;
     let changes = crate::change_summary::ChangeSummary::start(&tx)?;
-    crate::writer::apply_source_retractions(texts, &tx, &plan.retractions, counter, &changes)?;
+    let mut retracted = crate::writer::Touched::default();
+    crate::writer::apply_source_retractions(
+        texts,
+        &tx,
+        &plan.retractions,
+        counter,
+        &changes,
+        &mut retracted,
+    )?;
     bindings(&tx, &plan)?;
     // Variants are authored records, so only a request can change them.
     if plan.requests != StateChange::Unchanged {
@@ -988,13 +996,7 @@ pub(crate) fn apply_prepared(
     for session in touched {
         changes.whole_session(session);
     }
-    crate::writer::finish_rows(
-        &tx,
-        &changes,
-        &crate::writer::resolve::IndexUpkeep::PerTransaction,
-        texts,
-        counter,
-    )?;
+    crate::writer::finish_rows(&tx, retracted, &changes, texts, false, counter)?;
     crate::fault::check("primary.before_commit", "")?;
     tx.commit()?;
     text_transaction.commit();
@@ -1006,15 +1008,14 @@ pub(crate) fn apply_prepared(
 pub(crate) fn apply(
     texts: &crate::text_rows::TextIds,
     index: &mut Connection,
-    resolver: &std::sync::Arc<crate::writer::resolve::Resolver>,
     events: &[Confirmed],
 ) -> Result<i64> {
     let mut step = stage_next(index, events)?;
     loop {
         match step {
             Step::Complete(position) => return Ok(position),
-            Step::Prepare(mut prepared) => {
-                crate::writer::prepare_source_retractions(resolver, &mut prepared.retractions)?;
+            Step::Prepare(prepared) => {
+                crate::writer::check_source_retractions(&prepared.retractions)?;
                 step = apply_prepared(texts, index, *prepared)?;
             }
         }

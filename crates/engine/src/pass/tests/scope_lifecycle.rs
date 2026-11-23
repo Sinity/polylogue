@@ -651,7 +651,7 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
         let before_reply = home.read(|reader| {
             inputs.iter().map(|input| {
                 let message_sources = reader.query(
-                    "SELECT count(*) AS n FROM message_source m JOIN input_ref i ON i.pk=m.input_pk WHERE i.id=?1",
+                    "SELECT count(*) AS n FROM reading_message m JOIN input_ref i ON i.pk=m.input_pk WHERE i.id=?1",
                     &[polylogue_store::SqlValue::Text(input.id.clone())],
                 )?[0]["n"].as_u64().unwrap();
                 let markers = reader.query(

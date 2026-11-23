@@ -51,191 +51,6 @@ fn message(id: &str, role: Role, text: &str) -> Message {
 }
 
 #[test]
-fn identical_lower_priority_events_leave_items_unchanged() {
-    let w = installed_archive();
-    let mut main = batch(
-        "a-events",
-        Route::Live,
-        0,
-        vec![row(0, message("anchor", Role::User, "anchor"))],
-        &["s"],
-    );
-    for n in 0..196 {
-        main.parse[0].output.events.push(Event {
-            at_quality: polylogue_model::TimeQuality::Unknown,
-            at_precision: None,
-            at_until: None,
-            session: Some(sid("s")),
-            kind: "synthetic.observation".into(),
-            at: None,
-            after: Some(MessageId::parse("claude-code:anchor").unwrap()),
-            range: None,
-            data: serde_json::json!({"number": n}),
-        });
-    }
-    w.store_reading(main.clone(), Some(&SOURCE_RECORD)).unwrap();
-    assert!(w.writer.flush().unwrap().errors.is_empty());
-    let before = stored(&w, "s");
-    let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
-    conn.execute_batch(
-        "CREATE TABLE test_event_updates(n INTEGER NOT NULL);
-        INSERT INTO test_event_updates VALUES(0);
-        CREATE TRIGGER test_event_updates AFTER UPDATE ON event
-        BEGIN UPDATE test_event_updates SET n=n+1; END;",
-    )
-    .unwrap();
-    let mut extra = batch("z-extra-events", Route::Capture, 0, vec![], &[]);
-    extra.parse[0].output.events = main.parse[0].output.events.clone();
-    extra.parse[0].output.event_ids = main.parse[0].output.event_ids.clone();
-    w.store_reading(extra, Some(&SOURCE_RECORD)).unwrap();
-    let report = w.writer.flush().unwrap();
-    assert!(report.errors.is_empty(), "{:?}", report.errors);
-    assert_eq!(
-        conn.query_row("SELECT count(*) FROM event_source", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        392
-    );
-    let pool = ReadPool::open(&w.archive).unwrap();
-    let reader = pool.reader().unwrap();
-    let id: String = conn
-        .query_row("SELECT id FROM event ORDER BY pk LIMIT 1", [], |r| r.get(0))
-        .unwrap();
-    let record = reader.event_record(&id).unwrap().unwrap();
-    assert_eq!(
-        record.identity.sources.len(),
-        2,
-        "both stored stated sources are exported"
-    );
-    assert_eq!(stored(&w, "s"), before);
-    assert_matches_rows(&w, "s");
-    let updates: i64 = conn
-        .query_row("SELECT n FROM test_event_updates", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(
-        (updates, report.item_units_read),
-        (0, 0),
-        "unchanged selected event updates and session item reads"
-    );
-    // Exercise the production validity lookup, with unrelated cached entries
-    // before the selected header so a missing reverse index cannot pass early.
-    let (pk, session, kind, at, data): (i64, i64, String, Option<i64>, Vec<u8>) = conn
-        .query_row(
-            "SELECT pk,session_pk,kind,at,data FROM event WHERE id=?1",
-            [&id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-        )
-        .unwrap();
-    let work = || {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicU64, Ordering},
-        };
-        let steps = Arc::new(AtomicU64::new(0));
-        let counter = Arc::clone(&steps);
-        conn.flush_prepared_statement_cache();
-        conn.progress_handler(
-            1,
-            Some(move || {
-                counter.fetch_add(1, Ordering::Relaxed);
-                false
-            }),
-        )
-        .unwrap();
-        assert!(crate::items::event_is_current(&conn, pk, session, &id, &kind, at, &data).unwrap());
-        conn.progress_handler(0, None::<fn() -> bool>).unwrap();
-        steps.load(Ordering::Relaxed)
-    };
-    let small = work();
-    conn.execute_batch(
-        "SAVEPOINT unrelated_headers;
-        WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<8192)
-        INSERT INTO session_item
-        SELECT s.session_pk,-100000+n.x,s.unit,NULL,100000+n.x,s.time_bound,
-               s.entry,s.class,s.call_id,s.counts
-        FROM n,session_item s WHERE s.event_pk=(SELECT min(pk) FROM event);",
-    )
-    .unwrap();
-    let large = work();
-    assert!(
-        large <= small + 4,
-        "keyed header work grew: {small} -> {large}"
-    );
-    conn.execute_batch("DROP INDEX session_item_event").unwrap();
-    let unindexed = work();
-    assert!(
-        unindexed > 8192,
-        "the unindexed case did not scan unrelated headers: {unindexed}"
-    );
-    conn.execute_batch("ROLLBACK TO unrelated_headers; RELEASE unrelated_headers")
-        .unwrap();
-}
-
-#[test]
-fn identical_event_repairs_old_item_metadata() {
-    let w = test_archive();
-    let mut input = batch("a-events", Route::Live, 0, vec![], &["s"]);
-    input.parse[0].output.events.push(Event {
-        at_quality: polylogue_model::TimeQuality::Unknown,
-        at_precision: None,
-        at_until: None,
-        session: Some(sid("s")),
-        kind: "synthetic.observation".into(),
-        at: None,
-        after: None,
-        range: None,
-        data: serde_json::json!({"value":1}),
-    });
-    w.store_reading(input.clone(), Some(&SOURCE_RECORD))
-        .unwrap();
-    assert!(w.writer.flush().unwrap().errors.is_empty());
-    let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
-    let pk: i64 = conn
-        .query_row(
-            "SELECT event_pk FROM session_item WHERE event_pk IS NOT NULL",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    let mut stale = stored(&w, "s").entries[0].clone();
-    stale.at = Some(123);
-    let mut old = blake3::Hasher::new();
-    old.update(b"event\0");
-    old.update(&pk.to_le_bytes());
-    old.update(b"synthetic.observation");
-    conn.execute(
-        "UPDATE session_item SET unit=?1,entry=?2 WHERE event_pk=?3",
-        params![
-            old.finalize().as_bytes().as_slice(),
-            crate::items::entry_bytes::encode(&stale, None).unwrap(),
-            pk
-        ],
-    )
-    .unwrap();
-    let before = stored(&w, "s");
-    let mut extra = batch("z-extra-events", Route::Capture, 0, vec![], &[]);
-    extra.parse[0].output.events = input.parse[0].output.events.clone();
-    w.store_reading(extra, Some(&SOURCE_RECORD)).unwrap();
-    let report = w.writer.flush().unwrap();
-    assert!(report.errors.is_empty(), "{:?}", report.errors);
-    assert!(
-        report.item_units_read > 0,
-        "kept stale items must be refreshed"
-    );
-    assert!(
-        stored(&w, "s").rewrite_version > before.rewrite_version,
-        "the existing item cursor version invalidates the stale reading"
-    );
-    assert_matches_rows(&w, "s");
-    assert_eq!(
-        conn.query_row("SELECT count(*) FROM event_source", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        2
-    );
-}
-
-#[test]
 fn equal_length_context_boundary_changes_refresh_typed_event_items() {
     for kind in ["compaction", "microcompaction"] {
         let w = test_archive();
@@ -317,68 +132,6 @@ fn equal_length_context_boundary_changes_refresh_typed_event_items() {
             "typed {kind} payload must refresh"
         );
         assert_matches_rows(&w, "s");
-        // Reopen the older metadata-only cache shape: its event row
-        // is current, but its embedded typed item still has the old payload.
-        let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
-        let (pk, bytes): (i64, u64) = conn
-            .query_row("SELECT pk,length(data) FROM event", [], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
-            .unwrap();
-        let mut old = blake3::Hasher::new();
-        old.update(b"event\0");
-        old.update(&pk.to_le_bytes());
-        for value in ["synthetic-boundary", kind] {
-            old.update(&(value.len() as u64).to_le_bytes());
-            old.update(value.as_bytes());
-        }
-        old.update(&[0]);
-        old.update(&0_i64.to_le_bytes());
-        old.update(&bytes.to_le_bytes());
-        conn.execute(
-            "UPDATE session_item SET unit=?1,entry=?2 WHERE event_pk=?3",
-            params![
-                old.finalize().as_bytes().as_slice(),
-                crate::items::entry_bytes::encode(&original.entries[0], None).unwrap(),
-                pk
-            ],
-        )
-        .unwrap();
-        conn.execute_batch(
-            "CREATE TABLE test_event_updates(n INTEGER NOT NULL);
-            INSERT INTO test_event_updates VALUES(0);
-            CREATE TRIGGER test_event_updates AFTER UPDATE ON event
-            BEGIN UPDATE test_event_updates SET n=n+1; END;",
-        )
-        .unwrap();
-        let stale = stored(&w, "s");
-        let mut extra = batch("z-copy", Route::Capture, 0, vec![], &[]);
-        extra.parse[0].output.events.push(expected.clone());
-        extra.parse[0]
-            .output
-            .event_ids
-            .insert(0, "synthetic-boundary".into());
-        w.store_reading(extra, Some(&SOURCE_RECORD)).unwrap();
-        let report = w.writer.flush().unwrap();
-        assert!(report.errors.is_empty(), "{:?}", report.errors);
-        assert_eq!(
-            conn.query_row("SELECT n FROM test_event_updates", [], |r| r
-                .get::<_, i64>(0))
-                .unwrap(),
-            0
-        );
-        assert!(
-            report.item_units_read > 0,
-            "old typed item must refresh despite unchanged event row"
-        );
-        assert!(stored(&w, "s").rewrite_version > stale.rewrite_version);
-        assert_matches_rows(&w, "s");
-        assert_eq!(
-            conn.query_row("SELECT count(*) FROM event_source", [], |r| r
-                .get::<_, i64>(0))
-                .unwrap(),
-            2
-        );
     }
 }
 
@@ -491,7 +244,7 @@ fn identical_lower_priority_messages_leave_items_unchanged() {
     let report = w.writer.flush().unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     let claims: i64 = conn
-        .query_row("SELECT count(*) FROM message_source", [], |r| r.get(0))
+        .query_row("SELECT count(*) FROM reading_message", [], |r| r.get(0))
         .unwrap();
     assert_eq!(claims, 512);
     assert_eq!(stored(&w, "s").entries, before.entries);
@@ -539,7 +292,7 @@ fn a_new_citation_chain_does_not_reread_unchanged_message_items() {
         256
     );
     assert_eq!(
-        conn.query_row("SELECT count(*) FROM message_source", [], |r| r
+        conn.query_row("SELECT count(*) FROM reading_message", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
         512
@@ -647,7 +400,7 @@ fn removing_a_redundant_source_invalidates_derivations() {
     let report = w.writer.flush_rows().unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert_eq!(
-        conn.query_row("SELECT count(*) FROM message_source", [], |r| r
+        conn.query_row("SELECT count(*) FROM held_message_reading", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
         1

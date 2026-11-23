@@ -170,7 +170,7 @@ fn conflicting_parents_choose_neither_and_keep_one_structural_parent() {
         [],
     )
     .unwrap();
-    conn.execute("INSERT INTO link(parent_id,child_id,child_pk,kind,evidence,input_pk,branch_point) SELECT parent_id,child_id,child_pk,kind,evidence,input_pk,'test:two' FROM link WHERE child_id='test:child'",[]).unwrap();
+    conn.execute("INSERT INTO link(parent_id,child_id,kind,evidence,input_pk,branch_point) SELECT parent_id,child_id,kind,evidence,input_pk,'test:two' FROM link WHERE child_id='test:child'",[]).unwrap();
     assert_eq!(read(&f, "test:leaf"), rooted("test:a", 2));
     assert_eq!(
         conn.query_row(
@@ -210,8 +210,8 @@ fn lineage_has_no_silent_depth_limit_and_unrelated_components_are_not_dirtied() 
     conn.execute_batch("BEGIN;
       WITH RECURSIVE n(value) AS (SELECT 0 UNION ALL SELECT value+1 FROM n WHERE value<1005)
       INSERT INTO session(id,origin,native_id,kind,changed) SELECT 'test:'||value,'test',cast(value AS TEXT),'main',1 FROM n;
-      INSERT INTO link(parent_id,child_id,child_pk,kind,evidence,input_pk)
-      SELECT 'test:'||(cast(native_id AS INTEGER)-1),id,pk,'continuation','fixture',(SELECT pk FROM input_ref LIMIT 1)
+      INSERT INTO link(parent_id,child_id,kind,evidence,input_pk)
+      SELECT 'test:'||(cast(native_id AS INTEGER)-1),id,'continuation','fixture',(SELECT pk FROM input_ref LIMIT 1)
       FROM session WHERE origin='test' AND native_id<>'unrelated' AND cast(native_id AS INTEGER)>0;
       COMMIT;").unwrap();
     assert_eq!(read(&f, "test:1005"), rooted("test:0", 1005));

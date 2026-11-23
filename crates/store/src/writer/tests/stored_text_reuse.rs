@@ -22,14 +22,7 @@ fn current_blocks_reuse_stored_text_identities() {
             )
         })
         .collect();
-    let mut b = batch("input", Route::Live, 0, rows, &["session"]);
-    resolve::prepare_index(&tx, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
-    let texts = crate::text_rows::TextIds::new(
-        &tx,
-        false,
-        crate::archive::MemoryBudget::default().keys() / 3,
-    )
-    .unwrap();
+    let b = batch("input", Route::Live, 0, rows, &["session"]);
     tx.authorizer(Some(|context: AuthContext<'_>| match context.action {
         AuthAction::Read {
             table_name: "text",
@@ -39,22 +32,7 @@ fn current_blocks_reuse_stored_text_identities() {
     }))
     .unwrap();
     assert_eq!(
-        write_rows(
-            &tx,
-            &b,
-            &b.parse[0],
-            rows::ReadingWrite {
-                texts: &texts,
-                resolution: b.parse[0].resolution.as_ref().unwrap(),
-                counter: 1,
-                upkeep: &resolve::IndexUpkeep::PerTransaction,
-                source_commit: Some(&fixture_commit()),
-                changes: &crate::change_summary::ChangeSummary::start(&tx).unwrap(),
-                retraction: false,
-                replacement: false
-            }
-        )
-        .unwrap(),
+        write_test_rows(&tx, &b, &b.parse[0], 1, 1, false).unwrap(),
         32
     );
     tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)

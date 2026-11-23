@@ -244,12 +244,7 @@ fn metadata_order_has_an_id_tiebreak_and_never_reads_message_bodies() {
         .unwrap()
         .authorizer(Some(|context: AuthContext<'_>| match context.action {
             AuthAction::Read {
-                table_name:
-                    "block"
-                    | "text"
-                    | "message_version"
-                    | "message_version_body"
-                    | "message_block_selection",
+                table_name: "block" | "text" | "reading_message" | "reading_text",
                 ..
             } => Authorization::Deny,
             _ => Authorization::Allow,

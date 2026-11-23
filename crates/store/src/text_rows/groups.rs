@@ -26,11 +26,6 @@ pub(crate) struct PreparedTexts {
     groups: Vec<PreparedGroup>,
 }
 
-#[cfg(test)]
-thread_local! {
-    static PACK_INPUT_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
 /// Where one prepared text lies in its step's groups.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PreparedText {
@@ -56,13 +51,6 @@ pub(crate) struct Prepared<'a> {
 }
 
 impl PreparedTexts {
-    #[cfg(test)]
-    pub(crate) fn count_input_bytes<T>(run: impl FnOnce() -> T) -> (T, usize) {
-        PACK_INPUT_BYTES.with(|bytes| bytes.set(0));
-        let result = run();
-        (result, PACK_INPUT_BYTES.with(std::cell::Cell::get))
-    }
-
     /// Prepares `texts` in order; repeated and already prepared texts are
     /// skipped.
     pub(crate) fn pack<'t>(texts: impl IntoIterator<Item = &'t str>) -> Result<Self> {
@@ -77,8 +65,6 @@ impl PreparedTexts {
         // Counted apart from the bytes: an empty text still needs its group.
         let mut members = 0;
         for text in texts {
-            #[cfg(test)]
-            PACK_INPUT_BYTES.with(|bytes| bytes.set(bytes.get() + text.len()));
             let hash = *blake3::hash(text.as_bytes()).as_bytes();
             if self.texts.contains_key(&hash) {
                 continue;

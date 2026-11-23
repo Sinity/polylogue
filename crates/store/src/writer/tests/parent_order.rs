@@ -97,7 +97,7 @@ fn copied_parent_families_follow_child_coordinates_instead_of_link_insertion() {
             .collect::<Vec<_>>(),
         ["claude-code:c0", "claude-code:p0"]
     );
-    let coordinates = reader.query("SELECT m.id,s.source_start FROM message_source s JOIN input_ref i ON i.pk=s.input_pk JOIN message m ON m.pk=s.message_pk WHERE i.id='child-file' ORDER BY s.seq,s.record_position", &[]).unwrap();
+    let coordinates = reader.query("SELECT s.message_id AS id,s.source_start FROM reading_message s JOIN input_ref i ON i.pk=s.input_pk WHERE i.id='child-file' ORDER BY s.seq,s.record_position", &[]).unwrap();
     assert_eq!(
         coordinates
             .iter()
@@ -164,7 +164,7 @@ fn tied_historical_child_coordinates_never_gain_order_from_link_or_message_keys(
         // Historical rows with the original default coordinates keep their
         // bytes and identity, but supply no relative display order.
         crate::archive::open_write(&w.archive.index_db(), crate::archive::cache::SETUP).unwrap()
-            .execute("UPDATE message_source SET seq=0,record_position=0,source_start=0,source_end=0 WHERE input_pk=(SELECT pk FROM input_ref WHERE id='child-file')", []).unwrap();
+            .execute("UPDATE reading_message SET seq=0,record_position=0,source_start=0,source_end=0 WHERE input_pk=(SELECT pk FROM input_ref WHERE id='child-file')", []).unwrap();
         let pool = ReadPool::open(&w.archive).unwrap();
         let reader = pool.reader().unwrap();
         let selected = reader.select_messages(&sid("c1"), true).unwrap();

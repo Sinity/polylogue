@@ -238,28 +238,6 @@ impl KeyRows {
         }
         Ok(latest.map(|record| record.value))
     }
-    pub(crate) fn visit(
-        &self,
-        key: &[u8; 32],
-        mut visit: impl FnMut(i64) -> Result<ControlFlow<()>>,
-    ) -> Result<()> {
-        for ((_, value), _) in self.entries.range((*key, i64::MIN)..=(*key, i64::MAX)) {
-            if visit(*value)?.is_break() {
-                return Ok(());
-            }
-        }
-        if self.possible(key) {
-            for run in self.runs.iter().flatten() {
-                if run
-                    .visit(key, &mut |record| visit(record.value))?
-                    .is_break()
-                {
-                    break;
-                }
-            }
-        }
-        Ok(())
-    }
     fn spill(&mut self) -> Result<()> {
         if self.entries.is_empty() {
             return Ok(());

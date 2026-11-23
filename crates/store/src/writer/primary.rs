@@ -82,7 +82,6 @@ impl Inner {
             let changed = match crate::primary::scope::reset(
                 &mut self.index,
                 &self.location,
-                &self.resolver,
                 scope,
                 replacing,
             ) {
@@ -399,10 +398,8 @@ impl WriterSender {
             loop {
                 match step {
                     crate::primary::confirmed::Step::Complete(position) => return Ok(position),
-                    crate::primary::confirmed::Step::Prepare(mut prepared) => {
-                        // Queued groups can hold these key locks. Waiting here
-                        // leaves the serial writer free to commit or reject them.
-                        prepare_source_retractions(&self.0.resolver, &mut prepared.retractions)?;
+                    crate::primary::confirmed::Step::Prepare(prepared) => {
+                        check_source_retractions(&prepared.retractions)?;
                         step = self
                             .0
                             .ask(|reply| Msg::ApplyConfirmed(prepared, kinds, reply))?;

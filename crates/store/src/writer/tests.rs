@@ -1,26 +1,22 @@
 use super::*;
 use crate::ReadPool;
 use polylogue_model::{
-    Json, LinkKind, MessageId, PromptKind, RecordOutcome, Role, Route, SessionKind, TitleSource,
-    Usage,
+    Json, LinkKind, MessageId, MessageRow, PromptKind, RecordOutcome, Role, Route, SessionKind,
+    TitleSource, Usage,
 };
 
 mod annotations;
 mod append_cost;
 mod build_upkeep;
 mod empty_source;
-mod event_fk;
-mod event_placement;
 mod extent_checkpoint;
-mod fresh_messages;
 #[cfg(all(feature = "faults", target_os = "linux"))]
 mod fts;
 mod input_events;
 mod items;
-mod materialization;
 mod parent_order;
+mod parity;
 mod relationships;
-mod resolution;
 mod routes;
 mod saved;
 mod scoped;
@@ -41,34 +37,54 @@ fn write_test_rows(
     step: &ParseStep,
     chain: i64,
     counter: i64,
-    upkeep: &resolve::IndexUpkeep,
+    at_build_end: bool,
 ) -> Result<u64> {
     let mut batch = batch.clone();
     batch.parse = vec![step.clone()];
-    resolve::prepare_index(tx, &mut batch, chain, upkeep)?;
+    batch.parse[0].prepare();
+    normalize_attachments_with(tx, &mut batch)?;
     let changes = crate::change_summary::ChangeSummary::start(tx)?;
-    let written = write_rows(
+    let texts = crate::text_rows::TextIds::new(
+        tx,
+        false,
+        crate::archive::MemoryBudget::default().keys() / 3,
+    )?;
+    let mut touched = Touched::default();
+    // A primary cache hides the messages Sinex withdrew.
+    let primary = tx.exists(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='confirmed_event')",
+        [],
+    )?;
+    rows::write_step(
         tx,
         &batch,
         &batch.parse[0],
-        rows::ReadingWrite {
-            texts: &crate::text_rows::TextIds::new(
-                tx,
-                false,
-                crate::archive::MemoryBudget::default().keys() / 3,
-            )
-            .unwrap(),
-            resolution: batch.parse[0].resolution.as_ref().unwrap(),
+        rows::StepWrite {
+            texts: &texts,
             counter,
-            upkeep,
+            chain,
             source_commit: Some(&fixture_commit()),
-            changes: &changes,
-            retraction: false,
             replacement: false,
+            retraction: false,
+            primary,
+            changes: &changes,
         },
+        &mut touched,
     )?;
-    changes.finish_summaries(tx, Some(counter))?;
+    let (written, _) = rows::finish(tx, touched, &changes, &texts, at_build_end, counter)?;
     Ok(written)
+}
+
+/// Attachment references in a test step name only bytes the index's
+/// attached register holds, as the sending thread settles them.
+fn normalize_attachments_with(tx: &Transaction<'_>, batch: &mut Batch) -> Result<()> {
+    let pending: HashMap<_, _> = batch
+        .new_blob
+        .iter()
+        .chain(&batch.blobs)
+        .map(|blob| (blob.hash, blob.size))
+        .collect();
+    super::attachments::normalize(batch, tx, &pending)
 }
 
 fn fixture_commit() -> crate::wire_shapes::ReadingCommit {
@@ -422,7 +438,7 @@ fn a_tool_result_pairs_with_its_call_in_either_order() {
         let r = pool.reader().unwrap();
         let rows = r
             .query(
-                "SELECT outcome, exit_code, result_block_pk IS NOT NULL AS paired FROM tool_call",
+                "SELECT outcome, exit_code, result_message_id IS NOT NULL AS paired FROM tool_call",
                 &[],
             )
             .unwrap();
@@ -587,7 +603,7 @@ fn session_facts_merge_and_a_pending_link_finds_its_child() {
     assert_eq!(parent.title.unwrap().text, "named");
     let link = r
         .query(
-            "SELECT child_pk IS NOT NULL AS resolved, spawning_call FROM session_link",
+            "SELECT EXISTS(SELECT 1 FROM session c WHERE c.id=child_id) AS resolved, spawning_call FROM session_link",
             &[],
         )
         .unwrap();
@@ -1170,12 +1186,6 @@ mod array_order;
 mod record_order;
 
 mod metadata;
-
-mod statement_cache;
-
-#[cfg(test)]
-mod prepared;
-mod prepared_items;
 
 mod observation_order;
 

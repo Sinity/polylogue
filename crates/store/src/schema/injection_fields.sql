@@ -1,11 +1,10 @@
--- Fields stay stated values until the receiver is authenticated.
+-- Hook fields a reading's message states, as stated: they stay declarations
+-- until the receiver is authenticated. Owned by the reading, like its message.
 CREATE TABLE message_injection_field (
-  message_pk INTEGER NOT NULL REFERENCES message(pk) ON DELETE CASCADE,
-  version_pk INTEGER NOT NULL REFERENCES message_block_selection(version_pk) ON DELETE CASCADE,
-  block_ordinal TEXT NOT NULL CHECK(length(block_ordinal)>0),
   input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
   chain INTEGER NOT NULL CHECK(chain>0),
+  message_id TEXT NOT NULL,
+  block_ordinal TEXT NOT NULL CHECK(length(block_ordinal)>0),
   field TEXT NOT NULL CHECK(json_valid(field)),
-  PRIMARY KEY(message_pk,version_pk,block_ordinal,input_pk,chain,field)
+  PRIMARY KEY(input_pk,chain,message_id,block_ordinal,field)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX message_injection_source ON message_injection_field(input_pk,chain);

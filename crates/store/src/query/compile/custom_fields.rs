@@ -234,7 +234,7 @@ pub(crate) fn since(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
             },
         );
         return Ok(if x.unit == Unit::ToolCalls {
-            format!("({test} OR {}.result_block_pk IS NULL)", x.scope.a.t)
+            format!("({test} OR {}.result_message_id IS NULL)", x.scope.a.t)
         } else {
             test
         });
@@ -589,12 +589,12 @@ pub(crate) fn parent(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Q
     let v = x.value()?;
     if v.eq_ignore_ascii_case("missing") {
         return Ok(format!(
-            "EXISTS (SELECT 1 FROM session_link l WHERE l.child_pk = {s}.pk AND NOT EXISTS (SELECT 1 FROM session lp WHERE lp.id = l.parent_id))"
+            "EXISTS (SELECT 1 FROM session_link l WHERE l.child_id = {s}.id AND NOT EXISTS (SELECT 1 FROM session lp WHERE lp.id = l.parent_id))"
         ));
     }
     let reference = c.session_reference("l.parent_id", "id", &v);
     Ok(format!(
-        "EXISTS (SELECT 1 FROM session_link l WHERE l.child_pk = {s}.pk AND {reference})"
+        "EXISTS (SELECT 1 FROM session_link l WHERE l.child_id = {s}.id AND {reference})"
     ))
 }
 
@@ -627,7 +627,7 @@ pub(crate) fn link(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
             return Err(x.bad(v, message));
         };
         parts.push(format!(
-            "EXISTS (SELECT 1 FROM session_link l WHERE l.child_pk = {s}.pk AND l.{column} = '{v}')"
+            "EXISTS (SELECT 1 FROM session_link l WHERE l.child_id = {s}.id AND l.{column} = '{v}')"
         ));
     }
     any_of(x, parts)
@@ -636,7 +636,7 @@ pub(crate) fn link(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
 pub(crate) fn continues(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
     let reference = c.session_reference("l.parent_id", "id", &x.value()?);
     Ok(format!(
-        "EXISTS (SELECT 1 FROM session_link l WHERE l.child_pk = {}.pk AND l.kind IN ('fork','continuation','resume') AND {reference})",
+        "EXISTS (SELECT 1 FROM session_link l WHERE l.child_id = {}.id AND l.kind IN ('fork','continuation','resume') AND {reference})",
         x.s()
     ))
 }
@@ -644,7 +644,7 @@ pub(crate) fn continues(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String
 pub(crate) fn continued_by(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
     let reference = c.session_reference("lc.id", "id", &x.value()?);
     Ok(format!(
-        "EXISTS (SELECT 1 FROM session_link l JOIN session lc ON lc.pk = l.child_pk WHERE l.parent_id = {}.id \
+        "EXISTS (SELECT 1 FROM session_link l JOIN session lc ON lc.id = l.child_id WHERE l.parent_id = {}.id \
          AND l.kind IN ('fork','continuation','resume') AND {reference})",
         x.s()
     ))
@@ -655,7 +655,7 @@ pub(crate) fn connected(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String
     Ok(format!(
         "{}.id IN (WITH RECURSIVE comp(id) AS (SELECT rs.id FROM session rs WHERE {reference} \
          UNION SELECT CASE WHEN l.parent_id = comp.id THEN lc.id ELSE l.parent_id END \
-         FROM session_link l JOIN session lc ON lc.pk = l.child_pk JOIN comp ON comp.id = l.parent_id OR comp.id = lc.id) \
+         FROM session_link l JOIN session lc ON lc.id = l.child_id JOIN comp ON comp.id = l.parent_id OR comp.id = lc.id) \
          SELECT id FROM comp)",
         x.s()
     ))
@@ -742,7 +742,7 @@ pub(crate) fn spawned_child(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<St
     let reference = c.session_reference("lcs.id", "id", &x.value()?);
     let a = &x.scope.a;
     Ok(format!(
-        "EXISTS (SELECT 1 FROM session_link lc JOIN session lcs ON lcs.pk = lc.child_pk WHERE lc.kind = 'spawn' \
+        "EXISTS (SELECT 1 FROM session_link lc JOIN session lcs ON lcs.id = lc.child_id WHERE lc.kind = 'spawn' \
          AND lc.parent_id = {s}.id AND lc.spawning_call = {t}.call_id \
          AND {reference})",
         s = a.s,

@@ -87,12 +87,8 @@ pub(super) fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
             .into_iter()
             .map(str::to_owned)
             .collect();
-        // Version row keys follow insertion order. Translate them, rather than
-        // dropping them: a wrong payload/reference still names the wrong hash.
         let columns = names.iter().map(|name| {
-            if name == "version_pk" || (table == "message_version" && name == "pk") {
-                format!("(SELECT v.version_hash FROM message_version v WHERE v.pk=t.\"{name}\") AS \"{name}\"")
-            } else if matches!(table.as_str(), "wire_shape" | "wire_type") && matches!(name.as_str(), "first" | "last") {
+            if matches!(table.as_str(), "wire_shape" | "wire_type") && matches!(name.as_str(), "first" | "last") {
                 // The chain the occurrence record cites, not the read range it took.
                 format!("(SELECT json_extract(r.occurrence,'$.chain') FROM wire_occurrence r WHERE r.input_pk=t.input_pk AND r.chain=t.chain AND r.reading_version=t.reading_version AND r.number=t.\"{name}\") AS \"{name}\"")
             } else if table == "wire_occurrence" && name == "number" {
@@ -315,7 +311,7 @@ fn identical_older_chain_is_recorded_as_its_parse() {
     );
     // Every chain a message appeared in stays recorded.
     let chains = w.count(
-        "SELECT count(DISTINCT chain) AS n FROM message_source s JOIN message m ON m.pk = s.message_pk WHERE m.id LIKE '%u1%'",
+        "SELECT count(DISTINCT chain) AS n FROM reading_message s WHERE s.message_id LIKE '%u1%'",
     );
     assert_eq!(chains, 4);
 }

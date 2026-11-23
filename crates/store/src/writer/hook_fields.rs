@@ -70,68 +70,6 @@ pub(super) fn validate(output: &Output, messages: &[PreparedMessage]) -> Result<
     Ok(())
 }
 
-pub(super) struct Source<'a> {
-    pub input: &'a str,
-    pub input_pk: i64,
-    pub chain: i64,
-}
-
-/// All fields in this path stay declared. A captured payload does not show who
-/// wrote it; any future check of that must come from the payload's writer.
-/// A message row `created` by this reading has no earlier stated fields to replace.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn write(
-    conn: &rusqlite::Connection,
-    source: Source<'_>,
-    pk: i64,
-    step: &super::ParseStep,
-    index: usize,
-    version_pk: i64,
-    created: bool,
-) -> Result<()> {
-    use polylogue_model::injection::NativeHookField;
-    use rusqlite::params;
-    if !created {
-        conn.prepare_cached(
-            "DELETE FROM message_injection_field WHERE message_pk=?1 AND input_pk=?2 AND chain=?3 AND version_pk<>?4",
-        )?
-        .execute(params![pk, source.input_pk, source.chain, version_pk])?;
-    }
-    let insert = |block: u64, field: NativeHookField| -> Result<()> {
-        field.validate()?;
-        conn.prepare_cached(
-            "INSERT OR IGNORE INTO message_injection_field(message_pk,version_pk,block_ordinal,input_pk,chain,field) VALUES (?1,?2,?3,?4,?5,?6)",
-        )?
-        .execute(params![pk,version_pk,block.to_string(),source.input_pk,source.chain,serde_json::to_string(&field)?])?;
-        Ok(())
-    };
-    if let Some(stated) = step.output.hook_fields.get(&index) {
-        for stated_field in stated {
-            insert(
-                stated_field.block,
-                NativeHookField {
-                    input: source.input.into(),
-                    chain: source.chain,
-                    start: stated_field.start,
-                    end: stated_field.end,
-                    pointer: stated_field.pointer.clone(),
-                },
-            )?;
-        }
-    }
-    if let Some(injections) = step.output.declared_injections.get(&index) {
-        for injection in injections {
-            // A forged observed member stays a declaration from another source
-            // even if an importer skipped its into_declared conversion.
-            let declared = injection.clone().into_declared();
-            for field in declared.declared {
-                insert(declared.block, field)?;
-            }
-        }
-    }
-    Ok(())
-}
-
 fn valid_hook_pointer(pointer: &str) -> bool {
     let Some(index) = pointer.strip_prefix("/hookAdditionalContext/") else {
         return false;
