@@ -1,16 +1,20 @@
 use super::*;
 
 #[test]
-fn keys_differ_by_archive_and_are_twelve_hex_digits() {
-    let a = archive_key(Path::new("/tmp/a-archive"));
-    let b = archive_key(Path::new("/tmp/b-archive"));
-    assert_eq!(a.len(), 12);
-    assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
-    assert_ne!(a, b);
+fn the_key_is_a_known_blake3_prefix_of_a_path_that_does_not_exist_yet() {
+    // The first 12 hex digits of `printf %s /synthetic-archive/one | b3sum`.
+    assert_eq!(
+        archive_key(Path::new("/synthetic-archive/one")),
+        "364b629fecf9"
+    );
+    assert_ne!(
+        archive_key(Path::new("/synthetic-archive/one")),
+        archive_key(Path::new("/synthetic-archive/two"))
+    );
 }
 
 #[test]
-fn the_key_is_the_blake3_prefix_of_the_resolved_path_for_every_spelling() {
+fn the_key_is_the_blake3_prefix_of_the_canonical_path_for_direct_symlink_and_dotdot_spellings() {
     let dir = tempfile::tempdir().unwrap();
     let archive = dir.path().join("archive");
     std::fs::create_dir(&archive).unwrap();

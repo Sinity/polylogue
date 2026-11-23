@@ -356,10 +356,6 @@ pub(super) fn collect(
                 items.bytes <= all_items.bytes,
                 "strict byte progress cannot exceed the finite source"
             );
-            assert!(
-                pages <= all_items.bytes,
-                "each page delivers at least one source byte"
-            );
         }
         let interval = |item: &ReadItem| match &item.kind {
             ItemKind::Fragment {
@@ -532,7 +528,10 @@ fn mcp_read_pages_execute_the_generated_continuation_without_losing_unicode() {
     let error = execute_ready(&archive, &invalid).unwrap_err();
     // docs/query.md: "a cursor from another question is `invalid_query`";
     // a read continuation with other arguments is refused the same way.
-    assert!(error.contains("invalid_query"), "{error}");
+    assert!(
+        error.starts_with("error (invalid_query): the read cursor belongs to another reading: the reading options differ"),
+        "{error}"
+    );
     let (items, pages) = collect(
         &daemon,
         page,

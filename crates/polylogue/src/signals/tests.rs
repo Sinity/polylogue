@@ -54,7 +54,11 @@ fn assertion(author: polylogue_model::Author) -> polylogue_model::assertion::Ass
 fn signal_assertion_claims_never_supply_an_active_author_or_revision_epoch() {
     use polylogue_model::{Author, Origin};
     let config = crate::config::SignalDeployment::default().rule_configuration();
-    let expected = rules::definition(&assertion(Author::Unattributed), &config).unwrap();
+    let expected = rules::Definition {
+        family: "family".into(),
+        rule: serde_json::from_value(json!({"name":"waiting","query":"sessions","interrupt":true}))
+            .unwrap(),
+    };
     for author in [
         Author::Operator,
         Author::Script("unit".into()),
@@ -73,7 +77,16 @@ fn signal_assertion_claims_never_supply_an_active_author_or_revision_epoch() {
 fn signal_definition_uses_typed_fact_and_deployment_validation() {
     let config = crate::config::SignalDeployment::default().rule_configuration();
     let mut candidate = assertion(polylogue_model::Author::Operator);
-    assert!(rules::definition(&candidate, &config).is_ok());
+    assert_eq!(
+        rules::definition(&candidate, &config).unwrap(),
+        rules::Definition {
+            family: "family".into(),
+            rule: serde_json::from_value(
+                json!({"name":"waiting","query":"sessions","interrupt":true})
+            )
+            .unwrap(),
+        }
+    );
     candidate.fact.key = Some("different-name".into());
     assert!(rules::definition(&candidate, &config).is_err());
     candidate.fact.key = Some("waiting".into());
@@ -86,7 +99,7 @@ fn signal_definition_uses_typed_fact_and_deployment_validation() {
 }
 
 #[test]
-fn incomplete_timer_does_not_write_a_clock_heartbeat() {
+fn a_tick_with_a_stored_checkpoint_writes_no_clock_heartbeat() {
     use std::sync::atomic::{AtomicI64, Ordering};
     let at = Arc::new(AtomicI64::new(1_792_332_000_000));
     let sampled = Arc::clone(&at);

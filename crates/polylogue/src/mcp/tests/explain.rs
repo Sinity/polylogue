@@ -40,14 +40,13 @@ fn help_pages_declarations_and_lines_explain_queries() {
         query["plan"]["explanation"]["program"]["unit"],
         "tool_calls"
     );
-    assert!(
-        call(
-            &archive,
-            "rows",
-            args(json!({"selection":"messages where invalid:x", "explain":true}))
-        )
-        .is_err()
-    );
+    let error = call(
+        &archive,
+        "rows",
+        args(json!({"selection":"messages where invalid:x", "explain":true})),
+    )
+    .unwrap_err();
+    assert!(error.starts_with("error (invalid_query):"), "{error}");
 }
 
 #[test]

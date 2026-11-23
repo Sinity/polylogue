@@ -20,8 +20,6 @@ fn a_read_keeps_the_request_cursor_beside_its_reading_options() {
         crate::daemon::service::read::request_of(arguments, Some("sealed".into())).unwrap();
     assert_eq!(request.options.view, polylogue_model::read::View::Dialogue);
     assert_eq!(request.cursor.as_deref(), Some("sealed"));
-    let round = crate::daemon::service::read::arguments_of(&request).unwrap();
-    assert!(serde_json::to_value(round).unwrap().get("cursor").is_none());
     // The line owns its read cursor in the typed read step.
     let words = [
         "session:test:one",

@@ -27,6 +27,7 @@ fn deployment_flags_preserve_daemon_signal_policy_and_native_host_selection() {
         &tour,
         &super::daemon::service::ArchiveMode::Standalone
     ));
+    assert!(!super::keeps_sigpipe_ignored(&tour));
     #[cfg(feature = "sinex")]
     {
         let blocked = super::daemon::service::ArchiveMode::Blocked {
@@ -63,7 +64,7 @@ fn deployment_flags_preserve_daemon_signal_policy_and_native_host_selection() {
 }
 
 #[test]
-fn stopped_attempts_hash_executable_bytes_instead_of_paths_or_build_labels() {
+fn stopped_attempts_hash_executable_bytes_instead_of_paths() {
     let dir = tempfile::tempdir().unwrap();
     let first = dir.path().join("first-image");
     let second = dir.path().join("second-image");
@@ -80,9 +81,11 @@ fn stopped_attempts_hash_executable_bytes_instead_of_paths_or_build_labels() {
     );
     assert_eq!(before.parser_settings, None);
     std::fs::write(&first, b"synthetic executable two").unwrap();
-    assert_ne!(
-        before,
-        super::attempt_from_executable(std::fs::File::open(&first).unwrap()).unwrap()
+    let after = super::attempt_from_executable(std::fs::File::open(&first).unwrap()).unwrap();
+    assert_ne!(before, after);
+    assert_eq!(
+        after.executable,
+        polylogue_model::BlobHash::of(b"synthetic executable two")
     );
 }
 

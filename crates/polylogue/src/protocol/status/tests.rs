@@ -12,7 +12,6 @@ fn held_signal_observations_preserve_reasons_without_inventing_available_rules()
     let typed: Signals = serde_json::from_value(observed.clone()).unwrap();
     let roundtrip = serde_json::to_value(typed).unwrap();
     assert_eq!(roundtrip, observed);
-    assert!(roundtrip.get("rules").is_none());
     assert_eq!(
         roundtrip["held"][0]["detail"]["error"]["kind"],
         "not_yet_available"

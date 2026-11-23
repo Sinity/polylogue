@@ -17,6 +17,15 @@ fn resume_runs_each_harness_command() {
         (c.program.as_str(), c.args.as_slice(), c.cwd.as_deref()),
         ("codex", &["resume".to_owned(), "0199".to_owned()][..], None)
     );
+    let c = harness_resume(&SessionId::parse("gemini-cli:0abc").unwrap(), None).unwrap();
+    assert_eq!(
+        (c.program.as_str(), c.args.as_slice(), c.cwd.as_deref()),
+        (
+            "gemini",
+            &["--resume".to_owned(), "0abc".to_owned()][..],
+            None
+        )
+    );
     assert!(harness_resume(&SessionId::parse("claude-code:agent-a1").unwrap(), None).is_none());
     assert!(harness_resume(&SessionId::parse("chatgpt:abc").unwrap(), None).is_none());
 }
