@@ -211,7 +211,7 @@ fn cancelled_reader_leaves_while_vector_worker_is_still_loading() {
         let error = result
             .expect("cancelled read waited for the worker to finish")
             .expect_err("cancelled read unexpectedly succeeded");
-        assert!(error.contains("cancel"), "{error}");
+        assert_eq!(error, "the read was cancelled");
     });
 }
 
@@ -436,7 +436,6 @@ fn summary_does_not_wait_for_a_load() {
 
 #[test]
 fn one_provider_call_per_query_text_in_flight() {
-    use std::sync::atomic::AtomicUsize;
     let daemon = crate::test_daemon::start("parser text");
     let listener = daemon.embedding_endpoint();
     let d = &daemon.daemon;
@@ -447,7 +446,6 @@ fn one_provider_call_per_query_text_in_flight() {
             .unwrap()
             .expect("the local provider is configured")
     };
-    let calls = AtomicUsize::new(0);
     // Each read holds a reader slot while it waits, so this stays within the pool.
     let readers = 2;
     let answers: Vec<_> = std::thread::scope(|scope| {
@@ -462,7 +460,6 @@ fn one_provider_call_per_query_text_in_flight() {
         // The provider answers its first call only once every other read of
         // the same text waits for that call.
         let (peer, _) = listener.accept().unwrap();
-        calls.fetch_add(1, Ordering::Relaxed);
         let until = std::time::Instant::now() + Duration::from_secs(10);
         loop {
             let waiting = d
@@ -494,7 +491,6 @@ fn one_provider_call_per_query_text_in_flight() {
         listener.accept().is_err(),
         "a second provider call was made"
     );
-    assert_eq!(calls.load(Ordering::Relaxed), 1);
     assert_eq!(answers, vec![Ok(()); readers]);
 }
 
@@ -689,7 +685,8 @@ fn ranking_with_model_calls_off_uses_stored_vectors() {
         assert!(
             notes
                 .iter()
-                .any(|note| note.ends_with(crate::embeddings::CALLS_OFF)),
+                .any(|note| note
+                    .ends_with("semantic search for new text is off (model calls are off)")),
             "{notes:?}"
         );
         let refused = crate::test_daemon::call(d, "embed", json!({ "yes": true }));

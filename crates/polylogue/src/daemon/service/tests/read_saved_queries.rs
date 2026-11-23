@@ -249,7 +249,7 @@ fn saved_query_reads_keep_missing_withdrawn_and_historical_names_distinct() {
     d.pause_signals();
     save(&d.daemon, "saved-state", "focus", "sessions", false);
     crate::test_answers::step(Call::new("rows", json!({"selection":"annotations where kind:saved_query key:focus","steps":[{"verb":"withdraw"}]})).answer(&d.daemon));
-    for target in ["query:focus", "query:absent"] {
+    for (target, name) in [("query:focus", "focus"), ("query:absent", "absent")] {
         let failure = crate::test_answers::refusal(
             Call::new(
                 "rows",
@@ -257,10 +257,7 @@ fn saved_query_reads_keep_missing_withdrawn_and_historical_names_distinct() {
             )
             .answer(&d.daemon),
         );
-        assert!(
-            failure.message.contains("focus") || failure.message.contains("absent"),
-            "{failure:?}"
-        );
+        assert!(failure.message.contains(name), "{failure:?}");
     }
     assert_eq!(
         history(&read(&d.daemon, "query:focus@1")).revisions.len(),

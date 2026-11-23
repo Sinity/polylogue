@@ -320,8 +320,14 @@ fn logical_seen_keeps_unread_root_when_its_continuation_was_read_first() {
             .answer(&d.daemon),
     );
     assert_eq!(body_text(&root), ["root question"]);
-    assert_eq!(marks_of(&d, "session:claude-code:root").len(), 1);
-    assert_eq!(marks_of(&d, "session:claude-code:cont").len(), 1);
+    assert_eq!(
+        marks_of(&d, "session:claude-code:root")[0].item.as_deref(),
+        Some("block:claude-code:r1#0")
+    );
+    assert_eq!(
+        marks_of(&d, "session:claude-code:cont")[0].item.as_deref(),
+        Some("block:claude-code:c1#0")
+    );
     let empty =
         crate::test_answers::read(composed_call("root:claude-code:root", step).answer(&d.daemon));
     assert!(body_text(&empty).is_empty());
@@ -439,7 +445,10 @@ fn logical_seen_cursor_keeps_all_accepted_bounds_through_parent_append_and_resta
                 .answer(&d.daemon),
         );
     }
-    assert_eq!(marks_of(&d, "session:claude-code:cont").len(), 1);
+    assert_eq!(
+        marks_of(&d, "session:claude-code:cont")[0].item.as_deref(),
+        Some("block:claude-code:c1#0")
+    );
     let second = crate::test_answers::read(Call::from_request(&next.request).answer(&d.daemon));
     let mut source = std::fs::OpenOptions::new()
         .append(true)

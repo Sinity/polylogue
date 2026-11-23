@@ -137,7 +137,7 @@ fn watch(id: &str, selection: &str, hold: Option<&str>) -> crate::test_daemon::C
 }
 
 #[test]
-fn a_watch_is_a_signal_rule_delivering_notices() {
+fn a_watch_is_stored_as_a_signal_rule_with_its_query_hold_and_interrupt() {
     let d = test_daemon::start("first prompt");
     assert!(
         report(watch("w1", "sessions where live:waiting", Some("20m")).answer(&d.daemon))

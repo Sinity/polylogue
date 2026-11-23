@@ -61,7 +61,10 @@ fn provider_consumes_typed_settings_and_captured_credentials() {
         .unwrap();
     assert_eq!(voyage.model, "voyage-4");
     assert!(!format!("{voyage:?}").contains("synthetic-secret"));
-    assert!(Provider::from_settings(&Snapshot::new(Vec::new()), &credentials).is_err());
+    assert_eq!(
+        Provider::from_settings(&Snapshot::new(Vec::new()), &credentials).unwrap_err(),
+        "the typed settings snapshot lacks embed.provider"
+    );
     // A Voyage provider never points its key at another origin.
     let elsewhere = Provider::from_settings(
         &snapshot_with("voyage", Some("http://127.0.0.1:11434/v1")),

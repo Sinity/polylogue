@@ -229,4 +229,16 @@ fn manifest_resolves_the_cli_directory_and_refuses_symlinks() {
             .answer(&daemon.daemon);
     assert!(answer.value().is_none(), "{answer:?}");
     assert_eq!(std::fs::read(&manifest).unwrap(), original);
+    // A link whose target is missing exists too: writing through it would
+    // create the target.
+    let missing = directory.path().join("missing.tsv");
+    let dangling = directory.path().join("dangling.tsv");
+    std::os::unix::fs::symlink(&missing, &dangling).unwrap();
+    let answer = crate::test_daemon::Call::new(
+        "status",
+        serde_json::json!({"verify":true,"manifest":dangling}),
+    )
+    .answer(&daemon.daemon);
+    assert!(answer.value().is_none(), "{answer:?}");
+    assert!(!missing.exists());
 }

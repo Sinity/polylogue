@@ -234,6 +234,11 @@ fn saved_history_cursor_rejects_changed_history_and_retains_authored_self_aliase
     save(&d.daemon, "second-focus", "focus", "messages", false);
     let failure = crate::test_answers::refusal(Call::from_request(&call).answer(&d.daemon));
     assert_eq!(failure.code.as_deref(), Some("stale_cursor"));
+    assert_eq!(
+        resaves(&read(&d.daemon, "query:focus")).len(),
+        1,
+        "the alias is still a dependent after the history changed"
+    );
 }
 
 #[test]
@@ -308,9 +313,14 @@ fn saved_query_stream_emits_history_records_before_selected_rows() {
         })
         .collect::<Vec<_>>();
     assert_eq!(history(&projected(prefix, &expected)), history(&expected));
-    assert!(
-        records
-            .iter()
-            .any(|record| !matches!(record, ReadRecord::Presentation { .. }))
-    );
+    let rows = records
+        .iter()
+        .skip_while(|record| matches!(record, ReadRecord::Presentation { .. }))
+        .flat_map(|record| record.parts())
+        .filter_map(|part| match part {
+            ReadPart::Item(item) => Some(item.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(rows, data_items(&expected));
 }

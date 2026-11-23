@@ -92,17 +92,13 @@ fn acts_dry_run_reports_channels_and_permissions() {
         steps[0]["outcome"]["would"],
         "would send \"continue\" to claude-code:s1: resumed headlessly"
     );
-    assert!(
-        steps[1]["outcome"]["would"]
-            .as_str()
-            .unwrap()
-            .starts_with("would answer allow for claude-code:s1: refused: session_not_live:")
+    assert_eq!(
+        steps[1]["outcome"]["would"],
+        "would answer allow for claude-code:s1: refused: session_not_live: the session is ended; nothing waits for an answer"
     );
-    assert!(
-        steps[2]["outcome"]["would"]
-            .as_str()
-            .unwrap()
-            .starts_with("would interrupt claude-code:s1: refused: session_not_live:")
+    assert_eq!(
+        steps[2]["outcome"]["would"],
+        "would interrupt claude-code:s1: refused: session_not_live: the session is ended; no turn runs"
     );
     let deliveries = crate::test_answers::empty(
         Call::new("rows", json!({"selection": "deliveries"})).answer(&d.daemon),
