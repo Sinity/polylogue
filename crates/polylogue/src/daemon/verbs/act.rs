@@ -38,11 +38,15 @@ impl Verb for Send {
         let mut outcome = command_surface::Outcome::Empty(());
         for (n, target) in targets.into_iter().enumerate() {
             if several {
-                let running = call
-                    .call
-                    .reader()?
-                    .live_state(&target, call.call.daemon.config.requests.now().unix_ms())?
-                    .is_some_and(|state| state.view.state.running());
+                // The same notion of running as `would`: a session just
+                // started and still hosted has no live events yet.
+                let session = SessionId::parse(&target).map_err(Failure::bad_value)?;
+                let running = acts::session_state(
+                    call.call.daemon,
+                    &session,
+                    call.call.daemon.config.requests.now().unix_ms(),
+                )?
+                .is_some_and(|(state, _, _)| state.running());
                 if !running {
                     report.skipped.push(Skipped {
                         session: target.clone(),
@@ -117,7 +121,7 @@ impl Verb for Send {
                 let state = acts::session_state(d, &session, now)?;
                 let delivery = match state {
                     Some((state, _, _)) if several && !state.running() => {
-                        "skipped: ended".to_owned()
+                        format!("skipped: {}", state.as_str())
                     }
                     Some((state, facts, _)) => match channel(
                         Act::Ping { live: several },

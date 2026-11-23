@@ -1,4 +1,4 @@
-//! `QUERY follow`: one line per live-state change and per new message or
+//! `QUERY read --follow`: one line per live-state change and per new message or
 //! tool call of the sessions a query selects, until interrupted. The daemon
 //! streams lines until the request's deadline and ends with the marks it
 //! reached; the client sends them back with the next request, so a follow

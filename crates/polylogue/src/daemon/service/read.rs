@@ -280,6 +280,9 @@ fn failure(error: Error, request: &ReadRequest) -> Failure {
                 polylogue_model::Reference::Session(bound.session.clone()).to_string()
             };
         }
+        // "Start over" means the beginning, as the sentence below says, not
+        // the seen mark the stale cursor read from.
+        repeated.start = polylogue_reading::ReadStart::Beginning;
         let target = polylogue_render::shell_quote(&repeated.target);
         let view = if request.options.view == View::Transcript {
             String::new()

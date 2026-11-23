@@ -21,6 +21,9 @@ use std::{
     sync::{Arc, Condvar, Mutex},
 };
 
+/// Inputs read per store page while inferring a schema.
+const INPUTS_PER_PAGE: usize = 128;
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Infer {
     pub origin: Option<String>,
@@ -246,7 +249,7 @@ fn observe(pool: &ReadPool, gate: &IdleGate, selection: Infer) -> Result<Inferen
                 selection.revision,
                 summary.since_ms,
                 after.as_deref(),
-                128,
+                INPUTS_PER_PAGE,
             )?;
             if let Some(unknown) = page.unknown_time_inputs {
                 summary.unknown_time_inputs = unknown;

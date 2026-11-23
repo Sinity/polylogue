@@ -94,6 +94,9 @@ pub(crate) fn run(
         }
         // Waiting for the next commit is not work: the executor place goes
         // to other requests meanwhile.
+        if commits.is_none() && left.is_none() {
+            return Ok(marks);
+        }
         crate::daemon::executor::outside(|| match (&commits, left) {
             (Some(commits), Some(left)) => {
                 let _ = commits.recv_timeout(left);
@@ -104,11 +107,8 @@ pub(crate) fn run(
             // A daemon without a writer commits nothing: only the deadline
             // can end the follow.
             (None, Some(left)) => std::thread::sleep(left),
-            (None, None) => {}
+            (None, None) => unreachable!("returned above"),
         });
-        if commits.is_none() && left.is_none() {
-            return Ok(marks);
-        }
     }
 }
 
@@ -145,7 +145,7 @@ pub(crate) fn selected(
     let program = polylogue_store::query::compile(query, &options)?;
     if program.unit != polylogue_query::ast::Unit::Sessions {
         return Err(Failure::bad_request(
-            "follow takes a session reference or a sessions query",
+            "read --follow takes a session reference or a sessions query",
         ));
     }
     let mut out = Vec::new();

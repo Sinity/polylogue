@@ -133,10 +133,13 @@ pub(crate) fn peer(
     };
     crate::hook::hermes_session(&mut details, variable);
     let arguments = std::fs::read(root.join("cmdline"))?;
+    // Lossy, so a non-UTF-8 path keeps its position and an option still
+    // consumes its own value.
     let words = arguments
         .split(|byte| *byte == 0)
-        .filter_map(|word| std::str::from_utf8(word).ok())
+        .map(String::from_utf8_lossy)
         .collect::<Vec<_>>();
+    let words = words.iter().map(|word| &**word).collect::<Vec<&str>>();
     let via = via_of_command_line(&words);
     if via == command_surface::Via::Mcp && supplied.tool_call_id.is_some() {
         details.tool_call_id = supplied.tool_call_id.clone();

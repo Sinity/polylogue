@@ -270,10 +270,10 @@ impl Verb for Edit {
                 .into_iter()
                 .map(|reference| match reference.revision {
                     Some(_) => Ok(reference),
-                    None => match reader.assertion(&reference)? {
-                        Some(found) => Ok(RevisionReference::exact(found.fact.root, found.fact.id)),
-                        None => Err(Failure::not_found(format!("no annotation {reference}"))),
-                    },
+                    None => {
+                        let found = stored_annotation(&reader, &reference)?;
+                        Ok(RevisionReference::exact(found.fact.root, found.fact.id))
+                    }
                 })
                 .collect::<Result<Vec<_>, Failure>>()?
         };
@@ -295,6 +295,16 @@ impl Verb for Edit {
             selection.described()
         ))
     }
+}
+
+/// The stored annotation a reference names, or the not-found refusal.
+fn stored_annotation(
+    reader: &polylogue_store::Reader<'_>,
+    reference: &RevisionReference,
+) -> Result<polylogue_model::assertion::Assertion, Failure> {
+    reader
+        .assertion(reference)?
+        .ok_or_else(|| Failure::not_found(format!("no annotation {reference}")))
 }
 
 fn text(step: &EditStep) -> Result<String, Failure> {
@@ -422,9 +432,7 @@ impl Verb for Judge {
         };
         let reader = call.call.reader()?;
         let scope = reader.scope_token();
-        let found = reader
-            .assertion(reference)?
-            .ok_or_else(|| Failure::not_found(format!("no assertion {note}")))?;
+        let found = stored_annotation(&reader, reference)?;
         if !found.fact.author.is_agent() {
             return Err(Failure::bad_request(
                 "only assertions agents wrote are accepted or rejected; revise or withdraw the operator's own",
