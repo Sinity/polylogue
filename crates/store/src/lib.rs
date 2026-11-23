@@ -41,14 +41,12 @@ mod kept;
 pub(crate) mod key_maps;
 pub mod lineage;
 mod live;
-pub mod python_archive;
 pub use live::{
     FollowSnapshot, FollowedCall, FollowedMessage, LiveDetail, LiveEditedFiles, LiveRoot,
     LiveSession, ProcessRow, RunningSession,
 };
 mod identical_chains;
 pub mod measure;
-pub mod older_archive;
 mod ordered_blocks;
 pub mod primary;
 pub mod python_polylogue;
@@ -144,8 +142,11 @@ pub enum StoreError {
     )]
     EmbeddingsSchemaDiffers { difference: String },
     /// A database written before the baseline (no Polylogue format identity).
-    /// The importer lane matches this wording.
-    #[error("older format: import with `polylogue import --from-archive PATH`")]
+    /// Its history comes back by importing its original files.
+    #[error(
+        "{database}.db was written before this format's baseline and is left as it was; \
+         import the original files it was built from with `polylogue import`"
+    )]
     OlderFormat { database: &'static str },
     /// The archive's open builds a new index to replace it.
     #[error(

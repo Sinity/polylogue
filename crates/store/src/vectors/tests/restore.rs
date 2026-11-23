@@ -1,6 +1,4 @@
 use super::*;
-use crate::older_archive::StoredVector;
-use crate::writer::Restored;
 
 const KEY: &str = "synthetic/model/2/document/unit";
 

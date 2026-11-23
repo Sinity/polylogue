@@ -90,8 +90,8 @@ generated page of the thing they belong to, or on the area page that owns them.
   hash of its role and content, and its occurrence among equal messages
   (`id_kind` `content`, against `native`).
 - **linked material**: a page or file a conversation cites, fetched and stored.
-- **Python Polylogue**: the earlier Python implementation; `import` reads its
-  archive, user database and vectors as declared older formats.
+- **Python Polylogue**: the earlier Python implementation; `import` reads
+  its vector stores, whose vectors were paid for.
 
 ## Parsing
 

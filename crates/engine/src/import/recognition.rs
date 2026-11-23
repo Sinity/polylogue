@@ -10,7 +10,6 @@ pub(super) const STRUCTURES: &[&str] = &[
     "ChatGPT conversation",
     "Codex Cloud tasks",
     "Aider paired histories",
-    "Python Polylogue source catalog",
     "claude.ai export",
     "claude.ai conversation",
     "Grok account export",
@@ -147,8 +146,7 @@ pub(super) fn declared(
     file.rewind()?;
     if let Some(format) = format {
         return Ok(polylogue_sources::origin::by_name(format).filter(|o| {
-            o.support == Support::Parsed
-                && ((o.recognize)(path, &head[..n]) || o.arrival == Arrival::Import)
+            importable(o) && ((o.recognize)(path, &head[..n]) || o.arrival == Arrival::Import)
         }));
     }
     if path.file_name().is_some_and(|name| name == "codex.json") {
@@ -233,8 +231,8 @@ pub(super) fn declared(
             return Ok(Some(origin));
         }
     }
-    // Python Polylogue's hook and browser-capture spools are read only when
-    // named with --format, like its other stores.
+    // Hook spool and browser-capture files outside their own layouts are
+    // read only when named with --format.
     for name in ["hermes", "claude-design"] {
         if let Some(origin) = polylogue_sources::origin::by_name(name)
             && (origin.recognize)(path, &head[..n])
@@ -245,10 +243,19 @@ pub(super) fn declared(
     // Outside a tool's root its preserved layout is the declaration.
     Ok(ORIGINS
         .iter()
-        .filter(|o| o.arrival != Arrival::Import && o.support == Support::Parsed)
+        .filter(|o| o.arrival != Arrival::Import && importable(o))
         .find(|o| {
             o.locations.iter().any(|p| collect::ends_in(path, p)) && (o.recognize)(path, &head[..n])
         }))
+}
+
+/// An origin whose files an import stores: a parsed one, or one whose
+/// files are kept as bytes until it has a parser, as the live path keeps
+/// them. A row-dump origin is a database read row by row, never a file.
+fn importable(origin: &OriginSpec) -> bool {
+    origin.support == Support::Parsed
+        || (origin.support == Support::NoParser
+            && origin.capture == polylogue_sources::Capture::Bytes)
 }
 
 // A standalone project path identifies that sidecar, not a whole

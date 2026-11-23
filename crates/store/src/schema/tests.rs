@@ -63,7 +63,8 @@ fn an_index_at_another_version_is_refused_without_removing_rows() {
     ));
     assert_eq!(
         ensure_index(&conn).unwrap_err().to_string(),
-        "older format: import with `polylogue import --from-archive PATH`"
+        "index.db was written before this format's baseline and is left as it was; \
+         import the original files it was built from with `polylogue import`"
     );
     assert_eq!(
         conn.query_row("SELECT id FROM input_ref", [], |row| row
@@ -228,7 +229,8 @@ fn an_archive_written_before_the_baseline_is_an_older_format_and_stays_as_it_is(
         );
         assert_eq!(
             error.to_string(),
-            "older format: import with `polylogue import --from-archive PATH`"
+            "archive.db was written before this format's baseline and is left as it was; \
+             import the original files it was built from with `polylogue import`"
         );
         assert_eq!(version(&conn).unwrap(), found);
         assert_eq!(

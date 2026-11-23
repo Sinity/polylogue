@@ -109,7 +109,7 @@ pub mod import {
         #[serde(default)]
         #[schemars(extend("argument_form" = "words"))]
         pub paths: Vec<std::path::PathBuf>,
-        /// Read the paths as this declared structure (an origin name), or as one of Python Polylogue's stores: python-archive (a folder with source.db and blob/), python-user-db (its user.db) or python-vectors (one of its vector stores)
+        /// Read the paths as this declared structure (an origin name), or python-vectors for one of Python Polylogue's vector stores
         #[serde(default)]
         pub origin: Option<String>,
         /// Withdraw page blocks missing from an imported working copy
@@ -122,10 +122,7 @@ pub mod import {
         pub cancel: bool,
         /// Wait this long for a provider import
         pub wait: Option<String>,
-        /// The folder of an archive written before the version 1 baseline, imported once in place of paths
-        #[serde(default)]
-        pub from_archive: Option<std::path::PathBuf>,
-        /// With --from-archive: read and check the archive, write nothing, and report counts per class
+        /// Recognize and classify every member, storing nothing
         #[serde(default)]
         pub dry_run: bool,
     }

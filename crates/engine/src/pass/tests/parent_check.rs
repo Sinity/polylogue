@@ -51,7 +51,6 @@ fn queued_import_checks_its_parent_before_committing() {
         tx.send(LoopMsg::Import {
             paths: vec![path.clone()],
             format: None,
-            from_archive: None,
             dry_run: false,
             authorship: authorship.clone(),
             parent: Some(parent),
@@ -75,7 +74,6 @@ fn queued_import_checks_its_parent_before_committing() {
         tx.send(LoopMsg::Import {
             paths: vec![path.clone()],
             format: None,
-            from_archive: None,
             dry_run: false,
             authorship,
             parent: None,

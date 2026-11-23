@@ -111,3 +111,86 @@ fn hook_carrier_batches_keep_bytes_duplicate_paths_members_and_repeat() {
         counter
     );
 }
+
+fn spool_tree(root: &Path) {
+    let write = |path: &str, text: &str| {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write(
+        "hooks/carriers/codex/2026-09-19/4242.ndjson",
+        "{\"event_id\":\"0002\",\"event_type\":\"SessionStart\",\"observed_at_ms\":1789815097000,\"payload\":{\"session_id\":\"t1\",\"hook_event_name\":\"SessionStart\"}}\n",
+    );
+    write(
+        "hooks/claude-code-s1.jsonl",
+        "{\"event_type\":\"Stop\",\"session_id\":\"s1\",\"timestamp\":\"2026-08-14T00:00:00Z\"}\n",
+    );
+    write("hooks/.carrier-drain.lock", "");
+    write(
+        "browser-capture/gemini/files.json",
+        &serde_json::json!({"polylogue_capture_kind":"browser_llm_session", "schema_version":1,
+            "provenance":{"captured_at":"2026-08-01T00:00:00Z"},
+            "session":{"provider":"gemini", "provider_session_id":"files",
+                "turns":[{"provider_turn_id":"m1", "role":"user", "text":"a captured turn"}]}})
+        .to_string(),
+    );
+}
+
+/// Hook lines in the older shapes (dated carrier files with `event_id`,
+/// per-session files with `event_type`) and a `browser_llm_session` v1
+/// capture are record shapes of their parsers, read when named.
+#[test]
+fn older_hook_lines_and_browser_captures_import_when_named() {
+    let options = |format: &str| ImportOptions {
+        format: Some(format.into()),
+        ..Default::default()
+    };
+    let w = polylogue_testkit::ClaudeHome::new();
+    let old = w.dir.path().join("old");
+    spool_tree(&old);
+    let (mut engine, _lock) = engine(&w, 64);
+    // Unnamed, a spool is no declared export structure: nothing is stored.
+    let unnamed = engine.import(&[old.join("hooks")]).unwrap();
+    assert!(unnamed.imported.is_empty(), "{unnamed:?}");
+    assert_eq!(unnamed.refused.len(), 3);
+
+    let hooks = engine
+        .import_with_options(&[old.join("hooks")], &options("hook-spool"))
+        .unwrap();
+    // Every spool file is parsed; the lock file beside them is kept as a
+    // member of the named package, as any member no parser reads is.
+    assert_eq!(hooks.imported.len(), 3, "{hooks:?}");
+    assert!(hooks.refused.is_empty(), "{hooks:?}");
+    let lock = hooks
+        .members
+        .iter()
+        .find(|member| member.path.ends_with(".carrier-drain.lock"))
+        .unwrap();
+    assert_eq!(lock.class, "asset");
+    assert!(hooks.pass.errors.is_empty(), "{:?}", hooks.pass.errors);
+    let captures = engine
+        .import_with_options(&[old.join("browser-capture")], &options("browser-capture"))
+        .unwrap();
+    assert_eq!(captures.imported.len(), 1, "{captures:?}");
+    assert_eq!(
+        w.count("SELECT COUNT(*) AS n FROM a.input WHERE format = 'hook-spool'"),
+        2
+    );
+    assert_eq!(
+        w.count("SELECT COUNT(*) AS n FROM a.input WHERE format = 'browser-capture'"),
+        1
+    );
+    assert_eq!(
+        w.count("SELECT COUNT(*) AS n FROM session WHERE id = 'gemini-app:files'"),
+        1
+    );
+
+    // Importing the same trees again stores nothing new.
+    let again = engine
+        .import_with_options(&[old.join("hooks")], &options("hook-spool"))
+        .unwrap();
+    assert!(again.pass.errors.is_empty(), "{:?}", again.pass.errors);
+    assert!(again.imported.is_empty(), "{again:?}");
+    assert_eq!(again.already_stored.len(), 3, "{again:?}");
+}

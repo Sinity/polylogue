@@ -588,31 +588,6 @@ impl Handler for Import {
             .iter()
             .map(|path| call.path(path, "import path"))
             .collect::<Result<Vec<_>, _>>()?;
-        let from_archive = match arguments.from_archive.as_deref() {
-            Some(_) if !paths.is_empty() => {
-                return Ok(error(
-                    polylogue_model::Code::BadRequest,
-                    "--from-archive names one archive and takes no other paths",
-                ));
-            }
-            Some(_) if arguments.origin.is_some() => {
-                return Ok(error(
-                    polylogue_model::Code::BadRequest,
-                    "--from-archive takes no --origin",
-                ));
-            }
-            Some(archive) => {
-                let archive = call.path(archive, "archive path")?;
-                Some(archive)
-            }
-            None if arguments.dry_run => {
-                return Ok(error(
-                    polylogue_model::Code::BadRequest,
-                    "--dry-run applies to --from-archive",
-                ));
-            }
-            None => None,
-        };
         let d = call.daemon;
         let invocation = call.invocation;
         let (reply, wait) = sync_channel(1);
@@ -626,7 +601,6 @@ impl Handler for Import {
             .send(polylogue_engine::LoopMsg::Import {
                 paths,
                 format: arguments.origin.clone(),
-                from_archive,
                 dry_run: arguments.dry_run,
                 authorship: invocation.authorship.clone(),
                 parent: invocation.parent_lifetime(),

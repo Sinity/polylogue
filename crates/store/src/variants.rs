@@ -1,8 +1,6 @@
 //! Rendition rows, current revisions and typed reads. Confirmation applies
 //! prepared records unchanged through the same codec as standalone writes.
-mod imports;
 mod rows;
-pub use imports::declare_imports;
 mod search;
 mod sql;
 pub use search::{SCHEMA, VariantMatch, project};
@@ -185,21 +183,11 @@ pub fn apply(conn: &Connection, effect: &VariantEffect, counter: i64) -> Result<
     }
     Ok(())
 }
-pub fn restore(
-    conn: &Connection,
-    effect: &VariantEffect,
-    current: &polylogue_model::authored::ImportAttribution,
-    counter: i64,
-) -> Result<()> {
-    imports::restore(conn, effect, current, counter)
-}
-
 pub fn copy(from: &Connection, to: &Connection) -> Result<()> {
     rows::visit(from, "", None, |v| {
         rows::insert(to, &v, 0)?;
         rows::parts(from, &v.id, |p| rows::insert_part(to, &p))
-    })?;
-    imports::copy(from, to)
+    })
 }
 
 impl Reader<'_> {

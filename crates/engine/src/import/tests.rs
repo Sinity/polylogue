@@ -77,15 +77,6 @@ fn a_registered_import_retries_after_restart_without_storing_part_blobs() {
 
 #[test]
 fn a_codex_import_retry_reads_only_after_its_committed_checkpoint() {
-    codex_checkpoint_retry(false);
-}
-
-#[test]
-fn a_confirmed_predecessor_import_continues_from_its_committed_checkpoint() {
-    codex_checkpoint_retry(true);
-}
-
-fn codex_checkpoint_retry(predecessor: bool) {
     let home = polylogue_testkit::ClaudeHome::new();
     let thread = "019a0000-0000-7000-8000-000000000001";
     let name = format!("rollout-2026-03-01T10-00-00-{thread}.jsonl");
@@ -111,45 +102,16 @@ fn codex_checkpoint_retry(predecessor: bool) {
     );
     let cursor = prefix.len() as u64;
     let original = prefix + &suffix;
-    let (root, path, format) = if predecessor {
-        use sha2::Digest as _;
-        let root = home.dir.path().join("catalog");
-        let digest = sha2::Sha256::digest(original.as_bytes());
-        let address = format!("{digest:x}");
-        let prefix = root.join("blob").join(&address[..2]);
-        std::fs::create_dir_all(&prefix).unwrap();
-        std::fs::write(prefix.join(&address[2..]), original.as_bytes()).unwrap();
-        let db = rusqlite::Connection::open(root.join("source.db")).unwrap();
-        db.execute_batch("CREATE TABLE raw_sessions(raw_id TEXT PRIMARY KEY,origin TEXT,source_path TEXT,blob_hash BLOB,blob_size INTEGER)").unwrap();
-        db.execute(
-            "INSERT INTO raw_sessions VALUES ('one','codex-session',?1,?2,?3)",
-            rusqlite::params![name, digest.as_slice(), original.len() as i64],
-        )
-        .unwrap();
-        let path = PathBuf::from(format!("{}!/raw_sessions/one/{name}", root.display()));
-        (root, path, python_polylogue::ARCHIVE)
-    } else {
-        let path = home.dir.path().join(name);
-        std::fs::write(&path, &original).unwrap();
-        (path.clone(), path, "codex")
-    };
+    let path = home.dir.path().join(name);
+    std::fs::write(&path, &original).unwrap();
     let options = ImportOptions {
-        format: Some(format.into()),
+        format: Some("codex".into()),
         ..Default::default()
     };
     {
         let (mut engine, _lock) = engine(&home, cursor);
         let origin = polylogue_sources::origin::by_name("codex").unwrap();
-        let mut captured = Captured::stream(&engine.archive, original.as_bytes()).unwrap();
-        if predecessor {
-            let id = import_identity(
-                &engine.config.machine,
-                &root,
-                None,
-                std::iter::once((path.as_path(), captured.prepared.hash())),
-            );
-            captured.member = Some(import_member(&root, &path, false, id, &options));
-        }
+        let captured = Captured::stream(&engine.archive, original.as_bytes()).unwrap();
         let mut plan = engine
             .import_plan(&path, origin, captured, None, &mut ImportReport::default())
             .unwrap()
@@ -185,33 +147,15 @@ fn codex_checkpoint_retry(predecessor: bool) {
 
     let (mut engine, _lock) = engine(&home, cursor);
     engine.stopped_attempt.executable = polylogue_model::BlobHash::of(b"different executable");
-    if predecessor {
-        polylogue_store::fault::arm(
-            "python_archive.prepare_raw",
-            &path.to_string_lossy(),
-            polylogue_store::fault::Action::Fail,
-            0,
-            1,
-        );
-    }
     let retry = engine
-        .import_with_options(std::slice::from_ref(&root), &options)
+        .import_with_options(std::slice::from_ref(&path), &options)
         .unwrap();
     assert!(
         retry.refused.is_empty() && retry.pass.errors.is_empty(),
         "{retry:?}"
     );
     assert_eq!(retry.already_stored.as_slice(), std::slice::from_ref(&path));
-    if predecessor {
-        assert_eq!(retry.imported.len(), 1);
-        assert!(retry.imported[0].ends_with("source.db"));
-        assert_eq!(
-            retry.pass.bytes_stored,
-            std::fs::metadata(root.join("source.db")).unwrap().len()
-        );
-    } else {
-        assert_eq!(retry.pass.bytes_stored, 0);
-    }
+    assert_eq!(retry.pass.bytes_stored, 0);
     assert_eq!(retry.pass.bytes_read, suffix.len() as u64);
     let reader = engine.reads.reader().unwrap();
     let session = polylogue_model::SessionId::parse(&format!("codex:{thread}")).unwrap();
@@ -235,79 +179,109 @@ fn codex_checkpoint_retry(predecessor: bool) {
             .unwrap(),
         original.as_bytes()
     );
-    let mut inputs = vec![input.to_string()];
-    if predecessor {
-        let catalog = std::fs::read(root.join("source.db")).unwrap();
-        let id = polylogue_model::BlobHash::of(&catalog).to_string();
-        let progress = reader.input_progress(&id).unwrap().unwrap();
-        assert_eq!(
-            reader
-                .stored_range(&id, progress.chain, 0, progress.length, &engine.blobs)
-                .unwrap(),
-            catalog
-        );
-        inputs.push(id);
-    }
-    inputs.sort();
-    let expected: Vec<_> = inputs
-        .iter()
-        .map(|id| serde_json::json!({"input":id}))
-        .collect();
+    let expected = [serde_json::json!({"input": input.to_string()})];
     for table in ["a.revision", "a.extent"] {
         let rows = reader
             .query(&format!("SELECT input FROM {table} ORDER BY input"), &[])
             .unwrap();
         assert_eq!(rows, expected, "{table}");
     }
+}
+
+#[test]
+fn file_of_declared_origin_without_parser_is_stored_by_import() {
+    let w = polylogue_testkit::ClaudeHome::new();
+    // Pi's own layout below its root; Pi has no parser yet.
+    let path = w
+        .dir
+        .path()
+        .join("staged/.pi/agent/sessions/2026/11/run.jsonl");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let bytes = b"{\"type\":\"session\",\"id\":\"run\"}\n";
+    std::fs::write(&path, bytes).unwrap();
+    let (mut engine, _lock) = engine(&w, 64);
+    let report = engine.import(std::slice::from_ref(&path)).unwrap();
+    assert!(
+        report.refused.is_empty() && report.pass.errors.is_empty(),
+        "{report:?}"
+    );
+    assert_eq!(report.imported, std::slice::from_ref(&path));
+    let [member] = report.members.as_slice() else {
+        panic!("one member: {report:?}")
+    };
+    assert_eq!(
+        (member.origin.as_deref(), member.class.as_str()),
+        (Some("pi"), "no parser yet")
+    );
+    assert_eq!(report.packages[0].assets, 0);
+    let input = blake3::hash(bytes).to_hex();
+    let reader = engine.reads.reader().unwrap();
+    let progress = reader.input_progress(input.as_ref()).unwrap().unwrap();
+    assert_eq!(
+        reader
+            .stored_range(
+                input.as_ref(),
+                progress.chain,
+                0,
+                progress.length,
+                &engine.blobs
+            )
+            .unwrap(),
+        bytes
+    );
     drop(reader);
-    if predecessor {
-        let checkpoint_subject = format!("{}:{input}", engine.archive.root.display());
-        polylogue_store::fault::arm(
-            "parser.checkpoint",
-            &checkpoint_subject,
-            polylogue_store::fault::Action::Fail,
-            0,
-            u32::MAX,
-        );
-        // The fault reaches the full reader. The completed import must not.
-        assert!(
-            engine
-                .reads
-                .reader()
-                .unwrap()
-                .parser_checkpoint(
-                    input.as_ref(),
-                    progress.chain,
-                    &polylogue_sources::origin::by_name("codex")
-                        .unwrap()
-                        .reading_version()
-                )
-                .unwrap_err()
-                .to_string()
-                .contains("parser.checkpoint")
-        );
-        let source_observations = "SELECT count(*) AS n FROM a.observation o
-            JOIN a.input i ON i.id=o.input WHERE i.format='codex'";
-        let before = home.count(source_observations);
-        let options = ImportOptions {
-            authorship: Some(polylogue_model::authorship::Authorship {
-                author: polylogue_model::Author::Script("fixture-resume".into()),
-                via: polylogue_model::authorship::Channel::Import,
-            }),
-            ..options
-        };
-        for _ in 0..2 {
-            let report = engine
-                .import_with_options(std::slice::from_ref(&root), &options)
-                .unwrap();
-            assert!(report.refused.is_empty() && report.pass.errors.is_empty());
-            assert!(report.imported.is_empty());
-            assert!(report.already_stored.contains(&path));
-            assert_eq!(home.count(source_observations), before + 1);
-        }
-        assert_eq!(home.count("SELECT count(*) AS n FROM a.revision"), 2);
-        polylogue_store::fault::clear();
-    }
+    assert_eq!(
+        w.count("SELECT COUNT(*) AS n FROM a.input WHERE format = 'pi'"),
+        1
+    );
+    // Named explicitly, the same bytes are already stored.
+    let again = engine
+        .import_with_options(
+            std::slice::from_ref(&path),
+            &ImportOptions {
+                format: Some("pi".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(again.refused.is_empty(), "{again:?}");
+    assert_eq!(again.already_stored, [path]);
+}
+
+#[test]
+fn dry_run_classifies_members_and_stores_nothing() {
+    let w = polylogue_testkit::ClaudeHome::new();
+    let path = w
+        .dir
+        .path()
+        .join("staged/.pi/agent/sessions/2026/11/run.jsonl");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"{\"type\":\"session\"}\n").unwrap();
+    let unknown = w.dir.path().join("staged/notes.txt");
+    std::fs::write(&unknown, b"plain text").unwrap();
+    let (mut engine, _lock) = engine(&w, 64);
+    let report = engine
+        .import_with_options(
+            &[path.clone(), unknown.clone()],
+            &ImportOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let classes: Vec<_> = report
+        .members
+        .iter()
+        .map(|member| (member.path.clone(), member.class.as_str()))
+        .collect();
+    assert_eq!(
+        classes,
+        [(path, "no parser yet"), (unknown.clone(), "refused")]
+    );
+    assert_eq!(report.refused.len(), 1);
+    assert_eq!(report.refused[0].path, unknown);
+    assert!(report.imported.is_empty() && report.already_stored.is_empty());
+    assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.input"), 0);
 }
 
 #[test]

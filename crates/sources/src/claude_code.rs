@@ -65,34 +65,6 @@ pub fn open(path: &Path) -> Option<Parse> {
     File::from_path(path).map(|file| Parse::Lines(Box::new(ClaudeCode { file })))
 }
 
-/// Whether every nonblank line is a native message with its own identity.
-/// Check the whole immutable stream before admitting its first record.
-pub fn wire_messages(mut bytes: impl std::io::BufRead) -> std::io::Result<bool> {
-    let mut line = Vec::new();
-    let mut found = false;
-    while bytes.read_until(b'\n', &mut line)? > 0 {
-        if !line.iter().all(u8::is_ascii_whitespace) {
-            let Ok(record) = serde_json::from_slice::<Json>(&line) else {
-                return Ok(false);
-            };
-            let role = record.str("type");
-            if !matches!(role, Some("user" | "assistant"))
-                || record.str("sessionId").is_none_or(str::is_empty)
-                || record.str("uuid").is_none_or(str::is_empty)
-                || record.pointer("/message/role").and_then(Json::as_str) != role
-                || !record
-                    .pointer("/message/content")
-                    .is_some_and(|v| v.is_string() || v.is_array())
-            {
-                return Ok(false);
-            }
-            found = true;
-        }
-        line.clear();
-    }
-    Ok(found)
-}
-
 /// `claude --resume <id>`. Subagents and sidechains are not resumable on
 /// their own.
 pub fn resume(native: &str) -> Option<Vec<String>> {
@@ -108,9 +80,6 @@ pub enum File {
     /// A session's own transcript. `stem` is the session ID the file name
     /// carries (an `.orphaned-…` suffix removed).
     Main { stem: String },
-    /// Complete message envelopes in an imported transcript. Their wire session
-    /// IDs own the messages. The wrapping file supplies no parent or session.
-    WireMessages,
     /// A subagent's transcript. `stem` is the file name (`agent-<id>`).
     Subagent { stem: String },
     /// A Workflow run's journal: which agents it started and what each
@@ -331,14 +300,11 @@ impl ClaudeCode {
                 native: session.clone(),
                 kind: SessionKind::Main,
             },
-            file @ (File::Main { .. } | File::WireMessages) => {
+            File::Main { stem } => {
                 let base = v
                     .str("sessionId")
                     .filter(|s| !s.is_empty())
-                    .unwrap_or(match file {
-                        File::Main { stem } => stem,
-                        _ => "",
-                    })
+                    .unwrap_or(stem)
                     .to_owned();
                 if v.bool("isSidechain") == Some(true) {
                     RecordSession {
@@ -456,7 +422,6 @@ impl ClaudeCode {
                 (stem, SessionKind::Compaction)
             }
             File::Subagent { stem } => (stem, SessionKind::Subagent),
-            File::WireMessages => return None,
         };
         let id = session_id(stem)?;
         parser_state.touched_sessions.insert(stem.to_owned());
@@ -503,7 +468,7 @@ impl ClaudeCode {
             .filter(|s| !s.is_empty())
             .or(match &self.file {
                 File::Main { stem } | File::Subagent { stem } => Some(stem.as_str()),
-                File::Journal { .. } | File::WireMessages => None,
+                File::Journal { .. } => None,
             })
         else {
             return;
