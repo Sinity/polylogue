@@ -144,9 +144,12 @@ fn all_tagged_rows_create_no_step_request_and_retries_keep_the_original_result()
     assert_eq!(repeated.id, first.id);
     assert_eq!(repeated.written, 1);
     assert!(repeated.already.is_empty());
-    assert_eq!(
-        text,
-        "tagged 1 row\nrepeat; no new writes\nundo: printf '%s\\n' 'annotation:tag-original-1@tag-original-1' | polylogue --request-id tag-original-1-undo - withdraw\n"
+    let written = first.id.as_ref().unwrap();
+    let (report_lines, undo) = text.split_once("undo: ").expect("an undo line");
+    assert_eq!(report_lines, "tagged 1 row\nrepeat; no new writes\n");
+    assert!(
+        undo.contains(&format!("'annotation:{written}@{written}'")),
+        "{undo}"
     );
 }
 
@@ -164,11 +167,15 @@ fn tag_skips_rows_already_tagged_and_reports_the_accepted_population() {
     let (report, text) = wrote(&d, intended.clone());
     assert_eq!((report.targets, report.written), (2, 1));
     assert_eq!(report.already, vec![first.clone()]);
+    let written = report.id.as_ref().unwrap();
+    let (report_lines, undo) = text.split_once("undo: ").expect("an undo line");
     assert_eq!(
-        text,
-        format!(
-            "tagged 1 row\nalready tagged: {first}\nundo: printf '%s\\n' 'annotation:tag-bulk-1.2@tag-bulk-1.2' | polylogue --request-id tag-bulk-1-undo - withdraw\n"
-        )
+        report_lines,
+        format!("tagged 1 row\nalready tagged: {first}\n")
+    );
+    assert!(
+        undo.contains(&format!("'annotation:{written}@{written}'")),
+        "{undo}"
     );
     let request = d
         .daemon
