@@ -79,10 +79,10 @@ same note ID, so a note is never saved twice. Read notes with
 2. Register the host with the extension ID Chrome shows:
 
    ```bash
-   polylogue install-agent chrome --extension-id <id>
+   polylogue install chrome --extension-id <id>
    ```
 
-   `polylogue install-agent chrome --remove` takes it out again.
+   `polylogue install chrome --remove` takes it out again.
 3. Run the daemon (`polylogue daemon`) so captures are read.
 
 ## Develop

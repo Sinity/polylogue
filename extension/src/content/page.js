@@ -126,7 +126,7 @@
   function announceAfterPause(reason) {
     clearTimeout(timer);
     timer = setTimeout(() => {
-      if (provider.generating?.()) {
+      if (provider.generating()) {
         announceAfterPause(reason);
         return;
       }

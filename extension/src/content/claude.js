@@ -69,14 +69,15 @@
       `/api/organizations/${org}/chat_conversations?limit=${PAGE_SIZE}&offset=${offset}`,
     );
     if (failed) return failed;
-    const items = await response.json();
-    const rows = Array.isArray(items) ? items : [];
+    const rows = await response.json().catch(() => null);
+    if (!Array.isArray(rows)) return { status: 502, error: "claude_list_unreadable" };
     const conversations = rows.filter((item) => typeof item.uuid === "string").map((item) => ({
       id: item.uuid,
       title: typeof item.name === "string" ? item.name : null,
       updated_at: typeof item.updated_at === "string" ? item.updated_at : null,
     }));
-    const done = rows.length < PAGE_SIZE;
+    // The server may return fewer rows than asked; only an empty page ends the list.
+    const done = rows.length === 0;
     return { status: 200, info: { conversations, next: done ? null : String(offset + rows.length), done, newest_first: false } };
   }
 

@@ -56,6 +56,33 @@ describe("a note on a selected passage", () => {
     expect(() => notePayload(note, { ...sender, frameId: 3 })).toThrow("note_not_from_a_chat_page");
     expect(() => notePayload({ ...note, body: " " }, sender)).toThrow("the_note_needs_text_and_a_quote");
   });
+
+  it("is refused from a page that is not an https page of the provider's own host", () => {
+    const refuse = (provider, url) => {
+      const named = { ...note, source: { ...note.source, provider, page_url: url } };
+      return () => notePayload(named, { ...sender, url });
+    };
+    expect(refuse("chatgpt", "http://chatgpt.com/c/c1")).toThrow("the_page_is_not_that_conversation");
+    expect(refuse("chatgpt", "https://chatgpt.example/c/c1")).toThrow("the_page_is_not_that_conversation");
+    expect(refuse("claude-ai", "https://chatgpt.com/c/c1")).toThrow("the_page_is_not_that_conversation");
+    expect(refuse("unknown", "https://chatgpt.com/c/c1")).toThrow("the_page_is_not_that_conversation");
+  });
+
+  it("reads the conversation from each provider's own path", () => {
+    const accept = (provider, url) => notePayload(
+      { ...note, source: { ...note.source, provider, page_url: url } },
+      { ...sender, url },
+    ).source.conversation_id;
+    expect(accept("claude-ai", "https://claude.ai/chat/c1")).toBe("c1");
+    expect(accept("grok", "https://grok.com/c/c1")).toBe("c1");
+    expect(accept("gemini", "https://gemini.google.com/app/c1")).toBe("c1");
+    expect(() => accept("claude-ai", "https://claude.ai/c/c1")).toThrow("the_page_is_not_that_conversation");
+    expect(() => accept("gemini", "https://gemini.google.com/c/c1")).toThrow("the_page_is_not_that_conversation");
+  });
+
+  it("must name the message it was selected in", () => {
+    expect(() => notePayload({ ...note, source: { ...note.source, message_id: "" } }, sender)).toThrow("the_selection_names_no_message");
+  });
 });
 
 function scriptedPort(reply) {

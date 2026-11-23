@@ -3,6 +3,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { start } from "../src/background/main.js";
 import { Capturer, captureBody } from "../src/background/capture.js";
 import { fakeChrome, json, until } from "./support/fake_chrome.js";
+import "../src/wording.js";
 
 const CONVERSATION = {
   conversation_id: "c1", title: "Synthetic", mapping: {
@@ -392,6 +393,9 @@ describe("a capture", () => {
     const state = await extension.popup(1);
     expect(state.status.host).toBe("missing");
     expect(state.page.host).toBe("missing");
+    expect(globalThis.polylogueWording.conversation(state.page)).toMatchObject({
+      tone: "bad", label: "Polylogue is not installed for this browser",
+    });
     expect((await extension.captureTab(1, "changed")).outcome).toBe("waiting");
     expect(await extension.outbox.count()).toBe(1);
     const { problems } = await chrome.storage.session.get({ problems: [] });

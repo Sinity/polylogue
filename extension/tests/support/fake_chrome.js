@@ -3,12 +3,13 @@
 // ports. The host speaks the real native messaging frames, so the
 // extension's transport runs unchanged.
 
-function event() {
+export function event() {
   const listeners = [];
   return {
     addListener: (f) => listeners.push(f),
     removeListener: (f) => { const i = listeners.indexOf(f); if (i >= 0) listeners.splice(i, 1); },
-    fire: (...args) => listeners.map((f) => f(...args)),
+    // Chrome dispatches to a copy, so a listener may remove itself.
+    fire: (...args) => [...listeners].map((f) => f(...args)),
     listeners,
   };
 }
@@ -16,8 +17,15 @@ function event() {
 function storageArea() {
   let data = {};
   return {
-    async get(defaults = {}) {
-      return Object.fromEntries(Object.entries(defaults).map(([k, v]) => [k, k in data ? structuredClone(data[k]) : v]));
+    // The forms Chrome takes: no argument, a key, a list of keys, or an
+    // object of defaults.
+    async get(keys) {
+      if (keys === undefined || keys === null) return structuredClone(data);
+      const defaults = typeof keys === "string" ? { [keys]: undefined }
+        : Array.isArray(keys) ? Object.fromEntries(keys.map((k) => [k, undefined])) : keys;
+      return Object.fromEntries(Object.entries(defaults)
+        .filter(([k, v]) => k in data || v !== undefined)
+        .map(([k, v]) => [k, k in data ? structuredClone(data[k]) : v]));
     },
     async set(values) { data = { ...data, ...structuredClone(values) }; },
     async clear() { data = {}; },
@@ -129,10 +137,11 @@ export function fakeChrome({ routes = {}, pages = {}, tabs = [], installed = tru
         if (!installed) throw new Error("Specified native messaging host not found.");
         return hostPort(routes, calls);
       },
-      sendMessage: async (message) => {
-        const answers = chrome.runtime.onMessage.fire(message, {}, () => {});
-        return answers;
-      },
+      // Resolves with the first response a listener sends, as Chrome does.
+      sendMessage: (message) => new Promise((resolve) => {
+        const answers = chrome.runtime.onMessage.fire(message, {}, resolve);
+        if (!answers.includes(true)) resolve(undefined);
+      }),
     },
     storage: { local: storageArea(), session: storageArea(), onChanged: event() },
     alarms: { created: [], create: async (name, info) => { chrome.alarms.created.push([name, info]); }, onAlarm: event() },

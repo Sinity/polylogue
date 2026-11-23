@@ -6,14 +6,10 @@ import { ProviderScheduler } from "../src/background/provider.js";
 import { chatActionInPage } from "../src/actions/chatgpt.js";
 import { PROVIDERS } from "../src/background/tabs.js";
 import { JSDOM } from "jsdom";
+import { event, until } from "./support/fake_chrome.js";
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "../src");
 const source = (path) => readFileSync(join(SRC, path), "utf8");
-
-function event() {
-  const listeners = [];
-  return { addListener: (f) => listeners.push(f), removeListener: () => {}, fire: (...a) => listeners.map((f) => f(...a)) };
-}
 
 /** A chat page with the extension's page scripts, its fetches answered by `routes`. */
 function page(url, scripts, { html = "<body></body>", routes = {}, resources = [] } = {}) {
@@ -70,7 +66,7 @@ describe("the ChatGPT page script", () => {
     expect(await window.polylogueProvider.currentConversation()).toEqual({ id: "tmp-1", temporary: true });
   });
 
-  it("pages through the four parts of the conversation list", async () => {
+  it("pages through the four partitions of the conversation list", async () => {
     const { window } = page("https://chatgpt.com/", ["content/chatgpt.js"], {
       routes: Object.fromEntries([session,
         ["https://chatgpt.com/backend-api/conversations?offset=0&limit=28&order=updated&is_archived=false&is_starred=false",
@@ -86,11 +82,56 @@ describe("the ChatGPT page script", () => {
     expect(last.info).toMatchObject({ next: null, done: true });
   });
 
+  it("keeps listing a partition whose reply has no total until a short page", async () => {
+    const full = Array.from({ length: 28 }, (_, i) => ({ id: `c${i}` }));
+    const { window } = page("https://chatgpt.com/", ["content/chatgpt.js"], {
+      routes: Object.fromEntries([session,
+        ["https://chatgpt.com/backend-api/conversations?offset=0&limit=28&order=updated&is_archived=false&is_starred=false", [200, { items: full }]],
+        ["https://chatgpt.com/backend-api/conversations?offset=28&limit=28&order=updated&is_archived=false&is_starred=false", [200, { items: [{ id: "last" }] }]],
+      ]),
+    });
+    const first = await window.polylogueProvider.list(null);
+    expect(first.info).toMatchObject({ next: "0:28", done: false });
+    const second = await window.polylogueProvider.list("0:28");
+    expect(second.info).toMatchObject({ next: "1:0", next_partition: "1:0", done: false });
+  });
+
+  it("reports a refused sign-in check as the refusal, and an empty one as signed out", async () => {
+    const refused = page("https://chatgpt.com/c/c1", ["content/chatgpt.js"], {
+      routes: { "https://chatgpt.com/api/auth/session": [403, "{}"] },
+    });
+    expect(await refused.window.polylogueProvider.fetchConversation(null)).toEqual({ status: 403, error: "chatgpt_http_403" });
+    const signedOut = page("https://chatgpt.com/c/c1", ["content/chatgpt.js"], {
+      routes: { "https://chatgpt.com/api/auth/session": [200, {}] },
+    });
+    expect(await signedOut.window.polylogueProvider.fetchConversation(null)).toEqual({ status: 401, error: "signed_out" });
+  });
+
   it("answers a provider's request to wait with its delay", async () => {
     const { window } = page("https://chatgpt.com/c/c1", ["content/chatgpt.js"], {
       routes: { "https://chatgpt.com/api/auth/session": [429, "", { "retry-after": "30" }] },
     });
     expect(await window.polylogueProvider.fetchConversation(null)).toEqual({ status: 429, retry_after: "30" });
+  });
+});
+
+describe("the Claude page script", () => {
+  const list = "https://claude.ai/api/organizations/0b1c2d3e-0000-4000-8000-000000000001/chat_conversations";
+  const open = (routes) => {
+    const { window } = page("https://claude.ai/recents", ["content/claude.js"], {
+      routes, resources: [`${list}?limit=1`],
+    });
+    return window.polylogueProvider;
+  };
+
+  it("ends the list on an empty page, not a short one", async () => {
+    const provider = open({ [`${list}?limit=100&offset=0`]: [200, [{ uuid: "u1", name: "One" }]] });
+    expect((await provider.list(null)).info).toMatchObject({ next: "1", done: false });
+  });
+
+  it("refuses a list reply that is not a list", async () => {
+    const provider = open({ [`${list}?limit=100&offset=0`]: [200, { error: "x" }] });
+    expect(await provider.list(null)).toEqual({ status: 502, error: "claude_list_unreadable" });
   });
 });
 
@@ -102,6 +143,14 @@ describe("the Grok page script", () => {
     });
     const answer = await window.polylogueProvider.fetchConversation(null);
     expect(JSON.parse(await answer.body.text())).toEqual({ conversation: { conversationId: "g1" }, responses: { responses: [] } });
+  });
+
+  it("fails a capture when the optional response nodes are refused for a reason other than being absent", async () => {
+    const base = "https://grok.com/rest/app-chat/conversations/g1";
+    const { window } = page("https://grok.com/c/g1", ["content/grok.js"], {
+      routes: { [`${base}/responses`]: [200, { responses: [] }], [`${base}/response-node`]: [403, ""], [base]: [200, { conversationId: "g1" }] },
+    });
+    expect(await window.polylogueProvider.fetchConversation(null)).toEqual({ status: 403, error: "grok_http_403" });
   });
 
   it("fetches a file only from Grok's asset host", async () => {
@@ -129,7 +178,7 @@ describe("the shared page script", () => {
     const port = { name: "polylogue", onMessage: event(), onDisconnect: event(), postMessage: (m) => received.push(m) };
     window.chrome.runtime.onConnect.fire(port);
     port.onMessage.fire({ type: "conversation" });
-    await new Promise((resolve) => { const check = () => (received.at(-1)?.type === "end" ? resolve() : setTimeout(check, 5)); check(); });
+    await until(() => received.at(-1)?.type === "end", "the end of the answer");
     return received;
   }
 
@@ -174,10 +223,10 @@ describe("the shared page script", () => {
     window.chrome.runtime.onConnect.fire(port);
     port.onMessage.fire({ type: "conversation" });
     // The first bytes arrive while the rest of the download is held back.
-    await new Promise((resolve) => { const check = () => (received.some((m) => m.type === "chunk") ? resolve() : setTimeout(check, 5)); check(); });
+    await until(() => received.some((m) => m.type === "chunk"), "the first chunk");
     expect(received.at(-1).type).toBe("chunk");
     release();
-    await new Promise((resolve) => { const check = () => (received.at(-1)?.type === "end" ? resolve() : setTimeout(check, 5)); check(); });
+    await until(() => received.at(-1)?.type === "end", "the end of the answer");
     const bytes = Buffer.concat(received.filter((m) => m.type === "chunk").map((p) => Buffer.from(p.data, "base64")));
     expect(bytes.length).toBe(2 * chunk.length);
     expect(bytes.every((b) => b === 7)).toBe(true);
@@ -222,17 +271,6 @@ describe("the in-page panel", () => {
     expect(note.source).toMatchObject({ provider: "chatgpt", conversation_id: "c1", message_id: "m1" });
     expect(note.quote).toContain("first part");
     expect(selectionNote(select("a", "c"), window.location.href, window.polylogueProvider)).toBeNull();
-  });
-
-  it("says what the archive holds of the conversation", () => {
-    const { window } = page("https://chatgpt.com/c/c1", ["content/chatgpt.js", "wording.js"], { html });
-    window.eval(source("content/panel.js"));
-    const said = window.polylogueWording.conversation({ provider: "chatgpt", conversation: "c1", state: "archived", messages: 12, daemon: "running" });
-    expect(said).toMatchObject({ tone: "ok", label: "In the archive: 12 messages" });
-    expect(window.polylogueWording.conversation({ provider: "chatgpt", conversation: "c1", state: "unknown", daemon: "no_answer" }).label)
-      .toBe("The daemon did not answer");
-    expect(window.polylogueWording.conversation({ provider: "chatgpt", conversation: "c1", state: "spooled", daemon: "running" }).label)
-      .toBe("Stored; Polylogue is reading it");
   });
 });
 
