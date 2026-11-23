@@ -1017,6 +1017,8 @@ fn errors_point_at_the_problem_and_offer_a_fix() {
             .unwrap()
             .starts_with("unknown field `reop` on `sessions`; fields: ")
     );
+    // The known names nearest the unknown one travel as typed candidates.
+    assert!(f.candidates().contains(&"repo".to_owned()), "{f:?}");
     let suggestion = detail["suggestion"].as_str().unwrap();
     assert_same_question(suggestion, "repo:morrow");
     assert_eq!(ids(&q(&w, suggestion)), ids(&q(&w, "repo:morrow")));

@@ -202,10 +202,10 @@ pub(super) fn scrub_value(value: &mut serde_json::Value, root: &Path) {
             // Original keys keep their names when a transformed key collides.
             let (unchanged, changed): (Vec<_>, Vec<_>) = original
                 .into_iter()
-                .partition(|(key, _)| scrub(key, root) == *key);
-            for (key, mut value) in unchanged.into_iter().chain(changed) {
+                .map(|(key, value)| (scrub(&key, root), key, value))
+                .partition(|(scrubbed, key, _)| scrubbed == key);
+            for (base, _, mut value) in unchanged.into_iter().chain(changed) {
                 scrub_value(&mut value, root);
-                let base = scrub(&key, root);
                 let mut key = base.clone();
                 let mut ordinal = 2;
                 while object.contains_key(&key) {

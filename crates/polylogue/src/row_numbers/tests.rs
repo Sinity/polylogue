@@ -72,3 +72,16 @@ fn only_row_selections_are_rewritten() {
         assert!(!is_selection(word), "{word}");
     }
 }
+
+#[test]
+fn all_of_an_empty_list_is_refused() {
+    let shown = ShownRows {
+        question: "clock".into(),
+        shown_at: 0,
+        rows: vec![],
+    };
+    assert_eq!(
+        select("@all", &shown).unwrap_err(),
+        "@all: the last list has 0 rows"
+    );
+}

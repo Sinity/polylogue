@@ -1143,8 +1143,14 @@ pub(crate) fn run(
         let due = live_clock.take_due(now_ms);
         if committed || refreshed.is_none_or(|at| at.elapsed() >= REFRESH) {
             if let Ok(reader) = daemon.reads.reader() {
-                roots = reader.live_roots().unwrap_or_default();
-                edited_files = reader.live_edited_files(now_ms).unwrap_or_default();
+                // A failed read keeps the previous sets: an empty set would
+                // drop every watched root without its Ended lines.
+                if let Ok(live) = reader.live_roots() {
+                    roots = live;
+                }
+                if let Ok(files) = reader.live_edited_files(now_ms) {
+                    edited_files = files;
+                }
                 if let Ok(untils) = reader.live_untils(now_ms) {
                     live_clock.remember(&untils);
                 }

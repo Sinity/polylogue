@@ -205,6 +205,14 @@ fn access_rules() {
             .body(Body::empty())
             .unwrap();
         assert_eq!(send(&r, req).await.0, StatusCode::OK);
+        // The scheme name is case-insensitive and extra spaces are allowed.
+        for value in [format!("bearer {TOKEN}"), format!("Bearer   {TOKEN}")] {
+            let req = get("/api/v1/status")
+                .header(header::AUTHORIZATION, value)
+                .body(Body::empty())
+                .unwrap();
+            assert_eq!(send(&r, req).await.0, StatusCode::OK);
+        }
 
         // A write from another origin is refused even with the cookie.
         let req = authed(post("/api/v1/set"))
@@ -329,6 +337,23 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
         let (status, _, page) = send_html(&r, "/s/claude-code%3Anope").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(page.contains("not_found"));
+    });
+}
+
+#[test]
+fn a_deadline_header_that_is_not_unix_milliseconds_is_refused() {
+    let r = reader();
+    rt().block_on(async {
+        let req = authed(get("/api/v1/status"))
+            .header("x-polylogue-deadline-ms", "soon")
+            .body(Body::empty())
+            .unwrap();
+        let (s, _, body) = send(&r, req).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body.contains("x-polylogue-deadline-ms must be Unix milliseconds"),
+            "{body}"
+        );
     });
 }
 

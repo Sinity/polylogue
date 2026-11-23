@@ -51,6 +51,40 @@ impl std::fmt::Debug for State {
     }
 }
 
+/// Cancels a request's reads when the request is dropped before it is
+/// finished, so a hang-up or an abandoned future stops the blocking reader.
+/// [`disarm`](Self::disarm) hands the cancellation to whatever outlives the
+/// guard, such as a response stream.
+pub struct CancelOnDrop {
+    cancellation: Cancellation,
+    armed: bool,
+}
+
+impl CancelOnDrop {
+    pub fn new(cancellation: Cancellation) -> Self {
+        Self {
+            cancellation,
+            armed: true,
+        }
+    }
+
+    pub fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    pub fn check(&self) -> Result<()> {
+        self.cancellation.check()
+    }
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            self.cancellation.cancel();
+        }
+    }
+}
+
 /// Keeps a waker registered on a cancellation and its ancestors; dropping
 /// it removes the waker.
 pub struct CancellationWake {

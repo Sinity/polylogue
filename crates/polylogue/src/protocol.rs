@@ -418,6 +418,7 @@ pub fn query_failure(error: &polylogue_store::query::QueryError) -> Failure {
     let mut failure = failure.with_candidates(match error {
         QueryError::Ambiguous { candidates, .. } => candidates.clone(),
         QueryError::UnknownField { similar, .. } => similar.clone(),
+        QueryError::Language { error, .. } => error.candidates.clone(),
         _ => Vec::new(),
     });
     failure.position = position.map(|offset| InputSpan { offset, length: 1 });

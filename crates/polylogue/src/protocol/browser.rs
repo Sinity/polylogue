@@ -257,8 +257,9 @@ pub struct ConversationState {
     /// The session it is stored as; none for an ID no session can name.
     pub session: Option<String>,
     pub messages: Option<u64>,
-    /// Its latest capture said files were still downloading.
-    pub downloading: bool,
+    /// Its latest capture said files were still downloading; none when no
+    /// stored session can name the conversation.
+    pub downloading: Option<bool>,
     /// When the latest stored capture of it was taken (ms).
     pub last_captured_at: Option<i64>,
 }

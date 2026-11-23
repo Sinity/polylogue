@@ -14,7 +14,7 @@ use command_surface::{
     OperationFuture, OperationTable, RequestContext, RunnableRequest, TextStyle, TokenBudget, Via,
 };
 use polylogue_reading::operation::{Context, Invocation};
-use polylogue_store::{cancellation::Cancellation, read::limit::ReadLimit};
+use polylogue_store::{cancellation::CancelOnDrop, read::limit::ReadLimit};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::io::Write;
@@ -732,14 +732,6 @@ struct Row<H> {
     marker: PhantomData<H>,
 }
 
-/// A dropped shared operation cancels its blocking reader before releasing ownership.
-struct CancelRead(Cancellation);
-impl Drop for CancelRead {
-    fn drop(&mut self) {
-        self.0.cancel();
-    }
-}
-
 impl<H: Handler> Operation for Row<H> {
     type Request = H::Arguments;
     type Response = H::Answer;
@@ -833,7 +825,8 @@ impl<H: Handler> Operation for Row<H> {
                 )
                 && H::default_deadline(&arguments)
                 && H::read_phase(&arguments, self.row, &caller);
-            let guard = CancelRead(cancellation.clone());
+            // A dropped shared operation cancels its blocking reader before releasing ownership.
+            let guard = CancelOnDrop::new(cancellation.clone());
             let daemon = Arc::clone(&self.daemon);
             let row = self.row;
             let table_context = context.clone();
@@ -896,7 +889,7 @@ impl<H: Handler> Operation for Row<H> {
                     let left = deadline.saturating_duration_since(std::time::Instant::now());
                     let reply_at = deadline - super::service::answer_reserve(left);
                     tokio::time::sleep_until(reply_at.into()).await;
-                    if let Err(error) = guard.0.check() {
+                    if let Err(error) = guard.check() {
                         return super::service::store_error(&error);
                     }
                     if let Some(answer) = page.without_count() {
