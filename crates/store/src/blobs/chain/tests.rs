@@ -72,7 +72,7 @@ impl Fixture {
     fn source(&self) -> ChainSource {
         ChainSource {
             path: self._dir.path().join("archive.db"),
-            tables: "",
+            table_prefix: "",
         }
     }
     fn load(&self, length: u64) -> StoredChain {

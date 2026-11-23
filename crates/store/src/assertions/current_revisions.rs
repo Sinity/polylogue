@@ -32,7 +32,6 @@ pub struct RevisionState {
     pub reference: Reference,
     pub current: bool,
     pub withdrawn: bool,
-    pub conflict: bool,
 }
 
 /// Recomputes `revision_state` for `roots` from the stored links. The caller
@@ -146,7 +145,7 @@ impl Reader<'_> {
     pub fn assertion_family_state(&self, root: &RevisionReference) -> Result<Option<FamilyState>> {
         if root.revision.is_some() {
             return Err(crate::StoreError::invalid(
-                "family state requires an assertion root",
+                "family state requires an annotation root",
             ));
         }
         let state = family(self.conn()?, &root.root)?;
@@ -159,21 +158,20 @@ impl Reader<'_> {
     ) -> Result<Option<RevisionState>> {
         let Some(id) = &revision.revision else {
             return Err(crate::StoreError::invalid(
-                "revision state requires an exact assertion",
+                "revision state requires an exact annotation",
             ));
         };
         let conn = self.conn()?;
         let source = Source::reading(conn)?;
         let state = conn
             .query_row(
-                &source.sql("SELECT r.current,r.withdrawn,(SELECT count(*) FROM @source.revision_state h WHERE h.root=r.root AND h.current=1)>1 FROM @source.revision_state r WHERE r.id=?1 AND r.root=?2"),
+                &source.sql("SELECT r.current,r.withdrawn FROM @source.revision_state r WHERE r.id=?1 AND r.root=?2"),
                 params![id, revision.root],
                 |row| {
                     Ok(RevisionState {
                         reference: Reference::Assertion(revision.clone()),
                         current: row.get(0)?,
                         withdrawn: row.get(1)?,
-                        conflict: row.get(2)?,
                     })
                 },
             )

@@ -64,8 +64,8 @@ fn begin(
         let tx = index.unchecked_transaction()?;
         let generation = crate::meta_get(&tx, "generation")?;
         let mut changed = false;
-        // Changing boot always invalidates cursors. A stale clean-stop marker
-        // therefore cannot authorize reuse after a lost NORMAL transaction.
+        // Changing boot always invalidates cursors, so a lost NORMAL
+        // transaction cannot leave positions that look reusable.
         if generation.as_deref().is_none_or(str::is_empty)
             || crate::meta_get(&tx, "boot_id")?.as_deref() != Some(boot)
         {

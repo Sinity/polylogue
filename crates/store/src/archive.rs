@@ -71,9 +71,9 @@ impl MemoryBudget {
     }
 }
 
-/// An opened archive directory (`$XDG_DATA_HOME/polylogue`). The directory
-/// has copy-on-write turned off on btrfs; Polylogue checks its own data
-/// with BLAKE3 for blobs. SQLite's checksum VFS is not wired in yet: it
+/// An opened archive directory (`$XDG_DATA_HOME/polylogue`). A directory
+/// Polylogue creates has copy-on-write turned off on btrfs; an existing one
+/// keeps its own setting. Polylogue checks its own data with BLAKE3 for blobs. SQLite's checksum VFS is not wired in yet: it
 /// needs the `cksumvfs` extension, which the bundled build does not ship.
 #[derive(Debug, Clone)]
 pub struct Archive {
@@ -386,20 +386,6 @@ impl Archive {
         })
     }
 
-    /// Where input bytes wait, in primary mode, until the writer sends them
-    /// to Sinex; emptied when the archive opens.
-    pub fn parts_dir(&self) -> Result<PathBuf> {
-        if self.is_primary() {
-            Ok(self.byte_root()?.join("polylogue-prepared").join(
-                blake3::hash(self.root.as_os_str().as_encoded_bytes())
-                    .to_hex()
-                    .to_string(),
-            ))
-        } else {
-            Ok(self.root.join("parts"))
-        }
-    }
-
     fn lock(root: &Path) -> Result<ArchiveLock> {
         let fresh = !root.exists();
         fs::create_dir_all(root)?;
@@ -411,10 +397,14 @@ impl Archive {
             .truncate(false)
             .write(true)
             .open(root.join("lock"))?;
-        if file.try_lock().is_err() {
-            return Err(StoreError::Locked {
-                path: root.to_path_buf(),
-            });
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(fs::TryLockError::WouldBlock) => {
+                return Err(StoreError::Locked {
+                    path: root.to_path_buf(),
+                });
+            }
+            Err(fs::TryLockError::Error(error)) => return Err(error.into()),
         }
         Ok(ArchiveLock { _file: file })
     }
@@ -496,7 +486,7 @@ impl Archive {
     }
 }
 
-/// Deletes every file in `dir`. Blob files are written there before they
+/// Deletes every entry in `dir`. Blob files are written there before they
 /// are moved under their content names; only the lock holder writes there,
 /// so when the archive opens anything in it is left from a stop.
 fn clear_directory(dir: &Path) -> Result<()> {
@@ -506,7 +496,13 @@ fn clear_directory(dir: &Path) -> Result<()> {
         Err(e) => return Err(e.into()),
     };
     for entry in entries {
-        match fs::remove_file(entry?.path()) {
+        let entry = entry?;
+        let removed = if entry.file_type()?.is_dir() {
+            fs::remove_dir_all(entry.path())
+        } else {
+            fs::remove_file(entry.path())
+        };
+        match removed {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
@@ -668,7 +664,7 @@ fn open_read_connection(path: &Path, recover: bool) -> Result<Connection> {
         rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
         true,
     )?;
-    conn.busy_timeout(std::time::Duration::from_secs(30))?;
+    conn.busy_timeout(BUSY_TIMEOUT)?;
     if let Some(limit) = crate::read::limit::ReadLimit::current() {
         limit.install(&conn)?;
     }

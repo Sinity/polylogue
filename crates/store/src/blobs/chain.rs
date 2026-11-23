@@ -27,7 +27,7 @@ pub struct StoredChain {
 #[derive(Debug, Clone)]
 pub struct ChainSource {
     pub path: PathBuf,
-    pub tables: &'static str,
+    pub table_prefix: &'static str,
 }
 
 impl ChainSource {
@@ -35,12 +35,12 @@ impl ChainSource {
         if archive.is_primary() {
             Self {
                 path: archive.index_db(),
-                tables: "source_",
+                table_prefix: "source_",
             }
         } else {
             Self {
                 path: archive.archive_db(),
-                tables: "",
+                table_prefix: "",
             }
         }
     }
