@@ -75,7 +75,7 @@ impl<'a> Compiler<'a> {
         if let Some(Expression::Field { name: field }) = f.arguments.first() {
             let (expr, _) = self.sql_expression(&f.arguments[0], scope, at)?;
             let field = field.as_str();
-            let flat_field = flat(field);
+            let flat_field = column_name(field);
             if scope.unit == Unit::Sessions {
                 let derivation = if crate::session_sql::COUNT_FIELDS
                     .iter()
@@ -315,9 +315,9 @@ impl<'a> Compiler<'a> {
             } else {
                 self.expr(f, &sc, child.span.start)?
             };
-            select.push(format!("{expr} AS {}", flat(f)));
+            select.push(format!("{expr} AS {}", column_name(f)));
             columns.push(Column {
-                name: flat(f),
+                name: column_name(f),
                 kind,
                 reference: Self::field_reference(f, &sc),
             });

@@ -633,7 +633,7 @@ impl<'a> Compiler<'a> {
             for field in fields {
                 let (expression, kind) = self.expr(field, scope, 0)?;
                 cols.push((
-                    flat(field),
+                    column_name(field),
                     Self::display_value(&expression, kind),
                     kind,
                     Self::field_reference(field, scope),

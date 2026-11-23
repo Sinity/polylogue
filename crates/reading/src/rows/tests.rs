@@ -261,3 +261,13 @@ fn lineage_issue_coordinates_resume_and_reverse_at_both_family_boundaries() {
     }).unwrap();
     assert_eq!(observed, [at(LinkIssue, 0)]);
 }
+
+#[test]
+fn a_null_column_is_an_unknown_figure() {
+    let figures = figures(&serde_json::json!({"cost": null, "count": 0}));
+    assert_eq!(figures.len(), 2);
+    assert_eq!(figures[0].name, "cost");
+    assert_eq!(figures[0].value, ValueState::Unknown { reason: None });
+    assert_eq!(figures[1].name, "count");
+    assert_eq!(figures[1].value, ValueState::known(serde_json::json!(0)));
+}

@@ -67,7 +67,7 @@ pub fn stages(transforms: &[Transform], from: usize) -> Result<Vec<Stage>, Query
     Ok(stages)
 }
 
-fn measures(transform: &Transform) -> bool {
+pub(crate) fn measures(transform: &Transform) -> bool {
     matches!(&transform.kind, TransformKind::Extension { name, .. } if name == crate::catalog::MEASURE)
 }
 

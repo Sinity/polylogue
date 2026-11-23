@@ -85,15 +85,11 @@ impl Invocation {
         metadata: &polylogue_model::user::RequestMetadata,
         authorship: &Authorship,
     ) -> Self {
-        Self {
-            at: metadata.now(),
-            machine: metadata.machine().into(),
-            authorship: authorship.clone(),
-            calling_session: None,
-            working_directory: None,
-            accepted_request: None,
-            parent: None,
-        }
+        Self::new(
+            metadata.now(),
+            metadata.machine().into(),
+            authorship.clone(),
+        )
     }
     pub fn request(&self, id: String, write: UserWrite) -> UserRequest {
         UserRequest {
@@ -131,17 +127,7 @@ impl std::fmt::Debug for Context {
 }
 impl Context {
     pub fn standalone(invocation: Invocation, day: DaySetting) -> Self {
-        Self {
-            ran_at: invocation.at,
-            clock: Clock::new(invocation.at.into(), day),
-            machine: invocation.machine,
-            authorship: invocation.authorship,
-            sinex: SinexContext::Standalone,
-            calling_session: invocation.calling_session,
-            working_directory: invocation.working_directory,
-            accepted_request: invocation.accepted_request,
-            parent: invocation.parent,
-        }
+        Self::primary(invocation, day, SinexContext::Standalone)
     }
     pub fn primary(invocation: Invocation, day: DaySetting, sinex: SinexContext) -> Self {
         Self {

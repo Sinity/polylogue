@@ -19,7 +19,7 @@ impl Reader<'_> {
         }
         if at.values.len() != program.order.len() {
             return Err(SelectionError::invalid(
-                polylogue_model::Code::InvalidCursor,
+                polylogue_model::Code::InvalidQuery,
                 "selection order position has the wrong arity",
             ));
         }

@@ -27,8 +27,6 @@ fn execute<T>(
         ReadRecord,
         ReadSnapshot,
         ReadHeader,
-        Format,
-        Option<PageBudget>,
         RunId,
         ReadFooter,
         &LayoutFacts,
@@ -201,8 +199,6 @@ fn execute<T>(
                 projected,
                 snapshot,
                 header,
-                format,
-                budget,
                 id,
                 footer,
                 &facts,
@@ -245,7 +241,7 @@ pub(super) fn page(
         request,
         operation,
         reference,
-        |record, snapshot, header, _, _, id, footer, facts, content_hash| {
+        |record, snapshot, header, id, footer, facts, content_hash| {
             let (reading, _) = reading(request)?;
             crate::require_page_delivery(&reading)?;
             let page = rows_page(
@@ -287,7 +283,7 @@ pub(super) fn stream(
         request,
         operation,
         reference,
-        |record, snapshot, header, _, _, _, footer, facts, _| {
+        |record, snapshot, header, _, footer, facts, _| {
             let (reading, _) = reading(request)?;
             let complete = rows_stream(
                 reader,

@@ -1,3 +1,5 @@
+//! Encoders for a read document: JSON and JSONL records, HTML, terminal text
+//! and Markdown, each with the archive notice and its own escaping.
 use crate::{Format, html, terminal};
 use polylogue_model::{Reference, read::*};
 use serde::Serialize;
@@ -234,11 +236,7 @@ impl<'a> Encoder<'a> {
         let md = self.format == Format::Markdown;
         match &item.kind {
             ItemKind::MessageHeader { header } => {
-                let time = header
-                    .time
-                    .at
-                    .map(|at| recorded_time(Some(at), header.time.evidence, &self.zone))
-                    .unwrap_or_else(|| "--:--".into());
+                let time = message_time(&header.time, &self.zone);
                 let author = if self.options.model_facing
                     && header.author.value().is_some_and(|a| a == "you")
                 {
@@ -934,6 +932,15 @@ pub(crate) fn header_zone(header: &ReadHeader) -> jiff::tz::TimeZone {
         .as_deref()
         .and_then(|name| jiff::tz::TimeZone::get(name).ok())
         .unwrap_or(jiff::tz::TimeZone::UTC)
+}
+
+/// A message header's time: the recorded minute with its accuracy, or `--:--`
+/// when the message has no time.
+pub(crate) fn message_time(time: &TimeValue, zone: &jiff::tz::TimeZone) -> String {
+    time.at.map_or_else(
+        || "--:--".into(),
+        |at| recorded_time(Some(at), time.evidence, zone),
+    )
 }
 
 pub(crate) fn recorded_time(

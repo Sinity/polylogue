@@ -126,7 +126,8 @@ impl Engine {
             if classify_only {
                 continue;
             }
-            let authored_bytes = (origin.name == "polylogue-bundle").then(|| member.bytes.clone());
+            let authored_bytes = (origin.name == polylogue_sources::polylogue_bundle::ORIGIN)
+                .then(|| member.bytes.clone());
             let mut captured = Captured {
                 prepared: member.bytes,
                 member: None,
@@ -156,7 +157,7 @@ impl Engine {
                         path_bytes: member.member_path_bytes.clone().unwrap_or_default(),
                     })
             });
-            if origin.name == "polylogue-bundle" {
+            if origin.name == polylogue_sources::polylogue_bundle::ORIGIN {
                 authored_records.push((
                     member.path.clone(),
                     captured.prepared.hash().to_string(),
@@ -291,7 +292,7 @@ impl Engine {
         plan: &crate::plan::Plan,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
-        if plan.origin.name != "polylogue-bundle" {
+        if plan.origin.name != polylogue_sources::polylogue_bundle::ORIGIN {
             return Ok(());
         }
         let reader = self.reads.reader()?;

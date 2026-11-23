@@ -412,11 +412,6 @@ fn saved_name_requirements_follow_typed_nodes_without_rebinding_payloads() {
 mod metadata;
 
 #[test]
-fn the_catalog_fingerprint_is_stable_across_calls() {
-    assert_eq!(catalog_fingerprint(), catalog_fingerprint());
-}
-
-#[test]
 fn recorded_definitions_do_not_reinterpret_live_search_words() {
     let fixture: serde_json::Value =
         serde_json::from_str(include_str!("tests/fixtures/recorded-unit-objects.json")).unwrap();

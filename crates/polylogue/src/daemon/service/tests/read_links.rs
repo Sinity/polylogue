@@ -96,7 +96,7 @@ fn a_middle_links_page_does_not_visit_the_prefix() {
         }
         pages
     };
-    let flat = |pages: &[(Option<RunnableRequest>, ReadPage)]| -> Vec<ReadItem> {
+    let all_items = |pages: &[(Option<RunnableRequest>, ReadPage)]| -> Vec<ReadItem> {
         pages
             .iter()
             .flat_map(|(_, page)| page.document.items.clone())
@@ -104,7 +104,7 @@ fn a_middle_links_page_does_not_visit_the_prefix() {
     };
     let large = tile(1_000_000);
     let total = 1 + CHILDREN + GRANDCHILDREN;
-    let whole = flat(&large);
+    let whole = all_items(&large);
     let order = nodes(&whole);
     assert_eq!(order.len(), total);
     assert_eq!(
@@ -126,7 +126,7 @@ fn a_middle_links_page_does_not_visit_the_prefix() {
     assert!(order[c5 + GRANDCHILDREN + 1].starts_with("session:claude-code:c"));
     let pages = tile(200);
     assert!(pages.len() > 6, "{} pages", pages.len());
-    let tiled = flat(&pages);
+    let tiled = all_items(&pages);
     assert_eq!(tiled, whole);
     let mut before = 0;
     for (_, page) in &pages {
@@ -625,6 +625,34 @@ fn links_cursor_survives_body_append_but_not_an_unrelated_relationship_edit() {
     .unwrap();
     d.wait_for(|status| status["store"]["messages"] == 5);
     assert_stale(&d, &cursor);
+}
+
+#[test]
+fn links_cursor_that_reads_backwards_from_the_end_is_refused() {
+    let d = test_daemon::start("placeholder");
+    family(&d);
+    let page = read(&d, 60, None);
+    let cursor = resume(page.document.footer.next.as_ref()).unwrap();
+    let reader = d.daemon.reads.reader().unwrap();
+    let seal = polylogue_model::read::CursorSeal {
+        key: reader.cursor_key().unwrap(),
+        generation: reader.change_position().unwrap().generation,
+    };
+    let mut forged = polylogue_model::read::PageCursor::open(
+        cursor.arguments["steps"][0]["cursor"].as_str().unwrap(),
+        &seal,
+    )
+    .unwrap();
+    forged.direction = polylogue_model::read::ReadDirection::Past;
+    let mut request = cursor.clone();
+    request.request_id = polylogue_store::user_writes::new_request_id();
+    request.arguments["steps"][0]["cursor"] = serde_json::json!(forged.seal(&seal));
+    drop(reader);
+    let answer = test_daemon::Call::from_request(&request).answer(&d.daemon);
+    assert_eq!(
+        crate::test_answers::refusal(answer).code.as_deref(),
+        Some("invalid_query")
+    );
 }
 
 fn assert_stale(d: &test_daemon::TestDaemon, cursor: &RunnableRequest) {

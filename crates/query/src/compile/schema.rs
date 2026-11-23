@@ -158,7 +158,7 @@ pub(crate) fn bound_output_metadata(
                         ) && let Some(field) = aggregate.arguments.first()
                         {
                             schema.fields.push(Field {
-                                name: format!("unknown_{}", flat(&field.column())),
+                                name: format!("unknown_{}", column_name(&field.column())),
                                 kind: FieldKind::Integer,
                                 ..Field::default()
                             });

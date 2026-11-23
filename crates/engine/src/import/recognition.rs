@@ -141,7 +141,9 @@ pub(super) fn declared(
     file.rewind()?;
     if polylogue_sources::polylogue_bundle::manifest(&mut *file).is_ok() {
         file.rewind()?;
-        return Ok(polylogue_sources::origin::by_name("polylogue-bundle"));
+        return Ok(polylogue_sources::origin::by_name(
+            polylogue_sources::polylogue_bundle::ORIGIN,
+        ));
     }
     file.rewind()?;
     if let Some(name) = named_origin {

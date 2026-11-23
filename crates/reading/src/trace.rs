@@ -20,7 +20,7 @@ fn prepare(
     if request.target.starts_with("file:") {
         return Err(not_built("file-line lineage"));
     }
-    let item = Reference::parse(&request.target).map_err(|_| not_built(&request.target))?;
+    let item = Reference::parse(&request.target).map_err(Error::bad_request)?;
     let supported = match &item {
         Reference::Message(_) | Reference::Block { .. } | Reference::ToolCall(..) => true,
         Reference::Span { container, .. } => matches!(

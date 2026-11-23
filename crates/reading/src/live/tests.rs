@@ -14,7 +14,6 @@ fn process(
     ProcessRow {
         pid,
         parent_pid: Some(1),
-        start: 7,
         comm: Some("x".into()),
         argv: argv.iter().map(|a| (*a).to_owned()).collect(),
         cwd: Some("/work/tide".into()),
@@ -107,4 +106,55 @@ fn the_live_card_shows_the_state_the_wait_and_the_process_tree() {
             ),
         ]
     );
+}
+
+/// Absent facts are stated as unknown with their reason, a gone process and
+/// the harness's own word are appended to the state, a wait outranks a stall,
+/// and a process with no argv and no name says so.
+#[test]
+fn the_live_card_states_what_is_absent() {
+    let now = 10 * MIN;
+    let mut detail = LiveDetail {
+        view: live::view(None, None, now),
+        facts: LiveFacts::default(),
+        peers: vec![],
+        processes: vec![ProcessRow {
+            comm: None,
+            ..process(20, "child", &[], None, None)
+        }],
+    };
+    detail.view.process_alive = Some(false);
+    detail.view.stall = Some(live::Stall::RateLimit);
+    detail.facts.harness_status = Some(live::HarnessStatus {
+        word: "busy".into(),
+        at: 0,
+    });
+    let Card::Live {
+        state,
+        waits_on,
+        call,
+        task,
+        processes,
+        ..
+    } = render(&detail, now)
+    else {
+        panic!("a live card");
+    };
+    assert_eq!(
+        state,
+        ValueState::known("unknown · process gone · harness says busy".to_owned())
+    );
+    assert_eq!(waits_on, ValueState::known("stall: rate_limit".to_owned()));
+    let unknown = |reason: &str| ValueState::Unknown {
+        reason: Some(reason.into()),
+    };
+    assert_eq!(call, unknown("no tool call open"));
+    assert_eq!(task, unknown("no stated task"));
+    assert_eq!(processes[0].command, unknown("no command recorded"));
+
+    detail.view.waiting_on = Some(live::WaitingOn::Question);
+    let Card::Live { waits_on, .. } = render(&detail, now) else {
+        panic!("a live card");
+    };
+    assert_eq!(waits_on, ValueState::known("question".to_owned()));
 }

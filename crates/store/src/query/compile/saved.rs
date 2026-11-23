@@ -182,7 +182,7 @@ impl Compiler<'_> {
         let id = reference.strip_prefix("result:").unwrap_or(reference);
         let opts = self.opts;
         let kept = opts.kept.get(id).ok_or_else(|| QueryError::Unavailable {
-            what: format!("kept result {id:?}"),
+            reason: format!("kept result {id:?} is unavailable"),
         })?;
         let matched = *part == ResultPart::Matches;
         let part = if matched { "matches" } else { "rows" };

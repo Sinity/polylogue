@@ -288,7 +288,7 @@ pub fn lower(plan: &polylogue_query::plan::Plan, opts: &Options) -> Result<Progr
     captured.kept = plan.bindings().kept.clone();
     for (id, kept) in &mut captured.kept {
         let current = opts.kept.get(id).ok_or_else(|| QueryError::Unavailable {
-            what: format!("kept result {id:?} is absent from this read"),
+            reason: format!("kept result {id:?} is absent from this read"),
         })?;
         current.validate_output_metadata()?;
         if [ResultPart::Rows, ResultPart::Matches]
@@ -296,7 +296,7 @@ pub fn lower(plan: &polylogue_query::plan::Plan, opts: &Options) -> Result<Progr
             .any(|part| kept.output_schema(part) != current.output_schema(part))
         {
             return Err(QueryError::Unavailable {
-                what: format!("kept result {id:?} differs from its bound columns"),
+                reason: format!("kept result {id:?} differs from its bound columns"),
             });
         }
         *kept = current.clone();

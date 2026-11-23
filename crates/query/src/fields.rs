@@ -36,7 +36,7 @@ impl Kind {
     /// Kinds other than amounts and durations compare as numbers.
     pub fn scalar(self, field: &str, text: &str) -> Result<String, String> {
         match self {
-            Kind::Money => crate::time::money_nusd(text)
+            Kind::Money => crate::money::money_nusd(text)
                 .map(|n| n.to_string())
                 .ok_or_else(|| format!("{field} is an amount in dollars such as 2.90")),
             Kind::Duration => crate::time::duration_ms(text)
@@ -144,17 +144,7 @@ const fn f(unit: Unit, name: &'static str, kind: Kind, help: &'static str) -> Fi
 
 /// A field with product-specific matching rules.
 const fn sp(unit: Unit, name: &'static str, help: &'static str) -> Field {
-    Field {
-        unit,
-        name,
-        kind: Kind::Special,
-        values: None,
-        stored_unknown: None,
-        help,
-        value_kind: None,
-        reference_target: None,
-        reference_argument: false,
-    }
+    f(unit, name, Kind::Special, help)
 }
 
 const fn v(
@@ -164,15 +154,8 @@ const fn v(
     help: &'static str,
 ) -> Field {
     Field {
-        unit,
-        name,
-        kind: Kind::Match,
         values: Some(values),
-        stored_unknown: None,
-        help,
-        value_kind: None,
-        reference_target: None,
-        reference_argument: false,
+        ..f(unit, name, Kind::Match, help)
     }
 }
 

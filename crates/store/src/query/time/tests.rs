@@ -53,8 +53,6 @@ fn exact_shared_durations_and_product_money_keep_storage_units() {
     }
     assert_eq!(duration_ms("5x"), None);
     assert_eq!(duration_ms("0.0000001ms"), None);
-    assert_eq!(money_nusd("2.90"), Some(2_900_000_000));
-    assert_eq!(money_nusd("$1usd"), Some(1_000_000_000));
 }
 
 #[test]

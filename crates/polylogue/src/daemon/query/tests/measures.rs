@@ -455,6 +455,12 @@ fn unknown_session_endings_and_clock_sources_match_unknown_conditions() {
         );
         assert_eq!(result["count"], 1);
     }
+    // The stored word for an untimed session is also accepted as a value.
+    let result = q(
+        &archive,
+        r#"sessions where id:"codex:untimed" time_source:absent"#,
+    );
+    assert_eq!(result["count"], 1);
 }
 
 fn session_pk(archive: &TestArchive, like: &str) -> i64 {

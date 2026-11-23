@@ -428,7 +428,7 @@ pub fn visit_record(
             if !visit(ReadItem {
                 source,
                 kind: ItemKind::Other {
-                    type_name: "assertion".into(),
+                    type_name: "annotation".into(),
                     data: json!({"record":row}),
                 },
             }) {
@@ -1045,13 +1045,7 @@ fn root_text(
 /// Context boundaries and other in-place events read as one line at their
 /// position; figures the source did not record say so.
 fn event_indicator(event: &polylogue_model::Event) -> Option<(IndicatorKind, String)> {
-    let tokens = |n: u64| {
-        if n >= 1000 {
-            format!("{:.1}k", n as f64 / 1000.0)
-        } else {
-            n.to_string()
-        }
-    };
+    let tokens = crate::measures::tokens;
     match event.kind.as_str() {
         "compaction" => {
             let boundary: polylogue_model::CompactionBoundary =

@@ -467,9 +467,15 @@ impl Binder<'_> {
                         *value = value.to_lowercase();
                     }
                 }
-                let stores_unknown = def.stored_unknown.is_some();
+                // A field that stores its own unknown word answers both that
+                // word and `unknown` with a missing-value test.
+                let stored_unknown = def.stored_unknown;
                 let before = values.len();
-                values.retain(|value| !(stores_unknown && value.eq_ignore_ascii_case("unknown")));
+                values.retain(|value| {
+                    !stored_unknown.is_some_and(|word| {
+                        value.eq_ignore_ascii_case("unknown") || value.eq_ignore_ascii_case(word)
+                    })
+                });
                 Test::OneOf {
                     unknown: values.len() != before,
                     values,

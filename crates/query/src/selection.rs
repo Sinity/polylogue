@@ -130,10 +130,7 @@ impl Selection {
         let measured = query.transforms
             [stage_start..relations_from.unwrap_or(query.transforms.len())]
             .iter()
-            .any(|stage| {
-                matches!(&stage.kind, TransformKind::Extension { name, .. }
-                if name == crate::catalog::MEASURE)
-            });
+            .any(crate::stages::measures);
         let defaults = defaults::bind(unit, &top, origins, measured);
         let mut written: Vec<Condition> = condition.into_iter().collect();
         written.extend(query.transforms[..stage_start].iter().filter_map(

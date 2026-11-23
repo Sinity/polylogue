@@ -198,6 +198,10 @@ fn unavailable(engine: &Engine) {
     let resolution = reader.attachment(&message(), 0, 0).unwrap();
     assert_eq!(resolution.state, AttachmentState::Unavailable);
     assert!(resolution.matches.is_empty());
+}
+
+fn no_empty_input(engine: &Engine) {
+    let reader = engine.reads.reader().unwrap();
     assert!(
         reader
             .asset_source(&BlobHash::of(b"").to_string())
@@ -313,6 +317,7 @@ fn mismatched_source_reads_cannot_borrow_an_empty_body() {
             );
         }
         unavailable(&engine);
+        no_empty_input(&engine);
     }
 }
 

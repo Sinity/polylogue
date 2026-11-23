@@ -85,8 +85,12 @@ fn same(a: &str, b: &str, o: &Options) {
     let (pa, pb) = (compile(a, o).unwrap(), compile(b, o).unwrap());
     assert_eq!(pa.unit, pb.unit, "{a} / {b}");
     // The saved condition keeps its own parentheses; the meaning is equal.
-    let flat = |s: &str| s.replace(['(', ')'], "");
-    assert_eq!(flat(&statements(&pa)), flat(&statements(&pb)), "{a} / {b}");
+    let strip_parens = |s: &str| s.replace(['(', ')'], "");
+    assert_eq!(
+        strip_parens(&statements(&pa)),
+        strip_parens(&statements(&pb)),
+        "{a} / {b}"
+    );
     assert_eq!(pa.params, pb.params, "{a} / {b}");
 }
 

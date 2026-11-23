@@ -15,7 +15,7 @@ pub enum Error {
     #[error("{changed}")]
     StaleCursor { changed: String },
     #[error("{0}")]
-    InvalidCursor(String),
+    InvalidQuery(String),
     #[error("{0}")]
     BadRequest(String),
     #[error("{0}")]
@@ -46,7 +46,7 @@ impl Error {
             Self::Page(PageError::ItemChanged | PageError::InvalidPosition)
             | Self::StaleCursor { .. } => Code::StaleCursor.as_str(),
             Self::Page(_) | Self::BadRequest(_) => Code::BadRequest.as_str(),
-            Self::InvalidCursor(_) => Code::InvalidQuery.as_str(),
+            Self::InvalidQuery(_) => Code::InvalidQuery.as_str(),
             Self::BadValue(_) => Code::BadValue.as_str(),
             Self::NotFound(_) => Code::NotFound.as_str(),
             Self::NotYetAvailable(_) => Code::NotYetAvailable.as_str(),
@@ -78,7 +78,7 @@ impl Error {
         Self::Internal(message.to_string())
     }
     pub(crate) fn invalid_query(message: impl ToString) -> Self {
-        Self::InvalidCursor(message.to_string())
+        Self::InvalidQuery(message.to_string())
     }
     pub(crate) fn stale_cursor(changed: impl ToString) -> Self {
         Self::StaleCursor {

@@ -46,6 +46,10 @@ struct Walk<'r, 'a> {
     starts: HashSet<String>,
 }
 
+fn links_changed() -> Error {
+    Error::stale_cursor("the session links changed since this page was issued")
+}
+
 /// A node's tree links and its `reference` links, in stored order.
 fn links_of(
     reader: &Reader<'_>,
@@ -113,16 +117,15 @@ impl<'r, 'a> Walk<'r, 'a> {
         starts: Vec<String>,
         place: &LinksPlace,
     ) -> Result<Self, Error> {
-        let stale = || Error::stale_cursor("the session links changed since this page was issued");
         let mut walk = Self::start(reader, starts);
         let mut frames = place.frames.iter();
         let top = frames
             .next()
             .filter(|top| top.session.is_none())
-            .ok_or_else(stale)?;
+            .ok_or_else(links_changed)?;
         walk.frames[0].taken = top.taken as usize;
         for frame in frames {
-            let session = frame.session.clone().ok_or_else(stale)?;
+            let session = frame.session.clone().ok_or_else(links_changed)?;
             let above = walk.frames.last().expect("the walk's top");
             let reached = above
                 .taken
@@ -130,7 +133,7 @@ impl<'r, 'a> Walk<'r, 'a> {
                 .and_then(|slot| above.links.get(slot))
                 .is_some_and(|link| link.child == session);
             if !reached {
-                return Err(stale());
+                return Err(links_changed());
             }
             let (links, _) = links_of(reader, &session)?;
             walk.frames.push(Frame {
@@ -144,7 +147,7 @@ impl<'r, 'a> Walk<'r, 'a> {
             .iter()
             .any(|frame| frame.taken > frame.links.len())
         {
-            return Err(stale());
+            return Err(links_changed());
         }
         walk.shown = place
             .shown
@@ -390,14 +393,10 @@ pub(super) fn page(
     let ReadRequest {
         target,
         options,
-        format,
-        budget,
         cursor,
         ..
     } = request;
-    let format = Format::parse(format).ok_or_else(|| Error::bad_request("unknown read format"))?;
-    let limits = PageBudget::default().with_tokens(*budget);
-    let digest = options_digest(&(options, format));
+    let (format, limits, digest) = super::page_terms(request)?;
     let key = super::cursor_seal(reader)?;
     let graph_version = reader.lineage_version()?;
     let seed = &scope.session;
@@ -414,9 +413,7 @@ pub(super) fn page(
                 .check(target, &digest)
                 .map_err(super::cursor_failure)?;
             if opened.rewritten(&graph_version) {
-                return Err(Error::stale_cursor(
-                    "the session links changed since this page was issued",
-                ));
+                return Err(links_changed());
             }
             let PagePosition::Links { place } = &opened.position else {
                 return Err(Error::invalid_query(

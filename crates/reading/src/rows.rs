@@ -483,20 +483,30 @@ fn presentation(selection: &PreparedSelection<'_>, values: &serde_json::Value) -
             kind: ItemKind::Card {
                 card: Box::new(Card::Fields {
                     title: "Query result".into(),
-                    figures: values
-                        .as_object()
-                        .into_iter()
-                        .flat_map(|object| object.iter())
-                        .map(|(name, value)| Figure {
-                            name: name.clone(),
-                            value: ValueState::known(value.clone()),
-                            unit: None,
-                        })
-                        .collect(),
+                    figures: figures(values),
                 }),
             },
         })],
     }
+}
+
+/// One figure per column of a query row. A SQL NULL is an unknown value, not
+/// a known `null`.
+fn figures(values: &serde_json::Value) -> Vec<Figure> {
+    values
+        .as_object()
+        .into_iter()
+        .flat_map(|object| object.iter())
+        .map(|(name, value)| Figure {
+            name: name.clone(),
+            value: if value.is_null() {
+                ValueState::Unknown { reason: None }
+            } else {
+                ValueState::known(value.clone())
+            },
+            unit: None,
+        })
+        .collect()
 }
 
 #[cfg(test)]

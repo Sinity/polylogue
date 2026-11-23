@@ -431,20 +431,24 @@ impl Stage {
     }
 }
 
+/// One argument as a POSIX shell reads it.
+pub fn shell_quote(word: &str) -> String {
+    if !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:=@%+,".contains(c))
+    {
+        word.to_owned()
+    } else {
+        format!("'{}'", word.replace('\'', r"'\''"))
+    }
+}
+
 /// Words joined back into one command line, quoting what needs it.
 fn shell_join(words: &[String]) -> String {
     words
         .iter()
-        .map(|w| {
-            if !w.is_empty()
-                && w.chars()
-                    .all(|c| c.is_ascii_alphanumeric() || "-_./=:+,@%".contains(c))
-            {
-                w.clone()
-            } else {
-                format!("'{}'", w.replace('\'', "'\\''"))
-            }
-        })
+        .map(|word| shell_quote(word))
         .collect::<Vec<_>>()
         .join(" ")
 }
