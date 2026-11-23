@@ -308,7 +308,7 @@ impl Compiler<'_> {
                 return Ok((left, left_kind, right, right_kind));
             }
         }
-        let contextual = |kind| match arithmetic {
+        let literal_kind_for = |kind| match arithmetic {
             Some(Arithmetic::Add | Arithmetic::Subtract) if kind == ColKind::Money => Some(kind),
             Some(_) => None,
             None => Some(kind),
@@ -316,12 +316,12 @@ impl Compiler<'_> {
         if let Expression::Value { value } = left {
             let (right_sql, right_kind) = self.sql_expression_with(right, at, field)?;
             let (left_sql, left_kind) =
-                self.expression_literal(value, contextual(right_kind), at)?;
+                self.expression_literal(value, literal_kind_for(right_kind), at)?;
             Ok((left_sql, left_kind, right_sql, right_kind))
         } else {
             let (left_sql, left_kind) = self.sql_expression_with(left, at, field)?;
             let (right_sql, right_kind) = if let Expression::Value { value } = right {
-                self.expression_literal(value, contextual(left_kind), at)?
+                self.expression_literal(value, literal_kind_for(left_kind), at)?
             } else {
                 self.sql_expression_with(right, at, field)?
             };
@@ -335,7 +335,7 @@ impl Compiler<'_> {
         expected: Option<ColKind>,
         at: usize,
     ) -> Result<(String, ColKind), QueryError> {
-        let bad = || QueryError::Invalid {
+        let not_a_scalar = || QueryError::Invalid {
             message: "expected a finite scalar expression value".into(),
             position: at,
         };
@@ -352,14 +352,14 @@ impl Compiler<'_> {
         let Value::Scalar { text, quoted } = value else {
             return match value {
                 Value::Unknown => Ok(("NULL".into(), expected.unwrap_or(ColKind::Number))),
-                _ => Err(bad()),
+                _ => Err(not_a_scalar()),
             };
         };
         if expected == Some(ColKind::Text) {
             return Ok((self.text_param(text), ColKind::Text));
         }
         if expected == Some(ColKind::Money) {
-            let number = polylogue_query::money::money_nusd(text).ok_or_else(bad)?;
+            let number = polylogue_query::money::money_nusd(text).ok_or_else(not_a_scalar)?;
             return Ok((self.bind(Param::Int(number)), ColKind::Money));
         }
         if expected == Some(ColKind::Time) {
@@ -367,7 +367,7 @@ impl Compiler<'_> {
             return Ok((self.bind(Param::Int(value)), ColKind::Time));
         }
         if matches!(expected, Some(ColKind::Duration | ColKind::DurationSeconds)) {
-            let number = time::duration_ms(text).ok_or_else(bad)?;
+            let number = time::duration_ms(text).ok_or_else(not_a_scalar)?;
             return Ok((self.bind(Param::Int(number)), expected.unwrap()));
         }
         if expected == Some(ColKind::Bool) && matches!(text.as_str(), "true" | "false") {
@@ -395,7 +395,7 @@ impl Compiler<'_> {
             }
         }
         if expected == Some(ColKind::Number) {
-            return Err(bad());
+            return Err(not_a_scalar());
         }
         Ok((self.text_param(text), ColKind::Text))
     }

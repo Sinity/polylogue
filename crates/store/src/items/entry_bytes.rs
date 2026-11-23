@@ -16,6 +16,10 @@ use crate::{Result, StoreError};
 use polylogue_model::read::{Boundary, EntryKey, EntryKind, IndexEntry};
 use polylogue_model::{MessageId, PromptKind, ToolAction, WrittenBy};
 
+// The kind byte holds the entry kind in its low nibble and, on a unit's
+// first entry, the author in its high nibble.
+const KIND_BITS: u32 = 4;
+const KIND_MASK: u8 = 0x0F;
 const BLOCK: u32 = 1;
 const OUTPUT_LINES: u32 = 1 << 1;
 const ACTION: u32 = 1 << 2;
@@ -161,7 +165,7 @@ pub(crate) fn encode(entry: &IndexEntry, header: Option<&IndexEntry>) -> Result<
     let mut out = Vec::with_capacity(16 + entry.target.as_ref().map_or(0, String::len));
     number(&mut out, u64::from(flags));
     let author = if first {
-        author_code(entry.written_by) << 4
+        author_code(entry.written_by) << KIND_BITS
     } else {
         0
     };
@@ -223,7 +227,7 @@ pub(super) fn decode(
     let flags = u32::try_from(input.number()?).map_err(|_| malformed())?;
     let has = |bit: u32| flags & bit != 0;
     let kind_byte = input.byte()?;
-    let kind = kind_of(kind_byte & 0x0F)?;
+    let kind = kind_of(kind_byte & KIND_MASK)?;
     let (key_message, written_by, prompt_kind, active_path, branch_point, at) = match entry_of {
         EntryOf::Header(header) => {
             let Some(message) = header.key.message() else {
@@ -239,7 +243,7 @@ pub(super) fn decode(
             )
         }
         EntryOf::Message(_) | EntryOf::Event(_) => {
-            let written_by = author_of(kind_byte >> 4)?;
+            let written_by = author_of(kind_byte >> KIND_BITS)?;
             let prompt_kind = if has(PROMPT_KIND) {
                 Some(prompt_of(input.byte()?)?)
             } else {

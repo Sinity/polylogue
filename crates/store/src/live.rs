@@ -426,7 +426,7 @@ impl crate::Reader<'_> {
     }
 
     /// One session's live facts, its view at `now`, its peers and its
-    /// processes (the harness first, then children by start), for
+    /// processes (the harness first, then children by first sighting), for
     /// `read --view live`; `None` for a session not in the archive.
     pub fn live_detail(&self, session: &str, now: i64) -> Result<Option<LiveDetail>> {
         use crate::query::fields::{Aliases, processes_tool_call, sessions_peers};

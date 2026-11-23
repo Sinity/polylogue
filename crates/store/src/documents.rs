@@ -196,7 +196,9 @@ fn insert_blocks(
             )?;
         }
         let blob = match block {
-            Block::Image(a) | Block::File(a) => a.blob.map(|h| h.0.to_vec()),
+            Block::Image(attachment) | Block::File(attachment) => {
+                attachment.blob.map(|h| h.0.to_vec())
+            }
             _ => None,
         };
         tx.execute("INSERT INTO document_block(document_pk,idx,kind,body,text_id,blob_hash,data) VALUES (?1,?2,?3,?4,?5,?6,?7)",params![pk,idx as i64,block.kind().as_str(),body,text,blob,data])?;

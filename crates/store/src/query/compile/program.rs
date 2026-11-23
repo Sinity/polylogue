@@ -749,14 +749,10 @@ impl<'a> Compiler<'a> {
         let unit = scope.unit;
         let ranked = self.ranking().is_some();
         let counts_near = shape == Shape::Rows && self.near_rank.is_some();
-        let page_size =
-            self.opts
-                .page_size
-                .unwrap_or(if unit == Unit::Sessions && shape == Shape::Rows {
-                    20
-                } else {
-                    50
-                });
+        let page_size = self
+            .opts
+            .page_size
+            .unwrap_or(default_page_size(unit, shape));
         self.program_notes(&columns);
         let statements = self.program_statements(sql, keyed, row_count, row_membership);
         Program {

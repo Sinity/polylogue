@@ -14,6 +14,12 @@ use std::{
     time::Duration,
 };
 
+/// The file behind a path is still the one this process opened or created
+/// when its device and inode match.
+fn file_identity(file: &fs::Metadata) -> (u64, u64) {
+    (file.dev(), file.ino())
+}
+
 const VERSION: u32 = 7;
 const SCHEMA: &str = "
 CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL) WITHOUT ROWID;
@@ -194,7 +200,7 @@ impl CatalogWriter {
         let mut writer = Self {
             conn,
             path: temporary.clone(),
-            identity: (file.dev(), file.ino()),
+            identity: file_identity(&file),
         };
         writer.update(metadata, populate)?;
         writer
@@ -234,13 +240,13 @@ impl CatalogWriter {
         // Offline readers need neither directory writes nor journal creation.
         conn.query_row("SELECT count(*) FROM metadata", [], |_| Ok(()))?;
         let file = fs::metadata(path)?;
-        if (before.dev(), before.ino()) != (file.dev(), file.ino()) {
+        if file_identity(&before) != file_identity(&file) {
             return Err(StoreError::ScopeChanged);
         }
         Ok(Self {
             conn,
             path: path.to_owned(),
-            identity: (file.dev(), file.ino()),
+            identity: file_identity(&file),
         })
     }
     pub(super) fn resume(
@@ -388,7 +394,7 @@ impl CatalogWriter {
     }
     /// A deleted derived file is rebuilt on the next publication.
     pub fn is_current_file(&self) -> bool {
-        fs::metadata(&self.path).is_ok_and(|file| (file.dev(), file.ino()) == self.identity)
+        fs::metadata(&self.path).is_ok_and(|file| file_identity(&file) == self.identity)
     }
     /// The position is committed with every changed section, never beforehand.
     pub fn update(
@@ -684,7 +690,7 @@ impl CatalogReader {
             conn,
             metadata,
             path: path.to_owned(),
-            identity: (before.dev(), before.ino()),
+            identity: file_identity(&before),
         };
         reader.check()?;
         Ok(Some(reader))
@@ -692,7 +698,7 @@ impl CatalogReader {
     /// A revoked or replaced pointer cannot authorize an already-open snapshot.
     pub fn check(&self) -> Result<()> {
         let current = fs::metadata(&self.path).map_err(|_| StoreError::ScopeChanged)?;
-        if (current.dev(), current.ino()) != self.identity {
+        if file_identity(&current) != self.identity {
             return Err(StoreError::ScopeChanged);
         }
         Ok(())

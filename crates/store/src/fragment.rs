@@ -31,9 +31,14 @@ impl PreparedFragments {
             .iter()
             .map(|row| {
                 row.record.validate().map_err(crate::StoreError::invalid)?;
-                if row.offset > row.end || i64::try_from(row.end).is_err() {
+                if row.offset > row.end {
                     return Err(StoreError::Invalid(
-                        "invalid receiving fragment byte range".into(),
+                        "receiving fragment byte range ends before it starts".into(),
+                    ));
+                }
+                if i64::try_from(row.end).is_err() {
+                    return Err(StoreError::Invalid(
+                        "receiving fragment byte range exceeds SQLite's integer range".into(),
                     ));
                 }
                 let hash = canonical_json::canonical_hash(
