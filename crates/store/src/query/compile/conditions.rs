@@ -156,7 +156,7 @@ impl<'a> Compiler<'a> {
                 }
             }
             match x {
-                Filter::Word(word) if text_unit(scope.unit) => {
+                Filter::Word(word) if units::spec(scope.unit).words.plain() => {
                     words.push((word.text.clone(), word.phrase, word.span));
                 }
                 _ => parts.push(self.lower(x, scope, top)?),

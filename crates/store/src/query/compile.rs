@@ -545,11 +545,6 @@ fn and_all(parts: &[String]) -> String {
     }
 }
 
-/// Plain words search this unit.
-fn text_unit(unit: Unit) -> bool {
-    polylogue_query::units::spec(unit).words.plain()
-}
-
 fn like_escape(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('%', "\\%")
@@ -643,9 +638,16 @@ fn scalar(kind: ColKind, field: &str, at: usize) -> Result<(), QueryError> {
     Ok(())
 }
 
-fn parse_query(text: &str, opts: &Options) -> Result<Query, QueryError> {
-    crate::query::parse::with_catalog(text, &opts.catalog())
+/// The page size when the caller gives none: sessions rows are heavier
+/// than other rows.
+fn default_page_size(unit: Unit, shape: Shape) -> u64 {
+    if unit == Unit::Sessions && shape == Shape::Rows {
+        20
+    } else {
+        50
+    }
 }
+
 fn field_operand(operand: &Expression) -> Result<&str, QueryError> {
     match operand {
         Expression::Field { name } => Ok(name),

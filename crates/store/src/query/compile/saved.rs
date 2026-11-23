@@ -72,7 +72,10 @@ impl<'a> Compiler<'a> {
                 return Ok((bound.unit, bound.cond.clone()));
             }
             let definition = saved_definition(self.text, span.start, name, self.opts)?;
-            let mut query = parse_query(definition.executable_text()?, self.opts)?;
+            let mut query = crate::query::parse::with_catalog(
+                definition.executable_text()?,
+                &self.opts.catalog(),
+            )?;
             Parameters::new(name, arguments).bind(&mut query, span.start)?;
             if !query.transforms.is_empty() || !query.attach.is_empty() {
                 return Err(QueryError::Invalid {
@@ -197,8 +200,10 @@ impl Compiler<'_> {
                 position: 0,
             });
         }
-        let named_unit = Unit::from_bound_name(&kept.unit);
-        let unit = named_unit.unwrap_or(Unit::Sessions);
+        let unit = Unit::from_bound_name(&kept.unit).ok_or_else(|| QueryError::Unavailable {
+            reason: format!("kept result {id:?} has unknown unit {:?}", kept.unit),
+        })?;
+        let named_unit = Some(unit);
         let shape = if matched {
             Shape::Matches
         } else {
@@ -282,7 +287,7 @@ impl Compiler<'_> {
             why_of: format!(
                 "SELECT count(*) FROM source_kept_result k, json_each(k.rows_json, '$.{part}') j WHERE k.id={id_param}"
             ),
-            page_size: opts.page_size.unwrap_or(50),
+            page_size: opts.page_size.unwrap_or(default_page_size(unit, shape)),
             near: None,
             counts_near: false,
             definitions: vec![],

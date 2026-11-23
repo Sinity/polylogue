@@ -508,7 +508,7 @@ pub fn rule(id: FieldId) -> Rule {
         ToolCallsPosition => Rule::NONE.sql_fn(super::units::call_position),
         ToolCallsTool => Rule::NONE.sql("{t}.tool"),
         ToolCallsMcpServer => Rule::NONE.custom(custom::mcp_server).sql(
-        "CASE WHEN {t}.tool LIKE 'mcp\\_\\_%' ESCAPE '\\' THEN substr({t}.tool, 6, instr(substr({t}.tool, 6), '__') - 1) END",
+        "CASE WHEN {t}.tool LIKE 'mcp\\_\\_%' ESCAPE '\\' AND instr(substr({t}.tool, 6), '__') > 0 THEN substr({t}.tool, 6, instr(substr({t}.tool, 6), '__') - 1) END",
     ),
         ToolCallsAction => Rule::NONE.sql("{t}.action"),
         ToolCallsCommand => Rule::NONE.custom(custom::tool_call_text).sql("{t}.command"),

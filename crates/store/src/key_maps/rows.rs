@@ -338,6 +338,8 @@ impl KeyRows {
             })?;
         }
         let run = output.finish()?;
+        // Level k holds runs of up to `limit` * 2^k records, as in `spill`, so
+        // the rewritten run merges with later spills like any run of its size.
         let level = (run.length.saturating_sub(1) / self.limit as u64)
             .checked_ilog2()
             .map_or(0, |n| n as usize + 1)

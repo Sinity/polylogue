@@ -732,7 +732,7 @@ pub(crate) fn mcp_server(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<Strin
         return Err(x.need_value());
     }
     Ok(format!(
-        "({t}.tool LIKE 'mcp\\_\\_%' ESCAPE '\\' AND lower(substr({t}.tool, 6, instr(substr({t}.tool, 6), '__') - 1)) IN ({}))",
+        "({t}.tool LIKE 'mcp\\_\\_%' ESCAPE '\\' AND instr(substr({t}.tool, 6), '__') > 0 AND lower(substr({t}.tool, 6, instr(substr({t}.tool, 6), '__') - 1)) IN ({}))",
         vs.join(", "),
         t = x.scope.a.t
     ))

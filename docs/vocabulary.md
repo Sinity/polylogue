@@ -136,6 +136,10 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **session**, **message**, **block**, **tool call**, **attachment**,
   **document**: the parsed things. A message is stored once, in the session
   that originated it.
+- **duplicate message**: a message that a capture repeats from another route
+  of the same session; it names the shown version in `duplicate_of` and is
+  left out of every population (see the shown version of repeated turns in
+  `docs/measures.md`).
 - **logical session**: the root of a session's fork, spawn, continuation and
   resume tree; the default unit in listings, counts and measures. Its members
   are **physical sessions**.

@@ -98,9 +98,9 @@ pub struct ObservationRow {
 
 impl InputRows {
     /// Inserts the rows at write counter `seq`. A revision or extent already
-    /// present takes the recorded one: a later chunk grew the revision, or a
-    /// write that stopped before its commit sent the bytes at that place
-    /// again, longer. Everything else present is left as it is, so inserting
+    /// present takes the incoming length (and, for an extent, blob and blob
+    /// offset): a later chunk grew the revision, or a write that stopped
+    /// before its commit sent the bytes at that place again, longer. Everything else present is left as it is, so inserting
     /// the rows twice changes nothing.
     pub fn insert(&self, tx: &Connection, seq: i64) -> Result<()> {
         self.insert_rows(tx, seq, true)

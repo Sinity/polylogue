@@ -24,9 +24,6 @@ pub(super) fn visit<T: DeserializeOwned>(
     let mut rows = stmt.query(rusqlite::params_from_iter(params.iter()))?;
     while let Some(row) = rows.next()? {
         let value: serde_json::Value = crate::encoding::unpack_json(&row.get::<_, Vec<u8>>(2)?)?;
-        if value.str("report_id").is_none() {
-            continue;
-        }
         visit(
             &row.get::<_, String>(0)?,
             row.get(1)?,
