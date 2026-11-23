@@ -293,14 +293,6 @@ impl ScopeIndex {
         })
     }
 
-    pub fn len(&self) -> usize {
-        self.sessions.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.sessions.is_empty()
-    }
-
     /// Takes in what changed. A full read replaces everything held.
     pub fn apply(&mut self, changes: ScopeChanges) {
         if changes.full {

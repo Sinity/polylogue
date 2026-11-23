@@ -123,6 +123,29 @@ fn trace_preserves_missing_range_and_checks_block_span_and_call_identity() {
     );
 }
 
+/// Two tool calls that share a session and call ID are refused as ambiguous,
+/// naming both messages (docs/references.md: ambiguity is an error).
+#[test]
+fn trace_refuses_a_call_id_two_messages_share() {
+    let mut archive = WriterArchive::new();
+    archive.write("trace", bash("trace", 2, 2, "printf one", true, "one"));
+    archive.write("trace", bash("trace", 3, 3, "printf two", true, "two"));
+    let index = Connection::open(archive.archive.index_db()).unwrap();
+    index
+        .execute("UPDATE tool_call SET call_id='t2' WHERE call_id='t3'", [])
+        .unwrap();
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let error = reader
+        .record_chain(&Reference::parse("tool:claude-code:trace#t2").unwrap())
+        .unwrap_err();
+    assert!(
+        matches!(&error, StoreError::Ambiguous { candidates, .. }
+            if candidates == &["message:claude-code:trace-c2", "message:claude-code:trace-c3"]),
+        "{error:?}"
+    );
+}
+
 #[test]
 fn trace_span_does_not_require_unknown_text_after_its_end() {
     use polylogue_model::{Block, Role};

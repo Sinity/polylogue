@@ -66,7 +66,6 @@ fn sessions_under_a_directory_match_whole_path_components_newest_first() {
     );
     assert!(index.sessions_under(&dirs(&["/work/pro"]), None).is_empty());
     assert_eq!(index.repos_under(&dirs(&["/work"])), ["proj", "old"]);
-    assert_eq!(index.len(), 4, "only main sessions are held");
 }
 
 #[test]

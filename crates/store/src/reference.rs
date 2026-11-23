@@ -92,8 +92,9 @@ impl Reader<'_> {
     }
 }
 
-/// A preparation view borrows source text from its pinned original store and
-/// authored text from its private overlay. Recursive spans keep that split.
+/// Source text is read from the pinned original store and authored text from
+/// the authored connection (the write transaction, or the preflight overlay's
+/// transaction). Recursive spans keep that split.
 pub(crate) struct ReferenceText<'a> {
     original: &'a rusqlite::Connection,
     authored: &'a rusqlite::Connection,
@@ -407,7 +408,7 @@ pub(crate) fn link_quote(
 }
 
 /// Full-text hashes require the caller's existing original-source snapshot.
-/// Scratch rows never stand in for source Message/Document text.
+/// Authored rows never stand in for source Message/Document text.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum LinkHash {
     Missing,
