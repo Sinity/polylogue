@@ -1581,8 +1581,9 @@ fn running_keeps_a_silent_session_whose_root_is_alive() {
     let running = f.reads().unwrap().reader().unwrap().running(now).unwrap();
     let ids: Vec<&str> = running.iter().map(|r| r.session.as_str()).collect();
     assert_eq!(ids, ["test:silent"]);
-||||||| parent of 332b1bbf7 (Store tests: since:seen live and derived counters, order time errors, MCP server names)
+}
 
+#[test]
 fn since_seen_returns_a_session_whose_live_or_derived_counter_passed_the_mark() {
     use crate::fixture::{
         authored::operator_request,
