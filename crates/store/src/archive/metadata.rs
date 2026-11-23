@@ -2,8 +2,9 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 
-/// Storage identity survives replacing the derived index and is independent
-/// of the deployment's requested mode.
+/// Storage identity: the mode the archive was created in. It survives
+/// replacing the derived index, and an archive is opened only in its recorded
+/// mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
@@ -37,7 +38,7 @@ pub(super) fn read(root: &Path) -> Result<Option<Mode>> {
     }
 }
 
-fn expected(archive: &Archive) -> Mode {
+fn requested_mode(archive: &Archive) -> Mode {
     if archive.is_primary() {
         Mode::Primary
     } else {
@@ -47,13 +48,15 @@ fn expected(archive: &Archive) -> Mode {
 
 pub(super) fn check(archive: &Archive) -> Result<()> {
     match read(&archive.root)? {
-        Some(mode) if mode != expected(archive) => Err(StoreError::Invalid(format!(
+        Some(mode) if mode != requested_mode(archive) => Err(StoreError::Invalid(format!(
             "archive {} is {mode}, but configuration requests {}; select its recorded mode or another archive",
             archive.root.display(),
-            expected(archive)
+            requested_mode(archive)
         ))),
         Some(_) => Ok(()),
-        None if ["archive.db", "index.db", "embeddings.db", "segments"]
+        // The index is derived and replaced when unreadable; only stores that
+        // hold original bytes or paid vectors mark an older-format archive.
+        None if ["archive.db", "embeddings.db", "segments"]
             .iter()
             .any(|name| archive.root.join(name).exists()) =>
         {
@@ -75,7 +78,7 @@ pub(super) fn create(archive: &Archive) -> Result<()> {
     serde_json::to_writer(
         temporary.as_file_mut(),
         &Metadata {
-            mode: expected(archive),
+            mode: requested_mode(archive),
         },
     )?;
     temporary.write_all(b"\n")?;

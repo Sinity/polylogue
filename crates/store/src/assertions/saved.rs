@@ -53,10 +53,7 @@ pub(crate) fn saved_definition(
     Ok(Some((
         name,
         CurrentSavedDefinition {
-            reference: RevisionReference {
-                root: fact.root.clone(),
-                revision: Some(fact.id.clone()),
-            },
+            reference: RevisionReference::exact(fact.root.clone(), fact.id.clone()),
             value: value.fields,
             conflicts: conflicts.to_vec(),
         },
@@ -155,6 +152,11 @@ pub(crate) fn named_current(
         ))?
         .query_map(params![kind.as_str(), name], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows_by_id(conn, ids)
+}
+
+/// The stored rows of these assertion ids, in order.
+fn rows_by_id(conn: &Connection, ids: Vec<String>) -> Result<Vec<Assertion>> {
     ids.into_iter()
         .map(|id| get(conn, &id)?.ok_or_else(|| StoreError::NotFound(id)))
         .collect()
@@ -172,13 +174,7 @@ pub(crate) fn single_named_current(
             reference: format!("{}:{name}", kind.as_str()),
             candidates: rows
                 .iter()
-                .map(|row| {
-                    Reference::Assertion(RevisionReference {
-                        root: row.fact.root.clone(),
-                        revision: Some(row.fact.id.clone()),
-                    })
-                    .to_string()
-                })
+                .map(|row| row.fact.reference().to_string())
                 .collect(),
         });
     }
@@ -271,13 +267,7 @@ fn numbered_revisions(conn: &Connection, initial: Vec<Assertion>) -> Result<Vec<
         let cycle = remaining
             .iter()
             .filter(|(_, count)| **count != 0)
-            .map(|(id, _)| {
-                Reference::Assertion(RevisionReference::exact(
-                    rows[id].fact.root.clone(),
-                    id.clone(),
-                ))
-                .to_string()
-            })
+            .map(|(id, _)| rows[id].fact.reference().to_string())
             .collect::<Vec<_>>()
             .join(", ");
         return Err(StoreError::invalid(format!(
@@ -303,11 +293,7 @@ fn numbered_named_revisions(conn: &Connection, name: &str) -> Result<Vec<(u32, A
         ))?
         .query_map([name], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let rows = ids
-        .into_iter()
-        .map(|id| get(conn, &id)?.ok_or_else(|| StoreError::NotFound(id)))
-        .collect::<Result<Vec<_>>>()?;
-    numbered_revisions(conn, rows)
+    numbered_revisions(conn, rows_by_id(conn, ids)?)
 }
 
 pub(crate) fn saved_revision_number(
@@ -353,11 +339,7 @@ pub(crate) fn named_revision(
                  WHERE a.kind='saved_query' AND a.root=?1 AND r.current=1 AND r.withdrawn=0 ORDER BY a.id",
             ))?.query_map([root], |row| row.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
-            let rows = ids
-                .into_iter()
-                .map(|id| get(conn, &id)?.ok_or_else(|| StoreError::NotFound(id)))
-                .collect::<Result<Vec<_>>>()?;
-            numbered_revisions(conn, rows)?
+            numbered_revisions(conn, rows_by_id(conn, ids)?)?
         }
     };
     let mut matching = revisions
@@ -373,13 +355,7 @@ pub(crate) fn named_revision(
                 reference: format!("query:{name}@{number}"),
                 candidates: matching
                     .iter()
-                    .map(|row| {
-                        Reference::Assertion(RevisionReference::exact(
-                            row.fact.root.clone(),
-                            row.fact.id.clone(),
-                        ))
-                        .to_string()
-                    })
+                    .map(|row| row.fact.reference().to_string())
                     .collect(),
             });
         }
@@ -412,10 +388,14 @@ impl crate::Reader<'_> {
         if queries.is_empty() {
             return Ok(Vec::new());
         }
-        let hashes: Vec<_> = queries
+        let hashes = queries
             .iter()
-            .filter_map(|query| query.strip_prefix("query:"))
-            .collect();
+            .map(|query| {
+                query.strip_prefix("query:").ok_or_else(|| {
+                    StoreError::invalid(format!("dependent {query} is not a query identity"))
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
         let conn = self.conn()?;
         let source = Source::reading(conn)?;
         let names = conn.prepare_cached(&source.sql(
@@ -455,12 +435,13 @@ impl crate::Reader<'_> {
         for (number, row) in rows {
             let (_, definition) = saved_definition(&row.fact, &[])?
                 .ok_or_else(|| StoreError::invalid("saved history contains another kind"))?;
-            hashes.insert(format!("query:{}", definition.value.hash));
+            let hash = format!("query:{}", definition.value.hash);
+            hashes.insert(hash.clone());
             revisions.push(SavedRevision {
                 revision: number,
                 reference: Reference::Assertion(definition.reference).to_string(),
                 text: definition.value.text,
-                hash: format!("query:{}", definition.value.hash),
+                hash,
                 saved_at: row.fact.created_at,
                 author: row.fact.author.to_string(),
             });
@@ -490,25 +471,13 @@ impl crate::Reader<'_> {
         let watches = named_current(conn, AssertionKind::Signal, name)?;
         let watch = match watches.as_slice() {
             [] => None,
-            [watch] => Some(
-                Reference::Assertion(RevisionReference::exact(
-                    watch.fact.root.clone(),
-                    watch.fact.id.clone(),
-                ))
-                .to_string(),
-            ),
+            [watch] => Some(watch.fact.reference().to_string()),
             _ => {
                 return Err(StoreError::Ambiguous {
                     reference: format!("watch:{name}"),
                     candidates: watches
                         .iter()
-                        .map(|row| {
-                            Reference::Assertion(RevisionReference::exact(
-                                row.fact.root.clone(),
-                                row.fact.id.clone(),
-                            ))
-                            .to_string()
-                        })
+                        .map(|row| row.fact.reference().to_string())
                         .collect(),
                 });
             }

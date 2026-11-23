@@ -3,7 +3,9 @@
 //! the new one. A standalone index is built privately and installed over the
 //! old one ([`super::index_build`]); the primary cache is renamed beside
 //! itself under its schema identity, rebuilt from the confirmed stream, and
-//! the renamed file removed once the rebuild reaches the stream's latest_position.
+//! the renamed file removed once the rebuild is complete ([`built`]: the
+//! stream's latest position applied, every stored chain parsed, no event
+//! unresolved).
 //! `archive.db` is never handled here.
 
 use crate::ConnExt as _;
@@ -144,7 +146,7 @@ pub(crate) fn remove_when_built(index: &Connection, path: &Path) -> Result<()> {
     let Some(dir) = path.parent() else {
         return Ok(());
     };
-    let kept = std::fs::read_dir(dir)?
+    let set_aside_files = std::fs::read_dir(dir)?
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<std::io::Result<Vec<_>>>()?
         .into_iter()
@@ -153,10 +155,10 @@ pub(crate) fn remove_when_built(index: &Connection, path: &Path) -> Result<()> {
                 .is_some_and(|name| name.to_string_lossy().starts_with(PREFIX))
         })
         .collect::<Vec<_>>();
-    if kept.is_empty() || !built(index)? {
+    if set_aside_files.is_empty() || !built(index)? {
         return Ok(());
     }
-    for path in kept {
+    for path in set_aside_files {
         match std::fs::remove_file(path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}

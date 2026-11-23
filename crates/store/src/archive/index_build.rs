@@ -350,9 +350,7 @@ pub(crate) fn prepare(archive: &Archive) -> Result<()> {
             }
         }
     }
-    if !paths.dir.exists() {
-        fs::create_dir(&paths.dir)?;
-        crate::archive::no_cow(&paths.dir);
+    if create_build_dir(&paths)? {
         sync_directory(&archive.root)?;
     }
     let mut build = None;
@@ -369,7 +367,7 @@ pub(crate) fn prepare(archive: &Archive) -> Result<()> {
     let build = if let Some(build) = build {
         build
     } else {
-        remove(&paths.build)?;
+        remove_database(&paths.build)?;
         let build = open_setup(&paths.build)?;
         archive.ensure_index(&build, true)?;
         if let Some((reason, previous)) = replaced {
@@ -530,10 +528,7 @@ fn install(archive: &Archive) -> Result<()> {
 /// `previous.db`. Its shared-memory index is rebuilt from the log by the
 /// first reader.
 fn set_aside(paths: &Paths) -> Result<()> {
-    if !paths.dir.exists() {
-        fs::create_dir(&paths.dir)?;
-        crate::archive::no_cow(&paths.dir);
-    }
+    create_build_dir(paths)?;
     remove(&with_suffix(&paths.index, "-shm"))?;
     for suffix in ["-shm", "-wal", ""] {
         remove(&with_suffix(&paths.previous, suffix))?;
@@ -552,11 +547,28 @@ fn set_aside(paths: &Paths) -> Result<()> {
     sync_directory(paths.index.parent().unwrap_or(Path::new(".")))
 }
 
+/// Creates the build directory when absent; whether it was created.
+fn create_build_dir(paths: &Paths) -> Result<bool> {
+    if paths.dir.exists() {
+        return Ok(false);
+    }
+    fs::create_dir(&paths.dir)?;
+    crate::archive::no_cow(&paths.dir);
+    Ok(true)
+}
+
+/// Removes a SQLite database file with its journal, log and shared-memory
+/// siblings.
+fn remove_database(path: &Path) -> Result<()> {
+    for suffix in ["-journal", "-wal", "-shm", ""] {
+        remove(&with_suffix(path, suffix))?;
+    }
+    Ok(())
+}
+
 /// Discards a build a crash may have torn. The previous index stays.
 fn discard(paths: &Paths) -> Result<()> {
-    for suffix in ["-journal", "-wal", "-shm", ""] {
-        remove(&with_suffix(&paths.build, suffix))?;
-    }
+    remove_database(&paths.build)?;
     remove(&paths.unsynced)?;
     sync_directory(&paths.dir)
 }
@@ -566,9 +578,7 @@ fn remove_build_files(paths: &Paths) -> Result<()> {
         return Ok(());
     }
     for path in [&paths.build, &paths.built, &paths.previous] {
-        for suffix in ["-journal", "-wal", "-shm", ""] {
-            remove(&with_suffix(path, suffix))?;
-        }
+        remove_database(path)?;
     }
     remove(&paths.unsynced)?;
     match fs::remove_dir(&paths.dir) {
