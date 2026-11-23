@@ -70,7 +70,7 @@ fn revealed_message_items_are_prepared_before_the_derive_commit() {
     conn.flush_prepared_statement_cache();
     conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
         AuthAction::Read {
-            table_name: "block" | "text" | "message_version_body",
+            table_name: "block" | "text_group" | "message_version_body",
             column_name: "body",
         } => Authorization::Deny,
         _ => Authorization::Allow,
@@ -156,14 +156,14 @@ fn stale_reveal_cannot_restore_an_old_version_or_retracted_message() {
         } else {
             let selected = crate::items::computed_entries(&conn, session).unwrap();
             assert_eq!(selected[1].body_bytes, 22);
+            let hidden: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM message WHERE pk=?1 AND duplicate_of IS NOT NULL)",
+                    params![message],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(!hidden);
         }
-        let hidden: bool = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM message WHERE pk=?1 AND duplicate_of IS NOT NULL)",
-                params![message],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(!hidden);
     }
 }

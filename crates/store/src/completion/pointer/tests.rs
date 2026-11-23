@@ -498,7 +498,7 @@ fn failed_standalone_open_revokes_the_previous_catalog() {
 }
 
 #[test]
-fn unknown_and_primary_startup_revoke_the_previous_catalog() {
+fn primary_cache_and_blocked_startup_revoke_the_previous_catalog() {
     for mode in ["primary", "cache", "blocked"] {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("archive");

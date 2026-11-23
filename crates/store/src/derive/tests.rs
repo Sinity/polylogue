@@ -182,7 +182,7 @@ fn session_facts_do_not_depend_on_arrival_order() {
 }
 
 #[test]
-fn session_read_and_export_preserve_every_recorded_fact() {
+fn session_read_preserves_every_recorded_fact() {
     let mut w = WriterArchive::new();
     let mut session = Session::new(sid("export:identity"), SessionKind::Subagent);
     session.offer_title("An exact title", polylogue_model::TitleSource::Custom);
@@ -200,11 +200,19 @@ fn session_read_and_export_preserve_every_recorded_fact() {
     let reads = crate::ReadPool::open(&w.archive).unwrap();
     let reader = reads.reader().unwrap();
     assert_eq!(reader.session(&session.id).unwrap(), Some(session.clone()));
-    let exported = reader.session(&session.id).unwrap().unwrap();
-    assert_eq!(exported, session);
     let messages = reader.messages(&session.id, false).unwrap();
     assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].session, exported.id);
+    assert_eq!(messages[0].session, session.id);
+    assert_eq!(
+        messages[0].blocks,
+        [polylogue_model::Block::Text {
+            text: "A message".into()
+        }]
+    );
+    assert_eq!(
+        messages[0].at,
+        polylogue_model::Timestamp::from_unix_ms(1234)
+    );
 }
 
 fn versioned_rules(version: i64) -> [super::Derivation; 4] {
@@ -864,11 +872,14 @@ fn noop_derive_leaves_session_changed() {
     assert_eq!(state(&w), before);
     // A derive that has work moves no session's `changed` either: the later
     // session keeps the counter of the write that stored its rows.
-    w.write("b", prose("b", 1, 2_000, "another prompt"));
+    w.write_underived("b", prose("b", 1, 2_000, "another prompt"));
+    let stored_at: i64 = state(&w).1[0]["value"].as_str().unwrap().parse().unwrap();
+    assert!(w.writer.derive().unwrap() > 0);
     let (sessions, counter) = state(&w);
-    assert_eq!(sessions[0], before.0[0]);
     let counter: i64 = counter[0]["value"].as_str().unwrap().parse().unwrap();
-    assert!(sessions[1]["changed"].as_i64().unwrap() < counter);
+    assert!(counter > stored_at, "the derive wrote after the rows");
+    assert_eq!(sessions[0], before.0[0]);
+    assert_eq!(sessions[1]["changed"].as_i64().unwrap(), stored_at);
 }
 
 #[test]

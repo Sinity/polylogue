@@ -218,8 +218,21 @@ fn historical_observation_requires_the_stored_revision_point_and_has_no_new_byte
     wrong.batch.new_blob = None;
     wrong.files.clear();
     let result = writer.store_group(vec![wrong], blobs).unwrap();
-    assert!(result[0].is_err());
+    assert!(matches!(
+        &result[0],
+        Err(crate::StoreError::Invalid(message)) if message == "observed revision point is not stored"
+    ));
     let db = crate::archive::open_read(&archive.archive_db()).unwrap();
+    // One stored input: observing it again adds no extent and no blob.
+    for table in ["extent", "blob"] {
+        assert_eq!(
+            db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1,
+            "{table}"
+        );
+    }
     assert_eq!(
         db.query_row("SELECT count(*) FROM revision", [], |r| r.get::<_, i64>(0))
             .unwrap(),

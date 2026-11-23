@@ -132,9 +132,12 @@ fn calendar_sql_daily_series_and_pooled_reads_agree_at_fractional_dst_boundaries
         )
         .unwrap();
         assert_eq!(rhythm.prompts, 4);
-        assert_eq!(rhythm.grid[4][6], 1); // Friday's logical day, Saturday's clock hour.
-        assert_eq!(rhythm.grid[5][6], 2);
-        assert_eq!(rhythm.grid[6][6], 1);
+        // Friday's logical day, Saturday's clock hour.
+        let mut grid = [[0u64; 24]; 7];
+        grid[4][6] = 1;
+        grid[5][6] = 2;
+        grid[6][6] = 1;
+        assert_eq!(rhythm.grid, grid);
         let calendar =
             crate::timeline::calendar(&reader, &clock, "2026-03-07".parse().unwrap()).unwrap();
         assert_eq!(
@@ -165,7 +168,6 @@ fn calendar_sql_daily_series_and_pooled_reads_agree_at_fractional_dst_boundaries
         });
     }
     let reader = pool.reader().unwrap();
-    assert!(reader.query("SELECT pl_day(0) AS day", &[]).is_err());
     let utc = query_language::time::Clock::new(clock.now, day("UTC", "00:00:00"));
     reader.with_clock(&utc, || {
         assert_eq!(

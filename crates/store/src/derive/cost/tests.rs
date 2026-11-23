@@ -153,15 +153,12 @@ fn changed_usage_derives_only_its_session_and_preserves_cache_and_tier_fields() 
         None,
     )
     .unwrap();
-    // The changed session: its session values and its cost; the unrelated
-    // one: its cost alone.
-    let session_values = super::super::ALL
-        .iter()
-        .filter(|d| d.class == super::super::Class::Session)
-        .count() as u64;
+    // The changed session: its seven session derivations (session, title,
+    // active path, repository, session span, duplicates, tool calls) and its
+    // cost; the unrelated one: its cost alone.
     assert_eq!(
         super::super::run_with_catalog(&mut index, &catalog("second", 2)).unwrap(),
-        session_values + 2
+        9
     );
     assert_eq!(
         costs(&index),

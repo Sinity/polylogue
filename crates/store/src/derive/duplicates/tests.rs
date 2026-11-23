@@ -17,6 +17,9 @@ fn a_prompt_repeated_in_either_route_is_never_paired() {
     let captured = turns(&["plan it", "continue", "continue", "thanks"]);
     let exported = turns(&["plan it", "continue", "thanks"]);
     assert_eq!(paired(&captured, &exported), [(0, 0), (3, 2)]);
+    let captured = turns(&["plan it", "continue", "thanks"]);
+    let exported = turns(&["plan it", "continue", "continue", "thanks"]);
+    assert_eq!(paired(&captured, &exported), [(0, 0), (2, 3)]);
 }
 
 #[test]
@@ -50,7 +53,7 @@ fn page_reads(conn: &Connection) -> i32 {
 }
 
 #[test]
-fn unmarked_sessions_do_not_read_all_message_rows_and_withdrawn_capture_marks_clear() {
+fn unmarked_sessions_do_not_read_all_message_rows_and_marks_without_capture_clear() {
     use crate::fixture::{Fixture, SessionFacts};
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(dir.path()).unwrap();

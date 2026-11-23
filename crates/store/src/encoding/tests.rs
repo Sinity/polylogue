@@ -228,7 +228,7 @@ fn prepared_rows_preserve_values_for_every_block_kind() {
 }
 
 #[test]
-fn dictionary_rows_and_plain_sorted_frames_remain_distinct() {
+fn dictionary_rows_and_plain_frames_remain_distinct() {
     let message: Message = serde_json::from_value(json!({
         "id":"codex:sample-42", "session":"codex:sample-session",
         "parent":"codex:sample-parent", "role":"assistant", "model":"synthetic-model",
@@ -298,7 +298,10 @@ fn unknown_dictionary_and_truncated_dictionary_frames_refuse() {
     ));
     let packed = RowPacker::new().unwrap().pack_row(bytes).unwrap();
     assert!(zstd::zstd_safe::get_dict_id_from_frame(&packed).is_some());
-    assert!(unpack_bytes(&packed[..packed.len() - 1]).is_err());
+    assert!(matches!(
+        unpack_json::<serde_json::Value>(&packed[..packed.len() - 1]),
+        Err(StoreError::Io(_))
+    ));
 }
 
 #[test]
