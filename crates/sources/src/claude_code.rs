@@ -225,7 +225,7 @@ pub struct ParserState {
 }
 
 /// Hot alias cache. Older aliases remain in the keyed continuation.
-const ALIASES: usize = 4096;
+const ALIAS_CACHE_CAPACITY: usize = 4096;
 
 impl ParserState {
     fn bind(&mut self, context: polylogue_model::parser_context::Handle, namespace: String) {
@@ -244,7 +244,7 @@ impl ParserState {
             .bind(context, format!("{namespace}/prefix-copies"));
     }
     fn alias(&mut self, uuid: &str, target: Option<MessageId>) {
-        if self.aliases.len() == ALIASES {
+        if self.aliases.len() == ALIAS_CACHE_CAPACITY {
             self.aliases.pop_front();
         }
         self.context.put(

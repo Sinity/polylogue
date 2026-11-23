@@ -40,8 +40,7 @@ impl Server {
     }
 
     fn post(&self, method: &str, value: Json) -> Result<Json, ConversionError> {
-        let body =
-            serde_json::to_vec(&value).map_err(|e| ConversionError::NotConverted(e.to_string()))?;
+        let body = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
         let mut response = self
             .agent
             .post(format!("http://127.0.0.1:{}/{SERVICE}/{method}", self.port))
@@ -222,7 +221,7 @@ fn conversion_state(path: &Path, spool: &Path) -> Option<ConversionState> {
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
 }
 
-fn failed_for(path: &Path, spool: &Path, state: FileState, pid: u64) -> bool {
+fn already_not_converted(path: &Path, spool: &Path, state: FileState, pid: u64) -> bool {
     conversion_state(path, spool).is_some_and(|previous| {
         previous.file == state
             && previous.status == "not_converted"
@@ -277,7 +276,7 @@ fn sync_paths(
         }
         if pending
             .iter()
-            .all(|(path, state)| failed_for(path, spool, *state, server.pid))
+            .all(|(path, state)| already_not_converted(path, spool, *state, server.pid))
         {
             continue;
         }
@@ -311,7 +310,7 @@ fn sync_paths(
         for (path, state) in pending {
             if !servers
                 .iter()
-                .any(|server| failed_for(path, spool, state, server.pid))
+                .any(|server| already_not_converted(path, spool, state, server.pid))
             {
                 record_status(
                     path,
@@ -343,7 +342,7 @@ fn sync_paths(
             );
             continue;
         }
-        if failed_for(path, spool, state, server.pid) {
+        if already_not_converted(path, spool, state, server.pid) {
             continue;
         }
         let result = convert(server, &listing, path, spool, state);

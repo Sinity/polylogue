@@ -482,7 +482,7 @@ fn child_of_an_evicted_alias_keeps_its_resolved_parent() {
         assistant("a1", "response-a", json!({"type":"text","text":"first"})),
         assistant("a2", "response-a", json!({"type":"text","text":"last"})),
     ];
-    for n in 0..=ALIASES {
+    for n in 0..=ALIAS_CACHE_CAPACITY {
         records.push(json!({"type":"progress","uuid":format!("progress-{n}"),"parentUuid":"a1","sessionId":"s1","data":{"type":"bash_progress"}}));
     }
     records.push(json!({"type":"user","uuid":"child","parentUuid":"a2","sessionId":"s1","message":{"role":"user","content":"follow-up"}}));

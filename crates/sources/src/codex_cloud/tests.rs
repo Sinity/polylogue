@@ -124,3 +124,25 @@ fn a_literal_branch_named_none_is_a_branch_not_a_missing_value() {
             .contains_key("external_pull_request_id")
     );
 }
+
+#[test]
+fn custom_instructions_become_session_instructions() {
+    let bytes=br#"[{"id":"task_e_instr","turns":[{"id":"task_e_instr~usertrn_e_one","role":"user","custom_instructions":"Answer briefly.","input_items":[]}]}]"#;
+    let step =
+        crate::export::fixture::parse(&mut open(Path::new("codex.json")).unwrap(), bytes).unwrap();
+    assert_eq!(
+        step.output.sessions[0].instructions.as_deref(),
+        Some("Answer briefly.")
+    );
+}
+
+#[test]
+fn an_empty_branch_falls_through_to_branch_name() {
+    let bytes=br#"[{"id":"task_e_alt","turns":[{"id":"task_e_alt~assttrn_e_one","role":"assistant","branch":"","branch_name":"feature/alt","output_items":[]}]}]"#;
+    let step =
+        crate::export::fixture::parse(&mut open(Path::new("codex.json")).unwrap(), bytes).unwrap();
+    assert_eq!(
+        step.output.sessions[0].git_branch.as_deref(),
+        Some("feature/alt")
+    );
+}

@@ -163,7 +163,12 @@ impl Drive {
                 query.push(("pageToken", p.as_str()));
             }
             let v = json(get(&files_url, &query)?, &files_url)?;
-            files.extend(v.array("files").cloned().unwrap_or_default());
+            // A reply without `files` is not an empty folder: writing it would
+            // replace the saved listing with nothing.
+            let batch = v.array("files").ok_or_else(|| {
+                DriveError::Http(files_url.clone(), "reply has no `files` array".into())
+            })?;
+            files.extend(batch.iter().cloned());
             match v.str("nextPageToken") {
                 Some(p) => page = Some(p.to_owned()),
                 None => break,
@@ -200,13 +205,11 @@ impl Drive {
                     query.push(("pageToken", token.as_str()));
                 }
                 let v = json(get(&rev_url, &query)?, &rev_url)?;
-                let batch: Vec<Revision> = v
-                    .get("revisions")
-                    .cloned()
-                    .map(serde_json::from_value)
-                    .transpose()
-                    .map_err(|e| DriveError::Http(rev_url.clone(), e.to_string()))?
-                    .unwrap_or_default();
+                let batch: Vec<Revision> =
+                    serde_json::from_value(v.get("revisions").cloned().ok_or_else(|| {
+                        DriveError::Http(rev_url.clone(), "reply has no `revisions` array".into())
+                    })?)
+                    .map_err(|e| DriveError::Http(rev_url.clone(), e.to_string()))?;
                 revisions.extend(batch);
                 match v.str("nextPageToken") {
                     Some(token) => page = Some(token.to_owned()),
@@ -565,7 +568,13 @@ fn decode(value: &str) -> Option<String> {
         .as_chunks::<2>()
         .0
         .iter()
-        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
+        .map(|pair| {
+            // `from_str_radix` also accepts a leading `+`.
+            if !pair.iter().all(u8::is_ascii_hexdigit) {
+                return None;
+            }
+            u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()
+        })
         .collect::<Option<Vec<_>>>()?;
     String::from_utf8(bytes).ok()
 }

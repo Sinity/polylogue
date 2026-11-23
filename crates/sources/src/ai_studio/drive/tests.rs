@@ -423,3 +423,11 @@ fn invalid_present_credentials_are_reported_instead_of_treated_as_unauthorized()
     assert_eq!(errors.len(), 1);
     assert!(errors[0].contains("Drive token"), "{errors:?}");
 }
+
+#[test]
+fn pending_names_decode_only_plain_hex_pairs() {
+    assert_eq!(decode("3141"), Some("1A".to_owned()));
+    assert_eq!(decode("+1"), None);
+    assert_eq!(decode("3"), None);
+    assert_eq!(decode("zz"), None);
+}
