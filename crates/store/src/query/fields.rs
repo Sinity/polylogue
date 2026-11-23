@@ -820,7 +820,7 @@ fn sessions_running(a: &Aliases, now: i64) -> String {
 /// `LiveState::running` is the one definition.
 pub(crate) fn running_states_sql() -> String {
     let names: Vec<String> = polylogue_model::live::LiveState::ALL
-        .into_iter()
+        .iter()
         .filter(|state| state.running())
         .map(|state| format!("'{}'", state.as_str()))
         .collect();
