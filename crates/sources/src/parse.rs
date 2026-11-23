@@ -236,6 +236,12 @@ impl Parse {
         matches!(self, Parse::CaptureLog(_))
     }
 
+    /// Whether ranges are read in order, so a parse can stop at a record's
+    /// end and continue from there (lines or capture frames).
+    pub fn reads_in_order(&self) -> bool {
+        matches!(self, Parse::Lines(_) | Parse::CaptureLog(_))
+    }
+
     pub fn is_document(&self) -> bool {
         matches!(self, Parse::Document(_))
     }

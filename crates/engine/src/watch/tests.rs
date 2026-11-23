@@ -56,3 +56,28 @@ fn repeated_paths_are_coalesced_and_watch_failures_request_a_full_scan() {
     changes.record(Ok(notify::Event::new(notify::EventKind::Any)));
     assert!(changes.full);
 }
+
+#[test]
+fn a_change_to_a_watched_root_itself_watches_it_again() {
+    let home = tempfile::tempdir().unwrap();
+    let mut config = crate::test_config();
+    config.home = home.path().to_path_buf();
+    config.tool_dirs.clear();
+    fs::create_dir_all(config.spool_dir(polylogue_sources::browser_capture::ORIGIN)).unwrap();
+    let (tx, _rx) = channel();
+    let mut roots = Roots::new(&config, tx).unwrap();
+    let root = roots.active.keys().next().cloned().expect("a watched root");
+    roots.take();
+    roots.refresh(&config).unwrap();
+    assert!(!roots.retry);
+    let unrelated = notify::Event::new(notify::EventKind::Remove(notify::event::RemoveKind::File))
+        .add_path(root.join("child"));
+    roots.changes.locked().record(Ok(unrelated));
+    roots.take();
+    assert!(!roots.retry, "a change below a root keeps its watch");
+    let removed = notify::Event::new(notify::EventKind::Remove(notify::event::RemoveKind::Folder))
+        .add_path(root);
+    roots.changes.locked().record(Ok(removed));
+    roots.take();
+    assert!(roots.retry);
+}

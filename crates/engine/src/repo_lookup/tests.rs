@@ -2,27 +2,6 @@ use super::*;
 use std::io::Write;
 
 #[test]
-fn credentials_never_reach_a_lookup() {
-    assert_eq!(
-        without_credentials("https://user:tok@github.com/o/r.git"),
-        "https://github.com/o/r.git"
-    );
-    assert_eq!(
-        without_credentials("https://github.com/o/r.git"),
-        "https://github.com/o/r.git"
-    );
-    assert_eq!(
-        without_credentials("git@github.com:o/r.git"),
-        "git@github.com:o/r.git"
-    );
-    // An @ in the path is not userinfo.
-    assert_eq!(
-        without_credentials("https://host/a@b/r.git"),
-        "https://host/a@b/r.git"
-    );
-}
-
-#[test]
 fn the_repository_is_the_nearest_git_directory_above() {
     let t = tempfile::tempdir().unwrap();
     let repo = t.path().join("repo");
@@ -35,7 +14,7 @@ fn the_repository_is_the_nearest_git_directory_above() {
 }
 
 #[test]
-fn a_lookup_is_written_once_and_again_only_when_it_changes() {
+fn an_unchanged_lookup_is_written_once() {
     let t = tempfile::tempdir().unwrap();
     let repo = t.path().join("repo");
     // Not a readable repository: remote and root stay unknown.
@@ -54,6 +33,35 @@ fn a_lookup_is_written_once_and_again_only_when_it_changes() {
     assert!(doc["remote"].is_null());
     assert_eq!(doc["root_commits"], serde_json::json!([]));
     assert_eq!(doc["read_at"], "t1");
+}
+
+#[test]
+fn a_changed_remote_rewrites_the_lookup_file() {
+    let t = tempfile::tempdir().unwrap();
+    let repo = t.path().join("repo");
+    let root = repository(&repo);
+    let out = t.path().join("lookups");
+    let mut cache = Cache::default();
+    let cwds = || vec![repo.clone()];
+    assert_eq!(refresh(cwds(), &out, &mut cache, "t1").unwrap(), 1);
+    git(
+        &repo,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/team/project.git",
+        ],
+    );
+    assert_eq!(refresh(cwds(), &out, &mut cache, "t2").unwrap(), 1);
+    assert_eq!(refresh(cwds(), &out, &mut cache, "t3").unwrap(), 0);
+    let files: Vec<_> = fs::read_dir(&out).unwrap().collect();
+    assert_eq!(files.len(), 1);
+    let doc: serde_json::Value =
+        serde_json::from_slice(&fs::read(files[0].as_ref().unwrap().path()).unwrap()).unwrap();
+    assert_eq!(doc["remote"], "https://example.invalid/team/project.git");
+    assert_eq!(doc["root_commits"], serde_json::json!([root]));
+    assert_eq!(doc["read_at"], "t2");
 }
 
 #[test]

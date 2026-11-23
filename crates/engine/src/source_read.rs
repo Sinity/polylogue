@@ -1,14 +1,24 @@
 //! Only the receiving IO path creates source-read records; parser payloads do not.
 use crate::*;
 use polylogue_store::primary::{AcquisitionReceipt, AcquisitionRoute, RawRange, SourceSelector};
+/// What every source-read receipt of one source is built from: the source,
+/// how it was acquired and when.
 #[derive(Debug, Clone)]
 pub(crate) struct SourceReadContext {
     pub source: SourceSelector,
     pub route: AcquisitionRoute,
     pub clock: polylogue_model::WallClock,
+    /// The source position fixed before the read; none when the read states no
+    /// source coordinates.
     pub basis: Option<polylogue_store::primary::SourceBasis>,
+    /// The file's facts when the plan was made; the read refuses a file that
+    /// no longer matches them.
     pub facts: Option<FileFacts>,
+    /// The last body already held in the spool, which the read's first range
+    /// continues; it becomes the receipt's predecessor.
     pub previous_body: Option<String>,
+    /// The outcome the writer must report for the batch; set when the held
+    /// bytes did not prepare cleanly.
     pub required_outcome: Option<polylogue_store::primary::CaptureOutcome>,
 }
 impl SourceReadContext {
@@ -100,6 +110,9 @@ pub(crate) fn file_snapshot(
         changed: time(metadata.ctime(), metadata.ctime_nsec())?,
     })
 }
+/// Headers read per page when looking for a group member; a page is one
+/// store read, so this bounds memory per page, not what can be found.
+const GROUP_HEADER_PAGE: usize = 32;
 impl Engine {
     pub(crate) fn prepare_byte_read(
         &mut self,
@@ -149,7 +162,7 @@ impl Engine {
             );
         }
         if let Some(cursor) = cursor.filter(|cursor| {
-            cursor.range().end > plan.stored_upto || plan.size == 0 && cursor.is_complete_window()
+            cursor.range().end > plan.stored_upto || (plan.size == 0 && cursor.is_complete_window())
         }) {
             plan.byte_read = Some(crate::plan::ByteRead {
                 cursor: Some(cursor),
@@ -193,10 +206,10 @@ impl Engine {
                     && known.chain.is_some()
                     && known.stored >= source_read.range.end
                 {
-                    pass.capture_pending |= known.stored < plan.size
-                        || has_reading(plan.origin)
-                            && (!known.parsed
-                                || !known.waiting && known.parsed_upto < known.stored);
+                    let parse_unfinished =
+                        !known.parsed || (!known.waiting && known.parsed_upto < known.stored);
+                    pass.capture_pending |=
+                        known.stored < plan.size || (has_reading(plan.origin) && parse_unfinished);
                     self.refresh_confirmed_input(&plan.path)?;
                     return Ok(());
                 }
@@ -295,7 +308,9 @@ impl Engine {
         let mut after = None;
         let mut found = None;
         loop {
-            let page = self.writer.pending_group_headers(group.into(), after, 32)?;
+            let page = self
+                .writer
+                .pending_group_headers(group.into(), after, GROUP_HEADER_PAGE)?;
             if page.outcome.is_none() {
                 return Ok(None);
             }

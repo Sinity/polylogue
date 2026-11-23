@@ -142,12 +142,14 @@ impl Engine {
             return Ok(None);
         };
         let id = format!("codex:rollout:{session_id}");
-        let original = if compressed {
-            // Reading the session ID moved the shared file offset.
-            source.rewind()?;
-            Some(self.archive.prepare_bytes(&mut source)?)
-        } else {
-            None
+        // The compressed file itself, with the read context taken before it.
+        let original = match original_context {
+            Some(context) => {
+                // Reading the session ID moved the shared file offset.
+                source.rewind()?;
+                Some((self.archive.prepare_bytes(&mut source)?, context))
+            }
+            None => None,
         };
         let reader = self.reads.reader()?;
         let previous = reader.input_progress(&id)?;
@@ -223,41 +225,36 @@ impl Engine {
         let mut observation = self.observation(path, Some(facts));
         let mut group = Vec::new();
         let mut original_added = 0;
-        if let Some(original) = original {
+        if let Some((original, original_context)) = original {
             let original_id = original.hash().to_string();
             let exists = self.reads.reader()?.input_progress(&original_id)?.is_some();
             if !exists {
                 original_added = original.len();
             }
             let original_length = original.len();
-            group.push(
-                self.rollout_batch(
-                    if exists {
-                        Change::Unchanged
-                    } else {
-                        Change::First
+            group.push(self.rollout_batch(
+                if exists {
+                    Change::Unchanged
+                } else {
+                    Change::First
+                },
+                self.observation(path, Some(facts)),
+                Some(original.clone()),
+                &original_context,
+                original_context.observed_file(
+                    InputKey {
+                        id: original_id.clone(),
+                        format: found.origin.name.into(),
+                        route: found.origin.route.imported(),
                     },
-                    self.observation(path, Some(facts)),
-                    Some(original.clone()),
-                    original_context.as_ref().expect("compressed source read"),
-                    original_context
-                        .as_ref()
-                        .expect("compressed source read")
-                        .observed_file(
-                            InputKey {
-                                id: original_id.clone(),
-                                format: found.origin.name.into(),
-                                route: found.origin.route.imported(),
-                            },
-                            observed.clone(),
-                            polylogue_store::primary::RawStreamRole::ProviderBytes,
-                            polylogue_store::primary::RawRange {
-                                start: 0,
-                                end: original_length,
-                            },
-                        ),
+                    observed.clone(),
+                    polylogue_store::primary::RawStreamRole::ProviderBytes,
+                    polylogue_store::primary::RawRange {
+                        start: 0,
+                        end: original_length,
+                    },
                 ),
-            );
+            ));
             observation.container = Some(polylogue_store::InContainer {
                 input: original_id,
                 member_index: 0,

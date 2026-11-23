@@ -33,8 +33,8 @@ impl Engine {
 /// range reads the committed context from the index, so the kept state leaves
 /// them out; they hold every key a range wrote, many times the rest.
 pub(crate) fn without_context_changes(state: &mut polylogue_model::Json) {
-    if let Some(state) = state.as_object_mut() {
-        state.remove(polylogue_model::parser_context::FIELD);
+    if let Some(fields) = state.as_object_mut() {
+        fields.remove(polylogue_model::parser_context::FIELD);
     }
 }
 

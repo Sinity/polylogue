@@ -63,6 +63,7 @@ fn stored_name_round_trips_for_every_enum() {
     check!(LiveChannel);
     check!(HostProtocol);
     check!(EmbeddingProvider);
+    check!(crate::freshness::FreshnessState);
     check!(VariantKind);
     check!(VariantRelation);
     check!(crate::read::IndicatorKind);

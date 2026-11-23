@@ -156,18 +156,11 @@ impl Engine {
                     )),
                     blobs: Vec::new(),
                     length: prepared.len(),
-                    parse: {
-                        let mut step = polylogue_store::ParseStep::new(
-                            polylogue_model::Output::default(),
-                            polylogue_model::RecordCounts::default(),
-                            0..prepared.len(),
-                            true,
-                        );
-                        step.progress =
-                            polylogue_model::batch::StepProgress::NoParserYet { at_end: true };
-                        step.reading_version = origin.reading_version();
-                        vec![step]
-                    },
+                    parse: vec![polylogue_store::ParseStep::without_parser(
+                        0..prepared.len(),
+                        true,
+                        origin.reading_version(),
+                    )],
                     acquisition: None,
                     basis: None,
                     release: Default::default(),

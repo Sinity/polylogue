@@ -1,8 +1,12 @@
 //! The parse pool: N worker threads, limited by bytes in flight, feeding
-//! the one writer. A worker reads its byte range,
-//! hashes and stores or compresses the new bytes, parses, and hands the
-//! writer one batch. Live appends go before bulk work. One input has at
-//! most one job in flight, so its parser state passes from job to job.
+//! the one writer. A worker reads a job's byte range, hashes and stores or
+//! compresses the new bytes, parses, and adds one batch to its group; it
+//! hands the writer the group once the group is large enough or a live job
+//! is in it. A whole-chain replacement task is different: the worker parses
+//! the stored chain end to end into a reading the writer commits as one
+//! unit, after the worker's earlier groups. Live appends go before bulk
+//! work. One input has at most one job in flight, so its parser state
+//! passes from job to job.
 
 use crate::{EngineError, plan::Plan, read};
 use polylogue_model::{Json, LockExt, spawn_named};
@@ -70,8 +74,8 @@ pub enum Bytes {
     Stored(Arc<polylogue_store::blobs::StoredChain>),
     /// A stored chain not loaded yet: a pass plans every stored input before
     /// it runs any, and a loaded chain holds its extent list in a database
-    /// of its own. The engine loads it as the plan starts, as `Import` when
-    /// `decoded` (read forward from the start), else as `Stored`.
+    /// of its own. The worker that runs the chain task loads it, as `Import`
+    /// when `decoded` (read forward from the start), else as `Stored`.
     Unloaded {
         chain: i64,
         length: u64,
@@ -111,7 +115,8 @@ pub struct Done {
     /// The batch carries a step that records the parser's failure.
     pub failure_recorded: bool,
     pub continuation_missing: bool,
-    /// Accepted by the SDK and held in the spool; neither a failure nor confirmed by Sinex.
+    /// The capture is saved and waiting for Sinex's confirmation; neither a
+    /// failure nor confirmed.
     pub pending: Option<String>,
     pub checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
     pub spooled_group: Option<polylogue_store::primary::SpooledGroup>,
@@ -262,8 +267,9 @@ impl Pool {
         }
     }
 
-    /// Whether a job of `bytes` would be queued now, without waiting for
-    /// bytes in flight to commit.
+    /// Whether submitting a job of `bytes` would return without waiting for
+    /// bytes in flight to commit. A requested stop also makes submit return
+    /// at once, not queued; this does not report that.
     pub fn has_room(&self, bytes: u64) -> bool {
         let q = self.shared.queue.locked();
         q.in_flight == 0 || q.in_flight + bytes <= self.shared.limit
@@ -1165,7 +1171,15 @@ pub(crate) fn run(
                                     files.extend(file);
                                     extra.push(p);
                                 }
-                                Err(e) => out.error = Some(format!("store inline bytes: {e}")),
+                                Err(e) => {
+                                    // The step would cite a blob the batch does
+                                    // not carry; the bytes stay unparsed, the
+                                    // position stays behind, and the parser state
+                                    // that read past it is dropped.
+                                    out.error = Some(format!("store inline bytes: {e}"));
+                                    out.parser_state = None;
+                                    return Vec::new();
+                                }
                             }
                         }
                         out.parsed_upto = job.start + step.consumed;
@@ -1250,16 +1264,11 @@ pub(crate) fn run(
             if !crate::has_reading(job.origin) || job.origin.support != polylogue_sources::Support::NoParser {
                 return Vec::new();
             }
-            let mut step = ParseStep::new(
-                Default::default(),
-                Default::default(),
+            let mut step = ParseStep::without_parser(
                 job.start..job.end,
                 job.at_end,
+                job.origin.reading_version(),
             );
-            step.progress = polylogue_model::batch::StepProgress::NoParserYet {
-                at_end: job.at_end,
-            };
-            step.reading_version = job.origin.reading_version();
             if prepare {
                 step.prepare();
             }

@@ -85,13 +85,15 @@ impl Shared<'_> {
             if n < x.length.min(y.length) {
                 let mut from = n;
                 if b > left + 1 {
-                    let next = self.between(left, left + 1)?;
-                    let onward = onward.expect("the following chain was compared");
-                    if next != onward {
+                    // `left` against its following chain, and that following
+                    // chain against `b` (compared in the previous iteration).
+                    let with_following = self.between(left, left + 1)?;
+                    let following_with_b = onward.expect("the following chain was compared");
+                    if with_following != following_with_b {
                         from = x.length.min(y.length);
-                        n = next.min(onward);
+                        n = with_following.min(following_with_b);
                     } else {
-                        from = from.max(next);
+                        from = from.max(with_following);
                     }
                 }
                 if from < x.length.min(y.length) {
@@ -194,10 +196,7 @@ fn copies_from(engine: &Engine, plan: &Plan) -> Option<i64> {
 /// Whether a plan's parser reads ranges in order (lines or capture frames),
 /// so that its parse can stop at a position and continue from it.
 pub(crate) fn parses_in_order(plan: &Plan) -> bool {
-    matches!(
-        (plan.origin.open)(&plan.path),
-        Some(polylogue_sources::Parse::Lines(_) | polylogue_sources::Parse::CaptureLog(_))
-    )
+    (plan.origin.open)(&plan.path).is_some_and(|parse| parse.reads_in_order())
 }
 
 impl Engine {
@@ -224,6 +223,8 @@ impl Engine {
             layouts: &layouts,
         };
         let planned_chain = layouts.get(planned)?;
+        let capture_log =
+            (plan.origin.open)(&plan.path).is_some_and(|parse| parse.is_capture_log());
         for older in 0..planned {
             let older_chain = layouts.get(older)?;
             if older_chain.reading.is_some() || older_chain.length == 0 {
@@ -249,7 +250,7 @@ impl Engine {
                 continue;
             }
             // The parse stops at a record's end, so it reads no byte twice.
-            let stop = self.last_record_end(plan, &planned_chain, point)?;
+            let stop = self.last_record_end(plan, &planned_chain, point, capture_log)?;
             if stop > 0 {
                 if plan.prefix_copies.is_none() {
                     plan.prefix_copies = Some(PrefixCopies::new()?);
@@ -280,13 +281,14 @@ impl Engine {
         plan: &Plan,
         chain: &ChainLayout,
         point: u64,
+        capture_log: bool,
     ) -> Result<u64, EngineError> {
         use polylogue_model::capture_log::{HEADER_LEN, Header, MAGIC};
         let from = plan.parse_pos;
         let reader = self.reads.reader()?;
         let bytes = reader.stored_chain(&plan.input.id, chain.chain, chain.length)?;
         let read = |start: u64, end: u64| bytes.read_range(&self.blobs, start, end);
-        let end = if (plan.origin.open)(&plan.path).is_some_and(|parse| parse.is_capture_log()) {
+        let end = if capture_log {
             let mut at = from.max(MAGIC.len() as u64);
             loop {
                 let header_end = at + HEADER_LEN as u64;

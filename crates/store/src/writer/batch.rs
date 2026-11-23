@@ -182,6 +182,19 @@ impl ParseStep {
             comparison: None,
         }
     }
+
+    /// Coverage of a byte range no parser reads yet: no rows, only that the
+    /// bytes are kept.
+    pub fn without_parser(
+        range: std::ops::Range<u64>,
+        at_end: bool,
+        reading_version: String,
+    ) -> Self {
+        let mut step = Self::new(Output::default(), RecordCounts::default(), range, at_end);
+        step.progress = polylogue_model::batch::StepProgress::NoParserYet { at_end };
+        step.reading_version = reading_version;
+        step
+    }
 }
 
 /// What the writer stores for one input in one step. `new blob` holds the new
