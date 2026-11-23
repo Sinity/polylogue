@@ -229,7 +229,8 @@ generated page of the thing they belong to, or on the area page that owns them.
   (`save NAME --watch`).
 - **figure**: a saved measure query with a declared denominator query.
 - **finding**: an annotation that rests on a result or query.
-- **pre-registration**: saving a query before its first run.
+- **pre-registration**: a claim or finding whose `--check` names a question
+  before that question's first run (saving does not pre-register).
 - **page size** and **cursor**: replies come in pages; a cursor continues from
   the last row shown. A page of rows is never the reply's limit.
 - **deadline**: how long an operation may run before it stops and names a
@@ -273,7 +274,8 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **alternate**: another rendering of content (a translation,
   transliteration, simplification or summary) bound to an exact source
   revision, shown in place of the original when enabled and always marked; an
-  **alternate part** maps to one original message or block.
+  **alternate part** maps to one original message, block, span or (on a page)
+  annotation.
 - **blind**: a comparison shown with labels `A`, `B` instead of references and
   with identifying fields removed.
 - **as it stood**: `read --at TIME|POSITION`, rendering annotations and

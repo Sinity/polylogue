@@ -139,7 +139,7 @@ The inspector shows, for the view or the focused target:
 
 - **Transport:** one server-sent-event stream per visible tab: the view's own line with `follow`, in the shared framing ([routes](#routes)). A reader or Running streams what its sessions do, as `read --follow` does; a page streams changes to its slots and the annotations it shows; a listing streams each row that starts matching, as `read --follow` does on rows that are not sessions. The event ID is the change position; events are sent after commit and carry rendered fragments (`append`, `replace`) or changed references (`ref`), never whole sessions. A reconnect resumes from `Last-Event-ID`; an unknown position or a new index sends `reload`. A selection the daemon cannot follow is refused by name.
 - **Clock-driven changes:** a live state carries `until`, and the view recomputes at `until` without an event.
-- **Never moves the reader:** lists hold reordering while a row has focus and show "N updates · apply"; the reader appends only while reading live and at the end, and otherwise shows "N new messages ↓"; an update never removes text selection or focus.
+- **Never moves the reader:** lists hold reordering while a row has focus and show "N updates · apply"; the reader appends only while reading live and at the end, and otherwise shows "N new messages ↓"; a page shows "N changes · show" for a change above the viewport; an update never removes text selection or focus.
 - **Hidden tabs** close the stream and refresh on return.
 - **Superseded requests:** a newer selection aborts the older request, and a stale reply never overwrites a newer selection.
 

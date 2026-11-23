@@ -22,7 +22,7 @@ repository files and live checks for facts they answer directly.
 Use `polylogue_write` for `note`, `tag`, `edit`, `withdraw`, `judge` and `save`
 steps. A write or act over several query rows needs `all: true`. Keep the
 same request ID and arguments when retrying a write; when omitted, its ID is
-computed from the caller and call. Each completed write returns an undo line.
+computed from the caller and call. Each write that changes the archive returns an undo line.
 Authorship comes from the channel and harness, never from an argument.
 
 Use `polylogue_act` for steps that reach live sessions and operations that

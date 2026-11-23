@@ -474,9 +474,9 @@ pub(crate) fn clear(conn: &Connection) -> Result<()> {
 }
 
 fn prefix(prefix: &str) -> Result<String> {
-    if !(12..=64).contains(&prefix.len()) || !prefix.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if !(8..=64).contains(&prefix.len()) || !prefix.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(crate::StoreError::invalid(
-            "a query hash requires 12 to 64 hexadecimal characters",
+            "a query hash requires 8 to 64 hexadecimal characters",
         ));
     }
     Ok(prefix.to_ascii_lowercase())

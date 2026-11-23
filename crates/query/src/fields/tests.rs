@@ -66,3 +66,13 @@ fn numbers_beyond_i64_are_refused_not_rounded() {
         Err("depth is a number".to_string())
     );
 }
+
+/// `via` filters annotations as it does runs and alternates ([authorship.md]
+/// "What the author changes").
+#[test]
+fn annotations_can_be_filtered_by_via() {
+    assert_eq!(
+        lookup(Unit::Annotations, "via"),
+        Some(FieldId::AnnotationsVia)
+    );
+}

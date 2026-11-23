@@ -17,12 +17,12 @@ Composition edges are recorded at compile time in `query_edge(query, uses, how)`
 
 - **`query:<hash>`** is the BLAKE3 hash of the query's normal form and declared parameter types. The normal form resolves surface references to their stored forms and saved-query names to the hashes they resolved to, sorts operands where order carries no meaning, and removes spelling differences. Its explicit encoding is independent of the Rust AST's serialization layout. Equal normal forms and parameter declarations have equal hashes. The normal form and the hash function belong to the shared language, so Sinex hashes its queries the same way.
 - `query:<hash>` accepts the full 64-hex hash or a unique prefix of at least eight hex characters; replies print the shortest unique prefix, as footers do (`query:3f9a1c2e`).
-- Relative times stay as expressions in the normal form (`since:7d`, not an instant); each run records what they resolved to.
+- Relative times stay as expressions in the normal form (`since:7d`, not an instant); each run records what they resolved to in its stored body.
 - `query(hash, normal_form, first_run)` holds each distinct question once.
 
 ## Runs
 
-- Every executed query writes a run: `query_run(id, query, at, resolved, read_at, author, via, outcome, count, exact)`, with the author computed as for every authored record ([authorship.md](authorship.md)). `--explain` and completion write none.
+- Every executed query writes a run: `query_run(id, query, at, read_at, author, via, outcome, count, exact)`, with the author computed as for every authored record ([authorship.md](authorship.md)). `--explain` and completion write none.
 - Runs are written by the writer in its regular groups. A first page reserves space in the bounded user queue within its existing deadline, before acquiring the reader that prepares its page, then hands its completed execution to the writer without waiting for a commit. The run and its outcome commit together; the question is independently reusable under its hash. A cancelled or refused request starts no page and creates no run.
 - Every reply carries `query: "query:<hash>"` and `run: "run:<id>"`; a reply whose rows were kept also carries `result:<id>`.
 - A run is read as `polylogue run:01JD7Q4M read`: its question, read position, author, outcome and count. A run holds no rows; reading the rows again is running its question, and reading the same rows is reading a kept result. A normal run read returns one run card. Its next command runs the immutable question only when that question object is available; an object-read run has no invented question. A beginning without a completion is pending, an absent run is not found, and a completion whose beginning has not arrived is unavailable. `--view raw` shows the checked original beginning and optional completion instead of a card.
@@ -73,7 +73,7 @@ Over MCP the same step is `polylogue_write {"arguments": {"selection": "tool_cal
 
 Inside a saved query's definition, `result:NAME` is fixed at save time to the `result:<id>` it meant then.
 
-`query:NAME@N` selects revision N in the uniquely current assertion family for NAME. A name recreated after withdrawal has a new family; older families remain addressable by their exact annotation references and question hashes. Without a unique current family, colliding historical revision numbers are ambiguous.
+`query:NAME@N` selects revision N in the uniquely current annotation family for NAME. A name recreated after withdrawal has a new family; older families remain addressable by their exact annotation references and question hashes. Without a unique current family, colliding historical revision numbers are ambiguous.
 
 **Listing.** `polylogue saved` (a [shipped saved query](#shipped-saved-queries)) lists saved queries with name, revision, text, newest kept result and whether each is watched. `polylogue 'results where name:failing'` lists every kept result of that name, newest first. `polylogue query:failing read` identifies the selected definition in its header, then pages its text, revisions, kept results, watch and dependents before the selected rows, with the line that re-saves each named dependent. Long texts continue through the normal read fragments.
 

@@ -29,7 +29,7 @@ The visual style of MK2 (graphite and slate, dark only, Inter and JetBrains Mono
 | [04 Huge session](web/boards/mk3/index.html#a04) | virtualized reading with windows above and below, scroll restore to a message, show/hide defaults, search matches always visible, the minimap. The outline lists the session's turns rather than phases |
 | [06 Pastes](web/boards/mk3/index.html#a06), [07 Attachments](web/boards/mk3/index.html#a07) | how each paste kind and each attachment state renders; the pastes and attachments views |
 | [08 Inspector](web/boards/mk3/index.html#a08) | the inspector for each selection context |
-| [09 Topology](web/boards/mk3/index.html#a09) | the lineage view over the closed set of session links ([sessions.md](sessions.md#session-links)), with unresolved parents shown as waiting |
+| [09 Topology](web/boards/mk3/index.html#a09) | the lineage view over the closed set of session links ([sessions.md](sessions.md#session-links)), with unresolved parents shown as unresolved |
 | [10 Flows](web/boards/mk3/index.html#a10) | resuming from a message in another harness (`resume --in`), forking (`resume --fork`) and a bundle from a selection (a `bundle` page), each explicit and previewed ([Web reader](web-reader.md#session-reader-ssession)) |
 | [11 Tabs](web/boards/mk3/index.html#a11), [12 Columns](web/boards/mk3/index.html#a12) | the workspace modes, saved as `workspace` pages ([Workspaces](web.md#workspaces)) |
 | [13 Compare](web/boards/mk3/index.html#a13), [14 Timeline](web/boards/mk3/index.html#a14) | compare with its four alignments, the timeline, and the matching workspace modes |
@@ -38,7 +38,7 @@ The visual style of MK2 (graphite and slate, dark only, Inter and JetBrains Mono
 | [17 State matrix](web/boards/mk3/index.html#a17) | populated, empty, partial, degraded and failed for every view ([state matrix](web.md#state-matrix)) |
 | [18 Settings](web/boards/mk3/index.html#a18) | density, show/hide defaults, keyboard, sources and access settings |
 
-Parts of MK3.1 that do not bind: the redaction policy, redacted paths and "copy requires confirm" (stored text is shown as it is, with nothing masked); the "needs attention" repair suggestion (`index rebuild`), since derived data converges by itself; the "repaired" topology edge (links come only from explicit markers); the "insights" label (derived data has no umbrella name, [measures.md](measures.md#rules)); and the phase outline of 04.
+Parts of MK3.1 that do not bind: the redaction policy, redacted paths and "copy requires confirm" (stored text is shown as it is, with nothing masked); the "needs attention" repair suggestion (`index rebuild`), since derived data converges by itself; the "repaired" topology edge (links come only from explicit markers); the "insights" label (derived data has no umbrella name, [measures.md](measures.md#principles)); and the phase outline of 04.
 
 ### MK2 elements
 
@@ -50,7 +50,7 @@ Parts of MK3.1 that do not bind: the redaction policy, redacted paths and "copy 
 | source panel: arrival route, source path, byte cursor, hash, derived facts | MK2. The privacy line reads "local archive only"; derived facts never include guessed phases |
 | reader header actions star and note, with the equivalent CLI line beside them | MK2; starring is `tag star`; the keys are the [keys](web.md#keys) table's |
 | status strip: daemon uptime, live lag per source, capture connection, index pending, key hints | MK2 |
-| `⌘K` and `:` palette, `g a` for annotations | MK2 for the keys; MK3.1 16 for the palette |
+| `⌘K` and `:` palette, `g a` for annotations | MK2 for the palette keys; the go-to keys are the [keys](web.md#keys) table's (`g n` is Notes); MK3.1 16 for the palette |
 | one keymap across web, CLI picker and palette ("Same verbs, same letters") | MK2 keymap, as the [keys](web.md#keys) table. A delete key does not exist (Polylogue has no deletion) |
 | empty, loading, degraded and failure states on every surface; calm persistent status, never a blocking modal; the way out is always a line the user could run | MK2 for the rule; MK3.1 17 for the matrix. The ways out are everyday lines; there are no repair commands ([architecture.md](architecture.md#principles)) |
 | the daemon counting its own use, local only, readable from every surface: query runs, reader opens by surface, time spent per session, per-component lag | MK2 telemetry, as Status's own-use panel. The counters live with the request log in `archive.db`, and nothing is purged |
@@ -98,4 +98,4 @@ Parts of the canvas boards and mockups that do not bind, because the text decide
 
 Views that no board draws are drawn in Claude Design before they are built, with at least two versions wherever layout is a real choice; the operator picks one, and the chosen board becomes that view's baseline.
 
-The views without a board: the heatmap, the firehose, Waiting, the note page, triage, analysis, saved and kept, the live-session control panel, the flow panel, a page's board, table, contents and history layouts, the page's margin with citation sidenotes and discussion, the Backlinks panel, in-place Markdown editing with its pickers, proposals and tracked changes, the active-page header and **+ page** while reading, the bundle composer, the judging-pass rankings and calibration panels, the trace view, and the extension's in-page UI. Their behaviour in [Web views](web-views.md) and [Web reader](web-reader.md) binds; their layout does not until the board exists.
+The views without a board: the heatmap, the firehose, the note page, triage, analysis, saved and kept, the live-session control panel, the flow panel, a page's board and table layouts and its contents view and history panel, the page's margin with citation sidenotes and discussion, the Backlinks panel, in-place Markdown editing with its pickers, proposals and tracked changes, the active-page header and **+ page** while reading, the bundle composer, the judging-pass rankings and calibration panels, the trace view, and the extension's in-page UI. Their behaviour in [Web views](web-views.md) and [Web reader](web-reader.md) binds; their layout does not until the board exists.
