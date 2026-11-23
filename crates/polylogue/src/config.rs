@@ -247,8 +247,10 @@ impl Paths {
             .filter(|path| path.is_absolute())
             .ok_or_else(|| Error::Invalid("HOME must be an absolute path".into()))?;
         let xdg = |name, fallback: &str| -> Result<PathBuf, Error> {
+            // An empty value counts as unset (XDG base directory spec).
             let value = env
                 .get_os(name)
+                .filter(|value| !value.is_empty())
                 .map_or_else(|| home.join(fallback), PathBuf::from);
             if !value.is_absolute() {
                 return Err(Error::Invalid(format!("{name} must be an absolute path")));
@@ -380,7 +382,7 @@ pub struct Startup {
     pub mode: crate::daemon::service::ArchiveMode,
     pub clock: WallClock,
     pub output: OutputConfig,
-    /// The pager a terminal read is shown through: `$PAGER`, else `less -R`.
+    /// The pager a terminal read is shown through: `$PAGER`, else `less -FRX`.
     pub pager: String,
     pub hook: crate::hook::Inputs,
     /// Zsh reads its startup files here when ZDOTDIR is set.
@@ -701,7 +703,7 @@ impl Startup {
                 .environment
                 .text("PAGER")?
                 .filter(|pager| !pager.trim().is_empty())
-                .unwrap_or("less -R")
+                .unwrap_or("less -FRX")
                 .to_owned(),
             lifecycle: crate::daemon::lifecycle::Inputs::from_environment(
                 &process.environment,

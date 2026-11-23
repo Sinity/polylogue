@@ -206,6 +206,11 @@ pub(crate) fn answer_result(
                 .filter_map(|q| q.str("id"))
                 .map(|id| (id.to_owned(), json!({"answers": [reply]})))
                 .collect();
+            if answers.is_empty() {
+                return Err(std::io::Error::other(
+                    "the user-input request names no question to answer",
+                ));
+            }
             Ok(json!({ "answers": answers }))
         }
         other => Err(std::io::Error::other(format!(

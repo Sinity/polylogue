@@ -493,3 +493,14 @@ fn zsh_startup_directory_is_resolved_from_the_captured_environment() {
     let startup = Startup::load(&inputs, Overrides::default()).unwrap();
     assert_eq!(startup.zsh_directory, root.path().join("shell-startup"));
 }
+#[test]
+fn an_empty_xdg_variable_is_unset() {
+    let environment = EnvSnapshot::from_values([
+        ("HOME".into(), "/home/op".into()),
+        ("XDG_CONFIG_HOME".into(), "".into()),
+        ("XDG_DATA_HOME".into(), "/data".into()),
+    ]);
+    let paths = Paths::resolve(&environment).unwrap();
+    assert_eq!(paths.config, PathBuf::from("/home/op/.config"));
+    assert_eq!(paths.data, PathBuf::from("/data"));
+}

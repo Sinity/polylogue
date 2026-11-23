@@ -80,7 +80,7 @@ async fn ask(
         }
         None => Err(Box::new(refuse(
             StatusCode::SERVICE_UNAVAILABLE,
-            "daemon_required",
+            polylogue_model::Code::DaemonRequired.as_str(),
             "the Polylogue daemon did not answer; it is stopped or busy",
         ))),
     }
@@ -112,7 +112,7 @@ async fn reader(State(host): State<Arc<BrowserHost>>) -> HttpResponse {
         Some(Ok(url)) => Json(json!({ "url": url })).into_response(),
         _ => refuse(
             StatusCode::SERVICE_UNAVAILABLE,
-            "reader_unavailable",
+            polylogue_model::Code::ReaderUnavailable.as_str(),
             "no reader is running; start it with `polylogue web`",
         ),
     }

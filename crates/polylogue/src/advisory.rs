@@ -6,7 +6,7 @@ use polylogue_model::{Reference, SessionId, Timestamp, assertion::LinkRole};
 use polylogue_store::{Reader, StoreError};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::Duration;
 
 pub const BUDGET: Duration = Duration::from_millis(20);
@@ -20,7 +20,11 @@ impl Cooldowns {
         session: &SessionId,
         now: i64,
     ) -> Option<MutexGuard<'_, HashMap<String, i64>>> {
-        let mut recent = self.0.try_lock().ok()?;
+        let mut recent = match self.0.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return None,
+        };
         recent.retain(|_, at| now.saturating_sub(*at) < COOLDOWN_MS);
         if recent.contains_key(&session.to_string()) {
             None

@@ -2,7 +2,7 @@
 //! The daemon's writer stores them ([`polylogue_store::backfill_jobs`]);
 //! this module checks requests and shapes the answers.
 
-use super::actions::Refused;
+use super::actions::{Refused, iso, providers_where};
 use polylogue_model::user::NewBackfillJob;
 use polylogue_model::user::{BACKFILL_CLAIM_MS, BackfillJob, BackfillStatus};
 use serde::{Deserialize, Serialize};
@@ -10,11 +10,7 @@ use serde::{Deserialize, Serialize};
 /// The providers whose conversation lists the extension can page through,
 /// by the extension's names for them.
 pub fn providers() -> impl Iterator<Item = &'static str> {
-    polylogue_sources::origin::ORIGINS
-        .iter()
-        .filter_map(|o| o.web.as_ref())
-        .filter(|w| w.backfill)
-        .filter_map(|w| w.extension_names.first().copied())
+    providers_where(|web| web.backfill)
 }
 
 /// Checks a start request: a known provider, and `since` as a date or a
@@ -41,12 +37,6 @@ pub fn new_job(provider: &str, since: Option<&str>) -> Result<NewBackfillJob, Re
         provider: provider.to_owned(),
         since,
     })
-}
-
-fn iso(ms: i64) -> Option<String> {
-    jiff::Timestamp::from_millisecond(ms)
-        .ok()
-        .map(|t| t.to_string())
 }
 
 /// One backfill job as the CLI and the extension read it.

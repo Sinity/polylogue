@@ -237,9 +237,11 @@ impl Callback {
         let (send, reply) = mpsc::channel();
         let send = Arc::new(Mutex::new(Some(send)));
         let (stop, stopped) = tokio::sync::oneshot::channel();
-        let worker = std::thread::Builder::new().name("drive-consent".into()).spawn(move || {
+        let worker = polylogue_model::spawn_named("drive-consent", move || {
             let serve = || -> io::Result<()> {
-                let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()?;
                 runtime.block_on(async {
                     let listener = tokio::net::TcpListener::from_std(listener)?;
                     let router = axum::Router::new().route("/", axum::routing::get(move |axum::extract::RawQuery(query): axum::extract::RawQuery| {
@@ -248,7 +250,7 @@ impl Callback {
                         async move {
                             let result = callback_code(query.as_deref().unwrap_or(""), &state);
                             let good = result.is_ok();
-                            if let Some(send) = send.lock().unwrap_or_else(|error| error.into_inner()).take() {
+                            if let Some(send) = polylogue_model::LockExt::locked(&*send).take() {
                                 let _ = send.send(result);
                             }
                             (if good { axum::http::StatusCode::OK } else { axum::http::StatusCode::BAD_REQUEST },

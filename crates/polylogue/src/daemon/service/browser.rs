@@ -27,8 +27,7 @@ fn refused(e: &StoreError) -> Failure {
                 )
                 .into();
             };
-            let refused = actions::refusal(code);
-            Failure::new(refused.0, refused.0.as_str())
+            Failure::new(code, code.as_str())
         }
         other => Failure::store(other),
     }
@@ -99,7 +98,7 @@ fn chat_then_view(
             })),
             Err(error) => unreadable_request(&error).answer(),
         },
-        Ok(None) => browser_refusal(actions::refusal(polylogue_model::Code::UnknownChatAction)),
+        Ok(None) => browser_refusal(actions::Refused(polylogue_model::Code::UnknownChatAction)),
         Err(e) => store_error(&e),
     }
 }
@@ -131,7 +130,7 @@ fn backfill_then_view(
                 job: Some(Box::new(backfill::view(&job, invocation.at.unix_ms()))),
             },
         )),
-        Ok(None) => browser_refusal(actions::refusal(polylogue_model::Code::UnknownBackfillJob)),
+        Ok(None) => browser_refusal(actions::Refused(polylogue_model::Code::UnknownBackfillJob)),
         Err(e) => store_error(&e),
     }
 }

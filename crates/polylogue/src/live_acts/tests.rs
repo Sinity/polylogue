@@ -99,6 +99,15 @@ fn hosted_answers_take_each_request_shape() {
         .unwrap(),
         json!({"answers": {"q1": {"answers": ["use main"]}, "q2": {"answers": ["use main"]}}})
     );
+    assert!(
+        answer_result(
+            "item/tool/requestUserInput",
+            &json!({"questions": [{"prompt": "no id"}]}),
+            true,
+            None
+        )
+        .is_err()
+    );
     assert!(answer_result("item/permissions/requestApproval", &Value::Null, true, None).is_err());
 }
 
