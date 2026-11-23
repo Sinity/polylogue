@@ -128,8 +128,8 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **parsed end**: the furthest byte a parse of a chain reached.
 - **field accounting**: every leaf of every record is read, kept, or counted
   as unused.
-- **golden**: expected parser output written by hand from knowledge of the
-  format, never from the parser's own output.
+- **golden**: expected output of a parser, or of a CLI or MCP reply, written
+  by hand from knowledge of the format, never from the code's own output.
 - **wire shape**: per origin, path and type, when a field was first and last
   seen and how often.
 - **format drift**: new, changed or vanished fields in a provider's format.

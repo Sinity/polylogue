@@ -37,8 +37,8 @@ These properties are required for every input; named tests identify existing cov
 
 - Appending to an input in steps gives the same rows as reading it whole (`append_equivalence`).
 - The order in which inputs arrive does not change the result (`order_independence`, `session_facts_do_not_depend_on_arrival_order`).
-- A crash at every point between append, sync, commit and truncate leaves only a state the open path resumes, with no repair step (`crash_leaves_only_a_tail_at_each_product_commit_boundary`).
-- Rebuilding the index from stored bytes gives the same replies (`a_deliberate_index_rebuild_keeps_authored_rows_and_vectors`; in primary mode `the_morrow_example_rebuilt_from_sinex_gives_the_same_replies`).
+- A crash after each of append, sync and commit leaves only a state the open path resumes (it truncates an uncommitted segment tail), with no repair step (`crash_leaves_only_a_tail_at_each_product_commit_boundary`).
+- Rebuilding the index from stored bytes gives the same replies (`a_deliberate_index_rebuild_keeps_authored_rows_and_vectors`; in primary mode `the_morrow_example_rebuilt_from_sinex_gives_the_same_answers`).
 - An export imported into a fresh archive gives the same sessions, IDs and user state (`an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_state`, `read_to_bundle_import_round_trip_preserves_structured_values_and_unknown_tool_fields`).
 - The current revision of an authored record is a pure function of its revision links (`current_revisions`, `annotation_revision_state`).
 - Budgeted pages concatenate to the whole read (`fused_pages_concatenate_to_the_whole_reply`).
@@ -48,7 +48,7 @@ These properties are required for every input; named tests identify existing cov
 
 ## Fault points and crash tests
 
-Crash tests stop the writer at every point between append, sync, commit and truncate, and check that the next open resumes each state a crash can leave, losing only the uncommitted group ([architecture.md#durability](architecture.md#durability) owns the states).
+Crash tests stop the writer after each of append, sync and commit, and check that the next open resumes each state a crash can leave, losing only the uncommitted group ([architecture.md#durability](architecture.md#durability) owns the states).
 
 The store and engine have a `faults` feature that adds a fault registry. It starts empty: only a test's own call to arm a named point activates it, in that process. Points sit at write steps (between commits, inside a group, during migration and catch-up) and at readers whose deadlines a test exercises. Shipped builds never enable the feature. Tests that check durability use a real filesystem, not a memory one.
 

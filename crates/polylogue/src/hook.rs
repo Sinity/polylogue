@@ -695,13 +695,14 @@ pub fn respond(
     until: Instant,
 ) -> Option<(String, String)> {
     match (harness, event) {
-        (Harness::ClaudeCode | Harness::Codex | Harness::GeminiCli, "SessionStart") => start(
-            harness,
-            payload,
-            StartSource::parse(payload["source"].as_str().unwrap_or("startup")),
-            startup,
-            until,
-        ),
+        (Harness::ClaudeCode | Harness::Codex | Harness::GeminiCli, "SessionStart") => {
+            let source = payload["source"].as_str().unwrap_or("startup");
+            // A fork carries its parent's context already.
+            if source == "fork" {
+                return None;
+            }
+            start(harness, payload, StartSource::parse(source), startup, until)
+        }
         (Harness::ClaudeCode | Harness::Codex, "UserPromptSubmit")
         | (Harness::GeminiCli, "BeforeAgent") => prompt_context(
             harness,

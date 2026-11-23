@@ -95,7 +95,7 @@ Where the recipient's role wrote text on a page here, the page's line also repor
 
 An outcome whose write fails stays queued with its original request identity, time and author. Each writer-commit turn retries it at most once; retrying the record never sends the content again. Status reports queued outcomes and their last write failure until the writer acknowledges them. Shutdown stops producers, makes a final hand-over while the writer remains available, and reports any final write failure instead of silently discarding it. In primary mode, acceptance by the durable producer spool hands responsibility to the confirmed-stream consumer.
 
-On a whole-brief timeout, the hook injects one unreferenced line: "Polylogue context timed out; carry on with the current task and local instructions." It exits 0. The preparation is marked `not_sent:timeout` only when the daemon confirms its queued preparation and its bytes were never emitted. An unconfirmed acceptance stays unresolved; the failure line does not invent a delivery. If output was emitted but its acknowledgement was lost, its outcome stays `unknown` for reconciliation, without resending.
+On a whole-brief timeout, the hook injects one unreferenced line: "Polylogue context timed out; continue with the current task and local instructions." It exits 0. The preparation is marked `not_sent:timeout` only when the daemon confirms its queued preparation and its bytes were never emitted. An unconfirmed acceptance stays unresolved; the failure line does not invent a delivery. If output was emitted but its acknowledgement was lost, its outcome stays `unknown` for reconciliation, without resending.
 
 The hook asks for the brief through `internal hook` with the payload's source, directory and session, so the recipient is the `--for` session.
 
@@ -125,7 +125,7 @@ A prompt (`UserPromptSubmit`, Gemini `BeforeAgent`, Hermes `pre_llm_call`) that 
 `polylogue 'WORDS' brief` replies to "what is already known that bears on this". It fuses ranked lists ([search.md](search.md#recall)): messages holding every word in prose, every word in tool output, similarity to the whole text when vectors exist, and sessions in the `--cwd` repository.
 
 - Hits are grouped by session, each with its annotations (author, judgment), its `written_by`, and a datamarked snippet; the operator's decisions come first.
-- The reply states how it searched (indexes, hits, sessions, more). With vectors off and no exact hit: "no exact matches; semantic search is not enabled, so related work under other wording may exist".
+- The reply states how it searched (indexes, hits, sessions, more). With vectors off and no exact hit it says so, in the words of [search.md](search.md#recall).
 - It pages by cursor with no fixed cap.
 - The brief of a search is not injected at the first prompt; it is added there only when its precision on real first prompts is shown to help.
 - The first page arrives within the search latency class, from indexes, never by scanning message bodies.

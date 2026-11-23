@@ -831,6 +831,29 @@ fn file_advisory_hook_uses_the_shared_request_and_silences_timeout() {
 }
 
 #[test]
+fn a_forked_session_start_asks_for_no_context() {
+    use std::os::unix::net::UnixListener;
+    let dir = tempfile::tempdir().unwrap();
+    let startup = Startup::for_test(startup().engine, dir.path());
+    let listener = UnixListener::bind(Archive::at(dir.path()).socket()).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    assert!(
+        respond(
+            Harness::ClaudeCode,
+            "SessionStart",
+            &json!({"session_id":"fork-1","cwd":"/synthetic/project","source":"fork"}),
+            &startup,
+            Instant::now() + CONTEXT_BUDGET
+        )
+        .is_none()
+    );
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[test]
 fn prompt_without_a_path_needs_no_advisory_exchange() {
     use std::os::unix::net::UnixListener;
     let dir = tempfile::tempdir().unwrap();
