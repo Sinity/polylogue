@@ -599,7 +599,7 @@ pub(crate) fn parent(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Q
 }
 
 pub(crate) fn root(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
-    let root = crate::lineage::value_sql(&format!("{}.pk", x.s()), "root");
+    let root = crate::lineage::lineage_column_sql(&format!("{}.pk", x.s()), "root");
     if x.unknown() {
         return Ok(format!("{root} IS NULL"));
     }

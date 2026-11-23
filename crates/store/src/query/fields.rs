@@ -720,11 +720,11 @@ fn sessions_hidden(a: &Aliases) -> String {
 }
 
 fn sessions_root(a: &Aliases) -> String {
-    crate::lineage::value_sql(&format!("{}.pk", a.s), "root")
+    crate::lineage::lineage_column_sql(&format!("{}.pk", a.s), "root")
 }
 
 fn sessions_depth(a: &Aliases) -> String {
-    crate::lineage::value_sql(&format!("{}.pk", a.s), "depth")
+    crate::lineage::lineage_column_sql(&format!("{}.pk", a.s), "depth")
 }
 
 fn sessions_title(a: &Aliases) -> String {
@@ -958,7 +958,7 @@ pub fn descendants(s: &str) -> String {
 pub fn logical_root(s: &str) -> String {
     format!(
         "(SELECT r.pk FROM session r WHERE r.id = coalesce({}, {s}.id))",
-        crate::lineage::value_sql(&format!("{s}.pk"), "root")
+        crate::lineage::lineage_column_sql(&format!("{s}.pk"), "root")
     )
 }
 

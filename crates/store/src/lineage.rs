@@ -61,7 +61,7 @@ fn walk(session: &str) -> String {
     )
 }
 
-fn root_sql(session: &str) -> String {
+fn observed_lineage_sql(session: &str) -> String {
     format!(
         "{} SELECT CASE WHEN cycle=0 AND parents='[]' THEN id END AS root,
       CASE WHEN cycle=0 AND parents='[]' THEN depth END AS depth,
@@ -75,7 +75,7 @@ fn root_sql(session: &str) -> String {
 
 /// Cached products are used only while their structural causes are unchanged.
 /// A query during ingestion uses the very same walk, without exposing stale roots.
-pub(crate) fn value_sql(session: &str, column: &str) -> String {
+pub(crate) fn lineage_column_sql(session: &str, column: &str) -> String {
     let valid = format!("v.session_pk={session} AND EXISTS(
       SELECT 1 FROM derive_state ds WHERE ds.session_pk=v.session_pk AND ds.name='lineage' AND pl_derived_current(ds.name,ds.version))
       AND NOT EXISTS(SELECT 1 FROM derive_due dd WHERE dd.session_pk=v.session_pk AND dd.lineage=1)");
@@ -83,12 +83,12 @@ pub(crate) fn value_sql(session: &str, column: &str) -> String {
         "(CASE WHEN EXISTS(SELECT 1 FROM session_lineage v WHERE {valid})
       THEN (SELECT v.{column} FROM session_lineage v WHERE v.session_pk={session})
       ELSE (SELECT {column} FROM ({})) END)",
-        root_sql(session)
+        observed_lineage_sql(session)
     )
 }
 
-pub(crate) fn compute(conn: &Connection, session: i64) -> Result<Option<SessionLineage>> {
-    let sql = root_sql("?1");
+pub(crate) fn compute_lineage(conn: &Connection, session: i64) -> Result<Option<SessionLineage>> {
+    let sql = observed_lineage_sql("?1");
     let row = conn
         .prepare_cached(&sql)?
         .query_row([session], |r| {
