@@ -47,9 +47,10 @@ fn continuation_authenticates_question_clock_seed_and_read_context() {
         .enumerate()
         .map(|(i, key)| (key.column.clone(), json!(i)))
         .collect();
+    let row_values = Value::Object(row);
     let token = after_row(
         &program,
-        &Value::Object(row),
+        &row_values,
         &Paging {
             seal: &seal,
             context,
@@ -65,10 +66,46 @@ fn continuation_authenticates_question_clock_seed_and_read_context() {
         &program.resolved_times,
     )
     .unwrap();
+    let expected_after: Vec<Value> = program
+        .order
+        .iter()
+        .map(|key| row_values[&key.column].clone())
+        .collect();
     assert_eq!(
-        check(&opened, &program, &options, false).unwrap().len(),
-        program.order.len()
+        check(&opened, &program, &options, false).unwrap(),
+        expected_after
     );
+    // The cursor was read at index 3, archive 2 and index file (1, 2): a
+    // reader that has advanced still honours it; one behind it, or on a
+    // different index file, does not.
+    let mut ahead = position();
+    ahead.index = 4;
+    ahead.archive = 3;
+    open(&token, &seal, question, &ahead, (1, 2), &options).unwrap();
+    let mut behind_index = position();
+    behind_index.index = 2;
+    let mut behind_archive = position();
+    behind_archive.archive = 1;
+    for (read_position, index_file) in [
+        (behind_index, (1, 2)),
+        (behind_archive, (1, 2)),
+        (position(), (1, 3)),
+    ] {
+        assert_eq!(
+            open(
+                &token,
+                &seal,
+                question,
+                &read_position,
+                index_file,
+                &options
+            )
+            .unwrap_err()
+            .code(),
+            "stale_cursor",
+            "{read_position:?} {index_file:?}"
+        );
+    }
     let other = identity("since:3d | sort by id", &options).unwrap();
     assert_eq!(
         open(&token, &seal, other, &position(), (1, 2), &options)

@@ -85,7 +85,16 @@ fn a_reference_two_sessions_share_is_refused_listing_both() {
             .unwrap_err();
         assert_eq!(f.code(), "ambiguous", "{text}: {}", f.message);
         let ids = f.candidates();
-        assert!(ids.len() >= 2, "{text}: {ids:?}");
+        let expected: std::collections::BTreeSet<String> = (1..=4)
+            .map(|n| format!("claude-code:7f3a2c10-000{n}-4000-8000-00000000000{n}"))
+            .collect();
+        assert_eq!(
+            ids.iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+            expected,
+            "{text}"
+        );
         for id in ids {
             assert!(
                 f.message.contains(id.as_str()),

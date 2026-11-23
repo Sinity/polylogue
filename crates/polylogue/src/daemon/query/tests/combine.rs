@@ -124,7 +124,8 @@ fn fused_pages_concatenate_to_the_whole_answer() {
     let whole = run_q(&w, whole).unwrap();
     let mut seen = vec![];
     let mut cursor: Option<String> = None;
-    loop {
+    for pages in 1.. {
+        assert!(pages <= 100, "the paging never ended");
         let mut a = ask(text);
         a.page_size = Some(2);
         a.cursor = cursor.as_deref();
@@ -147,6 +148,8 @@ fn fused_pages_concatenate_to_the_whole_answer() {
         .iter()
         .map(|r| r["id"].clone())
         .collect();
+    // At least the three "please fix the parser" prompts answer the union.
+    assert!(all.len() >= 3, "{all:?}");
     assert_eq!(seen, all);
 }
 
@@ -160,16 +163,24 @@ fn counted_conditions_count_related_rows() {
         ids(&q(&w, "sessions where tool_calls > 2"))
     );
     // A count is known for every session: it and its NOT partition them.
-    assert_eq!(
-        count(&q(
-            &w,
-            &failing.replace("sessions where", "sessions where physical:true")
-        )) + count(&q(
-            &w,
-            "sessions where physical:true NOT count(tool_calls where outcome:error) >= 1"
-        )),
-        count(&q(&w, "sessions where physical:true"))
-    );
+    // Physical sessions with an error call are #2 (cargo test) and #4 (cargo
+    // clippy); the NOT side is every other physical session.
+    let mut failing_ids = ids(&q(
+        &w,
+        &failing.replace("sessions where", "sessions where physical:true"),
+    ));
+    failing_ids.sort();
+    assert_eq!(failing_ids, ["#2", "#4"]);
+    let mut passing_ids = ids(&q(
+        &w,
+        "sessions where physical:true NOT count(tool_calls where outcome:error) >= 1",
+    ));
+    passing_ids.sort();
+    let mut others = ids(&q(&w, "sessions where physical:true"));
+    others.retain(|id| id != "#2" && id != "#4");
+    others.sort();
+    assert_eq!(passing_ids, others);
+    assert_eq!(passing_ids.len() + failing_ids.len(), 8);
 }
 
 #[test]

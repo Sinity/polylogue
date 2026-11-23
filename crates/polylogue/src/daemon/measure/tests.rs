@@ -49,7 +49,7 @@ fn measures_on_a_fresh_reader_see_current_tags_without_a_preceding_query() {
     drop(reader);
 
     let reader = pool.reader().unwrap();
-    run(
+    let quota = run(
         &reader,
         "quota",
         None,
@@ -59,4 +59,6 @@ fn measures_on_a_fresh_reader_see_current_tags_without_a_preceding_query() {
         None,
     )
     .unwrap();
+    assert_eq!(quota["now"], 1_700_000_100_000_i64);
+    assert!(quota["tools"].is_array(), "{quota}");
 }
