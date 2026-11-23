@@ -84,14 +84,18 @@ fn stale_cursor_failures_suggest_rerun() {
             panic!("{case}: {failure:?}")
         };
         assert_eq!(repeated.operation, cursor.operation, "{case}");
-        let mut expected: crate::protocol::line::Rows =
-            serde_json::from_value(cursor.arguments.clone()).unwrap();
-        expected.references.clear();
-        expected.selection = Some(target.into());
-        let crate::protocol::line::Step::Read(step) = &mut expected.steps[0] else {
-            panic!("one read")
+        let expected = crate::protocol::line::Rows {
+            selection: Some(target.into()),
+            steps: vec![crate::protocol::line::Step::Read(Box::new(
+                crate::protocol::steps::ReadStep {
+                    view,
+                    format: Some("json".into()),
+                    budget: polylogue_model::read::ReadBudget::Tokens(1),
+                    ..Default::default()
+                },
+            ))],
+            ..Default::default()
         };
-        step.cursor = None;
         let actual: crate::protocol::line::Rows =
             serde_json::from_value(repeated.arguments.clone()).unwrap();
         assert_eq!(actual, expected, "{case}");

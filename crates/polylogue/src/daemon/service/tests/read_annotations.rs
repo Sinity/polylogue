@@ -194,7 +194,13 @@ fn message_annotations_include_original_spans_once_and_keep_current_user_facts()
     assert!(annotations(&read(&d.daemon, message, true), "claude-code:u1").is_empty());
     let session = read(&d.daemon, "session:claude-code:s1", false);
     assert_eq!(annotations(&session, "claude-code:u1"), shown);
-    assert_eq!(annotations(&session, "claude-code:u10").len(), 1);
+    assert_eq!(
+        annotations(&session, "claude-code:u10")
+            .iter()
+            .map(|annotation| annotation.value.clone())
+            .collect::<Vec<_>>(),
+        [json!("neighbor note")]
+    );
     d.restart();
     d.pause_signals();
     assert_eq!(
@@ -471,6 +477,16 @@ fn context_read_at_keeps_opaque_numeric_message_coordinates() {
                 .iter()
                 .any(|item| item.source.reference == format!("message:{message}"))
         );
+        // The context at the first message does not include the later one.
+        if message == "claude-code:2:3" {
+            assert!(
+                !page
+                    .document
+                    .items
+                    .iter()
+                    .any(|item| item.source.reference == "message:claude-code:02:03")
+            );
+        }
     }
 }
 
@@ -592,7 +608,15 @@ fn ordinary_session_annotation_times_keep_old_new_withdrawn_and_expired_versions
                             .collect::<Vec<_>>(),
                         *expected
                     );
-                    assert!(page.document.items.iter().any(|item| matches!(&item.kind, ItemKind::Text { text } if text.contains("approximate across machines") && text.contains("Unknown authored times are omitted"))));
+                    let notice = format!(
+                        "Annotations as of {at}, by authored time; approximate across machines. Unknown authored times are omitted. Expiry uses this time."
+                    );
+                    assert!(
+                        page.document.items.iter().any(
+                            |item| matches!(&item.kind, ItemKind::Text { text } if *text == notice)
+                        ),
+                        "{at}"
+                    );
                 }
             }
         }
@@ -632,11 +656,25 @@ fn ordinary_session_annotation_times_keep_old_new_withdrawn_and_expired_versions
             );
         }
         // Calendar periods use the same lower-bound rule, in the configured day.
+        // A note authored the day before is the only one the period start admits.
+        write_at(
+            &d.daemon,
+            "time-early",
+            note("early note", &["message:claude-code:u1"]),
+            time("2026-11-20T12:00:00Z"),
+        );
         for at in ["today", "2026-11-21"] {
             let page = crate::test_answers::read(
                 historical_call(target, &at, 100000, view).answer(&d.daemon),
             );
-            assert!(annotations(&page, "claude-code:u1").is_empty());
+            assert_eq!(
+                annotations(&page, "claude-code:u1")
+                    .iter()
+                    .map(|a| a.value.clone())
+                    .collect::<Vec<_>>(),
+                [json!("early note")],
+                "{at}"
+            );
         }
     }
 }
@@ -1030,7 +1068,10 @@ fn historical_context_refuses_around_and_fresh_physical_message_options() {
     physical.arguments["steps"][0]["physical"] = json!(true);
     let error = crate::test_answers::refusal(physical.answer(&d.daemon));
     assert_eq!(error.code.as_deref(), Some("bad_request"));
-    assert!(error.message.starts_with("--physical applies to root:REF"));
+    assert_eq!(
+        error.message,
+        "--physical applies to root:REF; a session reference is already one physical session"
+    );
 }
 
 #[test]

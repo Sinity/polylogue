@@ -233,11 +233,28 @@ fn a_diamond_shows_each_node_once_with_a_cross_link() {
     assert_eq!(actual_edges, expected_edges);
     for item in &page.document.items {
         if let ItemKind::Card { card } = &item.kind
-            && let Card::LinkNode { lineage, .. } = card.as_ref()
+            && let Card::LinkNode {
+                reference: node,
+                lineage,
+                ..
+            } = card.as_ref()
         {
             let lineage = lineage
                 .as_deref()
                 .expect("each stored diamond node carries its lineage");
+            // The node with two parents has no single path to the root.
+            if let Some(depth) = match node.as_str() {
+                "session:claude-code:a" => Some(0),
+                "session:claude-code:b" | "session:claude-code:c" => Some(1),
+                _ => None,
+            } {
+                assert_eq!(
+                    lineage.root.as_ref().map(ToString::to_string).as_deref(),
+                    Some("claude-code:a"),
+                    "{node}"
+                );
+                assert_eq!(lineage.depth, Some(depth), "{node}");
+            }
             assert!(
                 !matches!(&lineage.issue, Some(LineageIssue::Cycle { .. })),
                 "{lineage:?}"
@@ -421,7 +438,7 @@ fn cyclic_and_conflicting_families_tile_both_directions_without_a_guessed_root()
             pages
                 .iter()
                 .any(|page| nodes(&page.document.items).is_empty()),
-            "cross-edges must fit their own pages"
+            "a page carries edges and no node"
         );
         let mut offset = pages[0].document.items.len();
         for page in pages.iter().skip(1) {
@@ -459,6 +476,7 @@ fn alternative_branch_points_and_spawn_calls_keep_edges() {
     let mut branch_points = std::collections::BTreeSet::new();
     let mut cross = 0;
     let mut calls = Vec::new();
+    let mut child_node_seen = false;
     for item in &page.document.items {
         if let ItemKind::Card { card } = &item.kind {
             match card.as_ref() {
@@ -468,6 +486,7 @@ fn alternative_branch_points_and_spawn_calls_keep_edges() {
                     lineage,
                     ..
                 } if reference == "session:claude-code:child" => {
+                    child_node_seen = true;
                     assert_eq!(parents, &["session:claude-code:root"]);
                     let lineage = lineage.as_deref().unwrap();
                     assert_eq!(
@@ -505,6 +524,7 @@ fn alternative_branch_points_and_spawn_calls_keep_edges() {
             }
         }
     }
+    assert!(child_node_seen, "the child session has a node card");
     assert_eq!(
         branch_points,
         [
@@ -628,7 +648,7 @@ fn links_cursor_survives_body_append_but_not_an_unrelated_relationship_edit() {
 }
 
 #[test]
-fn links_cursor_that_reads_backwards_from_the_end_is_refused() {
+fn links_cursor_with_a_forged_past_direction_is_refused() {
     let d = test_daemon::start("placeholder");
     family(&d);
     let page = read(&d, 60, None);
