@@ -16,6 +16,11 @@ use polylogue_model::user::UserWrite;
 use serde_json::Value;
 use std::sync::mpsc::sync_channel;
 
+/// The answer when the engine loop no longer takes requests.
+fn loop_stopped<T>() -> Answer<T> {
+    error(polylogue_model::Code::Internal, "the loop has stopped")
+}
+
 /// What a query convenience asks for.
 struct QueryInput<'a> {
     text: &'a str,
@@ -23,6 +28,18 @@ struct QueryInput<'a> {
     why: bool,
     session: Option<String>,
     fields: &'a [String],
+}
+
+impl<'a> QueryInput<'a> {
+    fn of(arguments: &'a protocol::query::Arguments) -> Self {
+        Self {
+            text: &arguments.query,
+            page_size: arguments.limit,
+            why: arguments.why,
+            session: arguments.session.clone(),
+            fields: &arguments.fields,
+        }
+    }
 }
 
 /// Runs one query with the ranking the archive's settings allow.
@@ -87,16 +104,7 @@ impl Handler for Query {
         Some(arguments.query.clone())
     }
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
-        run_query(
-            call,
-            QueryInput {
-                text: &arguments.query,
-                page_size: arguments.limit,
-                why: arguments.why,
-                session: arguments.session,
-                fields: &arguments.fields,
-            },
-        )
+        run_query(call, QueryInput::of(&arguments))
     }
 }
 
@@ -105,17 +113,7 @@ pub(super) fn waiting_query(
     arguments: &protocol::query::Arguments,
     call: &Call<'_>,
 ) -> Result<Answer<protocol::query::Answer>, Failure> {
-    query_reply(
-        call,
-        QueryInput {
-            text: &arguments.query,
-            page_size: arguments.limit,
-            why: arguments.why,
-            session: arguments.session.clone(),
-            fields: &arguments.fields,
-        },
-        false,
-    )
+    query_reply(call, QueryInput::of(arguments), false)
 }
 
 /// `measure WHAT`: the query `QUERY | measure WHAT`, one row per measurement.
@@ -245,20 +243,26 @@ impl Handler for Complete {
     }
 }
 
+/// Whether a status request reads vector counts or runs verification: slow
+/// work that takes the background class and no default deadline.
+fn status_is_deep(arguments: &protocol::status::Arguments) -> bool {
+    arguments.verify || arguments.vectors
+}
+
 pub(crate) struct Status;
 impl Handler for Status {
     type Arguments = protocol::status::Arguments;
     type Answer = protocol::status::Answer;
     const CLASS: crate::daemon::executor::Class = crate::daemon::executor::Class::Interactive;
     fn class(arguments: &Self::Arguments) -> crate::daemon::executor::Class {
-        if arguments.verify || arguments.vectors {
+        if status_is_deep(arguments) {
             crate::daemon::executor::Class::Background
         } else {
             Self::CLASS
         }
     }
     fn default_deadline(arguments: &Self::Arguments) -> bool {
-        !(arguments.verify || arguments.vectors)
+        !status_is_deep(arguments)
     }
     fn validate(
         arguments: &Self::Arguments,
@@ -267,7 +271,7 @@ impl Handler for Status {
         if arguments.manifest.is_some() && !arguments.verify {
             return Err(Failure::bad_request("--manifest requires --verify"));
         }
-        if arguments.line && (arguments.verify || arguments.vectors) {
+        if arguments.line && status_is_deep(arguments) {
             return Err(Failure::bad_request(
                 "--line cannot be combined with --verify or --vectors",
             ));
@@ -287,12 +291,10 @@ impl Handler for Status {
             .transpose()?;
         // Drop the reader before waiting for idle-priority verification.
         let mut status = match call.reader() {
-            Ok(reader) => {
-                status::answer(call.daemon, &reader, arguments.vectors || arguments.verify)
-            }
+            Ok(reader) => status::answer(call.daemon, &reader, status_is_deep(&arguments)),
             Err(failure) => match call.daemon.archive.index_build() {
                 Some(build) if failure.code() == "index_building" => {
-                    status::building(call.daemon, build, arguments.vectors || arguments.verify)
+                    status::building(call.daemon, build, status_is_deep(&arguments))
                 }
                 _ => failure.answer(),
             },
@@ -615,14 +617,8 @@ impl Handler for Import {
         let d = call.daemon;
         let invocation = call.invocation;
         let (reply, wait) = sync_channel(1);
-        let tx = match d.loop_tx.lock() {
-            Ok(tx) => tx,
-            Err(_) => {
-                return Ok(error(
-                    polylogue_model::Code::Internal,
-                    "the loop has stopped",
-                ));
-            }
+        let Ok(tx) = d.loop_tx.lock() else {
+            return Ok(loop_stopped());
         };
         if let Err(error) = invocation.check_parent_lifetime() {
             return Ok(store_error(&error));
@@ -640,10 +636,7 @@ impl Handler for Import {
             .is_ok();
         drop(tx);
         if !sent {
-            return Ok(error(
-                polylogue_model::Code::Internal,
-                "the loop has stopped",
-            ));
+            return Ok(loop_stopped());
         }
         Ok(match wait.recv() {
             Ok(Ok(report)) => super::import_answer(report),
@@ -657,7 +650,7 @@ impl Handler for Import {
             Ok(Err(polylogue_engine::ImportFailure::Import(error))) => {
                 super::error(polylogue_model::Code::Import, error)
             }
-            Err(_) => error(polylogue_model::Code::Internal, "the loop has stopped"),
+            Err(_) => loop_stopped(),
         })
     }
 }
@@ -754,23 +747,28 @@ pub(crate) fn save_selection(
     ))
 }
 
+/// A setting request with a value writes; without one it reads.
+fn setting_writes(arguments: &protocol::setting::Arguments) -> bool {
+    arguments.value.is_some()
+}
+
 /// Reads a setting or the catalog without a value; writes one with a value.
 pub(crate) struct Setting;
 impl Handler for Setting {
     type Arguments = protocol::setting::Arguments;
     type Answer = protocol::setting::Answer;
     fn tool_access(arguments: &Self::Arguments, _: &Command) -> crate::commands::ToolAccess {
-        if arguments.value.is_none() {
-            crate::commands::ToolAccess::Read
-        } else {
+        if setting_writes(arguments) {
             crate::commands::ToolAccess::Write
+        } else {
+            crate::commands::ToolAccess::Read
         }
     }
     fn read_only(arguments: &Self::Arguments, _: &Command, _: &Caller) -> bool {
-        arguments.value.is_none()
+        !setting_writes(arguments)
     }
     fn access(arguments: &Self::Arguments, _: Access) -> Access {
-        if arguments.value.is_some() {
+        if setting_writes(arguments) {
             Access::Write
         } else {
             Access::Read

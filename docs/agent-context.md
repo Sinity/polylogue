@@ -159,6 +159,7 @@ A **delivery** records each time prepared content is handed to a session or a pe
 |---|---|
 | `prepared` | no send attempted yet |
 | `delivered` | handed over and acknowledged: the hook returned the text, the hosted connection accepted it, the harness command exited 0 |
+| `failed(<first stderr line>)` | a handed-over run that then exited unsuccessfully, recorded after `delivered` |
 | `not_sent:<reason>` | `timeout`, `empty`, `failed(<first stderr line>)`, `unsupported`, `session_missing`, `session_ended`, `session_stale`, `session_not_live`, `directory_unknown`, `directory_missing(DIR)`, `already_answered` |
 | `unknown` | a send was attempted and its acknowledgement was lost |
 

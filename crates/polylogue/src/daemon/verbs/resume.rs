@@ -118,7 +118,9 @@ impl Verb for Resume {
                 let StepAnswer::Acted(values) = done.reply else {
                     unreachable!()
                 };
-                let text = values[0]["pack"].as_str().unwrap_or_default();
+                let text = values[0]["pack"]
+                    .as_str()
+                    .ok_or_else(|| Failure::internal("the dry-run hand-off carries no brief"))?;
                 let tokens = polylogue_model::read::estimate_tokens(text);
                 Ok(format!(
                     "would continue {session} in {to} with a brief of {tokens} tokens"
@@ -136,10 +138,18 @@ fn session(step: &ResumeStep, selection: &Selection) -> Result<Option<SessionId>
     if step.anyway {
         return Err(not_built("resume", "anyway"));
     }
+    if step.harness.is_none() && (step.at.is_some() || step.cwd.is_some() || step.stop_source) {
+        return Err(Failure::bad_request(
+            "resume --at, --cwd and --stop-source apply only with --in HARNESS",
+        ));
+    }
     if selection.given == Given::None {
         return Ok(None);
     }
     match sessions("resume", selection)?.as_slice() {
+        [] => Err(Failure::not_found(
+            "resume found no session in the selection",
+        )),
         [session] => Ok(Some(session.clone())),
         several => Err(crate::protocol::failure(
             polylogue_model::Code::Ambiguous,

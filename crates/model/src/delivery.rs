@@ -22,7 +22,7 @@ pub enum DeliveryEvent {
     Control,
     /// The first turn of a session Polylogue starts: a role's text, a
     /// hand-off's context, the text it was started with.
-    Pack,
+    FirstTurn,
 }
 
 stored_names!(DeliveryEvent {
@@ -36,7 +36,7 @@ stored_names!(DeliveryEvent {
     Ping => "ping",
     Notice => "notice",
     Control => "control",
-    Pack => "pack",
+    FirstTurn => "first_turn",
 });
 
 /// What prepared a delivery.

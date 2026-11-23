@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 
 /// Bytes kept in memory before the rest goes to the spill file.
-pub(crate) const MEMORY: usize = 1 << 20;
+const MEMORY: usize = 1 << 20;
 /// The largest chunk the transport takes from the spill file at once.
 const SPILL_CHUNK: usize = 256 << 10;
 

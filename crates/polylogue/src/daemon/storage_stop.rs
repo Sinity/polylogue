@@ -1,4 +1,4 @@
-//! A daemon whose register failed a disk sync stops writing for the rest of
+//! A daemon whose archive database (`archive.db`) failed a disk sync stops writing for the rest of
 //! the boot (docs/operations.md, storage failure). The failure is kept in
 //! the archive's runtime directory with the boot's identifier. A later
 //! boot's identifier differs, so after a reboot the daemon starts again.
@@ -16,7 +16,16 @@ fn marker(paths: &crate::config::Paths, root: &Path) -> PathBuf {
 
 /// The failure recorded for `root` in this boot, if there is one.
 pub(crate) fn this_boot(paths: &crate::config::Paths, root: &Path) -> Option<StorageStopped> {
-    let text = std::fs::read_to_string(marker(paths, root)).ok()?;
+    let text = match std::fs::read_to_string(marker(paths, root)) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        // An unreadable marker may hide a failure of this boot: refuse.
+        Err(error) => {
+            return Some(StorageStopped(format!(
+                "the storage failure record could not be read ({error}); refusing to start (docs/operations.md, storage failure)"
+            )));
+        }
+    };
     let (recorded_boot, message) = text.split_once('\n')?;
     (Some(recorded_boot) == crate::live_events::boot_id().as_deref()).then(|| {
         StorageStopped(format!(

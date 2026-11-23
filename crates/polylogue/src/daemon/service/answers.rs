@@ -92,12 +92,6 @@ pub(crate) fn answer_reserve(left: std::time::Duration) -> std::time::Duration {
     (left / 5).min(std::time::Duration::from_secs(1))
 }
 
-/// Prepares context and, when a sender is named, queues its delivery record
-/// and answers without waiting for the writer, so a busy writer never delays
-/// a brief. The delivery ID is the request ID, chosen before the text is
-/// prepared and written into it; the writer records the delivery, and any
-/// later outcome event for it, in queue order. A session-start brief stops
-/// its sections early enough to answer before the request's deadline.
 /// The answer of an advisory that has nothing to offer: also its answer
 /// when preparation cannot finish within its cap, on every surface.
 pub(crate) fn advisory_silence() -> Answer<crate::protocol::context::Answer> {
@@ -110,6 +104,12 @@ pub(crate) fn advisory_silence() -> Answer<crate::protocol::context::Answer> {
     )
 }
 
+/// Prepares context and, when a sender is named, queues its delivery record
+/// and answers without waiting for the writer, so a busy writer never delays
+/// a brief. The delivery ID is the request ID, chosen before the text is
+/// prepared and written into it; the writer records the delivery, and any
+/// later outcome event for it, in queue order. A session-start brief stops
+/// its sections early enough to answer before the request's deadline.
 pub(crate) fn context(
     d: &Daemon,
     request_id: String,

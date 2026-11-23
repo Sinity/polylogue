@@ -39,6 +39,22 @@ fn a_failure_from_another_boot_does_not_refuse() {
     std::fs::remove_file(path).unwrap();
 }
 
+/// Only a missing marker means no failure: one that cannot be read may hide
+/// a failure of this boot.
+#[test]
+fn an_unreadable_marker_refuses_to_start() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = crate::config::Paths::resolve(&crate::config::EnvSnapshot::from_values([(
+        "HOME".into(),
+        root.path().as_os_str().to_owned(),
+    )]))
+    .unwrap();
+    // A directory in the marker's place cannot be read as text.
+    std::fs::create_dir_all(marker(&paths, root.path())).unwrap();
+    let stopped = this_boot(&paths, root.path()).expect("an unreadable marker refuses");
+    assert!(stopped.0.contains("could not be read"), "{}", stopped.0);
+}
+
 /// The writer's failed sync reaches the daemon as a worker failure, which
 /// stops it; the failure names the register's log.
 #[test]
