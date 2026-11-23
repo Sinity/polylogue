@@ -2,6 +2,11 @@ use crate::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
+/// Window lengths shared by the parsers that declare them and the renderer
+/// that names them.
+pub const FIVE_HOUR_MINUTES: i64 = 300;
+pub const WEEK_MINUTES: i64 = 10_080;
+
 /// One of a subscription's usage limits: a window of fixed length.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct QuotaLimit {

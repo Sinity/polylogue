@@ -91,7 +91,7 @@ pub use time::{
 };
 pub mod text;
 pub use price::{Catalog, LongContext, Multiplier, Price, Rate};
-pub use quota::{QuotaLimit, QuotaReading, QuotaWindow};
+pub use quota::{FIVE_HOUR_MINUTES, QuotaLimit, QuotaReading, QuotaWindow, WEEK_MINUTES};
 pub use usage::Usage;
 
 /// Opaque JSON kept exactly as the source wrote it. Numbers are lossless

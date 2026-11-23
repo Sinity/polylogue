@@ -109,6 +109,11 @@ impl Timestamp {
         jiff::Timestamp::from_millisecond(ms).ok().map(Self)
     }
 
+    /// Whole seconds since the epoch; `None` when the instant does not fit.
+    pub fn from_unix_seconds(s: i64) -> Option<Self> {
+        s.checked_mul(1000).and_then(Self::from_unix_ms)
+    }
+
     pub fn from_unix_ns(ns: i128) -> Option<Self> {
         // The current jiff nanosecond constructor checks i64 seconds but
         // reaches its internal unchecked constructor outside timestamp bounds.

@@ -79,8 +79,7 @@ fn quota(q: &Json) -> Option<QuotaReading> {
             let minutes = w.i64("window_minutes")?;
             let resets_at = w
                 .i64("resets_at")
-                .and_then(|s| s.checked_mul(1000))
-                .and_then(polylogue_model::Timestamp::from_unix_ms);
+                .and_then(polylogue_model::Timestamp::from_unix_seconds);
             let used = w.get("used_percent").and_then(|u| {
                 u.as_f64()
                     .or_else(|| u.as_str().and_then(|s| s.parse().ok()))

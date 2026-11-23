@@ -170,18 +170,36 @@ fn variant_application_keeps_forks_and_restores_base() {
 }
 #[test]
 fn variant_source_binding_cannot_be_changed_by_a_revision() {
+    type Change = fn(&mut NewVariant);
+    let changes: [(&str, Change); 5] = [
+        ("source", |v| v.source = "message:codex:other".into()),
+        ("source_hash", |v| v.source_hash = BlobHash([3; 32])),
+        ("kind", |v| v.kind = VariantKind::Summary),
+        ("from_lang", |v| v.from_lang = Some("de".into())),
+        ("to_lang", |v| v.to_lang = Some("de".into())),
+    ];
+    for (field, change) in changes {
+        let mut conn = archive();
+        write_request(&mut conn, &request("first", None, "Text"), 1);
+        let mut changed = request("changed", Some("first"), "Text");
+        let UserWrite::Variant { variant } = &mut changed.write else {
+            unreachable!()
+        };
+        change(variant);
+        let tx = conn.transaction().unwrap();
+        assert!(
+            matches!(
+                crate::user_writes::apply(&tx, &changed, 2),
+                Err(StoreError::Invalid(_))
+            ),
+            "changing {field} must be refused"
+        );
+    }
     let mut conn = archive();
     write_request(&mut conn, &request("first", None, "Text"), 1);
-    let mut changed = request("changed", Some("first"), "Text");
-    let UserWrite::Variant { variant } = &mut changed.write else {
-        unreachable!()
-    };
-    variant.source_hash = BlobHash([3; 32]);
+    let same = request("same", Some("first"), "Corrected");
     let tx = conn.transaction().unwrap();
-    assert!(matches!(
-        crate::user_writes::apply(&tx, &changed, 2),
-        Err(StoreError::Invalid(_))
-    ));
+    crate::user_writes::apply(&tx, &same, 2).unwrap();
 }
 
 #[test]

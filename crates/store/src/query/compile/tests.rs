@@ -214,7 +214,7 @@ fn fields_choose_the_columns() {
 }
 
 #[test]
-fn changes_continue_from_a_cursor() {
+fn changes_continue_from_a_feed_position() {
     let p = c("feed where after:generation:12:3");
     let sql = statements(&p);
     assert!(sql.contains("> 12") && sql.contains("> 3"), "{sql}");
