@@ -2,7 +2,8 @@
 use crate::{ColKind, ast::Unit};
 use polylogue_model::{
     BlockKind, CallOutcome, DELIVERY_STATES, DeliveryEvent, DeliverySender, DocumentAuthorship,
-    DocumentPurpose, LINK_HOW_NAMES, LINK_KIND_NAMES, PromptKind, Role, SessionKind, WrittenBy,
+    DocumentPurpose, LINK_HOW_NAMES, LINK_KIND_NAMES, PromptKind, Role, SessionKind, VariantKind,
+    WrittenBy,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -281,7 +282,7 @@ fields! {
     AlternatesRoot = f(Alternates,"root",Prefix,""),
     AlternatesBase = f(Alternates,"base",Prefix,""),
     AlternatesSource = f(Alternates,"source",Match,"").reference_argument(),
-    AlternatesKind = f(Alternates,"kind",Match,""),
+    AlternatesKind = v(Alternates, "kind", VariantKind::NAMES, "the kind of rendition"),
     AlternatesFromLang = f(Alternates,"from_lang",Match,""),
     AlternatesToLang = f(Alternates,"to_lang",Match,""),
     AlternatesLang = f(Alternates,"lang",Match,""),

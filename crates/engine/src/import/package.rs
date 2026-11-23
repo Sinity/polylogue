@@ -167,9 +167,10 @@ fn expand(
                 .prepare_bytes((&mut member).take(expected.saturating_add(1)))
                 .map_err(std::io::Error::other)?;
             if decoded.len() != expected {
-                return Err(std::io::Error::other(
-                    "container member length differs from declaration",
-                ));
+                return Err(std::io::Error::other(format!(
+                    "member {display} of {} decodes to a length different from its declared {expected}",
+                    path.display()
+                )));
             }
             children.push((name, i as u64, decoded, Some(display)));
         }

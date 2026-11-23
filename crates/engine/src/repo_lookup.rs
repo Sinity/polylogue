@@ -155,7 +155,9 @@ fn read_with(
 }
 
 /// Writes the lookups for `cwds` into `dir`, one file per repository named
-/// by the hash of its path. Returns how many files changed.
+/// by the hash of its path. Returns how many files changed. A repository
+/// whose file cannot be written does not stop the others; the first such
+/// failure is returned, naming its repository, after all were tried.
 pub fn refresh(
     cwds: impl IntoIterator<Item = PathBuf>,
     dir: &Path,
@@ -167,33 +169,51 @@ pub fn refresh(
         .filter_map(|cwd| repository_of(&cwd))
         .collect();
     let mut changed = 0;
+    let mut failure = None;
     for repo in repos {
-        let lookup = read(&repo, cache);
-        let path = repo.display().to_string();
-        let file = dir.join(format!(
-            "{}.json",
-            &blake3::hash(path.as_bytes()).to_hex()[..16]
-        ));
-        if let Some(old) = fs::read(&file)
-            .ok()
-            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-            && old["remote"].as_str() == lookup.remote.as_deref()
-            && old["root_commits"] == serde_json::json!(lookup.root_commits)
-        {
-            continue;
+        match write_lookup(&repo, dir, cache, read_at) {
+            Ok(true) => changed += 1,
+            Ok(false) => {}
+            Err(error) => {
+                failure.get_or_insert_with(|| {
+                    io::Error::new(error.kind(), format!("{}: {error}", repo.display()))
+                });
+            }
         }
-        let doc = serde_json::json!({
-            "path": path,
-            "remote": lookup.remote,
-            "root_commits": lookup.root_commits,
-            "read_at": read_at,
-        });
-        fs::create_dir_all(dir)?;
-        let bytes = serde_json::to_vec(&doc)?;
-        polylogue_model::atomic_write::write_atomic(&file, &bytes, None)?;
-        changed += 1;
     }
-    Ok(changed)
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(changed),
+    }
+}
+
+/// Writes one repository's lookup file unless it already holds the same
+/// remote and roots; whether it wrote.
+fn write_lookup(repo: &Path, dir: &Path, cache: &mut Cache, read_at: &str) -> io::Result<bool> {
+    let lookup = read(repo, cache);
+    let path = repo.display().to_string();
+    let file = dir.join(format!(
+        "{}.json",
+        &blake3::hash(path.as_bytes()).to_hex()[..16]
+    ));
+    if let Some(old) = fs::read(&file)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        && old["remote"].as_str() == lookup.remote.as_deref()
+        && old["root_commits"] == serde_json::json!(lookup.root_commits)
+    {
+        return Ok(false);
+    }
+    let doc = serde_json::json!({
+        "path": path,
+        "remote": lookup.remote,
+        "root_commits": lookup.root_commits,
+        "read_at": read_at,
+    });
+    fs::create_dir_all(dir)?;
+    let bytes = serde_json::to_vec(&doc)?;
+    polylogue_model::atomic_write::write_atomic(&file, &bytes, None)?;
+    Ok(true)
 }
 
 /// Every working directory a session row names: its last and the earlier

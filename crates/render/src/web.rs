@@ -5,7 +5,7 @@ use command_surface::{Failure, FailureKind, OperationDeclarations, RunnableReque
 use maud::{Markup, html};
 use polylogue_model::JsonExt;
 use polylogue_model::{
-    freshness::{FreshnessState, IndexFreshness},
+    freshness::IndexFreshness,
     read::{ReadError, ReadOptions, ReadPage, ReadyCall, View},
 };
 use serde_json::Value;
@@ -81,7 +81,7 @@ fn freshness(freshness: &IndexFreshness) -> Markup {
     html! { @match freshness {
         IndexFreshness::Standalone=>{span data-mode="standalone" {"Standalone archive"}},
         IndexFreshness::Primary {scope,applied_position,sinex_position,sinex_position_seconds_ago,reachable,lag_positions,state,error}=>{
-            @let state = match state {FreshnessState::Current=>"current",FreshnessState::Behind=>"behind",FreshnessState::Unknown=>"unknown",FreshnessState::Unavailable=>"unavailable"};
+            @let state = state.as_str();
             span data-mode="primary" data-state=(state) {
                 "Primary: " @if let Some(scope)=scope { (scope) " · " } (state) " · applied " (applied_position.map_or_else(||"unknown".into(),|n|n.to_string())) " · Sinex " (sinex_position.map_or_else(||"unknown".into(),|n|n.to_string())) " · observed " (sinex_position_seconds_ago.map_or_else(||"age unknown".into(),|age|format!("{age} seconds ago"))) " · reachable " (reachable.map_or_else(||"unknown".into(),|reachable|reachable.to_string())) " · lag " (lag_positions.map_or_else(||"unknown".into(),|lag|lag.to_string())) @if let Some(error)=error {" · " (error)}
             }

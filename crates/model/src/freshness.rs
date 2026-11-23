@@ -15,6 +15,13 @@ pub enum FreshnessState {
     Unavailable,
 }
 
+stored_names!(FreshnessState {
+    Current => "current",
+    Behind => "behind",
+    Unknown => "unknown",
+    Unavailable => "unavailable",
+});
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum IndexFreshness {

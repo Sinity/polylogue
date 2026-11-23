@@ -129,6 +129,52 @@ fn reopen_observes_local_references_after_raw_commit_before_parse() {
 }
 
 #[test]
+fn a_loop_without_sources_reads_no_referenced_file() {
+    let w = ClaudeHome::new();
+    let dir = w.home.join(".codex/sessions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let image = w.dir.path().join("kept.png");
+    std::fs::write(&image, b"image that stays unread").unwrap();
+    let row = serde_json::json!({"type":"event_msg","payload":{"type":"user_message","message":"capture pending attachment","local_images":[image]}});
+    let path = dir.join("rollout-no-sources.jsonl");
+    std::fs::write(
+        &path,
+        format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"no-sources-native\"}}}}\n{row}\n"
+        ),
+    )
+    .unwrap();
+    {
+        let (mut e, _lock) = engine(&w, 64);
+        let found = crate::collect::Found {
+            path: path.clone(),
+            origin: polylogue_sources::origin::by_name("codex").unwrap(),
+        };
+        e.capture_rollout(
+            &found,
+            FileFacts::of(&std::fs::metadata(&path).unwrap()),
+            &mut Pass::default(),
+        )
+        .unwrap()
+        .unwrap();
+    }
+    let (mut e, _lock) = engine(&w, 64);
+    e.config.reads_sources = false;
+    let p = e.run_pass().unwrap();
+    assert!(p.errors.is_empty(), "{p:?}");
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM a.input WHERE id='codex:rollout:no-sources-native'"),
+        1
+    );
+    assert_eq!(
+        w.count(
+            "SELECT count(*) AS n FROM a.input WHERE format IN ('codex-local-file','tool-context')"
+        ),
+        0
+    );
+}
+
+#[test]
 fn regular_local_files_keep_binary_bytes_empty_files_and_descriptor_facts() {
     let home = ClaudeHome::new();
     let (mut engine, _lock) = engine(&home, 64);

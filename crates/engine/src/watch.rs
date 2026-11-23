@@ -9,10 +9,14 @@ use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
+/// What the watcher saw since the last `take`.
 #[derive(Default)]
 pub(super) struct Changes {
+    /// Paths to rescan.
     pub paths: BTreeSet<PathBuf>,
+    /// A full scan of every source is needed.
     pub full: bool,
+    /// Watcher errors, which the pass forwards into its report.
     pub errors: Vec<String>,
 }
 
@@ -73,7 +77,14 @@ impl Roots {
 
     pub fn take(&mut self) -> Changes {
         let changes = std::mem::take(&mut *self.changes.locked());
-        self.retry |= changes.full;
+        // A watched directory that was deleted loses its watch inside notify,
+        // and a recreated one is not watched again unless the next refresh
+        // watches it afresh.
+        self.retry |= changes.full
+            || changes
+                .paths
+                .iter()
+                .any(|path| self.active.contains_key(path));
         changes
     }
 
@@ -94,6 +105,8 @@ impl Roots {
             self.watcher.watch(path, mode)?;
         }
         for path in self.active.keys() {
+            // A deleted root has already lost its watch, so only an unwatch
+            // failure on a path that still exists is an error.
             if !wanted.contains_key(path)
                 && let Err(error) = self.watcher.unwatch(path)
                 && path.exists()

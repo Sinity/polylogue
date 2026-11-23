@@ -579,6 +579,16 @@ impl Engine {
     }
 }
 
+/// A member's name as text. Bytes that are not UTF-8 are written as `%XX`
+/// for every byte, as a nested member's are, so distinct names stay distinct.
+fn member_name(name: &std::ffi::OsStr) -> String {
+    let bytes = name.as_encoded_bytes();
+    match std::str::from_utf8(bytes) {
+        Ok(text) => text.to_owned(),
+        Err(_) => bytes.iter().map(|byte| format!("%{byte:02X}")).collect(),
+    }
+}
+
 fn import_member(
     path: &Path,
     at: &Path,
@@ -602,15 +612,9 @@ fn import_member(
                 .expect("member name")
                 .to_owned()
         } else if at == path {
-            at.file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned()
+            member_name(at.file_name().unwrap_or_default())
         } else {
-            at.strip_prefix(path)
-                .unwrap_or(at)
-                .to_string_lossy()
-                .into_owned()
+            member_name(at.strip_prefix(path).unwrap_or(at).as_os_str())
         },
         format: None,
     }

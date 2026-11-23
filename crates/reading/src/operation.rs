@@ -193,6 +193,8 @@ impl Context {
         }
     }
     /// Callers authenticate the cursor and compare these versions before replay.
+    /// Only the settings identify a Sinex context; its observation time and age
+    /// change on every read and would stale every cursor.
     pub fn cursor_versions(&self) -> BTreeMap<String, String> {
         let sinex = match &self.sinex {
             SinexContext::Standalone => serde_json::json!({"mode":"standalone"}),
