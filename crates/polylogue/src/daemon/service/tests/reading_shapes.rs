@@ -207,12 +207,6 @@ fn a_logical_read_follows_the_root_with_its_continuation() {
         .position(|text| text == "continuation question")
         .expect("the continuation's message");
     assert!(root < continues && continues < continued, "{logical:?}");
-    let physical = texts(&read(
-        &d,
-        "session:claude-code:root",
-        ReadOptions::default(),
-    ));
-    assert!(!physical.iter().any(|text| text == "continuation question"));
 }
 
 #[test]

@@ -144,7 +144,13 @@ fn all_tagged_rows_create_no_step_request_and_retries_keep_the_original_result()
     assert_eq!(repeated.id, first.id);
     assert_eq!(repeated.written, 1);
     assert!(repeated.already.is_empty());
-    assert!(text.contains("repeat; no new writes"));
+    let written = first.id.as_ref().unwrap();
+    let (report_lines, undo) = text.split_once("undo: ").expect("an undo line");
+    assert_eq!(report_lines, "tagged 1 row\nrepeat; no new writes\n");
+    assert!(
+        undo.contains(&format!("'annotation:{written}@{written}'")),
+        "{undo}"
+    );
 }
 
 #[test]
@@ -161,10 +167,14 @@ fn tag_skips_rows_already_tagged_and_reports_the_accepted_population() {
     let (report, text) = wrote(&d, intended.clone());
     assert_eq!((report.targets, report.written), (2, 1));
     assert_eq!(report.already, vec![first.clone()]);
-    assert!(
-        text.starts_with("tagged 1 row\nalready tagged: annotation:"),
-        "{text}"
+    let (report_lines, undo) = text.split_once("undo: ").expect("an undo line");
+    assert_eq!(
+        report_lines,
+        format!("tagged 1 row\nalready tagged: {first}\n")
     );
+    // The undo withdraws what this write added, not the row already tagged.
+    assert!(undo.contains("'annotation:"), "{undo}");
+    assert!(!undo.contains(&first), "{undo}");
     let request = d
         .daemon
         .reads

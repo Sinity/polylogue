@@ -123,8 +123,8 @@ fn shutdown_cancels_a_stream_read_and_keeps_its_producers_writes_admissible() {
             .check()
             .is_ok()
     );
-    assert!(matches!(
-        input.next_blocking().unwrap(),
-        super::super::stream_buffer::Next::Failed(_)
-    ));
+    let super::super::stream_buffer::Next::Failed(failure) = input.next_blocking().unwrap() else {
+        panic!("the stopped read must fail");
+    };
+    assert_eq!(failure.code(), "shutting_down");
 }

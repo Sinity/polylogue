@@ -49,66 +49,72 @@ fn answer(data: Value) -> String {
 #[test]
 fn malformed_provider_batches_are_refused_as_a_whole() {
     let cases = [
-        ("data array", r#"{"data":{}}"#.into()),
-        ("count", answer(json!([{"index":0,"embedding":[1,0]}]))),
         (
-            "duplicate",
+            "invalid embedding response: missing data array",
+            r#"{"data":{}}"#.into(),
+        ),
+        (
+            "invalid embedding response: vector count differs from input count",
+            answer(json!([{"index":0,"embedding":[1,0]}])),
+        ),
+        (
+            "invalid embedding response: duplicate input index",
             answer(json!([{"index":0,"embedding":[1,0]},{"index":0,"embedding":[0,1]}])),
         ),
         (
-            "out of range",
+            "invalid embedding response: input index is out of range",
             answer(json!([{"index":0,"embedding":[1,0]},{"index":2,"embedding":[0,1]}])),
         ),
         (
-            "input index",
+            "invalid embedding response: missing or invalid input index",
             answer(json!([{"index":0,"embedding":[1,0]},{"embedding":[0,1]}])),
         ),
         (
-            "input index",
+            "invalid embedding response: missing or invalid input index",
             answer(json!([{"index":null,"embedding":[1,0]},{"index":1,"embedding":[0,1]}])),
         ),
         (
-            "input index",
+            "invalid embedding response: missing or invalid input index",
             answer(json!([{"index":-1,"embedding":[1,0]},{"index":1,"embedding":[0,1]}])),
         ),
         (
-            "input index",
+            "invalid embedding response: missing or invalid input index",
             answer(json!([{"index":"0","embedding":[1,0]},{"index":1,"embedding":[0,1]}])),
         ),
         (
-            "input index",
+            "invalid embedding response: missing or invalid input index",
             answer(json!([{"index":0.5,"embedding":[1,0]},{"index":1,"embedding":[0,1]}])),
         ),
         (
-            "out of range",
+            "invalid embedding response: input index is out of range",
             answer(json!([{"index":u64::MAX,"embedding":[1,0]},{"index":1,"embedding":[0,1]}])),
         ),
         (
-            "embedding array",
+            "invalid embedding response: missing embedding array",
             answer(json!([{"index":0},{"index":1,"embedding":[0,1]}])),
         ),
         (
-            "finite number",
+            "invalid embedding response: a component is not a finite number",
             answer(json!([{"index":0,"embedding":["x",1]},{"index":1,"embedding":[0,1]}])),
         ),
         (
-            "finite number",
+            "invalid embedding response: a component is not a finite number",
             answer(json!([{"index":0,"embedding":[null,1]},{"index":1,"embedding":[0,1]}])),
         ),
         (
-            "f32 range",
+            "invalid embedding response: a component is outside finite f32 range",
             answer(json!([{"index":0,"embedding":[1e300,1]},{"index":1,"embedding":[0,1]}])),
         ),
         (
-            "norm",
+            "invalid embedding response: vector has no finite nonzero norm",
             answer(json!([{"index":0,"embedding":[0,0]},{"index":1,"embedding":[0,1]}])),
         ),
         (
-            "norm",
+            "invalid embedding response: vector has no finite nonzero norm",
             answer(json!([{"index":0,"embedding":[]},{"index":1,"embedding":[]}])),
         ),
         (
-            "dimensions",
+            "invalid embedding response: inconsistent vector dimensions",
             answer(json!([{"index":0,"embedding":[1,0]},{"index":1,"embedding":[0,1,0]}])),
         ),
     ];
@@ -118,7 +124,7 @@ fn malformed_provider_batches_are_refused_as_a_whole() {
         let requests = server.join().unwrap();
         assert_eq!(requests[0]["input"], json!(["first", "second"]));
         match result {
-            Err(EmbedError::Transport(error)) => assert!(error.contains(expected), "{error}"),
+            Err(EmbedError::Transport(error)) => assert_eq!(error, expected),
             other => panic!("expected {expected} refusal, got {other:?}"),
         }
     }
