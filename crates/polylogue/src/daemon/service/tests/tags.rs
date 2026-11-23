@@ -173,8 +173,9 @@ fn tag_skips_rows_already_tagged_and_reports_the_accepted_population() {
         report_lines,
         format!("tagged 1 row\nalready tagged: {first}\n")
     );
+    // The written annotation's id extends the write's id with its row.
     assert!(
-        undo.contains(&format!("'annotation:{written}@{written}'")),
+        undo.starts_with(&format!("printf '%s\\n' 'annotation:{written}")),
         "{undo}"
     );
     let request = d
