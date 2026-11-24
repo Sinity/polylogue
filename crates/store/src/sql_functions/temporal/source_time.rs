@@ -1,7 +1,7 @@
 //! Stored source times and the possible latest time of a set of source periods.
 use super::Failure;
 use crate::query::fields::TimeStorage;
-use polylogue_model::{Event, Precision, TimeEvidence, TimeQuality, Timestamp};
+use polylogue_model::{Event, Precision, TimeAccuracy, TimeQuality, Timestamp};
 use query_language::time::Time;
 use rusqlite::{
     Error,
@@ -44,7 +44,7 @@ impl SourceTime {
         };
         Some(Time::Span { start: at, end })
     }
-    fn from_source(at: Option<Timestamp>, source: TimeEvidence) -> Result<Self, Failure> {
+    fn from_source(at: Option<Timestamp>, source: TimeAccuracy) -> Result<Self, Failure> {
         source.validate(at)?;
         Ok(Self {
             at,
@@ -91,7 +91,7 @@ fn read_stored(bytes: Option<&[u8]>, storage: TimeStorage) -> Result<SourceTime,
         }
         TimeStorage::Event => {
             let event: Event = crate::encoding::unpack_json(bytes)?;
-            SourceTime::from_source(event.at, event.time_evidence())
+            SourceTime::from_source(event.at, event.time_accuracy())
         }
         TimeStorage::Latest => {
             let time: SourceTime = serde_json::from_slice(bytes)?;

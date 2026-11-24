@@ -65,6 +65,7 @@ pub mod schema_inputs;
 pub mod scope_index;
 pub mod search;
 pub mod selection;
+pub mod session_alias;
 pub mod session_bundle;
 mod session_row;
 pub mod session_sql;
@@ -83,6 +84,7 @@ pub mod user_state;
 pub mod user_writes;
 pub mod vectors;
 pub mod verify;
+mod versions;
 pub mod wire_shapes;
 mod write_lock;
 pub mod writer;
@@ -211,8 +213,8 @@ pub enum StoreError {
     /// Sinex could not be reached, or refused what was sent (primary mode).
     #[error("capture {identity} is saved and waiting for Sinex confirmation")]
     PrimaryPending { identity: String },
-    #[error("capture read {spooled:?} stored original bytes after a source basis conflict")]
-    UnresolvedBasisConflict { spooled: primary::SpooledGroup },
+    #[error("capture read {spooled:?} stored original bytes after a source base conflict")]
+    UnresolvedBaseConflict { spooled: primary::SpooledGroup },
     #[error("Sinex denied confirmed read access: {0}")]
     ConfirmedReadDenied(String),
     #[error("Sinex: {0}")]
@@ -375,7 +377,7 @@ impl StoreError {
             | Self::ReadPoolNested
             | Self::ChatAction(_)
             | Self::ImportJob(_)
-            | Self::UnresolvedBasisConflict { .. }
+            | Self::UnresolvedBaseConflict { .. }
             | Self::Sinex(_)
             | Self::RowsRefused { .. }
             | Self::StoredValue { .. } => polylogue_model::Code::Store,

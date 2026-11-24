@@ -191,14 +191,14 @@ impl ExportParser for OtelGenAi {
             sink.out.sessions.push(s);
         }
         sink.out.events.push({
-            let (at, time_evidence) = crate::time::parts(span.interval());
+            let (at, time_accuracy) = crate::time::parts(span.interval());
             Event {
                 session: Some(sid.clone()),
                 kind: "otel_span".into(),
                 at,
-                at_quality: time_evidence.quality,
-                at_precision: time_evidence.precision,
-                at_until: time_evidence.until,
+                at_quality: time_accuracy.quality,
+                at_precision: time_accuracy.precision,
+                at_until: time_accuracy.until,
                 after: None,
                 range: None,
                 data: span.raw.clone(),
@@ -313,16 +313,16 @@ fn model_span(
             .checked_sub(1)
             .and_then(|p| message_id(ORIGIN, &format!("{conversation}#{p}")));
         let message = {
-            let (at, time_evidence) = crate::time::parts(if is_output { span.start } else { None });
+            let (at, time_accuracy) = crate::time::parts(if is_output { span.start } else { None });
             Message {
                 id,
                 session: sid.clone(),
                 parent,
                 role,
                 at,
-                at_quality: time_evidence.quality,
-                at_precision: time_evidence.precision,
-                at_until: time_evidence.until,
+                at_quality: time_accuracy.quality,
+                at_precision: time_accuracy.precision,
+                at_until: time_accuracy.until,
                 model: is_output.then(|| model.clone()).flatten(),
                 prompt_kind: (role == Role::User).then_some(if m.str("role") == Some("tool") {
                     PromptKind::Harness
@@ -369,14 +369,14 @@ fn model_span(
 /// carried them, as an event on the conversation.
 fn tool_span(span: &Span, sid: &polylogue_model::SessionId, sink: &mut Sink<'_>) {
     sink.out.events.push({
-        let (at, time_evidence) = crate::time::parts(span.interval());
+        let (at, time_accuracy) = crate::time::parts(span.interval());
         Event {
             session: Some(sid.clone()),
             kind: "tool_execution".into(),
             at,
-            at_quality: time_evidence.quality,
-            at_precision: time_evidence.precision,
-            at_until: time_evidence.until,
+            at_quality: time_accuracy.quality,
+            at_precision: time_accuracy.precision,
+            at_until: time_accuracy.until,
             after: None,
             range: None,
             data: serde_json::json!({

@@ -210,7 +210,7 @@ store's module documentation, not of this page.
   and every surface are the same code in both modes
   ([primary mode](primary-mode.md)).
 - **The index is a function of the record.** `index.db` is what the parsers,
-  at their current reading versions, make of the stored bytes. The same
+  at their current parse versions, make of the stored bytes. The same
   record gives the same index whatever order its inputs arrived in, in
   however many steps their bytes were read, on whichever host, and whether
   it was kept current as the record grew or built from nothing. "The same
@@ -228,9 +228,9 @@ store's module documentation, not of this page.
 
 ### Readings
 
-- **A reading is the parsed form of one chain under one reading version.**
+- **A reading is the parsed form of one chain under one parse version.**
   It is a function of the chain's bytes up to a length and of its parser's
-  reading version, and of nothing else. It is owned by its chain: its rows
+  parse version, and of nothing else. It is owned by its chain: its rows
   carry the input and the chain, and no other chain's reading shares a row
   with it. Only text is shared, stored once
   ([text](archive.md#text)). Because a reading owns its rows, replacing or
@@ -243,17 +243,17 @@ store's module documentation, not of this page.
   append causes is in proportion to the records appended and what they
   state, never to the size of the session, the input or the archive.
 - **A chain is in one of three states**: it has no reading; its reading is
-  complete at a length under a reading version; or reading it failed at a
+  complete at a length under a parse version; or reading it failed at a
   version, with the reason
-  ([reading versions](archive.md#reading-versions)). A chain is read when
-  its stored length or its parser's reading version differs from what its
+  ([parse versions](archive.md#reading-versions)). A chain is read when
+  its stored length or its parser's parse version differs from what its
   state names, and for no other cause.
 - **A chain that a newer chain of its input covers has no reading**, and a
   chain that begins like a newer one holds rows only for the records the
   newer one lacks ([covered chains](archive.md#readings)). The rows it would
   have held are the newer chain's rows for the same bytes.
 - **Readers see a reading appear whole.** The first reading of a chain and
-  the replacement of a reading under a new reading version each commit in
+  the replacement of a reading under a new parse version each commit in
   one transaction; a chain that grows commits record by record, each record
   whole and together with the position it advances. A session is never
   shown half through one reading and half through its replacement.
@@ -329,7 +329,7 @@ The daemon reaches the index two ways, which must agree.
   ([testing](testing.md)).
 - **Either may stand in for the other.** Because they agree, the daemon
   builds anew instead of catching up when that is less work (an index far
-  behind its record, a reading version changed for most of the corpus, a
+  behind its record, a parse version changed for most of the corpus, a
   large import into a small archive), and nothing a reader sees depends on
   which it chose.
 - **A build reads the record as it stood at one position.** It writes only

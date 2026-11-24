@@ -1,18 +1,27 @@
 //! Parsed readings wait on disk before their single replacement transaction.
 use super::*;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 
 /// Independently compressed parser steps bound memory before one replacement transaction.
-pub struct ChainReading {
+pub struct ChainParse {
     file: Option<BufWriter<std::fs::File>>,
     path: tempfile::TempPath,
     first: bool,
     decoded: Vec<crate::staging::PreparedBatch>,
+    resolved: Option<ResolvedChain>,
+    release: InFlight,
     /// In primary mode, its parsed events are in the producer spool.
     spooled: bool,
 }
 
-impl ChainReading {
+/// The row identities a chain reading's steps were resolved with, and the
+/// chain they were resolved for.
+struct ResolvedChain {
+    keys: Arc<resolve::ResolvedKeys>,
+    chain: i64,
+}
+impl ChainParse {
     pub fn new() -> Result<Self> {
         let (file, path) = tempfile::NamedTempFile::new()?.into_parts();
         Ok(Self {
@@ -20,6 +29,8 @@ impl ChainReading {
             path,
             first: true,
             decoded: Vec::new(),
+            resolved: None,
+            release: InFlight::default(),
             spooled: false,
         })
     }
@@ -42,6 +53,7 @@ impl ChainReading {
                 StoreError::Invalid("a completed reading cannot be extended".into())
             })?,
             step,
+            None,
         )?;
         self.first = false;
         Ok(())
@@ -67,7 +79,7 @@ impl ChainReading {
     ) -> Result<()> {
         self.finish()?;
         let mut input = BufReader::new(std::fs::File::open(&self.path)?);
-        while let Some(step) = read_step(&mut input)? {
+        while let Some((step, _)) = read_step(&mut input)? {
             apply(&step)?;
         }
         Ok(())
@@ -78,26 +90,201 @@ impl ChainReading {
         self.spooled = true;
     }
 
-    /// A replacement names a valid chain and holds a reading whose events
-    /// name their records.
-    pub(super) fn check(&mut self, input: &str, chain: i64) -> Result<()> {
-        if chain < 1 {
+    fn resolved_for(&self, chain: i64) -> Result<&ResolvedChain> {
+        self.resolved
+            .as_ref()
+            .filter(|resolved| resolved.chain == chain)
+            .ok_or_else(|| {
+                StoreError::Invalid("a chain reading was not resolved for its chain".into())
+            })
+    }
+
+    pub(super) fn resolve(
+        &mut self,
+        resolver: &Arc<resolve::Resolver>,
+        input: &InputKey,
+        chain: i64,
+        length: u64,
+    ) -> Result<()> {
+        let archive = crate::archive::open_read(&resolver.location().archive_db())?;
+        prepare_readings(
+            resolver,
+            &mut [Reading {
+                input,
+                chain,
+                length,
+                reading: self,
+            }],
+            &archive,
+        )
+    }
+}
+
+struct Reading<'a> {
+    input: &'a InputKey,
+    chain: i64,
+    length: u64,
+    reading: &'a mut ChainParse,
+}
+
+fn prepare_readings(
+    resolver: &Arc<resolve::Resolver>,
+    readings: &mut [Reading<'_>],
+    archive: &Connection,
+) -> Result<()> {
+    let mut distinct = BTreeSet::new();
+    for reading in readings.iter() {
+        if reading.chain < 1 || !distinct.insert((reading.input.id.clone(), reading.chain)) {
             return Err(StoreError::Invalid(
-                "a reading must name a valid input chain".into(),
+                "a reading must name each valid input chain once".into(),
             ));
         }
-        if self.first {
+        if reading.reading.first {
             return Err(StoreError::Invalid(
                 "a chain replacement has no reading".into(),
             ));
         }
-        self.visit_source(|step| step.check_events(input))?;
-        Ok(())
+    }
+    if readings.is_empty() {
+        return Ok(());
+    }
+    let pending: HashMap<_, _> = readings
+        .iter()
+        .flat_map(|reading| &reading.reading.decoded)
+        .flat_map(|item| item.batch.new_blob.iter().chain(&item.batch.blobs))
+        .map(|blob| (blob.hash, blob.size))
+        .collect();
+    loop {
+        let index = crate::archive::open_read(&resolver.location().index_db())?;
+        let (keys, _, _) = gather(resolver, readings, &index, archive, &pending)?;
+        drop(index);
+        let key_lock = resolver.lock_keys(keys.clone());
+        let index = crate::archive::open_read(&resolver.location().index_db())?;
+        let snapshot = index.unchecked_transaction()?;
+        let (fresh, history, recorded) = gather(resolver, readings, &snapshot, archive, &pending)?;
+        if keys != fresh {
+            drop(snapshot);
+            drop(key_lock);
+            continue;
+        }
+        let mut resolved = resolve::ResolvedKeys {
+            identities: crate::session_alias::Identities::load(&snapshot, &recorded)?,
+            ..resolve::ResolvedKeys::default()
+        };
+        for key in keys {
+            let row = resolver.resolve_key(&snapshot, &key)?;
+            resolved.rows.insert(key, row);
+        }
+        let keys = Arc::new(resolved);
+        let mut membership_state =
+            resolve::membership::MembershipState::new(resolver, &snapshot, &keys, Some(&history))?;
+        let mut prepared = Vec::new();
+        for reading in readings.iter() {
+            let input = keys
+                .get(resolve::Kind::Input, reading.input.id.as_bytes())?
+                .pk;
+            let (scratch, path) = tempfile::NamedTempFile::new()?.into_parts();
+            let mut output = BufWriter::new(scratch);
+            let file = history.add_path(&path);
+            let mut reader = BufReader::new(std::fs::File::open(&reading.reading.path)?);
+            while let Some((mut step, _)) = read_step(&mut reader)? {
+                attachments::normalize_known(&mut step, &history.available)?;
+                let choices = membership_state.step(reading.input, reading.chain, &mut step)?;
+                let offset = output.stream_position()?;
+                write_step(&mut output, &step, Some(&choices))?;
+                output.flush()?;
+                history.record(input, reading.chain, &choices, Location { file, offset });
+            }
+            drop(output.into_inner().map_err(|error| error.into_error())?);
+            prepared.push(path);
+        }
+        drop(membership_state);
+        drop(snapshot);
+        let key_lock = Arc::new(key_lock);
+        for (reading, path) in readings.iter_mut().zip(prepared) {
+            reading.reading.path = path;
+            reading.reading.resolved = Some(ResolvedChain {
+                keys: Arc::clone(&keys),
+                chain: reading.chain,
+            });
+            let key_lock = Arc::clone(&key_lock);
+            reading.reading.release = InFlight::new(move || drop(key_lock));
+        }
+        return Ok(());
     }
 }
 
-/// Writes one step record with its prepared rows.
-fn write_step(file: &mut BufWriter<std::fs::File>, step: &ParseStep) -> Result<()> {
+fn gather(
+    resolver: &resolve::Resolver,
+    readings: &[Reading<'_>],
+    index: &Connection,
+    archive: &Connection,
+    pending: &HashMap<BlobHash, u64>,
+) -> Result<(
+    BTreeSet<resolve::Key>,
+    History,
+    Vec<polylogue_model::Session>,
+)> {
+    let mut keys = BTreeSet::new();
+    let mut recorded = Vec::new();
+    let mut history = History::new();
+    for reading in readings {
+        let file = history.add_path(&reading.reading.path);
+        let mut reader = BufReader::new(std::fs::File::open(&reading.reading.path)?);
+        loop {
+            let offset = reader.stream_position()?;
+            let Some((mut step, _)) = read_step(&mut reader)? else {
+                break;
+            };
+            attachments::remember(&step, archive, pending, &mut history.available)?;
+            attachments::normalize_known(&mut step, &history.available)?;
+            let location = Location { file, offset };
+            recorded.extend(
+                step.output
+                    .sessions
+                    .iter()
+                    .filter(|s| !s.aliases.is_empty())
+                    .cloned(),
+            );
+            for prepared in &step.prepared.messages {
+                history
+                    .messages
+                    .borrow_mut()
+                    .insert(prepared.hash.to_vec(), location);
+            }
+            for prepared in &step.prepared.documents {
+                history.documents.insert(prepared.hash.to_vec(), location);
+            }
+            let mut batch = Batch {
+                required_outcome: None,
+                input: reading.input.clone(),
+                change: Change::Reparse {
+                    chain: reading.chain,
+                },
+                observation: None,
+                continues: false,
+                new_blob: None,
+                blobs: Vec::new(),
+                length: reading.length,
+                parse: vec![step],
+                capture_read: None,
+                base: None,
+                release: InFlight::default(),
+            };
+            let (step_keys, _) = resolver.gather(&mut [&mut batch], index, index)?;
+            keys.extend(step_keys);
+        }
+    }
+    Ok((keys, history, recorded))
+}
+
+/// Writes one step record; a resolved reading's records carry the versions
+/// chosen for the step.
+fn write_step(
+    file: &mut BufWriter<std::fs::File>,
+    step: &ParseStep,
+    choices: Option<&resolve::membership::Choices>,
+) -> Result<()> {
     let start = file.stream_position()?;
     file.write_all(&0u64.to_le_bytes())?;
     let mut encoder = zstd::stream::write::Encoder::new(&mut *file, 1)?;
@@ -111,6 +298,7 @@ fn write_step(file: &mut BufWriter<std::fs::File>, step: &ParseStep) -> Result<(
             &step.prepared.events,
             &step.prepared.texts,
             step.prepared.released,
+            choices,
         ),
     )?;
     encoder.finish()?;
@@ -121,7 +309,9 @@ fn write_step(file: &mut BufWriter<std::fs::File>, step: &ParseStep) -> Result<(
     Ok(())
 }
 
-fn read_step(reader: &mut BufReader<std::fs::File>) -> Result<Option<ParseStep>> {
+fn read_step(
+    reader: &mut BufReader<std::fs::File>,
+) -> Result<Option<(ParseStep, Option<resolve::membership::Choices>)>> {
     let mut size = [0u8; 8];
     let read = reader.read(&mut size[..1])?;
     if read == 0 {
@@ -132,7 +322,7 @@ fn read_step(reader: &mut BufReader<std::fs::File>) -> Result<Option<ParseStep>>
     let mut decoder = zstd::stream::read::Decoder::new(reader.take(size))?;
     let mut bytes = Vec::new();
     decoder.read_to_end(&mut bytes)?;
-    let StoredStep(mut step, messages, documents, fragments, events, texts, released) =
+    let StoredStep(mut step, messages, documents, fragments, events, texts, released, choices) =
         crate::encoding::read_json(&bytes)?;
     step.prepared = batch::PreparedRows {
         messages,
@@ -142,7 +332,28 @@ fn read_step(reader: &mut BufReader<std::fs::File>) -> Result<Option<ParseStep>>
         texts,
         released,
     };
-    Ok(Some(step))
+    Ok(Some((step, choices)))
+}
+
+/// Reads one record of a resolved reading together with its resolution.
+fn read_resolved_step(
+    reader: &mut BufReader<std::fs::File>,
+    resolved: &ResolvedChain,
+) -> Result<Option<(ParseStep, resolve::Resolution)>> {
+    let Some((step, choices)) = read_step(reader)? else {
+        return Ok(None);
+    };
+    let choices = choices.ok_or_else(|| {
+        StoreError::Invalid("a resolved chain step has no chosen versions".into())
+    })?;
+    Ok(Some((
+        step,
+        resolve::Resolution {
+            keys: Arc::clone(&resolved.keys),
+            chain: resolved.chain,
+            choices,
+        },
+    )))
 }
 
 #[derive(serde::Deserialize)]
@@ -154,14 +365,183 @@ struct StoredStep(
     Vec<(String, Vec<u8>)>,
     crate::text_rows::PreparedTexts,
     bool,
+    Option<resolve::membership::Choices>,
 );
+#[derive(Clone, Copy)]
+struct Location {
+    /// An index into `History::paths`.
+    file: usize,
+    offset: u64,
+}
+struct History {
+    paths: std::cell::RefCell<Vec<std::path::PathBuf>>,
+    messages: std::cell::RefCell<BTreeMap<Vec<u8>, Location>>,
+    documents: BTreeMap<Vec<u8>, Location>,
+    assertions: std::cell::RefCell<BTreeMap<(resolve::Kind, i64), Location>>,
+    sessions: std::cell::RefCell<BTreeMap<(i64, i64, i64), Location>>,
+    event_sources: std::cell::RefCell<BTreeMap<(i64, i64, i64), Location>>,
+    available: HashMap<BlobHash, Option<u64>>,
+}
+impl History {
+    fn new() -> Self {
+        Self {
+            paths: std::cell::RefCell::new(Vec::new()),
+            messages: std::cell::RefCell::new(BTreeMap::new()),
+            documents: BTreeMap::new(),
+            assertions: std::cell::RefCell::new(BTreeMap::new()),
+            sessions: std::cell::RefCell::new(BTreeMap::new()),
+            event_sources: std::cell::RefCell::new(BTreeMap::new()),
+            available: HashMap::new(),
+        }
+    }
+    fn add_path(&self, path: &std::path::Path) -> usize {
+        let mut paths = self.paths.borrow_mut();
+        let index = paths.len();
+        paths.push(path.to_path_buf());
+        index
+    }
+    fn record(
+        &self,
+        input: i64,
+        chain: i64,
+        choices: &resolve::membership::Choices,
+        location: Location,
+    ) {
+        {
+            for hash in choices.message_versions.keys() {
+                self.messages.borrow_mut().insert(hash.0.to_vec(), location);
+            }
+            for pk in choices.sessions.keys() {
+                self.sessions
+                    .borrow_mut()
+                    .insert((*pk, input, chain), location);
+            }
+            for (pk, _) in &choices.event_sources {
+                self.event_sources
+                    .borrow_mut()
+                    .insert((*pk, input, chain), location);
+            }
+            let mut assertions = self.assertions.borrow_mut();
+            for value in &choices.event_values {
+                assertions.insert((resolve::Kind::EventValue, value.key.pk), location);
+            }
+            for value in &choices.link_values {
+                assertions.insert((resolve::Kind::LinkValue, value.key.pk), location);
+            }
+        }
+    }
+    fn step(
+        &self,
+        location: Location,
+    ) -> Result<(ParseStep, Option<resolve::membership::Choices>)> {
+        let path = self.paths.borrow()[location.file].clone();
+        let mut reader = BufReader::new(std::fs::File::open(path)?);
+        reader.seek(SeekFrom::Start(location.offset))?;
+        let (mut step, choices) =
+            read_step(&mut reader)?.or_invalid("a scratch offset has no chain step")?;
+        attachments::normalize_known(&mut step, &self.available)?;
+        Ok((step, choices))
+    }
+}
+impl resolve::membership::ValueSource for History {
+    fn session(&self, pk: i64, input: i64, chain: i64) -> Result<Option<Session>> {
+        let Some(location) = self.sessions.borrow().get(&(pk, input, chain)).copied() else {
+            return Ok(None);
+        };
+        Ok(self
+            .step(location)?
+            .1
+            .and_then(|mut choices| choices.sessions.remove(&pk)))
+    }
+    fn event_parse(
+        &self,
+        pk: i64,
+        input: i64,
+        chain: i64,
+    ) -> Result<Option<resolve::membership::EventChoice>> {
+        let Some(location) = self
+            .event_sources
+            .borrow()
+            .get(&(pk, input, chain))
+            .copied()
+        else {
+            return Ok(None);
+        };
+        Ok(self.step(location)?.1.and_then(|choices| {
+            choices
+                .event_sources
+                .into_iter()
+                .rev()
+                .find(|(event, _)| *event == pk)
+                .map(|(_, source)| source)
+        }))
+    }
+    fn assertion(&self, kind: resolve::Kind, pk: i64) -> Result<Option<Vec<u8>>> {
+        let Some(location) = self.assertions.borrow().get(&(kind, pk)).copied() else {
+            return Ok(None);
+        };
+        let choices = self
+            .step(location)?
+            .1
+            .or_invalid("a value offset has no prepared choices")?;
+        let values = if kind == resolve::Kind::EventValue {
+            choices.event_values
+        } else {
+            choices.link_values
+        };
+        Ok(values
+            .into_iter()
+            .find(|value| value.key.pk == pk)
+            .map(|value| value.body))
+    }
+    fn message(&self, hash: &[u8]) -> Result<Option<(Message, PreparedMessage)>> {
+        let Some(location) = self.messages.borrow().get(hash).copied() else {
+            return Ok(None);
+        };
+        let (step, choices) = self.step(location)?;
+        if let Some(mut choices) = choices {
+            let hash = BlobHash(hash.try_into().map_err(|_| {
+                StoreError::Invalid("a recorded message version has an invalid hash".into())
+            })?);
+            if let Some(value) = choices.message_versions.remove(&hash) {
+                let resolve::membership::MessageValue { message, prepared } =
+                    Arc::unwrap_or_clone(value.value);
+                return Ok(Some((message, prepared)));
+            }
+        }
+        Ok(step
+            .output
+            .messages
+            .into_iter()
+            .zip(step.prepared.messages)
+            .find(|(_, prepared)| prepared.hash.as_slice() == hash)
+            .map(|(row, prepared)| (row.message, prepared)))
+    }
+    fn document(
+        &self,
+        hash: &[u8],
+    ) -> Result<Option<(polylogue_model::Document, PreparedDocument)>> {
+        let Some(location) = self.documents.get(hash).copied() else {
+            return Ok(None);
+        };
+        let (step, _) = self.step(location)?;
+        Ok(step
+            .output
+            .documents
+            .into_iter()
+            .zip(step.prepared.documents)
+            .find(|(_, prepared)| prepared.hash.as_slice() == hash)
+            .map(|(row, prepared)| (row.document, prepared)))
+    }
+}
+
 impl Inner {
     pub(super) fn replace_chain(
         &mut self,
         input: InputKey,
         chain: i64,
         length: u64,
-        mut reading: ChainReading,
+        mut reading: ChainParse,
     ) -> Result<u64> {
         if self.sinex.is_some() {
             if !reading.spooled {
@@ -193,13 +573,13 @@ impl Inner {
         reading.visit_source(|step| {
             if version
                 .as_ref()
-                .is_some_and(|version| version != &step.reading_version)
+                .is_some_and(|version| version != &step.parse_version)
             {
                 return Err(StoreError::Invalid(
-                    "one replacement has several reading versions".into(),
+                    "one replacement has several parse versions".into(),
                 ));
             }
-            version.get_or_insert_with(|| step.reading_version.clone());
+            version.get_or_insert_with(|| step.parse_version.clone());
             refused_or_failed |= matches!(
                 step.progress,
                 polylogue_model::batch::StepProgress::Refused { .. }
@@ -227,13 +607,13 @@ impl Inner {
         input: InputKey,
         chain: i64,
         length: u64,
-        reading: ChainReading,
+        reading: ChainParse,
     ) -> Result<u64> {
         let file = std::fs::File::open(&reading.path)?;
         let mut reader = BufReader::new(file);
         let mut all_replayed = true;
         let mut has_step = false;
-        while let Some(step) = read_step(&mut reader)? {
+        while let Some((step, _)) = read_step(&mut reader)? {
             has_step = true;
             if step.delivery.is_none()
                 || crate::wire_shapes::admit_export(&self.index, &input.id, chain, length, &step)?
@@ -246,13 +626,7 @@ impl Inner {
             return Ok(0);
         }
         reader.rewind()?;
-        // Attachment references name only bytes the archive holds, as of
-        // this transaction.
-        let mut known = HashMap::new();
-        while let Some(step) = read_step(&mut reader)? {
-            attachments::remember(&step, &self.archive, &HashMap::new(), &mut known)?;
-        }
-        reader.rewind()?;
+        let upkeep = self.resolver.upkeep();
         let text_transaction = self.texts.transaction();
         let tx = self
             .index
@@ -270,13 +644,14 @@ impl Inner {
             blobs: Vec::new(),
             length,
             parse: Vec::new(),
-            acquisition: None,
-            basis: None,
+            capture_read: None,
+            base: None,
             release: Default::default(),
         };
-        let mut touched = super::readings::Touched::default();
+        let resolved = reading.resolved_for(chain)?;
+        let mut written = 0;
         let mut first = true;
-        while let Some(mut step) = read_step(&mut reader)? {
+        while let Some((step, resolution)) = read_resolved_step(&mut reader, resolved)? {
             if first && !step.reset {
                 return Err(StoreError::Invalid(
                     "a chain replacement must start at its first record".into(),
@@ -287,8 +662,7 @@ impl Inner {
                     "a chain replacement resets twice".into(),
                 ));
             }
-            attachments::normalize_known(&mut step, &known)?;
-            let replacement = first && step.delivery.is_none();
+            let replace_wire = first && step.delivery.is_none();
             first = false;
             let source_commit = crate::source::Source::reading_commit(
                 &tx,
@@ -296,21 +670,25 @@ impl Inner {
                 chain,
                 step.parsed_upto,
             )?;
-            rows::write_step(
+            let write = if replace_wire {
+                rows::write_replacement_rows
+            } else {
+                write_rows
+            };
+            written += write(
                 &tx,
                 &batch,
                 &step,
-                rows::StepWrite {
+                rows::ReadingWrite {
                     texts: &self.texts,
+                    resolution: &resolution,
                     counter,
-                    chain,
+                    upkeep: &upkeep,
                     source_commit: Some(&source_commit),
-                    replacement,
-                    retraction: false,
-                    primary: self.sinex.is_some(),
                     changes: &changes,
+                    retraction: false,
+                    replacement: false,
                 },
-                &mut touched,
             )?;
         }
         if first {
@@ -318,15 +696,8 @@ impl Inner {
                 "a chain replacement has no reading".into(),
             ));
         }
-        let (written, read) = rows::finish(
-            &tx,
-            touched,
-            &changes,
-            &self.texts,
-            self.at_build_end,
-            counter,
-        )?;
-        self.report.item_units_read += read;
+        rows::prune_sessions(&tx, &batch.input.id, chain, counter)?;
+        self.report.item_units_read += rows::finish(&tx, &changes, &upkeep, &self.texts, counter)?;
         batch.parse.clear();
         crate::fault::check("write.index_commit", "")?;
         crate::fault::check("reparse.commit", &batch.input.id)?;

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 /// native authority.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct HookFieldClaim {
+pub struct ParsedHookField {
     pub block: u64,
     pub start: u64,
     pub end: u64,
@@ -18,7 +18,7 @@ pub struct HookFieldClaim {
     Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
 )]
 #[serde(deny_unknown_fields)]
-pub struct NativeHookField {
+pub struct StatedHookField {
     pub input: String,
     pub chain: i64,
     pub start: u64,
@@ -35,9 +35,9 @@ pub struct InjectionEvidence {
     pub source_version: BlobHash,
     pub block: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub observed: Option<NativeHookField>,
+    pub observed: Option<StatedHookField>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub declared: Vec<NativeHookField>,
+    pub declared: Vec<StatedHookField>,
 }
 
 /// What a producer states it emitted after success. The invocation record is
@@ -51,7 +51,7 @@ pub struct HookContextEmission {
     pub deliveries: Vec<crate::Reference>,
 }
 
-impl NativeHookField {
+impl StatedHookField {
     pub fn validate(&self) -> Result<(), crate::bundle::BundleError> {
         if self.input.is_empty()
             || self.chain < 1
@@ -78,7 +78,7 @@ impl InjectionEvidence {
     pub fn validate_for(
         &self,
         message: &MessageId,
-        block_selection: &crate::bundle::MessageProjection,
+        block_selection: &crate::bundle::ShownBlocks,
     ) -> Result<(), crate::bundle::BundleError> {
         if &self.message != message
             || self.source_version != block_selection.source_version

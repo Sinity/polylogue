@@ -314,7 +314,7 @@ async fn answer_as(
     };
     let table = &web.operations;
     let accepted = accepted(web, &details, super::request_limit().cancellation);
-    use crate::daemon::handler::{NativeReply, dispatch_native};
+    use crate::daemon::handler::{HandlerReply, dispatch_native};
     let (request, read_scope, dispatched) = match dispatch_native(
         &web.daemon,
         table,
@@ -326,8 +326,8 @@ async fn answer_as(
     )
     .await
     {
-        NativeReply::Refused(answer) => return json_answer(web, answer),
-        NativeReply::Stream {
+        HandlerReply::Refused(answer) => return json_answer(web, answer),
+        HandlerReply::Stream {
             request,
             accepted,
             policy,
@@ -342,7 +342,7 @@ async fn answer_as(
             );
             return stream_as(web, policy.class, limit, request, *accepted, produce).await;
         }
-        NativeReply::Answer(ready, answer) => (
+        HandlerReply::Answer(ready, answer) => (
             ready.web_request.expect("web replies retain their request"),
             ready.scope,
             answer,

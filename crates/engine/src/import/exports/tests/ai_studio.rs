@@ -67,7 +67,7 @@ fn stored_ai_studio_chunks_survive_source_deletion_and_index_rebuild() {
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
         let source_rows = r
             .query(
-                "SELECT source_start,source_end FROM reading_message WHERE source_start>0 \
+                "SELECT source_start,source_end FROM message_parse WHERE source_start>0 \
                  ORDER BY source_start",
                 &[],
             )
@@ -341,7 +341,7 @@ fn missing_stored_export_prefix_captures_a_full_rewrite() {
         true,
     );
     plan.stored_upto = old_length;
-    plan.basis = context.basis;
+    plan.base = context.base;
     plan.observation = Some(e.observation(&path, Some(facts)));
     fs::rename(&segment, &held).unwrap();
     let mut pass = Pass::default();
@@ -464,7 +464,7 @@ fn drive_and_takeout_copy_give_one_session() {
                 ["About rivers", "Rivers flow to the sea."]
             );
             assert_eq!(
-                w.count("SELECT COUNT(DISTINCT input_pk) AS n FROM reading_message"),
+                w.count("SELECT COUNT(DISTINCT input_pk) AS n FROM message_parse"),
                 2,
                 "both copies are readings of the one session"
             );
@@ -476,9 +476,9 @@ fn drive_and_takeout_copy_give_one_session() {
             );
             assert_eq!(
                 w.count(
-                    "SELECT COUNT(DISTINCT s.input_pk) AS n FROM reading_event s
-                     JOIN session_stated x ON x.stated_id=s.session_id JOIN session xs ON xs.pk=x.session_pk
-                     WHERE s.kind='run_settings' AND xs.id='ai-studio:drive-id'"
+                    "SELECT COUNT(DISTINCT s.input_pk) AS n FROM event_parse s
+                     JOIN event e ON e.pk=s.event_pk JOIN session x ON x.pk=e.session_pk
+                     WHERE e.kind='run_settings' AND x.id='ai-studio:drive-id'"
                 ),
                 2,
                 "drive first {drive_first}, rebuild {rebuild}"
@@ -500,18 +500,16 @@ fn ai_studio_rows(w: &ClaudeHome) -> serde_json::Value {
         "sessions": rows("SELECT id FROM session WHERE origin='ai-studio' ORDER BY id"),
         "messages": rows(
             "SELECT s.id AS session, m.id AS message,
-                    (SELECT COUNT(*) FROM message_reading v WHERE v.message_pk=m.pk) AS readings
+                    (SELECT COUNT(*) FROM message_parse v WHERE v.message_pk=m.pk) AS readings
              FROM message m JOIN session s ON s.pk=m.session_pk ORDER BY s.id, m.id"
         ),
         "events": rows(
             "SELECT s.id AS session, e.kind, e.id,
-                    (SELECT COUNT(*) FROM reading_event x JOIN session_stated st ON st.stated_id=x.session_id
-                     WHERE st.session_pk=e.session_pk AND x.kind=e.kind AND x.hash=(SELECT y.hash FROM reading_event y
-                     WHERE y.event_id=e.id AND y.input_pk=e.input_pk AND y.chain=e.source_chain)) AS readings
+                    (SELECT COUNT(*) FROM event_parse x WHERE x.event_pk=e.pk) AS readings
              FROM event e JOIN session s ON s.pk=e.session_pk ORDER BY s.id, e.kind, e.id"
         ),
         "calls": rows(
-            "SELECT s.id AS session, c.call_id, c.result_message_id IS NOT NULL AS answered
+            "SELECT s.id AS session, c.call_id, c.result_block_pk IS NOT NULL AS answered
              FROM tool_call c JOIN session s ON s.pk=c.session_pk ORDER BY s.id, c.call_id"
         ),
     })

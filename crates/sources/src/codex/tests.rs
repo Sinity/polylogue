@@ -489,7 +489,10 @@ fn a_subagents_copied_history_is_stored_once_in_the_parent() {
     };
     assert_eq!(spawn.kind, LinkKind::Spawn);
     assert_eq!(spawn.parent.native().as_str(), PARENT);
-    assert_eq!(spawn.at.as_ref().unwrap().native().as_str(), "msg_p2");
+    assert_eq!(
+        spawn.branch_point.as_ref().unwrap().native().as_str(),
+        "msg_p2"
+    );
 }
 
 #[test]
@@ -693,7 +696,7 @@ fn background_start_records() -> Vec<Json> {
 
 #[test]
 fn background_poll_keeps_precision_and_missing_clock() {
-    use polylogue_model::{Precision, TimeEvidence, Timestamp};
+    use polylogue_model::{Precision, TimeAccuracy, Timestamp};
     for (clock, precision) in [
         (Some("2026-03-01T10:00:05Z"), Some(Precision::Second)),
         (
@@ -722,14 +725,14 @@ fn background_poll_keeps_precision_and_missing_clock() {
         assert_eq!(update.result_at, clock.and_then(Timestamp::parse_rfc3339));
         assert_eq!(
             update.result_at_evidence,
-            precision.map_or(TimeEvidence::UNKNOWN, TimeEvidence::intrinsic)
+            precision.map_or(TimeAccuracy::UNKNOWN, TimeAccuracy::intrinsic)
         );
     }
 }
 
 #[test]
 fn background_completion_keeps_its_time_accuracy() {
-    use polylogue_model::{Precision, TimeEvidence};
+    use polylogue_model::{Precision, TimeAccuracy};
     for payload in [
         json!({"type":"item_completed","item":{"type":"CommandExecution","id":"call_a","status":"completed","exit_code":0}}),
         json!({"type":"exec_command_end","call_id":"call_a","exit_code":0}),
@@ -745,7 +748,7 @@ fn background_completion_keeps_its_time_accuracy() {
         assert_eq!(update.result_at.unwrap().unix_ns(), 1772359204123456789);
         assert_eq!(
             update.result_at_evidence,
-            TimeEvidence::intrinsic(Precision::Instant)
+            TimeAccuracy::intrinsic(Precision::Instant)
         );
     }
 }
@@ -796,7 +799,7 @@ fn copied_history_branch_point_survives_split_appends() {
         let mut state = ParserState::default();
         let first = run(&rollout(), &mut state, &input[..cut], 0).unwrap();
         assert!(!first.output.links.iter().any(|link| {
-            link.at
+            link.branch_point
                 .as_ref()
                 .is_some_and(|id| id.native().as_str() == "copied-first")
         }));
@@ -809,12 +812,20 @@ fn copied_history_branch_point_survives_split_appends() {
             .iter()
             .chain(&second.output.links)
             .collect();
-        let with_branch_point: Vec<_> = links.iter().filter(|link| link.at.is_some()).collect();
+        let with_branch_point: Vec<_> = links
+            .iter()
+            .filter(|link| link.branch_point.is_some())
+            .collect();
         assert_eq!(with_branch_point.len(), 1, "cut {cut}");
         assert_eq!(with_branch_point[0].kind, LinkKind::Fork);
         assert_eq!(with_branch_point[0].parent.native().as_str(), fork);
         assert_eq!(
-            with_branch_point[0].at.as_ref().unwrap().native().as_str(),
+            with_branch_point[0]
+                .branch_point
+                .as_ref()
+                .unwrap()
+                .native()
+                .as_str(),
             "copied-last"
         );
         assert!(with_branch_point[0].copies_prefix);
@@ -822,7 +833,7 @@ fn copied_history_branch_point_survives_split_appends() {
             links
                 .iter()
                 .filter(|link| link.kind == LinkKind::Spawn)
-                .all(|link| link.at.is_none() && !link.copies_prefix)
+                .all(|link| link.branch_point.is_none() && !link.copies_prefix)
         );
         assert_eq!(second.output.sessions[0].kind, SessionKind::Subagent);
         assert!(

@@ -5,7 +5,7 @@ use polylogue_model::batch::ParserCheckpoint;
 /// The committed reading's status and cursor, without its opaque continuation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StoredParserProgress {
-    pub reading_version: String,
+    pub parse_version: String,
     pub parsed_upto: u64,
     pub stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
     pub progress: polylogue_model::batch::ParseProgress,
@@ -13,7 +13,7 @@ pub struct StoredParserProgress {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StoredParserCheckpoint {
-    pub reading_version: String,
+    pub parse_version: String,
     pub parsed_upto: u64,
     pub checkpoint: Option<ParserCheckpoint>,
     pub stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
@@ -28,7 +28,7 @@ impl Reader<'_> {
             .conn()?
             .query_row(
                 &format!(
-                    "SELECT reading_version,parsed_upto,status,at_length,reason,stopped_attempt
+                    "SELECT parse_version,parsed_upto,status,at_length,reason,stopped_attempt
              FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk
              WHERE i.id=?1 AND p.chain=?2 AND NOT {database}"
                 ),
@@ -46,9 +46,9 @@ impl Reader<'_> {
             )
             .optional()?;
         row.map(
-            |(reading_version, parsed_upto, status, at_length, reason, attempt)| {
+            |(parse_version, parsed_upto, status, at_length, reason, attempt)| {
                 Ok(StoredParserProgress {
-                    reading_version,
+                    parse_version,
                     parsed_upto,
                     stopped_attempt: attempt
                         .as_deref()
@@ -74,14 +74,14 @@ impl Reader<'_> {
         )?;
         let database = crate::source::database_original("?1");
         let row = self.conn()?.query_row(
-            &format!("SELECT reading_version,parsed_upto,checkpoint,status,at_length,reason,stopped_attempt
+            &format!("SELECT parse_version,parsed_upto,checkpoint,status,at_length,reason,stopped_attempt
             FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk
             WHERE i.id=?1 AND p.chain=?2 AND NOT {database}"),
             params![input, chain], |r| <(String, u64, Option<Vec<u8>>, String, Option<i64>, Option<String>, Option<Vec<u8>>)>::try_from(r)).optional()?;
         row.map(
-            |(reading_version, cursor, bytes, status, at_length, reason, attempt)| {
+            |(parse_version, cursor, bytes, status, at_length, reason, attempt)| {
                 let parsed_upto = cursor;
-                let checkpoint: Option<ParserCheckpoint> = if reading_version == expected_version {
+                let checkpoint: Option<ParserCheckpoint> = if parse_version == expected_version {
                     bytes
                         .as_deref()
                         .map(crate::encoding::unpack_json)
@@ -90,7 +90,7 @@ impl Reader<'_> {
                     None
                 };
                 if let Some(checkpoint) = &checkpoint
-                    && !checkpoint.matches(&reading_version, parsed_upto)
+                    && !checkpoint.matches(&parse_version, parsed_upto)
                 {
                     return Err(StoreError::stored(
                         2,
@@ -98,7 +98,7 @@ impl Reader<'_> {
                     ));
                 }
                 Ok(StoredParserCheckpoint {
-                    reading_version,
+                    parse_version,
                     parsed_upto,
                     checkpoint,
                     stopped_attempt: attempt

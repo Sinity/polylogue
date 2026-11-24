@@ -6,7 +6,7 @@
 //! settled afterwards from its rows ([`crate::chain_names`]).
 
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 use crate::Records;
 use crate::lines::{self, Record};

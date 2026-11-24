@@ -2,7 +2,7 @@ use super::*;
 use crate::StoreError;
 use polylogue_model::bundle::BundleError;
 use polylogue_model::{
-    Precision, SessionId, TimeEvidence, TimeEvidenceError, TimeQuality, Timestamp,
+    Precision, SessionId, TimeAccuracy, TimeAccuracyError, TimeQuality, Timestamp,
 };
 
 #[test]
@@ -17,7 +17,7 @@ fn time_accuracy_and_order_survive_fixture_storage() {
         })
         .unwrap();
     let start = Timestamp::from_unix_ms(0).unwrap();
-    let bounded = TimeEvidence {
+    let bounded = TimeAccuracy {
         quality: TimeQuality::Intrinsic,
         precision: Some(Precision::Bounded),
         until: Timestamp::from_unix_ms(10_000),
@@ -26,7 +26,7 @@ fn time_accuracy_and_order_survive_fixture_storage() {
     assert!(matches!(
         fixture.session_time(session, bounded.until, bounded),
         Err(StoreError::Bundle(BundleError::Time(
-            TimeEvidenceError::InvalidBounds
+            TimeAccuracyError::InvalidBounds
         )))
     ));
     let message = fixture
@@ -42,7 +42,7 @@ fn time_accuracy_and_order_survive_fixture_storage() {
         )
         .unwrap();
     let at = Timestamp::from_unix_ms(5_000).unwrap();
-    let accuracy = TimeEvidence {
+    let accuracy = TimeAccuracy {
         until: Timestamp::from_unix_ms(9_000),
         ..bounded
     };
@@ -62,23 +62,23 @@ fn time_accuracy_and_order_survive_fixture_storage() {
         let reader = reads.reader().unwrap();
         let stored = reader.session(&session_id).unwrap().unwrap();
         assert_eq!(
-            (stored.started, stored.time_evidence()),
+            (stored.started, stored.time_accuracy()),
             (Some(start), bounded)
         );
         let messages = reader.messages(&session_id, false).unwrap();
         assert_eq!(
-            (messages[0].at, messages[0].time_evidence()),
+            (messages[0].at, messages[0].time_accuracy()),
             (Some(at), accuracy)
         );
     }
-    let invalid = TimeEvidence {
+    let invalid = TimeAccuracy {
         until: Some(at),
         ..accuracy
     };
     assert!(matches!(
         fixture.message_time(message, Some(at), invalid),
         Err(StoreError::Bundle(BundleError::Time(
-            TimeEvidenceError::InvalidBounds
+            TimeAccuracyError::InvalidBounds
         )))
     ));
     let reads = fixture.reads().unwrap();
@@ -88,12 +88,12 @@ fn time_accuracy_and_order_survive_fixture_storage() {
             .unwrap()
             .messages(&session_id, false)
             .unwrap()[0]
-            .time_evidence(),
+            .time_accuracy(),
         accuracy
     );
     drop(reads);
     fixture
-        .message_time(message, None, TimeEvidence::UNKNOWN)
+        .message_time(message, None, TimeAccuracy::UNKNOWN)
         .unwrap();
     let reads = fixture.reads().unwrap();
     let messages = reads
@@ -102,8 +102,8 @@ fn time_accuracy_and_order_survive_fixture_storage() {
         .messages(&session_id, false)
         .unwrap();
     assert_eq!(
-        (messages[0].at, messages[0].time_evidence()),
-        (None, TimeEvidence::UNKNOWN)
+        (messages[0].at, messages[0].time_accuracy()),
+        (None, TimeAccuracy::UNKNOWN)
     );
     let cached: Option<i64> = fixture
         .index

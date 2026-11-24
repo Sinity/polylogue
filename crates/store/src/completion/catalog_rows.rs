@@ -49,7 +49,7 @@ pub struct SavedEntry {
 pub struct KeptEntry {
     pub output_metadata: Option<polylogue_model::kept::OutputMetadata>,
     pub shape: Option<polylogue_query::Shape>,
-    pub native_identity: bool,
+    pub row_identity: bool,
     pub id: String,
     pub name: Option<String>,
     pub unit: Option<String>,
@@ -353,7 +353,7 @@ impl Reader<'_> {
                     Some(value) => serde_json::from_str(&value).ok(),
                 },
                 shape,
-                native_identity: shape == Some(polylogue_query::Shape::Rows)
+                row_identity: shape == Some(polylogue_query::Shape::Rows)
                     && row.get::<_, Option<bool>>(7)?.unwrap_or(false),
                 id: row.get(0)?,
                 name: row.get(1)?,

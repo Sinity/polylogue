@@ -52,13 +52,13 @@ pub struct Operation {
     pub material: Option<String>,
     pub previous_material: Option<String>,
     pub logical_name: Option<String>,
-    pub acquisition: Option<String>,
+    pub capture_read: Option<String>,
     pub ordinal: Option<u64>,
     pub unresolved: bool,
     pub source: Option<Vec<u8>>,
     pub raw: bool,
-    pub raw_generation: Option<Vec<u8>>,
-    pub raw_predecessor: Option<String>,
+    pub observed_state: Option<Vec<u8>>,
+    pub previous_revision: Option<String>,
     pub raw_root: bool,
     pub input: Option<String>,
     pub format: Option<String>,
@@ -83,7 +83,7 @@ pub enum Kind {
 impl Kind {
     fn name(self) -> &'static str {
         match self {
-            Self::CaptureGroupHeader => "acquisition",
+            Self::CaptureGroupHeader => "capture_read",
             Self::Material => "material",
             Self::Request => "request",
             Self::Events => "events",
@@ -216,15 +216,15 @@ CREATE TABLE operation (
   offered TEXT,
   admitted TEXT NOT NULL DEFAULT '[]',
   logical_name BLOB,
-  acquisition TEXT,
+  capture_read TEXT,
   ordinal INTEGER,
   confirmed_group TEXT,
   group_hash TEXT UNIQUE,
   unresolved INTEGER NOT NULL,
   source BLOB,
   raw INTEGER NOT NULL,
-  raw_generation BLOB,
-  raw_predecessor TEXT,
+  observed_state BLOB,
+  previous_revision TEXT,
   raw_root INTEGER NOT NULL,
   input TEXT,
   format TEXT,
@@ -242,10 +242,10 @@ CREATE INDEX queue_material_dependency ON operation(previous_material);
 CREATE INDEX queue_confirmed ON operation(phase,position,ordering);
 CREATE INDEX queue_names ON operation(logical_name,ordering);
 CREATE INDEX queue_members ON operation(confirmed_group,ordering);
-CREATE INDEX queue_acquisition ON operation(acquisition,ordinal);
+CREATE INDEX queue_acquisition ON operation(capture_read,ordinal);
 CREATE INDEX queue_source ON operation(source,ordering);
-CREATE INDEX queue_raw_generation ON operation(raw_generation,ordering);
-CREATE INDEX queue_raw_child ON operation(raw_predecessor,ordering);
+CREATE INDEX queue_raw_generation ON operation(observed_state,ordering);
+CREATE INDEX queue_raw_child ON operation(previous_revision,ordering);
 CREATE INDEX queue_input ON operation(input,format,ordering);
 PRAGMA application_id=1347178801;
 PRAGMA user_version=2;
@@ -294,7 +294,7 @@ const PARSED_CHAIN_PREFIX_LENGTH: usize = 72;
 /// chain is pending.
 fn ready_condition() -> String {
     format!(
-        "phase='pending' AND unresolved=0 AND kind!='acquisition'
+        "phase='pending' AND unresolved=0 AND kind!='capture_read'
       AND NOT EXISTS(SELECT 1 FROM operation AS member
         WHERE member.confirmed_group=current.identity
           AND (member.phase!='acknowledged' OR member.unresolved!=0))
@@ -321,8 +321,8 @@ fn refresh_ready(connection: &Connection, identity: &str) -> Result<()> {
 }
 
 fn insert(connection: &Connection, operation: &Operation, group_hash: Option<&str>) -> Result<()> {
-    connection.execute("INSERT INTO operation(identity,directory,metadata,kind,logical_name,acquisition,ordinal,unresolved,source,raw_generation,raw_predecessor,raw_root,input,format,stored_bytes,group_hash,material,previous_material,raw,completion,captured,blob)
-          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)", params![operation.identity, operation.directory, operation.metadata, operation.kind.name(), operation.logical_name.as_ref().map(|name| name.as_bytes()), operation.acquisition, operation.ordinal, operation.unresolved, operation.source, operation.raw_generation, operation.raw_predecessor, operation.raw_root, operation.input, operation.format, operation.stored_bytes, group_hash, operation.material, operation.previous_material, operation.raw, operation.completion.map(Completion::name), operation.captured, operation.blob])?;
+    connection.execute("INSERT INTO operation(identity,directory,metadata,kind,logical_name,capture_read,ordinal,unresolved,source,observed_state,previous_revision,raw_root,input,format,stored_bytes,group_hash,material,previous_material,raw,completion,captured,blob)
+          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)", params![operation.identity, operation.directory, operation.metadata, operation.kind.name(), operation.logical_name.as_ref().map(|name| name.as_bytes()), operation.capture_read, operation.ordinal, operation.unresolved, operation.source, operation.observed_state, operation.previous_revision, operation.raw_root, operation.input, operation.format, operation.stored_bytes, group_hash, operation.material, operation.previous_material, operation.raw, operation.completion.map(Completion::name), operation.captured, operation.blob])?;
     Ok(())
 }
 
@@ -412,12 +412,12 @@ impl Queue {
         let result: Result<()> = (|| {
             let tx = self.connection.unchecked_transaction()?;
             insert(&tx, header, None)?;
-            tx.execute("INSERT INTO operation(identity,directory,metadata,kind,material,previous_material,phase,position,offered,admitted,logical_name,acquisition,ordinal,confirmed_group,group_hash,unresolved,source,raw,raw_generation,raw_predecessor,raw_root,input,format,stored_bytes,completion,captured,blob)
-                SELECT identity,?1 || '/' || directory,metadata,kind,material,previous_material,phase,position,offered,admitted,logical_name,?2,ordering-1,confirmed_group,group_hash,?3,source,raw,raw_generation,raw_predecessor,raw_root,input,format,stored_bytes,completion,captured,blob FROM staged.operation ORDER BY ordering",
+            tx.execute("INSERT INTO operation(identity,directory,metadata,kind,material,previous_material,phase,position,offered,admitted,logical_name,capture_read,ordinal,confirmed_group,group_hash,unresolved,source,raw,observed_state,previous_revision,raw_root,input,format,stored_bytes,completion,captured,blob)
+                SELECT identity,?1 || '/' || directory,metadata,kind,material,previous_material,phase,position,offered,admitted,logical_name,?2,ordering-1,confirmed_group,group_hash,?3,source,raw,observed_state,previous_revision,raw_root,input,format,stored_bytes,completion,captured,blob FROM staged.operation ORDER BY ordering",
                 params![header.directory, header.identity, header.unresolved])?;
             tx.execute(
                 &format!(
-                    "UPDATE operation AS current SET ready=({}) WHERE acquisition=?1",
+                    "UPDATE operation AS current SET ready=({}) WHERE capture_read=?1",
                     ready_condition()
                 ),
                 [&header.identity],
@@ -436,13 +436,13 @@ impl Queue {
         let mut paths = Vec::new();
         let mut groups = Vec::new();
         {
-            let mut query = tx.prepare_cached("SELECT directory,acquisition FROM operation WHERE identity=?1 OR confirmed_group=?1")?;
+            let mut query = tx.prepare_cached("SELECT directory,capture_read FROM operation WHERE identity=?1 OR confirmed_group=?1")?;
             for row in
                 query.query_map([identity], |row| <(String, Option<String>)>::try_from(row))?
             {
-                let (path, acquisition) = row?;
+                let (path, capture_read) = row?;
                 paths.push(path);
-                if let Some(group) = acquisition {
+                if let Some(group) = capture_read {
                     groups.push(group);
                 }
             }
@@ -453,7 +453,7 @@ impl Queue {
         )?;
         for group in groups {
             if tx.scalar::<bool>(
-                "SELECT NOT EXISTS(SELECT 1 FROM operation WHERE acquisition=?1)",
+                "SELECT NOT EXISTS(SELECT 1 FROM operation WHERE capture_read=?1)",
                 [&group],
             )? {
                 if let Some(path) = tx.scalar_optional::<String>(
@@ -496,7 +496,7 @@ impl Queue {
         after: Option<u64>,
         limit: usize,
     ) -> Result<Vec<Entry>> {
-        let mut query = self.connection.prepare_cached(&format!("SELECT {COLUMNS} FROM operation WHERE acquisition=?1 AND ordinal>=?2 ORDER BY ordinal LIMIT ?3"))?;
+        let mut query = self.connection.prepare_cached(&format!("SELECT {COLUMNS} FROM operation WHERE capture_read=?1 AND ordinal>=?2 ORDER BY ordinal LIMIT ?3"))?;
         Ok(query
             .query_map(
                 params![identity, after.map_or(0, |n| n.saturating_add(1)), limit],
@@ -512,7 +512,7 @@ impl Queue {
 
     pub fn len(&self) -> Result<u64> {
         self.connection.scalar(
-            "SELECT count(*) FROM operation WHERE kind!='acquisition'",
+            "SELECT count(*) FROM operation WHERE kind!='capture_read'",
             [],
         )
     }
@@ -577,7 +577,7 @@ impl Queue {
     }
 
     pub fn after(&self, after: Option<u64>, limit: usize) -> Result<Vec<Entry>> {
-        let mut query = self.connection.prepare_cached(&format!("SELECT {COLUMNS} FROM operation WHERE ordering>?1 AND kind!='acquisition' ORDER BY ordering LIMIT ?2"))?;
+        let mut query = self.connection.prepare_cached(&format!("SELECT {COLUMNS} FROM operation WHERE ordering>?1 AND kind!='capture_read' ORDER BY ordering LIMIT ?2"))?;
         Ok(query
             .query_map(params![after.unwrap_or(0), limit], entry)?
             .collect::<rusqlite::Result<_>>()?)
@@ -643,7 +643,7 @@ impl Queue {
             }
             Lookup::GroupHash(hash) => ("group_hash=?1", vec![text(hash)]),
             Lookup::Members(identity) => ("confirmed_group=?1", vec![text(identity)]),
-            Lookup::CaptureGroupHeader(identity) => ("acquisition=?1", vec![text(identity)]),
+            Lookup::CaptureGroupHeader(identity) => ("capture_read=?1", vec![text(identity)]),
             Lookup::Source { source, raw } => (
                 "source=?1 AND (?2=0 OR raw=1) AND unresolved=0",
                 vec![blob(source), Value::Integer(i64::from(raw))],
@@ -652,10 +652,10 @@ impl Queue {
                 "input IS NOT NULL AND source IS NULL AND unresolved=0",
                 vec![],
             ),
-            Lookup::ObservedSourceKey(generation) => ("raw_generation=?1", vec![blob(generation)]),
-            Lookup::RawChildren(previous) => ("raw_predecessor=?1", vec![text(previous)]),
+            Lookup::ObservedSourceKey(generation) => ("observed_state=?1", vec![blob(generation)]),
+            Lookup::RawChildren(previous) => ("previous_revision=?1", vec![text(previous)]),
             Lookup::RawRoots(generation) => {
-                ("raw_generation=?1 AND raw_root=1", vec![blob(generation)])
+                ("observed_state=?1 AND raw_root=1", vec![blob(generation)])
             }
         };
         let base = parameters.len();

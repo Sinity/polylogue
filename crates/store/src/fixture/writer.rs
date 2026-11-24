@@ -37,8 +37,8 @@ pub fn sid(n: &str) -> SessionId {
 
 pub fn message(id: &str, session: &str, role: Role, at: i64, blocks: Vec<Block>) -> Message {
     let at = Timestamp::from_unix_ms(at);
-    let accuracy = at.map_or(polylogue_model::TimeEvidence::UNKNOWN, |_| {
-        polylogue_model::TimeEvidence::intrinsic(polylogue_model::Precision::Instant)
+    let accuracy = at.map_or(polylogue_model::TimeAccuracy::UNKNOWN, |_| {
+        polylogue_model::TimeAccuracy::intrinsic(polylogue_model::Precision::Instant)
     });
     Message {
         at_quality: accuracy.quality,
@@ -410,12 +410,12 @@ pub fn step(
         new_blob: None,
         blobs: vec![],
         length,
-        acquisition: None,
-        basis: None,
+        capture_read: None,
+        base: None,
         release: Default::default(),
         parse: vec![{
             let mut step = ParseStep::new(output, counts, start..length, true);
-            step.reading_version = "synthetic=1".into();
+            step.parse_version = "synthetic=1".into();
             step
         }],
     }

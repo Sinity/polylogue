@@ -34,7 +34,7 @@ Kind: Parameterized. Unit: milliseconds; prompts; tool calls. Denominator: one p
 
 Unknown: Absent clocks and durations are null; missing, equal and reversed tool times are counted separately.
 
-Reads: message.at, message.written_by, message.prompt_kind, message.stop_reason, message.on_active_path, message.duplicate_of, block.kind, tool_call.at, tool_call.result_message_id, tool_call.outcome, tool_call.command_norm, tool_call.action, tool_call.tool, event.at.
+Reads: message.at, message.written_by, message.prompt_kind, message.stop_reason, message.on_active_path, message.duplicate_of, block.kind, tool_call.at, tool_call.result_block_pk, tool_call.outcome, tool_call.command_norm, tool_call.action, tool_call.tool, event.at.
 
 Parameter: cluster_gap = 300000 milliseconds.
 
@@ -50,7 +50,7 @@ Kind: Exact. Unit: milliseconds. Denominator: session_span.wall_ms.
 
 Unknown: Missing or reversed transitions are unattributed; a session without a clock has no time rows.
 
-Reads: message.at, message.written_by, message.prompt_kind, message.stop_reason, message.on_active_path, message.duplicate_of, block.kind, tool_call.at, tool_call.result_message_id, tool_call.outcome, tool_call.command_norm, tool_call.action, tool_call.tool, event.at.
+Reads: message.at, message.written_by, message.prompt_kind, message.stop_reason, message.on_active_path, message.duplicate_of, block.kind, tool_call.at, tool_call.result_block_pk, tool_call.outcome, tool_call.command_norm, tool_call.action, tool_call.tool, event.at.
 
 Tests: span_and_parties_match_a_hand_computed_session, tool_intervals_extend_clusters_and_share_overlap, party_times_sum_to_wall_for_overlapping_intervals.
 

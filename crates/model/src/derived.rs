@@ -52,7 +52,7 @@ pub const SESSION_SPAN: Construct = Construct {
         "message.duplicate_of",
         "block.kind",
         "tool_call.at",
-        "tool_call.result_message_id",
+        "tool_call.result_block_pk",
         "tool_call.outcome",
         "tool_call.command_norm",
         "tool_call.action",

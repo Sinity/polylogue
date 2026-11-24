@@ -297,14 +297,14 @@ fn unwrap(v: &Json) -> Rec<'_> {
 impl Rollout {
     fn unknown_boundaries(session: SessionId, out: &mut Output) {
         out.events.push({
-            let (at, time_evidence) = crate::time::parts(None);
+            let (at, time_accuracy) = crate::time::parts(None);
             Event {
                 session: Some(session),
                 kind: "response_boundaries_unknown".into(),
                 at,
-                at_quality: time_evidence.quality,
-                at_precision: time_evidence.precision,
-                at_until: time_evidence.until,
+                at_quality: time_accuracy.quality,
+                at_precision: time_accuracy.precision,
+                at_until: time_accuracy.until,
                 after: None,
                 range: None,
                 data: serde_json::json!({}),
@@ -456,7 +456,7 @@ impl Rollout {
                 how: None,
                 parent: fork_parent,
                 child: id.clone(),
-                at: None,
+                branch_point: None,
                 call_id: None,
                 evidence: evidence.into(),
             });
@@ -478,7 +478,7 @@ impl Rollout {
                     how: None,
                     parent: copied_parent.clone(),
                     child: id,
-                    at: None,
+                    branch_point: None,
                     call_id: None,
                     evidence: evidence.into(),
                 });
@@ -516,14 +516,14 @@ impl Rollout {
             return RecordOutcome::unreadable("no thread ID in the file name or its header");
         };
         out.events.push({
-            let (at, time_evidence) = crate::time::parts(at);
+            let (at, time_accuracy) = crate::time::parts(at);
             Event {
                 session: Some(session),
                 kind: kind.to_owned(),
                 at,
-                at_quality: time_evidence.quality,
-                at_precision: time_evidence.precision,
-                at_until: time_evidence.until,
+                at_quality: time_accuracy.quality,
+                at_precision: time_accuracy.precision,
+                at_until: time_accuracy.until,
                 after: parser_state.last.clone(),
                 range: parser_state.current,
                 data: data.clone(),
@@ -635,16 +635,16 @@ impl Rollout {
             );
         }
         let message = {
-            let (at, time_evidence) = crate::time::parts(at);
+            let (at, time_accuracy) = crate::time::parts(at);
             Message {
                 id: id.clone(),
                 session,
                 parent: None,
                 role,
                 at,
-                at_quality: time_evidence.quality,
-                at_precision: time_evidence.precision,
-                at_until: time_evidence.until,
+                at_quality: time_accuracy.quality,
+                at_precision: time_accuracy.precision,
+                at_until: time_accuracy.until,
                 model: (role == Role::Assistant)
                     .then(|| parser_state.model.clone())
                     .flatten(),
@@ -867,7 +867,7 @@ impl Rollout {
             out.background.push(BackgroundUpdate {
                 result_at: at.map(crate::time::SourceTime::timestamp),
                 result_at_evidence: at.map_or(
-                    polylogue_model::TimeEvidence::UNKNOWN,
+                    polylogue_model::TimeAccuracy::UNKNOWN,
                     crate::time::SourceTime::accuracy,
                 ),
                 reported_duration_ms: None,
@@ -936,7 +936,7 @@ impl Rollout {
                         out.background.push(BackgroundUpdate {
                             result_at: at.map(crate::time::SourceTime::timestamp),
                             result_at_evidence: at.map_or(
-                                polylogue_model::TimeEvidence::UNKNOWN,
+                                polylogue_model::TimeAccuracy::UNKNOWN,
                                 crate::time::SourceTime::accuracy,
                             ),
                             reported_duration_ms: done.duration_ms,
@@ -966,16 +966,16 @@ impl Rollout {
                     offset: record.offset,
                     end: record.offset + record.bytes.len() as u64,
                     message: {
-                        let (at, time_evidence) = crate::time::parts(at);
+                        let (at, time_accuracy) = crate::time::parts(at);
                         Message {
                             id: mid.clone(),
                             session,
                             parent: None,
                             role: Role::Assistant,
                             at,
-                            at_quality: time_evidence.quality,
-                            at_precision: time_evidence.precision,
-                            at_until: time_evidence.until,
+                            at_quality: time_accuracy.quality,
+                            at_precision: time_accuracy.precision,
+                            at_until: time_accuracy.until,
                             model: None,
                             prompt_kind: Some(PromptKind::Harness),
                             blocks,
@@ -1102,7 +1102,7 @@ impl Rollout {
                         out.background.push(BackgroundUpdate {
                             result_at: at.map(crate::time::SourceTime::timestamp),
                             result_at_evidence: at.map_or(
-                                polylogue_model::TimeEvidence::UNKNOWN,
+                                polylogue_model::TimeAccuracy::UNKNOWN,
                                 crate::time::SourceTime::accuracy,
                             ),
                             reported_duration_ms: done.duration_ms,
@@ -1208,7 +1208,7 @@ fn link(
         how: None,
         parent,
         child,
-        at,
+        branch_point: at,
         call_id,
         evidence: evidence.to_owned(),
     };
@@ -1489,7 +1489,7 @@ impl Parser for Rollout {
             && let Some(mut relation) = parser_state.branch_relation.clone()
             && relation.parent != relation.child
         {
-            relation.at = parser_state.branch_point.clone();
+            relation.branch_point = parser_state.branch_point.clone();
             out.links.push(relation);
             parser_state.relation_stated = true;
         }

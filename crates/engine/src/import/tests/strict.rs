@@ -21,7 +21,7 @@ fn unknown_import_refuses_and_explain_stores_nothing() {
         .import_with_options(
             std::slice::from_ref(&path),
             &ImportOptions {
-                format: None,
+                origin: None,
                 explain: true,
                 ..Default::default()
             },
@@ -132,7 +132,7 @@ fn a_refusal_names_the_origin_the_operator_asked_for() {
         .import_with_options(
             std::slice::from_ref(&path),
             &ImportOptions {
-                format: Some("no-such-origin".into()),
+                origin: Some("no-such-origin".into()),
                 ..Default::default()
             },
         )

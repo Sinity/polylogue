@@ -60,7 +60,7 @@ fn a_registered_import_retries_after_restart_without_storing_part_blobs() {
         .import_with_options(
             std::slice::from_ref(&path),
             &ImportOptions {
-                format: Some("claude-code".into()),
+                origin: Some("claude-code".into()),
                 explain: false,
                 ..Default::default()
             },
@@ -105,7 +105,7 @@ fn a_codex_import_retry_reads_only_after_its_committed_checkpoint() {
     let path = home.dir.path().join(name);
     std::fs::write(&path, &original).unwrap();
     let options = ImportOptions {
-        format: Some("codex".into()),
+        origin: Some("codex".into()),
         ..Default::default()
     };
     {
@@ -133,7 +133,7 @@ fn a_codex_import_retry_reads_only_after_its_committed_checkpoint() {
             .parser_checkpoint(
                 &plan.input.id,
                 plan.parser_chain.unwrap(),
-                &origin.reading_version(),
+                &origin.parse_version(),
             )
             .unwrap()
             .unwrap();
@@ -239,7 +239,7 @@ fn file_of_declared_origin_without_parser_is_stored_by_import() {
         .import_with_options(
             std::slice::from_ref(&path),
             &ImportOptions {
-                format: Some("pi".into()),
+                origin: Some("pi".into()),
                 ..Default::default()
             },
         )
@@ -349,7 +349,7 @@ fn line_import_keeps_a_partial_tail_without_duplicate_parts_on_retry() {
             .import_with_options(
                 std::slice::from_ref(&path),
                 &ImportOptions {
-                    format: Some("claude-code".into()),
+                    origin: Some("claude-code".into()),
                     ..Default::default()
                 },
             )
@@ -476,8 +476,8 @@ fn restart_replays_a_registered_import_after_the_original_is_deleted() {
 }
 
 /// Messages whose shown reading is an imported copy of a tool's file.
-const SHOWN_FROM_COPY: &str = "SELECT count(*) AS n FROM message m JOIN reading_message s
-    ON s.message_id = m.id AND s.input_pk = m.input_pk AND s.chain = m.source_chain
+const SHOWN_FROM_COPY: &str = "SELECT count(*) AS n FROM message m JOIN message_parse s
+    ON s.message_pk = m.pk AND s.input_pk = m.input_pk AND s.chain = m.source_chain
     WHERE s.route = 'copy'";
 
 #[test]
@@ -584,7 +584,7 @@ fn repeated_explicit_import_keeps_a_stopped_attempt_until_its_executable_changes
     std::fs::write(&path, &content).unwrap();
     let (mut engine, lock) = engine(&home, 4096);
     let options = ImportOptions {
-        format: Some("claude-code".into()),
+        origin: Some("claude-code".into()),
         ..Default::default()
     };
     fault::arm("parse", "stopped-import", Action::Fail, 0, u32::MAX);

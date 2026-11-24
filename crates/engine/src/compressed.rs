@@ -89,10 +89,10 @@ impl Engine {
         let mut context = self.source_read_context(
             path,
             origin.name,
-            polylogue_store::primary::AcquisitionRoute::NativeCapture,
+            polylogue_store::primary::ReadRoute::NativeCapture,
         );
         let snapshot = self.writer.source_snapshot(context.source.clone())?;
-        context.basis = Some(snapshot.basis.clone());
+        context.base = Some(snapshot.base.clone());
         context.facts = Some(facts);
         let original_context = if compressed {
             Some(self.sampling_context(path, found.origin.name)?)
@@ -102,8 +102,8 @@ impl Engine {
         let has_pending = snapshot.pending.head.is_some();
         if let Some(spooled) = &snapshot.pending.raw
             && let polylogue_store::primary::Capture::Input(input) = &spooled.captured
-            && input.rows.acquisition.as_ref().is_some_and(|source_read| {
-                source_read.route == polylogue_store::primary::AcquisitionRoute::NativeCapture
+            && input.rows.capture_read.as_ref().is_some_and(|source_read| {
+                source_read.route == polylogue_store::primary::ReadRoute::NativeCapture
             })
             && input
                 .raw_range
@@ -359,7 +359,7 @@ impl Engine {
         observation: Observation,
         bytes: Option<PreparedBytes>,
         context: &crate::source_read::SourceReadContext,
-        generation: polylogue_store::primary::SourceGeneration,
+        generation: polylogue_store::primary::ObservedState,
     ) -> PreparedBatch {
         let input = generation.stream().input.clone();
         let length = generation.window().end;
@@ -393,8 +393,8 @@ impl Engine {
                     .into_iter()
                     .collect(),
                 parse: Vec::new(),
-                acquisition: source_read,
-                basis: context.basis.clone(),
+                capture_read: source_read,
+                base: context.base.clone(),
                 release: Default::default(),
             },
             files: bytes.into_iter().collect(),

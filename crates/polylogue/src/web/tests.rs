@@ -847,7 +847,7 @@ fn session_parent_links_are_scoped_and_missing_parent_stays_incomplete() {
         assert_eq!(links[0].parent.to_string(),"claude-code:s1");
         assert_eq!(links[0].child.to_string(),"claude-code:child");
         assert_eq!(links[0].kind,polylogue_model::LinkKind::Fork);
-        assert_eq!(links[0].at.as_ref().unwrap().to_string(),"claude-code:u1");
+        assert_eq!(links[0].branch_point.as_ref().unwrap().to_string(),"claude-code:u1");
         assert_eq!(links[0].evidence,"forkedFrom");
         let (status, _, html) = send_html(&r, "/s/claude-code:orphan?view=tree").await;
         assert_eq!(status, StatusCode::OK, "{html}");

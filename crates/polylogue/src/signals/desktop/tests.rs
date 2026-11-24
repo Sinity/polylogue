@@ -13,8 +13,8 @@ fn fixture() -> crate::test_daemon::TestDaemon {
 }
 
 fn seed(d: &Daemon) -> Notice {
-    let outbox = crate::signals::tests::outbox("deadline-caller");
-    let notice = outbox.metadata.notice.clone();
+    let pending_delivery = crate::signals::tests::pending_delivery("deadline-caller");
+    let notice = pending_delivery.metadata.notice.clone();
     let context = operation(d).unwrap();
     let reader = d.reads.reader().unwrap();
     let attention = local_attention(&reader, &context).unwrap();
@@ -27,7 +27,17 @@ fn seed(d: &Daemon) -> Notice {
         .unwrap();
     let checkpoint = previous.unwrap_or_else(|| initial(d, &context, Some(&attention)).unwrap());
     // This fixture only records a pending delivery; no rule fired it.
-    assert!(persist(d, &context, prior, checkpoint, vec![outbox], vec![]).unwrap());
+    assert!(
+        persist(
+            d,
+            &context,
+            prior,
+            checkpoint,
+            vec![pending_delivery],
+            vec![]
+        )
+        .unwrap()
+    );
     notice
 }
 

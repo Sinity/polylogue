@@ -916,7 +916,7 @@ fn decode_kept(
             .map_err(|error| damaged("shape", &error))?;
         let identity_kind: Option<String> =
             row.get(7).map_err(|error| damaged("identities", &error))?;
-        let native_identity = matches!(shape, Some(polylogue_query::Shape::Rows))
+        let row_identity = matches!(shape, Some(polylogue_query::Shape::Rows))
             && identity_kind.as_deref() == Some("array");
         let metadata: Option<String> = row
             .get(8)
@@ -929,7 +929,7 @@ fn decode_kept(
         let kept = polylogue_query::Kept {
             output_metadata,
             shape,
-            native_identity,
+            row_identity,
             unit,
             columns,
             match_columns,

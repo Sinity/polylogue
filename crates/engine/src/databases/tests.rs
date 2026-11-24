@@ -20,8 +20,8 @@ fn completed_records_wake_the_loop_and_unchanged_sources_need_no_archive_read() 
                 machine: "test-machine".into(),
                 path_bytes: db.as_os_str().as_encoded_bytes().to_vec(),
             },
-            route: polylogue_store::primary::AcquisitionRoute::NativeCapture,
-            basis: None,
+            route: polylogue_store::primary::ReadRoute::NativeCapture,
+            base: None,
             facts: None,
             previous_body: None,
             required_outcome: None,
@@ -132,8 +132,8 @@ fn capture_continues_the_input_at_the_observed_path() {
                     blobs: vec![],
                     length: bytes.len() as u64,
                     parse: vec![],
-                    acquisition: None,
-                    basis: None,
+                    capture_read: None,
+                    base: None,
                     release: Default::default(),
                 },
             )
@@ -214,7 +214,7 @@ fn capture_continues_the_input_at_the_observed_path() {
             .unwrap()[0]["n"],
         1
     );
-    let commit = reader.query("SELECT s.id,r.chain,r.committed FROM reading_session r JOIN session s ON s.id=r.session_id JOIN input_ref i ON i.pk=r.input_pk WHERE i.id='stored-database'", &[]).unwrap();
+    let commit = reader.query("SELECT s.id,r.chain,r.committed FROM session_record r JOIN session s ON s.pk=r.session_pk JOIN input_ref i ON i.pk=r.input_pk WHERE i.id='stored-database'", &[]).unwrap();
     assert_eq!(commit.len(), 1);
     assert_eq!(
         commit[0]["id"],
@@ -237,7 +237,7 @@ fn capture_continues_the_input_at_the_observed_path() {
             .length,
         progress.length
     );
-    assert_eq!(reader.query("SELECT s.id,r.chain,r.committed FROM reading_session r JOIN session s ON s.id=r.session_id JOIN input_ref i ON i.pk=r.input_pk WHERE i.id='stored-database'", &[]).unwrap(), commit);
+    assert_eq!(reader.query("SELECT s.id,r.chain,r.committed FROM session_record r JOIN session s ON s.pk=r.session_pk JOIN input_ref i ON i.pk=r.input_pk WHERE i.id='stored-database'", &[]).unwrap(), commit);
 }
 
 #[test]
@@ -270,8 +270,8 @@ fn a_database_pass_yields_when_its_waiting_parser_has_no_local_work() {
                 blobs: vec![],
                 length: bytes.len() as u64,
                 parse: vec![],
-                acquisition: None,
-                basis: None,
+                capture_read: None,
+                base: None,
                 release: Default::default(),
             },
         )

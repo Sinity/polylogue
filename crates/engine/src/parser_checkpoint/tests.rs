@@ -32,13 +32,13 @@ fn restart_resumes_response_assembly_without_rereading_provider_prefix() {
             .parser_checkpoint(
                 &state.input_id,
                 progress.chain,
-                &state.origin.reading_version(),
+                &state.origin.parse_version(),
             )
             .unwrap()
             .unwrap();
         let checkpoint = stored.checkpoint.unwrap();
         assert_eq!(checkpoint.parsed_upto, prefix);
-        assert!(checkpoint.matches(&state.origin.reading_version(), prefix));
+        assert!(checkpoint.matches(&state.origin.parse_version(), prefix));
     }
     home.append("continuation.jsonl", &fragment("last", "Final fragment."));
     let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
@@ -138,7 +138,7 @@ fn missing_parser_state_reads_the_chain_again_from_its_start() {
     let reader = engine.reads.reader().unwrap();
     let progress = reader.input_progress(&input).unwrap().unwrap();
     assert_eq!(progress.length, prefix + suffix.len() as u64);
-    // docs/archive.md, Reading versions: without its carried state the
+    // docs/archive.md, Parse versions: without its carried state the
     // chain is read from its start, which gives the same reading.
     assert_eq!(progress.parsed_upto, prefix + suffix.len() as u64);
     assert_eq!(
@@ -185,7 +185,7 @@ fn one_call_multiple_capture_steps_only_checkpoints_its_final_cursor() {
     assert!(steps[0].checkpoint.is_none());
     let last = steps[1].checkpoint.as_ref().unwrap();
     assert_eq!(last.parsed_upto, bytes.len() as u64);
-    assert!(last.matches(&origin.reading_version(), bytes.len() as u64));
+    assert!(last.matches(&origin.parse_version(), bytes.len() as u64));
 }
 
 #[test]
@@ -251,7 +251,7 @@ fn declared_registry_keeps_absent_raw_only_origins_valid_and_real_row_dump_versi
     }
     for name in ["llm", "tool-database"] {
         // The shared modules and the row-dump format, in declared order.
-        let expected = "parse=2,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::row_dump::VERSION=2";
+        let expected = "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::row_dump::VERSION=2";
         assert!(
             matches!(contracts.iter().find(|contract| contract.origin()==name), Some(ReadingContract::Expected { version, .. }) if version == expected)
         );
@@ -312,12 +312,13 @@ fn a_response_growing_across_appends_is_joined_from_the_chains_rows() {
     // for each later record (docs/sessions.md, Names and references).
     assert_eq!(
         column(
-            "SELECT s.response_key,s.message_id FROM reading_message s WHERE s.response_key IS NOT NULL"
+            "SELECT s.response_key,m.id FROM message_parse s JOIN message m ON m.pk=s.message_pk
+             WHERE s.response_key IS NOT NULL"
         ),
         [("response-a".to_owned(), "claude-code:first".to_owned())]
     );
     assert_eq!(
-        column("SELECT name,target FROM reading_alias ORDER BY name"),
+        column("SELECT name,target FROM message_alias ORDER BY name"),
         [
             (
                 "claude-code:second".to_owned(),
@@ -333,8 +334,8 @@ fn a_response_growing_across_appends_is_joined_from_the_chains_rows() {
     assert_eq!(
         index
             .query_row(
-                "SELECT count(*) FROM text t
-                 WHERE NOT EXISTS(SELECT 1 FROM reading_text r WHERE r.text_id=t.id)",
+                "SELECT count(*) FROM message_version v
+                 WHERE NOT EXISTS(SELECT 1 FROM message_parse s WHERE s.version_pk=v.pk)",
                 [],
                 |r| r.get::<_, i64>(0)
             )
@@ -604,7 +605,7 @@ fn an_appended_sessionless_event_follows_the_resumed_sessions_response() {
     let reader = engine.reads.reader().unwrap();
     let placed = reader
         .query(
-            "SELECT m.id FROM event e JOIN message m ON m.id=e.after_message_id WHERE e.kind='file_history'",
+            "SELECT m.id FROM event e JOIN message m ON m.pk=e.after_message_pk WHERE e.kind='file_history'",
             &[],
         )
         .unwrap();

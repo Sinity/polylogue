@@ -89,7 +89,7 @@ impl Reader<'_> {
             });
         }
         let message = crate::chain_names::resolved_message(conn, &message)?;
-        let mut statement=conn.prepare("SELECT i.id,s.chain,s.source_start,s.source_end,s.route,(s.input_pk=m.input_pk AND s.chain=m.source_chain),p.reading_version,p.status,p.parsed_upto FROM message m JOIN message_reading s ON s.message_pk=m.pk JOIN input_ref i ON i.pk=s.input_pk LEFT JOIN parse_state p ON p.input_pk=s.input_pk AND p.chain=s.chain WHERE m.id=?1 ORDER BY 6 DESC,i.id,s.chain")?;
+        let mut statement=conn.prepare("SELECT i.id,s.chain,s.source_start,s.source_end,s.route,(s.input_pk=m.input_pk AND s.chain=m.source_chain),p.parse_version,p.status,p.parsed_upto FROM message m JOIN message_parse s ON s.message_pk=m.pk JOIN input_ref i ON i.pk=s.input_pk LEFT JOIN parse_state p ON p.input_pk=s.input_pk AND p.chain=s.chain WHERE m.id=?1 ORDER BY 6 DESC,i.id,s.chain")?;
         let sources = statement
             .query_map([message.to_string()], |row| {
                 <(
@@ -146,15 +146,15 @@ impl Reader<'_> {
                     });
                 }
             }
-            if let (Some(reading_version), Some(status), Some(parsed_upto)) =
+            if let (Some(parse_version), Some(status), Some(parsed_upto)) =
                 (version, status, parsed_upto)
-                && !reading_version.is_empty()
+                && !parse_version.is_empty()
             {
                 if end > start && parsed_upto < end {
                     card.chain.push(ChainStep::Unavailable{reason:"the current reader checkpoint does not cover this record; its original reader version is unavailable".into()});
                 }
                 card.chain.push(ChainStep::ReaderVersion {
-                    reading_version,
+                    parse_version,
                     status,
                     parsed_upto,
                 });

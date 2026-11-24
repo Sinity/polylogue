@@ -134,14 +134,14 @@ impl ExportParser for GeminiApp {
         }
         if e.verb != "Prompted" {
             sink.out.events.push({
-                let (at, time_evidence) = crate::time::parts(e.at);
+                let (at, time_accuracy) = crate::time::parts(e.at);
                 Event {
                     session: Some(sid.clone()),
                     kind: "activity".into(),
                     at,
-                    at_quality: time_evidence.quality,
-                    at_precision: time_evidence.precision,
-                    at_until: time_evidence.until,
+                    at_quality: time_accuracy.quality,
+                    at_precision: time_accuracy.precision,
+                    at_until: time_accuracy.until,
                     after: state.last_message(&sid)?,
                     range: None,
                     data: serde_json::json!({
@@ -222,16 +222,16 @@ fn message(
     blocks: Vec<Block>,
 ) -> Message {
     {
-        let (at, time_evidence) = crate::time::parts(at);
+        let (at, time_accuracy) = crate::time::parts(at);
         Message {
             id,
             session: session.clone(),
             parent: None,
             role,
             at,
-            at_quality: time_evidence.quality,
-            at_precision: time_evidence.precision,
-            at_until: time_evidence.until,
+            at_quality: time_accuracy.quality,
+            at_precision: time_accuracy.precision,
+            at_until: time_accuracy.until,
             model: None,
             prompt_kind: (role == Role::User).then_some(PromptKind::Prose),
             blocks,

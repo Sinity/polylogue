@@ -520,7 +520,7 @@ fn offline_setting_and_chat_writes_keep_own_results() {
     };
     assert!(write_result.pending);
     let prepared = pending_requests(&runtime);
-    let action=prepared.iter().find(|prepared|matches!(&prepared.request.write,polylogue_model::user::UserWrite::ChatEnqueue(action) if action.id==write_result.id)).expect("the exact authored action is durable in the outbox");
+    let action=prepared.iter().find(|prepared|matches!(&prepared.request.write,polylogue_model::user::UserWrite::ChatEnqueue(action) if action.id==write_result.id)).expect("the exact authored action is durable in the pending_delivery");
     assert_eq!(action.outcome.id, write_result.id);
     assert!(
         runtime

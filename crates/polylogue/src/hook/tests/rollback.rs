@@ -31,7 +31,7 @@ fn the_hook_writes_exactly_the_line_shapes_the_rollback_fixture_holds() {
             "head": "1111111111111111111111111111111111111111",
             "root_commits": ["2222222222222222222222222222222222222222"],
         },
-        "native_unavailable": ["branch: empty native value"],
+        "unstated": ["branch: empty native value"],
         "repository": "https://example.invalid/project.git",
         "terminal_identity": {
             "adapter": "kitty", "boot_id": "synthetic-boot", "host": "synthetic-host",

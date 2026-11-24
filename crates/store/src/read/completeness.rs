@@ -58,9 +58,9 @@ impl Reader<'_> {
         let mut unknown = false;
         let mut kept_chains = 0_u64;
         let mut raw_only_chains = 0_u64;
-        // Chains counted by origin, reading version and state, which the
+        // Chains counted by origin, parse version and state, which the
         // writer keeps with each change (`crate::chain_progress`).
-        for (origin, reading_version, state, n) in crate::chain_progress::counts(conn)? {
+        for (origin, parse_version, state, n) in crate::chain_progress::counts(conn)? {
             use crate::chain_progress::State;
             match declared.get(origin.as_str()).copied() {
                 None => {
@@ -76,8 +76,8 @@ impl Reader<'_> {
                     State::NoCheckpoint => {
                         missing.insert(CompletenessReason::MissingCheckpoint);
                     }
-                    _ if &reading_version != version => {
-                        missing.insert(CompletenessReason::ReadingVersionChanged);
+                    _ if &parse_version != version => {
+                        missing.insert(CompletenessReason::ParseVersionChanged);
                     }
                     State::Current => {}
                     State::NoParser => {

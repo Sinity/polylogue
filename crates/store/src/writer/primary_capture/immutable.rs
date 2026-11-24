@@ -7,10 +7,10 @@ impl Inner {
         item: &PreparedBatch,
     ) -> Result<Option<StoredInput>> {
         let batch = &item.batch;
-        let Some(read) = &batch.acquisition else {
+        let Some(read) = &batch.capture_read else {
             return Ok(None);
         };
-        if read.route != crate::primary::AcquisitionRoute::ExplicitImport
+        if read.route != crate::primary::ReadRoute::ExplicitImport
             || batch.input.id != read.hash.to_string()
             || read.range.start != 0
             || read.range.end != batch.length
@@ -18,7 +18,7 @@ impl Inner {
             || !batch.blobs.is_empty()
             || !batch.parse.is_empty()
             || batch.required_outcome.is_some()
-            || batch.basis.is_some()
+            || batch.base.is_some()
         {
             return Ok(None);
         }

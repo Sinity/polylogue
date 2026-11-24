@@ -10,9 +10,9 @@ fn input(id: &str, position: i64) -> Confirmed {
         output_index: 0,
         change: ConfirmedChange::Live(Box::new(Product::Input {
             rows: Box::new(crate::input_rows::InputRows {
-                acquisition: None,
+                capture_read: None,
                 input: id.into(),
-                format: "synthetic".into(),
+                origin: "synthetic".into(),
                 revision: None,
                 extents: Vec::new(),
                 observation: None,

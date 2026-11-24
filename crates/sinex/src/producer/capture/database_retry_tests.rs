@@ -2,18 +2,18 @@ use super::tests::{accepted, source, source_base};
 use super::*;
 use crate::tests::{body, capture, client};
 use polylogue_store::primary::{
-    DatabaseSnapshotToken, RawRange, RawStream, RawStreamRole, SourceGeneration,
+    DatabaseSnapshotToken, ObservedState, RawRange, RawStream, RawStreamRole,
 };
 
 fn database(bytes: &[u8]) -> CapturedInput {
     let mut input = capture(bytes);
     let window = input.raw_range.unwrap();
-    input.generation = Some(SourceGeneration::Database {
+    input.generation = Some(ObservedState::Database {
         stream: RawStream {
             source: source(b"/home/op/state_5.sqlite"),
             input: polylogue_store::InputKey {
                 id: input.rows.input.clone(),
-                format: input.rows.format.clone(),
+                format: input.rows.origin.clone(),
                 route: input.route,
             },
             role: RawStreamRole::DatabaseDump,
@@ -33,9 +33,9 @@ fn prepare(
     root: &std::path::Path,
     mut input: CapturedInput,
     bytes: &[u8],
-    base: polylogue_store::primary::SourceBasis,
+    base: polylogue_store::primary::SourceBase,
 ) -> CaptureResult {
-    input.basis = Some(base.clone());
+    input.base = Some(base.clone());
     sdk.prepare_input_group(
         &CapturePlan {
             intent: blake3::hash(bytes).to_hex().to_string(),
@@ -121,15 +121,13 @@ fn database_retries_do_not_hide_stream_window_or_stale_source_changes() {
         let mut bytes = b"A".as_slice();
         match change {
             "stream" => {
-                let Some(SourceGeneration::Database { stream, .. }) = &mut offered.generation
-                else {
+                let Some(ObservedState::Database { stream, .. }) = &mut offered.generation else {
                     panic!()
                 };
                 stream.namespace = Some("other-stream".into());
             }
             "window" => {
-                let Some(SourceGeneration::Database { window, .. }) = &mut offered.generation
-                else {
+                let Some(ObservedState::Database { window, .. }) = &mut offered.generation else {
                     panic!()
                 };
                 *window = RawRange { start: 0, end: 2 };
@@ -145,7 +143,7 @@ fn database_retries_do_not_hide_stream_window_or_stale_source_changes() {
             _ => unreachable!(),
         }
         let expected_generation = offered.generation.clone();
-        let CaptureResult::UnresolvedBasisConflict { spooled } =
+        let CaptureResult::UnresolvedBaseConflict { spooled } =
             prepare(&sdk, root.path(), offered, bytes, base)
         else {
             panic!("{change} must retain bytes without accepting the changed read")
@@ -154,7 +152,7 @@ fn database_retries_do_not_hide_stream_window_or_stale_source_changes() {
         let page = sdk
             .pending_group_headers(&spooled.identity, None, 1)
             .unwrap();
-        assert_eq!(page.outcome, Some(CaptureOutcome::UnresolvedBasisConflict));
+        assert_eq!(page.outcome, Some(CaptureOutcome::UnresolvedBaseConflict));
         let Capture::Input(kept) = &page.headers[0].captured else {
             panic!()
         };

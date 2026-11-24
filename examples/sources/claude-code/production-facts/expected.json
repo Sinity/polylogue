@@ -105,7 +105,7 @@
     ],
     "links": [
       {
-        "at": "claude-code:z9",
+        "branch_point": "claude-code:z9",
         "child": "claude-code:s4",
         "evidence": "forkedFrom",
         "kind": "fork",

@@ -33,7 +33,7 @@ impl ChainLayouts {
         conn.execute_batch("CREATE TABLE layout(ordinal INTEGER PRIMARY KEY,chain INTEGER UNIQUE,length INTEGER,version TEXT,status TEXT,parsed INTEGER,at_length INTEGER);
             CREATE TABLE extent(chain INTEGER,offset INTEGER,length INTEGER,blob BLOB,blob_offset INTEGER,PRIMARY KEY(chain,offset)) WITHOUT ROWID; BEGIN;")?;
         let mut statement = source.prepare(&schema.sql(
-            "SELECT c.chain,c.length,p.reading_version,p.status,p.parsed_upto,p.at_length
+            "SELECT c.chain,c.length,p.parse_version,p.status,p.parsed_upto,p.at_length
              FROM (SELECT chain,max(length) AS length FROM @source.revision WHERE input=?1 GROUP BY chain) c
              LEFT JOIN input_ref i ON i.id=?1 LEFT JOIN parse_state p ON p.input_pk=i.pk AND p.chain=c.chain ORDER BY c.chain",
         ))?;
@@ -101,9 +101,9 @@ impl ChainLayouts {
             |row| {
                 let version: Option<String> = row.get(2)?;
                 let reading = version
-                    .map(|reading_version| -> rusqlite::Result<_> {
+                    .map(|parse_version| -> rusqlite::Result<_> {
                         Ok(StoredParseState {
-                            reading_version,
+                            parse_version,
                             status: row.get(3)?,
                             parsed_upto: row.get(4)?,
                             at_length: row.get(5)?,

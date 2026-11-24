@@ -1,7 +1,7 @@
 use super::*;
 use crate::completion::{CatalogReader, CatalogWriter, Metadata};
 use crate::fixture::writer::{WriterArchive, prose};
-use crate::writer::{ChainReading, InputKey, ParseStep};
+use crate::writer::{ChainParse, InputKey, ParseStep};
 use polylogue_model::{Output, RecordCounts, RecordOutcome};
 
 fn remove_reading(archive: &WriterArchive, input: &str) {
@@ -21,8 +21,8 @@ fn remove_reading(archive: &WriterArchive, input: &str) {
         &RecordOutcome::skipped("replacement has no session facts"),
     );
     let mut step = ParseStep::new(Output::default(), counts, 0..progress.length, true);
-    step.reading_version = "completion-removal=2".into();
-    let mut reading = ChainReading::new().unwrap();
+    step.parse_version = "completion-removal=2".into();
+    let mut reading = ChainParse::new().unwrap();
     reading.push(&mut step).unwrap();
     archive
         .writer

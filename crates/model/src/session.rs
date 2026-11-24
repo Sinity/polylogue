@@ -105,8 +105,8 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn time_evidence(&self) -> crate::TimeEvidence {
-        crate::TimeEvidence {
+    pub fn time_accuracy(&self) -> crate::TimeAccuracy {
+        crate::TimeAccuracy {
             quality: self.started_quality,
             precision: self.started_precision,
             until: self.started_until,
@@ -116,8 +116,8 @@ impl Session {
     pub fn set_time(
         &mut self,
         at: Option<Timestamp>,
-        accuracy: crate::TimeEvidence,
-    ) -> Result<(), crate::TimeEvidenceError> {
+        accuracy: crate::TimeAccuracy,
+    ) -> Result<(), crate::TimeAccuracyError> {
         accuracy.validate(at)?;
         self.started = at;
         self.started_quality = accuracy.quality;
@@ -173,8 +173,8 @@ impl Session {
     pub fn offer_start(
         &mut self,
         at: Timestamp,
-        accuracy: crate::TimeEvidence,
-    ) -> Result<bool, crate::TimeEvidenceError> {
+        accuracy: crate::TimeAccuracy,
+    ) -> Result<bool, crate::TimeAccuracyError> {
         accuracy.validate(Some(at))?;
         if self.started.is_none_or(|current| at < current) {
             self.set_time(Some(at), accuracy)?;

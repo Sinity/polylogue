@@ -77,7 +77,7 @@ pub(crate) fn client(root: &std::path::Path) -> Sinex {
 pub(crate) fn capture(bytes: &[u8]) -> CapturedInput {
     serde_json::from_value(json!({
         "input":{"origin":"codex","path":"/home/op/session.jsonl","host":"fixture-host"},
-        "rows":{"input":"input-x","format":"codex","revision":{"number":1,"produced":"file","chain":1,"length":bytes.len()},"extents":[{"chain":1,"offset":0,"length":bytes.len(),"blob":BlobHash::of(bytes),"blob_offset":0}]},
+        "rows":{"input":"input-x","origin":"codex","revision":{"number":1,"produced":"file","chain":1,"length":bytes.len()},"extents":[{"chain":1,"offset":0,"length":bytes.len(),"blob":BlobHash::of(bytes),"blob_offset":0}]},
         "index":0,"previous":null,"hash":BlobHash::of(bytes),"length":bytes.len(),"raw_range":{"start":0,"end":bytes.len()},"group":null,"route":"live"
     })).unwrap()
 }

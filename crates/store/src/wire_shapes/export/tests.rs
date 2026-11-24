@@ -28,7 +28,7 @@ fn callback(ordinal: u64, delivery_source: ExportDeliverySource, previous: BlobH
         _ => 0,
     };
     let mut step = ParseStep::new(Output::default(), RecordCounts::default(), 0..end, complete);
-    step.reading_version = "crate::export::VERSION=2".into();
+    step.parse_version = "crate::export::VERSION=2".into();
     step.reset = ordinal == 0;
     if matches!(delivery_source, ExportDeliverySource::Item { .. }) {
         step.counts.records = 1;
@@ -220,7 +220,7 @@ fn unreadable_header_keeps_diagnostics_without_a_cursor_and_new_length_can_resta
     );
     assert_eq!(reading.status(), CoverageStatus::Unreadable);
     assert_eq!(reading.parsed_upto, 0);
-    conn.execute_batch("CREATE TABLE parse_state(input_pk INTEGER,chain INTEGER,reading_version TEXT,status TEXT,parsed_upto INTEGER); INSERT INTO parse_state VALUES(1,1,'crate::export::VERSION=2','parsing',0);").unwrap();
+    conn.execute_batch("CREATE TABLE parse_state(input_pk INTEGER,chain INTEGER,parse_version TEXT,status TEXT,parsed_upto INTEGER); INSERT INTO parse_state VALUES(1,1,'crate::export::VERSION=2','parsing',0);").unwrap();
     let report = read(&conn, Scope::current(Some("fixture"))).unwrap();
     assert_eq!(report.coverage.len(), 1);
     assert_eq!(report.coverage[0].status(), CoverageStatus::Unreadable);

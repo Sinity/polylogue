@@ -22,7 +22,7 @@ pub struct Reading {
     pub delivery: Option<polylogue_model::batch::ExportDelivery>,
     pub input: InputKey,
     pub chain: i64,
-    pub reading_version: String,
+    pub parse_version: String,
     pub start: u64,
     pub parsed_upto: u64,
     pub progress: polylogue_model::batch::StepProgress,
@@ -40,7 +40,7 @@ impl Reading {
             delivery: step.delivery,
             input: input.clone(),
             chain,
-            reading_version: step.reading_version.clone(),
+            parse_version: step.parse_version.clone(),
             start: step.start,
             parsed_upto: step.parsed_upto,
             progress: step.progress.clone(),
@@ -64,7 +64,7 @@ pub struct ToolCall {
     pub source_start: u64,
     pub source_end: u64,
     pub at: Option<polylogue_model::Timestamp>,
-    pub at_evidence: polylogue_model::TimeEvidence,
+    pub at_evidence: polylogue_model::TimeAccuracy,
     pub call_id: Option<String>,
     pub tool: Option<String>,
     pub action: polylogue_model::ToolAction,
@@ -174,9 +174,9 @@ pub enum Product {
         reading: Reading,
         facts: Box<MessageRow>,
         order: Option<u64>,
-        projection: Option<polylogue_model::bundle::MessageProjection>,
+        projection: Option<polylogue_model::bundle::ShownBlocks>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        native_fields: Option<Vec<polylogue_model::HookFieldClaim>>,
+        stated_fields: Option<Vec<polylogue_model::ParsedHookField>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         declared_injections: Option<Vec<polylogue_model::injection::InjectionEvidence>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -327,17 +327,17 @@ pub struct CapturedInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_range: Option<super::RawRange>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub generation: Option<super::SourceGeneration>,
+    pub generation: Option<super::ObservedState>,
     /// The checked end of the source, independent of reaching the last group
     /// header.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_total: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raw_predecessor: Option<String>,
+    pub previous_revision: Option<String>,
     /// None means an older record with an unknown source base, never a freshly
     /// observed source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub basis: Option<super::SourceBasis>,
+    pub base: Option<super::SourceBase>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -398,14 +398,14 @@ pub(crate) fn hidden_messages(
     }
     if !index.exists(
         "SELECT EXISTS(SELECT 1 FROM confirmed_event WHERE input=?1 AND chain=?2
-          AND reading_version=?3 AND state!='live' AND reference GLOB 'message:*')",
-        rusqlite::params![input.id, chain, step.reading_version],
+          AND parse_version=?3 AND state!='live' AND reference GLOB 'message:*')",
+        rusqlite::params![input.id, chain, step.parse_version],
     )? {
         return Ok(hidden);
     }
     let mut state = index.prepare_cached(
         "SELECT count(*)>0 AND count(*) FILTER (WHERE state='live')=0
-         FROM confirmed_event WHERE input=?1 AND chain=?2 AND reading_version=?3
+         FROM confirmed_event WHERE input=?1 AND chain=?2 AND parse_version=?3
           AND reference=?4 AND value_hash=?5",
     )?;
     let messages = parse(input, chain, None, step)?
@@ -417,7 +417,7 @@ pub(crate) fn hidden_messages(
             rusqlite::params![
                 input.id,
                 chain,
-                step.reading_version,
+                step.parse_version,
                 record.reference,
                 &record.value_hash.0[..]
             ],
@@ -485,7 +485,7 @@ pub fn parse(
                         source_start: row.offset,
                         source_end: row.end,
                         at: row.message.at,
-                        at_evidence: row.message.time_evidence(),
+                        at_evidence: row.message.time_accuracy(),
                         call_id: call_id.clone(),
                         tool: tool.clone(),
                         action: *action,
@@ -509,7 +509,7 @@ pub fn parse(
                 facts: Box::new(facts),
                 order: message_order.remove(&index),
                 projection: block_selections.remove(&index),
-                native_fields: hook_fields.remove(&index),
+                stated_fields: hook_fields.remove(&index),
                 declared_injections: declared_injections.remove(&index),
                 declared_attachment_bindings: declared_attachment_bindings.remove(&index),
             }),

@@ -130,7 +130,7 @@ pub(crate) fn stored_time(unit: Unit, field: &str, a: &Aliases) -> Option<Stored
         (Events, "at") => ("{r}.at", "{r}.fields", TimeStorage::Event),
         (Documents, "source_time") => (
             "{r}.source_time",
-            "(SELECT {r}_time.time FROM reading_document {r}_time WHERE {r}_time.document_id={r}.id AND {r}_time.input_pk={r}.input_pk AND {r}_time.chain={r}.source_chain)",
+            "(SELECT {r}_time.time FROM document_parse {r}_time WHERE {r}_time.document_pk={r}.pk AND {r}_time.input_pk={r}.input_pk AND {r}_time.chain={r}.source_chain AND {r}_time.shown=1)",
             TimeStorage::Tuple,
         ),
         _ => return None,
@@ -386,7 +386,7 @@ pub fn rule(id: FieldId) -> Rule {
         DocumentsSourceTime => Rule::NONE.sql("{r}.source_time"),
         DocumentsSince => Rule::NONE.custom(custom::since),
         DocumentsUntil => Rule::NONE.custom(custom::until),
-        DocumentsVersions => Rule::NONE.sql("(SELECT count(DISTINCT ds.hash) FROM reading_document ds WHERE ds.document_id={r}.id)"),
+        DocumentsVersions => Rule::NONE.sql("(SELECT count(DISTINCT ds.version_hash) FROM document_parse ds WHERE ds.document_pk={r}.pk)"),
         SessionsId => Rule::NONE.sql("{s}.id"),
         SessionsOrigin => Rule::NONE.sql("{s}.origin"),
         SessionsPhysical => Rule::NONE.sql("1").custom(custom::physical),
@@ -402,7 +402,7 @@ pub fn rule(id: FieldId) -> Rule {
         // Gone: an export that lists every conversation of the session's account
         // (one input, or every input of its import) holds messages newer than the
         // session's last activity and does not hold the session.
-        SessionsSource => Rule::NONE.sql("CASE WHEN {s}.stub = 1 THEN 'missing' WHEN EXISTS(SELECT 1 FROM export_reading {s}_e JOIN input_ref {s}_ei ON {s}_ei.pk={s}_e.input_pk WHERE {s}_e.origin={s}.origin AND {s}_e.latest_at>{s}.last_activity_at AND NOT EXISTS(SELECT 1 FROM reading_session {s}_p JOIN input_ref {s}_pi ON {s}_pi.pk={s}_p.input_pk WHERE {s}_p.session_id={s}.id AND ({s}_pi.pk={s}_e.input_pk OR {s}_pi.id IN (SELECT {s}_m.input FROM import_member {s}_m JOIN import_member {s}_x ON {s}_x.import_id={s}_m.import_id WHERE {s}_x.input={s}_ei.id)))) THEN 'gone' ELSE 'present' END"),
+        SessionsSource => Rule::NONE.sql("CASE WHEN {s}.stub = 1 THEN 'missing' WHEN EXISTS(SELECT 1 FROM export_reading {s}_e JOIN input_ref {s}_ei ON {s}_ei.pk={s}_e.input_pk WHERE {s}_e.origin={s}.origin AND {s}_e.latest_at>{s}.last_activity_at AND NOT EXISTS(SELECT 1 FROM parsed {s}_p JOIN input_ref {s}_pi ON {s}_pi.pk={s}_p.input_pk WHERE {s}_p.session_pk={s}.pk AND ({s}_pi.pk={s}_e.input_pk OR {s}_pi.id IN (SELECT {s}_m.input FROM import_member {s}_m JOIN import_member {s}_x ON {s}_x.import_id={s}_m.import_id WHERE {s}_x.input={s}_ei.id)))) THEN 'gone' ELSE 'present' END"),
         SessionsLive => Rule::NONE.custom(custom::live).sql_clock(sessions_live),
         SessionsWaiting => Rule::NONE.custom(custom::waiting).sql_clock(sessions_waiting),
         SessionsRunning => Rule::NONE.custom(custom::running).sql_clock(sessions_running),
@@ -895,7 +895,7 @@ pub use crate::annotations::sql::{current_annotation, live_annotation, withdrawn
 /// that chain long enough to cover those records.
 pub fn first_seen_of(m: &str) -> String {
     format!(
-        "(SELECT min(fo.seen_at) FROM message_reading fs JOIN input_ref fi ON fi.pk = fs.input_pk \
+        "(SELECT min(fo.seen_at) FROM message_parse fs JOIN input_ref fi ON fi.pk = fs.input_pk \
          JOIN source_revision fr ON fr.input = fi.id AND fr.chain = fs.chain \
          AND fr.length > fs.source_start AND fr.length >= fs.source_end \
          JOIN source_observation fo ON fo.input = fr.input AND fo.revision = fr.number \
@@ -905,7 +905,7 @@ pub fn first_seen_of(m: &str) -> String {
 
 /// A stored `unknown` call with no result that the session's live state
 /// names as its open call: the `pending` outcome, decided when read.
-pub(crate) const OPEN_CALL: &str = "({t}.result_message_id IS NULL AND {t}.outcome = 'unknown' \
+pub(crate) const OPEN_CALL: &str = "({t}.result_block_pk IS NULL AND {t}.outcome = 'unknown' \
      AND coalesce(json_extract({s}.live_facts, '$.open_call.call_id') = {t}.call_id, 0))";
 
 pub(crate) fn call_outcome(a: &Aliases) -> String {
@@ -922,7 +922,7 @@ fn message_first_seen(a: &Aliases) -> String {
 
 fn session_first_seen(a: &Aliases) -> String {
     format!(
-        "(SELECT min(fo.seen_at) FROM message fm JOIN message_reading fs ON fs.message_pk = fm.pk \
+        "(SELECT min(fo.seen_at) FROM message fm JOIN message_parse fs ON fs.message_pk = fm.pk \
          JOIN input_ref fi ON fi.pk = fs.input_pk \
          JOIN source_revision fr ON fr.input = fi.id AND fr.chain = fs.chain \
          AND fr.length > fs.source_start AND fr.length >= fs.source_end \
@@ -956,10 +956,9 @@ pub fn hidden(s: &str) -> String {
 /// The session and every session below it through structural links.
 pub fn descendants(s: &str) -> String {
     format!(
-        "WITH RECURSIVE tr(pk) AS (SELECT {s}.pk UNION SELECT lc.pk FROM session_link l \
+        "WITH RECURSIVE tr(pk) AS (SELECT {s}.pk UNION SELECT l.child_pk FROM session_link l \
          JOIN session lp ON lp.id = l.parent_id JOIN tr ON tr.pk = lp.pk \
-         JOIN session lc ON lc.id = l.child_id \
-         WHERE l.kind IN ({STRUCTURAL_KINDS})) SELECT pk FROM tr"
+         WHERE l.kind IN ({STRUCTURAL_KINDS}) AND l.child_pk IS NOT NULL) SELECT pk FROM tr"
     )
 }
 

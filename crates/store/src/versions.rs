@@ -1,0 +1,609 @@
+//! Packed readings and their shared text. Source rows choose what is shown.
+use crate::ResultExt as _;
+use crate::{Result, encoding};
+use polylogue_model::{BlobHash, Block, Message, bundle::ShownBlocks};
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::de::DeserializeOwned;
+use std::collections::BTreeMap;
+
+#[cfg(test)]
+mod tests;
+
+/// Each kind declares its source key, stored payload and shown-version order.
+#[derive(Clone, Copy)]
+pub(crate) enum VersionKind {
+    Message,
+    Document,
+    Event,
+    Link,
+}
+
+impl VersionKind {
+    pub(crate) const ALL: [Self; 4] = [Self::Message, Self::Document, Self::Event, Self::Link];
+
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Message => "message",
+            Self::Document => "document",
+            Self::Event => "event",
+            Self::Link => "link",
+        }
+    }
+
+    fn content(self) -> bool {
+        matches!(self, Self::Message | Self::Document)
+    }
+
+    pub(crate) fn retract(self, conn: &Connection, input: i64, chain: i64) -> Result<()> {
+        let name = self.name();
+        conn.prepare_cached(&format!(
+            "DELETE FROM {name}_parse WHERE input_pk=?1 AND chain=?2"
+        ))?
+        .execute(params![input, chain])?;
+        Ok(())
+    }
+}
+
+pub(crate) struct TextRows<'a> {
+    pub packed: &'a crate::text_rows::PreparedTexts,
+    pub texts: &'a crate::text_rows::TextIds,
+    pub membership: Option<&'a crate::text_rows::NewMembership<'a>>,
+    pub upkeep: &'a crate::writer::resolve::IndexUpkeep,
+}
+
+pub(crate) fn store_document(
+    conn: &Connection,
+    hash: &[u8],
+    body: &[u8],
+    blocks: &[Block],
+    texts: &[Option<[u8; 32]>],
+    text_rows: TextRows<'_>,
+) -> Result<()> {
+    store_value(
+        conn,
+        VersionKind::Document,
+        ValueRows {
+            hash,
+            body,
+            blocks,
+            texts,
+        },
+        text_rows,
+        false,
+    )
+    .map(drop)
+}
+
+struct ValueRows<'a> {
+    hash: &'a [u8],
+    body: &'a [u8],
+    blocks: &'a [Block],
+    texts: &'a [Option<[u8; 32]>],
+}
+
+/// Resolve a canonical hash once at the boundary of the internal row graph.
+pub(crate) fn message_key(conn: &Connection, hash: &[u8]) -> Result<i64> {
+    Ok(conn
+        .prepare_cached("SELECT pk FROM message_version WHERE version_hash=?1")?
+        .query_row([hash], |row| row.get(0))?)
+}
+
+/// The body and text references written by this registration, if it changed
+/// the stored payload. An ignored duplicate validates nothing new.
+struct StoredValue {
+    message_pk: Option<i64>,
+    text_ids: Option<BTreeMap<usize, i64>>,
+}
+
+/// Keys from this registration.
+pub(crate) struct RegisteredMessage {
+    pk: i64,
+    text_ids: Option<BTreeMap<usize, i64>>,
+}
+
+impl RegisteredMessage {
+    pub fn pk(&self) -> i64 {
+        self.pk
+    }
+
+    pub fn text_ids(&self) -> Option<&BTreeMap<usize, i64>> {
+        self.text_ids.as_ref()
+    }
+}
+
+/// Writes one version's body, its text references and its blob references
+/// for `kind`, and returns the keys the writer needs. With `replace` an
+/// existing version's body is overwritten (and its text references rebuilt);
+/// without it an existing version is left as it is and nothing more is written.
+fn store_value(
+    conn: &Connection,
+    kind: VersionKind,
+    ValueRows {
+        hash,
+        body,
+        blocks,
+        texts,
+    }: ValueRows<'_>,
+    text_rows: TextRows<'_>,
+    replace: bool,
+) -> Result<StoredValue> {
+    let TextRows {
+        packed,
+        texts: identities,
+        membership,
+        upkeep,
+    } = text_rows;
+    let name = kind.name();
+    let (inserted, key, column) = if matches!(kind, VersionKind::Message) {
+        let pk = if let Some(keys) = upkeep.key_maps() {
+            match keys.message_version(conn, hash)? {
+                Some(pk) => pk,
+                None => {
+                    conn.prepare_cached("INSERT INTO message_version(version_hash) VALUES(?1)")?
+                        .execute([hash])?;
+                    let pk = conn.last_insert_rowid();
+                    keys.add_message_version(hash, pk)?;
+                    pk
+                }
+            }
+        } else {
+            let inserted = conn
+                .prepare_cached("INSERT OR IGNORE INTO message_version(version_hash) VALUES(?1)")?
+                .execute([hash])?;
+            if inserted == 1 {
+                conn.last_insert_rowid()
+            } else {
+                message_key(conn, hash)?
+            }
+        };
+        let sql = if replace {
+            "INSERT INTO message_version_body(version_pk,body) VALUES(?1,?2)
+             ON CONFLICT(version_pk) DO UPDATE SET body=excluded.body WHERE body IS NOT excluded.body"
+        } else {
+            "INSERT OR IGNORE INTO message_version_body(version_pk,body) VALUES(?1,?2)"
+        };
+        (
+            conn.prepare_cached(sql)?.execute(params![pk, body])?,
+            rusqlite::types::Value::Integer(pk),
+            "version_pk",
+        )
+    } else {
+        let sql = if replace {
+            format!("INSERT INTO {name}_version(version_hash,body) VALUES(?1,?2)
+                ON CONFLICT(version_hash) DO UPDATE SET body=excluded.body WHERE body IS NOT excluded.body")
+        } else {
+            format!("INSERT OR IGNORE INTO {name}_version(version_hash,body) VALUES(?1,?2)")
+        };
+        (
+            conn.prepare_cached(&sql)?.execute(params![hash, body])?,
+            rusqlite::types::Value::Blob(hash.to_vec()),
+            "version_hash",
+        )
+    };
+    let pk = match key {
+        rusqlite::types::Value::Integer(pk) => Some(pk),
+        _ => None,
+    };
+    if inserted == 0 {
+        return Ok(StoredValue {
+            message_pk: pk,
+            text_ids: None,
+        });
+    }
+    let mut text_ids = pk.map(|_| BTreeMap::new());
+    if replace {
+        conn.prepare_cached(&format!(
+            "DELETE FROM {name}_version_text WHERE {column}=?1"
+        ))?
+        .execute([&key])?;
+    }
+    let mut text = conn.prepare_cached(&format!(
+        "INSERT INTO {name}_version_text({column},idx,text_id) VALUES(?1,?2,?3)"
+    ))?;
+    for (idx, hash) in texts.iter().enumerate() {
+        if let Some(hash) = hash {
+            let id = identities.resolve(conn, hash, packed.get(hash), membership)?;
+            text.execute(params![key, idx as i64, id])?;
+            if let Some(ids) = &mut text_ids {
+                ids.insert(idx, id);
+            }
+        }
+    }
+    let mut blob = conn.prepare_cached(&format!(
+        "INSERT OR IGNORE INTO {name}_version_blob({column},blob_hash) VALUES(?1,?2)"
+    ))?;
+    for block in blocks {
+        for attachment in block.attachments() {
+            if let Some(hash) = attachment.blob {
+                blob.execute(params![key, hash.0.as_slice()])?;
+            }
+        }
+    }
+    Ok(StoredValue {
+        message_pk: pk,
+        text_ids,
+    })
+}
+
+pub(crate) fn store_message<'a>(
+    conn: &'a Connection,
+    message: &'a Message,
+    prepared: &'a encoding::PreparedMessage,
+    text_rows: TextRows<'_>,
+    replace: bool,
+    committed: Option<u64>,
+) -> Result<RegisteredMessage> {
+    if prepared.id != message.id {
+        return Err(crate::StoreError::Invalid(
+            "prepared version has another message identity".into(),
+        ));
+    }
+    prepared.block_selection.validate(message.blocks.len())?;
+    if prepared.hash != prepared.block_selection.source_version.0 {
+        return Err(polylogue_model::bundle::BundleError::SourceVersionMismatch.into());
+    }
+    let stored = store_value(
+        conn,
+        VersionKind::Message,
+        ValueRows {
+            hash: &prepared.hash,
+            body: &prepared.body,
+            blocks: &message.blocks,
+            texts: &prepared.texts,
+        },
+        text_rows,
+        replace,
+    )?;
+    let pk = stored
+        .message_pk
+        .expect("message versions have integer keys");
+    let layout = message_layout(&prepared.block_selection)?;
+    conn.prepare_cached(
+        "INSERT INTO message_block_selection(version_pk,layout,committed) VALUES (?1,?2,?3)
+         ON CONFLICT(version_pk) DO UPDATE SET layout=excluded.layout,
+         committed=CASE WHEN message_block_selection.committed IS NULL THEN excluded.committed
+             WHEN excluded.committed IS NULL THEN message_block_selection.committed
+             ELSE max(message_block_selection.committed,excluded.committed) END
+         WHERE layout IS NOT excluded.layout OR (excluded.committed IS NOT NULL
+             AND (message_block_selection.committed IS NULL OR excluded.committed>message_block_selection.committed))",
+    )?
+    .execute(params![
+            pk,
+            layout,
+            committed
+                .map(i64::try_from)
+                .transpose()
+                .or_invalid("message commit position exceeds SQLite's integer range")?
+    ])?;
+    Ok(RegisteredMessage {
+        pk,
+        text_ids: stored.text_ids,
+    })
+}
+
+/// Makes a registered message version a candidate for deletion before the
+/// commit ([`remove_unreferenced`]): the caller registered it without a
+/// source row choosing it.
+pub(crate) fn unreferenced_message(conn: &Connection, pk: i64) -> Result<()> {
+    conn.prepare_cached(
+        "INSERT OR IGNORE INTO temp.unreferenced_value(kind,value_pk) VALUES ('message',?1)",
+    )?
+    .execute([pk])?;
+    Ok(())
+}
+
+pub(crate) fn message_layout(block_selection: &ShownBlocks) -> Result<Vec<u8>> {
+    Ok(serde_json::to_vec(&(
+        block_selection.block_count,
+        &block_selection.block_ordinals,
+    ))?)
+}
+
+pub(crate) fn read_document(conn: &Connection, hash: &[u8]) -> Result<polylogue_model::Document> {
+    let body: Vec<u8> = conn
+        .prepare_cached("SELECT body FROM document_version WHERE version_hash=?1")?
+        .query_row([hash], |row| row.get(0))
+        .optional()?
+        .ok_or_else(|| {
+            let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+            crate::StoreError::NotFound(format!("document version {hex}"))
+        })?;
+    read_body(conn, "document", &hash, &body)
+}
+
+fn read_body<T: DeserializeOwned>(
+    conn: &Connection,
+    kind: &str,
+    key: &dyn rusqlite::ToSql,
+    body: &[u8],
+) -> Result<T> {
+    let mut value: serde_json::Value = encoding::unpack_json(body)?;
+    let column = if kind == "message" {
+        "version_pk"
+    } else {
+        "version_hash"
+    };
+    let mut statement = conn.prepare_cached(&format!(
+        "SELECT v.idx,g.body,t.start,t.length FROM {kind}_version_text v JOIN text t ON t.id=v.text_id
+         JOIN text_group g ON g.id=t.group_id WHERE v.{column}=?1 ORDER BY v.idx"
+    ))?;
+    let mut rows = statement.query([key])?;
+    while let Some(row) = rows.next()? {
+        let idx: i64 = row.get(0)?;
+        let text = crate::text_rows::joined(row, 1)?;
+        let block = value
+            .get_mut("blocks")
+            .and_then(|blocks| blocks.get_mut(idx as usize))
+            .ok_or_else(|| {
+                crate::StoreError::stored(0, "a stored text names a block the body lacks")
+            })?;
+        let field = if block.get("output").is_some() {
+            "output"
+        } else if block.get("written_text").is_some() {
+            "written_text"
+        } else {
+            "text"
+        };
+        block[field] = text.into();
+    }
+    Ok(serde_json::from_value(value)?)
+}
+
+type MessageRow = (Option<Vec<u8>>, Option<Vec<u8>>, i64);
+
+/// The value and its block positions belong to the caller's one read snapshot.
+pub(crate) fn read_message(
+    conn: &Connection,
+    hash: &[u8],
+) -> Result<Option<(Message, ShownBlocks)>> {
+    let stored = conn
+        .query_row(
+            "SELECT b.body,p.layout,v.pk FROM message_version v
+         LEFT JOIN message_version_body b ON b.version_pk=v.pk
+         LEFT JOIN message_block_selection p ON p.version_pk=v.pk WHERE v.version_hash=?1",
+            [hash],
+            |row| MessageRow::try_from(row),
+        )
+        .optional()?;
+    decode_message(conn, hash, stored)
+}
+
+/// Validate stored content using an already resolved row key. A build keeps
+/// the natural-key index deferred, so its writer must not resolve the hash again.
+pub(crate) fn read_message_by_key(
+    conn: &Connection,
+    pk: i64,
+    hash: &[u8],
+) -> Result<Option<(Message, ShownBlocks)>> {
+    let stored = conn
+        .prepare_cached(
+            "SELECT b.body,p.layout,v.pk FROM message_version v
+         LEFT JOIN message_version_body b ON b.version_pk=v.pk
+         LEFT JOIN message_block_selection p ON p.version_pk=v.pk
+         WHERE v.pk=?1 AND v.version_hash=?2",
+        )?
+        .query_row(params![pk, hash], |row| MessageRow::try_from(row))
+        .optional()?;
+    decode_message(conn, hash, stored)
+}
+
+fn decode_message(
+    conn: &Connection,
+    hash: &[u8],
+    stored: Option<MessageRow>,
+) -> Result<Option<(Message, ShownBlocks)>> {
+    let Some((body, layout, pk)) = stored else {
+        return Ok(None);
+    };
+    let body = body.ok_or_else(|| {
+        crate::StoreError::Invalid("stored message version has no payload".into())
+    })?;
+    let message: Message = read_body(conn, "message", &pk, &body)?;
+    let block_selection = message_block_selection(hash, layout.as_deref(), message.blocks.len())?;
+    block_selection.validate(message.blocks.len())?;
+    if block_selection.block_count == message.blocks.len() as u64
+        && message.content_hash()? != block_selection.source_version
+    {
+        return Err(polylogue_model::bundle::BundleError::SourceVersionMismatch.into());
+    }
+    Ok(Some((message, block_selection)))
+}
+
+pub(crate) fn message_block_selection(
+    hash: &[u8],
+    layout: Option<&[u8]>,
+    blocks: usize,
+) -> Result<ShownBlocks> {
+    let source_version = BlobHash(hash.try_into().map_err(|_| {
+        crate::StoreError::Invalid("a message source version is not a BLAKE3 hash".into())
+    })?);
+    let (block_count, block_ordinals) = match layout {
+        Some(layout) => encoding::read_json::<(u64, Vec<u64>)>(layout)?,
+        None => (blocks as u64, (0..blocks as u64).collect()),
+    };
+    let block_selection = ShownBlocks {
+        source_version,
+        block_count,
+        block_ordinals,
+    };
+    block_selection.validate(block_selection.block_ordinals.len())?;
+    Ok(block_selection)
+}
+
+/// Records, for the connection's current transaction, every version body,
+/// value and text whose reference a statement removed, so
+/// [`remove_unreferenced`] can delete those left without any before the
+/// transaction commits. Temporary: the candidates belong to one connection's
+/// transaction and roll back with it, and nothing is kept between
+/// transactions or across a restart.
+const UNREFERENCED: &str = "
+CREATE TEMP TABLE IF NOT EXISTS unreferenced_version(
+  kind TEXT NOT NULL, version_hash BLOB NOT NULL, PRIMARY KEY(kind,version_hash)) WITHOUT ROWID;
+CREATE TEMP TABLE IF NOT EXISTS unreferenced_value(
+  kind TEXT NOT NULL, value_pk INTEGER NOT NULL, PRIMARY KEY(kind,value_pk)) WITHOUT ROWID;
+CREATE TEMP TABLE IF NOT EXISTS unreferenced_text(text_id INTEGER PRIMARY KEY);
+";
+
+/// One trigger per reference column. An UPSERT's conflict policy can override
+/// a trigger's own, so each insert selects only absent keys.
+fn reference_triggers() -> String {
+    let mut sql = String::from(UNREFERENCED);
+    let mut trigger = |name: &str, table: &str, column: &str, target: &str, kind: Option<&str>| {
+        let (columns, key) = match kind {
+            Some(kind) => (
+                format!("'{kind}',OLD.{column}"),
+                format!("kind='{kind}' AND {}=OLD.{column}", target_key(target)),
+            ),
+            None => (format!("OLD.{column}"), format!("text_id=OLD.{column}")),
+        };
+        let insert = format!(
+            "INSERT INTO {target} SELECT {columns} WHERE OLD.{column} IS NOT NULL
+               AND NOT EXISTS(SELECT 1 FROM {target} WHERE {key});"
+        );
+        sql.push_str(&format!(
+            "CREATE TEMP TRIGGER IF NOT EXISTS {name}_removed AFTER DELETE ON {table}
+             BEGIN {insert} END;
+             CREATE TEMP TRIGGER IF NOT EXISTS {name}_changed AFTER UPDATE OF {column} ON {table}
+             WHEN OLD.{column} IS NOT NEW.{column} BEGIN {insert} END;\n"
+        ));
+    };
+    trigger(
+        "document_parse",
+        "document_parse",
+        "version_hash",
+        "unreferenced_version",
+        Some("document"),
+    );
+    trigger(
+        "message_parse",
+        "message_parse",
+        "version_pk",
+        "unreferenced_value",
+        Some("message"),
+    );
+    for name in ["event", "link"] {
+        trigger(
+            &format!("{name}_parse"),
+            &format!("{name}_parse"),
+            "value_pk",
+            "unreferenced_value",
+            Some(name),
+        );
+    }
+    for table in [
+        "block",
+        "document_block",
+        "message_version_text",
+        "document_version_text",
+    ] {
+        trigger(table, table, "text_id", "unreferenced_text", None);
+    }
+    sql
+}
+
+fn target_key(target: &str) -> &'static str {
+    if target == "unreferenced_value" {
+        "value_pk"
+    } else {
+        "version_hash"
+    }
+}
+
+/// Installs the reference triggers on a connection that writes the index.
+pub(crate) fn track_unreferenced(conn: &Connection) -> Result<()> {
+    conn.execute_batch(&reference_triggers())?;
+    Ok(())
+}
+
+/// Deletes the version bodies, values and texts whose last reference this
+/// transaction removed; each row-writing transaction calls it before it
+/// commits. Texts go last: deleting a version removes its text references.
+/// In a first build, the search tables are built from the remaining texts
+/// when it ends, so a removed text has no search entry to remove.
+pub(crate) fn remove_unreferenced(
+    conn: &Connection,
+    upkeep: &crate::writer::resolve::IndexUpkeep,
+    texts: &crate::text_rows::TextIds,
+) -> Result<()> {
+    for kind in VersionKind::ALL {
+        let name = kind.name();
+        let (table, stored_key, key, candidates) = if matches!(kind, VersionKind::Message) {
+            (
+                "message_version".to_owned(),
+                "pk",
+                "version_pk",
+                "unreferenced_value",
+            )
+        } else if kind.content() {
+            (
+                format!("{name}_version"),
+                "version_hash",
+                "version_hash",
+                "unreferenced_version",
+            )
+        } else {
+            (
+                format!("{name}_value"),
+                "pk",
+                "value_pk",
+                "unreferenced_value",
+            )
+        };
+        let candidate_key = target_key(candidates);
+        conn.prepare_cached(&format!(
+            "DELETE FROM {table} AS t WHERE {stored_key} IN (SELECT {candidate_key} FROM temp.{candidates} WHERE kind=?1)
+             AND NOT EXISTS(SELECT 1 FROM {name}_parse s WHERE s.{key}=t.{stored_key})"
+        ))?
+        .execute([name])?;
+    }
+    conn.prepare_cached("DELETE FROM temp.unreferenced_version")?
+        .execute([])?;
+    conn.prepare_cached("DELETE FROM temp.unreferenced_value")?
+        .execute([])?;
+    // Candidates drive the lookup. A plain JOIN can scan every kept
+    // text and its references before checking even an empty candidate table.
+    let unused_texts = conn
+        .prepare_cached(
+            "SELECT t.id,t.indexed,t.hash FROM temp.unreferenced_text u CROSS JOIN text t ON t.id=u.text_id
+             WHERE NOT EXISTS(SELECT 1 FROM block b WHERE b.text_id=t.id)
+             AND NOT EXISTS(SELECT 1 FROM document_block b WHERE b.text_id=t.id)
+             AND NOT EXISTS(SELECT 1 FROM message_version_text v WHERE v.text_id=t.id)
+             AND NOT EXISTS(SELECT 1 FROM document_version_text v WHERE v.text_id=t.id)",
+        )?
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, crate::encoding::Columns::hash(r, 2)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (id, indexed, hash) in unused_texts {
+        if upkeep.at_build_end() {
+            crate::text_rows::remove_unindexed(conn, id)?;
+        } else {
+            crate::text_rows::remove(conn, id, indexed)?;
+        }
+        texts.removed(&hash, id)?;
+    }
+    conn.prepare_cached("DELETE FROM temp.unreferenced_text")?
+        .execute([])?;
+    Ok(())
+}
+
+/// The version already owns these references; selection need not resolve
+/// their text hashes again.
+pub(crate) fn document_text_ids(
+    conn: &Connection,
+    hash: &[u8],
+) -> Result<std::collections::BTreeMap<usize, i64>> {
+    Ok(conn
+        .prepare_cached("SELECT idx,text_id FROM document_version_text WHERE version_hash=?1")?
+        .query_map([hash], |row| <(_, _)>::try_from(row))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+/// Text references already registered by the writer; no natural-key lookup.
+pub(crate) fn message_text_ids(
+    conn: &Connection,
+    pk: i64,
+) -> Result<std::collections::BTreeMap<usize, i64>> {
+    Ok(conn
+        .prepare_cached("SELECT idx,text_id FROM message_version_text WHERE version_pk=?1")?
+        .query_map([pk], |row| <(_, _)>::try_from(row))?
+        .collect::<rusqlite::Result<_>>()?)
+}

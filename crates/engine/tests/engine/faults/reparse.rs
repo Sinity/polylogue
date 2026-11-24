@@ -14,9 +14,9 @@ fn committed_continuation(
     let reads = w.reads();
     let reader = reads.reader().unwrap();
     (
-        reader.query("SELECT p.chain,p.status,p.parsed_upto,p.reading_version,hex(p.checkpoint) AS checkpoint FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.format='claude-code' ORDER BY p.chain", &[]).unwrap(),
-        reader.query("SELECT s.chain,s.response_key,s.source_start,s.source_end,hex(s.hash) AS version FROM reading_message s JOIN input_ref i ON i.pk=s.input_pk WHERE i.format='claude-code' AND s.response_key IS NOT NULL ORDER BY s.chain,s.response_key", &[]).unwrap(),
-        reader.query("SELECT a.chain,a.name,a.target FROM reading_alias a JOIN input_ref i ON i.pk=a.input_pk WHERE i.format='claude-code' ORDER BY a.chain,a.name", &[]).unwrap(),
+        reader.query("SELECT p.chain,p.status,p.parsed_upto,p.parse_version,hex(p.checkpoint) AS checkpoint FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.format='claude-code' ORDER BY p.chain", &[]).unwrap(),
+        reader.query("SELECT s.chain,s.response_key,s.source_start,s.source_end,hex((SELECT version_hash FROM message_version WHERE pk=s.version_pk)) AS version FROM message_parse s JOIN input_ref i ON i.pk=s.input_pk WHERE i.format='claude-code' AND s.response_key IS NOT NULL ORDER BY s.chain,s.response_key", &[]).unwrap(),
+        reader.query("SELECT a.chain,a.name,a.target FROM message_alias a JOIN input_ref i ON i.pk=a.input_pk WHERE i.format='claude-code' ORDER BY a.chain,a.name", &[]).unwrap(),
     )
 }
 
@@ -102,10 +102,10 @@ fn rejected_replacement_keeps_the_committed_reading() {
                 .unwrap(),
             messages
         );
-        let rows=w.reads().reader().unwrap().query("SELECT reading_version FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.format='claude-code'",&[]).unwrap();
+        let rows=w.reads().reader().unwrap().query("SELECT parse_version FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.format='claude-code'",&[]).unwrap();
         assert_eq!(
-            rows[0]["reading_version"],
-            by_name("claude-code").unwrap().reading_version()
+            rows[0]["parse_version"],
+            by_name("claude-code").unwrap().parse_version()
         );
         fault::clear();
         drop(engine);

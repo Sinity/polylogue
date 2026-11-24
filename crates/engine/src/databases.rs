@@ -303,8 +303,8 @@ impl<'a> InputWriter<'a> {
             blobs: vec![],
             length: self.length,
             parse: vec![],
-            acquisition: source_read,
-            basis: self.source.source_read.basis.clone(),
+            capture_read: source_read,
+            base: self.source.source_read.base.clone(),
             release: Default::default(),
         };
         self.exists = true;
@@ -326,7 +326,7 @@ impl<'a> InputWriter<'a> {
         })?;
         let start = self.staged.iter().find_map(|part| {
             part.batch
-                .acquisition
+                .capture_read
                 .as_ref()
                 .map(|source_read| source_read.range.start)
         });
@@ -336,9 +336,9 @@ impl<'a> InputWriter<'a> {
                 end: self.length,
             };
             for part in &mut self.staged {
-                if let Some(source_read) = &mut part.batch.acquisition {
+                if let Some(source_read) = &mut part.batch.capture_read {
                     source_read.generation =
-                        Some(polylogue_store::primary::SourceGeneration::Database {
+                        Some(polylogue_store::primary::ObservedState::Database {
                             stream: polylogue_store::primary::RawStream {
                                 source: source_read.source.clone(),
                                 input: part.batch.input.clone(),
@@ -435,7 +435,7 @@ impl Engine {
                     .source_read_context(
                         path,
                         origin.name,
-                        polylogue_store::primary::AcquisitionRoute::NativeCapture,
+                        polylogue_store::primary::ReadRoute::NativeCapture,
                     )
                     .source;
                 let snapshot = self.writer.source_snapshot(source)?;

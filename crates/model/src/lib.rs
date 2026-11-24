@@ -35,7 +35,7 @@ pub mod kept;
 pub mod live;
 pub mod markdown;
 pub mod sinex_event;
-pub use injection::{HookContextEmission, HookFieldClaim};
+pub use injection::{HookContextEmission, ParsedHookField};
 mod message;
 pub mod money;
 pub mod price;
@@ -87,7 +87,7 @@ pub use message::{
 pub use reports::{QuotaReport, UsageReport};
 pub use session::{Session, SessionKind, Title, TitleSource};
 pub use time::{
-    Precision, TimeEvidence, TimeEvidenceError, TimeQuality, Timestamp, local_minute, rfc3339_in,
+    Precision, TimeAccuracy, TimeAccuracyError, TimeQuality, Timestamp, local_minute, rfc3339_in,
 };
 pub mod text;
 pub use price::{Catalog, LongContext, Multiplier, Price, Rate};

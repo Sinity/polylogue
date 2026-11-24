@@ -245,14 +245,14 @@ impl ExportParser for Cloud {
             }
             if !attrs.is_empty() {
                 sink.out.events.push({
-                    let (at, time_evidence) = crate::time::parts(None);
+                    let (at, time_accuracy) = crate::time::parts(None);
                     Event {
                         session: Some(sid.clone()),
                         kind: "codex_cloud_turn".into(),
                         at,
-                        at_quality: time_evidence.quality,
-                        at_precision: time_evidence.precision,
-                        at_until: time_evidence.until,
+                        at_quality: time_accuracy.quality,
+                        at_precision: time_accuracy.precision,
+                        at_until: time_accuracy.until,
                         after: Some(id.clone()),
                         range: None,
                         data: Json::Object(attrs.clone()),
@@ -267,16 +267,16 @@ impl ExportParser for Cloud {
                 offset,
                 end: offset + 1,
                 message: {
-                    let (at, time_evidence) = crate::time::parts(None);
+                    let (at, time_accuracy) = crate::time::parts(None);
                     Message {
                         id,
                         session: sid.clone(),
                         parent,
                         role,
                         at,
-                        at_quality: time_evidence.quality,
-                        at_precision: time_evidence.precision,
-                        at_until: time_evidence.until,
+                        at_quality: time_accuracy.quality,
+                        at_precision: time_accuracy.precision,
+                        at_until: time_accuracy.until,
                         model: None,
                         prompt_kind: (role == Role::User).then_some(PromptKind::Prose),
                         blocks,
@@ -296,14 +296,14 @@ impl ExportParser for Cloud {
         }
         if !metadata.is_empty() {
             sink.out.events.push({
-                let (at, time_evidence) = crate::time::parts(None);
+                let (at, time_accuracy) = crate::time::parts(None);
                 Event {
                     session: Some(sid.clone()),
                     kind: "codex_cloud_task".into(),
                     at,
-                    at_quality: time_evidence.quality,
-                    at_precision: time_evidence.precision,
-                    at_until: time_evidence.until,
+                    at_quality: time_accuracy.quality,
+                    at_precision: time_accuracy.precision,
+                    at_until: time_accuracy.until,
                     after: None,
                     range: None,
                     data: Json::Object(metadata),

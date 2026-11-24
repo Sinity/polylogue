@@ -178,9 +178,9 @@ fn transport_fixture_keeps_source_rows() {
     let (archive, _lock) = crate::Archive::open_or_create(root.path()).unwrap();
     let source = super::super::open_write(&archive.archive_db(), cache::SETUP).unwrap();
     crate::input_rows::InputRows {
-        acquisition: None,
+        capture_read: None,
         input: "kept-source".into(),
-        format: "synthetic".into(),
+        origin: "synthetic".into(),
         revision: None,
         extents: Vec::new(),
         observation: None,

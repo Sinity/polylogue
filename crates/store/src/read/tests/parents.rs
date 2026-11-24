@@ -75,7 +75,7 @@ fn recorded_link(
         how: None,
         parent: crate::fixture::writer::sid(parent),
         child: crate::fixture::writer::sid(child),
-        at: None,
+        branch_point: None,
         call_id: None,
         evidence: "recorded source relation".into(),
     }

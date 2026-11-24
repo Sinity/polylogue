@@ -262,7 +262,7 @@ fn number_content(out: &mut Output, earlier: &mut dyn EarlierRows) -> Result<Num
         rename_in(&mut event.data, &mut rename)?;
     }
     for link in &mut out.links {
-        if let Some(at) = &mut link.at {
+        if let Some(at) = &mut link.branch_point {
             rename(at)?;
         }
     }

@@ -14,7 +14,7 @@ pub use export::{
 pub use progress::{ParseProgress, StepProgress};
 
 /// The actual program and parser settings that made one stopped attempt.
-/// Source, chain, reading version and observed length belong to its reading.
+/// Source, chain, parse version and observed length belong to its reading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StoppedAttempt {
@@ -28,28 +28,24 @@ pub struct StoppedAttempt {
 #[serde(deny_unknown_fields)]
 pub struct ParserCheckpoint {
     pub version: u32,
-    pub reading_version: String,
+    pub parse_version: String,
     pub parsed_upto: u64,
     /// None is an explicitly stateless parser; an absent envelope is unknown.
     pub parser_state: Option<crate::Json>,
 }
 impl ParserCheckpoint {
     pub const VERSION: u32 = 1;
-    pub fn new(
-        reading_version: String,
-        parsed_upto: u64,
-        parser_state: Option<crate::Json>,
-    ) -> Self {
+    pub fn new(parse_version: String, parsed_upto: u64, parser_state: Option<crate::Json>) -> Self {
         Self {
             version: Self::VERSION,
-            reading_version,
+            parse_version,
             parsed_upto,
             parser_state,
         }
     }
-    pub fn matches(&self, reading_version: &str, parsed_upto: u64) -> bool {
+    pub fn matches(&self, parse_version: &str, parsed_upto: u64) -> bool {
         self.version == Self::VERSION
-            && self.reading_version == reading_version
+            && self.parse_version == parse_version
             && self.parsed_upto == parsed_upto
     }
 }
@@ -66,8 +62,8 @@ pub struct Output {
     /// Native parser claims, indexed by message. Receiving admission validates
     /// their source before promoting them to observed injection evidence.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub hook_fields: BTreeMap<usize, Vec<crate::HookFieldClaim>>,
-    /// Imported hook evidence remains declared, independent of local acquisition.
+    pub hook_fields: BTreeMap<usize, Vec<crate::ParsedHookField>>,
+    /// Imported hook evidence remains declared, independent of local capture_read.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub declared_injections: BTreeMap<usize, Vec<crate::injection::InjectionEvidence>>,
     /// Portable attachment claims are independent of receiving membership proof.
@@ -95,7 +91,7 @@ pub struct Output {
     pub message_order: BTreeMap<usize, u64>,
     /// Selected original block positions retain the original source version.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub block_selections: BTreeMap<usize, crate::bundle::MessageProjection>,
+    pub block_selections: BTreeMap<usize, crate::bundle::ShownBlocks>,
     /// Exact statements of provider relationships or references.
     pub links: Vec<Link>,
     /// Records that are not messages but stand in a chain of parents, each
@@ -239,7 +235,7 @@ pub struct BackgroundUpdate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_at: Option<crate::Timestamp>,
     #[serde(default)]
-    pub result_at_evidence: crate::TimeEvidence,
+    pub result_at_evidence: crate::TimeAccuracy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported_duration_ms: Option<u64>,
     pub session: SessionId,

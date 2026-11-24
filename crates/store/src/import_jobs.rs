@@ -77,7 +77,7 @@ pub(crate) fn read(conn: &Connection, table_prefix: &str, id: &str) -> Result<Op
         provider,
         since,
         created_at,
-        execution: polylogue_model::authored::ExecutionEligibility::from_name(&execution)
+        execution: polylogue_model::authored::RunsHere::from_name(&execution)
             .ok_or_else(|| StoreError::stored(3, "unknown execution eligibility"))?,
         events,
     }))

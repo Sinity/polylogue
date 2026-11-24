@@ -124,7 +124,7 @@ fn an_expired_claim_lets_the_job_wait_and_the_operator_can_cancel_it() {
         provider: "grok".into(),
         since: None,
         created_at: 0,
-        execution: polylogue_model::authored::ExecutionEligibility::Live,
+        execution: polylogue_model::authored::RunsHere::Live,
         events: vec![
             ImportJobEvent {
                 request: "event-request".into(),

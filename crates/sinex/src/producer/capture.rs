@@ -40,10 +40,10 @@ fn compared_fields(input: &CapturedInput, mode: CaptureMode) -> Result<serde_jso
     // Byte identity must still match.
     Ok(serde_json::json!({
         "hash":input.hash, "length":input.length, "raw_range":input.raw_range,
-        "generation":input.generation, "raw_total":input.raw_total, "raw_predecessor":input.raw_predecessor,
+        "generation":input.generation, "raw_total":input.raw_total, "previous_revision":input.previous_revision,
         "index":input.index, "route":input.route,
         "origin":input.input.origin,
-        "source":(mode == CaptureMode::Mutable).then(|| input.basis.as_ref().map(|base| &base.source)),
+        "source":(mode == CaptureMode::Mutable).then(|| input.base.as_ref().map(|base| &base.source)),
     }))
 }
 
@@ -88,9 +88,9 @@ impl Sinex {
         } else {
             let bases = (plan.mode == CaptureMode::Mutable).then_some(&plan.bases);
             format!(
-                "acquisition:{}",
+                "capture_read:{}",
                 blake3::hash(&serde_json::to_vec(&(
-                    "polylogue-acquisition-1",
+                    "polylogue-capture_read-1",
                     &self.config.producer,
                     plan.bases
                         .iter()
@@ -146,7 +146,7 @@ impl Sinex {
                         "captured body differs from its original byte range",
                     ));
                 }
-                if let Some(base) = &input.basis
+                if let Some(base) = &input.base
                     && !plan.bases.iter().any(|expected| expected == base)
                 {
                     return Err(polylogue_store::StoreError::invalid(
@@ -164,11 +164,11 @@ impl Sinex {
                 if let (Some(generation), Some(range)) = (&input.generation, input.raw_range) {
                     generation.validate()?;
                     let key = serde_json::to_vec(generation)?;
-                    if input.raw_predecessor.is_none()
+                    if input.previous_revision.is_none()
                         && let Some((end, previous)) = adjacent_members.get(&key)
                         && *end == range.start
                     {
-                        input.raw_predecessor = Some(previous.clone());
+                        input.previous_revision = Some(previous.clone());
                     }
                     adjacent_members.insert(key, (range.end, member.clone()));
                 }
@@ -187,9 +187,9 @@ impl Sinex {
                     };
                     // The accepted capture read fixed the original observation and
                     // previous revision, not this retry's clock.
-                    let same_base = input.basis == original.basis;
+                    let same_base = input.base == original.base;
                     let retry_self = input
-                        .basis
+                        .base
                         .as_ref()
                         .and_then(|base| base.pending.as_ref())
                         .is_some_and(|pending| {
@@ -206,8 +206,8 @@ impl Sinex {
                         && matches!(
                             (&input.generation, &original.generation),
                             (
-                                Some(polylogue_store::primary::SourceGeneration::Database { .. }),
-                                Some(polylogue_store::primary::SourceGeneration::Database { .. })
+                                Some(polylogue_store::primary::ObservedState::Database { .. }),
+                                Some(polylogue_store::primary::ObservedState::Database { .. })
                             )
                         )
                     {
@@ -227,7 +227,7 @@ impl Sinex {
                     &mut spooled_hash,
                     &(
                         compared_fields(&input, plan.mode)?,
-                        (plan.mode == CaptureMode::Mutable).then_some(&input.basis),
+                        (plan.mode == CaptureMode::Mutable).then_some(&input.base),
                     ),
                 )?;
                 let captured = Capture::Input(Box::new(input));
@@ -256,7 +256,7 @@ impl Sinex {
                         pending: true,
                     },
                 },
-                CaptureOutcome::UnresolvedBasisConflict => CaptureResult::UnresolvedBasisConflict {
+                CaptureOutcome::UnresolvedBaseConflict => CaptureResult::UnresolvedBaseConflict {
                     spooled: SpooledGroup {
                         identity,
                         count: plan.count,
@@ -311,7 +311,7 @@ impl Sinex {
                     .ok_or_else(|| Error::invalid("capture read member has no ordinal"))?;
                 let member = format!("{spooled_identity}:{}", group.ordinal);
                 group.identity = spooled_identity.clone();
-                if let Some(previous) = input.raw_predecessor.as_ref()
+                if let Some(previous) = input.previous_revision.as_ref()
                     && let Some(preceding) = staging.get(previous)?
                     && preceding.order < entry.order
                     && let Some(Capture::Input(prior)) = preceding.capture().cloned()
@@ -322,7 +322,7 @@ impl Sinex {
                         .is_some_and(|(a, b)| a.end == b.start)
                     && let Some(group) = prior.group
                 {
-                    input.raw_predecessor = Some(format!("{spooled_identity}:{}", group.ordinal));
+                    input.previous_revision = Some(format!("{spooled_identity}:{}", group.ordinal));
                 }
                 let original = {
                     let queue = self.queue()?;
@@ -336,7 +336,7 @@ impl Sinex {
                         return Err(Error::invalid("the spooled group has a non-input member"));
                     };
                     if compared_fields(&input, plan.mode)? != compared_fields(&original, plan.mode)?
-                        || (plan.mode == CaptureMode::Mutable && input.basis != original.basis)
+                        || (plan.mode == CaptureMode::Mutable && input.base != original.base)
                     {
                         return Err(Error::invalid(
                             "spooled group identity changed its recorded observation",
@@ -364,8 +364,8 @@ impl Sinex {
         }
         kept.finish()?;
         self.queue()?
-            .publish_capture_group(kept, CaptureOutcome::UnresolvedBasisConflict)?;
-        Ok(CaptureResult::UnresolvedBasisConflict {
+            .publish_capture_group(kept, CaptureOutcome::UnresolvedBaseConflict)?;
+        Ok(CaptureResult::UnresolvedBaseConflict {
             spooled: SpooledGroup {
                 identity: spooled_identity,
                 count: plan.count,
@@ -402,7 +402,7 @@ impl Sinex {
         if let Some(latest) = pending_operations.latest {
             if let Some(Capture::Input(input)) = latest.capture() {
                 result.status = input
-                    .basis
+                    .base
                     .as_ref()
                     .map_or(SourceStatus::MissingEvidence, |base| base.status);
             }

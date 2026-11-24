@@ -2,7 +2,7 @@
 use crate::kinds::{GitIdentity, Objective, RecordRef, TerminalIdentity};
 use polylogue_model::{
     Block, MessageId, MessageRow, Production, PromptKind, Role, Session, SessionId, SessionKind,
-    TimeEvidence, Timestamp, Usage, WrittenBy,
+    TimeAccuracy, Timestamp, Usage, WrittenBy,
 };
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -16,7 +16,7 @@ pub(super) struct MessageFields<'a> {
     written_by: WrittenBy,
     prompt_kind: Option<PromptKind>,
     at: Option<Timestamp>,
-    at_evidence: TimeEvidence,
+    at_evidence: TimeAccuracy,
     model: &'a Option<String>,
     text: String,
     blocks: &'a [Block],
@@ -31,8 +31,8 @@ pub(super) struct MessageFields<'a> {
     id_kind: polylogue_model::IdKind,
     page_text: bool,
     order: Option<u64>,
-    projection: &'a Option<polylogue_model::bundle::MessageProjection>,
-    field_claims: &'a Option<Vec<polylogue_model::HookFieldClaim>>,
+    projection: &'a Option<polylogue_model::bundle::ShownBlocks>,
+    field_claims: &'a Option<Vec<polylogue_model::ParsedHookField>>,
     injections: &'a Option<Vec<polylogue_model::injection::InjectionEvidence>>,
     attachment_bindings: &'a Option<Vec<polylogue_model::attachment_binding::AttachmentBinding>>,
 }
@@ -41,8 +41,8 @@ impl<'a> MessageFields<'a> {
     pub(super) fn new(
         row: &'a MessageRow,
         order: Option<u64>,
-        projection: &'a Option<polylogue_model::bundle::MessageProjection>,
-        field_claims: &'a Option<Vec<polylogue_model::HookFieldClaim>>,
+        projection: &'a Option<polylogue_model::bundle::ShownBlocks>,
+        field_claims: &'a Option<Vec<polylogue_model::ParsedHookField>>,
         injections: &'a Option<Vec<polylogue_model::injection::InjectionEvidence>>,
         attachment_bindings: &'a Option<
             Vec<polylogue_model::attachment_binding::AttachmentBinding>,
@@ -57,7 +57,7 @@ impl<'a> MessageFields<'a> {
             written_by: WrittenBy::of(message),
             prompt_kind: message.prompt_kind,
             at: message.at,
-            at_evidence: message.time_evidence(),
+            at_evidence: message.time_accuracy(),
             model: &message.model,
             text: message
                 .blocks
@@ -105,14 +105,14 @@ pub(super) struct SessionFields<'a> {
     tool_version: &'a Option<String>,
     mode: &'a Option<String>,
     started: Option<Timestamp>,
-    started_evidence: TimeEvidence,
+    started_evidence: TimeAccuracy,
     machine: Option<&'a str>,
     objectives: Vec<Objective>,
     git_identity: Option<GitIdentity>,
     terminal: Option<TerminalIdentity>,
     boot_id: Option<String>,
-    native_sources: Vec<RecordRef>,
-    native_unavailable: Vec<String>,
+    stated_sources: Vec<RecordRef>,
+    unstated: Vec<String>,
 }
 
 impl<'a> From<&'a Session> for SessionFields<'a> {
@@ -133,14 +133,14 @@ impl<'a> From<&'a Session> for SessionFields<'a> {
             tool_version: &session.tool_version,
             mode: &session.mode,
             started: session.started,
-            started_evidence: session.time_evidence(),
+            started_evidence: session.time_accuracy(),
             machine: None,
             objectives: Vec::new(),
             git_identity: None,
             terminal: None,
             boot_id: None,
-            native_sources: Vec::new(),
-            native_unavailable: Vec::new(),
+            stated_sources: Vec::new(),
+            unstated: Vec::new(),
         }
     }
 }
@@ -199,11 +199,8 @@ pub(super) fn schema(product: &str) -> Option<serde_json::Value> {
     if let Some((from, to)) = renamed {
         rename_schema_field(&mut schema, from, to);
     }
-    if product == "link" {
-        rename_schema_field(&mut schema, "at", "branch_point");
-    }
     if matches!(product, "document" | "event") {
-        let mut accuracy = serde_json::to_value(schemars::schema_for!(TimeEvidence)).unwrap();
+        let mut accuracy = serde_json::to_value(schemars::schema_for!(TimeAccuracy)).unwrap();
         if let Some(definitions) = accuracy
             .as_object_mut()
             .expect("time accuracy schema")

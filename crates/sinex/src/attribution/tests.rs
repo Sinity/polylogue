@@ -76,7 +76,7 @@ fn prose_cwd_and_bad_stated_values_give_no_attribution() {
         &json!({"cwd":"/synthetic/project","objective":"finish task-1", "command":"gh pr view 12"}),
         source(1),
     );
-    stated.observe(&json!({"objectives":[{"kind":"task","reference":"", "repository":"repo"}],"git_identity":{},"terminal_identity":null,"native_unavailable":["git query timed out"]}),source(2));
+    stated.observe(&json!({"objectives":[{"kind":"task","reference":"", "repository":"repo"}],"git_identity":{},"terminal_identity":null,"unstated":["git query timed out"]}),source(2));
     let facts = stated.finish();
     assert!(facts.repo.is_none());
     assert!(facts.objectives.is_empty());

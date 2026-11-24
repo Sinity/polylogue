@@ -12,7 +12,7 @@ impl Engine {
         let Some(stored) = reader.parser_checkpoint(input, chain, version)? else {
             return Ok(None);
         };
-        if stored.reading_version != version || stored.parsed_upto != cursor {
+        if stored.parse_version != version || stored.parsed_upto != cursor {
             return Ok(None);
         }
         let Some(checkpoint) = stored.checkpoint else {

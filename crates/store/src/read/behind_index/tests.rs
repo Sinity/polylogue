@@ -218,7 +218,7 @@ fn incomplete_metadata_readings_wait_until_the_stored_length_changes() {
     index
         .execute_batch(
             "INSERT INTO input_ref(id) VALUES ('metadata');
-        INSERT INTO parse_state(input_pk,chain,status,parsed_upto,at_length,reading_version)
+        INSERT INTO parse_state(input_pk,chain,status,parsed_upto,at_length,parse_version)
         SELECT pk,1,'waiting',40,100,'metadata=1' FROM input_ref;",
         )
         .unwrap();
@@ -286,7 +286,7 @@ fn stopped_selection_uses_its_attempt_even_after_a_full_length_refusal() {
         executable: polylogue_model::BlobHash::of(b"first program"),
         parser_settings: None,
     };
-    index.execute_batch("INSERT INTO input_ref(pk,id,format) VALUES(71,'failed','claude-code'),(72,'refused','claude-code'); INSERT INTO parse_state(input_pk,chain,reading_version,status,parsed_upto,at_length,reason) VALUES(71,1,'reading','failed',0,10,'original failure'),(72,1,'reading','refused',10,10,'original refusal');").unwrap();
+    index.execute_batch("INSERT INTO input_ref(pk,id,format) VALUES(71,'failed','claude-code'),(72,'refused','claude-code'); INSERT INTO parse_state(input_pk,chain,parse_version,status,parsed_upto,at_length,reason) VALUES(71,1,'reading','failed',0,10,'original failure'),(72,1,'reading','refused',10,10,'original refusal');").unwrap();
     index
         .execute(
             "UPDATE parse_state SET stopped_attempt=?1 WHERE input_pk=71",
@@ -341,7 +341,7 @@ fn selected_chains_keep_order_parser_upgrades_and_empty_selection() {
     index
         .execute_batch(
             "INSERT INTO input_ref(id) VALUES ('a');
-         INSERT INTO parse_state(input_pk,chain,reading_version,status,parsed_upto)
+         INSERT INTO parse_state(input_pk,chain,parse_version,status,parsed_upto)
          SELECT pk,2,'old','done',20 FROM input_ref WHERE id='a';",
         )
         .unwrap();

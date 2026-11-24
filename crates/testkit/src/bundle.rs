@@ -3,12 +3,12 @@ use polylogue_model::{
     SessionId,
     bundle::{
         ImportedEventIdentity, InputEventRecord, LinkRecord, MessageRecord, Record, SessionRecord,
-        SourceClaim,
+        StatedSource,
     },
 };
 use polylogue_store::{
     Reader, Result, StoreError,
-    read::{MessagePosition, MessageSource},
+    read::{MessageParse, MessagePosition},
 };
 use std::ops::ControlFlow;
 
@@ -30,7 +30,7 @@ pub fn session_bundle(reader: &Reader<'_>, id: &SessionId) -> Result<Vec<Record>
     let mut order = 0;
     selected.visit_with_sources(
         MessagePosition::default(),
-        |message, MessageSource { blocks, .. }| {
+        |message, MessageParse { blocks, .. }| {
             records.push(Record::Message(Box::new(MessageRecord {
                 reference: format!("message:{}", message.id),
                 commit: 0,
@@ -54,7 +54,7 @@ pub fn session_bundle(reader: &Reader<'_>, id: &SessionId) -> Result<Vec<Record>
             commit: 0,
             identity: ImportedEventIdentity {
                 id: identity,
-                sources: vec![SourceClaim {
+                sources: vec![StatedSource {
                     input: "fixture".into(),
                     source: "fixture".into(),
                     source_chain: 1,

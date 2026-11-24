@@ -5,21 +5,21 @@ use crate::ConnExt as _;
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{
     Block, Reference, TEXT_BODY_SEPARATOR,
-    bundle::fragments::seek::{NativeTextBody, NativeTextPiece, NativeTextPosition, TextField},
+    bundle::fragments::seek::{SourceTextBody, SourceTextPiece, SourceTextPosition, TextField},
     text_body,
 };
 use rusqlite::params;
 use std::ops::ControlFlow;
 
-type Visit<'a> = dyn FnMut(NativeTextPiece, &str) -> Result<ControlFlow<()>> + 'a;
+type Visit<'a> = dyn FnMut(SourceTextPiece, &str) -> Result<ControlFlow<()>> + 'a;
 struct Text<'a, 'v> {
     visit: &'a mut Visit<'v>,
-    previous: Option<NativeTextBody>,
-    expected: Option<NativeTextPiece>,
+    previous: Option<SourceTextBody>,
+    expected: Option<SourceTextPiece>,
     reference: &'a Reference,
 }
 impl Text<'_, '_> {
-    fn piece(&mut self, piece: NativeTextPiece, text: &str) -> Result<ControlFlow<()>> {
+    fn piece(&mut self, piece: SourceTextPiece, text: &str) -> Result<ControlFlow<()>> {
         if self
             .expected
             .take()
@@ -32,22 +32,22 @@ impl Text<'_, '_> {
         }
         (self.visit)(piece, text)
     }
-    fn prime(&mut self, from: Option<&NativeTextPosition>) -> Result<ControlFlow<()>> {
-        if let Some(NativeTextPosition {
-            piece: NativeTextPiece::Separator { before, after },
+    fn prime(&mut self, from: Option<&SourceTextPosition>) -> Result<ControlFlow<()>> {
+        if let Some(SourceTextPosition {
+            piece: SourceTextPiece::Separator { before, after },
             ..
         }) = from
         {
             // The authenticated endpoint was derived by this walker. Seeking a
             // recorded separator uses the two bodies it sits between, not either body's text.
             let flow = (self.visit)(
-                NativeTextPiece::Separator {
+                SourceTextPiece::Separator {
                     before: *before,
                     after: *after,
                 },
                 TEXT_BODY_SEPARATOR,
             )?;
-            self.expected = Some(NativeTextPiece::Body { body: *after });
+            self.expected = Some(SourceTextPiece::Body { body: *after });
             return Ok(flow);
         }
         Ok(ControlFlow::Continue(()))
@@ -68,14 +68,14 @@ impl Text<'_, '_> {
                 ));
             }
         };
-        let body = NativeTextBody {
+        let body = SourceTextBody {
             block: ordinal,
             field,
         };
         if let Some(before) = self.previous
             && self
                 .piece(
-                    NativeTextPiece::Separator {
+                    SourceTextPiece::Separator {
                         before,
                         after: body,
                     },
@@ -86,7 +86,7 @@ impl Text<'_, '_> {
             return Ok(ControlFlow::Break(()));
         }
         self.previous = Some(body);
-        self.piece(NativeTextPiece::Body { body }, text)
+        self.piece(SourceTextPiece::Body { body }, text)
     }
 }
 impl Reader<'_> {
@@ -94,7 +94,7 @@ impl Reader<'_> {
         &self,
         reference: &Reference,
         complete: bool,
-        from: Option<&NativeTextPosition>,
+        from: Option<&SourceTextPosition>,
         visit: &mut Visit<'_>,
     ) -> Result<bool> {
         let found = ReferenceText::new(self.conn()?, self.conn()?).source_text_while(
@@ -115,13 +115,13 @@ impl ReferenceText<'_> {
         &self,
         reference: &Reference,
         complete: bool,
-        from: Option<&NativeTextPosition>,
+        from: Option<&SourceTextPosition>,
         visit: &mut Visit<'_>,
     ) -> Result<bool> {
         let first = match from.map(|position| position.piece) {
-            Some(NativeTextPiece::Body { body }) => Some(body.block),
-            Some(NativeTextPiece::Separator { after, .. }) => Some(after.block),
-            Some(NativeTextPiece::Empty) | None => None,
+            Some(SourceTextPiece::Body { body }) => Some(body.block),
+            Some(SourceTextPiece::Separator { after, .. }) => Some(after.block),
+            Some(SourceTextPiece::Empty) | None => None,
         };
         let mut text = Text {
             visit,
@@ -243,7 +243,7 @@ impl ReferenceText<'_> {
         }
         if text
             .expected
-            .is_some_and(|expected| expected != NativeTextPiece::Empty)
+            .is_some_and(|expected| expected != SourceTextPiece::Empty)
         {
             return Err(unavailable(
                 reference,

@@ -20,10 +20,10 @@ pub struct ChainLayout {
     pub reading: Option<StoredParseState>,
 }
 
-/// How far a chain's reading has read, under which reading version.
+/// How far a chain's reading has read, under which parse version.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredParseState {
-    pub reading_version: String,
+    pub parse_version: String,
     /// The stored parse status word (`parsing`, `waiting`, `done`, ...).
     pub status: String,
     pub parsed_upto: u64,
@@ -40,28 +40,27 @@ impl StoredParseState {
 
     /// A reading another chain's reading can continue from or be copied
     /// from: current and not stopped.
-    pub fn continues(&self, reading_version: &str) -> bool {
-        self.reading_version == reading_version
+    pub fn continues(&self, parse_version: &str) -> bool {
+        self.parse_version == parse_version
             && matches!(self.status.as_str(), "parsing" | "waiting" | "done")
     }
 }
 
 /// The index tables that hold one chain's reading, keyed by `input_pk` and
 /// `chain`. Copying a reading copies each table's rows of the other chain.
-const READING_TABLES: [&str; 21] = [
+const READING_TABLES: [&str; 20] = [
     "parse_state",
-    "reading_session",
-    "reading_session_alias",
-    "reading_message",
-    "reading_text",
-    "reading_alias",
-    "reading_event",
-    "reading_link",
-    "reading_document",
-    "reading_call_outcome",
+    "parsed",
+    "session_record",
+    "session_alias",
+    "message_parse",
+    "document_parse",
+    "event_parse",
+    "link_parse",
     "text_fragment_source",
     "message_injection_field",
     "unused",
+    "message_alias",
     "wire_reading",
     "wire_occurrence",
     "wire_shape",
@@ -77,11 +76,11 @@ const READING_TABLES: [&str; 21] = [
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadingCopy {
     pub input: String,
-    /// The newer chain, read under `reading_version` exactly to `upto`.
+    /// The newer chain, read under `parse_version` exactly to `upto`.
     pub from: i64,
     /// The older chain.
     pub to: i64,
-    pub reading_version: String,
+    pub parse_version: String,
     /// The parse position of `from` the copy is taken at: the end of its
     /// last complete record within the bytes the two chains share.
     pub upto: u64,
@@ -95,7 +94,7 @@ pub struct ReadingCopy {
 /// both of `input`. The caller has compared the bytes: the two chains hold
 /// the same bytes before the point the copy is taken at. `false` when the
 /// copy would not equal parsing `to`: `from` is not read exactly to `upto`
-/// under `reading_version`, `to` already has a reading, or the input's
+/// under `parse_version`, `to` already has a reading, or the input's
 /// reading writes rows shared by all its chains (a repository lookup, tool
 /// rows), or copied membership names its own chain and must be resolved by
 /// parsing.
@@ -113,7 +112,7 @@ pub(crate) fn copy_reading(tx: &Connection, copy: &ReadingCopy, counter: i64) ->
         input,
         from,
         to,
-        reading_version,
+        parse_version,
         upto,
         reaches_end,
     } = copy;
@@ -143,7 +142,7 @@ pub(crate) fn copy_reading(tx: &Connection, copy: &ReadingCopy, counter: i64) ->
     // `upto`, which `to` holds too, and is taken again for `to` below.
     let ready: bool = tx.exists(
         "SELECT EXISTS(SELECT 1 FROM parse_state WHERE input_pk = ?1 AND chain = ?2
-             AND reading_version = ?3 AND status IN ('parsing','waiting','done')
+             AND parse_version = ?3 AND status IN ('parsing','waiting','done')
              AND parsed_upto = ?6)
          AND NOT EXISTS(SELECT 1 FROM parse_state WHERE input_pk = ?1 AND chain = ?4)
          AND NOT EXISTS(SELECT 1 FROM repo_lookup WHERE input_pk = ?1)
@@ -151,7 +150,7 @@ pub(crate) fn copy_reading(tx: &Connection, copy: &ReadingCopy, counter: i64) ->
          AND NOT EXISTS(SELECT 1 FROM tool_database WHERE input_pk = ?1)
          AND NOT EXISTS(SELECT 1 FROM prefix_member WHERE input_pk = ?1 AND chain = ?2
              AND source_input = ?5 AND source_chain = ?2)",
-        params![input_pk, from, reading_version, to, input, upto_sql],
+        params![input_pk, from, parse_version, to, input, upto_sql],
     )?;
     if !ready {
         return Ok(false);
@@ -185,6 +184,9 @@ pub(crate) fn copy_reading(tx: &Connection, copy: &ReadingCopy, counter: i64) ->
                     .iter()
                     .map(|column| match column.as_str() {
                         "chain" => "?3".to_owned(),
+                        // The shown document source is the newest chain's
+                        // (`documents::apply_choice`); the older copy never is.
+                        "shown" if table == "document_parse" => "0".to_owned(),
                         // When this write committed the row, as a parse
                         // of the chain would record its own write.
                         "commit_seq" | "committed" => {
@@ -219,7 +221,7 @@ pub(crate) fn copy_reading(tx: &Connection, copy: &ReadingCopy, counter: i64) ->
     ] {
         let rows: Vec<(String, Option<i64>, String)> = tx
             .prepare(&format!(
-                "SELECT reading_version, {number}, {column} FROM {table} WHERE input_pk = ?1 AND chain = ?2"
+                "SELECT parse_version, {number}, {column} FROM {table} WHERE input_pk = ?1 AND chain = ?2"
             ))?
             .query_map(params![input_pk, to], |row| <(_, _, _)>::try_from(row))?
             .collect::<rusqlite::Result<_>>()?;
@@ -232,10 +234,10 @@ pub(crate) fn copy_reading(tx: &Connection, copy: &ReadingCopy, counter: i64) ->
             if let Some(number) = number {
                 // The occurrence's complete primary key avoids scanning every
                 // occurrence in this chain again for each retaken one.
-                tx.prepare_cached("UPDATE wire_occurrence SET occurrence = ?5 WHERE input_pk = ?1 AND chain = ?2 AND reading_version = ?3 AND number = ?4")?
+                tx.prepare_cached("UPDATE wire_occurrence SET occurrence = ?5 WHERE input_pk = ?1 AND chain = ?2 AND parse_version = ?3 AND number = ?4")?
                     .execute(params![input_pk, to, version, number, text])?;
             } else {
-                tx.prepare_cached("UPDATE wire_reading SET state = ?4 WHERE input_pk = ?1 AND chain = ?2 AND reading_version = ?3")?
+                tx.prepare_cached("UPDATE wire_reading SET state = ?4 WHERE input_pk = ?1 AND chain = ?2 AND parse_version = ?3")?
                     .execute(params![input_pk, to, version, text])?;
             }
         }
@@ -280,11 +282,11 @@ pub(crate) fn copy_reading(tx: &Connection, copy: &ReadingCopy, counter: i64) ->
             observation: commit.observation.as_deref(),
             observed_at_ms: commit.observed_at_ms,
         },
-        reading_version,
+        parse_version,
         *reaches_end,
     )?;
     tx.execute(
-        "UPDATE session SET changed = ?3 WHERE id IN (SELECT session_id FROM reading_session WHERE input_pk = ?1 AND chain = ?2)",
+        "UPDATE session SET changed = ?3 WHERE pk IN (SELECT session_pk FROM parsed WHERE input_pk = ?1 AND chain = ?2)",
         params![input_pk, to, counter],
     )?;
     Ok(true)

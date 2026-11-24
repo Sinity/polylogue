@@ -10,11 +10,11 @@ use serde::{Deserialize, Serialize};
 /// their state but never run: the receiving host computes this, never a bundle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum ExecutionEligibility {
+pub enum RunsHere {
     Live,
     Historical,
 }
-stored_names!(ExecutionEligibility { Live => "live", Historical => "historical" });
+stored_names!(RunsHere { Live => "live", Historical => "historical" });
 
 /// Computed from the local bundle ingress and authenticated importing channel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

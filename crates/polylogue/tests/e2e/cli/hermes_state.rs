@@ -165,7 +165,7 @@ fn hermes_query_read_export_keep_compression_parents() {
     assert_eq!(link.kind, polylogue_model::LinkKind::Continuation);
     assert!(link.parent.native().as_str().starts_with("parent@profile-"));
     assert!(
-        link.at
+        link.branch_point
             .as_ref()
             .unwrap()
             .native()
@@ -174,7 +174,10 @@ fn hermes_query_read_export_keep_compression_parents() {
     );
     let parent = super::claude_account_text::messages(&env, &link.parent.to_string());
     assert_eq!(parent[0]["blocks"][0]["text"], "stored ancestor Ω");
-    assert_eq!(parent[0]["id"], link.at.as_ref().unwrap().to_string());
+    assert_eq!(
+        parent[0]["id"],
+        link.branch_point.as_ref().unwrap().to_string()
+    );
     assert!(matches!(
         &exported_messages[1].message.blocks[0],
         polylogue_model::Block::ToolResult {

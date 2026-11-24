@@ -1,7 +1,7 @@
 //! Helpers shared by the parsers of whole documents (exports, captures):
 //! a running position for the rows they emit, and small JSON readers.
 
-/// Reading version of these shared helpers. Every origin's reading version
+/// Parse version of these shared helpers. Every origin's parse version
 /// includes it, so raise it when what any helper returns changes.
 pub const VERSION: u32 = 1;
 

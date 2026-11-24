@@ -254,7 +254,11 @@ fn rows_carry_names_as_the_source_writes_them() {
             .iter()
             .filter_map(|row| row.message.parent.as_ref())
             .chain(out.events.iter().filter_map(|event| event.after.as_ref()))
-            .chain(out.links.iter().filter_map(|link| link.at.as_ref()))
+            .chain(
+                out.links
+                    .iter()
+                    .filter_map(|link| link.branch_point.as_ref()),
+            )
             .chain(out.aliases.iter().filter_map(|alias| alias.target.as_ref()))
             .chain(named);
         for id in written {

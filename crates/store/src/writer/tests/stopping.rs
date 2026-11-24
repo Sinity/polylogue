@@ -50,7 +50,7 @@ fn stopping_stored_byte_replay_rolls_back_the_index() {
                     .collect(),
                 &["s"],
             );
-            b.parse[0].reading_version = "synthetic=2".into();
+            b.parse[0].parse_version = "synthetic=2".into();
             b.change = Change::Reparse { chain: 1 };
             b.observation = None;
             b
@@ -98,7 +98,7 @@ fn stopping_stored_byte_replay_rolls_back_the_index() {
                     .all(|result| matches!(result, Err(StoreError::Stopped))),
                 _ => {
                     let mut b = b;
-                    let mut reading = ChainReading::new().unwrap();
+                    let mut reading = ChainParse::new().unwrap();
                     reading.push(&mut b.parse[0]).unwrap();
                     matches!(
                         sender.replace_chain(b.input, 1, b.length, reading),
@@ -197,7 +197,7 @@ fn stopping_still_commits_an_explicit_parse_failure() {
         .unwrap();
     let mut step = ParseStep::new(Default::default(), Default::default(), 0..0, false);
     step.reset = false;
-    step.reading_version = "synthetic=1".into();
+    step.parse_version = "synthetic=1".into();
     step.progress = polylogue_model::batch::StepProgress::Refused {
         reason: "declared source is invalid".into(),
     };
@@ -244,7 +244,7 @@ fn a_diagnosed_member_does_not_keep_other_replays_running_during_stop() {
             .unwrap();
         let mut step = ParseStep::new(Default::default(), Default::default(), 0..0, false);
         step.reset = false;
-        step.reading_version = "synthetic=1".into();
+        step.parse_version = "synthetic=1".into();
         step.progress = polylogue_model::batch::StepProgress::Refused {
             reason: "diagnosis survives stop".into(),
         };
@@ -265,7 +265,7 @@ fn a_diagnosed_member_does_not_keep_other_replays_running_during_stop() {
         );
         normal.change = Change::Reparse { chain: 1 };
         normal.observation = None;
-        normal.parse[0].reading_version = "synthetic=2".into();
+        normal.parse[0].parse_version = "synthetic=2".into();
         assert!(w.writer.flush_rows().unwrap().errors.is_empty());
         // The queued route holds the preceding committed group's memory release
         // until both members and their flush are queued. They enter one group.
@@ -350,7 +350,7 @@ fn a_diagnosed_member_does_not_keep_other_replays_running_during_stop() {
             ["before stop"]
         );
         assert_eq!(r.query("SELECT p.status,p.reason,p.parsed_upto FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id='diagnosis'", &[]).unwrap(), vec![serde_json::json!({"status":"refused","reason":"diagnosis survives stop","parsed_upto":0})]);
-        assert_eq!(r.query("SELECT p.records,p.parsed_upto,p.reading_version FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id='normal'", &[]).unwrap(), vec![serde_json::json!({"records":1,"parsed_upto":100,"reading_version":"synthetic=1"})]);
+        assert_eq!(r.query("SELECT p.records,p.parsed_upto,p.parse_version FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id='normal'", &[]).unwrap(), vec![serde_json::json!({"records":1,"parsed_upto":100,"parse_version":"synthetic=1"})]);
     }
 }
 

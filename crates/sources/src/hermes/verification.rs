@@ -93,9 +93,9 @@ impl ExportParser for Verification {
             && value["r"].get(field).is_some_and(|v| !v.is_null())
             && at.is_none()
         {
-            sink.out.events.push({ let (at,time_evidence)=crate::time::parts(None); Event {
+            sink.out.events.push({ let (at,time_accuracy)=crate::time::parts(None); Event {
                 session: None, kind: "hermes_import_diagnostic".into(),
- at, at_quality:time_evidence.quality, at_precision:time_evidence.precision, at_until:time_evidence.until, after: None, range: None,
+ at, at_quality:time_accuracy.quality, at_precision:time_accuracy.precision, at_until:time_accuracy.until, after: None, range: None,
                 data: serde_json::json!({"field":field,"reason":"verification RFC3339 time unreadable; time remains unknown"}),
             } });
         }
@@ -103,14 +103,14 @@ impl ExportParser for Verification {
         // or future values do not become a tool outcome or an empty path list.
         sink.records.record(table, &RecordOutcome::Used);
         sink.out.events.push({
-            let (at, time_evidence) = crate::time::parts(at);
+            let (at, time_accuracy) = crate::time::parts(at);
             Event {
                 session: None,
                 kind: kind.into(),
                 at,
-                at_quality: time_evidence.quality,
-                at_precision: time_evidence.precision,
-                at_until: time_evidence.until,
+                at_quality: time_accuracy.quality,
+                at_precision: time_accuracy.precision,
+                at_until: time_accuracy.until,
                 after: None,
                 range: None,
                 data: value,

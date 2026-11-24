@@ -10,8 +10,7 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
 CREATE TABLE input_ref (
   pk                INTEGER PRIMARY KEY,
   id                TEXT NOT NULL UNIQUE,   -- archive.db input.id
-  format            TEXT NOT NULL DEFAULT '', -- parser declaration used for this input
-  route             TEXT NOT NULL DEFAULT 'live' CHECK (route IN ('live','capture','recorded','export','copy','page_text'))
+  format            TEXT NOT NULL DEFAULT '' -- parser declaration used for this input
 ) STRICT;
 
 CREATE TABLE session (
@@ -85,14 +84,12 @@ CREATE TABLE message (
   at_time           BLOB NOT NULL DEFAULT X'5b6e756c6c2c7b227175616c697479223a22756e6b6e6f776e227d5d',
   at                INTEGER,                -- provider time
   parent_id         TEXT,                   -- natural message id of the tree parent (may arrive later)
-  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),  -- the main route's input: its reading is the stored one
-  version_hash      BLOB,                   -- the main reading's content hash: the message's version
-  layout            BLOB,                   -- the main reading's block layout when it does not hold every block
+  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),  -- the main route's input: its version is the stored reading
   source_chain      INTEGER,                -- the revision chain the byte range is in (archive.db revision.chain):
                                             --   offsets are stable only within a chain, which only appends
   source_start      INTEGER,                -- byte range of its records in that chain (export `sources[0]`):
   source_end        INTEGER,                --   raw view and outside anchors; for a JSON export, the conversation object
-  in_progress       INTEGER NOT NULL DEFAULT 0, -- the shown message's completion is in_progress (its main reading's completion)
+  in_progress       INTEGER NOT NULL DEFAULT 0, -- the shown message's completion is in_progress (message_parse.completion)
   on_active_path    INTEGER,                -- 1 on the path, 0 off, NULL unknown (no marked leaf);
                                             --   always written, no default
   duplicate_of      TEXT,                   -- derived (duplicates): natural message id of another input's message the
@@ -125,100 +122,45 @@ CREATE INDEX message_prose   ON message(session_pk) WHERE written_by = 'human' A
 CREATE INDEX message_branch  ON message(session_pk) WHERE on_active_path = 0;
 CREATE INDEX message_parent  ON message(session_pk, parent_id) WHERE duplicate_of IS NULL;   -- branch points
 
--- Readings. Each chain's reading owns its rows: every row below carries the
--- input and chain whose records state it and the byte range of those
--- records, and holds what they say about one thing, taken together in byte
--- order. Replacing a reading deletes its rows and inserts the new ones; no
--- row is shared between chains, so nothing counts who else refers to it.
--- The shown rows (session, message, block, tool_call, event, link,
--- document) are computed from the readings present (writer/compose.rs).
-
--- What a chain states about a session (model Session, as JSON), merged in
--- byte order. A session exists while some reading states it.
-CREATE TABLE reading_session (
+-- Every stored version that contributed to a message: one row per input chain
+-- whose records hold a version of it. The shown message is composed field group
+-- by field group from each input's latest chain (writer/compose.rs); the main
+-- route's row is the one at the message's own (input_pk, source_chain). A citation names a row here, never
+-- just an input and offsets, because a rewritten input's new chain puts other
+-- bytes at the same offsets (an outside review, 2026-10-12). Rebuilt with the
+-- message. A message named by its content (id_kind 'content') keeps a row only
+-- from its input's latest chain once that chain is read to its end: a rewrite
+-- that no longer holds it no longer shows it.
+CREATE TABLE message_parse (
+  message_pk        INTEGER NOT NULL REFERENCES message(pk),
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
-  chain             INTEGER NOT NULL,
-  session_id        TEXT NOT NULL,          -- as the chain names it
-  facts             TEXT NOT NULL,
-  committed         INTEGER CHECK(committed > 0),
-  PRIMARY KEY (input_pk, chain, session_id)
-) STRICT, WITHOUT ROWID;
-CREATE INDEX reading_session_id ON reading_session(session_id);
-
--- The IDs copies of a session carry when they have no native ID
--- (Session.aliases): an AI Studio prompt read from Drive names the content
--- key of its Takeout copies. An alias exactly one session records names that
--- session, decided from these rows each time the sessions are composed.
-CREATE TABLE reading_session_alias (
-  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
-  chain             INTEGER NOT NULL,
-  session_id        TEXT NOT NULL,          -- the recording session
-  alias             TEXT NOT NULL,          -- the copy's session ID
-  PRIMARY KEY (input_pk, chain, session_id, alias)
-) STRICT, WITHOUT ROWID;
-CREATE INDEX reading_session_alias_name ON reading_session_alias(alias, session_id);
-CREATE INDEX reading_session_alias_session ON reading_session_alias(session_id);
-
--- One chain's reading of a message: where the chain first states it (a chain
--- that restates whole conversations: last), its place and order time, and
--- its body. The body is the model Message with text moved to `text`
--- (reading_text holds the keys); a reading of a sparse export also keeps the
--- block layout it selected.
-CREATE TABLE reading_message (
-  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
-  chain             INTEGER NOT NULL,
-  message_id        TEXT NOT NULL,          -- as the chain names it
-  session_id        TEXT NOT NULL,          -- as the chain names it
+  chain             INTEGER NOT NULL,       -- archive.db revision.chain
   source_start      INTEGER NOT NULL,
-  source_end        INTEGER NOT NULL,
-  seq               INTEGER NOT NULL,       -- its place in the input: the record's offset, or the
-  record_position   INTEGER NOT NULL,       --   explicit reading order; then its position in the record
+  source_end        INTEGER NOT NULL,       -- equal to source_start until parsers report record ends
+  id_kind           TEXT NOT NULL CHECK (id_kind IN ('native','content')), -- where the message ID came from
+  session_pk        INTEGER NOT NULL REFERENCES session(pk),
+  main              INTEGER NOT NULL DEFAULT 1,
+  route             TEXT NOT NULL CHECK (route IN ('live','capture','recorded','export','copy','page_text')),
+  seq               INTEGER NOT NULL DEFAULT 0,
+  record_position   INTEGER NOT NULL DEFAULT 0,
   order_time        INTEGER,                -- the latest source time (ms) of this reading and the readings
                                             --   before it in its chain and session; NULL before any time
-  at                INTEGER,                -- this reading's own source time (ms)
-  route             TEXT NOT NULL CHECK (route IN ('live','capture','recorded','export','copy','page_text')),
+  at                INTEGER,                -- this reading's own source time (ms), from which order times are
+                                            --   computed again when an earlier reading's time changes
   completion        TEXT NOT NULL CHECK (completion IN ('finished','unknown','in_progress')),
-  id_kind           TEXT NOT NULL CHECK (id_kind IN ('native','content')),
-  hash              BLOB NOT NULL,          -- the message's content hash (its version)
-  body              BLOB NOT NULL,
-  layout            BLOB NOT NULL,          -- original block count and selected ordinals
-  response_key      TEXT,                   -- the key the source gives the records of one response
+  version_pk        INTEGER NOT NULL REFERENCES message_version(pk), -- the version hash lives in the narrow version row
+  response_key      TEXT,                   -- the key the source gives the records of one response, as written
   content_name      TEXT,                   -- a content-named message's name without its number
-  committed         INTEGER CHECK(committed > 0),
-  PRIMARY KEY (input_pk, chain, message_id)
-) STRICT, WITHOUT ROWID;
-CREATE INDEX reading_message_id ON reading_message(message_id);
-CREATE INDEX reading_message_session ON reading_message(session_id);
-CREATE INDEX reading_message_place ON reading_message(input_pk, chain, session_id, seq, record_position);
-CREATE INDEX reading_message_start ON reading_message(input_pk, chain, source_start);
-CREATE INDEX reading_message_response ON reading_message(input_pk, chain, response_key) WHERE response_key IS NOT NULL;
-CREATE INDEX reading_message_content ON reading_message(input_pk, chain, content_name, source_start) WHERE content_name IS NOT NULL;
-CREATE INDEX reading_message_hash ON reading_message(hash);
--- The message readings an input still holds: once a newer chain of the
--- input is read to its end, a content-named message it no longer holds is
--- gone from that input (an edit has a new ID). Composition reads the same.
-CREATE VIEW held_message_reading AS
-SELECT * FROM reading_message r
-WHERE NOT (r.id_kind = 'content' AND EXISTS(SELECT 1 FROM parse_state p
-  WHERE p.input_pk = r.input_pk AND p.chain > r.chain AND p.status IN ('done','waiting')));
-
--- The texts a reading's message and document bodies hold, by block. A text
--- leaves with its last row here, with its search entries.
-CREATE TABLE reading_text (
-  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
-  chain             INTEGER NOT NULL,
-  document          INTEGER NOT NULL CHECK (document IN (0,1)),  -- 1: item names a document
-  item              TEXT NOT NULL,          -- the message or document ID as the chain names it
-  idx               INTEGER NOT NULL,       -- the block's position in the body
-  text_id           INTEGER NOT NULL REFERENCES text(id),
-  PRIMARY KEY (input_pk, chain, document, item, idx)
-) STRICT, WITHOUT ROWID;
-CREATE INDEX reading_text_id ON reading_text(text_id);
+  PRIMARY KEY (message_pk, input_pk, chain)
+) STRICT;
+CREATE INDEX message_parse_input ON message_parse(input_pk, chain, source_start);   -- foreign-key check; the next record's start
+CREATE INDEX message_parse_response ON message_parse(input_pk, chain, response_key) WHERE response_key IS NOT NULL;   -- the response an appended record continues
+CREATE INDEX message_parse_content ON message_parse(input_pk, chain, content_name, source_start) WHERE content_name IS NOT NULL;   -- the number of the next equal message
 
 -- Records that are not messages but stand in a chain of parents: `name`
 -- stands for `target` (NULL: no message), settled through the chain's earlier
 -- aliases so one lookup resolves a name.
-CREATE TABLE reading_alias (
+CREATE TABLE message_alias (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
   name              TEXT NOT NULL,
@@ -227,81 +169,8 @@ CREATE TABLE reading_alias (
   source_end        INTEGER NOT NULL,
   PRIMARY KEY (input_pk, chain, name)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX reading_alias_name ON reading_alias(name);
-
--- One chain's reading of an event.
-CREATE TABLE reading_event (
-  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
-  chain             INTEGER NOT NULL,
-  event_id          TEXT NOT NULL,          -- as the chain names it
-  session_id        TEXT,                   -- NULL: an event about its input
-  route             TEXT NOT NULL CHECK (route IN ('live','capture','recorded','export','copy','page_text')),
-  seq               INTEGER NOT NULL,
-  source_start      INTEGER,
-  source_end        INTEGER,
-  after_message_id  TEXT,                   -- the message it follows, as the chain names it
-  kind              TEXT NOT NULL,
-  at                INTEGER,
-  hash              BLOB NOT NULL,          -- the value's hash
-  fields            BLOB NOT NULL,          -- the encoded Event without its data
-  data              BLOB NOT NULL,          -- its data, zstd-compressed JSON
-  imported_sources  TEXT NOT NULL CHECK(json_valid(imported_sources)),
-  committed         INTEGER CHECK(committed > 0),
-  PRIMARY KEY (input_pk, chain, event_id)
-) STRICT, WITHOUT ROWID;
-CREATE INDEX reading_event_id ON reading_event(event_id);
-CREATE INDEX reading_event_session ON reading_event(session_id) WHERE session_id IS NOT NULL;
-
--- One chain's statement of a link between sessions. `statement` is the
--- link's coordinates (parent, child, kind, how, branch point, spawning
--- call) as the chain names them.
-CREATE TABLE reading_link (
-  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
-  chain             INTEGER NOT NULL,
-  statement         BLOB NOT NULL,
-  parent_id         TEXT NOT NULL,
-  child_id          TEXT NOT NULL,
-  kind              TEXT NOT NULL,
-  how               TEXT,
-  route             TEXT NOT NULL CHECK (route IN ('live','capture','recorded','export','copy','page_text')),
-  hash              BLOB NOT NULL,
-  body              BLOB NOT NULL,          -- the model Link as JSON
-  committed         INTEGER CHECK(committed > 0),
-  PRIMARY KEY (input_pk, chain, statement)
-) STRICT, WITHOUT ROWID;
-CREATE INDEX reading_link_statement ON reading_link(statement);
-CREATE INDEX reading_link_parent ON reading_link(parent_id);
-CREATE INDEX reading_link_child ON reading_link(child_id);
-
--- One chain's reading of a document.
-CREATE TABLE reading_document (
-  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
-  chain             INTEGER NOT NULL,
-  document_id       TEXT NOT NULL,
-  route             TEXT NOT NULL CHECK (route IN ('live','capture','recorded','export','copy','page_text')),
-  source_start      INTEGER NOT NULL,
-  source_end        INTEGER NOT NULL,
-  source_time       INTEGER,
-  time              BLOB NOT NULL,
-  hash              BLOB NOT NULL,
-  body              BLOB NOT NULL,          -- the model Document with text moved to `text`
-  committed         INTEGER CHECK(committed > 0),
-  PRIMARY KEY (input_pk, chain, document_id)
-) STRICT, WITHOUT ROWID;
-CREATE INDEX reading_document_id ON reading_document(document_id);
-
--- Outcomes a chain learned after a tool result was written, for calls that
--- ran in the background, as the chain states them.
-CREATE TABLE reading_call_outcome (
-  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
-  chain             INTEGER NOT NULL,
-  session_id        TEXT NOT NULL,
-  call_id           TEXT NOT NULL,
-  position          INTEGER NOT NULL,       -- its order among the chain's outcomes of this call
-  body              TEXT NOT NULL,          -- the model BackgroundUpdate as JSON
-  PRIMARY KEY (input_pk, chain, session_id, call_id)
-) STRICT, WITHOUT ROWID;
-CREATE INDEX reading_call_outcome_call ON reading_call_outcome(session_id, call_id);
+CREATE INDEX message_alias_name ON message_alias(name);   -- references resolved through aliases
+CREATE INDEX message_parse_order ON message_parse(input_pk, chain, session_pk, seq, record_position);   -- the order time before a step
 
 -- The newest message time in each chain of an export that lists every
 -- conversation of its account, by session origin. A session of that origin
@@ -420,9 +289,7 @@ CREATE TABLE tool_call (
   call_id           TEXT,                   -- the provider's call id: how a later result finds its call
   result_at         INTEGER,
   reported_duration_ms INTEGER,
-  result_message_id TEXT,                   -- the result's message and block position, NULL while no
-  result_idx        INTEGER,                --   result is shown: the first tool_result block with the
-                                            --   call's ID in session order
+  result_block_pk   INTEGER,                -- NULL until the result is seen
   at                INTEGER,
   tool              TEXT NOT NULL,
   action            TEXT,                   -- the parser's ToolAction: shell | code | file_read | file_write | file_edit | search | web | subagent | mcp | other
@@ -434,7 +301,8 @@ CREATE TABLE tool_call (
   outcome_reason    TEXT,                   -- a reason code (no_result, background_never_reported, ...)
   exit_code         INTEGER,
   run_by_script     INTEGER NOT NULL DEFAULT 0, -- a command a script call ran, with no call of its own
-  FOREIGN KEY (call_block_pk, session_pk) REFERENCES block(pk, session_pk)
+  FOREIGN KEY (call_block_pk, session_pk) REFERENCES block(pk, session_pk),
+  FOREIGN KEY (result_block_pk, session_pk) REFERENCES block(pk, session_pk)
 ) STRICT;
 CREATE INDEX tool_call_session ON tool_call(session_pk, at);   -- exists, seq(...), the changes view
 CREATE INDEX tool_call_pairing ON tool_call(session_pk, call_id) WHERE call_id IS NOT NULL;   -- result -> call
@@ -443,7 +311,7 @@ CREATE INDEX tool_call_tool    ON tool_call(tool);
 CREATE INDEX tool_call_action  ON tool_call(action, NULLIF(outcome, 'unknown'));   -- action: and outcome: as compiled
 CREATE INDEX tool_call_path    ON tool_call(path) WHERE path IS NOT NULL;
 CREATE INDEX tool_call_repo_command ON tool_call(command_norm, at) WHERE command_norm IS NOT NULL;   -- failing commands
-CREATE INDEX tool_call_result  ON tool_call(result_message_id) WHERE result_message_id IS NOT NULL;   -- result -> call
+CREATE INDEX tool_call_result  ON tool_call(result_block_pk) WHERE result_block_pk IS NOT NULL;   -- foreign-key check
 
 -- Substring search on short fields (command:, path:) without a scan. Unfolded
 -- text, so it can read its content from tool_call. The writer issues the FTS5
@@ -461,6 +329,7 @@ CREATE TABLE link (
   parent_id         TEXT NOT NULL,          -- natural session id (may not be ingested yet)
   child_id          TEXT NOT NULL,          -- natural session id of the child (may not be ingested yet: a parent's
                                             --   thread_spawn_edges, continued-in or job children name it first)
+  child_pk          INTEGER REFERENCES session(pk),  -- set once the child is stored; NULL while the link is pending
   kind              TEXT NOT NULL,          -- spawn | fork | continuation | resume | reference
   how               TEXT,                   -- reference: briefing | ping | mention
   copies_prefix     INTEGER NOT NULL DEFAULT 0 CHECK(copies_prefix IN (0,1)),
@@ -514,7 +383,7 @@ CREATE INDEX prefix_member_message ON prefix_member(message_id,parent_id);
 -- affected edge's link_statement index, so a session read does not walk the whole graph.
 CREATE VIEW session_link_identity AS
 WITH statements AS NOT MATERIALIZED (
-  SELECT l.pk,l.parent_id,l.child_id,l.kind,l.how,l.copies_prefix,
+  SELECT l.pk,l.parent_id,l.child_id,l.child_pk,l.kind,l.how,l.copies_prefix,
     l.branch_point,l.spawning_call,l.source_chain,l.input_pk,
     (SELECT count(DISTINCT x.branch_point) FROM link x
      WHERE x.parent_id=l.parent_id AND x.child_id=l.child_id AND x.kind=l.kind AND x.how IS l.how) AS branch_points,
@@ -522,7 +391,7 @@ WITH statements AS NOT MATERIALIZED (
      WHERE x.parent_id=l.parent_id AND x.child_id=l.child_id AND x.kind=l.kind AND x.how IS l.how) AS calls
   FROM link l
 )
-SELECT s.pk,s.parent_id,s.child_id,s.kind,s.how,
+SELECT s.pk,s.parent_id,s.child_id,s.child_pk,s.kind,s.how,
   ((SELECT max(x.copies_prefix) FROM link x
     WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how)
     OR EXISTS(SELECT 1 FROM prefix_copy p WHERE p.parent_id=s.parent_id AND p.child_id=s.child_id)) AS copies_prefix,
@@ -581,10 +450,10 @@ CREATE TABLE event (
   id                TEXT NOT NULL,          -- unique: event_id. Computed by the parser from the raw record; an
                                             --   event that names no session is keyed by its input record instead
   session_pk        INTEGER REFERENCES session(pk),  -- NULL for an event about its input, not a session
-  seq               INTEGER NOT NULL,       -- display position: its reading's place in its input, or for an event
-                                            --   placed after a message with no place of its own, that message's
-                                            --   main reading's; not a key
-  after_message_id  TEXT,                   -- the message it follows, joined by ID; export `after_message`
+  seq               INTEGER NOT NULL,       -- display position (an event placed after a message takes its message's main reading's seq); not a key
+  after_message_id  TEXT,
+  seq_from_message  INTEGER NOT NULL DEFAULT 0,
+  after_message_pk  INTEGER REFERENCES message(pk),  -- the message it follows; export `after_message`
   kind              TEXT NOT NULL,          -- open set; each provider's kinds are listed in sources/
   at                INTEGER,
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),  -- the input whose record it came from
@@ -598,19 +467,28 @@ CREATE UNIQUE INDEX event_id ON event(id);
 CREATE INDEX event_session ON event(session_pk, seq);
 CREATE INDEX event_input   ON event(input_pk, source_chain, source_start);
 CREATE INDEX event_after_id ON event(after_message_id) WHERE after_message_id IS NOT NULL;
-CREATE INDEX event_session_at ON event(session_pk, at);   -- events placed by time
+CREATE INDEX event_placed_by_time ON event(session_pk, at) WHERE after_message_pk IS NULL;   -- events placed by time
 CREATE INDEX event_kind    ON event(kind, at);
 
 
 
 
 
+-- Which inputs produced which sessions.
+CREATE TABLE parsed (
+  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
+  chain             INTEGER NOT NULL,       -- the revision chain parsed
+  session_pk        INTEGER NOT NULL REFERENCES session(pk),
+  PRIMARY KEY (input_pk, chain, session_pk)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX parsed_session ON parsed(session_pk);             -- rebuild a session from all its inputs
+
 -- How far each revision chain has been parsed, and how it ended. Every chain of every input has a row once the loop has seen it,
 -- so nothing is silently skipped.
 CREATE TABLE parse_state (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
-  reading_version   TEXT NOT NULL DEFAULT '',
+  parse_version   TEXT NOT NULL DEFAULT '',
   status            TEXT NOT NULL CHECK(status IN ('parsing','waiting','done','no_parser_yet','partial','refused','failed')),
                                             -- parsing: more stored bytes need parsing; waiting: incomplete record at
                                             --   observed EOF; done: at the stored length
@@ -695,6 +573,33 @@ CREATE TABLE repo_lookup (
 
 
 
+
+-- What each input states about a session (model Session, as JSON), merged
+-- within the input in file order. The session's own columns are derived
+-- from all of them (derive/session.rs), never from arrival order.
+CREATE TABLE session_record (
+  session_pk        INTEGER NOT NULL REFERENCES session(pk) ON DELETE CASCADE,
+  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
+  chain             INTEGER NOT NULL,
+  facts             TEXT NOT NULL,
+  committed INTEGER CHECK(committed > 0),
+  PRIMARY KEY (session_pk, input_pk, chain)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX session_record_input ON session_record(input_pk);   -- foreign-key check
+
+-- The IDs copies of a session are named by when they carry no native ID
+-- (Session.aliases), as each input chain's reading states them: an AI Studio
+-- prompt read from Drive names the content key of its Takeout copies. A copy
+-- whose name one session records is read as that session; a chain still
+-- holding a session so named is read again (docs/capture.md).
+CREATE TABLE session_alias (
+  alias             TEXT NOT NULL,          -- the copy's session ID
+  session_pk        INTEGER NOT NULL REFERENCES session(pk) ON DELETE CASCADE,
+  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
+  chain             INTEGER NOT NULL,
+  PRIMARY KEY (alias, session_pk, input_pk, chain)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX session_alias_input ON session_alias(input_pk, chain);   -- retraction
 
 -- Which derivation (derive.rs) made a session's derived rows, and at which
 -- version; a derivation whose version moved derives the session again.
@@ -790,6 +695,21 @@ CREATE TABLE document (
   fields BLOB NOT NULL, -- the shown version without its blocks, zstd JSON
   changed INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE document_parse (
+  document_pk INTEGER NOT NULL REFERENCES document(pk) ON DELETE CASCADE,
+  input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
+  chain INTEGER NOT NULL,
+  source_start INTEGER NOT NULL,
+  source_end INTEGER NOT NULL,
+  route TEXT NOT NULL CHECK (route IN ('live','capture','recorded','export','copy','page_text')),
+  source_time INTEGER,
+  time BLOB NOT NULL DEFAULT X'5b6e756c6c2c7b227175616c697479223a22756e6b6e6f776e227d5d',
+  version_hash BLOB NOT NULL REFERENCES document_version(version_hash),
+  shown INTEGER NOT NULL DEFAULT 0,
+  committed INTEGER CHECK(committed > 0),
+  PRIMARY KEY(document_pk,input_pk,chain)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX document_parse_input ON document_parse(input_pk,chain);
 CREATE TABLE document_block (
   document_pk INTEGER NOT NULL REFERENCES document(pk) ON DELETE CASCADE,
   idx INTEGER NOT NULL,
@@ -889,30 +809,30 @@ CREATE TABLE chain_progress (
   input             TEXT NOT NULL,          -- archive.db input.id
   chain             INTEGER NOT NULL,
   origin            TEXT NOT NULL,          -- the format the chain is read as
-  reading_version   TEXT NOT NULL,          -- of its parse state; '' without one
+  parse_version   TEXT NOT NULL,          -- of its parse state; '' without one
   state             TEXT NOT NULL CHECK(state IN ('no_checkpoint','current','no_parser','partial','behind')),
   PRIMARY KEY (input, chain)
 ) STRICT, WITHOUT ROWID;
 CREATE TABLE chain_progress_count (
   origin            TEXT NOT NULL,
-  reading_version   TEXT NOT NULL,
+  parse_version   TEXT NOT NULL,
   state             TEXT NOT NULL,
   n                 INTEGER NOT NULL,
-  PRIMARY KEY (origin, reading_version, state)
+  PRIMARY KEY (origin, parse_version, state)
 ) STRICT, WITHOUT ROWID;
 CREATE TRIGGER chain_progress_added AFTER INSERT ON chain_progress BEGIN
-  INSERT INTO chain_progress_count(origin, reading_version, state, n) VALUES (NEW.origin, NEW.reading_version, NEW.state, 1)
-    ON CONFLICT(origin, reading_version, state) DO UPDATE SET n = n + 1;
+  INSERT INTO chain_progress_count(origin, parse_version, state, n) VALUES (NEW.origin, NEW.parse_version, NEW.state, 1)
+    ON CONFLICT(origin, parse_version, state) DO UPDATE SET n = n + 1;
 END;
 CREATE TRIGGER chain_progress_removed AFTER DELETE ON chain_progress BEGIN
-  UPDATE chain_progress_count SET n = n - 1 WHERE origin = OLD.origin AND reading_version = OLD.reading_version AND state = OLD.state;
-  DELETE FROM chain_progress_count WHERE origin = OLD.origin AND reading_version = OLD.reading_version AND state = OLD.state AND n = 0;
+  UPDATE chain_progress_count SET n = n - 1 WHERE origin = OLD.origin AND parse_version = OLD.parse_version AND state = OLD.state;
+  DELETE FROM chain_progress_count WHERE origin = OLD.origin AND parse_version = OLD.parse_version AND state = OLD.state AND n = 0;
 END;
-CREATE TRIGGER chain_progress_changed AFTER UPDATE OF origin, reading_version, state ON chain_progress BEGIN
-  UPDATE chain_progress_count SET n = n - 1 WHERE origin = OLD.origin AND reading_version = OLD.reading_version AND state = OLD.state;
-  DELETE FROM chain_progress_count WHERE origin = OLD.origin AND reading_version = OLD.reading_version AND state = OLD.state AND n = 0;
-  INSERT INTO chain_progress_count(origin, reading_version, state, n) VALUES (NEW.origin, NEW.reading_version, NEW.state, 1)
-    ON CONFLICT(origin, reading_version, state) DO UPDATE SET n = n + 1;
+CREATE TRIGGER chain_progress_changed AFTER UPDATE OF origin, parse_version, state ON chain_progress BEGIN
+  UPDATE chain_progress_count SET n = n - 1 WHERE origin = OLD.origin AND parse_version = OLD.parse_version AND state = OLD.state;
+  DELETE FROM chain_progress_count WHERE origin = OLD.origin AND parse_version = OLD.parse_version AND state = OLD.state AND n = 0;
+  INSERT INTO chain_progress_count(origin, parse_version, state, n) VALUES (NEW.origin, NEW.parse_version, NEW.state, 1)
+    ON CONFLICT(origin, parse_version, state) DO UPDATE SET n = n + 1;
 END;
 -- Records parsers did not read, summed by what they were, kept the same way.
 CREATE TABLE unused_count (
@@ -930,6 +850,102 @@ CREATE TRIGGER unused_changed AFTER UPDATE OF what, count ON unused BEGIN
   INSERT INTO unused_count(what, n) VALUES (NEW.what, NEW.count) ON CONFLICT(what) DO UPDATE SET n = n + excluded.n;
 END;
 
+-- Referenced metadata stays narrow; payload pages are read only for content.
+CREATE TABLE message_version (
+  pk INTEGER PRIMARY KEY,
+  version_hash BLOB NOT NULL
+) STRICT;
+CREATE UNIQUE INDEX message_version_hash ON message_version(version_hash);
+CREATE TABLE message_version_body (
+  version_pk INTEGER PRIMARY KEY REFERENCES message_version(pk) ON DELETE CASCADE,
+  body BLOB NOT NULL
+) STRICT;
+CREATE TABLE message_block_selection (
+  version_pk INTEGER PRIMARY KEY REFERENCES message_version(pk) ON DELETE CASCADE,
+  layout BLOB NOT NULL, -- original u64 block count and aligned original ordinals
+  committed INTEGER CHECK(committed > 0) -- latest commit position contributing these rows
+) STRICT, WITHOUT ROWID;
+CREATE TABLE message_version_text (
+  version_pk INTEGER NOT NULL REFERENCES message_version(pk) ON DELETE CASCADE,
+  idx INTEGER NOT NULL,
+  text_id INTEGER NOT NULL REFERENCES text(id),
+  PRIMARY KEY(version_pk, idx)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX message_version_text_id ON message_version_text(text_id);
+-- Document payloads keep their own hash-addressed format.
+CREATE TABLE document_version (
+  version_hash BLOB NOT NULL UNIQUE,
+  body BLOB NOT NULL
+) STRICT;
+CREATE TABLE document_version_text (
+  version_hash BLOB NOT NULL REFERENCES document_version(version_hash) ON DELETE CASCADE,
+  idx INTEGER NOT NULL,
+  text_id INTEGER NOT NULL REFERENCES text(id),
+  PRIMARY KEY(version_hash, idx)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX document_version_text_id ON document_version_text(text_id);
+
+-- Membership rows use small value keys, independently of assertion payload size.
+CREATE TABLE event_value (
+  pk INTEGER PRIMARY KEY,
+  hash BLOB NOT NULL,
+  body BLOB NOT NULL
+) STRICT;
+CREATE UNIQUE INDEX event_value_hash ON event_value(hash);
+CREATE TABLE event_parse (
+  event_pk INTEGER NOT NULL REFERENCES event(pk) ON DELETE CASCADE,
+  input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
+  chain INTEGER NOT NULL,
+  value_pk INTEGER NOT NULL REFERENCES event_value(pk),
+  route TEXT NOT NULL CHECK (route IN ('live','capture','recorded','export','copy','page_text')),
+  session_pk INTEGER REFERENCES session(pk),
+  seq INTEGER,
+  source_start INTEGER,
+  source_end INTEGER,
+  after_message_id TEXT,
+  at INTEGER,
+  fields BLOB NOT NULL,
+  imported_sources TEXT NOT NULL CHECK(json_valid(imported_sources)),
+  committed INTEGER CHECK(committed > 0),
+  PRIMARY KEY(event_pk, input_pk, chain)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX event_parse_input ON event_parse(input_pk, chain);
+CREATE TABLE link_value (
+  pk INTEGER PRIMARY KEY,
+  hash BLOB NOT NULL,
+  body BLOB NOT NULL
+) STRICT;
+CREATE UNIQUE INDEX link_value_hash ON link_value(hash);
+CREATE TABLE link_parse (
+  link_pk INTEGER NOT NULL REFERENCES link(pk) ON DELETE CASCADE,
+  input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
+  chain INTEGER NOT NULL,
+  value_pk INTEGER NOT NULL REFERENCES link_value(pk),
+  route TEXT NOT NULL CHECK (route IN ('live','capture','recorded','export','copy','page_text')),
+  committed INTEGER CHECK(committed > 0),
+  PRIMARY KEY(link_pk, input_pk, chain)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX link_parse_input ON link_parse(input_pk, chain);
+
+CREATE INDEX message_parse_version ON message_parse(version_pk);
+CREATE INDEX document_parse_version ON document_parse(version_hash);
+CREATE INDEX event_parse_value ON event_parse(value_pk);
+CREATE INDEX link_parse_value ON link_parse(value_pk);
+CREATE TABLE message_version_blob (
+  version_pk INTEGER NOT NULL REFERENCES message_version(pk) ON DELETE CASCADE,
+  blob_hash BLOB NOT NULL,
+  PRIMARY KEY(version_pk,blob_hash)
+) STRICT, WITHOUT ROWID;
+CREATE TABLE document_version_blob (
+  version_hash BLOB NOT NULL REFERENCES document_version(version_hash) ON DELETE CASCADE,
+  blob_hash BLOB NOT NULL,
+  PRIMARY KEY(version_hash,blob_hash)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX message_version_blob_hash ON message_version_blob(blob_hash);
+CREATE INDEX document_version_blob_hash ON document_version_blob(blob_hash);
+
+CREATE INDEX message_parse_session ON message_parse(session_pk);
+CREATE INDEX event_parse_session ON event_parse(session_pk);
 -- Recomputed comparison state for tool-database inputs.
 CREATE TABLE tool_row (
     input_pk INTEGER NOT NULL REFERENCES input_ref(pk) ON DELETE CASCADE,
@@ -974,27 +990,3 @@ CREATE TABLE process (
   role       TEXT NOT NULL,                 -- harness | child
   PRIMARY KEY (session_pk, boot_id, pid, start)
 ) STRICT;
-
--- Every session ID readings state that a shown session is shown as: its own
--- ID, unless exactly one other session records it as an alias, and each
--- alias that it alone records (writer/identity.rs).
-CREATE VIEW session_stated AS
-SELECT s.pk AS session_pk, s.id AS stated_id FROM session s
-WHERE (SELECT count(DISTINCT a.session_id) FROM reading_session_alias a WHERE a.alias = s.id AND a.session_id <> s.id) <> 1
-UNION ALL
-SELECT s.pk, a.alias FROM session s JOIN reading_session_alias a ON a.session_id = s.id AND a.alias <> s.id
-WHERE (SELECT count(DISTINCT b.session_id) FROM reading_session_alias b WHERE b.alias = a.alias AND b.session_id <> b.alias) = 1
-GROUP BY s.pk, a.alias;
-
--- Each reading a shown message is composed from: those naming its ID, and
--- those of a copy its session is shown for, whose content-named messages
--- carry the copy's ID where the shown one carries the session's
--- (writer/identity.rs).
-CREATE VIEW message_reading AS
-SELECT m.pk AS message_pk, r.* FROM message m JOIN held_message_reading r ON r.message_id = m.id
-UNION ALL
-SELECT m.pk, r.* FROM message m JOIN session s ON s.pk = m.session_pk
-JOIN session_stated x ON x.session_pk = s.pk AND x.stated_id <> s.id
-JOIN held_message_reading r ON r.session_id = x.stated_id
-  AND r.message_id = x.stated_id || substr(m.id, length(s.id) + 1)
-WHERE substr(m.id, 1, length(s.id) + 1) = s.id || '~';

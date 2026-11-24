@@ -1,6 +1,6 @@
 use crate::fixture::writer::message;
 use crate::writer::ParseStep;
-use polylogue_model::{Block, HookFieldClaim, MessageRow, Output, RecordCounts, Role};
+use polylogue_model::{Block, MessageRow, Output, ParsedHookField, RecordCounts, Role};
 
 fn step() -> ParseStep {
     step_with_second_block(Block::Text {
@@ -34,7 +34,7 @@ fn step_with_second_block(second: Block) -> ParseStep {
     };
     output.hook_fields.insert(
         0,
-        vec![HookFieldClaim {
+        vec![ParsedHookField {
             block: 1,
             start: 10,
             end: 80,
@@ -131,7 +131,7 @@ fn sparse_hook_fields_keep_original_ordinals() {
     };
     output.block_selections.insert(
         0,
-        polylogue_model::bundle::MessageProjection {
+        polylogue_model::bundle::ShownBlocks {
             source_version,
             block_count: 4,
             block_ordinals: vec![3],
@@ -139,7 +139,7 @@ fn sparse_hook_fields_keep_original_ordinals() {
     );
     output.hook_fields.insert(
         0,
-        vec![HookFieldClaim {
+        vec![ParsedHookField {
             block: 3,
             start: 10,
             end: 80,

@@ -32,7 +32,7 @@ pub enum ChainStep {
         blob_offset: u64,
     },
     ReaderVersion {
-        reading_version: String,
+        parse_version: String,
         status: String,
         parsed_upto: u64,
     },

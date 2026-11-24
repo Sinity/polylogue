@@ -4,10 +4,9 @@ pub use crate::source::SourceBoundary;
 pub mod authored;
 pub mod capture;
 pub use capture::{
-    AcquisitionReceipt, AcquisitionRoute, CaptureEmitter, CaptureMembers, CaptureMode,
-    CaptureOutcome, CapturePlan, CaptureResult, ConfirmedSource, PendingGroupPage, PendingSource,
-    RawRange, SourceBasis, SourceSelector, SourceSnapshot, SourceStatus, SourceSubject,
-    SpooledGroup,
+    CaptureEmitter, CaptureMembers, CaptureMode, CaptureOutcome, CapturePlan, CaptureRead,
+    CaptureResult, ConfirmedSource, PendingGroupPage, PendingSource, RawRange, ReadRoute,
+    SourceBase, SourceSelector, SourceSnapshot, SourceStatus, SourceSubject, SpooledGroup,
 };
 pub mod byte_cursor;
 pub mod products;
@@ -15,7 +14,7 @@ pub mod queue;
 pub mod replay;
 pub use byte_cursor::{
     BodyRange, ByteCursor, ByteCursorCheck, ByteCursorQuery, DatabaseSnapshotToken, FileSnapshot,
-    FileTime, RawStream, RawStreamRole, SourceGeneration,
+    FileTime, ObservedState, RawStream, RawStreamRole,
 };
 pub use replay::{
     AppliedSnapshot, CompletedDelivery, ConfirmedOrigin, LastStreamMessage, PayloadIdentity,

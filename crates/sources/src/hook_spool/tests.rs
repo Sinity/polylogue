@@ -117,7 +117,7 @@ fn work_live_events_keep_their_hook_record_range() {
     let input = lines(&[
         json!({"event_id":"native-one","event":"SessionStart","provider":"codex","session_id":"session","at_ns":"1000000",
         "git_identity":git,"terminal_identity":terminal,"boot_id":"boot","repository":"https://example.test/project.git",
-        "native_unavailable":["optional observation unavailable"],
+        "unstated":["optional observation unavailable"],
         "payload":{"objectives":[{"kind":"task","reference":"demo-1","repository":"https://example.test/project.git"}]}}),
     ]);
     let step = run(&HookSpool, &mut ParserState::default(), &input, 0).unwrap();
@@ -128,7 +128,7 @@ fn work_live_events_keep_their_hook_record_range() {
     assert_eq!(event.data["objectives"][0]["reference"], "demo-1");
     assert_eq!(event.data["boot_id"], "boot");
     assert_eq!(
-        event.data["native_unavailable"],
+        event.data["unstated"],
         json!(["optional observation unavailable"])
     );
     assert!(step.output.sessions.is_empty());

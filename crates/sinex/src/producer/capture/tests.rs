@@ -1,7 +1,7 @@
 mod commit_wake;
 use super::*;
 use crate::tests::{body, capture, client};
-use polylogue_store::primary::{RawRange, SourceBasis};
+use polylogue_store::primary::{RawRange, SourceBase};
 
 pub(super) fn source(path: &[u8]) -> SourceSelector {
     SourceSelector {
@@ -10,8 +10,8 @@ pub(super) fn source(path: &[u8]) -> SourceSelector {
         path_bytes: path.into(),
     }
 }
-pub(super) fn source_base(source: &SourceSelector, pending: Option<String>) -> SourceBasis {
-    SourceBasis {
+pub(super) fn source_base(source: &SourceSelector, pending: Option<String>) -> SourceBase {
+    SourceBase {
         boundary: None,
         resolved: None,
         source: source.clone(),
@@ -24,7 +24,7 @@ pub(super) fn capture_bytes(
     sinex: &Sinex,
     root: &std::path::Path,
     bytes: &[u8],
-    base: SourceBasis,
+    base: SourceBase,
     mode: CaptureMode,
 ) -> Result<PreparedWrite> {
     let plan = CapturePlan {
@@ -40,17 +40,15 @@ pub(super) fn capture_bytes(
             start: 0,
             end: bytes.len() as u64,
         });
-        input.basis = Some(base.clone());
+        input.base = Some(base.clone());
         emit(input, vec![body(root, bytes)])
     })?;
     match result {
         CaptureResult::Accepted { write } => Ok(write),
-        CaptureResult::UnresolvedBasisConflict { .. } => {
-            Err(polylogue_store::StoreError::Conflict(
-                "original bytes kept without advancing the source".into(),
-            )
-            .into())
-        }
+        CaptureResult::UnresolvedBaseConflict { .. } => Err(polylogue_store::StoreError::Conflict(
+            "original bytes kept without advancing the source".into(),
+        )
+        .into()),
     }
 }
 
@@ -99,7 +97,7 @@ fn retries_keep_first_outcome_after_downgrade() {
         sinex
             .prepare_input_group(plan, &mut |emit| {
                 let mut input = capture(bytes);
-                input.basis = Some(plan.bases[0].clone());
+                input.base = Some(plan.bases[0].clone());
                 emit(input, vec![body(root.path(), bytes)])
             })
             .unwrap()
@@ -111,11 +109,11 @@ fn retries_keep_first_outcome_after_downgrade() {
         .head
         .unwrap()
         .identity;
-    plan.required_outcome = Some(CaptureOutcome::UnresolvedBasisConflict);
+    plan.required_outcome = Some(CaptureOutcome::UnresolvedBaseConflict);
     assert_eq!(accepted(prepare(&plan, b"A")).identity, first.identity);
     plan.intent = "second".into();
     plan.bases[0].pending = Some(latest.clone());
-    let CaptureResult::UnresolvedBasisConflict { spooled } = prepare(&plan, b"B") else {
+    let CaptureResult::UnresolvedBaseConflict { spooled } = prepare(&plan, b"B") else {
         panic!()
     };
     let page = sinex
@@ -139,7 +137,7 @@ fn retries_keep_first_outcome_after_downgrade() {
     std::io::Read::read_to_end(&mut reader, &mut actual).unwrap();
     assert_eq!(actual, b"B");
     plan.required_outcome = None;
-    let CaptureResult::UnresolvedBasisConflict { spooled: retried } = prepare(&plan, b"B") else {
+    let CaptureResult::UnresolvedBaseConflict { spooled: retried } = prepare(&plan, b"B") else {
         panic!()
     };
     assert_eq!(retried, spooled);
@@ -278,7 +276,7 @@ fn failed_group_is_not_visible_and_immutable_imports_keep_content_identity() {
         sinex
             .prepare_input_group(&plan, &mut |emit| {
                 let mut input = capture(b"first");
-                input.basis = Some(source_base(&selector, None));
+                input.base = Some(source_base(&selector, None));
                 emit(input, vec![body(root.path(), b"first")])?;
                 Err(polylogue_store::StoreError::invalid(
                     "second member unavailable",
@@ -337,7 +335,7 @@ fn staging_releases_spool_lock_and_rechecks_source() {
             "body staging kept the shared spool lock"
         );
         let mut input = capture(b"A");
-        input.basis = Some(original_base.clone());
+        input.base = Some(original_base.clone());
         emit(input, vec![body(root.path(), b"A")])?;
         capture_bytes(
             &sinex,
@@ -348,13 +346,13 @@ fn staging_releases_spool_lock_and_rechecks_source() {
         )?;
         Ok(())
     });
-    let CaptureResult::UnresolvedBasisConflict { spooled } = result.unwrap() else {
+    let CaptureResult::UnresolvedBaseConflict { spooled } = result.unwrap() else {
         panic!("stale capture read must keep its bytes in the spool without advancing the source");
     };
     let kept = sinex
         .pending_group_headers(&spooled.identity, None, 1)
         .unwrap();
-    assert_eq!(kept.outcome, Some(CaptureOutcome::UnresolvedBasisConflict));
+    assert_eq!(kept.outcome, Some(CaptureOutcome::UnresolvedBaseConflict));
     assert_eq!(kept.headers.len(), 1);
     let raw = sinex
         .capture_body(&kept.headers[0].identity)
@@ -412,7 +410,7 @@ fn group_pages_keep_siblings_and_order_after_restart() {
             {
                 let mut input = capture(bytes);
                 input.index = u32::try_from(ordinal).unwrap();
-                input.basis = Some(base.clone());
+                input.base = Some(base.clone());
                 emit(input, vec![body(root.path(), bytes)])?;
             }
             sinex.prepare_blob(
@@ -493,7 +491,7 @@ fn retry_keeps_first_capture_coordinates() {
     let first = sinex
         .prepare_input_group(&plan, &mut |emit| {
             let mut input = capture(b"A");
-            input.basis = Some(base.clone());
+            input.base = Some(base.clone());
             first_header = Some(input.clone());
             emit(input, vec![body(root.path(), b"A")])
         })
@@ -532,7 +530,7 @@ fn unresolved_retry_survives_a_moved_source() {
         sinex
             .prepare_input_group(&plan, &mut |emit| {
                 let mut input = capture(bytes);
-                input.basis = Some(first_base.clone());
+                input.base = Some(first_base.clone());
                 if no_extent {
                     input.rows.extents.clear();
                 }
@@ -542,13 +540,13 @@ fn unresolved_retry_survives_a_moved_source() {
     };
     let accepted_a = accepted(stage(b"A", false));
     let raw_b = b"provider\x00\xff";
-    let CaptureResult::UnresolvedBasisConflict { spooled: rejected } = stage(raw_b, true) else {
+    let CaptureResult::UnresolvedBaseConflict { spooled: rejected } = stage(raw_b, true) else {
         panic!("different offered body needs its bytes kept in the spool")
     };
     let kept = sinex
         .pending_group_headers(&rejected.identity, None, 1)
         .unwrap();
-    assert_eq!(kept.outcome, Some(CaptureOutcome::UnresolvedBasisConflict));
+    assert_eq!(kept.outcome, Some(CaptureOutcome::UnresolvedBaseConflict));
     let raw_id = kept.headers[0].identity.clone();
     let Capture::Input(header) = &kept.headers[0].captured else {
         panic!("input header expected")
@@ -583,7 +581,7 @@ fn unresolved_retry_survives_a_moved_source() {
         .head
         .unwrap()
         .identity;
-    let CaptureResult::UnresolvedBasisConflict { spooled: retry } = stage(raw_b, true) else {
+    let CaptureResult::UnresolvedBaseConflict { spooled: retry } = stage(raw_b, true) else {
         panic!("unresolved retry must not be promoted")
     };
     assert_eq!(rejected, retry);
@@ -612,7 +610,7 @@ fn unresolved_retry_survives_a_moved_source() {
     let kept = sinex
         .pending_group_headers(&rejected.identity, None, 1)
         .unwrap();
-    assert_eq!(kept.outcome, Some(CaptureOutcome::UnresolvedBasisConflict));
+    assert_eq!(kept.outcome, Some(CaptureOutcome::UnresolvedBaseConflict));
     let body = sinex.capture_body(&raw_id).unwrap().remove(0);
     let prepared = hashed_blobs::Prepared::from_encoded(
         body.file,

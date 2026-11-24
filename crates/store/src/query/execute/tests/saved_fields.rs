@@ -370,7 +370,7 @@ fn triage_score_sums_named_facts() {
     f.message_time(
         m,
         Some(polylogue_model::Timestamp::from_unix_ms(1000).unwrap()),
-        polylogue_model::TimeEvidence::intrinsic(polylogue_model::Precision::Instant),
+        polylogue_model::TimeAccuracy::intrinsic(polylogue_model::Precision::Instant),
     )
     .unwrap();
     assert_eq!(

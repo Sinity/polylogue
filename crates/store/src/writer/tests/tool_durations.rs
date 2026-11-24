@@ -50,7 +50,7 @@ fn duration_outside_sql_integer_range_stays_exact() {
             archive.writer.derive().unwrap();
             let pool = ReadPool::open(&archive.archive).unwrap();
             let reader = pool.reader().unwrap();
-            let rows = reader.query("SELECT reported_duration_ms AS duration,result_message_id IS NOT NULL AS paired FROM tool_call WHERE call_id='t1'",&[]).unwrap();
+            let rows = reader.query("SELECT reported_duration_ms AS duration,result_block_pk IS NOT NULL AS paired FROM tool_call WHERE call_id='t1'",&[]).unwrap();
             assert_eq!(
                 rows[0]["duration"],
                 i64::try_from(duration).ok().map_or(Json::Null, Json::from)

@@ -48,11 +48,11 @@ fn import(bytes: &[u8], chunk: u64) -> (ClaudeHome, i64) {
 /// The length every item of [`equal_conversations`] has in the stored export.
 fn item_length(w: &ClaudeHome) -> u64 {
     assert_eq!(
-        w.count("SELECT count(DISTINCT source_end - source_start) AS n FROM reading_message"),
+        w.count("SELECT count(DISTINCT source_end - source_start) AS n FROM message_parse"),
         1,
         "the items differ in length"
     );
-    w.count("SELECT source_end - source_start AS n FROM reading_message LIMIT 1") as u64
+    w.count("SELECT source_end - source_start AS n FROM message_parse LIMIT 1") as u64
 }
 
 #[test]

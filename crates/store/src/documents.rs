@@ -1,15 +1,210 @@
 //! Text documents: one shown version each, with source time before route
 //! precedence, and reads in the reader's read transaction.
 use crate::ConnExt as _;
-use crate::ResultExt as _;
-use crate::encoding::{restore_text, unpack_block, unpack_json};
-use crate::{Reader, Result};
+use crate::encoding::{PreparedDocument, restore_text, unpack_block, unpack_json};
+use crate::{OptionExt as _, ResultExt as _};
+use crate::{Reader, Result, StoreError};
 use polylogue_model::hex;
-use polylogue_model::{Block, Document, DocumentId, Json};
-use rusqlite::{OptionalExtension, params};
+use polylogue_model::{Block, Document, DocumentId, DocumentRow, Json};
+use rusqlite::{OptionalExtension, Transaction, params};
 use serde::Serialize;
 
 use std::ops::ControlFlow;
+
+pub(crate) struct Source<'a> {
+    pub input_pk: i64,
+    pub chain: i64,
+    pub route: polylogue_model::Route,
+    pub counter: i64,
+    pub packed: &'a crate::text_rows::PreparedTexts,
+    pub texts: &'a crate::text_rows::TextIds,
+    /// The writer's index upkeep for this transaction.
+    pub upkeep: &'a crate::writer::resolve::IndexUpkeep,
+    pub keys: &'a crate::writer::resolve::ResolvedKeys,
+}
+
+pub(crate) fn write(
+    tx: &Transaction<'_>,
+    source: &Source<'_>,
+    row: &DocumentRow,
+    prepared: &PreparedDocument,
+    committed: Option<i64>,
+) -> Result<()> {
+    if prepared.id != row.document.id || prepared.blocks.len() != row.document.blocks.len() {
+        return Err(StoreError::Invalid(
+            "prepared Document differs from its source row".into(),
+        ));
+    }
+    let doc = &row.document;
+    let time = doc.source_time.map(|t| t.unix_ms());
+    let keys = source.keys;
+    let reserved = keys.get(
+        crate::writer::resolve::Kind::Document,
+        doc.id.to_string().as_bytes(),
+    )?;
+    let existing = tx
+        .prepare_cached("SELECT pk FROM document WHERE pk=?1")?
+        .query_row([reserved.pk], |row| row.get::<_, i64>(0))
+        .optional()?;
+    crate::versions::store_document(
+        tx,
+        &prepared.hash,
+        &prepared.body,
+        &doc.blocks,
+        &prepared.texts,
+        crate::versions::TextRows {
+            packed: source.packed,
+            texts: source.texts,
+            membership: None,
+            upkeep: source.upkeep,
+        },
+    )?;
+    let pk = match existing {
+        Some(pk) => pk,
+        None => {
+            tx.execute("INSERT INTO document(pk,id,origin,native_id,purpose,title,source_time,authorship,version_hash,input_pk,source_chain,source_start,source_end,changed,fields)
+                VALUES (?15,?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",params![doc.id.to_string(),doc.id.origin().as_str(),doc.id.native().as_str(),doc.purpose.as_str(),doc.title,time,doc.authorship.as_str(),&prepared.hash[..],source.input_pk,source.chain,row.offset as i64,row.end as i64,source.counter,prepared.fields,Some(reserved.pk)])?;
+            tx.last_insert_rowid()
+        }
+    };
+    set_source(tx, pk, source, row, time, prepared, committed)?;
+    Ok(())
+}
+
+/// Makes the document row what its resolved choice says. `None` means every
+/// reading of the document is gone: the row and its unused texts are removed.
+pub(crate) fn apply_choice(
+    tx: &Transaction<'_>,
+    pk: i64,
+    choice: Option<&crate::writer::resolve::membership::DocumentChoice>,
+    counter: i64,
+    upkeep: &crate::writer::resolve::IndexUpkeep,
+    texts: &crate::text_rows::TextIds,
+    keys: &crate::writer::resolve::ResolvedKeys,
+) -> Result<()> {
+    let Some(choice) = choice else {
+        let old=tx.prepare("SELECT DISTINCT text_id FROM document_block WHERE document_pk=?1 AND text_id IS NOT NULL")?.query_map([pk],|r|r.get::<_,i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        tx.execute("DELETE FROM document WHERE pk=?1", [pk])?;
+        for text in old {
+            crate::text_rows::unindex_unused(tx, texts, text, upkeep.at_build_end())?;
+        }
+        return Ok(());
+    };
+    let packed = crate::text_rows::PreparedTexts::default();
+    let source = Source {
+        input_pk: choice.input,
+        chain: choice.chain,
+        route: choice.route,
+        counter,
+        packed: &packed,
+        upkeep,
+        texts,
+        keys,
+    };
+    if choice.changed {
+        let document = choice.document.as_ref().ok_or_else(|| {
+            StoreError::Invalid("a changed document has no prepared value".into())
+        })?;
+        let prepared = choice
+            .prepared
+            .as_ref()
+            .or_invalid("a changed document has no prepared body")?;
+        let row = DocumentRow {
+            offset: choice.start as u64,
+            end: choice.end as u64,
+            document: document.clone(),
+        };
+        show(tx, pk, &source, &row, prepared)?;
+    } else {
+        tx.prepare_cached("UPDATE document SET input_pk=?2,source_chain=?3,source_start=?4,source_end=?5,changed=?6 WHERE pk=?1")?.execute(params![pk,choice.input,choice.chain,choice.start,choice.end,counter])?;
+    }
+    tx.execute(
+        "UPDATE document_parse SET shown=(input_pk=?2 AND chain=?3) WHERE document_pk=?1",
+        params![pk, choice.input, choice.chain],
+    )?;
+    Ok(())
+}
+
+fn set_source(
+    tx: &Transaction<'_>,
+    pk: i64,
+    source: &Source<'_>,
+    row: &DocumentRow,
+    time: Option<i64>,
+    prepared: &PreparedDocument,
+    committed: Option<i64>,
+) -> Result<()> {
+    tx.execute("INSERT INTO document_parse(document_pk,input_pk,chain,source_start,source_end,route,source_time,version_hash,shown,time,committed)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+        ON CONFLICT(document_pk,input_pk,chain) DO UPDATE SET source_start=excluded.source_start,source_end=excluded.source_end,
+            route=excluded.route,source_time=excluded.source_time,version_hash=excluded.version_hash,shown=excluded.shown,time=excluded.time,committed=excluded.committed",
+        params![pk,source.input_pk,source.chain,row.offset as i64,row.end as i64,source.route.as_str(),time,&prepared.hash[..],false,prepared.time,committed])?;
+    Ok(())
+}
+
+fn show(
+    tx: &Transaction<'_>,
+    pk: i64,
+    source: &Source<'_>,
+    row: &DocumentRow,
+    prepared: &PreparedDocument,
+) -> Result<()> {
+    let document = &row.document;
+    tx.execute("UPDATE document SET purpose=?2,title=?3,source_time=?4,authorship=?5,version_hash=?6,input_pk=?7,source_chain=?8,source_start=?9,source_end=?10,changed=?11,fields=?12 WHERE pk=?1",params![pk,document.purpose.as_str(),document.title,document.source_time.map(|t|t.unix_ms()),document.authorship.as_str(),&prepared.hash[..],source.input_pk,source.chain,row.offset as i64,row.end as i64,source.counter,prepared.fields])?;
+    let old: Vec<i64> = tx
+        .prepare("SELECT DISTINCT text_id FROM document_block WHERE document_pk=?1 AND text_id IS NOT NULL")?
+        .query_map([pk], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    tx.execute("DELETE FROM document_block WHERE document_pk=?1", [pk])?;
+    insert_blocks(tx, pk, source, document, prepared)?;
+    for text in old {
+        crate::text_rows::unindex_unused(tx, source.texts, text, source.upkeep.at_build_end())?;
+    }
+    Ok(())
+}
+
+fn insert_blocks(
+    tx: &Transaction<'_>,
+    pk: i64,
+    source: &Source<'_>,
+    document: &Document,
+    prepared: &PreparedDocument,
+) -> Result<()> {
+    let stored_texts = crate::versions::document_text_ids(tx, &prepared.hash)?;
+    for (idx, ((block, body), data)) in document
+        .blocks
+        .iter()
+        .zip(&prepared.blocks)
+        .zip(&prepared.data)
+        .enumerate()
+    {
+        let text = prepared.texts[idx]
+            .as_ref()
+            .map(|_| {
+                stored_texts.get(&idx).copied().ok_or_else(|| {
+                    StoreError::Invalid("stored document text reference is missing".into())
+                })
+            })
+            .transpose()?;
+        if let Some(id) = text {
+            crate::text_rows::join_search_index(
+                tx,
+                source.texts,
+                id,
+                1,
+                source.upkeep.at_build_end(),
+            )?;
+        }
+        let blob = match block {
+            Block::Image(attachment) | Block::File(attachment) => {
+                attachment.blob.map(|h| h.0.to_vec())
+            }
+            _ => None,
+        };
+        tx.execute("INSERT INTO document_block(document_pk,idx,kind,body,text_id,blob_hash,data) VALUES (?1,?2,?3,?4,?5,?6,?7)",params![pk,idx as i64,block.kind().as_str(),body,text,blob,data])?;
+    }
+    Ok(())
+}
 
 /// A document selection belongs to its Reader; budgeted consumers decode blocks
 /// in order and can stop before later blocks. No input is reopened.
@@ -111,7 +306,7 @@ impl DocumentRead<'_, '_> {
     }
 
     pub fn sources(&self) -> Result<Vec<DocumentSource>> {
-        let mut statement=self.reader.conn()?.prepare("SELECT r.id,s.chain,s.source_start,s.source_end,s.hash,(s.input_pk=d.input_pk AND s.chain=d.source_chain) FROM document d JOIN reading_document s ON s.document_id=d.id JOIN input_ref r ON r.pk=s.input_pk WHERE d.pk=?1 ORDER BY r.id,s.chain,s.source_start,s.hash")?;
+        let mut statement=self.reader.conn()?.prepare("SELECT r.id,s.chain,s.source_start,s.source_end,s.version_hash,s.shown FROM document_parse s JOIN input_ref r ON r.pk=s.input_pk WHERE s.document_pk=?1 ORDER BY r.id,s.chain,s.source_start,s.version_hash")?;
         let mut rows = statement.query([self.pk])?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {

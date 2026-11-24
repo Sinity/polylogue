@@ -443,7 +443,7 @@ fn compose(
     });
     composed.indexes.push(own);
     children(services, reader, scope, &mut composed, options.view)?;
-    if let SpawnFold::Inline { depth } = options.spawns {
+    if let SpawnDisplay::Inline { depth } = options.spawns {
         inline_spawns(services, reader, &mut composed, depth, options.view)?;
     }
     Ok(composed)
@@ -2430,7 +2430,7 @@ fn place_cards(
         }
         let slot = page.partition_point(|entry| entry.place() < place);
         let cards = card_slot.cards.iter().filter(|item| {
-            options.spawns != SpawnFold::Hidden
+            options.spawns != SpawnDisplay::Hidden
                 || !matches!(&item.kind, ItemKind::Card { card } if matches!(**card, Card::Delegation { .. }))
         });
         let held = placed.entry(slot).or_default();

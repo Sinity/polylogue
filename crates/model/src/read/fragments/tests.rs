@@ -1,9 +1,7 @@
 use super::*;
 use crate::{
     BlobHash, MessageId, Reference, SpanUnit,
-    bundle::{
-        TextCoverage, TextFragment, TextFragmentProvenance, TextSourceVersion, TextSpanOrigin,
-    },
+    bundle::{TextCoverage, TextFragment, TextFragmentSource, TextSourceVersion, TextSpanOrigin},
     read::ContextState,
 };
 
@@ -120,7 +118,7 @@ fn fragment_record(text: &str) -> TextFragmentRecord {
             },
             text: text.into(),
             text_hash: BlobHash::of(text.as_bytes()),
-            provenance: TextFragmentProvenance {
+            provenance: TextFragmentSource {
                 spans: vec![TextSpanOrigin {
                     reference: span,
                     start: 0,

@@ -67,11 +67,11 @@ pub enum ParseProgress {
     /// Confirmed events omit part of the source this reading needs.
     Partial,
     /// The parser declined the `length` stored bytes, for the stated reason.
-    /// The chain is read again once its stored length or reading version
+    /// The chain is read again once its stored length or parse version
     /// changes.
     Refused { reason: String, length: u64 },
     /// The parser failed over `length` stored bytes, with its error. The
-    /// chain is read again once its stored length or reading version changes.
+    /// chain is read again once its stored length or parse version changes.
     Failed { error: String, length: u64 },
 }
 

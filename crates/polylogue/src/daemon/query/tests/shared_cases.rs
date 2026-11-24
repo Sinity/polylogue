@@ -1,7 +1,7 @@
 //! Shared independent cases through the product compiler, fixture store and pager.
 use super::super::*;
 use super::{fixture_clock, fixture_context, run};
-use polylogue_model::{Precision, SessionId, TimeEvidence, TimeQuality, Timestamp, Usage};
+use polylogue_model::{Precision, SessionId, TimeAccuracy, TimeQuality, Timestamp, Usage};
 use polylogue_store::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
 use query_language::cursor::{PageRequest, SealedCursor};
 use query_language::{
@@ -314,13 +314,13 @@ fn timestamp(tick: i64) -> Result<Timestamp, Error> {
         .and_then(Timestamp::from_unix_ms)
         .ok_or_else(|| error("fixture time is outside the stored timestamp range"))
 }
-fn time(extent: Option<Extent>) -> Result<(Option<Timestamp>, TimeEvidence), Error> {
+fn time(extent: Option<Extent>) -> Result<(Option<Timestamp>, TimeAccuracy), Error> {
     let Some(extent) = extent else {
-        return Ok((None, TimeEvidence::UNKNOWN));
+        return Ok((None, TimeAccuracy::UNKNOWN));
     };
     Ok((
         Some(timestamp(extent.start)?),
-        TimeEvidence {
+        TimeAccuracy {
             quality: TimeQuality::Intrinsic,
             precision: Some(if extent.coarse {
                 Precision::Bounded
@@ -331,7 +331,7 @@ fn time(extent: Option<Extent>) -> Result<(Option<Timestamp>, TimeEvidence), Err
         },
     ))
 }
-fn extent(at: Option<Timestamp>, accuracy: TimeEvidence) -> Option<Extent> {
+fn extent(at: Option<Timestamp>, accuracy: TimeAccuracy) -> Option<Extent> {
     at.map(|at| Extent {
         start: at.unix_ms() / 1000,
         end: accuracy.until.unwrap_or(at).unix_ms() / 1000,
@@ -465,7 +465,7 @@ impl Execution {
                             .session(&id)
                             .map_err(error)?
                             .ok_or_else(|| error("fixture session missing"))?;
-                        (0, extent(session.started, session.time_evidence()))
+                        (0, extent(session.started, session.time_accuracy()))
                     } else {
                         let parent = row
                             .parent
@@ -485,7 +485,7 @@ impl Execution {
                             fixture
                                 .message_order(message_keys[&row.id])
                                 .map_err(error)?,
-                            extent(message.at, message.time_evidence()),
+                            extent(message.at, message.time_accuracy()),
                         )
                     };
                     metadata.insert(

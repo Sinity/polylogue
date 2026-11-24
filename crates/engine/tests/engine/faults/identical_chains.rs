@@ -87,14 +87,14 @@ pub(super) fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
             .into_iter()
             .map(str::to_owned)
             .collect();
+        // Version row keys follow insertion order. Translate them, rather than
+        // dropping them: a wrong payload/reference still names the wrong hash.
         let columns = names.iter().map(|name| {
-            if matches!(table.as_str(), "wire_shape" | "wire_type") && matches!(name.as_str(), "first" | "last") {
+            if name == "version_pk" || (table == "message_version" && name == "pk") {
+                format!("(SELECT v.version_hash FROM message_version v WHERE v.pk=t.\"{name}\") AS \"{name}\"")
+            } else if matches!(table.as_str(), "wire_shape" | "wire_type") && matches!(name.as_str(), "first" | "last") {
                 // The chain the occurrence record cites, not the read range it took.
-                format!("(SELECT json_extract(r.occurrence,'$.chain') FROM wire_occurrence r WHERE r.input_pk=t.input_pk AND r.chain=t.chain AND r.reading_version=t.reading_version AND r.number=t.\"{name}\") AS \"{name}\"")
-            } else if let Some(natural) = natural_key(&table, name) {
-                // Row keys are local to an index; what they name is compared
-                // (docs/architecture.md, the record and the index).
-                format!("{natural} AS \"{name}\"")
+                format!("(SELECT json_extract(r.occurrence,'$.chain') FROM wire_occurrence r WHERE r.input_pk=t.input_pk AND r.chain=t.chain AND r.parse_version=t.parse_version AND r.number=t.\"{name}\") AS \"{name}\"")
             } else if table == "wire_occurrence" && name == "number" {
                 "NULL".to_owned()
             } else if table == "wire_occurrence" && name == "occurrence" {
@@ -179,34 +179,7 @@ const WRITE_COUNTER_VALUES: &[(&str, &str)] = &[
 /// compare only with its own earlier value (docs/reading.md, the session
 /// item index). A copy is written after the newer chain's parse, where a
 /// parse of the older chain would have come before it.
-const WRITE_ORDER: &[(&str, &str)] = &[
-    ("block", "pk"),
-    ("session", "pk"),
-    ("message", "pk"),
-    ("tool_call", "pk"),
-    ("event", "pk"),
-    ("link", "pk"),
-    ("document", "pk"),
-    ("text", "id"),
-    ("input_ref", "pk"),
-    ("session_item_state", "rewrite_version"),
-];
-
-/// The natural key a column holding a local row key names.
-fn natural_key(table: &str, column: &str) -> Option<String> {
-    Some(match column {
-        "session_pk" if table != "session" => {
-            "(SELECT x.id FROM session x WHERE x.pk=t.session_pk)".to_owned()
-        }
-        "message_pk" => "(SELECT x.id FROM message x WHERE x.pk=t.message_pk)".to_owned(),
-        "text_id" => "(SELECT hex(x.hash) FROM text x WHERE x.id=t.text_id)".to_owned(),
-        "input_pk" => "(SELECT x.id FROM input_ref x WHERE x.pk=t.input_pk)".to_owned(),
-        "call_block_pk" => "(SELECT m.id||'/'||b.idx FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.pk=t.call_block_pk)".to_owned(),
-        "event_pk" => "(SELECT x.id FROM event x WHERE x.pk=t.event_pk)".to_owned(),
-        "document_pk" => "(SELECT x.id FROM document x WHERE x.pk=t.document_pk)".to_owned(),
-        _ => return None,
-    })
-}
+const WRITE_ORDER: &[(&str, &str)] = &[("block", "pk"), ("session_item_state", "rewrite_version")];
 /// Fields of a reading's wire-shape record that note the ranges it was read
 /// in: the occurrences of its first and latest read ranges (each a range and
 /// the revision it was taken at) and the latest range's bounds and hash,
@@ -342,7 +315,7 @@ fn identical_older_chain_is_recorded_as_its_parse() {
     );
     // Every chain a message appeared in stays recorded.
     let chains = w.count(
-        "SELECT count(DISTINCT chain) AS n FROM reading_message s WHERE s.message_id LIKE '%u1%'",
+        "SELECT count(DISTINCT chain) AS n FROM message_parse s JOIN message m ON m.pk = s.message_pk WHERE m.id LIKE '%u1%'",
     );
     assert_eq!(chains, 4);
 }

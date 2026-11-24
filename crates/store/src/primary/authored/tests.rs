@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_model::authored::ExecutionEligibility;
+use polylogue_model::authored::RunsHere;
 use polylogue_model::user::{
     ChatAttachment, Delivery, ImportJobCounts, ImportJobReport, NewChatAction, NewImportJob,
     UserWrite,
@@ -647,7 +647,7 @@ fn restored_actions_keep_their_history_but_never_run() {
     let action = crate::chat_actions::read(&destination, "source_", "a")
         .unwrap()
         .unwrap();
-    assert_eq!(action.execution, ExecutionEligibility::Historical);
+    assert_eq!(action.execution, RunsHere::Historical);
     assert_eq!(action.events, p.effect.chats[0].action.events);
     assert!(matches!(
         prepare_with(
@@ -710,7 +710,7 @@ fn subset_restore_keeps_full_chat_history() {
         .unwrap()
         .unwrap();
     assert_eq!(got.events, p.effect.chats[0].action.events);
-    assert_eq!(got.execution, ExecutionEligibility::Historical);
+    assert_eq!(got.execution, RunsHere::Historical);
     let mut n = 0;
     visit(&dest, &mut |record| {
         n += 1;

@@ -21,7 +21,7 @@ fn records(
                 key: None,
             },
             |message,
-             crate::read::MessageSource {
+             crate::read::MessageParse {
                  blocks: _,
                  committed: _,
                  ordinal: order,
@@ -125,7 +125,7 @@ fn fork_prefixes_keep_parent_ordinals_and_the_childs_own_order() {
         how: None,
         parent: sid("s"),
         child: sid("child"),
-        at: Some(message("p1", "s").id),
+        branch_point: Some(message("p1", "s").id),
         call_id: None,
         evidence: "synthetic".into(),
     });
@@ -188,7 +188,7 @@ fn copied_parent_subsets_do_not_renumber_their_original_own_session() {
         how: None,
         parent: sid("s"),
         child: sid("child"),
-        at: None,
+        branch_point: None,
         call_id: None,
         evidence: "synthetic".into(),
     });
@@ -244,7 +244,12 @@ fn metadata_order_has_an_id_tiebreak_and_never_reads_message_bodies() {
         .unwrap()
         .authorizer(Some(|context: AuthContext<'_>| match context.action {
             AuthAction::Read {
-                table_name: "block" | "text" | "reading_message" | "reading_text",
+                table_name:
+                    "block"
+                    | "text"
+                    | "message_version"
+                    | "message_version_body"
+                    | "message_block_selection",
                 ..
             } => Authorization::Deny,
             _ => Authorization::Allow,

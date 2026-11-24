@@ -71,7 +71,7 @@ pub fn reading_contracts() -> Vec<polylogue_store::ReadingContract> {
             } else {
                 polylogue_store::ReadingContract::Expected {
                     origin: origin.name.to_owned(),
-                    version: origin.reading_version(),
+                    version: origin.parse_version(),
                 }
             }
         })
@@ -359,7 +359,7 @@ pub struct LoopStatus {
 
 #[derive(Debug, Default, Clone, Serialize, serde::Deserialize)]
 pub struct ImportOptions {
-    pub format: Option<String>,
+    pub origin: Option<String>,
     pub explain: bool,
     /// Recognize and classify every member, storing nothing.
     pub dry_run: bool,

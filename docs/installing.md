@@ -113,7 +113,7 @@ An upgrade is a version change in `status` and, when a parser changed, a while i
 | Change in the release | What happens | Reads meanwhile |
 |---|---|---|
 | no storage change | restart, resume from committed positions | down for the restart |
-| a parser module's reading version | chains read with the old version are re-parsed one at a time, live inputs first, then newest first | every read replies; results touching a chain not yet re-parsed carry `up_to_date: false`; `status` shows progress |
+| a parser module's parse version | chains read with the old version are re-parsed one at a time, live inputs first, then newest first | every read replies; results touching a chain not yet re-parsed carry `up_to_date: false`; `status` shows progress |
 | a change to the index schema | a new index is built from stored bytes in a private file and installed when its build ends ([below](#replacing-an-index-from-another-schema)) | reads reply `index_building` with the build's progress until the new index is installed |
 | a table added to `embeddings.db` | added in place at start; stored vectors are untouched | down for the restart |
 | `archive.db` or `embeddings.db` in another format than the binary's | refused, exit 78, not restarted | down |

@@ -206,7 +206,7 @@ fn relation(
         how: None,
         parent: crate::fixture::writer::sid(parent),
         child: crate::fixture::writer::sid(child),
-        at: branch.cloned(),
+        branch_point: branch.cloned(),
         call_id: None,
         evidence: "synthetic recorded relation".into(),
     }

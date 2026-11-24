@@ -143,7 +143,7 @@ fn an_interrupted_first_read_does_not_wait_for_the_lock() {
     );
 }
 
-fn rotate_generation(archive: &Archive) {
+fn rotate_observed_state(archive: &Archive) {
     archive.advance_generation_for_test().unwrap();
 }
 
@@ -153,7 +153,7 @@ fn an_unused_slot_on_a_rotated_generation_refuses_while_idle_connections_refresh
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let pool = fixture.reads().unwrap();
     let unused = pool.reader().unwrap();
-    rotate_generation(&fixture.archive);
+    rotate_observed_state(&fixture.archive);
     assert!(matches!(
         unused.change_position(),
         Err(StoreError::ScopeChanged)
@@ -164,7 +164,7 @@ fn an_unused_slot_on_a_rotated_generation_refuses_while_idle_connections_refresh
     ));
     drop(unused);
     let current = pool.reader().unwrap().change_position().unwrap();
-    rotate_generation(&fixture.archive);
+    rotate_observed_state(&fixture.archive);
     let refreshed = pool.reader().unwrap().change_position().unwrap();
     assert_ne!(current.generation, refreshed.generation);
 }
@@ -176,7 +176,7 @@ fn a_started_reader_is_cancelled_when_its_generation_rotates() {
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
     let old = reader.change_position().unwrap();
-    rotate_generation(&fixture.archive);
+    rotate_observed_state(&fixture.archive);
     assert!(matches!(
         reader.change_position(),
         Err(StoreError::ScopeChanged)

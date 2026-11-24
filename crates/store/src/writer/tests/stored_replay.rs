@@ -126,7 +126,7 @@ fn sparse_stored_readings_commit_their_diagnosis_during_stop() {
         }
         let mut step = ParseStep::new(Default::default(), Default::default(), 0..0, false);
         step.reset = false;
-        step.reading_version = "synthetic=1".into();
+        step.parse_version = "synthetic=1".into();
         step.progress = polylogue_model::batch::StepProgress::Refused {
             reason: format!("missing source {missing}"),
         };

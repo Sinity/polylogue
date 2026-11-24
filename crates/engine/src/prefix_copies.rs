@@ -121,7 +121,7 @@ impl ChainComparison<'_> {
         &self,
         newer: usize,
         shared: u64,
-        reading_version: &str,
+        parse_version: &str,
         planned: Option<(usize, u64)>,
     ) -> Result<bool, EngineError> {
         Ok(match planned {
@@ -132,7 +132,7 @@ impl ChainComparison<'_> {
                 .reading
                 .as_ref()
                 .is_none_or(|reading| {
-                    reading.continues(reading_version) && reading.parsed_upto <= shared
+                    reading.continues(parse_version) && reading.parsed_upto <= shared
                 }),
         })
     }
@@ -143,7 +143,7 @@ impl ChainComparison<'_> {
     fn source(
         &self,
         older: usize,
-        reading_version: &str,
+        parse_version: &str,
         planned: Option<(usize, u64)>,
     ) -> Result<Option<(usize, u64)>, EngineError> {
         let length = self.layouts.get(older)?.length;
@@ -152,7 +152,7 @@ impl ChainComparison<'_> {
         for newer in (older + 1..self.layouts.len()).rev() {
             if self.layouts.shared_extents(older, newer)? >= length
                 && length > 0
-                && self.can_stop_at(newer, length, reading_version, planned)?
+                && self.can_stop_at(newer, length, parse_version, planned)?
             {
                 return Ok(Some((newer, length)));
             }
@@ -163,7 +163,7 @@ impl ChainComparison<'_> {
             if best.is_some_and(|(_, most)| shared <= most) {
                 continue;
             }
-            if shared > 0 && self.can_stop_at(newer, shared, reading_version, planned)? {
+            if shared > 0 && self.can_stop_at(newer, shared, parse_version, planned)? {
                 best = Some((newer, shared));
                 if shared >= length {
                     break;
@@ -216,7 +216,7 @@ impl Engine {
         if !layouts.unread_before(planned)? {
             return Ok(());
         }
-        let reading_version = plan.origin.reading_version();
+        let parse_version = plan.origin.parse_version();
         let shared = ChainComparison {
             engine: self,
             input: &plan.input.id,
@@ -231,7 +231,7 @@ impl Engine {
                 continue;
             }
             let Some((source, bytes)) =
-                shared.source(older, &reading_version, Some((planned, plan.parse_pos)))?
+                shared.source(older, &parse_version, Some((planned, plan.parse_pos)))?
             else {
                 continue;
             };
@@ -358,7 +358,7 @@ impl Engine {
                 input: plan.input.id.clone(),
                 from,
                 to: copy.chain,
-                reading_version: plan.origin.reading_version(),
+                parse_version: plan.origin.parse_version(),
                 upto: plan.parse_pos,
                 reaches_end: copy.reaches_end,
             })?;
@@ -376,7 +376,7 @@ impl Engine {
         &self,
         input: &str,
         chain: i64,
-        reading_version: &str,
+        parse_version: &str,
     ) -> Result<Option<(ChainLayout, u64, u64)>, EngineError> {
         let Some(layouts) = self.reads.reader()?.chain_layouts(input)? else {
             return Ok(None);
@@ -394,7 +394,7 @@ impl Engine {
             layouts: &layouts,
         };
         shared
-            .source(older, reading_version, None)?
+            .source(older, parse_version, None)?
             .map(|(newer, bytes)| Ok((layouts.get(newer)?, bytes, older_chain.length)))
             .transpose()
     }
@@ -407,11 +407,11 @@ impl Engine {
         &self,
         input: &str,
         chain: i64,
-        reading_version: &str,
+        parse_version: &str,
         finished: bool,
     ) -> Result<bool, EngineError> {
         Ok(self
-            .source_of(input, chain, reading_version)?
+            .source_of(input, chain, parse_version)?
             .is_some_and(|(newer, bytes, length)| {
                 copy_point(bytes, length, newer.length, finished).is_none()
                     || newer
@@ -430,10 +430,10 @@ impl Engine {
         &self,
         input: &str,
         chain: i64,
-        reading_version: &str,
+        parse_version: &str,
         finished: bool,
     ) -> Result<Option<polylogue_store::ReadingCopy>, EngineError> {
-        let Some((newer, bytes, length)) = self.source_of(input, chain, reading_version)? else {
+        let Some((newer, bytes, length)) = self.source_of(input, chain, parse_version)? else {
             return Ok(None);
         };
         let Some(reading) = &newer.reading else {
@@ -448,7 +448,7 @@ impl Engine {
             input: input.to_owned(),
             from: newer.chain,
             to: chain,
-            reading_version: reading_version.to_owned(),
+            parse_version: parse_version.to_owned(),
             upto: reading.parsed_upto,
             reaches_end: reaches_end && reading.settled(newer.length),
         }))

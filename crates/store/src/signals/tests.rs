@@ -72,7 +72,7 @@ fn initial() -> Commit {
     Commit {
         prior: None,
         checkpoint: checkpoint_value(),
-        outbox: vec![crate::fixture::signals::outbox(
+        pending_delivery: vec![crate::fixture::signals::pending_delivery(
             "rule", "session", 100, false,
         )],
         events: vec![],
@@ -92,12 +92,12 @@ fn checkpoint_and_receipts_are_stored_once_across_restart() {
     conn.execute_batch(&crate::source::schema().unwrap().ddl)
         .unwrap();
     let first = initial();
-    let id = first.outbox[0].metadata.delivery.id().to_owned();
+    let id = first.pending_delivery[0].metadata.delivery.id().to_owned();
     let p = prepare_pending(&conn, &request("first", first.clone()), &[]).unwrap();
     assert!(checkpoint(&conn, Source::Cache, "host").unwrap().is_none());
     let mut next = first.clone();
     next.prior = Some(first.checkpoint.identity().unwrap());
-    next.outbox.clear();
+    next.pending_delivery.clear();
     next.events = vec![Event::Outlet {
         receipt: DeliveryReceipt {
             delivery_id: id.clone(),
@@ -157,12 +157,12 @@ fn checkpoint_and_receipts_are_stored_once_across_restart() {
 fn historical_snapshots_keep_receipts_but_run_no_effects() {
     let mut origin = cache();
     let first = initial();
-    let id = first.outbox[0].metadata.delivery.id().to_owned();
+    let id = first.pending_delivery[0].metadata.delivery.id().to_owned();
     let p = prepare_pending(&origin, &request("first", first.clone()), &[]).unwrap();
     admit(&mut origin, &p, 1);
     let mut next = first.clone();
     next.prior = Some(first.checkpoint.identity().unwrap());
-    next.outbox.clear();
+    next.pending_delivery.clear();
     next.events = vec![Event::Outlet {
         receipt: DeliveryReceipt {
             delivery_id: id.clone(),
@@ -188,7 +188,7 @@ fn historical_snapshots_keep_receipts_but_run_no_effects() {
             .unwrap()
             .unwrap()
             .execution,
-        ExecutionEligibility::Historical
+        RunsHere::Historical
     );
     assert_eq!(
         events(&target, Source::Cache, &id).unwrap(),
@@ -215,7 +215,7 @@ fn historical_snapshots_keep_receipts_but_run_no_effects() {
             .unwrap()
             .unwrap()
             .execution,
-        ExecutionEligibility::Historical
+        RunsHere::Historical
     );
     let mut corrupt = q.clone();
     corrupt.effect.signal_events[0].position = 2;
@@ -226,12 +226,12 @@ fn historical_snapshots_keep_receipts_but_run_no_effects() {
 fn imported_effect_with_receipts_beyond_the_request_is_refused() {
     let mut origin = cache();
     let first = initial();
-    let id = first.outbox[0].metadata.delivery.id().to_owned();
+    let id = first.pending_delivery[0].metadata.delivery.id().to_owned();
     let p = prepare_pending(&origin, &request("first", first.clone()), &[]).unwrap();
     admit(&mut origin, &p, 1);
     let mut next = first;
     next.prior = Some(next.checkpoint.identity().unwrap());
-    next.outbox.clear();
+    next.pending_delivery.clear();
     next.events = vec![Event::Outlet {
         receipt: DeliveryReceipt {
             delivery_id: id,
@@ -270,7 +270,7 @@ fn signal_source_schema_is_shared_by_archive_and_cache() {
         0
     );
     let mut committed = initial();
-    committed.outbox[0].metadata.notice.delivery_id = "forged".into();
+    committed.pending_delivery[0].metadata.notice.delivery_id = "forged".into();
     let tx = conn.transaction().unwrap();
     assert!(crate::user_writes::apply(&tx, &request("invalid", committed), 2).is_err());
 }
@@ -278,7 +278,7 @@ fn signal_source_schema_is_shared_by_archive_and_cache() {
 #[test]
 fn signal_numeric_host_decision_survives_tagged_request_round_trip() {
     let mut commit = initial();
-    let delivery = commit.outbox[0].metadata.delivery.clone();
+    let delivery = commit.pending_delivery[0].metadata.delivery.clone();
     commit.events.push(Event::HostDecision {
         delivery: Box::new(delivery),
     });
@@ -296,9 +296,13 @@ fn pending_signal_notice_must_follow_its_route() {
     let mut conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(crate::schema::ARCHIVE).unwrap();
     let mut shown_on_desktop = initial();
-    shown_on_desktop.outbox[0].metadata.notice.outlets.desktop = true;
+    shown_on_desktop.pending_delivery[0]
+        .metadata
+        .notice
+        .outlets
+        .desktop = true;
     let mut current = initial();
-    current.outbox[0].metadata.notice.current = true;
+    current.pending_delivery[0].metadata.notice.current = true;
     for (id, commit) in [("outlets", shown_on_desktop), ("current", current)] {
         let tx = conn.transaction().unwrap();
         assert!(crate::user_writes::apply(&tx, &request(id, commit), 1).is_err());

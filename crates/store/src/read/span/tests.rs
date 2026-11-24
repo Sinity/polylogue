@@ -161,7 +161,7 @@ fn accessible_empty_absent_and_unavailable_text_remain_distinct() {
 
 #[test]
 fn sparse_known_prefix_preserves_version_and_never_bridges_unknown_blocks() {
-    use polylogue_model::{MessageRow, Output, Session, SessionKind, bundle::MessageProjection};
+    use polylogue_model::{MessageRow, Output, Session, SessionKind, bundle::ShownBlocks};
     let mut archive = WriterArchive::new();
     let original = message(
         "sparse",
@@ -196,7 +196,7 @@ fn sparse_known_prefix_preserves_version_and_never_bridges_unknown_blocks() {
     };
     output.block_selections.insert(
         0,
-        MessageProjection {
+        ShownBlocks {
             source_version: original.content_hash().unwrap(),
             block_count: 3,
             block_ordinals: vec![0, 2],
@@ -270,9 +270,9 @@ fn replay_seeks_by_field_past_a_bad_earlier_body() {
         let source = reader.select_span_source(&original).unwrap().unwrap();
         assert_eq!(
             source.seek().start,
-            NativeTextPosition {
-                piece: NativeTextPiece::Body {
-                    body: NativeTextBody {
+            SourceTextPosition {
+                piece: SourceTextPiece::Body {
+                    body: SourceTextBody {
                         block: 1,
                         field: TextField::Text
                     }
@@ -350,7 +350,7 @@ fn a_recorded_separator_can_resume_without_decoding_either_unselected_body() {
         let source = reader.select_span_source(&original).unwrap().unwrap();
         assert!(matches!(
             source.seek().start.piece,
-            NativeTextPiece::Separator { .. }
+            SourceTextPiece::Separator { .. }
         ));
         (
             TextSpanOrigin {
@@ -417,9 +417,9 @@ fn document_replay_seeks_the_source_block_ordinal() {
         let source = reader.select_span_source(&original).unwrap().unwrap();
         assert_eq!(
             source.seek().start,
-            NativeTextPosition {
-                piece: NativeTextPiece::Body {
-                    body: NativeTextBody {
+            SourceTextPosition {
+                piece: SourceTextPiece::Body {
+                    body: SourceTextBody {
                         block: 1,
                         field: TextField::Text
                     }

@@ -36,14 +36,14 @@ fn copy_occurrences(count: i64, refuse_first: bool) -> u64 {
     .unwrap();
     crate::source::views(&conn).unwrap();
     let (version, original): (String, String) = conn.query_row(
-        "SELECT reading_version,occurrence FROM wire_occurrence WHERE chain=3 ORDER BY number LIMIT 1", [], |row| Ok((row.get(0)?,row.get(1)?))
+        "SELECT parse_version,occurrence FROM wire_occurrence WHERE chain=3 ORDER BY number LIMIT 1", [], |row| Ok((row.get(0)?,row.get(1)?))
     ).unwrap();
     conn.execute("INSERT INTO wire_reading SELECT input_pk,chain,'older=1',format,0,state FROM wire_reading WHERE chain=3", []).unwrap();
-    conn.execute("INSERT INTO wire_occurrence SELECT input_pk,chain,'older=1',number,occurrence FROM wire_occurrence WHERE chain=3 AND reading_version=?1", [&version]).unwrap();
+    conn.execute("INSERT INTO wire_occurrence SELECT input_pk,chain,'older=1',number,occurrence FROM wire_occurrence WHERE chain=3 AND parse_version=?1", [&version]).unwrap();
     let tx = conn.transaction().unwrap();
     for n in 2..=count {
         for reading in [version.as_str(), "older=1"] {
-            tx.execute("INSERT INTO wire_occurrence SELECT input_pk,chain,reading_version,?1,occurrence FROM wire_occurrence WHERE chain=3 AND reading_version=?2 AND number=1", params![n,reading]).unwrap();
+            tx.execute("INSERT INTO wire_occurrence SELECT input_pk,chain,parse_version,?1,occurrence FROM wire_occurrence WHERE chain=3 AND parse_version=?2 AND number=1", params![n,reading]).unwrap();
         }
     }
     tx.commit().unwrap();
@@ -51,7 +51,7 @@ fn copy_occurrences(count: i64, refuse_first: bool) -> u64 {
         input: "doc".into(),
         from: 3,
         to: 1,
-        reading_version: version.clone(),
+        parse_version: version.clone(),
         upto: 100,
         reaches_end: true,
     };
@@ -59,7 +59,7 @@ fn copy_occurrences(count: i64, refuse_first: bool) -> u64 {
         let mut invalid: serde_json::Value = serde_json::from_str(&original).unwrap();
         invalid["covered"] = serde_json::json!({"kind":"unavailable"});
         conn.execute(
-            "UPDATE wire_occurrence SET occurrence=?1 WHERE chain=3 AND reading_version=?2 AND number=?3",
+            "UPDATE wire_occurrence SET occurrence=?1 WHERE chain=3 AND parse_version=?2 AND number=?3",
             params![serde_json::to_string(&invalid).unwrap(), version, count],
         )
         .unwrap();
@@ -73,7 +73,7 @@ fn copy_occurrences(count: i64, refuse_first: bool) -> u64 {
             "a refused retaking leaves no copied table or checkpoint"
         );
         conn.execute(
-            "UPDATE wire_occurrence SET occurrence=?1 WHERE chain=3 AND reading_version=?2 AND number=?3",
+            "UPDATE wire_occurrence SET occurrence=?1 WHERE chain=3 AND parse_version=?2 AND number=?3",
             params![original, version, count],
         )
         .unwrap();
@@ -87,7 +87,7 @@ fn copy_occurrences(count: i64, refuse_first: bool) -> u64 {
     conn.trace_v2(TraceEventCodes::empty(), None);
     let steps = OCCURRENCE_STEPS.with(Cell::get);
     let expected = crate::source::Source::reading_commit(&conn, "doc", 1, 100).unwrap();
-    let rows=conn.prepare("SELECT reading_version,number,occurrence FROM wire_occurrence WHERE chain=1 ORDER BY reading_version,number").unwrap().query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+    let rows=conn.prepare("SELECT parse_version,number,occurrence FROM wire_occurrence WHERE chain=1 ORDER BY parse_version,number").unwrap().query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
     assert_eq!(rows.len(), usize::try_from(count * 2).unwrap());
     for (i, (reading, number, text)) in rows.iter().enumerate() {
         assert_eq!(

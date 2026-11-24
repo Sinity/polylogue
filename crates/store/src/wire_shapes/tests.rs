@@ -2,7 +2,7 @@ use super::*;
 use polylogue_model::{Output, RecordCounts};
 fn database() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE input_ref(pk INTEGER PRIMARY KEY,id TEXT NOT NULL,format TEXT NOT NULL); CREATE TABLE parse_state(input_pk INTEGER,chain INTEGER,reading_version TEXT,status TEXT,parsed_upto INTEGER); INSERT INTO input_ref VALUES(1,'first','fixture'),(2,'second','fixture'),(3,'third','other');").unwrap();
+    conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE input_ref(pk INTEGER PRIMARY KEY,id TEXT NOT NULL,format TEXT NOT NULL); CREATE TABLE parse_state(input_pk INTEGER,chain INTEGER,parse_version TEXT,status TEXT,parsed_upto INTEGER); INSERT INTO input_ref VALUES(1,'first','fixture'),(2,'second','fixture'),(3,'third','other');").unwrap();
     conn.execute_batch(SCHEMA).unwrap();
     conn
 }
@@ -58,7 +58,7 @@ fn step(
         );
     }
     let mut step = ParseStep::new(Output::default(), counts, range, at_end);
-    step.reading_version = version.into();
+    step.parse_version = version.into();
     step
 }
 fn root() -> WireShape {
@@ -273,7 +273,7 @@ fn wire_shape_incomplete_or_unreadable_population_never_establishes_absence() {
     );
 }
 #[test]
-fn wire_shape_reading_versions_and_input_chains_keep_their_history() {
+fn wire_shape_parse_versions_and_input_chains_keep_their_history() {
     let mut conn = database();
     store(
         &mut conn,
@@ -310,13 +310,13 @@ fn wire_shape_reading_versions_and_input_chains_keep_their_history() {
         !report
             .shapes
             .iter()
-            .any(|row| row.reading_version == "v1" && row.path == "/old")
+            .any(|row| row.parse_version == "v1" && row.path == "/old")
     );
     assert!(
         report
             .shapes
             .iter()
-            .any(|row| row.reading_version == "v1" && row.path == "/chain-two")
+            .any(|row| row.parse_version == "v1" && row.path == "/chain-two")
     );
     assert!(
         !report
@@ -707,7 +707,7 @@ fn writer_stores_occurrences_and_reparse_versions() {
         .unwrap();
     assert_eq!(current.shapes.len(), 2);
     assert!(current.drift.is_empty());
-    assert_eq!(current.shapes[0].reading_version, "v2");
+    assert_eq!(current.shapes[0].parse_version, "v2");
     assert_eq!(current.shapes[0].last.sequence, commit_seq);
     let history = pool
         .reader()
@@ -719,7 +719,7 @@ fn writer_stores_occurrences_and_reparse_versions() {
         history
             .drift
             .iter()
-            .any(|drift| drift.kind == Kind::NewPath && drift.shape.reading_version == "v1")
+            .any(|drift| drift.kind == Kind::NewPath && drift.shape.parse_version == "v1")
     );
 }
 
@@ -759,7 +759,7 @@ fn complete_chain_replacement_rebuilds_chunk_counts_and_rolls_back_overlaps() {
     let before = report();
     let original_occurrence = at(&before, "").first.clone();
     let replacement = |tail_start, at_end| {
-        let mut reading = crate::writer::ChainReading::new().unwrap();
+        let mut reading = crate::writer::ChainParse::new().unwrap();
         let mut first = step(
             "v1",
             0..2,

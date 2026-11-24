@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    Block, Message, MessageId, Precision, PromptKind, Role, TimeEvidence, Timestamp, Usage,
+    Block, Message, MessageId, Precision, PromptKind, Role, TimeAccuracy, Timestamp, Usage,
     bundle::{MessageRecord, Record},
 };
 
@@ -61,7 +61,7 @@ fn dialogue_is_dialogue_and_original_positions_survive() {
     timed
         .set_time(
             Timestamp::from_unix_ms(1_000),
-            TimeEvidence::intrinsic(Precision::Instant),
+            TimeAccuracy::intrinsic(Precision::Instant),
         )
         .unwrap();
     let original = record(timed);
@@ -87,8 +87,8 @@ fn dialogue_is_dialogue_and_original_positions_survive() {
     assert_eq!(after.message.production, before.message.production);
     assert_eq!(after.message.at, Timestamp::from_unix_ms(1_000));
     assert_eq!(
-        after.message.time_evidence(),
-        TimeEvidence::intrinsic(Precision::Instant)
+        after.message.time_accuracy(),
+        TimeAccuracy::intrinsic(Precision::Instant)
     );
     assert!(
         project_record(
@@ -260,12 +260,12 @@ fn expansion_headers_is_the_only_public_collapsed_spelling() {
 
 #[test]
 fn layout_keeps_selected_hook_injections_only() {
-    use crate::injection::{InjectionEvidence, NativeHookField};
+    use crate::injection::{InjectionEvidence, StatedHookField};
     let mut original = record(message(Role::Assistant, None));
     let Record::Message(row) = &mut original else {
         unreachable!()
     };
-    let field = |n: u64| NativeHookField {
+    let field = |n: u64| StatedHookField {
         input: format!("synthetic-input-{n}"),
         chain: 1,
         start: n + 1,
@@ -316,7 +316,7 @@ fn layout_keeps_selected_hook_injections_only() {
 #[test]
 fn layout_keeps_slots_and_ambiguous_same_hash_sources() {
     use crate::attachment_binding::{
-        AttachmentBinding, AttachmentCandidate, AttachmentSourceClaim,
+        AttachmentBinding, AttachmentCandidate, StatedAttachmentSource,
     };
     let attachment = |source: &str| crate::Attachment {
         source_id: Some(source.into()),
@@ -344,7 +344,7 @@ fn layout_keeps_slots_and_ambiguous_same_hash_sources() {
     let candidate = |name: &str| AttachmentCandidate {
         hash: crate::BlobHash::of(b"same"),
         size: 4,
-        sources: vec![AttachmentSourceClaim {
+        sources: vec![StatedAttachmentSource {
             namespace: None,
             input: name.into(),
             chain: 1,
@@ -444,7 +444,7 @@ fn show_hide_words_round_trip_through_one_table() {
     assert_eq!(options.tools, Some(Expansion::Full));
     assert_eq!(options.thinking, Some(Expansion::Full));
     assert!(options.inherited && options.turns && options.context_meter);
-    assert!(!options.annotations && options.spawns == SpawnFold::Hidden);
+    assert!(!options.annotations && options.spawns == SpawnDisplay::Hidden);
     let (show, hide) = options.show_hide_words();
     assert_eq!(hide, ["annotations", "spawns"]);
     assert_eq!(
@@ -470,13 +470,13 @@ fn show_hide_words_round_trip_through_one_table() {
 #[test]
 fn spawn_levels_and_help_come_from_the_show_table() {
     for (word, expected) in [
-        ("spawns", SpawnFold::Inline { depth: None }),
-        ("spawns:full", SpawnFold::Inline { depth: None }),
-        ("spawns:card", SpawnFold::Card),
-        ("spawns:2", SpawnFold::Inline { depth: Some(2) }),
+        ("spawns", SpawnDisplay::Inline { depth: None }),
+        ("spawns:full", SpawnDisplay::Inline { depth: None }),
+        ("spawns:card", SpawnDisplay::Card),
+        ("spawns:2", SpawnDisplay::Inline { depth: Some(2) }),
         (
             "spawns:4294967296",
-            SpawnFold::Inline {
+            SpawnDisplay::Inline {
                 depth: Some(u32::MAX),
             },
         ),
@@ -504,7 +504,7 @@ fn spawn_levels_and_help_come_from_the_show_table() {
     );
     let inline_context = ReadOptions {
         view: View::Context,
-        spawns: SpawnFold::Inline { depth: None },
+        spawns: SpawnDisplay::Inline { depth: None },
         ..ReadOptions::default()
     };
     assert!(matches!(
@@ -516,7 +516,7 @@ fn spawn_levels_and_help_come_from_the_show_table() {
 #[test]
 fn inline_spawns_to_depth_zero_read_back_as_cards() {
     let options = ReadOptions {
-        spawns: SpawnFold::Inline { depth: Some(0) },
+        spawns: SpawnDisplay::Inline { depth: Some(0) },
         ..ReadOptions::default()
     };
     let (show, hide) = options.show_hide_words();
@@ -524,7 +524,7 @@ fn inline_spawns_to_depth_zero_read_back_as_cards() {
     assert!(hide.is_empty());
     let mut again = ReadOptions::default();
     again.apply_show_hide(&show, &hide).unwrap();
-    assert_eq!(again.spawns, SpawnFold::Card);
+    assert_eq!(again.spawns, SpawnDisplay::Card);
 }
 
 #[test]

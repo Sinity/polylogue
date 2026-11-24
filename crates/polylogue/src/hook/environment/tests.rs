@@ -176,7 +176,7 @@ fn a_directory_outside_any_repository_leaves_git_identity_unknown() {
     );
     assert!(captured.get("git_identity").is_none());
     assert_eq!(
-        captured["native_unavailable"],
+        captured["unstated"],
         json!(["git identity: not in a repository with a commit"])
     );
 }

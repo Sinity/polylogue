@@ -195,14 +195,14 @@ impl ExportParser for Trajectory {
                     data["final_metrics"] = metrics.clone();
                 }
                 output.events.push({
-                    let (at, time_evidence) = crate::time::parts(None);
+                    let (at, time_accuracy) = crate::time::parts(None);
                     Event {
                         session: None,
                         kind: "hermes_trajectory".into(),
                         at,
-                        at_quality: time_evidence.quality,
-                        at_precision: time_evidence.precision,
-                        at_until: time_evidence.until,
+                        at_quality: time_accuracy.quality,
+                        at_precision: time_accuracy.precision,
+                        at_until: time_accuracy.until,
                         after: None,
                         range: Some((facts.start, facts.end)),
                         data,
@@ -371,14 +371,14 @@ impl ExportParser for Trajectory {
         });
         if !limits.is_empty() {
             sink.out.events.push({
-                let (at, time_evidence) = crate::time::parts(None);
+                let (at, time_accuracy) = crate::time::parts(None);
                 Event {
                     session: None,
                     kind: "hermes_import_diagnostic".into(),
                     at,
-                    at_quality: time_evidence.quality,
-                    at_precision: time_evidence.precision,
-                    at_until: time_evidence.until,
+                    at_quality: time_accuracy.quality,
+                    at_precision: time_accuracy.precision,
+                    at_until: time_accuracy.until,
                     after: None,
                     range: None,
                     data: serde_json::json!({"reason":limits}),

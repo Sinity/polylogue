@@ -34,7 +34,7 @@ fn exported(name: &str, text: &str, parent: Option<(&str, Option<&str>)>) -> Vec
     if let Some((parent, branch_point)) = parent {
         let link: polylogue_model::Link = serde_json::from_value(json!({
             "kind":"fork","parent":format!("claude-code:{parent}"),"child":id,
-            "at":branch_point.map(|s|format!("claude-code:{s}")),"evidence":"synthetic fork marker"
+            "branch_point":branch_point.map(|s|format!("claude-code:{s}")),"evidence":"synthetic fork marker"
         }))
         .unwrap();
         records.push(Record::Link(bundle::LinkRecord {

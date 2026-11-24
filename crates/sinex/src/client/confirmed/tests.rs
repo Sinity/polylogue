@@ -15,7 +15,7 @@ fn reading(progress: StepProgress) -> Reading {
             route: polylogue_model::Route::Live,
         },
         chain: 1,
-        reading_version: "reader-earlier".into(),
+        parse_version: "reader-earlier".into(),
         start: 0,
         parsed_upto: 8,
         progress,
@@ -31,7 +31,7 @@ pub(super) fn document(progress: StepProgress) -> Product {
 
 fn fragment(progress: StepProgress) -> Product {
     use polylogue_model::bundle::fragments::{
-        TextCoverage, TextFragment, TextFragmentProvenance, TextFragmentRecord, TextSourceVersion,
+        TextCoverage, TextFragment, TextFragmentRecord, TextFragmentSource, TextSourceVersion,
         TextSpanOrigin,
     };
     use polylogue_model::{BlobHash, Reference};
@@ -50,7 +50,7 @@ fn fragment(progress: StepProgress) -> Product {
         },
         text: "abc".into(),
         text_hash: BlobHash::of(b"abc"),
-        provenance: TextFragmentProvenance {
+        provenance: TextFragmentSource {
             spans: vec![],
             sources: vec![],
             imports: vec![],

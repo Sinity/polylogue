@@ -50,7 +50,7 @@ pub(crate) fn require_reading(
     if reading.input.id != key.input.id
         || reading.input.format != key.input.format
         || reading.chain != key.chain
-        || reading.reading_version != key.reading_version
+        || reading.parse_version != key.parse_version
         || reading
             .source_length
             .is_some_and(|length| length != key.length)
@@ -185,7 +185,7 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
             facts,
             order,
             projection,
-            native_fields,
+            stated_fields,
             declared_injections,
             declared_attachment_bindings,
             ..
@@ -193,7 +193,7 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
             facts,
             *order,
             projection,
-            native_fields,
+            stated_fields,
             declared_injections,
             declared_attachment_bindings,
         ))?,
@@ -203,7 +203,7 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
             value["source_start"] = facts.offset.into();
             value["source_end"] = facts.end.into();
             value["at"] = serde_json::to_value(facts.document.source_time)?;
-            value["at_evidence"] = serde_json::to_value(facts.document.time_evidence())?;
+            value["at_evidence"] = serde_json::to_value(facts.document.time_accuracy())?;
             value
         }
         Product::Fragment { facts, .. } => {
@@ -221,7 +221,7 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
             let mut value = serde_json::to_value(facts)?;
             rename_field(&mut value, "kind", "event");
             value["at"] = serde_json::to_value(facts.at)?;
-            value["at_evidence"] = serde_json::to_value(polylogue_model::TimeEvidence {
+            value["at_evidence"] = serde_json::to_value(polylogue_model::TimeAccuracy {
                 quality: facts.at_quality,
                 precision: facts.at_precision,
                 until: facts.at_until,
@@ -233,7 +233,6 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
         Product::Link { facts, .. } => {
             let mut value = serde_json::to_value(facts)?;
             rename_field(&mut value, "child", "session");
-            rename_field(&mut value, "at", "branch_point");
             value
         }
         Product::PrefixCopy { facts, .. } => {
@@ -379,7 +378,7 @@ pub(crate) fn decode(event_kind: &sinex_model::KindRef, payload: Value) -> Resul
         if reading.chain < 1
             || reading.input.id.is_empty()
             || reading.input.format.is_empty()
-            || reading.reading_version.is_empty()
+            || reading.parse_version.is_empty()
             || reading.start > reading.parsed_upto
             || reading
                 .source_length
@@ -703,35 +702,31 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
             KindDeclaration {
                 kind: KindRef {
                     name: (*name).into(),
-                    version: if matches!(
-                        *name,
-                        "polylogue.annotation" | "polylogue.annotation_restore"
-                    ) {
+                    version: if *name == "polylogue.annotation_restore" {
                         1
+                    } else if *name == "polylogue.annotation" {
+                        2
                     } else if matches!(*name, "polylogue.line_save" | "polylogue.line_save_restore")
                     {
-                        4
+                        5
                     } else if matches!(
                         *name,
                         "polylogue.line_resolution" | "polylogue.line_resolution_restore"
                     ) {
-                        6
+                        7
                     } else {
                         match *product {
-                            "message" => 9,
-                            "request" | "restored_request" => 10,
-                            "session" => 7,
-                            "link" => 7,
-                            "document" | "event" | "background" | "repository" => 6,
-                            "parse_progress" => 7,
-                            // Input rows refuse fields outside their declared source shape.
-                            "input" => 6,
-                            "fragment" => 4,
-                            "query_run" => 8,
-                            "tool_call" | "prefix_copy" | "prefix_member" => 2,
+                            "message" => 10,
+                            "request" | "restored_request" => 11,
+                            "session" | "link" | "parse_progress" => 8,
+                            "input" => 7,
+                            "document" | "event" | "background" | "repository" => 7,
+                            "fragment" => 5,
+                            "query_run" => 9,
+                            "tool_call" | "prefix_copy" | "prefix_member" | "query" => 3,
                             "query_run_outcome" => 2,
-                            "restored_history" | "attachment_binding" => 1,
-                            "query" => 2,
+                            "attachment_binding" => 2,
+                            "restored_history" => 1,
                             _ => 3,
                         }
                     },
@@ -868,8 +863,8 @@ pub(crate) fn events(
                     payload["git_identity"] = serde_json::to_value(stated.git_identity)?;
                     payload["terminal"] = serde_json::to_value(stated.terminal)?;
                     payload["boot_id"] = serde_json::to_value(stated.boot_id)?;
-                    payload["native_sources"] = serde_json::to_value(stated.sources)?;
-                    payload["native_unavailable"] = serde_json::to_value(stated.unavailable)?;
+                    payload["stated_sources"] = serde_json::to_value(stated.sources)?;
+                    payload["unstated"] = serde_json::to_value(stated.unavailable)?;
                     payload["machine"] = serde_json::to_value(&write.machine)?;
                 } else {
                     payload["context"] = serde_json::to_value(stated)?;

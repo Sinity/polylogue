@@ -285,7 +285,7 @@ fn primary_previous_index_rebuild_preserves_original_cache_and_paid_and_pending_
             !built(&index).unwrap(),
             "latest position does not replace missing parser progress"
         );
-        index.execute_batch("INSERT INTO parse_state(input_pk,chain,reading_version,status,parsed_upto) VALUES(71,1,'reader=1','parsing',5)").unwrap();
+        index.execute_batch("INSERT INTO parse_state(input_pk,chain,parse_version,status,parsed_upto) VALUES(71,1,'reader=1','parsing',5)").unwrap();
         assert!(
             !built(&index).unwrap(),
             "an unfinished prefix remains pending"

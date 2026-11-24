@@ -34,7 +34,7 @@ pub struct Plan {
     catalog: Arc<Catalog>,
     definitions: Vec<ResolvedDefinition>,
     bindings: Bindings,
-    saved_definitions: Vec<polylogue_model::query_objects::FrozenQueryDefinition>,
+    saved_definitions: Vec<polylogue_model::query_objects::SavedQueryDefinition>,
     identity_catalog: Arc<Catalog>,
     question_id: QuestionId,
 }
@@ -190,7 +190,7 @@ fn prepare_inner(
         catalog = crate::compile::source::bound_catalog(options)?;
         crate::compile::source::preserve_live_units(&mut query, &catalog)?;
         let mut definitions = Vec::new();
-        let mut saved_definitions: Vec<polylogue_model::query_objects::FrozenQueryDefinition> =
+        let mut saved_definitions: Vec<polylogue_model::query_objects::SavedQueryDefinition> =
             Vec::new();
         let mut identities = BTreeMap::<String, QuestionId>::new();
         walk(

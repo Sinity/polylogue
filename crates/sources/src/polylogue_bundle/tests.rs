@@ -22,7 +22,7 @@ fn message_record(id: &str, order: u64) -> MessageRecord {
             message: message.id.clone(),
             source_version,
             block: 0,
-            observed: Some(NativeHookField {
+            observed: Some(StatedHookField {
                 input: "other-input".into(),
                 chain: 7,
                 start: 10,
@@ -50,7 +50,7 @@ fn fragment_record() -> TextFragmentRecord {
         },
         text: "λZ".into(),
         text_hash: BlobHash::of("λZ".as_bytes()),
-        provenance: TextFragmentProvenance {
+        provenance: TextFragmentSource {
             spans: vec![TextSpanOrigin {
                 reference: Reference::Span {
                     container: Box::new(container),
@@ -61,7 +61,7 @@ fn fragment_record() -> TextFragmentRecord {
                 start: 5,
                 end: 8,
             }],
-            sources: vec![SourceClaim {
+            sources: vec![StatedSource {
                 input: "other-input".into(),
                 source: "codex".into(),
                 source_chain: 7,
@@ -94,7 +94,7 @@ fn bundle_import_keeps_stated_hook_fields_declared() {
         assert_eq!(step.output.messages[index].message, record.message);
         assert_eq!(
             step.output.block_selections[&index],
-            MessageProjection {
+            ShownBlocks {
                 source_version: record.source_version,
                 block_count: 1,
                 block_ordinals: vec![0],
@@ -142,7 +142,7 @@ fn imported_copy_members_keep_original_order_and_do_not_claim_other_parent_messa
         source: polylogue_model::PrefixSource {
             input: "original-child-input".into(),
             chain: 4,
-            reading_version: "original-reading".into(),
+            parse_version: "original-reading".into(),
         },
         position: [u64::MAX, u64::MAX - 1],
     });
@@ -162,7 +162,7 @@ fn imported_copy_members_keep_original_order_and_do_not_claim_other_parent_messa
     assert_eq!(member.position, [u64::MAX, u64::MAX - 1]);
     let source = member.source.as_ref().unwrap();
     assert_eq!(
-        (&*source.input, source.chain, &*source.reading_version),
+        (&*source.input, source.chain, &*source.parse_version),
         ("original-child-input", 4, "original-reading")
     );
 }

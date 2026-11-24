@@ -1,0 +1,182 @@
+//! Apply worker-resolved event and link values and their compact memberships.
+use super::*;
+
+impl RowWriter<'_, '_> {
+    pub(super) fn copy_event(
+        &self,
+        source: i64,
+        target: i64,
+        id: &str,
+        session: Option<i64>,
+    ) -> Result<()> {
+        if self
+            .tx
+            .exists("SELECT EXISTS(SELECT 1 FROM event WHERE pk=?1)", [target])?
+        {
+            return Ok(());
+        }
+        self.changes.event(self.tx, target)?;
+        self.tx.prepare_cached(
+            "INSERT INTO event(pk,id,session_pk,seq,after_message_id,seq_from_message,after_message_pk,kind,at,input_pk,source_chain,source_start,source_end,fields,data)
+             SELECT ?2,?3,coalesce(?4,session_pk),seq,after_message_id,seq_from_message,after_message_pk,kind,at,input_pk,source_chain,source_start,source_end,fields,data
+             FROM event WHERE pk=?1",
+        )?.execute(params![source,target,id,session])?;
+        self.upkeep.remember_event(id, target)
+    }
+
+    pub(super) fn refresh_event(&self, pk: i64) -> Result<()> {
+        let choice = self
+            .choices
+            .events
+            .get(&pk)
+            .or_invalid("unresolved event version")?;
+        let Some(choice) = choice else {
+            self.changes.event(self.tx, pk)?;
+            self.tx.execute("DELETE FROM event WHERE pk=?1", [pk])?;
+            return Ok(());
+        };
+        let after = choice
+            .after
+            .as_ref()
+            .map(|id| self.message_pk(id))
+            .transpose()?
+            .flatten();
+        let seq = match choice.seq {
+            Some(seq) => seq,
+            None => after
+                .map(|pk| {
+                    self.tx.scalar(
+                            "SELECT coalesce(s.seq,0) FROM message m LEFT JOIN message_parse s
+                             ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain WHERE m.pk=?1",
+                            [pk])
+                })
+                .transpose()?
+                .unwrap_or(0),
+        };
+        let (unchanged, id) = self
+            .tx
+            .prepare_cached(
+                "SELECT session_pk IS ?2 AND seq IS ?3 AND after_message_pk IS ?4 AND at IS ?5
+             AND input_pk IS ?6 AND source_chain IS ?7 AND source_start IS ?8 AND source_end IS ?9
+             AND after_message_id IS ?11 AND seq_from_message IS ?12 AND kind IS ?13
+             AND fields IS ?14 AND data IS ?10, id FROM event WHERE pk=?1",
+            )?
+            .query_row(
+                params![
+                    pk,
+                    choice.session,
+                    seq,
+                    after,
+                    choice.at,
+                    choice.input,
+                    choice.chain,
+                    choice.start,
+                    choice.end,
+                    choice.body,
+                    choice.after,
+                    choice.seq.is_none(),
+                    choice.kind,
+                    choice.fields
+                ],
+                |row| <(bool, String)>::try_from(row),
+            )?;
+        if unchanged {
+            if let Some(session) = choice.session
+                && !crate::items::event_is_current(
+                    self.tx,
+                    pk,
+                    session,
+                    &id,
+                    &choice.kind,
+                    choice.at,
+                    &choice.body,
+                )?
+            {
+                self.changes.event(self.tx, pk)?;
+            }
+            return Ok(());
+        }
+        self.changes.event(self.tx, pk)?;
+        if let Some(session) = choice.session {
+            self.changes.session(self.tx, session)?;
+        }
+        self.tx.prepare_cached("UPDATE event SET session_pk=?2,seq=?3,after_message_pk=?4,at=?5,input_pk=?6,source_chain=?7,source_start=?8,source_end=?9,data=?10,after_message_id=?11,seq_from_message=?12,kind=?13,fields=?14 WHERE pk=?1")?.execute(params![pk,choice.session,seq,after,choice.at,choice.input,choice.chain,choice.start,choice.end,choice.body,choice.after,choice.seq.is_none(),choice.kind,choice.fields])?;
+        Ok(())
+    }
+    pub(super) fn refresh_link(&self, pk: i64) -> Result<()> {
+        self.changes.link(self.tx, pk)?;
+        self.mark_link_sessions(pk)?;
+        let choice = self
+            .choices
+            .links
+            .get(&pk)
+            .or_invalid("unresolved link version")?;
+        let Some(choice) = choice else {
+            self.tx.execute("DELETE FROM link WHERE pk=?1", [pk])?;
+            return Ok(());
+        };
+        self.tx.prepare_cached("UPDATE link SET branch_point=?2,spawning_call=?3,evidence=?4,input_pk=?5,source_chain=?6,copies_prefix=?7 WHERE pk=?1")?.execute(params![pk,choice.link.branch_point.as_ref().map(ToString::to_string),choice.link.call_id,choice.link.evidence,choice.input,choice.chain,choice.link.copies_prefix])?;
+        Ok(())
+    }
+    fn mark_link_sessions(&self, pk: i64) -> Result<()> {
+        let sessions = self
+            .tx
+            .prepare_cached(
+                "SELECT pk FROM session WHERE id IN
+            (SELECT parent_id FROM link WHERE pk=?1 UNION SELECT child_id FROM link WHERE pk=?1)",
+            )?
+            .query_map([pk], |row| row.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for session in sessions {
+            self.changes.session(self.tx, session)?;
+        }
+        Ok(())
+    }
+    pub(super) fn store_link(
+        &self,
+        link: &Link,
+        index: usize,
+        committed: Option<i64>,
+    ) -> Result<()> {
+        let pk = self
+            .keys
+            .get(resolve::Kind::Link, &resolve::link_key(link)?)?
+            .pk;
+        let (parent, child_id) = (link.parent.to_string(), link.child.to_string());
+        let child = self
+            .keys
+            .get(resolve::Kind::Session, child_id.as_bytes())?
+            .pk;
+        let kind = link.kind.as_str();
+        let how = link.how.map(|how| how.as_str());
+        // A copy's session is named by the session its name is an alias of.
+        let ids = &self.keys.identities;
+        let (parent, child_id) = (ids.shown_session(&parent), ids.shown_session(&child_id));
+        let at = link
+            .branch_point
+            .as_ref()
+            .map(|at| ids.shown_message(&at.to_string()).into_owned());
+        self.changes.link_child(self.tx, child_id)?;
+        self.tx.prepare_cached("INSERT OR IGNORE INTO link(pk,parent_id,child_id,child_pk,kind,how,evidence,input_pk,source_chain,branch_point,spawning_call,copies_prefix) VALUES (?1,?2,?3,(SELECT pk FROM session WHERE pk=?4),?5,?6,?7,?8,?9,?10,?11,?12)")?.execute(params![pk,parent,child_id,child,kind,how,link.evidence,self.input_pk,self.chain,at,link.call_id,link.copies_prefix])?;
+        let value = &self.choices.link_values[index];
+        self.tx
+            .prepare_cached("INSERT OR IGNORE INTO link_value(pk,hash,body) VALUES (?1,?2,?3)")?
+            .execute(params![value.key.pk, value.hash.as_slice(), value.body])?;
+        self.tx.prepare_cached("INSERT INTO link_parse(link_pk,input_pk,chain,value_pk,route,committed) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(link_pk,input_pk,chain) DO UPDATE SET value_pk=excluded.value_pk,route=excluded.route,committed=coalesce(max(link_parse.committed,excluded.committed),link_parse.committed,excluded.committed)")?.execute(params![pk,self.input_pk,self.chain,value.key.pk,self.route.as_str(),committed])?;
+        Ok(())
+    }
+    pub(super) fn store_event_value(&self, index: usize) -> Result<()> {
+        let value = &self.choices.event_values[index];
+        let (pk, source) = &self.choices.event_sources[index];
+        self.tx
+            .prepare_cached("INSERT OR IGNORE INTO event_value(pk,hash,body) VALUES (?1,?2,?3)")?
+            .execute(params![value.key.pk, value.hash.as_slice(), value.body])?;
+        let imported = &source.imported;
+        let committed = source.committed.or(self.source_committed);
+        self.tx.prepare_cached("INSERT INTO event_parse(event_pk,input_pk,chain,value_pk,route,session_pk,seq,source_start,source_end,after_message_id,at,fields,imported_sources,committed)
+            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+            ON CONFLICT(event_pk,input_pk,chain) DO UPDATE SET value_pk=excluded.value_pk,route=excluded.route,session_pk=excluded.session_pk,seq=excluded.seq,source_start=excluded.source_start,source_end=excluded.source_end,after_message_id=excluded.after_message_id,at=excluded.at,fields=excluded.fields,imported_sources=excluded.imported_sources,committed=excluded.committed")?
+            .execute(params![pk,self.input_pk,self.chain,value.key.pk,self.route.as_str(),source.session,source.seq,source.start,source.end,source.after,source.at,source.fields,imported,committed])?;
+        Ok(())
+    }
+}

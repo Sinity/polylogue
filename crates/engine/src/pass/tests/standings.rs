@@ -92,7 +92,7 @@ fn stopped_reading(engine: &Engine, path: &Path) -> polylogue_store::read::Store
         .parser_checkpoint(
             &input.input_id,
             progress.chain,
-            &input.origin.reading_version(),
+            &input.origin.parse_version(),
         )
         .unwrap()
         .unwrap()
@@ -215,7 +215,7 @@ fn an_unrecorded_failure_gets_one_real_attempt_then_stops_across_restart() {
     step.progress = polylogue_model::batch::StepProgress::Failed {
         error: "unrecorded synthetic failure".into(),
     };
-    step.reading_version = state.origin.reading_version();
+    step.parse_version = state.origin.parse_version();
     engine
         .writer
         .send(polylogue_store::Batch {
@@ -234,8 +234,8 @@ fn an_unrecorded_failure_gets_one_real_attempt_then_stops_across_restart() {
             blobs: vec![],
             length: progress.length,
             parse: vec![step],
-            acquisition: None,
-            basis: None,
+            capture_read: None,
+            base: None,
             release: Default::default(),
         })
         .unwrap();

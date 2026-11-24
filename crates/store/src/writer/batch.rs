@@ -84,7 +84,7 @@ pub struct ParseStep {
     pub delivery: Option<polylogue_model::batch::ExportDelivery>,
     /// Message positions in reading order for array records, apart from byte ranges.
     pub order_from: Option<u64>,
-    pub reading_version: String,
+    pub parse_version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -115,6 +115,10 @@ pub struct ParseStep {
     /// Default leaves the complete parsed values available for writer fallback.
     #[serde(skip)]
     pub(crate) prepared: PreparedRows,
+    /// Row identities and chosen versions, set by the resolver before the
+    /// step reaches the writer of `index.db` rows.
+    #[serde(skip)]
+    pub(crate) resolution: Option<super::resolve::Resolution>,
     pub(crate) comparison: Option<crate::tool_databases::RowComparison>,
 }
 
@@ -167,7 +171,7 @@ impl ParseStep {
         Self {
             delivery: None,
             order_from: None,
-            reading_version: String::new(),
+            parse_version: String::new(),
             checkpoint: None,
             stopped_attempt: None,
             source_commit: None,
@@ -181,6 +185,7 @@ impl ParseStep {
             parsed_upto: range.end,
             progress: polylogue_model::batch::StepProgress::parsed(at_end),
             prepared: PreparedRows::default(),
+            resolution: None,
             comparison: None,
         }
     }
@@ -190,11 +195,11 @@ impl ParseStep {
     pub fn without_parser(
         range: std::ops::Range<u64>,
         at_end: bool,
-        reading_version: String,
+        parse_version: String,
     ) -> Self {
         let mut step = Self::new(Output::default(), RecordCounts::default(), range, at_end);
         step.progress = polylogue_model::batch::StepProgress::NoParserYet { at_end };
-        step.reading_version = reading_version;
+        step.parse_version = parse_version;
         step
     }
 }
@@ -225,10 +230,10 @@ pub struct Batch {
     pub release: InFlight,
     /// The receiver's record of the capture read that produced the body; not
     /// parsed payload data.
-    pub acquisition: Option<crate::primary::AcquisitionReceipt>,
+    pub capture_read: Option<crate::primary::CaptureRead>,
     /// The source state sampled before provider I/O. It cannot assign the
     /// resulting chain or revision.
-    pub basis: Option<crate::primary::SourceBasis>,
+    pub base: Option<crate::primary::SourceBase>,
     /// Limits this new capture read to being held in the spool; it cannot
     /// request source acceptance or accept a previously unresolved group.
     pub required_outcome: Option<crate::primary::CaptureOutcome>,

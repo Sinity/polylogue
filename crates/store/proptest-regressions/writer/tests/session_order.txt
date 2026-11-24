@@ -1,7 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc 5f4e4d03233f31523f57a55146a0383e158cff03289ad9a3f0cf131682ff9324 # shrinks to timeline = Timeline { turns: [(None, true, false), (None, true, false)], split: 0 }

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 /// Polylogue as its producer; producer proof is a separate post-emit receipt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum AcquisitionRoute {
+pub enum ReadRoute {
     NativeCapture,
     ExplicitImport,
 }
@@ -19,25 +19,25 @@ pub enum AcquisitionRoute {
 /// assignment. Historical absence is unknown. Payload declarations cannot mint it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct AcquisitionReceipt {
+pub struct CaptureRead {
     pub version: u32,
-    pub route: AcquisitionRoute,
+    pub route: ReadRoute,
     pub source: SourceSelector,
     pub range: RawRange,
     pub hash: polylogue_model::BlobHash,
     pub observed_at: polylogue_model::Timestamp,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub generation: Option<super::SourceGeneration>,
+    pub generation: Option<super::ObservedState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_total: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raw_predecessor: Option<String>,
+    pub previous_revision: Option<String>,
     /// The body's content-defined chunks, in order, when it is stored as
     /// chunks; empty when it is one blob.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub chunks: Vec<crate::Chunk>,
 }
-impl AcquisitionReceipt {
+impl CaptureRead {
     pub const VERSION: u32 = 1;
 
     pub fn validate_for(&self, input: &crate::InputKey) -> Result<()> {
@@ -49,7 +49,7 @@ impl AcquisitionReceipt {
         }
         self.range.length()?;
         let Some(generation) = &self.generation else {
-            return if self.raw_total.is_none() && self.raw_predecessor.is_none() {
+            return if self.raw_total.is_none() && self.previous_revision.is_none() {
                 Ok(())
             } else {
                 Err(invalid())
@@ -67,11 +67,11 @@ impl AcquisitionReceipt {
                 .raw_total
                 .is_some_and(|end| end != window.end || end != self.range.end)
             || self
-                .raw_predecessor
+                .previous_revision
                 .as_ref()
                 .is_some_and(|body| body.is_empty() || self.range.start == window.start)
             || matches!(generation,
-                super::SourceGeneration::File { stream: super::RawStream { role: super::RawStreamRole::ProviderBytes, .. }, observed, .. }
+                super::ObservedState::File { stream: super::RawStream { role: super::RawStreamRole::ProviderBytes, .. }, observed, .. }
                 if self.raw_total.is_some_and(|end| end != observed.size))
         {
             return Err(invalid());
@@ -114,7 +114,7 @@ pub struct SourceSubject {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct SourceBasis {
+pub struct SourceBase {
     /// Without a boundary the bytes can be held in the spool, but they state no
     /// source coordinates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -158,7 +158,7 @@ pub enum CaptureMode {
 #[serde(deny_unknown_fields)]
 pub struct CapturePlan {
     pub intent: String,
-    pub bases: Vec<SourceBasis>,
+    pub bases: Vec<SourceBase>,
     pub count: u64,
     pub mode: CaptureMode,
     /// Constrains newly spooled groups only. A retry of a kept group keeps its
@@ -210,7 +210,7 @@ pub struct ConfirmedSource {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SourceSnapshot {
-    pub basis: SourceBasis,
+    pub base: SourceBase,
     pub confirmed: Option<ConfirmedSource>,
     pub pending: PendingSource,
 }
@@ -220,7 +220,7 @@ pub struct SourceSnapshot {
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum CaptureResult {
     Accepted { write: super::PreparedWrite },
-    UnresolvedBasisConflict { spooled: SpooledGroup },
+    UnresolvedBaseConflict { spooled: SpooledGroup },
 }
 
 /// Existing group identity and original count. Bodies are resolved one page at
@@ -237,7 +237,7 @@ pub struct SpooledGroup {
 #[serde(rename_all = "snake_case")]
 pub enum CaptureOutcome {
     Prepared,
-    UnresolvedBasisConflict,
+    UnresolvedBaseConflict,
 }
 
 /// One bounded page of stored original group members. Exhaustion says

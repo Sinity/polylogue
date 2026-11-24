@@ -232,14 +232,14 @@ impl OpenRouter {
 
         self.characters = doc.get("characters").cloned().unwrap_or(Json::Null);
         sink.out.events.push({
-            let (at, time_evidence) = crate::time::parts(None);
+            let (at, time_accuracy) = crate::time::parts(None);
             Event {
                 session: Some(sid.clone()),
                 kind: "room_models".into(),
                 at,
-                at_quality: time_evidence.quality,
-                at_precision: time_evidence.precision,
-                at_until: time_evidence.until,
+                at_quality: time_accuracy.quality,
+                at_precision: time_accuracy.precision,
+                at_until: time_accuracy.until,
                 after: None,
                 range: None,
                 data: self.characters.clone(),
@@ -261,14 +261,14 @@ impl OpenRouter {
         .collect();
         if !artifacts.is_empty() {
             sink.out.events.push({
-                let (at, time_evidence) = crate::time::parts(None);
+                let (at, time_accuracy) = crate::time::parts(None);
                 Event {
                     session: Some(sid.clone()),
                     kind: "artifacts".into(),
                     at,
-                    at_quality: time_evidence.quality,
-                    at_precision: time_evidence.precision,
-                    at_until: time_evidence.until,
+                    at_quality: time_accuracy.quality,
+                    at_precision: time_accuracy.precision,
+                    at_until: time_accuracy.until,
                     after: None,
                     range: None,
                     data: Json::Object(artifacts),
@@ -450,7 +450,7 @@ fn message(
         ..Usage::default()
     };
     Ok({
-        let (at, time_evidence) = crate::time::parts(m.get("createdAt").and_then(time_of));
+        let (at, time_accuracy) = crate::time::parts(m.get("createdAt").and_then(time_of));
         Message {
             id,
             session: sid.clone(),
@@ -460,9 +460,9 @@ fn message(
                 .and_then(|p| message_id(ORIGIN, p)),
             role,
             at,
-            at_quality: time_evidence.quality,
-            at_precision: time_evidence.precision,
-            at_until: time_evidence.until,
+            at_quality: time_accuracy.quality,
+            at_precision: time_accuracy.precision,
+            at_until: time_accuracy.until,
             model: if role == Role::Assistant { model } else { None },
             prompt_kind: (role == Role::User).then_some(PromptKind::Prose),
             blocks,

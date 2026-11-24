@@ -325,7 +325,7 @@ fn stopped_readings_keep_their_attempt_and_upgrade() {
         let state = &engine.inputs[&home.file("upgrade.jsonl")];
         let input = state.input_id.clone();
         let length = state.stored;
-        let version = state.origin.reading_version();
+        let version = state.origin.parse_version();
         // A refusal after a committed prefix changes neither that prefix's
         // rows nor its cursor. A resetting step would retract the reading.
         let mut step = polylogue_store::ParseStep::new(
@@ -337,7 +337,7 @@ fn stopped_readings_keep_their_attempt_and_upgrade() {
         step.progress = StepProgress::Refused {
             reason: "recorded synthetic refusal".into(),
         };
-        step.reading_version = if old_version {
+        step.parse_version = if old_version {
             "synthetic-previous-reading".into()
         } else {
             version.clone()
@@ -361,8 +361,8 @@ fn stopped_readings_keep_their_attempt_and_upgrade() {
                 blobs: vec![],
                 length,
                 parse: vec![step],
-                acquisition: None,
-                basis: None,
+                capture_read: None,
+                base: None,
                 release: Default::default(),
             })
             .unwrap();
@@ -379,14 +379,14 @@ fn stopped_readings_keep_their_attempt_and_upgrade() {
         let replay = engine.run_pass().unwrap();
         assert!(replay.errors.is_empty(), "{replay:?}");
         let progress = engine.reads.reader().unwrap().query(
-            "SELECT status,reading_version,parsed_upto FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1",
+            "SELECT status,parse_version,parsed_upto FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1",
             &[polylogue_store::SqlValue::Text(input)],
         ).unwrap();
         assert_eq!(
             progress[0]["status"],
             if old_version { "done" } else { "refused" }
         );
-        assert_eq!(progress[0]["reading_version"], version);
+        assert_eq!(progress[0]["parse_version"], version);
         assert_eq!(progress[0]["parsed_upto"].as_u64(), Some(length));
         assert_eq!(rows(&home), stored);
         assert_eq!(home.texts("upgrade"), ["preserved reading"]);

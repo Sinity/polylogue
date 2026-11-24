@@ -27,7 +27,7 @@ macro_rules! check {
 fn stored_name_round_trips_for_every_enum() {
     use crate::alternate::{AlternateKind, AlternateRelation};
     use crate::annotation::{AnnotationKind, LinkRole};
-    use crate::authored::ExecutionEligibility;
+    use crate::authored::RunsHere;
     use crate::batch::IdKind;
     use crate::block::CallOutcome;
     use crate::document::{DocumentAuthorship, DocumentPurpose};
@@ -47,7 +47,7 @@ fn stored_name_round_trips_for_every_enum() {
     check!(AnnotationKind);
     check!(LinkRole);
     check!(crate::authorship::Channel);
-    check!(ExecutionEligibility);
+    check!(RunsHere);
     check!(IdKind);
     check!(DocumentPurpose);
     check!(DocumentAuthorship);

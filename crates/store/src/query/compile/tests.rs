@@ -200,7 +200,7 @@ fn measure_ends_a_session_query() {
             .everything
     );
     assert!(compile_err("messages | measure usage").contains("session query"));
-    assert!(compile_err("sessions | measure usage | sort by cost").contains("last stage"));
+    assert!(compile_err("sessions | measure usage | sort by cost").contains("last transform"));
 }
 
 #[test]
@@ -415,7 +415,7 @@ fn kept_rows_preserve_only_recorded_reference_metadata() {
         Kept {
             output_metadata: Default::default(),
             shape: None,
-            native_identity: false,
+            row_identity: false,
             unit: "documents".into(),
             columns: c("documents").columns,
             match_columns: vec![],
@@ -446,7 +446,7 @@ fn kept_rows_preserve_only_recorded_reference_metadata() {
         Kept {
             output_metadata: Default::default(),
             shape: None,
-            native_identity: false,
+            row_identity: false,
             unit: "sessions".into(),
             columns: vec![without_reference],
             match_columns: vec![],
@@ -461,7 +461,7 @@ fn kept_rows_preserve_only_recorded_reference_metadata() {
         Kept {
             output_metadata: Default::default(),
             shape: None,
-            native_identity: false,
+            row_identity: false,
             unit: "sessions".into(),
             columns: c("sessions | group by id").columns,
             match_columns: vec![],
@@ -545,7 +545,7 @@ fn kept_references_use_query_literals_without_splitting_their_ids() {
         Kept {
             output_metadata: Default::default(),
             shape: None,
-            native_identity: false,
+            row_identity: false,
             unit: "sessions".into(),
             columns: columns.clone(),
             match_columns: vec![],
@@ -570,7 +570,7 @@ fn kept_references_use_query_literals_without_splitting_their_ids() {
         Kept {
             output_metadata: Default::default(),
             shape: None,
-            native_identity: false,
+            row_identity: false,
             unit: "sessions".into(),
             columns: columns.clone(),
             match_columns: columns,
@@ -609,7 +609,7 @@ fn saved_kept_source_records_its_resolved_definition() {
         Kept {
             output_metadata: Default::default(),
             shape: None,
-            native_identity: false,
+            row_identity: false,
             unit: "sessions".into(),
             columns: c("sessions").columns,
             match_columns: vec![],

@@ -401,7 +401,7 @@ fn thinking_above_output_leaves_output_unknown() {
 
 #[test]
 fn background_notice_keeps_clock_precision_or_unknown() {
-    use polylogue_model::{Precision, TimeEvidence, Timestamp};
+    use polylogue_model::{Precision, TimeAccuracy, Timestamp};
     for (clock, precision) in [
         (Some("2026-03-01T10:00:05Z"), Some(Precision::Second)),
         (
@@ -427,7 +427,7 @@ fn background_notice_keeps_clock_precision_or_unknown() {
         assert_eq!(update.result_at, clock.and_then(Timestamp::parse_rfc3339));
         assert_eq!(
             update.result_at_evidence,
-            precision.map_or(TimeEvidence::UNKNOWN, TimeEvidence::intrinsic)
+            precision.map_or(TimeAccuracy::UNKNOWN, TimeAccuracy::intrinsic)
         );
     }
 }
@@ -522,7 +522,7 @@ fn explicit_resume_and_distinct_fork_points_survive_source_deduplication() {
         .links
         .iter()
         .filter(|l| l.kind == LinkKind::Fork)
-        .map(|l| l.at.as_ref().unwrap().native().as_str())
+        .map(|l| l.branch_point.as_ref().unwrap().native().as_str())
         .collect();
     assert_eq!(branch_points, ["first", "second"]);
 }

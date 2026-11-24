@@ -158,7 +158,7 @@ pub(crate) struct Plan {
     pub(crate) input_finished: bool,
     /// Where the input's bytes come from.
     pub(crate) source: pool::Bytes,
-    pub(crate) basis: Option<polylogue_store::primary::SourceBasis>,
+    pub(crate) base: Option<polylogue_store::primary::SourceBase>,
     /// The latest step is held in the spool but not yet confirmed by Sinex.
     pub(crate) pending: Option<String>,
     pub(crate) checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
@@ -197,7 +197,7 @@ impl Plan {
             _ => None,
         };
         Plan {
-            basis: None,
+            base: None,
             pending: None,
             checkpoint: None,
             byte_read: None,

@@ -35,7 +35,7 @@ fn signal_state_is_an_authored_request_held_in_the_spool() {
             UserWrite::SignalCommit(Box::new(Commit {
                 prior: None,
                 checkpoint,
-                outbox: vec![],
+                pending_delivery: vec![],
                 events: vec![],
             })),
         ),

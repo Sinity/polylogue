@@ -97,7 +97,7 @@ fn fixture(changed: bool) -> Vec<Batch> {
             kind: LinkKind::Spawn,
             copies_prefix: false,
             how: None,
-            at: None,
+            branch_point: None,
             call_id: None,
             evidence: b.input.id.clone(),
         });
@@ -115,7 +115,8 @@ fn fixture(changed: bool) -> Vec<Batch> {
             data: json!({"notification_type":"permission_prompt"}),
         });
     }
-    main.parse[0].output.links[0].at = Some(MessageId::parse("claude-code:shared").unwrap());
+    main.parse[0].output.links[0].branch_point =
+        Some(MessageId::parse("claude-code:shared").unwrap());
     child.parse[0].output.links[0].call_id = Some("spawn-call".into());
     let mut doc = Document::new(
         DocumentId::parse("claude-ai:instructions").unwrap(),
@@ -147,7 +148,7 @@ fn fixture(changed: bool) -> Vec<Batch> {
         document: doc,
     });
     for b in [&mut main, &mut child, &mut browser, &mut export] {
-        b.parse[0].reading_version = if changed {
+        b.parse[0].parse_version = if changed {
             "synthetic=2"
         } else {
             "synthetic=1"
@@ -193,7 +194,7 @@ fn chain_selection_keeps_changed_readings_and_incomplete_stored_bytes() {
         .into_iter()
         .map(|input| {
             let mut b = batch(input, Route::Live, 0, vec![], &[]);
-            b.parse[0].reading_version = "synthetic=1".into();
+            b.parse[0].parse_version = "synthetic=1".into();
             if input == "unrelated" {
                 b.input.format = "other".into();
             }
@@ -207,7 +208,7 @@ fn chain_selection_keeps_changed_readings_and_incomplete_stored_bytes() {
             WHERE input_pk=(SELECT pk FROM input_ref WHERE id='waiting');
          UPDATE parse_state SET status='parsing',parsed_upto=40
             WHERE input_pk=(SELECT pk FROM input_ref WHERE id='partial');
-         UPDATE parse_state SET reading_version='older'
+         UPDATE parse_state SET parse_version='older'
             WHERE input_pk=(SELECT pk FROM input_ref WHERE id='changed');
          DELETE FROM parse_state WHERE input_pk=(SELECT pk FROM input_ref WHERE id='unparsed');",
         )
@@ -280,7 +281,7 @@ fn natural_rows(w: &TestArchive) -> Json {
     for (name, sql) in [
         (
             "sources",
-            "SELECT m.id,i.id AS input,s.chain,s.source_start,s.source_end,(s.input_pk=m.input_pk AND s.chain=m.source_chain) AS shown,hex(s.hash) AS version FROM reading_message s JOIN message m ON m.id=s.message_id JOIN input_ref i ON i.pk=s.input_pk ORDER BY m.id,i.id,s.chain",
+            "SELECT m.id,i.id AS input,s.chain,s.source_start,s.source_end,(s.input_pk=m.input_pk AND s.chain=m.source_chain) AS shown,hex((SELECT version_hash FROM message_version WHERE pk=s.version_pk)) AS version FROM message_parse s JOIN message m ON m.pk=s.message_pk JOIN input_ref i ON i.pk=s.input_pk ORDER BY m.id,i.id,s.chain",
         ),
         (
             "order",
@@ -296,11 +297,11 @@ fn natural_rows(w: &TestArchive) -> Json {
         ),
         (
             "event_sources",
-            "SELECT s.event_id AS id,i.id AS input,s.chain,hex(s.hash) AS hash FROM reading_event s JOIN input_ref i ON i.pk=s.input_pk ORDER BY s.event_id,i.id,s.chain",
+            "SELECT e.id,i.id AS input,s.chain,hex(v.hash) AS hash FROM event_parse s JOIN event e ON e.pk=s.event_pk JOIN input_ref i ON i.pk=s.input_pk JOIN event_value v ON v.pk=s.value_pk ORDER BY e.id,i.id,s.chain",
         ),
         (
             "link_sources",
-            "SELECT s.parent_id,s.child_id,i.id AS input,s.chain,hex(s.hash) AS hash FROM reading_link s JOIN input_ref i ON i.pk=s.input_pk ORDER BY s.parent_id,s.child_id,i.id,s.chain",
+            "SELECT l.parent_id,l.child_id,i.id AS input,s.chain,hex(v.hash) AS hash FROM link_parse s JOIN link l ON l.pk=s.link_pk JOIN input_ref i ON i.pk=s.input_pk JOIN link_value v ON v.pk=s.value_pk ORDER BY l.parent_id,l.child_id,i.id,s.chain",
         ),
         (
             "documents",
@@ -308,7 +309,7 @@ fn natural_rows(w: &TestArchive) -> Json {
         ),
         (
             "parse",
-            "SELECT i.id,p.chain,p.reading_version,p.records,p.parsed_upto,p.status FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk ORDER BY i.id,p.chain",
+            "SELECT i.id,p.chain,p.parse_version,p.records,p.parsed_upto,p.status FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk ORDER BY i.id,p.chain",
         ),
     ] {
         result.insert(name.into(), json!(r.query(sql, &[]).unwrap()));
@@ -321,7 +322,7 @@ fn replacing_each_chain_equals_a_fresh_build_and_plan_order_does_not_matter() {
     let reparsed = test_archive();
     write(&reparsed, fixture(false));
     for mut b in fixture(true) {
-        let mut reading = ChainReading::new().unwrap();
+        let mut reading = ChainParse::new().unwrap();
         reading.push(&mut b.parse[0]).unwrap();
         reparsed
             .writer
@@ -370,7 +371,7 @@ fn retracting_the_winner_restores_complete_structured_payloads() {
             ),
         ],
     );
-    let mut reading = ChainReading::new().unwrap();
+    let mut reading = ChainParse::new().unwrap();
     reading
         .push(&mut ParseStep::new(
             Output::default(),
@@ -488,7 +489,7 @@ fn a_later_reading_failure_rolls_back_retraction_and_prior_steps() {
     write(&w, fixture(false));
     let before = natural_rows(&w);
     let mut b = fixture(true).remove(0);
-    let mut reading = ChainReading::new().unwrap();
+    let mut reading = ChainParse::new().unwrap();
     let mut later = b.parse[0].clone();
     reading.push(&mut b.parse[0]).unwrap();
     later.output.events.push(Event {
@@ -535,7 +536,7 @@ fn a_chain_reading_preserves_deep_structured_values() {
         data: nested,
     }];
     let mut b = batch("a", Route::Live, 0, vec![row(1, message.clone())], &["s"]);
-    let mut reading = ChainReading::new().unwrap();
+    let mut reading = ChainParse::new().unwrap();
     reading.push(&mut b.parse[0]).unwrap();
     w.writer
         .replace_chain(b.input, 1, b.length, reading)
@@ -649,9 +650,9 @@ fn a_session_stated_later_in_a_reading_is_not_removed_mid_transaction() {
         .unwrap()
         .query("SELECT pk FROM session WHERE id='claude-code:s'", &[])
         .unwrap();
-    let mut reading = ChainReading::new().unwrap();
+    let mut reading = ChainParse::new().unwrap();
     let mut prefix = ParseStep::new(Output::default(), RecordCounts::default(), 0..0, false);
-    prefix.reading_version = original.parse[0].reading_version.clone();
+    prefix.parse_version = original.parse[0].parse_version.clone();
     reading.push(&mut prefix).unwrap();
     let mut replacement = original;
     reading.push(&mut replacement.parse[0]).unwrap();
@@ -702,7 +703,7 @@ fn changing_a_shared_event_marks_the_old_and_restored_sessions() {
     write(&w, [winner.clone()]);
     let moved = changed();
     assert!(moved > before);
-    let mut reading = ChainReading::new().unwrap();
+    let mut reading = ChainParse::new().unwrap();
     reading
         .push(&mut ParseStep::new(
             Output::default(),
@@ -828,7 +829,7 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
     let pool = ReadPool::open(&w.archive).unwrap();
     let positions = || {
         pool.reader().unwrap().query(
-        "SELECT e.kind,m.id AS after,e.seq FROM event e LEFT JOIN message m ON m.id=e.after_message_id ORDER BY e.kind", &[]).unwrap()
+        "SELECT e.kind,m.id AS after,e.seq FROM event e LEFT JOIN message m ON m.pk=e.after_message_pk ORDER BY e.kind", &[]).unwrap()
     };
     let changed = || {
         pool.reader()
@@ -884,7 +885,7 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
     );
     assert!(changed() > before);
     messages.parse[0].output.messages[0].offset = 50;
-    let mut reading = ChainReading::new().unwrap();
+    let mut reading = ChainParse::new().unwrap();
     reading.push(&mut messages.parse[0]).unwrap();
     let before = changed();
     w.writer
@@ -899,7 +900,7 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
         ])
     );
     assert!(changed() > before);
-    let mut reading = ChainReading::new().unwrap();
+    let mut reading = ChainParse::new().unwrap();
     reading
         .push(&mut ParseStep::new(
             Output::default(),
@@ -1019,7 +1020,7 @@ fn status_totals_equal_a_recount_across_imports_reparses_and_retractions() {
     assert_totals_equal_a_recount(&w);
     // Re-parses retract each chain's rows and counts and write the new reading's.
     for mut b in fixture(true) {
-        let mut reading = ChainReading::new().unwrap();
+        let mut reading = ChainParse::new().unwrap();
         reading.push(&mut b.parse[0]).unwrap();
         w.writer
             .replace_chain(b.input, 1, b.length, reading)
@@ -1030,14 +1031,29 @@ fn status_totals_equal_a_recount_across_imports_reparses_and_retractions() {
     assert_totals_equal_a_recount(&w);
 }
 
-/// Texts that no reading holds.
+/// Version bodies, values and texts that no row refers to.
 fn unreferenced(w: &TestArchive) -> Json {
     let pool = ReadPool::open(&w.archive).unwrap();
     let r = pool.reader().unwrap();
     json!(
         r.query(
-            "SELECT (SELECT count(*) FROM text t
-                WHERE NOT EXISTS(SELECT 1 FROM reading_text r WHERE r.text_id = t.id)) AS texts",
+            "SELECT
+           (SELECT count(*) FROM message_version v
+            WHERE NOT EXISTS(SELECT 1 FROM message_parse s WHERE s.version_pk = v.pk))
+             AS message_versions,
+           (SELECT count(*) FROM document_version v
+            WHERE NOT EXISTS(SELECT 1 FROM document_parse s WHERE s.version_hash = v.version_hash))
+             AS document_versions,
+           (SELECT count(*) FROM event_value v
+            WHERE NOT EXISTS(SELECT 1 FROM event_parse s WHERE s.value_pk = v.pk)) AS event_values,
+           (SELECT count(*) FROM link_value v
+            WHERE NOT EXISTS(SELECT 1 FROM link_parse s WHERE s.value_pk = v.pk)) AS link_values,
+           (SELECT count(*) FROM text t
+            WHERE NOT EXISTS(SELECT 1 FROM block b WHERE b.text_id = t.id)
+              AND NOT EXISTS(SELECT 1 FROM document_block b WHERE b.text_id = t.id)
+              AND NOT EXISTS(SELECT 1 FROM message_version_text v WHERE v.text_id = t.id)
+              AND NOT EXISTS(SELECT 1 FROM document_version_text v WHERE v.text_id = t.id))
+             AS texts",
             &[]
         )
         .unwrap()
@@ -1046,7 +1062,7 @@ fn unreferenced(w: &TestArchive) -> Json {
 
 #[test]
 fn no_unreferenced_versions_after_each_operation() {
-    let none = json!([{"texts":0}]);
+    let none = json!([{"message_versions":0,"document_versions":0,"event_values":0,"link_values":0,"texts":0}]);
     let w = test_archive();
     // Each commit, with no derive between them, leaves nothing unreferenced:
     // the first readings, readings that replace another input's shown
@@ -1067,7 +1083,7 @@ fn no_unreferenced_versions_after_each_operation() {
         assert_eq!(unreferenced(&w), none);
     }
     for mut b in fixture(true) {
-        let mut reading = ChainReading::new().unwrap();
+        let mut reading = ChainParse::new().unwrap();
         reading.push(&mut b.parse[0]).unwrap();
         w.writer
             .replace_chain(b.input, 1, b.length, reading)

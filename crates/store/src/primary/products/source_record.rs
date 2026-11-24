@@ -138,14 +138,14 @@ impl SourceRecord {
 }
 
 fn known(index: &Connection, reading: &Reading, record: &SourceRecord) -> Result<bool> {
-    index.exists("SELECT EXISTS(SELECT 1 FROM confirmed_event WHERE input=?1 AND chain=?2 AND reading_version=?3 AND reference=?4 AND value_hash=?5)",
-        params![reading.input.id,reading.chain,reading.reading_version,record.reference,record.value_hash.0.as_slice()])
+    index.exists("SELECT EXISTS(SELECT 1 FROM confirmed_event WHERE input=?1 AND chain=?2 AND parse_version=?3 AND reference=?4 AND value_hash=?5)",
+        params![reading.input.id,reading.chain,reading.parse_version,record.reference,record.value_hash.0.as_slice()])
 }
 
 fn uncovered(index: &Connection, reading: &Reading, record: &SourceRecord) -> Result<bool> {
     Ok(!index.scalar::<bool>(
-        "SELECT EXISTS(SELECT 1 FROM confirmed_event WHERE kind='reading_progress' AND input=?1 AND chain=?2 AND reading_version=?3 AND step_start<=?4 AND step_end>=?5)",
-        params![reading.input.id,reading.chain,reading.reading_version,record.start,record.end])?)
+        "SELECT EXISTS(SELECT 1 FROM confirmed_event WHERE kind='reading_progress' AND input=?1 AND chain=?2 AND parse_version=?3 AND step_start<=?4 AND step_end>=?5)",
+        params![reading.input.id,reading.chain,reading.parse_version,record.start,record.end])?)
 }
 
 /// Whether a parsed event still has to be sent to Sinex: no confirmed Sinex
@@ -171,7 +171,7 @@ pub(crate) fn previous_reading_bound(
     version: &str,
 ) -> Result<Option<u64>> {
     let mut query = index.prepare_cached(
-        "SELECT f.sinex_kind,f.reading_version,f.step_end,s.offset,s.length,s.blob_offset
+        "SELECT f.sinex_kind,f.parse_version,f.step_end,s.offset,s.length,s.blob_offset
          FROM source_material s JOIN confirmed_event f ON f.material=s.id
          WHERE s.input=?1 AND s.chain=?2 AND f.state='live'",
     )?;

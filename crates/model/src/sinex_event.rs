@@ -20,7 +20,7 @@ pub struct SinexSource {
 }
 
 /// Only Sinex fetch metadata supplies origin. Product payloads, names and
-/// acquisition-route declarations cannot authenticate it.
+/// capture_read-route declarations cannot authenticate it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ConfirmedOrigin {
     pub source: Option<SinexSource>,

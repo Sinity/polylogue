@@ -163,7 +163,7 @@ fn missing_and_unrecorded_text_never_become_an_accessible_empty_hash() {
 
 #[test]
 fn sparse_source_blocks_keep_original_addresses_and_never_hash_as_complete_text() {
-    use polylogue_model::{MessageRow, Output, Session, SessionKind, bundle::MessageProjection};
+    use polylogue_model::{MessageRow, Output, Session, SessionKind, bundle::ShownBlocks};
     let mut archive = WriterArchive::new();
     let original = source(
         "sparse",
@@ -199,7 +199,7 @@ fn sparse_source_blocks_keep_original_addresses_and_never_hash_as_complete_text(
         };
         output.block_selections.insert(
             0,
-            MessageProjection {
+            ShownBlocks {
                 source_version: original.content_hash().unwrap(),
                 block_count: 3,
                 block_ordinals: ordinals.to_vec(),

@@ -209,7 +209,11 @@ pub fn visit_record(
                             to: format!("session:{}", row.link.child),
                             relation: relation.into(),
                             how: row.link.how.map(|how| how.as_str().into()),
-                            branch_point: row.link.at.as_ref().map(|at| format!("message:{at}")),
+                            branch_point: row
+                                .link
+                                .branch_point
+                                .as_ref()
+                                .map(|at| format!("message:{at}")),
                             spawning_call: row.link.call_id.clone(),
                             copies_prefix: row.link.copies_prefix,
                             cross_link: false,
@@ -285,7 +289,7 @@ pub fn visit_record(
                     header: Box::new(MessageHeader {
                         time: TimeValue {
                             at: message.at,
-                            evidence: message.time_evidence(),
+                            evidence: message.time_accuracy(),
                         },
                         author,
                         model: message

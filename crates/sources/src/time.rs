@@ -4,7 +4,7 @@
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 2;
 
-use polylogue_model::{Json, Precision, TimeEvidence, TimeEvidenceError, TimeQuality, Timestamp};
+use polylogue_model::{Json, Precision, TimeAccuracy, TimeAccuracyError, TimeQuality, Timestamp};
 use serde::{Deserialize, Serialize};
 
 /// A decoded source time remains paired with its accuracy through parser state.
@@ -12,36 +12,36 @@ use serde::{Deserialize, Serialize};
 #[serde(try_from = "TimeWire", into = "TimeWire")]
 pub struct SourceTime {
     at: Timestamp,
-    accuracy: TimeEvidence,
+    accuracy: TimeAccuracy,
 }
 #[derive(Serialize, Deserialize)]
 struct TimeWire {
     at: Timestamp,
-    evidence: TimeEvidence,
+    accuracy: TimeAccuracy,
 }
 impl TryFrom<TimeWire> for SourceTime {
-    type Error = TimeEvidenceError;
+    type Error = TimeAccuracyError;
     fn try_from(value: TimeWire) -> Result<Self, Self::Error> {
-        Self::new(value.at, value.evidence)
+        Self::new(value.at, value.accuracy)
     }
 }
 impl From<SourceTime> for TimeWire {
     fn from(value: SourceTime) -> Self {
         Self {
             at: value.at,
-            evidence: value.accuracy,
+            accuracy: value.accuracy,
         }
     }
 }
 impl SourceTime {
-    pub fn new(at: Timestamp, accuracy: TimeEvidence) -> Result<Self, TimeEvidenceError> {
+    pub fn new(at: Timestamp, accuracy: TimeAccuracy) -> Result<Self, TimeAccuracyError> {
         accuracy.validate(Some(at))?;
         Ok(Self { at, accuracy })
     }
     pub fn timestamp(self) -> Timestamp {
         self.at
     }
-    pub fn accuracy(self) -> TimeEvidence {
+    pub fn accuracy(self) -> TimeAccuracy {
         self.accuracy
     }
     /// A source-declared interval end, never a guessed rounding boundary.
@@ -73,15 +73,15 @@ impl std::fmt::Display for SourceTime {
     }
 }
 
-pub fn parts(time: Option<SourceTime>) -> (Option<Timestamp>, TimeEvidence) {
-    time.map_or((None, TimeEvidence::UNKNOWN), |time| {
+pub fn parts(time: Option<SourceTime>) -> (Option<Timestamp>, TimeAccuracy) {
+    time.map_or((None, TimeAccuracy::UNKNOWN), |time| {
         (Some(time.at), time.accuracy)
     })
 }
 fn intrinsic(at: Timestamp, precision: Precision) -> SourceTime {
     SourceTime {
         at,
-        accuracy: TimeEvidence::intrinsic(precision),
+        accuracy: TimeAccuracy::intrinsic(precision),
     }
 }
 
@@ -101,7 +101,7 @@ pub fn rfc3339(value: &Json) -> Option<SourceTime> {
         let until = Timestamp::from_unix_ns(at.unix_ns().checked_add(3_600_000_000_000)?)?;
         return SourceTime::new(
             at,
-            TimeEvidence {
+            TimeAccuracy {
                 quality: TimeQuality::Intrinsic,
                 precision: Some(Precision::Bounded),
                 until: Some(until),

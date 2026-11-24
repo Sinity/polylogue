@@ -947,7 +947,7 @@ fn current_frame_is_acknowledged_with_5000_frames_waiting() {
 fn refused_attachment_keeps_request_as_others_complete() {
     use polylogue_model::{
         BlobHash,
-        authored::{AuthoredEffect, ChatChange, ExecutionEligibility, PreparedRequest},
+        authored::{AuthoredEffect, ChatChange, PreparedRequest, RunsHere},
         user::{ChatAction, ChatAttachment, UserOutcome, UserWrite},
     };
     use polylogue_store::primary::ProductWrite;
@@ -1002,7 +1002,7 @@ fn refused_attachment_keeps_request_as_others_complete() {
                     stage_only: true,
                     needs_approval: false,
                     created_at: 0,
-                    execution: ExecutionEligibility::Live,
+                    execution: RunsHere::Live,
                     attachments: vec![ChatAttachment {
                         id: "synthetic-attachment".into(),
                         blob: hash,

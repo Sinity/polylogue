@@ -134,7 +134,7 @@ impl<'a> Compiler<'a> {
                         let tree = fields::descendants(s);
                         Some(format!(
                             "({} OR EXISTS (SELECT 1 FROM session_link xl JOIN session xs ON xs.id = xl.parent_id \
-                         WHERE xl.kind IN ({}) AND NOT EXISTS (SELECT 1 FROM session xc WHERE xc.id = xl.child_id) AND xs.pk IN ({tree})))",
+                         WHERE xl.kind IN ({}) AND xl.child_pk IS NULL AND xs.pk IN ({tree})))",
                             unpriced(&tree),
                             fields::STRUCTURAL_KINDS
                         ))
@@ -333,7 +333,7 @@ impl<'a> Compiler<'a> {
         };
         let parent_link = self.under_parent(parent.unit, &sc, "_parents.value", session)?;
         w.push(parent_link);
-        self.fold_bound_sessions(&sc, &top, &mut w, true)?;
+        self.sessions_within_bounds(&sc, &top, &mut w, true)?;
         let ctes = if self.ctes.is_empty() {
             String::new()
         } else {

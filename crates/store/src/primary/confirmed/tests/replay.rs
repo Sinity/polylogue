@@ -34,7 +34,13 @@ fn snapshot_pages_resume_hidden_and_install_with_their_completion() {
     let path = dir.path().join("index.db");
     let mut index = cache(&path);
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
-    crate::primary::scope::reset(&mut index, &archive, "scope", false).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
+    crate::primary::scope::reset(&mut index, &archive, &resolver, "scope", false).unwrap();
     apply(
         &crate::text_rows::TextIds::new(
             &index,
@@ -43,11 +49,12 @@ fn snapshot_pages_resume_hidden_and_install_with_their_completion() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[input(1, "obsolete"), complete_at(1)],
     )
     .unwrap();
     // An equal scope can still need replacement at a new stream origin.
-    assert!(crate::primary::scope::reset(&mut index, &archive, "scope", true).unwrap());
+    assert!(crate::primary::scope::reset(&mut index, &archive, &resolver, "scope", true).unwrap());
     let mut state = replay_state(&index).unwrap();
     state.snapshot_progress = Some(SnapshotProgress {
         origin: 4,
@@ -71,6 +78,7 @@ fn snapshot_pages_resume_hidden_and_install_with_their_completion() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &page,
     )
     .unwrap();
@@ -83,6 +91,7 @@ fn snapshot_pages_resume_hidden_and_install_with_their_completion() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &page,
     )
     .unwrap();
@@ -105,6 +114,7 @@ fn snapshot_pages_resume_hidden_and_install_with_their_completion() {
             )
             .unwrap(),
             &mut index,
+            &resolver,
             &[complete_at(8)]
         )
         .is_err()
@@ -128,6 +138,7 @@ fn snapshot_pages_resume_hidden_and_install_with_their_completion() {
             )
             .unwrap(),
             &mut index,
+            &resolver,
             &[
                 input(3, "archived"),
                 Confirmed {
@@ -156,6 +167,7 @@ fn snapshot_pages_resume_hidden_and_install_with_their_completion() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[],
     )
     .unwrap();
@@ -185,6 +197,7 @@ fn snapshot_pages_resume_hidden_and_install_with_their_completion() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[completed(8, 20)],
     )
     .unwrap();
@@ -202,7 +215,13 @@ fn a_staged_delivery_survives_reopen_without_advancing_the_applied_position() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("index.db");
     let mut index = cache(&path);
-    let _archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     apply(
         &crate::text_rows::TextIds::new(
             &index,
@@ -211,6 +230,7 @@ fn a_staged_delivery_survives_reopen_without_advancing_the_applied_position() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[input(3, "source"), delivered(7)],
     )
     .unwrap();
@@ -235,6 +255,7 @@ fn a_staged_delivery_survives_reopen_without_advancing_the_applied_position() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[complete_at(3), delivered(8)],
     )
     .unwrap();
@@ -247,7 +268,13 @@ fn a_staged_delivery_survives_reopen_without_advancing_the_applied_position() {
 fn a_restarted_consumer_redelivers_applied_positions_without_changing_them() {
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
-    let _archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     apply(
         &crate::text_rows::TextIds::new(
             &index,
@@ -256,6 +283,7 @@ fn a_restarted_consumer_redelivers_applied_positions_without_changing_them() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[input(2, "source"), complete_at(2), delivered(9)],
     )
     .unwrap();
@@ -269,6 +297,7 @@ fn a_restarted_consumer_redelivers_applied_positions_without_changing_them() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[input(2, "source"), complete_at(2), delivered(4)],
     )
     .unwrap();
@@ -288,7 +317,13 @@ fn a_restarted_consumer_redelivers_applied_positions_without_changing_them() {
 fn an_event_erased_before_this_index_read_it_is_recorded_as_tombstoned() {
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
-    let _archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     apply(
         &crate::text_rows::TextIds::new(
             &index,
@@ -297,6 +332,7 @@ fn an_event_erased_before_this_index_read_it_is_recorded_as_tombstoned() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[
             Confirmed {
                 sinex_context: None,
@@ -328,6 +364,7 @@ fn an_event_erased_before_this_index_read_it_is_recorded_as_tombstoned() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[
             Confirmed {
                 sinex_context: None,
@@ -348,7 +385,13 @@ fn an_event_erased_before_this_index_read_it_is_recorded_as_tombstoned() {
 fn scope_reset_cannot_share_a_page_with_events() {
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
-    let _archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     assert!(
         apply(
             &crate::text_rows::TextIds::new(
@@ -358,6 +401,7 @@ fn scope_reset_cannot_share_a_page_with_events() {
             )
             .unwrap(),
             &mut index,
+            &resolver,
             &[
                 input(1, "source"),
                 control(ReplayControl::Reset {
@@ -374,7 +418,13 @@ fn scope_reset_cannot_share_a_page_with_events() {
 fn an_unreadable_event_in_the_middle_of_a_page_is_refused_and_later_events_apply() {
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
-    let _archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     apply(
         &crate::text_rows::TextIds::new(
             &index,
@@ -383,6 +433,7 @@ fn an_unreadable_event_in_the_middle_of_a_page_is_refused_and_later_events_apply
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[
             input(1, "before"),
             complete_at(1),
@@ -436,7 +487,13 @@ fn source_boundary_needs_complete_scope_and_survives_commits() {
         crate::Archive::open_primary(directory.path(), &directory.path().join("bytes")).unwrap();
     let mut index =
         crate::archive::open_write(&archive.index_db(), crate::archive::cache::SETUP).unwrap();
-    crate::primary::scope::reset(&mut index, &archive, "scope-a", false).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
+    crate::primary::scope::reset(&mut index, &archive, &resolver, "scope-a", false).unwrap();
     let boundary =
         |index: &Connection| crate::primary::SourceBoundary::read(index, index, &archive).unwrap();
     assert!(boundary(&index).is_none());
@@ -460,6 +517,7 @@ fn source_boundary_needs_complete_scope_and_survives_commits() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[
             observed(2, "first-observation"),
             control(ReplayControl::LatestPosition { position: 9 }),
@@ -483,6 +541,7 @@ fn source_boundary_needs_complete_scope_and_survives_commits() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[complete_at(2)],
     )
     .unwrap();
@@ -498,6 +557,7 @@ fn source_boundary_needs_complete_scope_and_survives_commits() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[append, input(5, "next"), complete_at(5)],
     )
     .unwrap();
@@ -528,6 +588,7 @@ fn source_boundary_needs_complete_scope_and_survives_commits() {
             )
             .unwrap(),
             &mut index,
+            &resolver,
             &[
                 Confirmed {
                     position,
@@ -550,7 +611,7 @@ fn source_boundary_needs_complete_scope_and_survives_commits() {
         Err(StoreError::ScopeChanged)
     ));
     let previous = boundary(&index).unwrap();
-    crate::primary::scope::reset(&mut index, &archive, "scope-b", false).unwrap();
+    crate::primary::scope::reset(&mut index, &archive, &resolver, "scope-b", false).unwrap();
     assert!(boundary(&index).is_none());
     assert!(matches!(
         previous.through(&index, &archive),
@@ -565,7 +626,13 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
         crate::Archive::open_primary(directory.path(), &directory.path().join("bytes")).unwrap();
     let mut index =
         crate::archive::open_write(&archive.index_db(), crate::archive::cache::SETUP).unwrap();
-    crate::primary::scope::reset(&mut index, &archive, "scope", false).unwrap();
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
+    crate::primary::scope::reset(&mut index, &archive, &resolver, "scope", false).unwrap();
     let boundary =
         |index: &Connection| crate::primary::SourceBoundary::read(index, index, &archive).unwrap();
     let refused = |position, event: &str, unreadable_input| Confirmed {
@@ -587,6 +654,7 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[
             input(1, "known"),
             complete_at(1),
@@ -604,6 +672,7 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[refused(3, "possible-input", true), complete_at(3)],
     )
     .unwrap();
@@ -628,6 +697,7 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[lifecycle(4, ConfirmedChange::Archived), complete_at(4)],
     )
     .unwrap();
@@ -640,6 +710,7 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[lifecycle(5, ConfirmedChange::Restored), complete_at(5)],
     )
     .unwrap();
@@ -654,6 +725,7 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[replacement, complete_at(6)],
     )
     .unwrap();
@@ -687,6 +759,7 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[refused(7, "erased-input", true), complete_at(7)],
     )
     .unwrap();
@@ -701,6 +774,7 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[erased, complete_at(8)],
     )
     .unwrap();
@@ -737,7 +811,13 @@ fn completion_marker_survives_pages_and_rolls_back() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("index.db");
     let mut index = cache(&path);
-    let _archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     apply(
         &crate::text_rows::TextIds::new(
             &index,
@@ -746,6 +826,7 @@ fn completion_marker_survives_pages_and_rolls_back() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[input(2, "first"), completed(2, 5), delivered(5)],
     )
     .unwrap();
@@ -757,6 +838,7 @@ fn completion_marker_survives_pages_and_rolls_back() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[input(3, "later"), delivered(7)],
     )
     .unwrap();
@@ -776,6 +858,7 @@ fn completion_marker_survives_pages_and_rolls_back() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[completed(2, 8), delivered(8)],
     )
     .unwrap();
@@ -797,6 +880,7 @@ fn completion_marker_survives_pages_and_rolls_back() {
             )
             .unwrap(),
             &mut index,
+            &resolver,
             &[completed(3, 9), delivered(9)]
         )
         .is_err()
@@ -816,6 +900,7 @@ fn completion_marker_survives_pages_and_rolls_back() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[],
     )
     .unwrap();
@@ -829,7 +914,13 @@ fn completion_marker_survives_pages_and_rolls_back() {
 fn a_new_completion_after_higher_pending_data_cannot_become_a_restart_boundary() {
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
-    let _archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     apply(
         &crate::text_rows::TextIds::new(
             &index,
@@ -838,6 +929,7 @@ fn a_new_completion_after_higher_pending_data_cannot_become_a_restart_boundary()
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[
             input(2, "first"),
             input(3, "later"),
@@ -864,6 +956,7 @@ fn a_new_completion_after_higher_pending_data_cannot_become_a_restart_boundary()
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[completed(3, 9)],
     )
     .unwrap();
@@ -881,7 +974,13 @@ fn a_new_completion_after_higher_pending_data_cannot_become_a_restart_boundary()
 fn malformed_completion_markers_refuse_visible_progress() {
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
-    let _archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     apply(
         &crate::text_rows::TextIds::new(
             &index,
@@ -890,6 +989,7 @@ fn malformed_completion_markers_refuse_visible_progress() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[input(2, "first"), delivered(5)],
     )
     .unwrap();
@@ -916,6 +1016,7 @@ fn malformed_completion_markers_refuse_visible_progress() {
                 )
                 .unwrap(),
                 &mut index,
+                &resolver,
                 &[]
             )
             .is_err(),
@@ -935,6 +1036,7 @@ fn malformed_completion_markers_refuse_visible_progress() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[completed(2, 5)],
     )
     .unwrap();

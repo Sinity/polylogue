@@ -195,9 +195,9 @@ impl Export {
         {
             session.offer_title(title, TitleSource::Generated);
         }
-        let (at, time_evidence) = crate::time::parts(time(conversation, &mut warnings));
+        let (at, time_accuracy) = crate::time::parts(time(conversation, &mut warnings));
         session
-            .set_time(at, time_evidence)
+            .set_time(at, time_accuracy)
             .expect("decoded source time is valid");
         sink.out.sessions.push(session);
         sink.records.record("conversation", &RecordOutcome::Used);
@@ -300,7 +300,7 @@ impl Export {
                 offset,
                 end: offset + 1,
                 message: {
-                    let (at, time_evidence) = crate::time::parts(at);
+                    let (at, time_accuracy) = crate::time::parts(at);
                     Message {
                         id,
                         session: sid.clone(),
@@ -310,9 +310,9 @@ impl Export {
                             .and_then(|id| message_id(ORIGIN, id)),
                         role,
                         at,
-                        at_quality: time_evidence.quality,
-                        at_precision: time_evidence.precision,
-                        at_until: time_evidence.until,
+                        at_quality: time_accuracy.quality,
+                        at_precision: time_accuracy.precision,
+                        at_until: time_accuracy.until,
                         model,
                         prompt_kind: (role == Role::User).then_some(PromptKind::Prose),
                         blocks: vec![Block::Text {
@@ -333,14 +333,14 @@ impl Export {
             warnings.sort();
             warnings.dedup();
             sink.out.events.push({
-                let (at, time_evidence) = crate::time::parts(None);
+                let (at, time_accuracy) = crate::time::parts(None);
                 Event {
                     session: Some(sid),
                     kind: "grok_import_diagnostic".into(),
                     at,
-                    at_quality: time_evidence.quality,
-                    at_precision: time_evidence.precision,
-                    at_until: time_evidence.until,
+                    at_quality: time_accuracy.quality,
+                    at_precision: time_accuracy.precision,
+                    at_until: time_accuracy.until,
                     after: None,
                     range: None,
                     data: serde_json::json!({"warnings": warnings}),

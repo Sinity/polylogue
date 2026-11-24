@@ -11,7 +11,7 @@ fn key(length: u64) -> ExportReadingKey {
             route: polylogue_model::Route::Live,
         },
         chain: 1,
-        reading_version: "export-2".into(),
+        parse_version: "export-2".into(),
         length,
     }
 }
@@ -35,7 +35,7 @@ fn callback(
         0..if complete { key.length } else { 0 },
         complete,
     );
-    step.reading_version = key.reading_version.clone();
+    step.parse_version = key.parse_version.clone();
     let source = if complete {
         ExportDeliverySource::Complete {
             length: key.length,
@@ -130,14 +130,14 @@ fn length_and_callback_coordinate_keep_keys_apart() {
         crate::kinds::kind_reference("polylogue.parse_progress")
             .unwrap()
             .version,
-        7
+        8
     );
     assert_eq!(crate::source_reference().version, crate::SOURCE_VERSION);
     assert_eq!(
         crate::kinds::kind_reference("polylogue.query_run")
             .unwrap()
             .version,
-        8
+        9
     );
     assert_eq!(
         crate::kinds::kind_reference("polylogue.query_run_outcome")

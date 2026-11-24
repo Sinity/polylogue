@@ -3,7 +3,7 @@
 //! selects bodies without decoding their contents.
 use super::*;
 use polylogue_store::primary::{
-    BodyRange, SourceGeneration,
+    BodyRange, ObservedState,
     queue::{Lookup, Order},
 };
 
@@ -57,7 +57,7 @@ fn group_outcome(
         return Ok(None);
     }
     let group = parent.parent().expect("capture group directory");
-    let header = read_checked::<CaptureGroupHeader>(&group.join("acquisition.json"))?
+    let header = read_checked::<CaptureGroupHeader>(&group.join("capture_read.json"))?
         .ok_or_else(|| Error::invalid("body has no published capture group header"))?;
     if group.file_name().and_then(|name| name.to_str())
         != Some(hash(header.identity.as_bytes()).as_str())
@@ -69,7 +69,7 @@ fn group_outcome(
 
 pub(crate) struct BodyMetadata {
     pub order: u64,
-    pub generation: SourceGeneration,
+    pub generation: ObservedState,
     pub range: polylogue_store::primary::RawRange,
     pub previous: Option<String>,
 }
@@ -93,7 +93,7 @@ impl Spool {
             order: prepared.order,
             generation,
             range,
-            previous: input.raw_predecessor,
+            previous: input.previous_revision,
         }))
     }
 
@@ -128,7 +128,7 @@ impl Spool {
                 hash: input.hash,
                 decoded_length: input.length,
                 known_total: input.raw_total,
-                previous: input.raw_predecessor.clone(),
+                previous: input.previous_revision.clone(),
                 outcome: group_outcome(self, identity)?,
             },
             parts: parts
@@ -138,14 +138,14 @@ impl Spool {
         })
     }
 
-    pub fn body_roots(&self, generation: &SourceGeneration, through: u64) -> Result<Vec<String>> {
+    pub fn body_roots(&self, generation: &ObservedState, through: u64) -> Result<Vec<String>> {
         self.body_branches(None, generation, through)
     }
 
     pub fn body_children(
         &self,
         identity: &str,
-        generation: &SourceGeneration,
+        generation: &ObservedState,
         through: u64,
     ) -> Result<Vec<String>> {
         self.body_branches(Some(identity), generation, through)
@@ -154,7 +154,7 @@ impl Spool {
     fn body_branches(
         &self,
         parent: Option<&str>,
-        generation: &SourceGeneration,
+        generation: &ObservedState,
         through: u64,
     ) -> Result<Vec<String>> {
         // A second matching branch is enough for the caller to reject an
@@ -190,7 +190,7 @@ impl Spool {
         }
     }
 
-    pub fn body_count(&self, generation: &SourceGeneration, through: u64) -> Result<u64> {
+    pub fn body_count(&self, generation: &ObservedState, through: u64) -> Result<u64> {
         let generation = serde_json::to_vec(generation)?;
         let mut after = None;
         let mut count = 0u64;

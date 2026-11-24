@@ -448,7 +448,7 @@ impl State {
                 .map(|((unit, columns), metadata)| polylogue_query::Kept {
                     output_metadata: metadata.clone(),
                     shape: kept.shape,
-                    native_identity: kept.native_identity,
+                    row_identity: kept.row_identity,
                     unit: unit.clone(),
                     columns: columns.clone(),
                     match_columns: matches.clone().unwrap_or_default(),

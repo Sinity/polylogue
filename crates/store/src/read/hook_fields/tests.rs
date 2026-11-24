@@ -1,6 +1,6 @@
 use super::*;
 use crate::fixture::writer::{WriterArchive, message};
-use polylogue_model::{Block, HookFieldClaim, MessageRow, Output, Role, Session, SessionKind};
+use polylogue_model::{Block, MessageRow, Output, ParsedHookField, Role, Session, SessionKind};
 
 fn output() -> Output {
     let message = message(
@@ -44,7 +44,7 @@ fn capture(
     if with_hook_field {
         output.hook_fields.insert(
             0,
-            vec![HookFieldClaim {
+            vec![ParsedHookField {
                 block: 1,
                 start: 0,
                 end,
@@ -58,9 +58,9 @@ fn capture(
     batch.parse[0].parsed_upto = batch.length;
     // Even a kept capture-read record of the harness file cannot authenticate
     // who sent the field.
-    batch.acquisition = Some(crate::primary::AcquisitionReceipt {
-        version: crate::primary::AcquisitionReceipt::VERSION,
-        route: crate::primary::AcquisitionRoute::NativeCapture,
+    batch.capture_read = Some(crate::primary::CaptureRead {
+        version: crate::primary::CaptureRead::VERSION,
+        route: crate::primary::ReadRoute::NativeCapture,
         source: crate::primary::SourceSelector {
             origin: "claude-code".into(),
             machine: "m".into(),
@@ -74,7 +74,7 @@ fn capture(
         observed_at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
         generation: None,
         raw_total: None,
-        raw_predecessor: None,
+        previous_revision: None,
         chunks: Vec::new(),
     });
     let mut raw = batch.clone();
@@ -126,7 +126,7 @@ fn unauthenticated_hook_field_stays_unknown() {
         );
         injections
     };
-    let mut reading = crate::writer::ChainReading::new().unwrap();
+    let mut reading = crate::writer::ChainParse::new().unwrap();
     reading.push(&mut step).unwrap();
     w.writer
         .replace_chain(input, chain, length, reading)
@@ -163,7 +163,7 @@ fn forged_imported_observation_stays_outside_local_membership() {
             message: message.id.clone(),
             source_version: version,
             block: 1,
-            observed: Some(NativeHookField {
+            observed: Some(StatedHookField {
                 input: "other-input".into(),
                 chain: 77,
                 start: 900,
@@ -203,7 +203,7 @@ fn sparse_injection_block_ordinals_keep_the_full_u64_domain() {
     let block = u64::MAX - 1;
     output.block_selections.insert(
         0,
-        polylogue_model::bundle::MessageProjection {
+        polylogue_model::bundle::ShownBlocks {
             source_version: version,
             block_count: u64::MAX,
             block_ordinals: vec![block],
@@ -216,7 +216,7 @@ fn sparse_injection_block_ordinals_keep_the_full_u64_domain() {
             source_version: version,
             block,
             observed: None,
-            declared: vec![NativeHookField {
+            declared: vec![StatedHookField {
                 input: "original-input".into(),
                 chain: 1,
                 start: 1,

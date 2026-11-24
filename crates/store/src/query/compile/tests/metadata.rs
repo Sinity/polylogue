@@ -267,7 +267,7 @@ fn saved_scope_keeps_fields_and_refuses_forgery() {
         Kept {
             output_metadata: Default::default(),
             shape: None,
-            native_identity: false,
+            row_identity: false,
             unit: "tool_calls".into(),
             columns: vec![Column {
                 name: "command".into(),
@@ -364,7 +364,7 @@ fn replay_recovers_kept_declarations_and_lowers_matching() {
             columns,
             match_columns: vec![],
             shape: None,
-            native_identity: false,
+            row_identity: false,
         },
     );
     let base =

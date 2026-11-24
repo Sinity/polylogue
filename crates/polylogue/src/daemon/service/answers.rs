@@ -421,18 +421,18 @@ pub(crate) fn submit<T: serde::Serialize>(
     selected_scope: Option<polylogue_store::ReadScopeToken>,
     present: impl FnOnce(polylogue_model::user::UserOutcome) -> T,
 ) -> Answer<T> {
-    submit_receipt(d, invocation, request_id, w, selected_scope, |receipt| {
+    submit_result(d, invocation, request_id, w, selected_scope, |receipt| {
         present(receipt.outcome)
     })
 }
 
-pub(crate) fn submit_receipt<T>(
+pub(crate) fn submit_result<T>(
     d: &Daemon,
     invocation: &Invocation,
     request_id: String,
     w: UserWrite,
     selected_scope: Option<polylogue_store::ReadScopeToken>,
-    present: impl FnOnce(polylogue_store::user_writes::UserReceipt) -> T,
+    present: impl FnOnce(polylogue_store::user_writes::WriteResult) -> T,
 ) -> Answer<T> {
     let accepted = || -> Result<_, Failure> {
         let writes = writer(d)?;

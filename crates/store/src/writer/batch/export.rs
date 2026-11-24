@@ -37,7 +37,7 @@ impl ParseStep {
             self.output.clone()
         };
         let body = (
-            &self.reading_version,
+            &self.parse_version,
             output,
             &self.counts,
             self.order_from,

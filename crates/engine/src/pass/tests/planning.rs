@@ -56,7 +56,7 @@ fn pending_current_chains(engine: &Engine, inputs: &[String]) -> usize {
                 "claude-code".into(),
                 polylogue_sources::origin::by_name("claude-code")
                     .unwrap()
-                    .reading_version(),
+                    .parse_version(),
             )],
             polylogue_store::StoppedChains::Finished,
             RevisionChains::Newest,

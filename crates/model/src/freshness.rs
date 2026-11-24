@@ -131,7 +131,7 @@ impl IndexFreshness {
 pub enum CompletenessReason {
     MissingDeclaration,
     MissingCheckpoint,
-    ReadingVersionChanged,
+    ParseVersionChanged,
     ParserBehind,
     MissingSourcePrefix,
     KnownRawOnly,
@@ -241,7 +241,7 @@ impl ReadFreshness {
                         CompletenessReason::MissingCheckpoint => {
                             "some stored inputs have not been parsed"
                         }
-                        CompletenessReason::ReadingVersionChanged => {
+                        CompletenessReason::ParseVersionChanged => {
                             "some stored inputs await the current parser"
                         }
                         CompletenessReason::ParserBehind => "parsing is behind the stored bytes",

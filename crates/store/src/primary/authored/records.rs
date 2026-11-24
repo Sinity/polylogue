@@ -226,7 +226,7 @@ pub(super) fn insert_delivery(
         let mut old_signal = old.signal;
         let mut new_signal = value.signal.clone();
         for signal in [&mut old_signal, &mut new_signal].into_iter().flatten() {
-            signal.execution = ExecutionEligibility::Historical;
+            signal.execution = RunsHere::Historical;
         }
         if old.prepared != value.prepared || old.at != value.at || old_signal != new_signal {
             return Err(StoreError::Conflict(value.id.clone()));
@@ -236,7 +236,7 @@ pub(super) fn insert_delivery(
     conn.execute(&source.sql("INSERT INTO @source.delivery(id,recipient_kind,recipient_id,sender,event,cwd,at,content_hash,bytes,body,refs_json,left_out_json,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"),params![value.id,d.recipient_kind,d.recipient_id,d.sender,d.event,d.cwd,value.at.unix_ms(),&blake3::hash(d.text.as_bytes()).as_bytes()[..],crate::to_i64(d.text.len(), "delivery size is out of range")?,crate::encoding::pack_text(&d.text)?,serde_json::to_string(&d.refs)?,serde_json::to_string(&d.left_out)?,counter])?;
     if let Some(mut signal) = value.signal.clone() {
         if historical {
-            signal.execution = ExecutionEligibility::Historical;
+            signal.execution = RunsHere::Historical;
         }
         conn.execute(
             &source.sql("UPDATE @source.delivery SET signal=?2 WHERE id=?1"),
@@ -285,7 +285,7 @@ fn insert_chat(
         return Ok(());
     }
     let execution = if historical {
-        ExecutionEligibility::Historical
+        RunsHere::Historical
     } else {
         value.execution
     };
@@ -340,7 +340,7 @@ fn insert_backfill(
         return Ok(());
     }
     let execution = if historical {
-        ExecutionEligibility::Historical
+        RunsHere::Historical
     } else {
         value.execution
     };

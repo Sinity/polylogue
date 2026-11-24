@@ -73,7 +73,7 @@ fn malformed_row_records_are_counted_with_fixed_reasons() {
 }
 
 #[test]
-fn row_envelope_and_column_metadata_are_counted_once() {
+fn row_wrapper_and_column_metadata_are_counted_once() {
     let bytes = br#"{"schema":{"empty_table":"CREATE TABLE empty_table(x TEXT)"},"table_metadata":{"empty_table":{"columns":[{"cid":0,"name":"distinctive_column_name","declared_type":"distinctive_type_name","not_null":false,"primary_key":0,"hidden":1,"future":{"leaf":true}}],"without_rowid":false}}}
 {"t":"facts","k":1,"h":"distinctive_hash","r":{"body":"distinctive_body"},"future":{"leaf":true}}
 "#;
@@ -84,11 +84,11 @@ fn row_envelope_and_column_metadata_are_counted_once() {
         &step.counts.wire_shapes[&serde_json::to_string(&(kind, table, path)).unwrap()]
     };
     assert_eq!(observed("row", "facts", "/body").unused_count, 1);
-    let header = observed("row_envelope", "facts", "/future/leaf");
+    let header = observed("row_wrapper", "facts", "/future/leaf");
     assert_eq!(header.types["boolean"], 1);
     assert_eq!(header.unused_count, 1);
-    assert_eq!(observed("row_envelope", "facts", "/k").unused_count, 0);
-    assert_eq!(observed("row_envelope", "facts", "").unknown_table_count, 0);
+    assert_eq!(observed("row_wrapper", "facts", "/k").unused_count, 0);
+    assert_eq!(observed("row_wrapper", "facts", "").unknown_table_count, 0);
     assert_eq!(observed("row", "facts", "").unknown_table_count, 1);
     assert_eq!(
         observed("table_metadata", "empty_table", "/columns/[]/name").expected,

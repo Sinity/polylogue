@@ -1,7 +1,9 @@
 //! Readings through the real request path: logical sessions, fork and
 //! spawn cards, context differences, the links tree and following.
 use super::*;
-use polylogue_model::read::{Card, HeaderKind, ItemKind, ReadOptions, ReadPage, SpawnFold, View};
+use polylogue_model::read::{
+    Card, HeaderKind, ItemKind, ReadOptions, ReadPage, SpawnDisplay, View,
+};
 use serde_json::json;
 
 fn line(value: serde_json::Value) -> String {
@@ -224,7 +226,7 @@ fn forks_and_spawns_are_cards_at_their_branch_point_and_call() {
         &d,
         "session:claude-code:root",
         ReadOptions {
-            spawns: SpawnFold::Hidden,
+            spawns: SpawnDisplay::Hidden,
             ..ReadOptions::default()
         },
     );
@@ -437,7 +439,7 @@ fn spawns_read_inline_at_their_call_to_the_asked_depth() {
         &d,
         "session:claude-code:root",
         ReadOptions {
-            spawns: SpawnFold::Inline { depth: Some(1) },
+            spawns: SpawnDisplay::Inline { depth: Some(1) },
             ..ReadOptions::default()
         },
     );
@@ -509,7 +511,7 @@ fn spawns_read_inline_at_their_call_to_the_asked_depth() {
         &d,
         "session:claude-code:root",
         ReadOptions {
-            spawns: SpawnFold::Inline { depth: None },
+            spawns: SpawnDisplay::Inline { depth: None },
             ..ReadOptions::default()
         },
     ));

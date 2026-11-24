@@ -387,7 +387,7 @@ impl Sinex {
             || reading
                 .source_length
                 .is_none_or(|length| reading.parsed_upto > length)
-            || reading.reading_version.is_empty()
+            || reading.parse_version.is_empty()
         {
             return Err(Error::invalid(
                 "interpreted source identity or range is invalid",
@@ -400,7 +400,7 @@ impl Sinex {
                 let key = polylogue_store::primary::ExportReadingKey {
                     input: reading.input.clone(),
                     chain: reading.chain,
-                    reading_version: reading.reading_version.clone(),
+                    parse_version: reading.parse_version.clone(),
                     length: reading.source_length.expect("validated source length"),
                 };
                 crate::products::require_reading(&write.product, &key)?;

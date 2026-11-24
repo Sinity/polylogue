@@ -55,16 +55,16 @@ pub(super) fn snapshot(
                 Ok((identity, repository, unavailable)) => {
                     result["git_identity"] = identity;
                     if !unavailable.is_empty() {
-                        result["native_unavailable"] = json!(unavailable);
+                        result["unstated"] = json!(unavailable);
                     }
                     if let Some(repository) = repository {
                         result["repository"] = json!(repository);
                     }
                 }
-                Err(reason) => result["native_unavailable"] = json!([reason]),
+                Err(reason) => result["unstated"] = json!([reason]),
             }
         } else {
-            result["native_unavailable"] = json!(["git identity: no source cwd"]);
+            result["unstated"] = json!(["git identity: no source cwd"]);
         }
     }
     result

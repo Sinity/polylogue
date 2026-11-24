@@ -22,7 +22,7 @@ impl Reader<'_> {
         for row in explicit.query_map([id.to_string()], |r| {
             <(String, String, i64, String, String, String, String)>::try_from(r)
         })? {
-            let (child, input, chain, reading_version, sequence, position, parent) = row?;
+            let (child, input, chain, parse_version, sequence, position, parent) = row?;
             let coordinate = |s: String| {
                 s.parse::<u64>()
                     .map_err(|error| crate::StoreError::stored(0, error.to_string()))
@@ -35,7 +35,7 @@ impl Reader<'_> {
                 source: PrefixSource {
                     input,
                     chain,
-                    reading_version,
+                    parse_version,
                 },
                 position: [coordinate(sequence)?, coordinate(position)?],
             });
@@ -49,11 +49,11 @@ impl Reader<'_> {
                  WHERE m.id=?1 AND m.duplicate_of IS NULL",
             [id.to_string()],
         )?;
-        let mut inferred = conn.prepare_cached("SELECT DISTINCT p.child_id,ir.id,s.chain,ps.reading_version,s.seq,s.record_position,p.parent_id FROM message m JOIN session_prefix p ON p.parent_id=?2 AND p.copies_prefix=1 AND p.branch_point IS NULL JOIN reading_message s ON s.message_id=m.id JOIN input_ref ir ON ir.pk=s.input_pk JOIN parse_state ps ON ps.input_pk=s.input_pk AND ps.chain=s.chain WHERE m.id=?1 AND m.duplicate_of IS NULL AND EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=0) AND NOT EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=1)")?;
+        let mut inferred = conn.prepare_cached("SELECT DISTINCT p.child_id,ir.id,s.chain,ps.parse_version,s.seq,s.record_position,p.parent_id FROM message m JOIN session_prefix p ON p.parent_id=?2 AND p.copies_prefix=1 AND p.branch_point IS NULL JOIN message_parse s ON s.message_pk=m.pk JOIN input_ref ir ON ir.pk=s.input_pk JOIN parse_state ps ON ps.input_pk=s.input_pk AND ps.chain=s.chain WHERE m.id=?1 AND m.duplicate_of IS NULL AND EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=0) AND NOT EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=1)")?;
         for row in inferred.query_map(rusqlite::params![id.to_string(), session], |r| {
             <(String, String, i64, String, u64, u64, String)>::try_from(r)
         })? {
-            let (child, input, chain, reading_version, sequence, position, parent) = row?;
+            let (child, input, chain, parse_version, sequence, position, parent) = row?;
             result.push(CopiedFor {
                 parent: SessionId::parse(&parent)
                     .map_err(|error| crate::StoreError::stored(0, error.to_string()))?,
@@ -62,7 +62,7 @@ impl Reader<'_> {
                 source: PrefixSource {
                     input,
                     chain,
-                    reading_version,
+                    parse_version,
                 },
                 position: [sequence, position],
             });
@@ -182,7 +182,7 @@ impl Reader<'_> {
                 how,
                 parent,
                 child,
-                at,
+                branch_point: at,
                 call_id,
                 evidence,
             };

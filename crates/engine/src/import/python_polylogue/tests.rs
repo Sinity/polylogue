@@ -5,7 +5,7 @@ use rusqlite::OpenFlags;
 
 fn options(format: &str) -> ImportOptions {
     ImportOptions {
-        format: Some(format.into()),
+        origin: Some(format.into()),
         ..Default::default()
     }
 }

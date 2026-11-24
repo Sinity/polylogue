@@ -4,6 +4,75 @@ use super::*;
 use crate::derive::counts::{self, Counts};
 
 impl ChangeSummary {
+    pub(crate) fn installed_message(
+        &self,
+        pk: i64,
+        session: i64,
+        parent: Option<String>,
+        message: &polylogue_model::Message,
+        words: i64,
+        author: polylogue_model::WrittenBy,
+    ) -> Result<()> {
+        use polylogue_model::{Block, PromptKind, WrittenBy};
+        let human = author == WrittenBy::Human;
+        let model = author == WrittenBy::Model;
+        let counts = Counts {
+            messages: 1,
+            human_prompts: i64::from(human && message.prompt_kind == Some(PromptKind::Prose)),
+            human_commands: i64::from(human && message.prompt_kind == Some(PromptKind::Command)),
+            words: if human || model { words } else { 0 },
+            human_words: if human { words } else { 0 },
+            model_words: if model { words } else { 0 },
+            thinking_messages: i64::from(
+                message
+                    .blocks
+                    .iter()
+                    .any(|block| matches!(block, Block::Thinking { .. })),
+            ),
+            ..Counts::default()
+        };
+        let mut changed = self.changed.borrow_mut();
+        let change = changed.messages.get_mut(&pk).ok_or_else(|| {
+            crate::StoreError::Invalid(
+                "installed message is not in the transaction's changes".into(),
+            )
+        })?;
+        change.installed = Some(Installed {
+            session,
+            parent,
+            counts,
+            has_calls: message
+                .blocks
+                .iter()
+                .any(|block| matches!(block, Block::ToolCall { .. })),
+        });
+        Ok(())
+    }
+
+    /// The message's row no longer holds what its insert wrote (it was
+    /// rewritten, moved or deleted), so its counts are read from the row.
+    pub(crate) fn forget_installed(&self, pk: i64) -> Result<()> {
+        let mut changed = self.changed.borrow_mut();
+        let change = changed.messages.get_mut(&pk).ok_or_else(|| {
+            crate::StoreError::Invalid("changed message is not in the transaction's changes".into())
+        })?;
+        change.installed = None;
+        Ok(())
+    }
+
+    /// A session row is being removed with its messages: what messages
+    /// inserted into it in this transaction held is no longer their row.
+    pub(crate) fn removed_session(&self, session: i64) {
+        for change in self.changed.borrow_mut().messages.values_mut() {
+            if change
+                .installed
+                .as_ref()
+                .is_some_and(|installed| installed.session == session)
+            {
+                change.installed = None;
+            }
+        }
+    }
     pub(crate) fn session(&self, conn: &Connection, session: i64) -> Result<()> {
         if !self.changed.borrow().sessions.contains_key(&session)
             && let Some((script, counts_known)) = counts::session_state(conn, session)?
@@ -46,6 +115,15 @@ impl ChangeSummary {
         )
     }
 
+    pub(crate) fn remove_results(&self, conn: &Connection, message: i64) -> Result<()> {
+        self.call_messages(
+            conn,
+            "SELECT b.message_pk FROM tool_call t JOIN block b ON b.pk=t.call_block_pk
+             WHERE t.result_block_pk IN (SELECT pk FROM block WHERE message_pk=?1)",
+            [message],
+        )
+    }
+
     pub(crate) fn finish_summaries(&self, conn: &Connection, counter: Option<i64>) -> Result<()> {
         let changed = self.changed.borrow();
         let mut deltas = BTreeMap::<i64, Counts>::new();
@@ -56,7 +134,16 @@ impl ChangeSummary {
                     .or_default()
                     .accumulate(&before.counts, -1)?;
             }
-            let after = counts::message(conn, pk)?;
+            let after = match &change.installed {
+                Some(installed) => {
+                    let mut counts = installed.counts.clone();
+                    if installed.has_calls {
+                        (counts.tool_calls, counts.errors) = counts::message_actions(conn, pk)?;
+                    }
+                    Some((installed.session, counts))
+                }
+                None => counts::message(conn, pk)?,
+            };
             if let Some((session, after)) = after {
                 deltas.entry(session).or_default().accumulate(&after, 1)?;
             }

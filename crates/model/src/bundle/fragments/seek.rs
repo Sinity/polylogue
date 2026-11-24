@@ -14,7 +14,7 @@ pub enum TextField {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct NativeTextBody {
+pub struct SourceTextBody {
     /// Original Message block ordinal or canonical Document block ordinal.
     /// This is never a text-body sequence index or local database primary key.
     pub block: u64,
@@ -22,31 +22,31 @@ pub struct NativeTextBody {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum NativeTextPiece {
+pub enum SourceTextPiece {
     Body {
-        body: NativeTextBody,
+        body: SourceTextBody,
     },
     Separator {
-        before: NativeTextBody,
-        after: NativeTextBody,
+        before: SourceTextBody,
+        after: SourceTextBody,
     },
     /// A complete, accessible container with no text bodies; no block invented.
     Empty,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct NativeTextPosition {
-    pub piece: NativeTextPiece,
+pub struct SourceTextPosition {
+    pub piece: SourceTextPiece,
     /// UTF-8 byte offset inside the exact field or two-LF separator.
     pub byte: u64,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct NativeSpanSeek {
-    pub start: NativeTextPosition,
-    pub end: NativeTextPosition,
+pub struct SourceSpanSeek {
+    pub start: SourceTextPosition,
+    pub end: SourceTextPosition,
 }
-impl NativeSpanSeek {
+impl SourceSpanSeek {
     /// Shape checks only. The Reader validates the fields and boundaries;
     /// the acknowledged Run binds the global resolved coordinate mapping.
     pub fn validate(
@@ -67,14 +67,14 @@ impl NativeSpanSeek {
         }
         for endpoint in [self.start, self.end] {
             match endpoint.piece {
-                NativeTextPiece::Body { body } => {
+                SourceTextPiece::Body { body } => {
                     if let Reference::Block { n, .. } = container
                         && body.block != *n
                     {
                         return Err(TextFragmentError::Origin);
                     }
                 }
-                NativeTextPiece::Separator { before, after } => {
+                SourceTextPiece::Separator { before, after } => {
                     if matches!(container, Reference::Block { .. })
                         || endpoint.byte > 2
                         || before.block >= after.block
@@ -82,7 +82,7 @@ impl NativeSpanSeek {
                         return Err(TextFragmentError::Origin);
                     }
                 }
-                NativeTextPiece::Empty => {
+                SourceTextPiece::Empty => {
                     if endpoint.byte != 0
                         || coverage.start != 0
                         || coverage.end != 0
@@ -93,8 +93,8 @@ impl NativeSpanSeek {
                 }
             }
         }
-        if matches!(self.start.piece, NativeTextPiece::Empty)
-            != matches!(self.end.piece, NativeTextPiece::Empty)
+        if matches!(self.start.piece, SourceTextPiece::Empty)
+            != matches!(self.end.piece, SourceTextPiece::Empty)
         {
             return Err(TextFragmentError::Origin);
         }
@@ -112,11 +112,11 @@ impl NativeSpanSeek {
     }
 }
 
-fn piece_order(piece: NativeTextPiece) -> (u64, u8) {
+fn piece_order(piece: SourceTextPiece) -> (u64, u8) {
     match piece {
-        NativeTextPiece::Body { body } => (body.block, 0),
-        NativeTextPiece::Separator { before, .. } => (before.block, 1),
-        NativeTextPiece::Empty => (0, 0),
+        SourceTextPiece::Body { body } => (body.block, 0),
+        SourceTextPiece::Separator { before, .. } => (before.block, 1),
+        SourceTextPiece::Empty => (0, 0),
     }
 }
 

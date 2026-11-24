@@ -7,6 +7,8 @@ mod groups;
 mod search_build;
 pub(crate) use search_build::build_search_indexes;
 mod identities;
+#[cfg(any(test, feature = "fixture"))]
+use crate::writer::resolve::IndexUpkeep;
 pub(crate) use groups::{PreparedTexts, StoredGroups, column, joined, read, slice};
 pub(crate) use identities::TextIds;
 #[cfg(any(test, feature = "fixture"))]
@@ -22,13 +24,14 @@ pub(crate) fn intern(
     body: &str,
     search_index: i64,
     prepared: Option<&PreparedTexts>,
-    at_build_end: bool,
+    upkeep: &IndexUpkeep,
 ) -> Result<i64> {
     let hash = blake3::hash(body.as_bytes());
     let stored: Option<(i64, i64)> = conn
         .prepare_cached("SELECT id, indexed FROM text WHERE hash=?1")?
         .query_row([hash.as_bytes().as_slice()], |r| <(_, _)>::try_from(r))
         .optional()?;
+    let at_build_end = upkeep.at_build_end();
     let (id, indexed) = match stored {
         Some(stored) => stored,
         None => {

@@ -15,7 +15,7 @@ fn fragment(start: u64, text: &str) -> TextFragment {
         },
         text: text.into(),
         text_hash: BlobHash::of(text.as_bytes()),
-        provenance: TextFragmentProvenance {
+        provenance: TextFragmentSource {
             spans: vec![TextSpanOrigin {
                 reference: Reference::Span {
                     container: Box::new(container.clone()),

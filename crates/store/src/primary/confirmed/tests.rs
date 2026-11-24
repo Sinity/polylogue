@@ -15,9 +15,9 @@ fn input(position: i64, id: &str) -> Confirmed {
         event: format!("event-{id}"),
         change: ConfirmedChange::Live(Box::new(Product::Input {
             rows: Box::new(crate::input_rows::InputRows {
-                acquisition: None,
+                capture_read: None,
                 input: id.into(),
-                format: "synthetic".into(),
+                origin: "synthetic".into(),
                 revision: None,
                 extents: Vec::new(),
                 observation: None,
@@ -45,6 +45,12 @@ fn completion_marker_commits_staged_pages_atomically() {
     let path = dir.path().join("index.db");
     let mut index = cache(&path);
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     assert_eq!(
         apply(
             &crate::text_rows::TextIds::new(
@@ -54,6 +60,7 @@ fn completion_marker_commits_staged_pages_atomically() {
             )
             .unwrap(),
             &mut index,
+            &resolver,
             &[input(2, "first")]
         )
         .unwrap(),
@@ -79,6 +86,7 @@ fn completion_marker_commits_staged_pages_atomically() {
             )
             .unwrap(),
             &mut index,
+            &resolver,
             &[input(4, "second"), complete_at(5)]
         )
         .is_err()
@@ -110,6 +118,7 @@ fn completion_marker_commits_staged_pages_atomically() {
             )
             .unwrap(),
             &mut index,
+            &resolver,
             &[]
         )
         .unwrap(),
@@ -131,6 +140,7 @@ fn completion_marker_commits_staged_pages_atomically() {
             )
             .unwrap(),
             &mut index,
+            &resolver,
             &[input(2, "first"), complete_at(5)]
         )
         .unwrap(),
@@ -151,7 +161,13 @@ fn an_empty_confirmed_database_is_known_and_zero_data_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
     assert_eq!(checkpoint(&index).unwrap(), None);
-    let _archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     apply(
         &crate::text_rows::TextIds::new(
             &index,
@@ -160,6 +176,7 @@ fn an_empty_confirmed_database_is_known_and_zero_data_is_refused() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[complete_at(0)],
     )
     .unwrap();
@@ -173,6 +190,7 @@ fn an_empty_confirmed_database_is_known_and_zero_data_is_refused() {
             )
             .unwrap(),
             &mut index,
+            &resolver,
             &[input(0, "invalid")]
         )
         .is_err()
@@ -185,7 +203,13 @@ fn source_lifecycle_keeps_recorded_authored_effects() {
     use polylogue_model::user::{UserRequest, UserWrite};
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
-    let _archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let request = UserRequest {
         authorship: polylogue_model::authorship::Authorship {
             author: polylogue_model::Author::Operator,
@@ -211,6 +235,7 @@ fn source_lifecycle_keeps_recorded_authored_effects() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[
             input(1, "source"),
             Confirmed {
@@ -237,6 +262,7 @@ fn source_lifecycle_keeps_recorded_authored_effects() {
             )
             .unwrap(),
             &mut index,
+            &resolver,
             &[
                 Confirmed {
                     sinex_context: None,
@@ -276,6 +302,7 @@ fn source_lifecycle_keeps_recorded_authored_effects() {
             )
             .unwrap(),
             &mut index,
+            &resolver,
             &[
                 Confirmed {
                     sinex_context: None,
@@ -335,7 +362,13 @@ fn settings(index: &Connection) -> Vec<String> {
 fn new_requests_apply_after_the_applied_ones_and_a_lifecycle_change_rebuilds_authored_state() {
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
-    let _archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let live = |position, event: &str, product| Confirmed {
         sinex_context: None,
         position,
@@ -352,6 +385,7 @@ fn new_requests_apply_after_the_applied_ones_and_a_lifecycle_change_rebuilds_aut
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[live(2, "first", first), complete_at(2)],
     )
     .unwrap();
@@ -365,6 +399,7 @@ fn new_requests_apply_after_the_applied_ones_and_a_lifecycle_change_rebuilds_aut
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[live(3, "second", second), complete_at(3)],
     )
     .unwrap();
@@ -377,6 +412,7 @@ fn new_requests_apply_after_the_applied_ones_and_a_lifecycle_change_rebuilds_aut
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[
             Confirmed {
                 sinex_context: None,
@@ -398,6 +434,7 @@ fn new_requests_apply_after_the_applied_ones_and_a_lifecycle_change_rebuilds_aut
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[
             Confirmed {
                 sinex_context: None,
@@ -418,7 +455,13 @@ fn confirmed_slices_keep_full_material_descriptors_without_opening_source_bytes(
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
     let bytes_root = dir.path().join("unavailable-bytes");
-    let _archive = crate::Archive::on_sinex(dir.path(), &bytes_root);
+    let archive = crate::Archive::on_sinex(dir.path(), &bytes_root);
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let hash = polylogue_model::BlobHash::of(b"abcd");
     let extent = hashed_blobs::Extent {
         segment: "segments/confirmed.hb".into(),
@@ -443,9 +486,9 @@ fn confirmed_slices_keep_full_material_descriptors_without_opening_source_bytes(
         event: format!("event-{id}"),
         change: ConfirmedChange::Live(Box::new(Product::Input {
             rows: Box::new(crate::input_rows::InputRows {
-                acquisition: None,
+                capture_read: None,
                 input: id.into(),
-                format: "synthetic".into(),
+                origin: "synthetic".into(),
                 observation: None,
                 revision: Some(crate::input_rows::Revision {
                     number: 1,
@@ -472,6 +515,7 @@ fn confirmed_slices_keep_full_material_descriptors_without_opening_source_bytes(
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[
             input_at(7, "first", 1),
             input_at(8, "second", 0),
@@ -518,7 +562,13 @@ mod completion;
 fn has_confirmed_event_follows_positions_and_early_erasures() {
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
-    let _archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let erased = Confirmed {
         sinex_context: None,
         position: 3,
@@ -535,6 +585,7 @@ fn has_confirmed_event_follows_positions_and_early_erasures() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[input(2, "staged"), erased],
     )
     .unwrap();
@@ -547,6 +598,7 @@ fn has_confirmed_event_follows_positions_and_early_erasures() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[complete_at(4)],
     )
     .unwrap();
@@ -560,7 +612,13 @@ fn has_confirmed_event_follows_positions_and_early_erasures() {
 fn prepared_position_cannot_skip_new_sinex_events() {
     let directory = tempfile::tempdir().unwrap();
     let mut index = cache(&directory.path().join("index.db"));
-    let _archive = crate::Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
+    let archive = crate::Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let Step::Prepare(prepared) =
         stage_next(&mut index, &[input(2, "first"), complete_at(5)]).unwrap()
     else {
@@ -597,6 +655,7 @@ fn prepared_position_cannot_skip_new_sinex_events() {
             )
             .unwrap(),
             &mut index,
+            &resolver,
             &[]
         )
         .unwrap(),
@@ -615,7 +674,13 @@ fn prepared_position_cannot_skip_new_sinex_events() {
 fn prepared_application_respects_a_failed_scope_reset_fence() {
     let directory = tempfile::tempdir().unwrap();
     let mut index = cache(&directory.path().join("index.db"));
-    let _archive = crate::Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
+    let archive = crate::Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let Step::Prepare(prepared) =
         stage_next(&mut index, &[input(2, "first"), complete_at(2)]).unwrap()
     else {
@@ -660,6 +725,7 @@ fn prepared_application_respects_a_failed_scope_reset_fence() {
             )
             .unwrap(),
             &mut index,
+            &resolver,
             &[]
         )
         .unwrap(),
@@ -671,12 +737,18 @@ fn prepared_application_respects_a_failed_scope_reset_fence() {
 fn mixed_live_and_restored_authored_records_keep_first_execution_and_commit_order() {
     use polylogue_model::{
         BlobHash,
-        authored::ExecutionEligibility,
+        authored::RunsHere,
         user::{NewChatAction, UserWrite},
     };
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
-    let _archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let context = crate::user_writes::PreparationContext::new(vec!["codex".into()]);
     let prepared = |id: &str| {
         let request = crate::fixture::authored::operator_request(
@@ -750,12 +822,12 @@ fn mixed_live_and_restored_authored_records_keep_first_execution_and_commit_orde
     )
     .unwrap();
     for _ in 0..2 {
-        assert_eq!(apply(&texts, &mut index, &events).unwrap(), 7);
+        assert_eq!(apply(&texts, &mut index, &resolver, &events).unwrap(), 7);
         for (id, execution, committed) in [
-            ("live", ExecutionEligibility::Live, 2),
-            ("historical", ExecutionEligibility::Historical, 3),
-            ("historical-first", ExecutionEligibility::Historical, 4),
-            ("live-first", ExecutionEligibility::Live, 6),
+            ("live", RunsHere::Live, 2),
+            ("historical", RunsHere::Historical, 3),
+            ("historical-first", RunsHere::Historical, 4),
+            ("live-first", RunsHere::Live, 6),
         ] {
             let action = crate::chat_actions::read(&index, "source_", id)
                 .unwrap()

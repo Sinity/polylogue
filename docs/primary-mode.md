@@ -53,8 +53,8 @@ One reader follows Sinex's confirmed stream. The stream carries references (comm
 AI work is present in Sinex beside everything else, as events its timeline, recall and derivations can read.
 
 - **After a chain's reading commits in the index, the records composed from it are published**: the shown session, message and tool-call records, each keyed by its kind and its stable ID, with the inputs and chains that contributed carried in the payload. A message is one record in Sinex however many routes, machines and rewrites brought it.
-- **Publication follows the index and never feeds it.** Nothing is queued before the index commits; a chain's state notes the reading version and length last published; published records are never read back into the index.
-- **A parser upgrade is a replay.** A chain read again under a new reading version is published as a producer replay of that chain, so the new records become live and the previous ones are archived with what was derived from them. Authored records about a session name it by natural key and are untouched.
+- **Publication follows the index and never feeds it.** Nothing is queued before the index commits; a chain's state notes the parse version and length last published; published records are never read back into the index.
+- **A parser upgrade is a replay.** A chain read again under a new parse version is published as a producer replay of that chain, so the new records become live and the previous ones are archived with what was derived from them. Authored records about a session name it by natural key and are untouched.
 - **One host publishes an input's records:** the host that wrote the input ([Several machines](#several-machines)). A record composed from several hosts' inputs is published under one key and converges whichever host sends.
 - Polylogue's kinds are declared in Polylogue's code and reach Sinex as an installed catalog ([kind registration](https://github.com/Sinity/sinex/blob/master/docs/producers.md#kind-registration)); Sinex knows none of them by name.
 
@@ -95,7 +95,7 @@ Each host is its own producer identity (credential and frame namespace) under on
 
 - **A rebuild is the ordinary build.** An index from another build, or none, is built from the record with bytes opened from Sinex ([architecture.md](architecture.md#one-path)); there is no primary build path and nothing is re-sent.
 - **Restoring the record.** A host with an empty record starts the reader from Sinex's snapshot. The same reader, with the same code, fills the record, this host's own earlier records included, and the index is then built. The host continues its own numbering after the highest position Sinex holds for it. What it had committed and not yet shipped when the record was lost is lost with it.
-- **Parser upgrades.** A chain whose reading version changed is read again from its bytes, as in standalone, and published again as a replay ([Parsed records in Sinex](#parsed-records-in-sinex)).
+- **Parser upgrades.** A chain whose parse version changed is read again from its bytes, as in standalone, and published again as a replay ([Parsed records in Sinex](#parsed-records-in-sinex)).
 
 ## Moving user state
 

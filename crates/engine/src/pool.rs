@@ -12,7 +12,7 @@ use crate::{EngineError, plan::Plan, read};
 use polylogue_model::{Json, LockExt, spawn_named};
 use polylogue_sources::OriginSpec;
 use polylogue_store::staging::PreparedBatch;
-use polylogue_store::writer::ChainReading;
+use polylogue_store::writer::ChainParse;
 use polylogue_store::writer::WriterSender;
 use polylogue_store::{Archive, ReadPool};
 use polylogue_store::{Batch, Change, InFlight, InputKey, Observation, ParseStep};
@@ -122,7 +122,7 @@ pub struct Done {
     pub pending: Option<String>,
     pub checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
     pub spooled_group: Option<polylogue_store::primary::SpooledGroup>,
-    pub source_read: Option<polylogue_store::primary::AcquisitionReceipt>,
+    pub source_read: Option<polylogue_store::primary::CaptureRead>,
 }
 
 pub(crate) enum Task {
@@ -621,7 +621,7 @@ fn acknowledge_groups(pending: Receiver<Pending>, done: Sender<Finished>) {
                             Some(Err(polylogue_store::StoreError::PrimaryPending { identity })) => {
                                 result.pending = Some(identity);
                             }
-                            Some(Err(polylogue_store::StoreError::UnresolvedBasisConflict {
+                            Some(Err(polylogue_store::StoreError::UnresolvedBaseConflict {
                                 spooled,
                             })) => {
                                 result.spooled_group = Some(spooled);
@@ -720,7 +720,7 @@ fn run_chain(
     settings: &ChainSettings,
     shared: &Arc<Shared>,
     bytes_read: &mut u64,
-) -> Result<Option<ChainReading>, EngineError> {
+) -> Result<Option<ChainParse>, EngineError> {
     let stop = archive.stop();
     let yielding = &settings.yielding;
     let stopped_attempt = &settings.stopped_attempt;
@@ -747,7 +747,7 @@ fn run_chain(
         };
     }
     polylogue_store::fault::check("reparse.prepare", &plan.input.id)?;
-    let mut reading = ChainReading::new()?;
+    let mut reading = ChainParse::new()?;
     if let Some(polylogue_sources::Parse::Export(mut parser)) = (plan.origin.open)(&plan.path) {
         let read = crate::import::exports::parse_export(plan, &mut *parser, blobs, |mut item| {
             // A reading commits whole, so a yield drops what was
@@ -786,8 +786,8 @@ fn run_chain(
                         blobs: decoded,
                         length: plan.size,
                         parse: Vec::new(),
-                        acquisition: None,
-                        basis: None,
+                        capture_read: None,
+                        base: None,
                         release: Default::default(),
                     },
                     files,
@@ -823,7 +823,7 @@ fn run_chain(
                     archive,
                     &plan.input.id,
                     plan.parser_chain,
-                    &plan.origin.reading_version(),
+                    &plan.origin.parse_version(),
                     job.start,
                 )?;
             }
@@ -862,7 +862,7 @@ fn run_chain(
     Ok(Some(reading))
 }
 
-fn keep_decoded(reading: &mut ChainReading, shared: &Arc<Shared>, mut batch: PreparedBatch) {
+fn keep_decoded(reading: &mut ChainParse, shared: &Arc<Shared>, mut batch: PreparedBatch) {
     if !batch.batch.blobs.is_empty() {
         // Decoded payloads are files; only their batch and chunk descriptors stay in memory.
         let bytes = (std::mem::size_of::<PreparedBatch>()
@@ -896,7 +896,7 @@ fn failed_step(job: &Job, error: String, prepare: bool) -> ParseStep {
     );
     failed.reset = false;
     failed.progress = polylogue_model::batch::StepProgress::Failed { error };
-    failed.reading_version = job.origin.reading_version();
+    failed.parse_version = job.origin.parse_version();
     failed.stopped_attempt = job.stopped_attempt;
     if prepare {
         failed.prepare();
@@ -1052,7 +1052,7 @@ pub(crate) fn run(
                 Change::Reparse { chain } => Some(chain),
                 _ => None,
             }),
-            &job.origin.reading_version(),
+            &job.origin.parse_version(),
             job.start,
         ) {
             Ok(names) => {
@@ -1183,7 +1183,7 @@ pub(crate) fn run(
                         }
                         // Packing for the writer is store work, not parsing.
                         let packed = std::time::Instant::now();
-                        p.reading_version = job.origin.reading_version();
+                        p.parse_version = job.origin.parse_version();
                         if prepare { p.prepare(); }
                         add(Stage::Store, packed.elapsed());
                         parsed.push(p);
@@ -1193,7 +1193,7 @@ pub(crate) fn run(
                         // A finished input never grows, so nothing continues it.
                         if !job.finished {
                             last.checkpoint = Some(polylogue_model::batch::ParserCheckpoint::new(
-                                last.reading_version.clone(), last.parsed_upto, out.parser_state.clone().filter(|state| !state.is_null())));
+                                last.parse_version.clone(), last.parsed_upto, out.parser_state.clone().filter(|state| !state.is_null())));
                         }
                     }
                     parsed
@@ -1214,7 +1214,7 @@ pub(crate) fn run(
             let mut step = ParseStep::without_parser(
                 job.start..job.end,
                 job.at_end,
-                job.origin.reading_version(),
+                job.origin.parse_version(),
             );
             if prepare {
                 step.prepare();
@@ -1255,11 +1255,11 @@ pub(crate) fn run(
         blobs: extra,
         length: job.length,
         parse,
-        acquisition: source_read,
-        basis: job
+        capture_read: source_read,
+        base: job
             .source_read
             .as_ref()
-            .and_then(|context| context.basis.clone()),
+            .and_then(|context| context.base.clone()),
         release: InFlight::default(),
     };
     (Some(PreparedBatch { batch, files }), out)

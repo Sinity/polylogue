@@ -181,7 +181,7 @@ impl Reader<'_> {
             .unwrap_or_default();
         let unfinished_tool_call: bool = conn
             .prepare_cached(
-                "SELECT coalesce((SELECT c.result_message_id IS NULL FROM tool_call c
+                "SELECT coalesce((SELECT c.result_block_pk IS NULL FROM tool_call c
                                    WHERE c.session_pk = ?1 ORDER BY c.pk DESC LIMIT 1), 0)",
             )?
             .query_row([pk], |r| r.get(0))?;
@@ -302,7 +302,7 @@ impl Reader<'_> {
                           ORDER BY m.session_order DESC, m.id DESC LIMIT 1),
                         (SELECT m.prompt_kind FROM message m WHERE m.session_pk = s.pk AND m.duplicate_of IS NULL
                           ORDER BY m.session_order DESC, m.id DESC LIMIT 1),
-                        coalesce((SELECT c.result_message_id IS NULL FROM tool_call c
+                        coalesce((SELECT c.result_block_pk IS NULL FROM tool_call c
                                    WHERE c.session_pk = s.pk ORDER BY c.pk DESC LIMIT 1), 0)
                    FROM session s WHERE s.id = ?1",
             )?

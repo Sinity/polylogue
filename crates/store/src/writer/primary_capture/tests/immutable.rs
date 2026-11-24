@@ -1,16 +1,15 @@
 use super::*;
 use crate::primary::{
-    AcquisitionReceipt, AcquisitionRoute, Confirmed, ConfirmedChange, RawRange, ReplayControl,
-    SourceSelector,
+    CaptureRead, Confirmed, ConfirmedChange, RawRange, ReadRoute, ReplayControl, SourceSelector,
 };
 
 fn imported(archive: &Archive, bytes: &[u8]) -> PreparedBatch {
     let hash = BlobHash::of(bytes);
     let mut item = source(&hash.to_string(), bytes);
     item.batch.input.route = polylogue_model::Route::Copy;
-    item.batch.acquisition = Some(AcquisitionReceipt {
-        version: AcquisitionReceipt::VERSION,
-        route: AcquisitionRoute::ExplicitImport,
+    item.batch.capture_read = Some(CaptureRead {
+        version: CaptureRead::VERSION,
+        route: ReadRoute::ExplicitImport,
         source: SourceSelector {
             origin: "codex".into(),
             machine: "machine".into(),
@@ -24,7 +23,7 @@ fn imported(archive: &Archive, bytes: &[u8]) -> PreparedBatch {
         observed_at: polylogue_model::Timestamp::parse_rfc3339("2026-01-01T00:00:00Z").unwrap(),
         generation: None,
         raw_total: None,
-        raw_predecessor: None,
+        previous_revision: None,
         chunks: Vec::new(),
     });
     item.files.push(archive.prepare_bytes(bytes).unwrap());
@@ -136,7 +135,7 @@ fn completed_imports_keep_their_receipt_when_repeated_or_mixed_with_new_members(
     wrong_format.batch.input.format = "other".into();
     wrong_format
         .batch
-        .acquisition
+        .capture_read
         .as_mut()
         .unwrap()
         .source
@@ -149,7 +148,7 @@ fn completed_imports_keep_their_receipt_when_repeated_or_mixed_with_new_members(
     other_receiver.batch.observation.as_mut().unwrap().machine = "second-machine".into();
     other_receiver
         .batch
-        .acquisition
+        .capture_read
         .as_mut()
         .unwrap()
         .source
@@ -159,7 +158,7 @@ fn completed_imports_keep_their_receipt_when_repeated_or_mixed_with_new_members(
             store(vec![other_receiver]).remove(0),
             Err(StoreError::PrimaryPending { .. })
         ),
-        "a different receiver must still capture its own acquisition"
+        "a different receiver must still capture its own capture_read"
     );
     let index = crate::archive::open_read(&archive.index_db()).unwrap();
     assert_eq!(

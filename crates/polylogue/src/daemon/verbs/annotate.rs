@@ -219,7 +219,7 @@ fn each(
         });
     }
     let mut committed = Vec::new();
-    let answer = crate::daemon::service::submit_receipt(
+    let answer = crate::daemon::service::submit_result(
         call.call.daemon,
         call.call.invocation,
         call.call.request_id.into(),
@@ -334,7 +334,7 @@ fn wrote(
     scope: Option<polylogue_store::ReadScopeToken>,
 ) -> Result<StepDone, Failure> {
     let mut committed = Vec::new();
-    let answer = crate::daemon::service::submit_receipt(
+    let answer = crate::daemon::service::submit_result(
         call.call.daemon,
         call.call.invocation,
         call.call.request_id.into(),

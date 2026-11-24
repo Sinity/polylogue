@@ -17,7 +17,7 @@ mod large_sessions;
 #[cfg(feature = "faults")]
 mod live_first;
 mod one_worker;
-mod reading_version;
+mod parse_version;
 mod returning_files;
 mod rewritten_documents;
 mod started_inputs;
@@ -126,7 +126,7 @@ fn after_restart_only_the_changed_input_resumes() {
         let chain = known.chain.unwrap();
         let version = polylogue_sources::origin::by_name("claude-code")
             .unwrap()
-            .reading_version();
+            .parse_version();
         let stored = reader
             .parser_checkpoint(&known.input_id, chain, &version)
             .unwrap()
@@ -298,7 +298,7 @@ fn a_session_growing_across_range_boundaries_stays_one_chain() {
         records.len() as i64
     );
     assert_eq!(
-        w.count("SELECT count(*) AS n FROM reading_message"),
+        w.count("SELECT count(*) AS n FROM message_parse"),
         records.len() as i64,
         "each record is read once"
     );
@@ -367,7 +367,7 @@ fn importing_the_same_bytes_twice_stores_them_once() {
         .import_with_options(
             std::slice::from_ref(&outside),
             &ImportOptions {
-                format: Some("claude-code".into()),
+                origin: Some("claude-code".into()),
                 ..Default::default()
             },
         )
@@ -380,7 +380,7 @@ fn importing_the_same_bytes_twice_stores_them_once() {
         .import_with_options(
             std::slice::from_ref(&outside),
             &ImportOptions {
-                format: Some("claude-code".into()),
+                origin: Some("claude-code".into()),
                 ..Default::default()
             },
         )
@@ -402,7 +402,7 @@ fn import_without_final_newline_reads_last_record() {
         .import_with_options(
             std::slice::from_ref(&outside),
             &ImportOptions {
-                format: Some("claude-code".into()),
+                origin: Some("claude-code".into()),
                 ..Default::default()
             },
         )
@@ -447,7 +447,7 @@ fn importing_a_directory_imports_every_file_under_it() {
         .import_with_options(
             std::slice::from_ref(&spool),
             &ImportOptions {
-                format: Some("claude-code".into()),
+                origin: Some("claude-code".into()),
                 ..Default::default()
             },
         )

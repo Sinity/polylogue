@@ -15,7 +15,7 @@ impl<'a> Compiler<'a> {
         let top = cond.map(top_level).unwrap_or_default();
         let Some(cond) = cond else {
             let mut predicates = vec![rows];
-            self.fold_bound_sessions(&child, &top, &mut predicates, true)?;
+            self.sessions_within_bounds(&child, &top, &mut predicates, true)?;
             return Ok(format!(
                 "EXISTS (SELECT 1 FROM {from} WHERE {})",
                 and_all(&predicates)
@@ -23,9 +23,9 @@ impl<'a> Compiler<'a> {
         };
         let inner = self.cond(cond, &child, false)?;
         let mut matching = vec![rows.clone(), inner.clone()];
-        self.fold_bound_sessions(&child, &top, &mut matching, true)?;
+        self.sessions_within_bounds(&child, &top, &mut matching, true)?;
         let mut unknown = vec![rows, format!("({inner}) IS NULL")];
-        self.fold_bound_sessions(&child, &top, &mut unknown, true)?;
+        self.sessions_within_bounds(&child, &top, &mut unknown, true)?;
         let matching = and_all(&matching);
         let unknown = and_all(&unknown);
         // True when some child satisfies the condition, false when every
@@ -54,7 +54,7 @@ impl<'a> Compiler<'a> {
             rows = format!("{rows} AND {}", self.cond(cond, &child, false)?);
         }
         let mut predicates = vec![rows];
-        self.fold_bound_sessions(
+        self.sessions_within_bounds(
             &child,
             &cond.map(top_level).unwrap_or_default(),
             &mut predicates,
@@ -173,7 +173,7 @@ impl<'a> Compiler<'a> {
         if let Some(cond) = cond {
             w.push(self.cond(cond, &child, false)?);
         }
-        self.fold_bound_sessions(
+        self.sessions_within_bounds(
             &child,
             &cond.map(top_level).unwrap_or_default(),
             &mut w,
@@ -181,14 +181,14 @@ impl<'a> Compiler<'a> {
         )?;
         w.push(format!("({parent_rows})"));
         let parent_pk = parent.a.expand(units::spec(parent.unit).key);
-        let (child_key, child_cols) =
+        let (child_pk, child_cols) =
             row_columns(unit, &child.a, self.opts.clock.now.as_millisecond());
         let parent_ref = row_reference(parent)?;
         let child_ref = row_reference(&child)?;
         let child_order = self.default_order(&child);
         let parent_order = self.default_order(parent);
         let mut select = vec![
-            format!("{child_key} AS _pk"),
+            format!("{child_pk} AS _pk"),
             format!("{parent_pk} AS _match_parent_pk"),
             format!("{parent_ref} AS parent"),
             format!(

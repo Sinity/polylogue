@@ -119,7 +119,7 @@ generated page of the thing they belong to, or on the area page that owns them.
 ## Parsing
 
 - **parser**: reads one origin's chains into parsed rows; one per origin.
-- **reading version**: a parser module's version; changing it re-parses the
+- **parse version**: a parser module's version; changing it re-parses the
   chains that module read.
 - **input record**: one entry in an input (a JSON line, an export item, a
   row). Each input record ends **used**, **skipped** (with a reason) or **unreadable**: its
@@ -137,9 +137,9 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **format drift**: new, changed or vanished fields in a provider's format.
 - **record**: `archive.db` with the bytes it cites: what was captured and
   authored, which cannot be recomputed. The index is a function of it.
-- **chain reading**: what a parser, at its reading version, makes of one chain. It
+- **chain parse**: what a parser, at its parse version, makes of one chain. It
   is owned by its chain; the **shown rows** of a session are composed from
-  the readings that state it.
+  the parses that state it. **Reading** is what `read` produces.
 - **covered chain**: a chain a newer chain of the same input is known to
   begin with all of; it has no reading.
 - **upkeep** and **build**: keeping the installed index current as the record
@@ -170,7 +170,8 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **`written_by`**: who wrote a message (`human`, `model`, `harness`, `tool`,
   `unknown`). **`prompt_kind`**: what kind of prompt a user-role message is.
 - **time quality** and **precision**: how a stored time was obtained and how
-  exact it is. Unknown times stay unknown.
+  exact it is. Unknown times stay unknown. **Time accuracy** is the pair with
+  an optional upper bound, stored beside each source time.
 - **paste**: a pasted range of a prompt.
 - **sidecar**: a file read into its session, never as a session of its own.
 - **session alias**: the ID a copy of a session carries when the copy has no
@@ -598,7 +599,6 @@ another line does are in [set-aside.md](set-aside.md#words-another-line-does).
 | `pin` | `save page:pinned` |
 | `analyze` (experiments) | `\| measure experiment` |
 | `applies` (as a verb) | the field `applies:REF` on methods |
-| stage (in a query) | transform |
 | fold | `--show` and `--hide` |
 | `links` (the unit of links between sessions) | `session_links`; `links` is the unit of link rows |
 | answer (for a query run) | run: `run:<id>`, the unit `runs` |

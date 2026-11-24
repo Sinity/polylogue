@@ -11,7 +11,7 @@ fn import(engine: &mut Engine, path: &Path) -> ImportReport {
         .import_with_options(
             &[path.to_path_buf()],
             &ImportOptions {
-                format: Some("claude-code".into()),
+                origin: Some("claude-code".into()),
                 ..Default::default()
             },
         )

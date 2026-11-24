@@ -22,13 +22,17 @@ pub(super) fn is_atomic_capture_group(items: &[PreparedBatch]) -> bool {
                 .observation
                 .as_ref()
                 .is_some_and(|observation| observation.import.is_some())
-            || item.batch.acquisition.as_ref().is_some_and(|capture_read| {
-                capture_read.route == crate::primary::AcquisitionRoute::ExplicitImport
-                    || matches!(
-                        capture_read.generation,
-                        Some(crate::primary::SourceGeneration::Database { .. })
-                    )
-            })
+            || item
+                .batch
+                .capture_read
+                .as_ref()
+                .is_some_and(|capture_read| {
+                    capture_read.route == crate::primary::ReadRoute::ExplicitImport
+                        || matches!(
+                            capture_read.generation,
+                            Some(crate::primary::ObservedState::Database { .. })
+                        )
+                })
     })
 }
 
@@ -36,9 +40,12 @@ pub(super) fn independent_files(items: &[PreparedBatch]) -> bool {
     items.len() > 1
         && !is_atomic_capture_group(items)
         && items.iter().any(|item| {
-            item.batch.acquisition.as_ref().is_some_and(|capture_read| {
-                capture_read.route == crate::primary::AcquisitionRoute::NativeCapture
-            })
+            item.batch
+                .capture_read
+                .as_ref()
+                .is_some_and(|capture_read| {
+                    capture_read.route == crate::primary::ReadRoute::NativeCapture
+                })
         })
 }
 
@@ -475,8 +482,8 @@ fn stored_readings(
         replayed_input(&item.batch)
             && item.files.is_empty()
             && item.batch.blobs.is_empty()
-            && item.batch.acquisition.is_none()
-            && item.batch.basis.is_none()
+            && item.batch.capture_read.is_none()
+            && item.batch.base.is_none()
             && item.batch.required_outcome.is_none()
     }) {
         return Ok(None);

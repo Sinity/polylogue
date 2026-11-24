@@ -15,7 +15,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
-type Committed = Receiver<Result<polylogue_store::user_writes::UserReceipt, StoreError>>;
+type Committed = Receiver<Result<polylogue_store::user_writes::WriteResult, StoreError>>;
 
 /// A request the writer's queue had no room for.
 struct Waiting {

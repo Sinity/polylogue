@@ -1,3 +1,7 @@
+-- Foreign-key parent deletes need these child lookups during the first build too.
+CREATE INDEX IF NOT EXISTS link_child  ON link(child_pk);
+CREATE INDEX IF NOT EXISTS event_after   ON event(after_message_pk) WHERE after_message_pk IS NOT NULL;
+
 -- Duplicate derivation also clears old marks after capture inputs disappear.
 -- Unmarked sessions have no entries and need no message-table scan.
 CREATE INDEX IF NOT EXISTS message_duplicate ON message(session_pk) WHERE duplicate_of IS NOT NULL;
