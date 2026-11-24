@@ -53,8 +53,9 @@ pub(crate) struct SearchBuild {
     written: bool,
 }
 
-/// Texts and bytes one step enters.
-const STEP_TEXTS: i64 = 16_384;
+/// Texts one step enters: each step's commit writes a new full-text
+/// segment that later merges, so a step is large.
+const STEP_TEXTS: i64 = 100_000;
 
 impl SearchBuild {
     pub(crate) fn new() -> Self {
