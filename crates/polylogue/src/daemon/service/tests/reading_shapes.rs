@@ -680,11 +680,7 @@ fn the_context_meter_estimates_from_stored_sums_what_context_at_computes() {
     ]
     .concat();
     std::fs::write(d.home.join(".claude/projects/-p/meter.jsonl"), session).unwrap();
-    d.wait_for(|status| {
-        status["store"]["messages"] == 4
-            && status["store"]["search_pending"] == 0
-            && status["busy"] == false
-    });
+    d.wait_for(|status| status["store"]["sessions"] == 2 && status["store"]["search_pending"] == 0);
     let page = read(
         &d,
         "session:claude-code:meter",
