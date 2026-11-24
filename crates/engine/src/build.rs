@@ -37,6 +37,9 @@ pub(crate) struct BuildProgress {
     started: bool,
     /// Plans of the last page not yet handed to a worker.
     pending: Vec<Plan>,
+    /// Chains a worker was reading when the build yielded, as (input,
+    /// chain): planned again from their start.
+    put_down: Vec<(String, i64)>,
 }
 
 /// Inputs whose chains are planned per page.
@@ -126,6 +129,8 @@ struct Prepare<'a> {
     /// Chains a worker put down unread when the build yielded, read again
     /// from their start when it resumes.
     yielded: Mutex<Vec<Plan>>,
+    /// Chains being read when the build yielded, read again from their start.
+    put_down: Mutex<Vec<(String, i64)>>,
 }
 
 impl Prepare<'_> {
@@ -204,12 +209,13 @@ impl Prepare<'_> {
                         .map_err(EngineError::from)
                 }
                 Ok(None) => {
-                    // The build yields to a request: the chain is read again.
+                    // The build yields to a request: the chain is planned
+                    // again, since this plan has read part of it.
                     drop(admitted);
-                    self.yielded
+                    self.put_down
                         .lock()
                         .map_err(|_| EngineError::Stopped)?
-                        .push(plan);
+                        .push((input.id.clone(), chain));
                     break;
                 }
                 Err(EngineError::Stopped) => return Err(EngineError::Stopped),
@@ -296,6 +302,7 @@ impl Engine {
             runs: Mutex::new(std::mem::take(&mut saved.runs)),
             failed: Mutex::new(std::mem::take(&mut saved.failed)),
             yielded: Mutex::new(Vec::new()),
+            put_down: Mutex::new(Vec::new()),
         };
         let mut requests = self.requests.take();
         let clock = PhaseClock::start("read chains");
@@ -353,6 +360,10 @@ impl Engine {
                 .map_err(|_| EngineError::Stopped)?;
             put_down.append(&mut saved.pending);
             saved.pending = put_down;
+            saved.put_down = prepare
+                .put_down
+                .into_inner()
+                .map_err(|_| EngineError::Stopped)?;
             self.build_progress = Some(saved);
             pass.capture_pending = true;
             return Ok((pass, Vec::new()));
@@ -416,6 +427,26 @@ impl Engine {
             return Ok(false);
         };
         let mut requested = || requests.as_mut().is_some_and(|requests| requests.poll());
+        if !progress.put_down.is_empty() {
+            let put_down = std::mem::take(&mut progress.put_down);
+            let inputs: Vec<String> = put_down.iter().map(|(input, _)| input.clone()).collect();
+            let behind = self.reads.reader()?.chains_behind_index(
+                &versions,
+                polylogue_store::StoppedChains::ForAttempt(self.stopped_attempt),
+                polylogue_store::read::RevisionChains::All,
+                Some(&inputs),
+            )?;
+            let mut again = Vec::new();
+            for c in behind {
+                if put_down.contains(&(c.input.clone(), c.progress.chain))
+                    && let Some(plan) = self.build_plan(c)?
+                {
+                    again.push(plan);
+                }
+            }
+            again.append(&mut progress.pending);
+            progress.pending = again;
+        }
         loop {
             self.archive.stop().check()?;
             // A request waits at most for the chains already handed out.
